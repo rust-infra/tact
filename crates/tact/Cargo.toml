@@ -1,0 +1,46 @@
+[package]
+name = "tact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tact"
+path = "src/main.rs"
+
+[[bin]]
+name = "tact-tui"
+path = "src/bin/tui.rs"
+
+[dependencies]
+tact_core = { path = "../core" }
+tui = { path = "../tui" }
+anthropic-ai-sdk = { workspace = true }
+async-openai = "0.20"
+secrecy = "0.8"
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22"
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true }
+dashmap = { workspace = true }
+reqwest = { workspace = true }
+console-subscriber = { workspace = true }
+derive_builder = { workspace = true }
+dotenvy = { workspace = true }
+futures-util = "0.3"
+reqwest-eventsource = "0.6"
+rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
+schemars.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tool_refactor_macros = { path = "../tool_refactor_macros" }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tera = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process", "sync", "time", "tracing"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+walkdir = { workspace = true }

@@ -1,0 +1,28 @@
+# tact configuration (TOML)
+# Place this at any of these locations:
+#   ./.tact/config.toml     (project-level)
+#   ./tact.toml              (project-level, alternative)
+#   ~/.tact/config.toml      (user-global)
+#
+# Priority: CLI args > environment variables > this config file.
+
+[llm]
+# LLM provider: "anthropic" or "openai"
+# provider = "anthropic"
+
+# Model name
+# model = "claude-sonnet-4-20250514"
+
+# API key (alternative to ANTHROPIC_API_KEY / OPENAI_API_KEY env vars)
+# api_key = "sk-..."
+
+# API base URL (for proxies or alternative endpoints)
+# base_url = "https://api.anthropic.com"
+
+[permission]
+# Permission mode: "default" (ask before each tool), "plan" (plan first), "auto" (auto-approve)
+# mode = "default"
+
+[agent]
+# Maximum context size in characters before auto-compaction
+# context_limit_chars = 500000
