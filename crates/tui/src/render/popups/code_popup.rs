@@ -1,11 +1,24 @@
+use crate::state::App;
 use ratatui::{
-    Frame, layout::Rect,
+    Frame,
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
-use crate::state::App;
 
+//    total = 10 lines, content_height = 4, scroll = 3
+//
+//    lines[0]  ─┐
+//    lines[1]   │ skipped (above visible area)
+//    lines[2]  ─┘
+//    lines[3]  ─┐ ← start_line = 3
+//    lines[4]   │
+//    lines[5]   │ visible in viewport
+//    lines[6]  ─┘ ← end_line = min(3+4, 10) = 7
+//    lines[7]  ─┐
+//    lines[8]   │ skipped (below visible area)
+//    lines[9]  ─┘
 pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = match &app.code_popup {
         Some(p) => p,
@@ -36,7 +49,11 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let title_style = Style::default()
         .fg(app.theme.accent)
         .add_modifier(Modifier::BOLD);
-    let lang = if popup.lang.is_empty() { "code" } else { &popup.lang };
+    let lang = if popup.lang.is_empty() {
+        "code"
+    } else {
+        &popup.lang
+    };
     text.push_line(Line::from(Span::styled(
         format!("```{} ({} lines)", lang, total),
         title_style,
@@ -69,8 +86,8 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
     frame.render_widget(para, popup_area);
 
-    let scrollbar = Scrollbar::default()
-        .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
+    let scrollbar =
+        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
     let mut state = ScrollbarState::new(total)
         .viewport_content_length(content_height)
         .position(scroll);
