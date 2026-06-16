@@ -27,12 +27,12 @@ stateDiagram-v2
     [*] --> Idle: startup
 
     Idle --> Planning: user submits task (Enter in Insert mode)
-    Planning --> Executing: AgentUpdate::PlanGenerated or StepAdded
+    Planning --> Executing: AgentUpdate:PlanGenerated or StepAdded
 
-    Executing --> Executing: AgentUpdate::StepStarted (current_step updated)
-    Executing --> WaitingForUser: AgentUpdate::NeedApproval / RequestSelect
-    Executing --> Done: AgentUpdate::TaskComplete
-    Executing --> Idle: AgentUpdate::StepFailed / Error(Other)
+    Executing --> Executing: AgentUpdate:StepStarted (current_step updated)
+    Executing --> WaitingForUser: AgentUpdate:NeedApproval / RequestSelect
+    Executing --> Done: AgentUpdate:TaskComplete
+    Executing --> Idle: AgentUpdate:StepFailed / Error(Other)
 
     WaitingForUser --> Executing: user approves (y / Enter)
     WaitingForUser --> Idle: user denies (n / Esc)
@@ -86,10 +86,10 @@ stateDiagram-v2
     Normal --> Search: /
     Search --> Normal: Enter / Esc
 
-    Normal --> Palette: :
+    Normal --> Palette
     Palette --> Normal: Enter / Esc
 
-    Normal --> Select: AgentUpdate::RequestSelect
+    Normal --> Select: AgentUpdate:RequestSelect
     Select --> Normal: Enter / Esc
 ```
 

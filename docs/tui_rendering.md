@@ -1,36 +1,36 @@
-# TUI 渲染文档
+# TUI Rendering Documentation
 
-本文档描述 `crates/tui/src/render` 模块的渲染架构、模块划分、渲染流程及性能优化策略。
+This document describes the rendering architecture, module division, rendering flow, and performance optimization strategies of the `crates/tui/src/render` module.
 
 ---
 
-## 1. 架构总览
+## 1. Architecture Overview
 
-TUI 基于 [ratatui](https://docs.rs/ratatui) 绘制，采用**分层渲染**设计：
+The TUI is drawn with [ratatui](https://docs.rs/ratatui) and follows a **layered rendering** design:
 
-- `lib.rs` 中的主循环负责初始化终端、处理事件、调度渲染。
-- `render/` 目录包含所有绘制逻辑，按功能拆分为多个子模块。
-- 渲染以 `Frame` 为单位，每一帧将 `App` 状态转换为终端画面。
+- The main loop in `lib.rs` initializes the terminal, handles events, and schedules rendering.
+- The `render/` directory contains all drawing logic, split into submodules by feature.
+- Rendering is frame-based: each `Frame` converts the `App` state into a terminal screen.
 
 ```
 crates/tui/src/render/
-├── mod.rs              # 模块导出
-├── layout.rs           # 主区域布局
-├── bar.rs              # 顶部/底部状态栏
-├── input.rs            # 输入框与命令行
-├── log.rs              # 日志面板
-├── log_column.rs       # 日志列渲染器
-├── plan.rs             # 执行计划面板
-├── render_md.rs        # Markdown 渲染
+├── mod.rs              # module re-exports
+├── layout.rs           # main area layout
+├── bar.rs              # top/bottom status bars
+├── input.rs            # input box and command line
+├── log.rs              # log panel
+├── log_column.rs       # log column renderer
+├── plan.rs             # execution plan panel
+├── render_md.rs        # Markdown rendering
 ├── renderable.rs       # Renderable trait
-├── util.rs             # 文本换行工具
-├── welcome.rs          # 启动 Logo 组件
-├── cells/              # 卡片渲染单元
+├── util.rs             # text wrapping utilities
+├── welcome.rs          # startup logo component
+├── cells/              # card rendering cells
 │   ├── text.rs
 │   ├── thinking.rs
 │   ├── diff.rs
 │   └── code.rs
-└── popups/             # 弹窗
+└── popups/             # popups
     ├── command_palette.rs
     ├── select.rs
     ├── help.rs
@@ -42,15 +42,15 @@ crates/tui/src/render/
 
 ---
 
-## 2. 主循环与渲染入口
+## 2. Main Loop and Rendering Entry
 
-主循环位于 `crates/tui/src/lib.rs` 的 `run_tui()` 中：
+The main loop is in `run_tui()` in `crates/tui/src/lib.rs`:
 
-1. **处理 Agent 更新**：在渲染前先消费 `agent_rx` 中的消息，保证状态一致性。
-2. **脏检查**：仅当 `app.dirty` 为 `true` 或状态为 `Status::Done` 时才重绘。
-3. **计算布局**：根据终端大小、输入框行数、余额信息行数切分区域。
-4. **按层次渲染**：状态栏 → 主区域 → 输入框 → 底部栏 → 弹窗。
-5. **清理状态**：如 `Done` 高亮 2 秒后恢复 `Idle`，`flash_msg` 3 秒后清除。
+1. **Consume Agent updates**: drain `agent_rx` before drawing to keep state consistent.
+2. **Dirty check**: redraw only when `app.dirty` is `true` or the status is `Status::Done`.
+3. **Compute layout**: split the area based on terminal size, input box height, and balance row count.
+4. **Render by layer**: status bar → main area → input box → bottom bar → popups.
+5. **Clean up state**: e.g., `Done` highlight reverts to `Idle` after 2s, `flash_msg` clears after 3s.
 
 ```rust
 terminal.draw(|f| {
@@ -58,10 +58,10 @@ terminal.draw(|f| {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),          // 顶部状态栏
-            Constraint::Min(3),              // 主区域
-            Constraint::Length(input_height),// 输入框
-            Constraint::Length(bottom_height),// 底部栏
+            Constraint::Length(1),          // top status bar
+            Constraint::Min(3),              // main area
+            Constraint::Length(input_height),// input box
+            Constraint::Length(bottom_height),// bottom bar
         ])
         .split(size);
 
@@ -77,109 +77,109 @@ terminal.draw(|f| {
 
 ---
 
-## 3. 布局模块 (`layout.rs`)
+## 3. Layout Module (`layout.rs`)
 
-`render_main_area()` 负责主内容区：
+`render_main_area()` is responsible for the main content area:
 
-| 显示状态 | 布局行为 |
+| Display State | Layout Behavior |
 |---|---|
-| `show_history == true` | 全屏显示历史任务面板 |
-| `show_help == true` | 全屏显示帮助面板 |
-| `plan.visible == true` | 左侧 20% 计划面板，右侧 80% 日志面板 |
-| 默认 | 100% 日志面板 |
+| `show_history == true` | Full-screen history task panel |
+| `show_help == true` | Full-screen help panel |
+| `plan.visible == true` | Left 20% plan panel, right 80% log panel |
+| default | 100% log panel |
 
-同时根据布局结果更新 `app.mouse.plan_area` 和 `app.mouse.log_area`，用于后续鼠标命中测试。
-
----
-
-## 4. 状态栏 (`bar.rs`)
-
-### 顶部状态栏 (`render_status_bar`)
-
-- 显示当前输入模式（`Normal` / `Insert` / `Search` / `Palette` / `Select`）
-- 显示当前焦点面板（`[Log]` / `[Plan]`）
-- 根据 `Status` 显示任务状态：
-  - `Idle`：主题、语言、快捷键提示
-  - `Planning`：正在规划中
-  - `Executing`：执行到第 N / 总 M 步
-  - `WaitingForUser`：等待用户审批
-  - `Done`：任务完成（绿色高亮 2 秒）
-- 特殊状态覆盖：
-  - `party_mode`：派对模式全彩横幅
-  - `flash_msg`：临时通知（3 秒）
-
-### 底部栏 (`render_bottom_bar`)
-
-- 焦点面板提示
-- 工作目录、Git 分支
-- 当前模型、最大 token、thinking budget
-- Token 统计（prompt / completion / cache hit）
-- 任务耗时与 TUI 运行时间
-- DeepSeek 账户余额（可选第三行）
+It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout result for later mouse hit testing.
 
 ---
 
-## 5. 输入区域 (`input.rs`)
+## 4. Status Bars (`bar.rs`)
 
-### 命令行 (`render_command_line`)
+### Top Status Bar (`render_status_bar`)
 
-用于 `Search`（前缀 `/`）和 `Palette`（无前缀）模式：
+- Shows current input mode (`Normal` / `Insert` / `Search` / `Palette` / `Select`).
+- Shows current focus panel (`[Log]` / `[Plan]`).
+- Shows task status according to `Status`:
+  - `Idle`: theme, language, shortcut hints
+  - `Planning`: planning in progress
+  - `Executing`: step N of M
+  - `WaitingForUser`: waiting for user approval
+  - `Done`: task complete (green highlight for 2s)
+- Special overrides:
+  - `party_mode`: full-color party banner
+  - `flash_msg`: temporary notification (3s)
 
-- 显示 `cmd_line` 内容
-- 光标定位在文本末尾
+### Bottom Bar (`render_bottom_bar`)
 
-### 主输入框 (`render_input_box`)
-
-- 支持最多 3 行的多行输入
-- 在 `Insert` 模式下渲染带圆角边框的输入框
-- 在 `WaitingForUser` 状态下渲染审批横幅
-- 光标按字符宽度计算（支持中文等宽字符）
+- Focus panel hint
+- Working directory, Git branch
+- Current model, max tokens, thinking budget
+- Token statistics (prompt / completion / cache hit)
+- Task elapsed time and TUI uptime
+- DeepSeek account balance (optional third row)
 
 ---
 
-## 6. 日志面板 (`log.rs`)
+## 5. Input Area (`input.rs`)
 
-日志面板是最复杂的渲染组件，核心流程如下：
+### Command Line (`render_command_line`)
 
-### 6.1 可见性索引 (`visible_indices`)
+Used for `Search` (prefixed with `/`) and `Palette` (no prefix) modes:
 
-- 某些物理消息行可能被隐藏（如思考块的详细内容、代码块占位符）
-- 维护 `visible_indices`：逻辑行 → 物理行
-- 维护 `phys_to_logical_cache`：物理行 → 逻辑行
+- Displays `cmd_line` content.
+- Cursor is positioned at the end of the text.
 
-### 6.2 视觉缓存 (`visual_cache`)
+### Main Input Box (`render_input_box`)
 
-- 每行按面板宽度自动换行
-- 缓存 `visual_cache` 和 `visual_start_cache`
-- 当 `messages.len()` 或宽度变化时重建缓存
+- Supports multi-line input up to 3 lines.
+- Renders a rounded-border input box in `Insert` mode.
+- Renders an approval banner in `WaitingForUser` state.
+- Cursor is computed by character width (supports CJK full-width characters).
 
-### 6.3 视口裁剪
+---
 
-- 根据 `log_scroll.offset` 计算可见的逻辑行范围
-- 只渲染落在当前视口内的 `TextCell`
+## 6. Log Panel (`log.rs`)
 
-### 6.4 卡片覆盖层
+The log panel is the most complex rendering component. Its core flow is:
 
-在日志面板之上叠加三种卡片：
+### 6.1 Visibility Index (`visible_indices`)
 
-| 卡片类型 | 文件 | 说明 |
+- Some physical message rows may be hidden (e.g., detailed thinking content, code block placeholders).
+- Maintains `visible_indices`: logical row → physical row.
+- Maintains `phys_to_logical_cache`: physical row → logical row.
+
+### 6.2 Visual Cache (`visual_cache`)
+
+- Wraps each row to the panel width automatically.
+- Caches `visual_cache` and `visual_start_cache`.
+- Rebuilt when `messages.len()` or width changes.
+
+### 6.3 Viewport Clipping
+
+- Computes the visible logical row range based on `log_scroll.offset`.
+- Only renders `TextCell`s that fall inside the current viewport.
+
+### 6.4 Card Overlays
+
+Three card types are overlaid on the log panel:
+
+| Card Type | File | Description |
 |---|---|---|
-| Thinking 卡片 | `cells/thinking.rs` | 折叠显示思考块，最多 3 行预览 |
-| Diff 卡片 | `cells/diff.rs` | 文件写入预览，显示行号与 `+` 前缀 |
-| Code 卡片 | `cells/code.rs` | 已完成代码块卡片，支持语法高亮 |
+| Thinking card | `cells/thinking.rs` | Collapsed thinking block, up to 3 preview lines |
+| Diff card | `cells/diff.rs` | File write preview with line numbers and `+` prefix |
+| Code card | `cells/code.rs` | Completed code block card with syntax highlighting |
 
-### 6.5 滚动条
+### 6.5 Scrollbar
 
-- 基于**视觉行总数**计算滚动条位置
-- 使用自定义符号：`▲` / `▼` / `│` / `█`
+- Position is computed from the **total visual line count**.
+- Custom symbols: `▲` / `▼` / `│` / `█`
 
 ---
 
-## 7. 渲染单元 (`cells/`)
+## 7. Rendering Cells (`cells/`)
 
 ### `Renderable` trait (`renderable.rs`)
 
-所有可渲染单元实现该 trait：
+All renderable units implement this trait:
 
 ```rust
 pub(crate) trait Renderable {
@@ -191,136 +191,136 @@ pub(crate) trait Renderable {
 
 ### `TextCell` (`cells/text.rs`)
 
-日志基本渲染单元，支持：
+The basic log rendering unit, supporting:
 
-- 预换行缓存
-- 搜索高亮（黄色背景）
-- 鼠标选中（反色）
-- 词级双击选择
-- 思考块折叠指示前缀
+- Pre-wrapping cache
+- Search highlight (yellow background)
+- Mouse selection (inverted color)
+- Word-level double-click selection
+- Thinking block collapsed indicator prefix
 
-### 卡片单元
+### Card Cells
 
-- `thinking.rs`：紫色调边框，显示最近最多 3 行思考内容
-- `diff.rs`：绿色 `+` 前缀，显示文件路径与行号
-- `code.rs`：深蓝灰背景，显示语言标签与代码预览
-
----
-
-## 8. Markdown 渲染 (`render_md.rs`)
-
-使用 `tui-markdown` 将 Markdown 转换为 `Line` 列表：
-
-- 自定义 `TuiStyleSheet`：标题、代码、链接、引用样式
-- 代码块后处理：统一深蓝灰背景
-- 表格格式化：对齐列、加粗表头
-- 水平线检测
-
-> 注意：不处理超链接 OSC 8 序列，因为 ratatui 会剥离转义序列。
+- `thinking.rs`: purple-tinted border, shows up to 3 recent thinking lines
+- `diff.rs`: green `+` prefix, shows file path and line numbers
+- `code.rs`: dark blue-gray background, shows language tag and code preview
 
 ---
 
-## 9. 弹窗 (`popups/`)
+## 8. Markdown Rendering (`render_md.rs`)
 
-| 弹窗 | 文件 | 说明 |
+Uses `tui-markdown` to convert Markdown into a list of `Line`s:
+
+- Custom `TuiStyleSheet`: headings, code, links, blockquotes
+- Code block post-processing: unified dark blue-gray background
+- Table formatting: aligned columns, bold header
+- Horizontal rule detection
+
+> Note: Hyperlink OSC 8 sequences are not handled because ratatui strips escape sequences.
+
+---
+
+## 9. Popups (`popups/`)
+
+| Popup | File | Description |
 |---|---|---|
-| 命令面板 | `command_palette.rs` | `:` 触发，模糊过滤命令 |
-| 选择弹窗 | `select.rs` | 代理请求用户选择 |
-| 帮助面板 | `help.rs` | `Ctrl+?` 触发，快捷键说明 |
-| 历史面板 | `history.rs` | `Ctrl+H` 触发，可重试历史任务 |
-| 思考详情 | `thinking_popup.rs` | 查看完整思考内容 |
-| 文件详情 | `diff_popup.rs` | 查看写入文件的完整内容 |
-| 代码详情 | `code_popup.rs` | 查看完整代码块 |
+| Command palette | `command_palette.rs` | Triggered by `:`, fuzzy-filtered commands |
+| Select popup | `select.rs` | Agent asks the user to choose |
+| Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
+| History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
+| Thinking detail | `thinking_popup.rs` | View full thinking content |
+| File detail | `diff_popup.rs` | View full content of written files |
+| Code detail | `code_popup.rs` | View full code block |
 
-弹窗通常：
+Popups usually:
 
-- 占据屏幕 80% × 80%
-- 先渲染 `Clear` 清除背景
-- 显示 `[y] Copy`、`[Esc] Close`、`[j/k] Scroll` 提示
-- 记录区域到 `app.mouse.*_popup_area` 用于点击外部关闭
+- Occupy 80% × 80% of the screen
+- Render `Clear` first to erase the background
+- Show hints like `[y] Copy`, `[Esc] Close`, `[j/k] Scroll`
+- Record their area in `app.mouse.*_popup_area` for click-outside-to-close
 
 ---
 
-## 10. 性能优化
+## 10. Performance Optimization
 
-### 10.1 脏渲染 (Dirty Rendering)
+### 10.1 Dirty Rendering
 
-- 仅在 `app.dirty == true` 或 `Status::Done` 时调用 `terminal.draw()`
-- 空闲时以 1 秒间隔 poll，降低 CPU 占用
+- `terminal.draw()` is called only when `app.dirty == true` or `Status::Done`.
+- Polls at 1s intervals when idle to reduce CPU usage.
 
-### 10.2 缓存策略
+### 10.2 Caching Strategy
 
-| 缓存 | 位置 | 失效条件 |
+| Cache | Location | Invalidation Condition |
 |---|---|---|
-| `visible_indices` | `log_scroll` | `messages.len()` 变化 |
-| `visual_cache` | `log_scroll` | `messages.len()` 或宽度变化 |
-| `phys_to_logical_cache` | `log_scroll` | `messages.len()` 变化 |
-| 代码块 `styled` | `CodeBlock` | 块创建时 |
-| Diff 预览行 | `DiffBlock` | 块创建时 |
+| `visible_indices` | `log_scroll` | `messages.len()` changes |
+| `visual_cache` | `log_scroll` | `messages.len()` or width changes |
+| `phys_to_logical_cache` | `log_scroll` | `messages.len()` changes |
+| code block `styled` | `CodeBlock` | block creation |
+| diff preview rows | `DiffBlock` | block creation |
 
-### 10.3 视口裁剪
+### 10.3 Viewport Clipping
 
-- `LogColumnRenderer` 只渲染落在当前视口内的单元
-- 每个 `TextCell` 支持 `render_partial` 跳过不可见行
+- `LogColumnRenderer` only renders cells that fall inside the current viewport.
+- Each `TextCell` supports `render_partial` to skip invisible lines.
 
-### 10.4 自适应事件轮询
+### 10.4 Adaptive Event Polling
 
-| 状态 | 轮询间隔 | 原因 |
+| State | Poll Interval | Reason |
 |---|---|---|
-| `Done` 或 `flash_msg` | 200ms | 及时清理超时状态 |
-| `dirty == true` | 10ms | 快速触发重绘 |
-| 空闲 | 1000ms | 降低 CPU 占用 |
+| `Done` or `flash_msg` | 200ms | Clean up timed-out states promptly |
+| `dirty == true` | 10ms | Trigger redraw quickly |
+| idle | 1000ms | Reduce CPU usage |
 
 ---
 
-## 11. 主题与国际化
+## 11. Theme and Internationalization
 
-### 主题 (`theme.rs`)
+### Theme (`theme.rs`)
 
-- 内置 9 套主题：`Dark`、`Light`、`SolarizedDark`、`SolarizedLight`、`GruvboxDark`、`Nord`、`Retro`、`Kawaii`、`Japanese`
-- 每个主题定义背景、前景、强调色、警告色、边框等
-- 通过 `Ctrl+T` 循环切换
+- 9 built-in themes: `Dark`, `Light`, `SolarizedDark`, `SolarizedLight`, `GruvboxDark`, `Nord`, `Retro`, `Kawaii`, `Japanese`
+- Each theme defines background, foreground, accent, warning, border, etc.
+- Cycle through themes with `Ctrl+T`
 
-### 国际化 (`i18n.rs`)
+### Internationalization (`i18n.rs`)
 
-- 支持 `English` 和 `Chinese`
-- 所有 UI 字符串集中定义在 `Messages` 结构体
-- 命名约定：
-  - `_tmpl`：含 `{}` 占位符的模板
-  - `_pl`：复数形式
-- 通过 `Ctrl+L` 循环切换
-
----
-
-## 12. 相关状态机
-
-渲染状态受以下状态机驱动，详见 `docs/state_machines.md`：
-
-- `Status`：Idle / Planning / Executing / WaitingForUser / Done
-- `InputMode`：Normal / Insert / Search / Palette / Select
-- `SelectPopup`：Inactive / Active / Confirmed / Cancelled
-- `StreamState` / `ThinkingState`：流式输出解析
+- Supports `English` and `Chinese`
+- All UI strings are centralized in the `Messages` struct
+- Naming conventions:
+  - `_tmpl`: templates with `{}` placeholders
+  - `_pl`: plural forms
+- Cycle languages with `Ctrl+L`
 
 ---
 
-## 13. 调试与扩展
+## 12. Related State Machines
 
-### 添加新面板
+Rendering is driven by the following state machines; see `docs/state_machines.md` for details:
 
-1. 在 `render/` 下新建渲染模块
-2. 在 `layout.rs` 中根据状态分配区域
-3. 在 `state/mod.rs` 的 `App` 中添加所需状态
-4. 如有需要，在 `mouse_state.rs` 中记录区域用于鼠标命中
+- `Status`: Idle / Planning / Executing / WaitingForUser / Done
+- `InputMode`: Normal / Insert / Search / Palette / Select
+- `SelectPopup`: Inactive / Active / Confirmed / Cancelled
+- `StreamState` / `ThinkingState`: streaming output parsing
 
-### 添加新弹窗
+---
 
-1. 在 `render/popups/` 下新建模块
-2. 在 `popups/mod.rs` 中导出
-3. 在 `layout.rs` 或主循环中调用
-4. 在 `App` 中添加弹窗状态与打开/关闭/滚动方法
+## 13. Debugging and Extension
 
-### 性能分析
+### Adding a New Panel
 
-- 关注 `log.rs` 中缓存命中率
-- 使用 `app.dirty` 控制重绘频率
-- 避免在 `render()` 中执行文件 I/O（如 `diff_popup.rs` 已使用 `cached_content` 懒加载）
+1. Create a new rendering module under `render/`.
+2. Allocate area based on state in `layout.rs`.
+3. Add required state to `App` in `state/mod.rs`.
+4. If needed, record the area in `mouse_state.rs` for mouse hit testing.
+
+### Adding a New Popup
+
+1. Create a new module under `render/popups/`.
+2. Re-export it in `popups/mod.rs`.
+3. Call it from `layout.rs` or the main loop.
+4. Add popup state and open/close/scroll methods to `App`.
+
+### Performance Profiling
+
+- Watch cache hit rates in `log.rs`.
+- Use `app.dirty` to control redraw frequency.
+- Avoid file I/O inside `render()` (e.g., `diff_popup.rs` uses `cached_content` lazy loading).
