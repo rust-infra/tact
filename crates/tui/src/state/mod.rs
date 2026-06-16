@@ -114,6 +114,7 @@ pub(crate) struct CodeBlock {
 pub(crate) struct CodePopup {
     pub block_idx: usize,
     pub lang: String,
+    /// Scroll position within the code content.
     pub scroll: u16,
 }
 
