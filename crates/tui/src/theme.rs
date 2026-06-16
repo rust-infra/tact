@@ -42,6 +42,7 @@ impl ThemeName {
 
 /// Theme color configuration. Each field corresponds to a color used by
 /// a different TUI element.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Theme {
     pub name: ThemeName,
     pub bg: Color,            // Background color
