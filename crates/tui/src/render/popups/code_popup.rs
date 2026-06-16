@@ -1,11 +1,26 @@
+use crate::state::App;
 use ratatui::{
-    Frame, layout::Rect,
+    Frame,
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
-use crate::state::App;
 
+use super::popup_common::{compute_popup_layout, render_popup_scrollbar};
+
+// total = 10 lines, content_height = 4, scroll = 3
+//
+//    lines[0]  ─┐
+//    lines[1]   │ skipped (above visible area)
+//    lines[2]  ─┘
+//    lines[3]  ─┐ ← start_line = 3
+//    lines[4]   │
+//    lines[5]   │ visible in viewport
+//    lines[6]  ─┘ ← end_line = min(3+4, 10) = 7
+//    lines[7]  ─┐
+//    lines[8]   │ skipped (below visible area)
+//    lines[9]  ─┘
 pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = match &app.code_popup {
         Some(p) => p,
@@ -18,35 +33,39 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let popup_width = (area.width as f32 * 0.8) as u16;
-    let popup_height = (area.height as f32 * 0.8) as u16;
-    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    let layout = compute_popup_layout(area, total, popup.scroll, 3);
 
-    frame.render_widget(Clear, popup_area);
-
-    let content_height = popup_height.saturating_sub(3) as usize;
-    let max_scroll = total.saturating_sub(1);
-    let scroll = (popup.scroll as usize).min(max_scroll);
-    let start_line = scroll;
-    let end_line = (scroll + content_height).min(total);
+    frame.render_widget(Clear, layout.area);
 
     let mut text = Text::default();
     let title_style = Style::default()
         .fg(app.theme.accent)
         .add_modifier(Modifier::BOLD);
-    let lang = if popup.lang.is_empty() { "code" } else { &popup.lang };
+    let lang = if popup.lang.is_empty() {
+        "code"
+    } else {
+        &popup.lang
+    };
+
     text.push_line(Line::from(Span::styled(
         format!("```{} ({} lines)", lang, total),
         title_style,
     )));
     text.push_line(Line::from(""));
 
-    // Render code lines, truncating to popup width minus borders/padding
-    let max_chars = popup_width.saturating_sub(4) as usize;
-    for &line in &lines[start_line..end_line] {
-        let display: String = line.chars().take(max_chars).collect();
+    // Render code lines, truncating to popup width minus borders/padding.
+    // Lines that exceed the available width get a "→" indicator at the end.
+    for &line in &lines[layout.start_line..layout.end_line] {
+        let chars: Vec<char> = line.chars().collect();
+        let display: String = if chars.len() > layout.max_chars {
+            let truncated: String = chars
+                .iter()
+                .take(layout.max_chars.saturating_sub(1))
+                .collect();
+            format!("{truncated}→") // #TODO Warn: line truncated
+        } else {
+            line.to_string()
+        };
         text.push_line(Line::from(Span::styled(
             display,
             Style::default().fg(app.theme.fg),
@@ -67,14 +86,9 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )
         .wrap(Wrap { trim: false });
 
-    frame.render_widget(para, popup_area);
+    frame.render_widget(para, layout.area);
 
-    let scrollbar = Scrollbar::default()
-        .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+    render_popup_scrollbar(frame, &layout, total);
 
-    app.mouse.code_popup_area = popup_area;
+    app.mouse.code_popup_area = layout.area;
 }
