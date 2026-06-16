@@ -74,7 +74,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         0
     } else {
         let target = total_visual - visible_height;
-        app.log_scroll.visual_start_cache.binary_search(&target).unwrap_or_else(|idx| idx.saturating_sub(1))
+        app.log_scroll
+            .visual_start_cache
+            .binary_search(&target)
+            .unwrap_or_else(|idx| idx.saturating_sub(1))
     };
     let max_scroll = effective_max_logical as u16;
     if app.log_scroll.offset > max_scroll {
@@ -98,7 +101,9 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let end_visual = (visual_scroll + visible_height).min(total_visual);
 
     // ---- Phase 3: build cells and render ----
-    let logical_start = vs_cache.binary_search(&visual_scroll).unwrap_or_else(|i| i.saturating_sub(1));
+    let logical_start = vs_cache
+        .binary_search(&visual_scroll)
+        .unwrap_or_else(|i| i.saturating_sub(1));
     let logical_end = match vs_cache.binary_search(&end_visual) {
         Ok(i) => i,
         Err(i) => i.min(total_logical),
@@ -109,8 +114,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let search_term = app.search.term.clone();
     let log_fg = app.theme.fg;
 
-    let mut renderer = super::log_column::LogColumnRenderer::new()
-        .with_viewport(visual_scroll, visible_height);
+    let mut renderer =
+        super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
 
     for logical_i in logical_start..logical_end {
         let cache_start = vs_cache[logical_i];
@@ -195,16 +200,13 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(renderer, inner);
 
     // ---- Card overlay: thinking blocks ----
-    super::cells::thinking::render_thinking_cards(
-        frame, area, app, visual_scroll, visible_height);
+    super::cells::thinking::render_thinking_cards(frame, area, app, visual_scroll, visible_height);
 
     // ---- Diff block overlay ----
-    super::cells::diff::render_diff_cards(
-        frame, area, app, visual_scroll, visible_height);
+    super::cells::diff::render_diff_cards(frame, area, app, visual_scroll, visible_height);
 
     // ---- Code block overlay ----
-    super::cells::code::render_code_cards(
-        frame, area, app, visual_scroll, visible_height);
+    super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
 
     // Scrollbar
     let scrollbar = Scrollbar::default()
