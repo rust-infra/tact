@@ -89,10 +89,10 @@ async fn main() -> anyhow::Result<()> {
                 Ok(balance) => {
                     let _ = balance_tx.send(AgentUpdate::Balance(balance));
                 }
-                Err(e) => {
-                    let _ = balance_tx.send(AgentUpdate::Error(
-                        AgentErrorKind::BalanceQueryFailed(e.to_string()),
-                    ));
+                Err(_) => {
+                    //  let _ = balance_tx.send(AgentUpdate::Error(
+                    //     AgentErrorKind::BalanceQueryFailed(e.to_string()),
+                    // ));
                 }
             }
         });
