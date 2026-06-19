@@ -1,4 +1,5 @@
 use crate::widgets::state::*;
+use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
@@ -303,6 +304,7 @@ impl App {
                     self.raw_messages.push(msgs.thinking_title.to_string());
                     self.thinking.title_added = true;
                     self.thinking.active_start = Some(separator_idx);
+                    self.thinking.thinking_start = Some(Instant::now());
                 }
 
                 // Line-level buffering: extract complete lines for real-time display

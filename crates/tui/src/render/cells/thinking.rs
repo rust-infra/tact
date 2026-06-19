@@ -44,6 +44,7 @@ pub(crate) fn render_thinking_cards(
         let visible_count = total_lines.min(3);
         let showing_from = total_lines.saturating_sub(visible_count);
         let msgs = app.msgs();
+        let elapsed_str = format_elapsed(block.elapsed);
         let card_block = Block::default()
             .borders(Borders::ALL)
             .border_style(card_style)
@@ -64,7 +65,8 @@ pub(crate) fn render_thinking_cards(
             .title_bottom(
                 msgs.thinking_card_bottom
                     .replacen("{}", &(showing_from + 1).to_string(), 1)
-                    .replacen("{}", &total_lines.to_string(), 1),
+                    .replacen("{}", &total_lines.to_string(), 1)
+                    .replacen("{}", &elapsed_str, 1),
             );
 
         let card_area = Rect::new(
@@ -104,5 +106,17 @@ pub(crate) fn render_thinking_cards(
                 .collect();
             frame.render_widget(Paragraph::new(preview_lines), inner);
         }
+    }
+}
+
+fn format_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs_f64();
+    if secs < 1.0 {
+        format!("{:.0}ms", secs * 1000.0)
+    } else if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else {
+        let m = secs / 60.0;
+        format!("{:.1}min", m)
     }
 }
