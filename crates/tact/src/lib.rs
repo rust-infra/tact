@@ -17,12 +17,14 @@
 //! - Module [`hook`] provides pre/post tool-use and session-start hooks.
 //! - Module [`compact`] handles context compaction and transcript persistence.
 //! - Module [`permission`] classifies tool risk and enforces approval policies.
+//! - Module [`notifications`] sends macOS desktop notifications for task lifecycle events.
 
 pub mod background;
 pub mod compact;
 pub mod config;
 pub mod consts;
 pub mod cron;
+pub mod notifications;
 pub mod hook;
 pub mod llm;
 pub mod lsp;
@@ -177,6 +179,18 @@ impl Agent {
     }
 
     pub fn emit_update(&self, update: AgentUpdate) {
+        // Desktop notifications for key lifecycle events
+        match &update {
+            AgentUpdate::TaskComplete(text) => {
+                let summary = text.chars().take(200).collect::<String>();
+                let _ = crate::notifications::notify_task_complete(&summary);
+            }
+            AgentUpdate::StepFailed(idx, msg) => {
+                let _ = crate::notifications::notify_step_failed(*idx, msg);
+            }
+            _ => {}
+        }
+
         if let Some(tx) = &self.runtime.ui_tx {
             let _ = tx.send(update);
         }

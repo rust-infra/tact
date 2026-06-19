@@ -146,7 +146,12 @@ async fn main() -> anyhow::Result<()> {
     let Some(final_content) = agent.runtime.context.last() else {
         return Ok(());
     };
-    println!("{}", extract_text(&final_content.content));
+    let text = extract_text(&final_content.content);
+    println!("{text}");
+
+    // Send a desktop notification with the final result summary
+    let summary = text.chars().take(200).collect::<String>();
+    let _ = tact::notifications::notify_task_complete(&summary);
 
     Ok(())
 }
