@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anthropic_ai_sdk::types::message::{Message, Role::User};
 use tact::{
+    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -22,17 +23,41 @@ use tact_core::{AgentErrorKind, AgentUpdate, PlanStep, UserCommand};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize config: CLI args > env vars > TOML config file
-    tact::config::init();
+    let args = tact::config::init();
 
     if std::env::var("TOKIO_CONSOLE").is_ok() {
         console_subscriber::init();
         eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
     }
+
+    let tact_path = TactPath::from_cwd()?;
+    let db_path = tact_path.claude_dir().join("tact.db");
+    let session_store = open_sqlite_session_store(&db_path).await?;
+
+    // --list-sessions: print recent sessions and exit
+    if args.list_sessions {
+        let sessions = session_store.list_sessions().await?;
+        if sessions.is_empty() {
+            println!("No sessions found.");
+        } else {
+            println!("{:<36}  {:>4}  {:<20}  {:<40}", "SESSION ID", "MSGS", "UPDATED", "TITLE");
+            println!("{}", "-".repeat(110));
+            for s in &sessions {
+                let updated = s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                let title = s.title.as_deref().unwrap_or("(untitled)");
+                println!(
+                    "{:<36}  {:>4}  {:<20}  {:.40}",
+                    s.id, s.message_count, updated, title
+                );
+            }
+        }
+        return Ok(());
+    }
+
     let client = get_llm_client()?;
 
     let permission_manager = PermissionManager::try_new(PermissionMode::Default)?;
 
-    let tact_path = TactPath::from_cwd()?;
     let work_dir = tact_path.workdir().to_path_buf();
     let tui_work_dir = work_dir.clone();
     let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
@@ -67,6 +92,16 @@ async fn main() -> anyhow::Result<()> {
         ui_tx: Some(agent_tx.clone()),
     };
 
+    // Resolve session_id: --session takes priority, then --resume-last
+    let session_id = if let Some(ref id) = args.session {
+        Some(id.clone())
+    } else if args.resume_last {
+        let sessions = session_store.list_sessions().await?;
+        sessions.into_iter().next().map(|s| s.id)
+    } else {
+        None
+    };
+
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -75,7 +110,8 @@ async fn main() -> anyhow::Result<()> {
         permission_manager,
         AgentSystemPrompt::Dynamic,
     )
-    .with_ui_channel(agent_tx);
+    .with_ui_channel(agent_tx)
+    .with_session(session_id, session_store);
 
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(agent_rx, user_cmd_tx, tui_work_dir).await
@@ -101,7 +137,6 @@ async fn main() -> anyhow::Result<()> {
     while let Some(cmd) = user_cmd_rx.recv().await {
         match cmd {
             UserCommand::SubmitTask(task) => {
-                agent.runtime.context.push(Message::new_text(User, task));
                 agent.tool_use_counter = 0;
 
                 agent.emit_update(AgentUpdate::PlanGenerated(vec![PlanStep {
@@ -112,7 +147,8 @@ async fn main() -> anyhow::Result<()> {
                     output: None,
                 }]));
 
-                if let Err(e) = agent.agent_loop().await {
+                let task_message = Message::new_text(User, task);
+                if let Err(e) = agent.agent_loop(Some(task_message)).await {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                 }
 

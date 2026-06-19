@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use anthropic_ai_sdk::types::message::{Message, Role::User};
+use chrono::{DateTime, Utc};
 
 use tact::{
+    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -24,6 +26,45 @@ async fn main() -> anyhow::Result<()> {
     // Initialize config: CLI args > env vars > TOML config file
     let args = tact::config::init();
 
+    let tact_path = TactPath::from_cwd()?;
+    let store_root = StoreRoot::new(tact_path.claude_dir())?;
+    let db_path = tact_path.claude_dir().join("tact.db");
+    let session_store = open_sqlite_session_store(&db_path).await?;
+
+    // --list-sessions: print recent sessions and exit
+    if args.list_sessions {
+        let sessions = session_store.list_sessions().await?;
+        if sessions.is_empty() {
+            println!("No sessions found.");
+        } else {
+            println!("{:<36}  {:>4}  {:<20}  {:<40}", "SESSION ID", "MSGS", "UPDATED", "TITLE");
+            println!("{}", "-".repeat(110));
+            for s in &sessions {
+                let updated = format_timestamp(s.updated_at);
+                let title = s.title.as_deref().unwrap_or("(untitled)");
+                println!(
+                    "{:<36}  {:>4}  {:<20}  {:.40}",
+                    s.id, s.message_count, updated, title
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // Resolve session_id: --session takes priority, then --resume-last
+    let session_id = if let Some(ref id) = args.session {
+        Some(id.clone())
+    } else if args.resume_last {
+        let sessions = session_store.list_sessions().await?;
+        sessions.into_iter().next().map(|s| s.id)
+    } else {
+        None
+    };
+
+    if session_id.is_some() {
+        eprintln!("[session: {}]", session_id.as_deref().unwrap_or("new"));
+    }
+
     if args.prompt.is_empty() {
         eprintln!("Usage: tact <PROMPT>");
         eprintln!("       tact [OPTIONS] <PROMPT>");
@@ -42,10 +83,8 @@ async fn main() -> anyhow::Result<()> {
     let permission_manager = PermissionManager::try_new(mode)?;
     eprintln!("[permission: {mode}]");
 
-    let tact_path = TactPath::from_cwd()?;
     let work_dir = tact_path.workdir().to_path_buf();
     let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
-    let store_root = StoreRoot::new(tact_path.claude_dir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;
     let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
@@ -70,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         ui_tx: None,
     };
 
+    let is_new_session = session_id.is_none();
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -77,14 +117,28 @@ async fn main() -> anyhow::Result<()> {
         mcp_router,
         permission_manager,
         AgentSystemPrompt::Dynamic,
-    );
+    )
+    .with_session(session_id, session_store);
 
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(User, args.prompt));
+    // Materialise the session (create or resume) so we can set title.
+    let _ = agent.ensure_session().await?;
 
-    agent.agent_loop().await?;
+    // Auto-title new sessions from first line of prompt
+    if is_new_session {
+        let title = args.prompt.lines().next().unwrap_or("").trim();
+        if !title.is_empty() {
+            let title = if title.len() > 80 { &title[..80] } else { title };
+            agent.set_session_title(Some(title)).await?;
+        }
+    }
+
+    let prompt_message = Message::new_text(User, args.prompt);
+    agent.agent_loop(Some(prompt_message)).await?;
+
+    // Print session ID so user can resume later
+    if let Some(ref sid) = agent.runtime.session_id {
+        eprintln!("[session id: {sid}]");
+    }
 
     // Print session statistics
     eprintln!("{}", agent.runtime.stats.summary());
@@ -95,4 +149,8 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", extract_text(&final_content.content));
 
     Ok(())
+}
+
+fn format_timestamp(dt: DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }

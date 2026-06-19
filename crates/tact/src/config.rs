@@ -47,6 +47,18 @@ pub struct CliArgs {
     /// Permission mode: "default", "plan", or "auto" (tact CLI only)
     #[arg(short = 'm', long, env = "TACT_PERMISSION_MODE")]
     pub permission_mode: Option<String>,
+
+    /// Resume a specific session by ID
+    #[arg(long = "session")]
+    pub session: Option<String>,
+
+    /// Resume the most recent session
+    #[arg(long = "resume-last")]
+    pub resume_last: bool,
+
+    /// List recent sessions and exit
+    #[arg(long = "list-sessions")]
+    pub list_sessions: bool,
 }
 
 // ---------------------------------------------------------------------------
