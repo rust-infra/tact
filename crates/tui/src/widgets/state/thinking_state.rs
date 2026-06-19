@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 /// Thinking state: manages reasoning content buffer, title markers, active/completed blocks, and popups.
 pub(crate) struct ThinkingState {
     /// Reasoning content buffer.
@@ -12,6 +14,8 @@ pub(crate) struct ThinkingState {
     pub(crate) blocks: Vec<ThinkingBlock>,
     /// Popup state.
     pub(crate) popup: Option<ThinkingPopup>,
+    /// When the current thinking block started streaming.
+    pub(crate) thinking_start: Option<Instant>,
 }
 
 /// A completed Thinking block's range in messages and its scroll state.
@@ -26,6 +30,8 @@ pub(crate) struct ThinkingBlock {
     pub(crate) cached_preview: Vec<String>,
     /// Cached Markdown rendered lines, used for popup display, avoiding per-frame re-rendering.
     pub(crate) cached_markdown: Vec<ratatui::text::Line<'static>>,
+    /// Duration of the thinking phase.
+    pub(crate) elapsed: Duration,
 }
 
 /// Thinking popup state.
@@ -44,6 +50,7 @@ impl ThinkingState {
             title_added: false,
             active_start: None,
             active_end: None,
+            thinking_start: None,
             blocks: Vec::new(),
             popup: None,
         }
