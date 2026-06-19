@@ -7,7 +7,6 @@
 mod handlers;
 mod i18n;
 mod render;
-mod state;
 mod theme;
 
 mod widgets;
@@ -20,7 +19,7 @@ use crate::render::{
     render_bottom_bar, render_command_palette, render_input_box, render_main_area,
     render_select_popup, render_status_bar,
 };
-use crate::state::{App, FocusedPanel, InputMode, Status};
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -302,8 +301,8 @@ pub async fn run_tui(
                             }
                         } else if key.code == KeyCode::Tab {
                             app.focused_panel = match app.focused_panel {
-                                crate::state::FocusedPanel::Log => crate::state::FocusedPanel::Plan,
-                                crate::state::FocusedPanel::Plan => crate::state::FocusedPanel::Log,
+                                crate::widgets::state::FocusedPanel::Log => crate::widgets::state::FocusedPanel::Plan,
+                                crate::widgets::state::FocusedPanel::Plan => crate::widgets::state::FocusedPanel::Log,
                             };
                         } else if (app.show_help || app.show_history) && key.code == KeyCode::Esc {
                             app.show_help = false;

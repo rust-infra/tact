@@ -1,7 +1,7 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use crate::state::{
+use crate::widgets::state::{
     App, CodeBlock, DiffBlock, DiffPopup, FocusedPanel, HistoryEntry, InputHistory, InputMode,
     LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
     StreamState, ThinkingBlock, ThinkingPopup, ThinkingState,

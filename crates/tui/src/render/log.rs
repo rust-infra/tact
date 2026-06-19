@@ -1,5 +1,5 @@
 use crate::render::util::wrap_line;
-use crate::state::App;
+use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,

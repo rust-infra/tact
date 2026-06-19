@@ -1,5 +1,5 @@
 use crate::i18n::Messages;
-use crate::state::*;
+use crate::widgets::state::*;
 use crate::theme::{Theme, ThemeName};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
-use crate::state::App;
+use crate::widgets::state::App;
 
 /// Render diff block card overlay.
 pub(crate) fn render_diff_cards(

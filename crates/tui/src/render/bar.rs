@@ -1,4 +1,4 @@
-use crate::state::{App, FocusedPanel, InputMode, Status};
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},

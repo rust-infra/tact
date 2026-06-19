@@ -13,8 +13,8 @@ mod input_history;
 mod log_scroll;
 mod mouse_state;
 mod plan_panel;
-
 mod search_state;
+mod select_popup;
 mod status_bar_state;
 mod stream_state;
 mod thinking_state;
@@ -24,7 +24,7 @@ pub(crate) use log_scroll::LogScroll;
 pub(crate) use mouse_state::MouseState;
 pub(crate) use plan_panel::PlanPanel;
 pub(crate) use search_state::SearchState;
-pub(crate) use crate::widgets::select_popup_widget::SelectPopup;
+pub(crate) use select_popup::SelectPopup;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 pub(crate) use thinking_state::{ThinkingBlock, ThinkingPopup, ThinkingState};
