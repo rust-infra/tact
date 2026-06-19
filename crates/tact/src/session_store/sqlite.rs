@@ -16,6 +16,15 @@ impl SqliteSessionStore {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.context("failed to create database directory")?;
         }
+        // sqlx may fail to open a non-existent database file in some environments;
+        // create an empty file first to ensure it's present.
+        if let Err(e) = tokio::fs::metadata(path).await {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                tokio::fs::File::create(path)
+                    .await
+                    .context("failed to create database file")?;
+            }
+        }
         let url = format!("sqlite:{}", path.display());
         let pool = SqlitePool::connect(&url)
             .await
