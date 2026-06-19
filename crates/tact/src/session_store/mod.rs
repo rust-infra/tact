@@ -30,6 +30,8 @@ pub struct MessageCountByPeriod {
 pub trait SessionStore: Send + Sync {
     async fn create_session(&self, id: &str, title: Option<&str>) -> Result<()>;
 
+    async fn update_session_title(&self, id: &str, title: Option<&str>) -> Result<()>;
+
     async fn append_message(
         &self,
         session_id: &str,

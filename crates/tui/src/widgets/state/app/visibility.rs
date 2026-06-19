@@ -153,12 +153,20 @@ impl App {
                 }
                 let (styled_lines, _) = render_markdown_tui(&raw_content);
 
+                let elapsed = self
+                    .thinking
+                    .thinking_start
+                    .take()
+                    .map(|start| start.elapsed())
+                    .unwrap_or_default();
+
                 self.thinking.blocks.push(ThinkingBlock {
                     title_idx,
                     end_idx,
                     scroll_offset,
                     cached_preview: preview_lines,
                     cached_markdown: styled_lines,
+                    elapsed,
                 });
             }
         }

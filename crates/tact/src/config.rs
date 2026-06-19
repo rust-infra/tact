@@ -48,9 +48,21 @@ pub struct CliArgs {
     #[arg(short = 'm', long, env = "TACT_PERMISSION_MODE")]
     pub permission_mode: Option<String>,
 
-    /// Resume an existing session by its id. If omitted, a new session is created.
-    #[arg(short = 'r', long, env = "TACT_RESUME_SESSION")]
-    pub resume: Option<String>,
+    /// Resume a specific session by ID
+    #[arg(long = "session")]
+    pub session: Option<String>,
+
+    /// Resume the most recent session
+    #[arg(long = "resume-last")]
+    pub resume_last: bool,
+
+    /// List recent sessions and exit
+    #[arg(long = "list-sessions")]
+    pub list_sessions: bool,
+
+    /// Enable desktop notifications (macOS only). Use --no-notifications to disable.
+    #[arg(long)]
+    pub notifications: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +119,9 @@ impl Default for PermissionTomlConfig {
 pub struct AgentTomlConfig {
     /// Maximum context size in characters (for auto-compaction)
     pub context_limit_chars: Option<usize>,
+
+    /// Enable desktop notifications (default: true)
+    pub notifications_enabled: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +271,20 @@ pub fn init_config() -> CliArgs {
         .or_else(|| toml_cfg.permission.mode.clone());
     if let Some(ref mode) = perm_mode {
         set_env("TACT_PERMISSION_MODE", mode);
+    }
+
+    // ---- Notifications ----
+    // Priority: CLI > env > TOML > default(true)
+    let notifications_enabled = args
+        .notifications
+        .map(|v| v.to_string())
+        .or_else(|| std::env::var("TACT_NOTIFICATIONS_ENABLED").ok())
+        .or_else(|| toml_cfg.agent.notifications_enabled.map(|v| v.to_string()));
+    if let Some(ref v) = notifications_enabled {
+        set_env("TACT_NOTIFICATIONS_ENABLED", v);
+    } else {
+        // default: enabled
+        set_env("TACT_NOTIFICATIONS_ENABLED", "true");
     }
 
     args
