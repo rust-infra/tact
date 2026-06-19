@@ -1,4 +1,4 @@
-use crate::state::*;
+use crate::widgets::state::*;
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use ratatui::widgets::{ListState, ScrollbarState};
 

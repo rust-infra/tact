@@ -11,7 +11,7 @@ pub(crate) use palette::handle_palette_mode;
 pub(crate) use search::handle_search_mode;
 pub(crate) use select::handle_select_mode;
 
-use crate::state::{App, FocusedPanel, InputMode, PALETTE_COMMANDS, Status};
+use crate::widgets::state::{App, FocusedPanel, InputMode, PALETTE_COMMANDS, Status};
 use arboard::Clipboard;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;

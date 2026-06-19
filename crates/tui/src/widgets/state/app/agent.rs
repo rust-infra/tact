@@ -1,4 +1,4 @@
-use crate::state::*;
+use crate::widgets::state::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};

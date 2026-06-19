@@ -1,5 +1,5 @@
-use crate::state::{InputMode, Status};
-use crate::state::App;
+use crate::widgets::state::{InputMode, Status};
+use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::{ListState, ScrollbarState};
 use tact_core::UserCommand;

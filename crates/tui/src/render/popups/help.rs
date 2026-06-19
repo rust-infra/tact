@@ -1,4 +1,5 @@
-use crate::{state::App, widgets::help_widget::HelpWidget};
+use crate::widgets::state::App;
+use crate::widgets::help_widget::HelpWidget;
 use ratatui::{Frame, layout::Rect};
 
 pub(crate) fn render_help_panel(frame: &mut Frame, area: Rect, app: &mut App) {

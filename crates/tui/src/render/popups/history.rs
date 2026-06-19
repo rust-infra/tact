@@ -1,4 +1,4 @@
-use crate::state::App;
+use crate::widgets::state::App;
 use crate::widgets::popup_widget::PopupWidget;
 use ratatui::style::Style;
 use ratatui::widgets::ListItem;

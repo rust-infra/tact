@@ -1,5 +1,5 @@
 use super::{execute_palette_command, prev_word_boundary};
-use crate::state::{App, InputMode, PALETTE_COMMANDS};
+use crate::widgets::state::{App, InputMode, PALETTE_COMMANDS};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Palette mode key handling: filter the command list and navigate with arrow keys; Enter to execute.
