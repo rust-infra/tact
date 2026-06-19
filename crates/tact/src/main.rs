@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anthropic_ai_sdk::types::message::{Message, Role::User};
 
 use tact::{
+    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -79,12 +80,12 @@ async fn main() -> anyhow::Result<()> {
         AgentSystemPrompt::Dynamic,
     );
 
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(User, args.prompt));
+    let session_store = open_sqlite_session_store(&tact_path.claude_dir().join("tact.db")
+    ).await?;
+    agent = agent.with_session(args.resume.clone(), session_store);
 
-    agent.agent_loop().await?;
+    let prompt_message = Message::new_text(User, args.prompt);
+    agent.agent_loop(Some(prompt_message)).await?;
 
     // Print session statistics
     eprintln!("{}", agent.runtime.stats.summary());
