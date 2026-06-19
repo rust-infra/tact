@@ -31,6 +31,7 @@ pub mod memory;
 pub mod permission;
 pub mod prompt;
 pub mod recovery;
+pub mod session_store;
 pub mod skill;
 pub mod stats;
 pub mod store;
@@ -64,6 +65,7 @@ use crate::recovery::{
     CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
     is_prompt_too_long_error, is_transient_transport_error,
 };
+use crate::session_store::DynSessionStore;
 use crate::stats::SessionStats;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_core::{AgentUpdate, StepResult, StepStatus};
@@ -103,6 +105,8 @@ pub struct AgentRuntime {
     pub stats: SessionStats,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub session_store: Option<DynSessionStore>,
+    pub session_id: Option<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -147,6 +151,8 @@ impl Agent {
                 stats: SessionStats::default(),
                 ui_tx: None,
                 cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                session_store: None,
+                session_id: None,
             },
             tool_context,
             tools,
@@ -164,10 +170,63 @@ impl Agent {
         self
     }
 
+    pub fn with_session(mut self, session_id: Option<String>, store: DynSessionStore) -> Self {
+        self.runtime.session_store = Some(store);
+        self.runtime.session_id = session_id;
+        self
+    }
+
     pub fn emit_update(&self, update: AgentUpdate) {
         if let Some(tx) = &self.runtime.ui_tx {
             let _ = tx.send(update);
         }
+    }
+
+    async fn ensure_session(&mut self) -> Result<String> {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return Ok(self.runtime.session_id.clone().unwrap_or_default());
+        };
+
+        let session_id = match self.runtime.session_id.as_ref() {
+            Some(id) if !id.is_empty() => id.clone(),
+            _ => {
+                let id = uuid::Uuid::new_v4().to_string();
+                self.runtime.session_id = Some(id.clone());
+                id
+            }
+        };
+
+        store.create_session(&session_id, None).await?;
+
+        if self.runtime.context.is_empty() {
+            let history = store.load_session(&session_id).await?;
+            self.runtime.context = history;
+        }
+
+        Ok(session_id)
+    }
+
+    async fn push_message(&mut self, message: Message) -> Result<()> {
+        let blocks = message.content.clone();
+        let role = message.role;
+        self.runtime.context.push(message);
+        self.persist_message(role, &blocks).await
+    }
+
+    async fn persist_message(
+        &mut self,
+        role: Role,
+        content: &MessageContent,
+    ) -> Result<()> {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return Ok(());
+        };
+        let ordinal = self.runtime.context.len() as i64;
+        store.append_message(session_id, role, content, ordinal).await?;
+        Ok(())
     }
 
     fn next_step_idx(&mut self) -> usize {
@@ -184,8 +243,23 @@ impl Agent {
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
-    pub async fn agent_loop(&mut self) -> Result<()> {
+    pub async fn agent_loop(&mut self,
+        initial_user_message: Option<Message>,
+    ) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
+
+        // Ensure a session exists and optionally restore history.
+        let _session_id = self.ensure_session().await?;
+
+        // If history is empty, add the initial user message so it is persisted.
+        if self.runtime.context.is_empty() {
+            if let Some(msg) = initial_user_message {
+                self.push_message(msg).await?;
+            }
+        } else if let Some(msg) = initial_user_message {
+            self.push_message(msg).await?;
+        }
+
         let system = self.build_system_prompt()?;
         loop {
             if self
@@ -291,6 +365,11 @@ impl Agent {
                 }
             }
 
+            self.persist_message(
+                Role::Assistant,
+                &MessageContent::Blocks { content: content.clone() },
+            )
+            .await?;
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::Assistant, content.clone()));
@@ -309,6 +388,11 @@ impl Agent {
                 // was hit, so the context remains valid for the API.
                 if has_pending_tools {
                     let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
+                    self.persist_message(
+                        Role::User,
+                        &MessageContent::Blocks { content: tool_result.clone() },
+                    )
+                    .await?;
                     self.runtime
                         .context
                         .push(Message::new_blocks(Role::User, tool_result));
@@ -326,6 +410,13 @@ impl Agent {
                 self.runtime
                     .context
                     .push(Message::new_text(Role::User, CONTINUATION_MESSAGE));
+                self.persist_message(
+                    Role::User,
+                    &MessageContent::Text {
+                        content: CONTINUATION_MESSAGE.to_string(),
+                    },
+                )
+                .await?;
                 continue;
             }
             self.runtime.recovery_state.continuation_attempts = 0;
@@ -346,6 +437,11 @@ impl Agent {
             }
             let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
 
+            self.persist_message(
+                Role::User,
+                &MessageContent::Blocks { content: tool_result.clone() },
+            )
+            .await?;
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::User, tool_result));

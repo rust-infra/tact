@@ -44,3 +44,6 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 walkdir = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "migrate"] }
+tempfile = "3"

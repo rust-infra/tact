@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anthropic_ai_sdk::types::message::{Message, Role::User};
 use tact::{
+    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -22,7 +23,7 @@ use tact_core::{AgentErrorKind, AgentUpdate, PlanStep, UserCommand};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize config: CLI args > env vars > TOML config file
-    tact::config::init();
+    let args = tact::config::init();
 
     if std::env::var("TOKIO_CONSOLE").is_ok() {
         console_subscriber::init();
@@ -77,6 +78,11 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_ui_channel(agent_tx);
 
+    let session_store = open_sqlite_session_store(
+        &tact_path.claude_dir().join("tact.db")
+    ).await?;
+    agent = agent.with_session(args.resume.clone(), session_store);
+
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(agent_rx, user_cmd_tx, tui_work_dir).await
     }));
@@ -101,7 +107,6 @@ async fn main() -> anyhow::Result<()> {
     while let Some(cmd) = user_cmd_rx.recv().await {
         match cmd {
             UserCommand::SubmitTask(task) => {
-                agent.runtime.context.push(Message::new_text(User, task));
                 agent.tool_use_counter = 0;
 
                 agent.emit_update(AgentUpdate::PlanGenerated(vec![PlanStep {
@@ -112,7 +117,8 @@ async fn main() -> anyhow::Result<()> {
                     output: None,
                 }]));
 
-                if let Err(e) = agent.agent_loop().await {
+                let task_message = Message::new_text(User, task);
+                if let Err(e) = agent.agent_loop(Some(task_message)).await {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                 }
 

@@ -47,6 +47,10 @@ pub struct CliArgs {
     /// Permission mode: "default", "plan", or "auto" (tact CLI only)
     #[arg(short = 'm', long, env = "TACT_PERMISSION_MODE")]
     pub permission_mode: Option<String>,
+
+    /// Resume an existing session by its id. If omitted, a new session is created.
+    #[arg(short = 'r', long, env = "TACT_RESUME_SESSION")]
+    pub resume: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
