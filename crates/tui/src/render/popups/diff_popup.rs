@@ -1,5 +1,5 @@
 use ratatui::{Frame, layout::Rect, style::Style, text::{Line, Span, Text}, widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap}};
-use crate::state::App;
+use crate::widgets::state::App;
 
 pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let file_path = app.diff_popup.as_ref().map(|p| p.file_path.clone());

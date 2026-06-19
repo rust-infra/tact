@@ -1,5 +1,5 @@
 use crate::render::render_md::render_markdown_tui;
-use crate::state::*;
+use crate::widgets::state::*;
 use chrono::Local;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

@@ -1,4 +1,4 @@
-use crate::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::prev_word_boundary;
 

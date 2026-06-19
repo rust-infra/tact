@@ -3,7 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Widget};
-use crate::state::SelectPopup;
+
+use crate::widgets::state::SelectPopup;
 
 /// Selection popup widget: displays prompt and option list centered, supports keyboard/mouse selection.
 pub struct SelectPopupWidget<'a> {
@@ -43,7 +44,7 @@ impl<'a> SelectPopupWidget<'a> {
 impl Widget for SelectPopupWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
-        Self: Sized
+        Self: Sized,
     {
         let count = self.state.options.len().max(1) as u16;
         let popup_width = 50u16.min(area.width.saturating_sub(4));
@@ -88,17 +89,12 @@ impl Widget for SelectPopupWidget<'_> {
                 .map(|(i, opt)| {
                     let is_selected = i == selected;
                     let style = if is_selected {
-                        Style::default()
-                            .bg(self.highlight_color)
-                            .fg(Color::White)
+                        Style::default().bg(self.highlight_color).fg(Color::White)
                     } else {
                         Style::default().fg(self.fg_color)
                     };
                     let prefix = if is_selected { self.arrow } else { "  " };
-                    ListItem::new(Span::styled(
-                        format!("{}{}", prefix, opt),
-                        style,
-                    ))
+                    ListItem::new(Span::styled(format!("{}{}", prefix, opt), style))
                 })
                 .collect()
         };

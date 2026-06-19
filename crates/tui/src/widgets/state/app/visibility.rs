@@ -1,4 +1,4 @@
-use crate::state::*;
+use crate::widgets::state::*;
 use crate::render::render_md::{format_table, render_markdown_tui};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

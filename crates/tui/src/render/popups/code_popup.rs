@@ -1,4 +1,4 @@
-use crate::state::App;
+use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,

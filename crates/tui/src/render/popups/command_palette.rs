@@ -1,5 +1,5 @@
 use ratatui::{Frame, layout::Rect, style::{Color, Style}, text::Span, widgets::{Block, Borders, Clear, List, ListItem}};
-use crate::state::{App, PALETTE_COMMANDS};
+use crate::widgets::state::{App, PALETTE_COMMANDS};
 
 pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
     let filter = app.cmd_line.to_lowercase();

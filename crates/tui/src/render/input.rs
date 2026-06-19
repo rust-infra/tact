@@ -1,4 +1,4 @@
-use crate::state::{App, InputMode, Status};
+use crate::widgets::state::{App, InputMode, Status};
 use ratatui::{
     Frame,
     layout::Rect,

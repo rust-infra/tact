@@ -1,4 +1,4 @@
-use crate::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Select popup mode key handling: up/down to navigate, Enter to confirm, Esc to cancel.
