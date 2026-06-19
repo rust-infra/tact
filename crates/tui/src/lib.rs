@@ -631,12 +631,13 @@ pub async fn run_tui(
                         match app.input_mode {
                             InputMode::Insert => {
                                 // Multi-line edit: preserve newlines, insert at cursor position
+                                // app.input_cursor is a byte index — use byte-indexed slicing
                                 let before: String =
-                                    app.input.chars().take(app.input_cursor).collect();
+                                    app.input[..app.input_cursor].to_string();
                                 let after: String =
-                                    app.input.chars().skip(app.input_cursor).collect();
+                                    app.input[app.input_cursor..].to_string();
                                 app.input = before + &data + &after;
-                                app.input_cursor += data.chars().count();
+                                app.input_cursor += data.len();
                             }
                             InputMode::Search | InputMode::Palette => {
                                 // Single-line command: replace newlines with spaces, append to end

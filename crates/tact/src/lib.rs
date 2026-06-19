@@ -17,12 +17,14 @@
 //! - Module [`hook`] provides pre/post tool-use and session-start hooks.
 //! - Module [`compact`] handles context compaction and transcript persistence.
 //! - Module [`permission`] classifies tool risk and enforces approval policies.
+//! - Module [`notifications`] sends macOS desktop notifications for task lifecycle events.
 
 pub mod background;
 pub mod compact;
 pub mod config;
 pub mod consts;
 pub mod cron;
+pub mod notifications;
 pub mod hook;
 pub mod llm;
 pub mod lsp;
@@ -177,12 +179,24 @@ impl Agent {
     }
 
     pub fn emit_update(&self, update: AgentUpdate) {
+        // Desktop notifications for key lifecycle events
+        match &update {
+            AgentUpdate::TaskComplete(text) => {
+                let summary = text.chars().take(200).collect::<String>();
+                let _ = crate::notifications::notify_task_complete(&summary);
+            }
+            AgentUpdate::StepFailed(idx, msg) => {
+                let _ = crate::notifications::notify_step_failed(*idx, msg);
+            }
+            _ => {}
+        }
+
         if let Some(tx) = &self.runtime.ui_tx {
             let _ = tx.send(update);
         }
     }
 
-    async fn ensure_session(&mut self) -> Result<String> {
+    pub async fn ensure_session(&mut self) -> Result<String> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(self.runtime.session_id.clone().unwrap_or_default());
         };
@@ -208,9 +222,8 @@ impl Agent {
 
     async fn push_message(&mut self, message: Message) -> Result<()> {
         let blocks = message.content.clone();
-        let role = message.role;
-        self.runtime.context.push(message);
-        self.persist_message(role, &blocks).await
+        self.runtime.context.push(message.clone());
+        self.persist_message(message.role, &blocks).await
     }
 
     async fn persist_message(
@@ -226,6 +239,17 @@ impl Agent {
         };
         let ordinal = self.runtime.context.len() as i64;
         store.append_message(session_id, role, content, ordinal).await?;
+        Ok(())
+    }
+
+    /// Set or update the session title (displayed in --list-sessions).
+    pub async fn set_session_title(&mut self, title: Option<&str>) -> Result<()> {
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return Ok(());
+        };
+        if let Some(store) = self.runtime.session_store.as_ref() {
+            store.update_session_title(session_id, title).await?;
+        }
         Ok(())
     }
 
@@ -365,11 +389,6 @@ impl Agent {
                 }
             }
 
-            self.persist_message(
-                Role::Assistant,
-                &MessageContent::Blocks { content: content.clone() },
-            )
-            .await?;
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::Assistant, content.clone()));
@@ -381,6 +400,8 @@ impl Agent {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
+            self.persist_message(Role::Assistant, &MessageContent::Blocks { content: content.clone() }).await?;
+
             if matches!(stop_reason, Some(StopReason::MaxTokens))
                 && self.runtime.recovery_state.continuation_attempts < MAX_RECOVERY_ATTEMPTS
             {
@@ -388,14 +409,10 @@ impl Agent {
                 // was hit, so the context remains valid for the API.
                 if has_pending_tools {
                     let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
-                    self.persist_message(
-                        Role::User,
-                        &MessageContent::Blocks { content: tool_result.clone() },
-                    )
-                    .await?;
                     self.runtime
                         .context
-                        .push(Message::new_blocks(Role::User, tool_result));
+                        .push(Message::new_blocks(Role::User, tool_result.clone()));
+                    self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
                     if let Some(focus) = manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
                         self.compact_history(Some(focus.as_str())).await?;
@@ -437,14 +454,10 @@ impl Agent {
             }
             let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
 
-            self.persist_message(
-                Role::User,
-                &MessageContent::Blocks { content: tool_result.clone() },
-            )
-            .await?;
             self.runtime
                 .context
-                .push(Message::new_blocks(Role::User, tool_result));
+                .push(Message::new_blocks(Role::User, tool_result.clone()));
+            self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
 
             if let Some(focus) = manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));

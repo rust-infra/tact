@@ -41,7 +41,7 @@ pub struct Messages {
     pub log_title: &'static str,
     pub thinking_card_title: &'static str, // "🧠 Thinking ({} line{})"
     pub thinking_card_title_pl: &'static str, // "s" / "" for plural
-    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Click for full content"
+    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Click for full content | ⏱ {}"
     pub diff_card_title: &'static str,     // "+{} {}"
     pub diff_card_bottom: &'static str,    // "Double-click for full code"
     pub code_card_bottom: &'static str,    // " Click for full code "
@@ -208,7 +208,7 @@ impl Messages {
             log_title: " [Log] ",
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
-            thinking_card_bottom: " ↕ {}/{} lines | Click for full content ",
+            thinking_card_bottom: " ↕ {}/{} lines | Click for full content | ⏱ {} ",
             diff_card_title: " +{} {} ",
             diff_card_bottom: " Double-click for full code ",
             code_card_bottom: " Click for full code ",
@@ -356,7 +356,7 @@ impl Messages {
             log_title: " [日志] ",
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
-            thinking_card_bottom: " ↕ {}/{} 行 | 点击查看完整内容 ",
+            thinking_card_bottom: " ↕ {}/{} 行 | 点击查看完整内容 | ⏱ {} ",
             diff_card_title: " +{} {} ",
             diff_card_bottom: " 双击查看完整代码 ",
             code_card_bottom: " 点击查看完整代码 ",

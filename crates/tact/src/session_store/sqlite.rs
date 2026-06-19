@@ -16,8 +16,15 @@ impl SqliteSessionStore {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.context("failed to create database directory")?;
         }
-        // Ensure the database file exists so sqlx can open it.
-        tokio::fs::File::create(path).await.context("failed to create database file")?;
+        // sqlx may fail to open a non-existent database file in some environments;
+        // create an empty file first to ensure it's present.
+        if let Err(e) = tokio::fs::metadata(path).await {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                tokio::fs::File::create(path)
+                    .await
+                    .context("failed to create database file")?;
+            }
+        }
         let url = format!("sqlite:{}", path.display());
         let pool = SqlitePool::connect(&url)
             .await
@@ -103,6 +110,17 @@ impl super::SessionStore for SqliteSessionStore {
         .execute(&self.pool)
         .await
         .context("failed to create session")?;
+        Ok(())
+    }
+
+    async fn update_session_title(&self, id: &str, title: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
+            .bind(title)
+            .bind(Self::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("failed to update session title")?;
         Ok(())
     }
 
