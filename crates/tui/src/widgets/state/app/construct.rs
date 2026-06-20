@@ -8,7 +8,7 @@ use crate::widgets::state::{
 };
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::i18n::{Language, Messages};
-use crate::theme::{Theme, ThemeName};
+use crate::theme::Theme;
 use arboard::Clipboard;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -25,7 +25,7 @@ const STREAMING_INDICATOR: &str = " ▌";
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {
-    /// Create an initialized App instance, defaulting to Insert mode with the Nord theme.
+    /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.
     pub(crate) fn new(
         agent_rx: UnboundedReceiver<AgentUpdate>,
         user_cmd_tx: UnboundedSender<UserCommand>,
@@ -67,7 +67,9 @@ impl App {
             agent_rx,
             user_cmd_tx,
             task_history: Vec::new(),
-            theme: Theme::by_name(ThemeName::Nord),
+            theme: Theme::by_name_str(
+                std::env::var("TACT_THEME").ok().as_deref().unwrap_or("retro"),
+            ),
             log_scroll: LogScroll::new(),
             show_history: false,
             show_help: false,

@@ -83,6 +83,32 @@ fn context_limit() -> usize {
         .unwrap_or(500_000)
 }
 
+/// Maximum tokens to generate per LLM call.
+/// Defaults to 8000. Override with `TACT_MAX_TOKENS`.
+fn max_tokens() -> u32 {
+    std::env::var("TACT_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8000)
+}
+
+/// Budget tokens for extended thinking.
+/// Defaults to 32000. Override with `TACT_THINKING_BUDGET`.
+fn thinking_budget() -> usize {
+    std::env::var("TACT_THINKING_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32000)
+}
+
+/// Returns the thinking configuration to use.
+fn thinking_config() -> Thinking {
+    Thinking {
+        budget_tokens: thinking_budget(),
+        type_: ThinkingType::Enabled,
+    }
+}
+
 /// Returns the model name from the active provider's environment variable.
 /// Parsed once on first call and cached for the lifetime of the process.
 pub fn get_model() -> &'static str {
@@ -304,23 +330,18 @@ impl Agent {
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: self.runtime.context.clone(),
-                max_tokens: 8000,
+                max_tokens: max_tokens(),
             })
             .with_system(&system)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
-            .with_thinking(Thinking {
-                budget_tokens: 32000,
-                type_: ThinkingType::Enabled,
-            });
+            .with_thinking(thinking_config());
 
             self.emit_update(AgentUpdate::ModelInfo(tact_core::ModelCallParams {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: request.thinking.as_ref().map(|t| match t.type_ {
-                    ThinkingType::Enabled => "high".to_string(),
-                }),
+                reasoning_effort: request.thinking.as_ref().map(|_| "high".to_string()),
                 extra_body: request
                     .thinking
                     .as_ref()
