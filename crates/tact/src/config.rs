@@ -44,6 +44,14 @@ pub struct CliArgs {
     #[arg(long)]
     pub base_url: Option<String>,
 
+    /// Maximum tokens to generate per LLM call
+    #[arg(long)]
+    pub max_tokens: Option<u32>,
+
+    /// Budget tokens for extended thinking (Anthropic/Kimi `thinking`)
+    #[arg(long)]
+    pub thinking_budget: Option<usize>,
+
     /// Permission mode: "default", "plan", or "auto" (tact CLI only)
     #[arg(short = 'm', long, env = "TACT_PERMISSION_MODE")]
     pub permission_mode: Option<String>,
@@ -63,6 +71,10 @@ pub struct CliArgs {
     /// Enable desktop notifications (macOS only). Use --no-notifications to disable.
     #[arg(long)]
     pub notifications: Option<bool>,
+
+    /// Soft context limit in characters before auto-compaction is triggered.
+    #[arg(long)]
+    pub context_limit_chars: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +109,12 @@ pub struct LlmTomlConfig {
 
     /// API base URL
     pub base_url: Option<String>,
+
+    /// Maximum tokens to generate per LLM call.
+    pub max_tokens: Option<u32>,
+
+    /// Budget tokens for extended thinking (Anthropic-style thinking / Kimi `thinking`).
+    pub thinking_budget: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +281,28 @@ pub fn init_config() -> CliArgs {
         }
     }
 
+    // ---- Max tokens ----
+    {
+        let max_tokens = args
+            .max_tokens
+            .or_else(|| std::env::var("TACT_MAX_TOKENS").ok().and_then(|s| s.parse().ok()))
+            .or_else(|| toml_cfg.llm.max_tokens);
+        if let Some(ref v) = max_tokens {
+            set_env("TACT_MAX_TOKENS", &v.to_string());
+        }
+    }
+
+    // ---- Thinking budget ----
+    {
+        let thinking_budget = args
+            .thinking_budget
+            .or_else(|| std::env::var("TACT_THINKING_BUDGET").ok().and_then(|s| s.parse().ok()))
+            .or_else(|| toml_cfg.llm.thinking_budget);
+        if let Some(ref v) = thinking_budget {
+            set_env("TACT_THINKING_BUDGET", &v.to_string());
+        }
+    }
+
     // ---- Permission mode ----
     let perm_mode = args
         .permission_mode
@@ -285,6 +325,15 @@ pub fn init_config() -> CliArgs {
     } else {
         // default: enabled
         set_env("TACT_NOTIFICATIONS_ENABLED", "true");
+    }
+
+    // ---- Context limit ----
+    let context_limit = args
+        .context_limit_chars
+        .or_else(|| std::env::var("TACT_CONTEXT_LIMIT_CHARS").ok().and_then(|s| s.parse().ok()))
+        .or_else(|| toml_cfg.agent.context_limit_chars);
+    if let Some(ref v) = context_limit {
+        set_env("TACT_CONTEXT_LIMIT_CHARS", &v.to_string());
     }
 
     args
@@ -324,6 +373,8 @@ provider = "openai"
 model = "gpt-4o"
 api_key = "sk-test"
 base_url = "https://proxy.example.com/v1"
+max_tokens = 16000
+thinking_budget = 64000
 
 [permission]
 mode = "auto"
@@ -336,6 +387,8 @@ context_limit_chars = 500000
         assert_eq!(cfg.llm.model.as_deref(), Some("gpt-4o"));
         assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-test"));
         assert!(cfg.llm.base_url.is_some());
+        assert_eq!(cfg.llm.max_tokens, Some(16000));
+        assert_eq!(cfg.llm.thinking_budget, Some(64000));
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
         assert_eq!(cfg.agent.context_limit_chars, Some(500000));
     }
@@ -346,5 +399,7 @@ context_limit_chars = 500000
         assert_eq!(cfg.llm.provider, None);
         assert_eq!(cfg.permission.mode.as_deref(), Some("default"));
         assert_eq!(cfg.agent.context_limit_chars, None);
+        assert_eq!(cfg.llm.max_tokens, None);
+        assert_eq!(cfg.llm.thinking_budget, None);
     }
 }
