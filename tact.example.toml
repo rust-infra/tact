@@ -26,3 +26,9 @@
 [agent]
 # Maximum context size in characters before auto-compaction
 # context_limit_chars = 500000
+
+[ui]
+# TUI theme name. Supported values:
+#   dark, light, solarized-dark, solarized-light, gruvbox-dark,
+#   nord, retro (default), kawaii, japanese
+# theme = "retro"

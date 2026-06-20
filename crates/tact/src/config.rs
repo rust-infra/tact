@@ -75,6 +75,10 @@ pub struct CliArgs {
     /// Soft context limit in characters before auto-compaction is triggered.
     #[arg(long)]
     pub context_limit_chars: Option<usize>,
+
+    /// UI theme name (e.g. "retro", "nord", "dark").
+    #[arg(long, env = "TACT_THEME")]
+    pub theme: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +97,9 @@ pub struct TactTomlConfig {
 
     /// Agent settings
     pub agent: AgentTomlConfig,
+
+    /// UI settings
+    pub ui: UiTomlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -140,6 +147,13 @@ pub struct AgentTomlConfig {
 
     /// Enable desktop notifications (default: true)
     pub notifications_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UiTomlConfig {
+    /// Initial TUI theme name (e.g. "retro", "nord", "dark").
+    pub theme: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +350,16 @@ pub fn init_config() -> CliArgs {
         set_env("TACT_CONTEXT_LIMIT_CHARS", &v.to_string());
     }
 
+    // ---- Theme ----
+    // Priority: CLI > env > TOML > default("retro")
+    let theme = args
+        .theme
+        .clone()
+        .or_else(|| std::env::var("TACT_THEME").ok())
+        .or_else(|| toml_cfg.ui.theme.clone())
+        .unwrap_or_else(|| "retro".to_string());
+    set_env("TACT_THEME", &theme);
+
     args
 }
 
@@ -381,6 +405,9 @@ mode = "auto"
 
 [agent]
 context_limit_chars = 500000
+
+[ui]
+theme = "nord"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("openai"));
@@ -391,6 +418,17 @@ context_limit_chars = 500000
         assert_eq!(cfg.llm.thinking_budget, Some(64000));
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
         assert_eq!(cfg.agent.context_limit_chars, Some(500000));
+        assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn parse_ui_theme() {
+        let toml_str = r#"
+[ui]
+theme = "retro"
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.ui.theme.as_deref(), Some("retro"));
     }
 
     #[test]
