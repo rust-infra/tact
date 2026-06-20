@@ -3,6 +3,7 @@
 // foreground, accent, warning, error, and other UI element colors.
 
 use ratatui::style::Color;
+use std::str::FromStr;
 
 /// Built-in theme name enum.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -37,6 +38,25 @@ impl ThemeName {
         let all = Self::all();
         let idx = all.iter().position(|t| t == self).unwrap();
         all[(idx + 1) % all.len()]
+    }
+}
+
+impl FromStr for ThemeName {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "dark" => Ok(Self::Dark),
+            "light" => Ok(Self::Light),
+            "solarized-dark" | "solarized_dark" | "solarizeddark" => Ok(Self::SolarizedDark),
+            "solarized-light" | "solarized_light" | "solarizedlight" => Ok(Self::SolarizedLight),
+            "gruvbox-dark" | "gruvbox_dark" | "gruvboxdark" => Ok(Self::GruvboxDark),
+            "nord" => Ok(Self::Nord),
+            "retro" => Ok(Self::Retro),
+            "kawaii" => Ok(Self::Kawaii),
+            "japanese" => Ok(Self::Japanese),
+            other => Err(format!("unknown theme: {other}")),
+        }
     }
 }
 
@@ -209,5 +229,12 @@ impl Theme {
                 input_box_fg: Color::Rgb(200, 60, 40),
             },
         }
+    }
+
+    /// Parse a theme name string and return the matching theme, falling back to Retro.
+    pub(super) fn by_name_str(name: &str) -> Self {
+        name.parse()
+            .map(Self::by_name)
+            .unwrap_or_else(|_| Self::by_name(ThemeName::Retro))
     }
 }

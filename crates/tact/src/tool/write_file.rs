@@ -3,7 +3,7 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
-use tact_core::AgentUpdate;
+use tact_core::{format_bytes, AgentUpdate};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tool_refactor_macros::tool;
@@ -65,11 +65,11 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
                     let pct = (written * 100 / total) as u64;
                     if let Some(ref tx) = ctx.ui_tx {
                         let _ = tx.send(AgentUpdate::Info(format!(
-                            "Writing {}... {}% ({} / {} bytes)",
+                            "Writing {}... {}% ({} / {})",
                             path.display(),
                             pct,
-                            written,
-                            total
+                            format_bytes(written),
+                            format_bytes(total)
                         )));
                     }
                     last_update = now;
@@ -89,8 +89,8 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
     }
 
     Ok(format!(
-        "Wrote {} bytes / {} lines to {}",
-        total,
+        "Wrote {} / {} lines to {}",
+        format_bytes(total),
         line_count,
         path.display()
     ))

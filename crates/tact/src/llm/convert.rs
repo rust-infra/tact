@@ -240,7 +240,7 @@ pub fn build_openai_request(
         logit_bias: None,
         logprobs: None,
         top_logprobs: None,
-        max_tokens: Some(request.max_tokens as u16),
+        max_tokens: Some(request.max_tokens.min(u16::MAX as u32) as u16),
         n: Some(1),
         presence_penalty: None,
         response_format: None,

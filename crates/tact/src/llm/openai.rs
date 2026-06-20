@@ -70,6 +70,18 @@ struct StreamUsage {
     prompt_cache_miss_tokens: Option<u32>,
 }
 
+/// Inject the Anthropic-style `thinking` block into an OpenAI-compatible JSON body.
+///
+/// Moonshot/Kimi k2.x models accept this shape for extended thinking.
+fn inject_thinking_param(request: &CreateMessageParams, body: &mut serde_json::Value) {
+    if let Some(thinking) = &request.thinking {
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": thinking.budget_tokens,
+        });
+    }
+}
+
 // ── Config / Adapter ───────────────────────────────────────────────────
 
 /// Custom config that strips the `OpenAI-Beta` header.
@@ -156,6 +168,7 @@ impl LlmClient for OpenAiAdapter {
         let mut body =
             serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
         body["stream_options"] = serde_json::json!({"include_usage": true});
+        inject_thinking_param(request, &mut body);
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -316,6 +329,10 @@ impl LlmClient for OpenAiAdapter {
         let mut openai_request = build_openai_request(request);
         openai_request.stream = Some(false);
 
+        let mut body = serde_json::to_value(&openai_request)
+            .map_err(|e| LlmError::Other(e.to_string()))?;
+        inject_thinking_param(request, &mut body);
+
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
 
@@ -325,7 +342,7 @@ impl LlmClient for OpenAiAdapter {
             .map_err(|e| LlmError::Other(e.to_string()))?
             .post(&url)
             .headers(headers)
-            .json(&openai_request)
+            .json(&body)
             .send()
             .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
