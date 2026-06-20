@@ -169,15 +169,12 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
 
     match provider.as_str() {
         "anthropic" => {
-            let key = std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY is not set")?;
+            let api_key =
+                std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY is not set")?;
             let base_url =
                 std::env::var("ANTHROPIC_BASE_URL").context("ANTHROPIC_BASE_URL is not set")?;
-            let client = anthropic_ai_sdk::client::AnthropicClientBuilder::new(key, "")
-                .with_api_base_url(base_url)
-                .build::<MessageError>()
-                .context("can't create Anthropic client")?;
             Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
-                client,
+                api_key, base_url,
             )))
         }
         "openai" => {
