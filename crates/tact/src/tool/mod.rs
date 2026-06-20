@@ -379,7 +379,7 @@ mod tests {
 
         assert!(output.contains("Wrote"));
         assert!(output.contains("test.txt"));
-        assert!(output.contains("bytes"));
+        assert!(output.contains("Byte"));
         assert!(output.contains("lines"));
         let written =
             std::fs::read_to_string(context.work_dir.join(path)).unwrap();
