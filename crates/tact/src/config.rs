@@ -28,7 +28,7 @@ pub struct CliArgs {
     #[arg(short, long, env = "TACT_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// LLM provider: "anthropic" or "openai"
+    /// LLM provider: "anthropic", "openai", or "kimi"
     #[arg(long)]
     pub provider: Option<String>,
 
@@ -105,7 +105,7 @@ pub struct TactTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LlmTomlConfig {
-    /// Provider name: "anthropic" or "openai"
+    /// Provider name: "anthropic", "openai", or "kimi"
     pub provider: Option<String>,
 
     /// Model name
@@ -252,6 +252,7 @@ pub fn init_config() -> CliArgs {
         let prov = provider.as_deref().unwrap_or("openai");
         match prov {
             "anthropic" => format!("ANTHROPIC_{var_base}"),
+            "kimi" => format!("KIMI_{var_base}"),
             _ => format!("OPENAI_{var_base}"),
         }
     };
@@ -429,6 +430,20 @@ theme = "retro"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.ui.theme.as_deref(), Some("retro"));
+    }
+
+    #[test]
+    fn parse_kimi_config() {
+        let toml_str = r#"
+[llm]
+provider = "kimi"
+model = "kimi-k2.7-code"
+api_key = "sk-kimi-test"
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.llm.provider.as_deref(), Some("kimi"));
+        assert_eq!(cfg.llm.model.as_deref(), Some("kimi-k2.7-code"));
+        assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-kimi-test"));
     }
 
     #[test]

@@ -37,22 +37,29 @@ impl ProviderInfo {
                 "TACT_PROVIDER environment variable not set"
             ));
         }
-        let (api_key, base_url, model) = if provider != "openai" && provider != "anthropic" {
-            return Err(anyhow::anyhow!(
-                "TACT_PROVIDER must be either 'openai' or 'anthropic'"
-            ));
-        } else if provider == "openai" {
-            (
+        let (api_key, base_url, model) = match provider.as_str() {
+            "openai" => (
                 std::env::var("OPENAI_API_KEY")?,
                 std::env::var("OPENAI_BASE_URL").unwrap_or_default(),
                 std::env::var("OPENAI_MODEL").unwrap_or_default(),
-            )
-        } else {
-            (
+            ),
+            "anthropic" => (
                 std::env::var("ANTHROPIC_API_KEY")?,
                 std::env::var("ANTHROPIC_BASE_URL").unwrap_or_default(),
                 std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
-            )
+            ),
+            "kimi" => (
+                std::env::var("KIMI_API_KEY")?,
+                std::env::var("KIMI_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string()),
+                std::env::var("KIMI_MODEL")
+                    .unwrap_or_else(|_| "kimi-for-coding".to_string()),
+            ),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "TACT_PROVIDER must be 'openai', 'anthropic', or 'kimi'"
+                ))
+            }
         };
         Ok(Self {
             api_key,
@@ -60,6 +67,45 @@ impl ProviderInfo {
             model,
             provider,
         })
+    }
+
+    /// Returns true if the active target is a Kimi/Moonshot endpoint.
+    pub fn is_kimi(&self) -> bool {
+        self.provider == "kimi"
+            || self.base_url.contains("moonshot")
+            || self.base_url.contains("kimi")
+            || self.model.contains("kimi")
+    }
+
+    /// Returns true for the Kimi K2.x family (K2.5, K2.6, K2.7-code, ...).
+    ///
+    /// Also covers the stable `kimi-for-coding` model ID and the Kimi Code
+    /// platform endpoint (`api.kimi.com/coding`), both of which always serve
+    /// the latest K2.x coding model.
+    pub fn is_kimi_k2x(&self) -> bool {
+        if !self.is_kimi() {
+            return false;
+        }
+        if self.model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
+            return true;
+        }
+        self.model.contains("kimi-k2")
+            || self.model.contains("k2.")
+            || self.model.contains("k2-")
+    }
+
+    /// Returns true specifically for K2.7-code and the Kimi Code stable model.
+    ///
+    /// `kimi-for-coding` and the `api.kimi.com/coding` endpoint currently map
+    /// to the latest K2.7-code model.
+    pub fn is_kimi_k27(&self) -> bool {
+        if !self.is_kimi() {
+            return false;
+        }
+        if self.model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
+            return true;
+        }
+        self.model.contains("k2.7") || self.model.contains("k2-7")
     }
 }
 
@@ -148,9 +194,10 @@ impl LlmClient for LlmProvider {
 /// Returns the active LLM client based on environment variables.
 ///
 /// Environment variables:
-/// - `TACT_PROVIDER` = `anthropic` | `openai` (optional; inferred from API keys if absent)
+/// - `TACT_PROVIDER` = `anthropic` | `openai` | `kimi` (optional; inferred from API keys if absent)
 /// - `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`
 /// - `OPENAI_API_KEY`, `OPENAI_BASE_URL` (optional), `OPENAI_MODEL`
+/// - `KIMI_API_KEY`, `KIMI_BASE_URL` (optional), `KIMI_MODEL` (optional)
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
     dotenvy::dotenv().ok();
 
@@ -159,13 +206,15 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
         .or_else(|| {
             if std::env::var("ANTHROPIC_API_KEY").is_ok() {
                 Some("anthropic".to_string())
+            } else if std::env::var("KIMI_API_KEY").is_ok() {
+                Some("kimi".to_string())
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
                 Some("openai".to_string())
             } else {
                 None
             }
         })
-        .context("No LLM provider configured. Set TACT_PROVIDER=anthropic|openai or provide ANTHROPIC_API_KEY / OPENAI_API_KEY")?;
+        .context("No LLM provider configured. Set TACT_PROVIDER=anthropic|openai|kimi or provide ANTHROPIC_API_KEY / OPENAI_API_KEY / KIMI_API_KEY")?;
 
     match provider.as_str() {
         "anthropic" => {
@@ -184,7 +233,14 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
             let config = openai::CompatibleConfig::new(api_key, base_url);
             Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
         }
-        other => anyhow::bail!("Unknown TACT_PROVIDER: {other}. Use 'anthropic' or 'openai'."),
+        "kimi" => {
+            let api_key = std::env::var("KIMI_API_KEY").context("KIMI_API_KEY is not set")?;
+            let base_url = std::env::var("KIMI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string());
+            let config = openai::CompatibleConfig::new(api_key, base_url);
+            Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
+        }
+        other => anyhow::bail!("Unknown TACT_PROVIDER: {other}. Use 'anthropic', 'openai', or 'kimi'."),
     }
 }
 
@@ -288,4 +344,19 @@ pub fn get_provider() -> &'static ProviderInfo {
     static PROVIDER: LazyLock<ProviderInfo> =
         LazyLock::new(|| ProviderInfo::get_provider_from_env().unwrap_or_default());
     &PROVIDER
+}
+
+/// Returns true if the active provider/target is Kimi/Moonshot.
+pub fn is_kimi() -> bool {
+    get_provider().is_kimi()
+}
+
+/// Returns true for the Kimi K2.x family.
+pub fn is_kimi_k2x() -> bool {
+    get_provider().is_kimi_k2x()
+}
+
+/// Returns true specifically for kimi-k2.7-code.
+pub fn is_kimi_k27() -> bool {
+    get_provider().is_kimi_k27()
 }

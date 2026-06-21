@@ -214,11 +214,17 @@ fn sanitize_tool_call_sequence(messages: &mut Vec<ChatCompletionRequestMessage>)
 }
 
 /// Build an OpenAI `CreateChatCompletionRequest` from Anthropic `CreateMessageParams`.
+///
+/// Also returns a parallel vector of optional `reasoning_content` strings, one for each
+/// message in the generated OpenAI message list. This is needed for providers such as
+/// Kimi/Moonshot that require historical `reasoning_content` to be echoed back on
+/// assistant messages (especially assistant messages containing `tool_calls`).
 #[allow(deprecated)]
 pub fn build_openai_request(
     request: &anthropic_ai_sdk::types::message::CreateMessageParams,
-) -> CreateChatCompletionRequest {
+) -> (CreateChatCompletionRequest, Vec<Option<String>>) {
     let mut messages = Vec::new();
+    let mut reasoning_per_message = Vec::new();
 
     // Anthropic sends system as a top-level field; OpenAI expects it as the first system message.
     if let Some(system) = &request.system {
@@ -229,9 +235,35 @@ pub fn build_openai_request(
                 name: None,
             },
         ));
+        reasoning_per_message.push(None);
     }
 
     messages.extend(anthropic_messages_to_openai(&request.messages));
+
+    // Collect reasoning content from historical assistant messages so callers can
+    // inject it back into the JSON body for providers that require it.
+    for msg in &request.messages {
+        if matches!(msg.role, Role::Assistant) {
+            let reasoning = match &msg.content {
+                MessageContent::Blocks { content } => content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+                _ => String::new(),
+            };
+            reasoning_per_message.push(if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning)
+            });
+        } else {
+            reasoning_per_message.push(None);
+        }
+    }
 
     let mut openai_request = CreateChatCompletionRequest {
         model: request.model.clone(),
@@ -261,7 +293,7 @@ pub fn build_openai_request(
         openai_request.tool_choice = Some(map_tool_choice(tc));
     }
 
-    openai_request
+    (openai_request, reasoning_per_message)
 }
 
 fn map_tool_choice(
