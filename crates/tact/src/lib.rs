@@ -75,21 +75,35 @@ use tact_core::{AgentUpdate, StepResult, StepStatus};
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
 ///
-/// Defaults to 500_000 (~125K tokens). Override with `TACT_CONTEXT_LIMIT_CHARS`.
+/// Defaults to 500_000 (~125K tokens), raised to 900_000 for Kimi K2.x which
+/// has a 256K-token context window. Override with `TACT_CONTEXT_LIMIT_CHARS`.
 fn context_limit() -> usize {
     std::env::var("TACT_CONTEXT_LIMIT_CHARS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(500_000)
+        .unwrap_or_else(|| {
+            if crate::llm::is_kimi_k2x() {
+                900_000
+            } else {
+                500_000
+            }
+        })
 }
 
 /// Maximum tokens to generate per LLM call.
-/// Defaults to 8000. Override with `TACT_MAX_TOKENS`.
+/// Defaults to 8000, raised to 32000 for Kimi K2.x thinking models because
+/// they emit both reasoning_content and content. Override with `TACT_MAX_TOKENS`.
 fn max_tokens() -> u32 {
     std::env::var("TACT_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8000)
+        .unwrap_or_else(|| {
+            if crate::llm::is_kimi_k2x() {
+                32_000
+            } else {
+                8_000
+            }
+        })
 }
 
 /// Budget tokens for extended thinking.

@@ -4160,6 +4160,7 @@ dependencies = [
  "derive_builder",
  "dotenvy",
  "futures-util",
+ "regex",
  "reqwest",
  "reqwest-eventsource",
  "rmcp",

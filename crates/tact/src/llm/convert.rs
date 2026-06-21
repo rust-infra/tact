@@ -5,10 +5,12 @@ use anthropic_ai_sdk::types::message::{
 };
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionToolType,
-    CreateChatCompletionRequest, FinishReason, FunctionObject, Role as OpenAiRole,
+    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart,
+    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage,
+    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+    ChatCompletionTool, ChatCompletionToolType, CreateChatCompletionRequest, FinishReason,
+    FunctionObject, ImageUrl, ImageUrlDetail, Role as OpenAiRole,
 };
 
 /// Convert Anthropic tool definitions to OpenAI tool definitions.
@@ -43,16 +45,30 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                     ));
                 }
                 MessageContent::Blocks { content } => {
+                    let mut parts: Vec<ChatCompletionRequestMessageContentPart> = Vec::new();
+                    let mut tool_results: Vec<ChatCompletionRequestMessage> = Vec::new();
                     for block in content {
                         match block {
                             ContentBlock::Text { text } => {
-                                result.push(ChatCompletionRequestMessage::User(
-                                    ChatCompletionRequestUserMessage {
-                                        content: ChatCompletionRequestUserMessageContent::Text(
-                                            text.clone(),
-                                        ),
-                                        role: OpenAiRole::User,
-                                        name: None,
+                                parts.push(ChatCompletionRequestMessageContentPart::Text(
+                                    ChatCompletionRequestMessageContentPartText {
+                                        r#type: "text".to_string(),
+                                        text: text.clone(),
+                                    },
+                                ));
+                            }
+                            ContentBlock::Image { source } => {
+                                let data_url = format!(
+                                    "data:{};base64,{}",
+                                    source.media_type, source.data
+                                );
+                                parts.push(ChatCompletionRequestMessageContentPart::Image(
+                                    ChatCompletionRequestMessageContentPartImage {
+                                        r#type: "image_url".to_string(),
+                                        image_url: ImageUrl {
+                                            url: data_url,
+                                            detail: ImageUrlDetail::Auto,
+                                        },
                                     },
                                 ));
                             }
@@ -60,7 +76,7 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                                 tool_use_id,
                                 content,
                             } => {
-                                result.push(ChatCompletionRequestMessage::Tool(
+                                tool_results.push(ChatCompletionRequestMessage::Tool(
                                     ChatCompletionRequestToolMessage {
                                         role: OpenAiRole::Tool,
                                         content: content.clone(),
@@ -68,10 +84,20 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                                     },
                                 ));
                             }
-                            // Drop images, thinking, etc. on the user side for now.
+                            // Drop thinking on the user side for now.
                             _ => {}
                         }
                     }
+                    if !parts.is_empty() {
+                        result.push(ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessage {
+                                content: ChatCompletionRequestUserMessageContent::Array(parts),
+                                role: OpenAiRole::User,
+                                name: None,
+                            },
+                        ));
+                    }
+                    result.extend(tool_results);
                 }
             },
             Role::Assistant => match &msg.content {
@@ -214,11 +240,17 @@ fn sanitize_tool_call_sequence(messages: &mut Vec<ChatCompletionRequestMessage>)
 }
 
 /// Build an OpenAI `CreateChatCompletionRequest` from Anthropic `CreateMessageParams`.
+///
+/// Also returns a parallel vector of optional `reasoning_content` strings, one for each
+/// message in the generated OpenAI message list. This is needed for providers such as
+/// Kimi/Moonshot that require historical `reasoning_content` to be echoed back on
+/// assistant messages (especially assistant messages containing `tool_calls`).
 #[allow(deprecated)]
 pub fn build_openai_request(
     request: &anthropic_ai_sdk::types::message::CreateMessageParams,
-) -> CreateChatCompletionRequest {
+) -> (CreateChatCompletionRequest, Vec<Option<String>>) {
     let mut messages = Vec::new();
+    let mut reasoning_per_message = Vec::new();
 
     // Anthropic sends system as a top-level field; OpenAI expects it as the first system message.
     if let Some(system) = &request.system {
@@ -229,9 +261,35 @@ pub fn build_openai_request(
                 name: None,
             },
         ));
+        reasoning_per_message.push(None);
     }
 
     messages.extend(anthropic_messages_to_openai(&request.messages));
+
+    // Collect reasoning content from historical assistant messages so callers can
+    // inject it back into the JSON body for providers that require it.
+    for msg in &request.messages {
+        if matches!(msg.role, Role::Assistant) {
+            let reasoning = match &msg.content {
+                MessageContent::Blocks { content } => content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+                _ => String::new(),
+            };
+            reasoning_per_message.push(if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning)
+            });
+        } else {
+            reasoning_per_message.push(None);
+        }
+    }
 
     let mut openai_request = CreateChatCompletionRequest {
         model: request.model.clone(),
@@ -261,7 +319,7 @@ pub fn build_openai_request(
         openai_request.tool_choice = Some(map_tool_choice(tc));
     }
 
-    openai_request
+    (openai_request, reasoning_per_message)
 }
 
 fn map_tool_choice(
@@ -289,5 +347,46 @@ pub fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> Option<Stop
         Some(FinishReason::ContentFilter) => Some(StopReason::StopSequence),
         Some(FinishReason::FunctionCall) => Some(StopReason::ToolUse),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role};
+
+    #[test]
+    fn convert_user_message_with_image_to_openai_content_parts() {
+        let msg = Message::new_blocks(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "describe this".to_string(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        type_: "base64".to_string(),
+                        media_type: "image/png".to_string(),
+                        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".to_string(),
+                    },
+                },
+            ],
+        );
+
+        let openai = anthropic_messages_to_openai(&[msg]);
+        assert_eq!(openai.len(), 1);
+        let ChatCompletionRequestMessage::User(user) = &openai[0] else {
+            panic!("expected user message");
+        };
+        let ChatCompletionRequestUserMessageContent::Array(parts) = &user.content else {
+            panic!("expected array content");
+        };
+        assert_eq!(parts.len(), 2);
+        assert!(
+            matches!(&parts[0], ChatCompletionRequestMessageContentPart::Text(t) if t.text == "describe this")
+        );
+        assert!(
+            matches!(&parts[1], ChatCompletionRequestMessageContentPart::Image(img) if img.image_url.url.starts_with("data:image/png;base64,"))
+        );
     }
 }

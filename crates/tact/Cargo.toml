@@ -30,6 +30,7 @@ derive_builder = { workspace = true }
 dotenvy = { workspace = true }
 futures-util = "0.3"
 reqwest-eventsource = "0.6"
+regex = "1"
 rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
 schemars.workspace = true
 serde = { workspace = true }
