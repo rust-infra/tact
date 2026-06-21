@@ -83,7 +83,8 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             //.replacen("{}", tips, 1)
             .replacen("{}", &app.workspace_dir, 1)
             .replacen("{}", branch, 1);
-        let cache_str = if app.status_bar.token_cache_hit > 0
+        let cache_str = if app.status_bar.token_total > 0
+            || app.status_bar.token_cache_hit > 0
             || app.status_bar.token_cache_miss > 0
         {
             msgs.bottom_cache_tmpl

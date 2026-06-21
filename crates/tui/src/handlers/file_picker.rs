@@ -13,6 +13,8 @@ pub(crate) fn handle_file_picker_mode(app: &mut App, key: KeyEvent) {
                     format!("@{}", path)
                 };
                 app.save_undo();
+                let mut insert = insert;
+                insert.push(' ');
                 app.input.insert_str(app.input_cursor, &insert);
                 app.input_cursor += insert.len();
             }

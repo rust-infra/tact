@@ -45,6 +45,9 @@ pub struct CompactState {
 /// [`KEEP_RECENT_TOOL_RESULTS`] entries.  Any older result longer than 120
 /// characters is replaced with a stub message.
 pub fn micro_compact(messages: &mut [Message]) {
+    if is_micro_compact_disabled() {
+        return;
+    }
     let tool_result_positions = collect_tool_result_positions(messages);
     if tool_result_positions.len() <= KEEP_RECENT_TOOL_RESULTS {
         return;
@@ -144,6 +147,16 @@ pub fn compacted_context(summary: String) -> Vec<Message> {
         Role::User,
         format!("This conversation was compacted so the agent can continue working.\n\n{summary}"),
     )]
+}
+
+fn is_micro_compact_disabled() -> bool {
+    std::env::var("TACT_MICRO_COMPACT")
+        .ok()
+        .map(|s| {
+            let s = s.trim();
+            s == "0" || s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("off")
+        })
+        .unwrap_or(false)
 }
 
 fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
