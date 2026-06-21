@@ -1,6 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 
-use anthropic_ai_sdk::types::message::{Message, Role::User};
+use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role::User};
+use base64::Engine as _;
+use regex::Regex;
 use tact::{
     session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
@@ -19,6 +22,92 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_core::{AgentErrorKind, AgentUpdate, PlanStep, UserCommand};
+
+/// Parse inline markdown image references like `![alt](path.png)` out of the
+/// user's task, resolve them relative to the working directory, base64-encode
+/// them, and build a multi-part user message for vision-capable models.
+///
+/// References that cannot be resolved are left in the text unchanged.
+async fn build_user_message(task: &str, work_dir: &Path) -> Message {
+    static IMAGE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = IMAGE_RE.get_or_init(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap());
+
+    let mut blocks = Vec::new();
+    let mut last_end = 0;
+
+    for cap in re.captures_iter(task) {
+        let whole = cap.get(0).unwrap();
+        let alt = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let path_str = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        // Text before this image reference.
+        if whole.start() > last_end {
+            blocks.push(ContentBlock::Text {
+                text: task[last_end..whole.start()].to_string(),
+            });
+        }
+
+        let resolved = work_dir.join(path_str);
+        match load_image_block(&resolved).await {
+            Some(source) => {
+                // Keep the alt text so the model still sees the description.
+                if !alt.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("({})", alt),
+                    });
+                }
+                blocks.push(ContentBlock::Image { source });
+            }
+            None => {
+                // Leave the original markdown in place if the file cannot be loaded.
+                blocks.push(ContentBlock::Text {
+                    text: whole.as_str().to_string(),
+                });
+            }
+        }
+
+        last_end = whole.end();
+    }
+
+    if last_end < task.len() {
+        blocks.push(ContentBlock::Text {
+            text: task[last_end..].to_string(),
+        });
+    }
+
+    if blocks.is_empty() {
+        // Fallback for empty input.
+        return Message::new_text(User, "");
+    }
+
+    Message::new_blocks(User, blocks)
+}
+
+async fn load_image_block(path: &Path) -> Option<ImageSource> {
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let media_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        _ => "image/png",
+    };
+    Some(ImageSource {
+        type_: "base64".to_string(),
+        media_type: media_type.to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -60,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
 
     let work_dir = tact_path.workdir().to_path_buf();
     let tui_work_dir = work_dir.clone();
+    let image_work_dir = work_dir.clone();
     let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
     let store_root = StoreRoot::new(tact_path.claude_dir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
@@ -147,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
                     output: None,
                 }]));
 
-                let task_message = Message::new_text(User, task);
+                let task_message = build_user_message(&task, &image_work_dir).await;
                 if let Err(e) = agent.agent_loop(Some(task_message)).await {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                 }

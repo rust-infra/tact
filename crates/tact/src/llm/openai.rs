@@ -70,15 +70,58 @@ struct StreamUsage {
     prompt_cache_miss_tokens: Option<u32>,
 }
 
-/// Inject the Anthropic-style `thinking` block into an OpenAI-compatible JSON body.
+/// Inject the provider-specific `thinking` block into an OpenAI-compatible JSON body.
 ///
-/// Moonshot/Kimi k2.x models accept this shape for extended thinking.
-fn inject_thinking_param(request: &CreateMessageParams, body: &mut serde_json::Value) {
+/// - Anthropic-style providers use `{ type: "enabled", budget_tokens }`.
+/// - Kimi K2.5 uses `{ type: "enabled" }`.
+/// - Kimi K2.6 uses `{ type: "enabled", keep: "all" }` for Preserved Thinking.
+/// - Kimi K2.7-code has thinking always on; do not inject anything.
+fn inject_thinking_param(
+    request: &CreateMessageParams,
+    body: &mut serde_json::Value,
+    provider: &crate::llm::ProviderInfo,
+) {
+    if provider.is_kimi_k27() {
+        // K2.7-code forces thinking on; passing `thinking` is unnecessary and can error.
+        return;
+    }
+    if provider.is_kimi_k2x() {
+        if provider.model.contains("k2.6") || provider.model.contains("k2-6") {
+            body["thinking"] = serde_json::json!({"type": "enabled", "keep": "all"});
+        } else {
+            // K2.5 and similar
+            body["thinking"] = serde_json::json!({"type": "enabled"});
+        }
+        return;
+    }
+    // Default Anthropic-style thinking.
     if let Some(thinking) = &request.thinking {
         body["thinking"] = serde_json::json!({
             "type": "enabled",
             "budget_tokens": thinking.budget_tokens,
         });
+    }
+}
+
+/// For Kimi/Moonshot thinking models, echo historical `reasoning_content` back into
+/// assistant messages. Without this, multi-turn tool-call conversations fail with:
+///   "thinking is enabled but reasoning_content is missing in assistant tool call message"
+fn inject_reasoning_content(
+    body: &mut serde_json::Value,
+    reasoning: &[Option<String>],
+    is_kimi: bool,
+) {
+    if !is_kimi {
+        return;
+    }
+    if let Some(messages) = body["messages"].as_array_mut() {
+        for (i, msg) in messages.iter_mut().enumerate() {
+            if let Some(Some(r)) = reasoning.get(i) {
+                if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                    msg["reasoning_content"] = serde_json::Value::String(r.clone());
+                }
+            }
+        }
     }
 }
 
@@ -160,7 +203,7 @@ impl LlmClient for OpenAiAdapter {
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
     ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
-        let mut openai_request = build_openai_request(request);
+        let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(true);
 
         // `stream_options` is absent from async-openai 0.20's
@@ -168,7 +211,8 @@ impl LlmClient for OpenAiAdapter {
         let mut body =
             serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
         body["stream_options"] = serde_json::json!({"include_usage": true});
-        inject_thinking_param(request, &mut body);
+        inject_thinking_param(request, &mut body, crate::llm::get_provider());
+        inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -326,12 +370,13 @@ impl LlmClient for OpenAiAdapter {
         &self,
         request: &CreateMessageParams,
     ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
-        let mut openai_request = build_openai_request(request);
+        let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(false);
 
         let mut body = serde_json::to_value(&openai_request)
             .map_err(|e| LlmError::Other(e.to_string()))?;
-        inject_thinking_param(request, &mut body);
+        inject_thinking_param(request, &mut body, crate::llm::get_provider());
+        inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -404,5 +449,118 @@ impl LlmClient for OpenAiAdapter {
         });
 
         Ok((blocks, stop_reason))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::ProviderInfo;
+    use anthropic_ai_sdk::types::message::{
+        RequiredMessageParams, Thinking, ThinkingType,
+    };
+
+    fn sample_request_with_thinking() -> CreateMessageParams {
+        CreateMessageParams::new(RequiredMessageParams {
+            model: "test-model".to_string(),
+            messages: vec![],
+            max_tokens: 1,
+        })
+        .with_thinking(Thinking {
+            budget_tokens: 1000,
+            type_: ThinkingType::Enabled,
+        })
+    }
+
+    #[test]
+    fn inject_thinking_uses_anthropic_shape_for_openai() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "openai".to_string(),
+            api_key: String::new(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type": "enabled", "budget_tokens": 1000})
+        );
+    }
+
+    #[test]
+    fn inject_thinking_skips_for_kimi_k27() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "kimi".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "kimi-k2.7-code".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body["thinking"].is_null());
+    }
+
+    #[test]
+    fn inject_thinking_skips_for_kimi_code_stable_id() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "kimi".to_string(),
+            api_key: String::new(),
+            base_url: "https://api.kimi.com/coding/v1".to_string(),
+            model: "kimi-for-coding".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body["thinking"].is_null());
+    }
+
+    #[test]
+    fn inject_thinking_uses_preserved_thinking_for_kimi_k26() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "kimi".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "kimi-k2.6".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type": "enabled", "keep": "all"})
+        );
+    }
+
+    #[test]
+    fn inject_reasoning_content_adds_field_for_kimi_assistant() {
+        let mut body = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "tool", "content": "ok", "tool_call_id": "1"}
+            ]
+        });
+        let reasoning = vec![None, Some("let me think".to_string()), None];
+        inject_reasoning_content(&mut body, &reasoning, true);
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "let me think"
+        );
+    }
+
+    #[test]
+    fn inject_reasoning_content_skipped_for_non_kimi() {
+        let mut body = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}
+            ]
+        });
+        let reasoning = vec![None, Some("reasoning".to_string())];
+        inject_reasoning_content(&mut body, &reasoning, false);
+        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 }
