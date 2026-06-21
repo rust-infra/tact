@@ -146,6 +146,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         InputMode::Search => msgs.mode_search,
         InputMode::Palette => msgs.mode_palette,
         InputMode::Select => msgs.mode_select,
+        InputMode::FilePicker => msgs.mode_file_picker,
     };
     let focus_str = match app.focused_panel {
         FocusedPanel::Plan => msgs.focus_plan,

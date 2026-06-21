@@ -1,10 +1,12 @@
 // Input handlers — split by mode.
+mod file_picker;
 mod insert;
 mod normal;
 mod palette;
 mod search;
 mod select;
 
+pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use palette::handle_palette_mode;

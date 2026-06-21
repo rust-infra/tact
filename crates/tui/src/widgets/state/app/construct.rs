@@ -2,8 +2,8 @@
 // Extracted from state.rs to keep file sizes manageable.
 
 use crate::widgets::state::{
-    App, CodeBlock, DiffBlock, DiffPopup, FocusedPanel, HistoryEntry, InputHistory, InputMode,
-    LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
+    App, CodeBlock, DiffBlock, DiffPopup, FilePicker, FocusedPanel, HistoryEntry, InputHistory,
+    InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
     StreamState, ThinkingBlock, ThinkingPopup, ThinkingState,
 };
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
@@ -90,6 +90,7 @@ impl App {
             process_start_time: chrono::Local::now(),
             workspace_dir,
             select: SelectPopup::new(),
+            file_picker: FilePicker::new(),
             diff_blocks: Vec::new(),
             diff_popup: None,
             code_blocks: Vec::new(),
@@ -106,5 +107,45 @@ impl App {
         }
     }
 
+    /// Open the `@` file picker: scan the project root for files (skipping
+    /// hidden directories and common build/output folders), populate the picker
+    /// options, and switch to `FilePicker` mode.
+    pub(crate) fn open_file_picker(&mut self) {
+        let mut options = Vec::new();
+        collect_files(&self.work_dir, &self.work_dir, &mut options, 200);
+        options.sort();
+        self.file_picker.set(options);
+        self.input_mode = InputMode::FilePicker;
+    }
+}
 
+const FILE_PICKER_EXCLUDES: &[&str] = &[".git", "target", "node_modules", ".tact"];
+
+fn collect_files(dir: &Path, base: &Path, options: &mut Vec<String>, max: usize) {
+    if options.len() >= max {
+        return;
+    }
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(it) => it.flatten().collect(),
+        Err(_) => return,
+    };
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with('.') || FILE_PICKER_EXCLUDES.contains(&name) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files(&path, base, options, max);
+            if options.len() >= max {
+                break;
+            }
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            options.push(rel.to_string_lossy().to_string());
+            if options.len() >= max {
+                break;
+            }
+        }
+    }
 }
