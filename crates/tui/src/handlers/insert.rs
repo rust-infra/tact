@@ -244,6 +244,25 @@ pub(crate) fn handle_insert_mode(
                 app.input_cursor = next_cursor;
             }
         }
+        KeyCode::Char('@')
+            if app.input_cursor == 0
+                || app.input[..app.input_cursor]
+                    .chars()
+                    .next_back()
+                    .map_or(true, |c| c.is_whitespace()) =>
+        {
+            // Open the file picker when '@' is typed at the start of the input
+            // or after whitespace.
+            app.open_file_picker();
+        }
+        KeyCode::Char('@') => {
+            // Literal '@' (e.g. inside an email address).
+            app.input_history.index = None;
+            app.input_history.saved.clear();
+            app.save_undo();
+            app.input.insert(app.input_cursor, '@');
+            app.input_cursor += '@'.len_utf8();
+        }
         KeyCode::Char(c) => {
             // Typing anything exits history navigation
             app.input_history.index = None;

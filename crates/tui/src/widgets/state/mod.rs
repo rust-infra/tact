@@ -9,6 +9,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 pub(crate) use tact_core::PlanStep;
 
 pub(crate) mod app;
+mod file_picker;
 mod input_history;
 mod log_scroll;
 mod mouse_state;
@@ -19,6 +20,7 @@ mod status_bar_state;
 mod stream_state;
 mod thinking_state;
 
+pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use log_scroll::LogScroll;
 pub(crate) use mouse_state::MouseState;
@@ -39,6 +41,7 @@ pub(crate) enum InputMode {
     Search,
     Palette,
     Select,
+    FilePicker,
 }
 
 /// Commands shown in the command palette (triggered by `:`).
@@ -201,6 +204,8 @@ pub struct App {
     pub(crate) code_popup: Option<CodePopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
+    // File picker popup (triggered by @ in insert mode)
+    pub(crate) file_picker: FilePicker,
     // Streaming output state
     pub(crate) stream: StreamState,
     // Thinking state
