@@ -12,12 +12,12 @@ mod theme;
 mod widgets;
 
 use crate::handlers::{
-    handle_insert_mode, handle_normal_mode, handle_palette_mode, handle_search_mode,
-    handle_select_mode,
+    handle_file_picker_mode, handle_insert_mode, handle_normal_mode, handle_palette_mode,
+    handle_search_mode, handle_select_mode,
 };
 use crate::render::{
-    render_bottom_bar, render_command_palette, render_input_box, render_main_area,
-    render_select_popup, render_status_bar,
+    render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
+    render_main_area, render_select_popup, render_status_bar,
 };
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use anyhow::Result;
@@ -159,6 +159,9 @@ pub async fn run_tui(
                 }
                 if app.input_mode == InputMode::Select {
                     render_select_popup(f, size, &app);
+                }
+                if app.input_mode == InputMode::FilePicker {
+                    render_file_picker(f, size, &app);
                 }
             })?;
             // Clear dirty flag after painting; next frame only repaints when state changes.
@@ -348,6 +351,9 @@ pub async fn run_tui(
                                 InputMode::Search => handle_search_mode(&mut app, key),
                                 InputMode::Palette => handle_palette_mode(&mut app, key),
                                 InputMode::Select => handle_select_mode(&mut app, key),
+                                InputMode::FilePicker => {
+                                    handle_file_picker_mode(&mut app, key)
+                                }
                             }
                         }
                     }
