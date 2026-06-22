@@ -1,5 +1,5 @@
-use crate::widgets::state::*;
 use crate::render::render_md::{format_table, render_markdown_tui};
+use crate::widgets::state::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
@@ -10,6 +10,14 @@ const STREAMING_INDICATOR: &str = " ▌";
 
 impl App {
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
+        // messages[] 布局（一个已完成 thinking block 的物理索引范围）:
+
+        // [blank_idx]   ""                              ← 隔离空行
+        // [title_idx]   "🧠 Thinking (8 lines)…"        ← title_idx
+        // [title_idx+1] "│ Let me analyze…"              ← 思考内容行 1
+        //   ...
+        // [end_idx]     "│ Solution: use B…"             ← end_idx ← 最后一行
+        // [end_idx+1]   ""                              ← 隔离空行（close 时插入）
         for block in &self.thinking.blocks {
             if idx > block.title_idx && idx <= block.end_idx {
                 let total = block.end_idx.saturating_sub(block.title_idx);
@@ -290,6 +298,4 @@ impl App {
         self.raw_messages.extend(raw_lines);
         self.stream.buffer.clear();
     }
-
-
 }

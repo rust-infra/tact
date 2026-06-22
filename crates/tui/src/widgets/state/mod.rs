@@ -148,8 +148,6 @@ pub struct App {
     pub(crate) input_scroll: u16,
     pub(crate) cmd_line: String,
     pub(crate) messages: Vec<Line<'static>>,
-    /// Visible index cache: logical line → physical msg index. Rebuilt by render_log_panel each frame.
-    pub(crate) visible_indices: Vec<usize>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,

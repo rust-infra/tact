@@ -419,11 +419,7 @@ impl Agent {
                 let path = step.args.get("path").ok_or(anyhow!("Missing path"))?;
                 let content = step.args.get("content").ok_or(anyhow!("Missing content"))?;
                 self.sandbox.write_file(path, content).await?;
-                Ok(format!(
-                    "Wrote {} to {}",
-                    format_bytes(content.len()),
-                    path
-                ))
+                Ok(format!("Wrote {} to {}", format_bytes(content.len()), path))
             }
             "run_command" => {
                 let command = step.args.get("command").ok_or(anyhow!("Missing command"))?;
@@ -459,7 +455,11 @@ pub fn format_bytes(bytes: usize) -> String {
 
     let formatted = format!("{:.1}", size);
     if formatted.ends_with(".0") {
-        format!("{} {}", &formatted[..formatted.len() - 2], UNITS[unit_index])
+        format!(
+            "{} {}",
+            &formatted[..formatted.len() - 2],
+            UNITS[unit_index]
+        )
     } else {
         format!("{} {}", formatted, UNITS[unit_index])
     }
