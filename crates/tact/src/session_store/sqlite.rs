@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
+use tact_core::TokenUsageInfo;
 
 use super::{MessageCountByPeriod, SessionSummary};
 
@@ -72,6 +73,34 @@ impl SqliteSessionStore {
             .execute(&pool)
             .await
             .context("failed to create messages created_at index")?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                call_type TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create token_usages table")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);",
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create token_usages index")?;
 
         Ok(Self { pool })
     }
@@ -330,6 +359,29 @@ impl super::SessionStore for SqliteSessionStore {
             .await
             .context("failed to count total sessions")?;
         Ok(row.try_get("cnt")?)
+    }
+
+    async fn record_token_usage(
+        &self,
+        session_id: &str,
+        call_type: &str,
+        usage: &TokenUsageInfo,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(call_type)
+        .bind(usage.prompt as i64)
+        .bind(usage.completion as i64)
+        .bind(usage.total as i64)
+        .bind(usage.prompt_cache_hit_tokens as i64)
+        .bind(usage.prompt_cache_miss_tokens as i64)
+        .bind(usage.reasoning_tokens as i64)
+        .execute(&self.pool)
+        .await
+        .context("failed to record token usage")?;
+        Ok(())
     }
 }
 

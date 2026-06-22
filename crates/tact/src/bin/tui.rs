@@ -330,6 +330,8 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[session id: {sid}]");
     }
 
+    eprintln!("{}", agent.runtime.stats.summary());
+
     Ok(())
 }
 

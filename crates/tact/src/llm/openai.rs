@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::AgentUpdate;
+use tact_core::{AgentUpdate, TokenUsageInfo};
 
 use super::{LlmClient, LlmError, convert::build_openai_request};
 
@@ -239,7 +239,7 @@ impl LlmClient for OpenAiAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(true);
 
@@ -275,6 +275,7 @@ impl LlmClient for OpenAiAdapter {
         // (vec of (id, name, args) buffers)
         let mut tool_call_buffers: Vec<(Option<String>, Option<String>, String)> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
+        let mut token_usage: Option<TokenUsageInfo> = None;
 
         while let Some(event) = event_source.next().await {
             match event {
@@ -346,25 +347,36 @@ impl LlmClient for OpenAiAdapter {
                     // ── usage (sent in final chunk when stream_options.include_usage is set) ──
                     if let Some(usage) = &chunk.usage {
                         // Only emit when there are real token counts.
-                        if (usage.prompt_tokens > 0 || usage.completion_tokens > 0)
-                            && let Some(ref tx) = ui_tx
-                        {
-                            let _ = tx.send(AgentUpdate::TokenUsage {
+                        if usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
+                            let cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
+                            let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or(0);
+                            let reasoning = usage
+                                .completion_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.reasoning_tokens)
+                                .unwrap_or(0);
+                            token_usage = Some(TokenUsageInfo {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
                                 total: usage
                                     .total_tokens
                                     .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
-                                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens.unwrap_or(0),
-                                prompt_cache_miss_tokens: usage
-                                    .prompt_cache_miss_tokens
-                                    .unwrap_or(0),
-                                reasoning_tokens: usage
-                                    .completion_tokens_details
-                                    .as_ref()
-                                    .and_then(|d| d.reasoning_tokens)
-                                    .unwrap_or(0),
+                                prompt_cache_hit_tokens: cache_hit,
+                                prompt_cache_miss_tokens: cache_miss,
+                                reasoning_tokens: reasoning,
                             });
+                            if let Some(ref tx) = ui_tx {
+                                let _ = tx.send(AgentUpdate::TokenUsage {
+                                    prompt: usage.prompt_tokens,
+                                    completion: usage.completion_tokens,
+                                    total: usage
+                                        .total_tokens
+                                        .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
+                                    prompt_cache_hit_tokens: cache_hit,
+                                    prompt_cache_miss_tokens: cache_miss,
+                                    reasoning_tokens: reasoning,
+                                });
+                            }
                         }
                     }
                 }
@@ -391,7 +403,7 @@ impl LlmClient for OpenAiAdapter {
             response_blocks.push(ContentBlock::ToolUse { id, name, input });
         }
 
-        Ok((response_blocks, stop_reason))
+        Ok((response_blocks, stop_reason, token_usage))
     }
 
     /*
@@ -414,7 +426,7 @@ impl LlmClient for OpenAiAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(false);
 
@@ -494,7 +506,33 @@ impl LlmClient for OpenAiAdapter {
             _ => StopReason::EndTurn,
         });
 
-        Ok((blocks, stop_reason))
+        let token_usage = json["usage"].as_object().map(|u| {
+            let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+            let completion = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
+            TokenUsageInfo {
+                prompt,
+                completion,
+                total: u["total_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(prompt + completion),
+                prompt_cache_hit_tokens: u["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: u["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                reasoning_tokens: u["completion_tokens_details"]
+                    .get("reasoning_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+            }
+        });
+
+        Ok((blocks, stop_reason, token_usage))
     }
 }
 

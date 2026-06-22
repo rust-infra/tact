@@ -16,7 +16,7 @@ use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::{AgentUpdate, ModelCallParams};
+use tact_core::{AgentUpdate, ModelCallParams, TokenUsageInfo};
 
 use super::{LlmClient, LlmError};
 
@@ -153,10 +153,11 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
+        let mut token_usage: Option<TokenUsageInfo> = None;
 
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
@@ -361,10 +362,18 @@ impl LlmClient for AnthropicAdapter {
                                     .map(|n| n as u32)
                                     .unwrap_or(0);
                                 let reasoning = usage_json["completion_tokens_details"]
-                                    ["reasoning_tokens"]
-                                    .as_u64()
+                                    .get("reasoning_tokens")
+                                    .and_then(|v| v.as_u64())
                                     .map(|n| n as u32)
                                     .unwrap_or(0);
+                                token_usage = Some(TokenUsageInfo {
+                                    prompt: usage.input_tokens,
+                                    completion: usage.output_tokens,
+                                    total: usage.input_tokens + usage.output_tokens,
+                                    prompt_cache_hit_tokens: cache_hit,
+                                    prompt_cache_miss_tokens: cache_miss,
+                                    reasoning_tokens: reasoning,
+                                });
                                 if let Some(ref tx) = ui_tx {
                                     let _ = tx.send(AgentUpdate::TokenUsage {
                                         prompt: usage.input_tokens,
@@ -398,13 +407,13 @@ impl LlmClient for AnthropicAdapter {
             }
         }
 
-        Ok((response_blocks, stop_reason))
+        Ok((response_blocks, stop_reason, token_usage))
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(false);
@@ -442,6 +451,7 @@ impl LlmClient for AnthropicAdapter {
             content: Vec<ContentBlock>,
             #[serde(rename = "stop_reason")]
             stop_reason: Option<String>,
+            usage: Option<serde_json::Value>,
         }
 
         let payload: CreateMessageResponse = response.json().await.map_err(|e| {
@@ -450,7 +460,30 @@ impl LlmClient for AnthropicAdapter {
             )))
         })?;
 
-        Ok((payload.content, parse_stop_reason(payload.stop_reason)))
+        let token_usage = payload.usage.as_ref().and_then(|raw| {
+            let prompt = raw["input_tokens"].as_u64().map(|n| n as u32)?;
+            let completion = raw["output_tokens"].as_u64().map(|n| n as u32)?;
+            Some(TokenUsageInfo {
+                prompt,
+                completion,
+                total: prompt + completion,
+                prompt_cache_hit_tokens: raw["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: raw["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                reasoning_tokens: raw["completion_tokens_details"]
+                    .get("reasoning_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+            })
+        });
+
+        Ok((payload.content, parse_stop_reason(payload.stop_reason), token_usage))
     }
 }
 

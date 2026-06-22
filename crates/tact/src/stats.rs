@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
+use tact_core::TokenUsageInfo;
+
 /// Tracks per-session statistics for the agent runtime.
 #[derive(Debug)]
 pub struct SessionStats {
@@ -23,6 +25,12 @@ pub struct SessionStats {
     pub llm_call_durations: Vec<Duration>,
     /// Per-tool-execution durations in milliseconds.
     pub tool_durations_ms: Vec<u64>,
+    /// Cumulative KV cache hit prompt tokens (DeepSeek).
+    pub cache_hit_tokens: u64,
+    /// Cumulative KV cache miss prompt tokens (DeepSeek).
+    pub cache_miss_tokens: u64,
+    /// Cumulative reasoning tokens.
+    pub reasoning_tokens: u64,
     /// When the session started.
     pub start_time: Instant,
 }
@@ -39,12 +47,22 @@ impl Default for SessionStats {
             tool_counts: HashMap::new(),
             llm_call_durations: Vec::new(),
             tool_durations_ms: Vec::new(),
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
+            reasoning_tokens: 0,
             start_time: Instant::now(),
         }
     }
 }
 
 impl SessionStats {
+    /// Accumulate token usage info from an LLM call (streaming or compaction).
+    pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
+        self.cache_hit_tokens += usage.prompt_cache_hit_tokens as u64;
+        self.cache_miss_tokens += usage.prompt_cache_miss_tokens as u64;
+        self.reasoning_tokens += usage.reasoning_tokens as u64;
+    }
+
     /// Produce a human-readable summary of all recorded statistics.
     pub fn summary(&self) -> String {
         let elapsed = self.start_time.elapsed();
@@ -98,7 +116,55 @@ impl SessionStats {
             );
         }
 
+        if self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0 {
+            let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
+            let hit_rate = if cache_total > 0 {
+                (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                out,
+                "  Cache hit tokens:      {:>8}",
+                self.cache_hit_tokens
+            );
+            let _ = writeln!(
+                out,
+                "  Cache miss tokens:     {:>8}",
+                self.cache_miss_tokens
+            );
+            let _ = writeln!(out, "  Cache hit rate:        {:>8.1}%", hit_rate);
+        }
+
+        if self.reasoning_tokens > 0 {
+            let _ = writeln!(
+                out,
+                "  Reasoning tokens:      {:>8}",
+                self.reasoning_tokens
+            );
+        }
+
         let _ = writeln!(out, "─────────────────────────────────────────────");
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_accumulates_all_fields() {
+        let mut s = SessionStats::default();
+        s.record_token_usage(&TokenUsageInfo {
+            prompt_cache_hit_tokens: 1000,
+            prompt_cache_miss_tokens: 500,
+            reasoning_tokens: 200,
+            ..Default::default()
+        });
+        assert_eq!(s.cache_hit_tokens, 1000);
+        assert_eq!(s.cache_miss_tokens, 500);
+        assert_eq!(s.reasoning_tokens, 200);
+        let _ = s.summary(); // smoke check
     }
 }

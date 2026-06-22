@@ -70,7 +70,7 @@ use crate::recovery::{
 use crate::session_store::DynSessionStore;
 use crate::stats::SessionStats;
 use crate::tool::{ToolContext, ToolRouter};
-use tact_core::{AgentUpdate, StepResult, StepStatus};
+use tact_core::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
 
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
@@ -282,6 +282,20 @@ impl Agent {
         Ok(())
     }
 
+    /// Persist token usage (cache hit/miss, reasoning) to sqlite.
+    async fn persist_token_usage(&self, call_type: &str, usage: &TokenUsageInfo) -> Result<()> {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return Ok(());
+        };
+        store
+            .record_token_usage(session_id, call_type, usage)
+            .await?;
+        Ok(())
+    }
+
     /// Set or update the session title (displayed in --list-sessions).
     pub async fn set_session_title(&mut self, title: Option<&str>) -> Result<()> {
         let Some(session_id) = self.runtime.session_id.as_ref() else {
@@ -372,7 +386,7 @@ impl Agent {
             self.runtime.stats.total_prompt_chars += prompt_chars;
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason) = match self.stream_message(&request).await {
+            let (content, stop_reason, token_usage) = match self.stream_message(&request).await {
                 Ok(result) => {
                     self.runtime.recovery_state.transport_attempts = 0;
                     result
@@ -424,6 +438,11 @@ impl Agent {
                     self.runtime.stats.thinking_blocks += 1;
                     self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
                 }
+            }
+
+            if let Some(ref usage) = token_usage {
+                self.runtime.stats.record_token_usage(usage);
+                let _ = self.persist_token_usage("stream", usage).await;
             }
 
             self.runtime
@@ -506,7 +525,7 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), anyhow::Error> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), anyhow::Error> {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
@@ -899,7 +918,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
-        let (blocks, _stop_reason) = self
+        let (blocks, _stop_reason, token_usage) = self
             .runtime
             .client
             .create_message(&request)
@@ -920,6 +939,10 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 self.runtime.stats.thinking_blocks += 1;
                 self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
             }
+        }
+        if let Some(ref usage) = token_usage {
+            self.runtime.stats.record_token_usage(usage);
+            let _ = self.persist_token_usage("compact", usage).await;
         }
         let summary = blocks
             .iter()

@@ -77,6 +77,20 @@ impl AgentErrorKind {
     }
 }
 
+/// Token usage info returned from an LLM API call.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsageInfo {
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
+    /// DeepSeek KV cache hit prompt tokens (0 for non-DeepSeek providers)
+    pub prompt_cache_hit_tokens: u32,
+    /// DeepSeek KV cache miss prompt tokens
+    pub prompt_cache_miss_tokens: u32,
+    /// Reasoning tokens consumed by the model (R1 / V3 thinking).
+    pub reasoning_tokens: u32,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {

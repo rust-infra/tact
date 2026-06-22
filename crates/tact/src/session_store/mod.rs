@@ -5,6 +5,7 @@ use anyhow::Result;
 use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tact_core::TokenUsageInfo;
 
 pub mod sqlite;
 
@@ -57,6 +58,14 @@ pub trait SessionStore: Send + Sync {
     async fn count_messages_total(&self) -> Result<i64>;
 
     async fn count_sessions_total(&self) -> Result<i64>;
+
+    /// Record per-call token usage (cache hit/miss, reasoning, prompt, completion).
+    async fn record_token_usage(
+        &self,
+        session_id: &str,
+        call_type: &str,
+        usage: &TokenUsageInfo,
+    ) -> Result<()>;
 }
 
 pub type DynSessionStore = Arc<dyn SessionStore>;
