@@ -55,6 +55,26 @@ impl Default for SessionStats {
     }
 }
 
+/// Format a Duration with the most appropriate unit: s, m:s, h:m, or d:h.
+fn fmt_duration(d: Duration) -> String {
+    let total_secs = d.as_secs_f64();
+    if total_secs < 60.0 {
+        format!("{:.1}s", total_secs)
+    } else if total_secs < 3600.0 {
+        let m = total_secs as u64 / 60;
+        let s = (total_secs as u64) % 60;
+        format!("{}m{}s", m, s)
+    } else if total_secs < 86_400.0 {
+        let h = total_secs as u64 / 3600;
+        let m = ((total_secs as u64) % 3600) / 60;
+        format!("{}h{}m", h, m)
+    } else {
+        let d = total_secs as u64 / 86_400;
+        let h = ((total_secs as u64) % 86_400) / 3600;
+        format!("{}d{}h", d, h)
+    }
+}
+
 impl SessionStats {
     /// Accumulate token usage info from an LLM call (streaming or compaction).
     pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
@@ -65,11 +85,14 @@ impl SessionStats {
 
     /// Produce a human-readable summary of all recorded statistics.
     pub fn summary(&self) -> String {
-        let elapsed = self.start_time.elapsed();
         let mut out = String::new();
 
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
-        let _ = writeln!(out, "  Elapsed:               {:>8.1}s", elapsed.as_secs_f64());
+        let _ = writeln!(
+            out,
+            "  Elapsed:               {:>8}",
+            fmt_duration(self.start_time.elapsed())
+        );
 
         let _ = writeln!(out, "  LLM API calls:         {:>8}", self.prompt_count);
 
@@ -78,7 +101,11 @@ impl SessionStats {
             .iter()
             .map(|d| d.as_secs_f64() * 1000.0)
             .sum();
-        let _ = writeln!(out, "  Total LLM time:        {:>8.1}s", total_llm_ms / 1000.0);
+        let _ = writeln!(
+            out,
+            "  Total LLM time:        {:>8}",
+            fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0))
+        );
 
         let _ = writeln!(out, "  Prompt chars sent:     {:>8}", self.total_prompt_chars);
         let _ = writeln!(
@@ -111,8 +138,8 @@ impl SessionStats {
             let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
             let _ = writeln!(
                 out,
-                "  Total tool time:       {:>8.1}s",
-                total_tool_ms as f64 / 1000.0
+                "  Total tool time:       {:>8}",
+                fmt_duration(Duration::from_millis(total_tool_ms))
             );
         }
 
@@ -166,5 +193,18 @@ mod tests {
         assert_eq!(s.cache_miss_tokens, 500);
         assert_eq!(s.reasoning_tokens, 200);
         let _ = s.summary(); // smoke check
+    }
+
+    #[test]
+    fn fmt_duration_picks_unit() {
+        assert_eq!(fmt_duration(Duration::from_secs(0)), "0.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(12)), "12.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(59)), "59.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(60)), "1m0s");
+        assert_eq!(fmt_duration(Duration::from_secs(125)), "2m5s");
+        assert_eq!(fmt_duration(Duration::from_secs(3600)), "1h0m");
+        assert_eq!(fmt_duration(Duration::from_secs(7384)), "2h3m");
+        assert_eq!(fmt_duration(Duration::from_secs(86_400)), "1d0h");
+        assert_eq!(fmt_duration(Duration::from_secs(100_000)), "1d3h");
     }
 }
