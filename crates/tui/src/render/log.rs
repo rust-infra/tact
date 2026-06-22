@@ -33,43 +33,59 @@ use ratatui::{
 ///                             + stream buffer           (may be many per logical)
 /// ```
 pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
+    // 这行是算**面板内容区的实际可用高度**。
+    // area.height = Border Block 的整个矩形高度
+    // ┌─ Log ──────────────┐  ← area.y + 0  (上边框，占 1 行)
+    // │                     │  ← area.y + 1  (内容区第 1 行)
+    // │   actual content    │  ← ...
+    // │                     │  ← area.y + area.height - 2 (内容区最后一行)
+    // └─────────────────────┘  ← area.y + area.height - 1 (下边框，占 1 行)
+    // area.height.saturating_sub(2) = 内容区可用行数 = visible_height
+    // ① Phase 2 视口裁剪 —— 决定屏幕上能显示多少行
+    // let visible_height = app.log_scroll.height as usize;
+    // let end_visual = (visual_scroll + visible_height).min(total_visual);
+    // // ② 覆盖层裁剪 —— thinking/diff/code cards 也用它
+    // render_thinking_cards(frame, area, app, visual_scroll, visible_height);
+    // saturating_sub` 防的是极端情况：如果 `area.height < 2`（面板被缩到极小），不会 panic，直接归零。
     app.log_scroll.height = area.height.saturating_sub(2);
     let visible_height = app.log_scroll.height as usize;
+    // 两行做两件事：
+    // 和 `height` 同样的 `saturating_sub(2)`：
+    // area.width = 整个 Block 的列宽
+    // ┌─ Log ──────────────────┐
+    // │                        │  ← area.width - 2 = 内容区可用列宽
+    // └────────────────────────┘
+    //     ↑ 左边框(1列)         ↑ 右边框(1列)
     let max_width = area.width.saturating_sub(2) as usize;
+    // 防止 `wrap_line` 拿到 0 宽度：
     let wrap_width = if max_width > 0 { max_width } else { 1 };
 
-    // Phase 0: physical → logical index map.
-    //
-    // ```text
-    //  messages (physical)          visible_indices (logical)
-    //  ┌─────┬────────┐             ┌───┬───┬───┐
-    //  │  0  │ visible│ ──→ 0       │ 0 │ 1 │ 3 │   msg 2 hidden (collapsed thinking)
-    //  │  1  │ visible│ ──→ 1       └───┴───┴───┘
-    //  │  2  │ hidden │
-    //  │  3  │ visible│ ──→ 2
-    //  └─────┴────────┘
-    //  stream.buffer (if non-empty) → extra logical row at the end
+    // `visible_indices_ver` 是**脏检测的版本号**。它存的是上次构建时 `messages.len()` 的值。这里的逻辑：
     // ```
-    //
-    // Rebuild only when message count changes (`visible_indices_ver` dirty check).
+    // 当前消息数量 ≠ 上次缓存时的消息数量  →  缓存过期，需要重建
+    // ```
+    // 这是 Phase 0 唯一的触发条件——因为只有消息增删才会改变可见索引（消息新增可能落在 thinking block 内部，需要重新判断是否可见）。消息内容变化不改变可见性，所以不用重建。
     let indices_stale = app.log_scroll.visible_indices_ver != app.messages.len();
     if indices_stale {
-        app.visible_indices.clear();
+        app.log_scroll.visible_indices.clear();
         app.log_scroll.phys_to_logical_cache.clear();
         app.log_scroll
             .phys_to_logical_cache
             .resize(app.messages.len(), None);
         let mut total_logical = 0;
+        // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
         for phys in 0..app.messages.len() {
             if app.is_message_visible(phys) {
-                app.visible_indices.push(phys);
+                app.log_scroll.visible_indices.push(phys);
                 app.log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
                 total_logical += 1;
             }
         }
+        // update visible_indices_ver to mark cache valid
         app.log_scroll.visible_indices_ver = app.messages.len();
     }
-    let mut total_logical = app.visible_indices.len();
+    // total_logical: 可见的逻辑行数量
+    let mut total_logical = app.log_scroll.visible_indices.len();
     // Stream buffer occupies the last logical row while tokens are arriving.
     if !app.stream.buffer.is_empty() {
         total_logical += 1;
@@ -97,7 +113,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         app.log_scroll.visual_start_cache.push(0);
 
         for logical_i in 0..total_logical {
-            let line = if let Some(&phys_idx) = app.visible_indices.get(logical_i) {
+            let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
                 let base = &app.messages[phys_idx];
                 if base.spans.is_empty() {
                     Line::default()
@@ -221,7 +237,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 .map(|(s, e)| logical_i >= s.min(e) && logical_i <= s.max(e))
                 .unwrap_or(false);
 
-        let phys_idx = app.visible_indices.get(logical_i).copied();
+        let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
         let cached_lines: Vec<Line<'static>> =
             app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
         let raw_text = phys_idx
