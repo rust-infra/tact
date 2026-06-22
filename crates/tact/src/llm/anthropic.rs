@@ -25,6 +25,13 @@ pub struct AnthropicAdapter {
     api_key: String,
     base_url: String,
     api_version: String,
+    /// Optional user identifier sent in the `metadata` body field.
+    ///
+    /// DeepSeek's Anthropic-compatible endpoint uses `metadata.user_id`
+    /// for KV cache isolation: requests with the same `user_id` within a
+    /// session share the KV cache, improving cache hit rate and reducing
+    /// latency / cost.  Session IDs (UUIDs) are natural candidates.
+    user_id: Option<String>,
 }
 
 impl AnthropicAdapter {
@@ -33,7 +40,14 @@ impl AnthropicAdapter {
             api_key: api_key.into(),
             base_url: base_url.into(),
             api_version: "2023-06-01".to_string(),
+            user_id: None,
         }
+    }
+
+    /// Set the `user_id` that will be injected into every outgoing request
+    /// body as `metadata.user_id`.
+    pub fn set_user_id(&mut self, user_id: String) {
+        self.user_id = Some(user_id);
     }
 
     fn messages_url(&self) -> String {
@@ -147,6 +161,13 @@ impl LlmClient for AnthropicAdapter {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(true);
+        if let Some(ref uid) = self.user_id {
+            if let Some(meta) = body["metadata"].as_object_mut() {
+                meta.insert("user_id".to_string(), serde_json::json!(uid));
+            } else {
+                body["metadata"] = serde_json::json!({"user_id": uid});
+            }
+        }
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
@@ -332,6 +353,7 @@ impl LlmClient for AnthropicAdapter {
                                         total: usage.input_tokens + usage.output_tokens,
                                         prompt_cache_hit_tokens: 0,
                                         prompt_cache_miss_tokens: 0,
+                                        reasoning_tokens: 0,
                                     });
                                 }
                             }
@@ -367,6 +389,13 @@ impl LlmClient for AnthropicAdapter {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(false);
+        if let Some(ref uid) = self.user_id {
+            if let Some(meta) = body["metadata"].as_object_mut() {
+                meta.insert("user_id".to_string(), serde_json::json!(uid));
+            } else {
+                body["metadata"] = serde_json::json!({"user_id": uid});
+            }
+        }
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))

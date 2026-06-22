@@ -313,7 +313,9 @@ impl Agent {
         self.runtime.recovery_state = RecoveryState::default();
 
         // Ensure a session exists and optionally restore history.
-        let _session_id = self.ensure_session().await?;
+        let session_id = self.ensure_session().await?;
+        // Wire the session_id as the DeepSeek `user_id` for KV cache isolation.
+        self.runtime.client.set_user_id(&session_id);
 
         // If history is empty, add the initial user message so it is persisted.
         if self.runtime.context.is_empty() {

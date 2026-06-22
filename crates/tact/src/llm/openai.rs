@@ -66,8 +66,16 @@ struct StreamFunctionDelta {
 struct StreamUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    /// DeepSeek returns `total_tokens` directly; fall back to prompt+completion.
+    total_tokens: Option<u32>,
     prompt_cache_hit_tokens: Option<u32>,
     prompt_cache_miss_tokens: Option<u32>,
+    completion_tokens_details: Option<StreamCompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamCompletionTokensDetails {
+    reasoning_tokens: Option<u32>,
 }
 
 /// Inject the provider-specific `thinking` block into an OpenAI-compatible JSON body.
@@ -100,6 +108,18 @@ fn inject_thinking_param(
             "type": "enabled",
             "budget_tokens": thinking.budget_tokens,
         });
+    }
+}
+
+/// Inject `user_id` into the request body for KV cache isolation.
+///
+/// DeepSeek uses `user_id` to isolate per-user KV cache.  Requests
+/// that share the same `user_id` can reuse cached prompt tokens,
+/// improving cache hit rate.  Other OpenAI-compatible providers
+/// silently ignore unrecognised fields.
+fn inject_user_id(body: &mut serde_json::Value, user_id: &Option<String>) {
+    if let Some(uid) = user_id {
+        body["user_id"] = serde_json::json!(uid);
     }
 }
 
@@ -182,11 +202,28 @@ impl Config for CompatibleConfig {
 #[derive(Clone)]
 pub struct OpenAiAdapter {
     config: CompatibleConfig,
+    /// Optional user identifier sent as the `user_id` body field.
+    ///
+    /// DeepSeek uses `user_id` for KV cache isolation: requests with the
+    /// same `user_id` within a session share the KV cache, improving cache
+    /// hit rate and reducing latency / cost.
+    ///
+    /// Session IDs (UUIDs) are natural candidates here.
+    user_id: Option<String>,
 }
 
 impl OpenAiAdapter {
     pub fn new(config: CompatibleConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            user_id: None,
+        }
+    }
+
+    /// Set the `user_id` that will be injected into every outgoing request
+    /// body as `"user_id"`.
+    pub fn set_user_id(&mut self, user_id: String) {
+        self.user_id = Some(user_id);
     }
 }
 
@@ -213,6 +250,7 @@ impl LlmClient for OpenAiAdapter {
         body["stream_options"] = serde_json::json!({"include_usage": true});
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_user_id(&mut body, &self.user_id);
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -314,10 +352,17 @@ impl LlmClient for OpenAiAdapter {
                             let _ = tx.send(AgentUpdate::TokenUsage {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
-                                total: usage.prompt_tokens + usage.completion_tokens,
+                                total: usage
+                                    .total_tokens
+                                    .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
                                 prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens.unwrap_or(0),
                                 prompt_cache_miss_tokens: usage
                                     .prompt_cache_miss_tokens
+                                    .unwrap_or(0),
+                                reasoning_tokens: usage
+                                    .completion_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.reasoning_tokens)
                                     .unwrap_or(0),
                             });
                         }
@@ -377,6 +422,7 @@ impl LlmClient for OpenAiAdapter {
             .map_err(|e| LlmError::Other(e.to_string()))?;
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_user_id(&mut body, &self.user_id);
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -532,6 +578,30 @@ mod tests {
             body["thinking"],
             serde_json::json!({"type": "enabled", "keep": "all"})
         );
+    }
+
+    #[test]
+    fn inject_user_id_adds_field_when_set() {
+        let mut body = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let user_id = Some("a1b2c3d4-5678-90ab-cdef-1234567890ab".to_string());
+        inject_user_id(&mut body, &user_id);
+        assert_eq!(
+            body["user_id"],
+            "a1b2c3d4-5678-90ab-cdef-1234567890ab"
+        );
+    }
+
+    #[test]
+    fn inject_user_id_skipped_when_none() {
+        let mut body = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        inject_user_id(&mut body, &None);
+        assert!(body.get("user_id").is_none());
     }
 
     #[test]

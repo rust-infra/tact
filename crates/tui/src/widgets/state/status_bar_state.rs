@@ -9,6 +9,7 @@ pub(crate) struct StatusBarState {
     pub(crate) token_total: u32,
     pub(crate) token_cache_hit: u32,
     pub(crate) token_cache_miss: u32,
+    pub(crate) token_reasoning: u32,
 }
 
 impl StatusBarState {
@@ -23,6 +24,7 @@ impl StatusBarState {
             token_total: 0,
             token_cache_hit: 0,
             token_cache_miss: 0,
+            token_reasoning: 0,
         }
     }
 }

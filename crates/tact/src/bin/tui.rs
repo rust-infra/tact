@@ -324,6 +324,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tui_handle.await??;
+
+    // Print session ID so user can resume later
+    if let Some(ref sid) = agent.runtime.session_id {
+        eprintln!("[session id: {sid}]");
+    }
+
     Ok(())
 }
 

@@ -191,6 +191,21 @@ impl LlmClient for LlmProvider {
     }
 }
 
+impl LlmProvider {
+    /// Set a `user_id` on the underlying client adapter.
+    ///
+    /// For OpenAI-compatible adapters (DeepSeek, Kimi, etc.) this is
+    /// injected into the request body as `"user_id"`.  For Anthropic
+    /// adapters it is injected as `metadata.user_id`.  Both mechanisms
+    /// enable KV cache isolation per session on DeepSeek's endpoints.
+    pub fn set_user_id(&mut self, user_id: &str) {
+        match self {
+            LlmProvider::OpenAi(o) => o.set_user_id(user_id.to_string()),
+            LlmProvider::Anthropic(a) => a.set_user_id(user_id.to_string()),
+        }
+    }
+}
+
 /// Returns the active LLM client based on environment variables.
 ///
 /// Environment variables:
