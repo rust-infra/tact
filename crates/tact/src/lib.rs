@@ -45,7 +45,7 @@ pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
 
 use crate::llm::{LlmClient, LlmProvider};
 use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, Message, MessageContent, MessageError,
+    ContentBlock, CreateMessageParams, Message, MessageContent,
     RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use anyhow::{Context, Result};
@@ -504,13 +504,13 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), MessageError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), anyhow::Error> {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
             .stream_message(request, ui_tx)
             .await
-            .map_err(|e| MessageError::ApiError(e.to_string()))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub async fn execute_tool_call(

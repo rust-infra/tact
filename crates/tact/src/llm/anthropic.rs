@@ -5,6 +5,7 @@
 //! upstream `anthropic-ai-sdk` crate has not yet added to its `StopReason`
 //! enum.
 
+use std::error::Error;
 use std::time::Duration;
 
 use anthropic_ai_sdk::types::message::{
@@ -49,6 +50,22 @@ impl AnthropicAdapter {
         );
         headers
     }
+}
+
+/// Walk an HTTP error's `source()` chain to surface the real root cause.
+///
+/// `reqwest::Error::to_string()` often yields a generic "error sending request
+/// for url (...)" that hides the underlying cause (DNS failure, TLS handshake
+/// error, "connection refused", etc.).  Walking the source chain recovers the
+/// originating `hyper` / `rustls` / `std::io::Error` message.
+fn format_http_error(e: &(dyn Error + 'static)) -> String {
+    let mut parts: Vec<String> = vec![e.to_string()];
+    let mut source = e.source();
+    while let Some(s) = source {
+        parts.push(s.to_string());
+        source = s.source();
+    }
+    parts.join(": ")
 }
 
 fn parse_stop_reason(reason: Option<String>) -> Option<StopReason> {
@@ -134,19 +151,19 @@ impl LlmClient for AnthropicAdapter {
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         let mut event_source = client
             .post(&self.messages_url())
             .headers(self.headers())
             .json(&body)
             .eventsource()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
         event_source.set_retry_policy(Box::new(reqwest_eventsource::retry::Never));
 
         while let Some(event) = event_source.next().await {
             match event {
-                Err(e) => return Err(LlmError::Anthropic(MessageError::ApiError(e.to_string()))),
+                Err(e) => return Err(LlmError::Anthropic(MessageError::ApiError(format_http_error(&e)))),
                 Ok(Event::Open) => continue,
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
@@ -354,7 +371,7 @@ impl LlmClient for AnthropicAdapter {
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         let response = client
             .post(&self.messages_url())
@@ -362,7 +379,7 @@ impl LlmClient for AnthropicAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         if !response.status().is_success() {
             let status = response.status();
