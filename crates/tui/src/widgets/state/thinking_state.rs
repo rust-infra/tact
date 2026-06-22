@@ -20,6 +20,14 @@ pub(crate) struct ThinkingState {
 
 /// A completed Thinking block's range in messages and its scroll state.
 /// After completion, only the last 3 lines are shown by default; scroll_offset controls the visible window start row.
+// messages[] 布局（一个已完成 thinking block 的物理索引范围）:
+
+// [blank_idx]   ""                              ← 隔离空行
+// [title_idx]   "🧠 Thinking (8 lines)…"        ← title_idx
+// [title_idx+1] "│ Let me analyze…"              ← 思考内容行 1
+//   ...
+// [end_idx]     "│ Solution: use B…"             ← end_idx ← 最后一行
+// [end_idx+1]   ""                              ← 隔离空行（close 时插入）
 #[derive(Debug, Clone)]
 pub(crate) struct ThinkingBlock {
     pub title_idx: usize,

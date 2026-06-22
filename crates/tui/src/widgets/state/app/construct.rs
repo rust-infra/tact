@@ -1,14 +1,14 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
+use crate::i18n::{Language, Messages};
+use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
+use crate::theme::Theme;
 use crate::widgets::state::{
     App, CodeBlock, DiffBlock, DiffPopup, FilePicker, FocusedPanel, HistoryEntry, InputHistory,
     InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
     StreamState, ThinkingBlock, ThinkingPopup, ThinkingState,
 };
-use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
-use crate::i18n::{Language, Messages};
-use crate::theme::Theme;
 use arboard::Clipboard;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -60,7 +60,6 @@ impl App {
             input_scroll: 0,
             cmd_line: String::new(),
             messages: Vec::new(),
-            visible_indices: Vec::new(),
             raw_messages: Vec::new(),
             plan: PlanPanel::new(),
             status: Status::Idle,
@@ -68,7 +67,10 @@ impl App {
             user_cmd_tx,
             task_history: Vec::new(),
             theme: Theme::by_name_str(
-                std::env::var("TACT_THEME").ok().as_deref().unwrap_or("retro"),
+                std::env::var("TACT_THEME")
+                    .ok()
+                    .as_deref()
+                    .unwrap_or("retro"),
             ),
             log_scroll: LogScroll::new(),
             show_history: false,
