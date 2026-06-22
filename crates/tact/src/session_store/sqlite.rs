@@ -86,6 +86,8 @@ impl SqliteSessionStore {
                 prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
                 prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                first_message_id INTEGER NOT NULL DEFAULT 0,
+                last_message_id INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
@@ -366,9 +368,11 @@ impl super::SessionStore for SqliteSessionStore {
         session_id: &str,
         call_type: &str,
         usage: &TokenUsageInfo,
+        first_message_id: i64,
+        last_message_id: i64,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(call_type)
@@ -378,6 +382,8 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(usage.prompt_cache_hit_tokens as i64)
         .bind(usage.prompt_cache_miss_tokens as i64)
         .bind(usage.reasoning_tokens as i64)
+        .bind(first_message_id)
+        .bind(last_message_id)
         .execute(&self.pool)
         .await
         .context("failed to record token usage")?;

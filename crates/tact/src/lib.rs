@@ -149,6 +149,10 @@ pub struct AgentRuntime {
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     pub session_id: Option<String>,
+    /// DB row id of the first message persisted for the current LLM-call window.
+    pub first_message_db_id: i64,
+    /// DB row id of the last message persisted for the current LLM-call window.
+    pub last_message_db_id: i64,
 }
 
 /// How the agent builds its system prompt.
@@ -195,6 +199,8 @@ impl Agent {
                 cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 session_store: None,
                 session_id: None,
+                first_message_db_id: 0,
+                last_message_db_id: 0,
             },
             tool_context,
             tools,
@@ -278,11 +284,16 @@ impl Agent {
             return Ok(());
         };
         let ordinal = self.runtime.context.len() as i64;
-        store.append_message(session_id, role, content, ordinal).await?;
+        let db_id = store.append_message(session_id, role, content, ordinal).await?;
+        if self.runtime.first_message_db_id == 0 {
+            self.runtime.first_message_db_id = db_id;
+        }
+        self.runtime.last_message_db_id = db_id;
         Ok(())
     }
 
     /// Persist token usage (cache hit/miss, reasoning) to sqlite.
+    /// Links to the message range that was sent ([first_message_db_id .. last_message_db_id]).
     async fn persist_token_usage(&self, call_type: &str, usage: &TokenUsageInfo) -> Result<()> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(());
@@ -291,7 +302,13 @@ impl Agent {
             return Ok(());
         };
         store
-            .record_token_usage(session_id, call_type, usage)
+            .record_token_usage(
+                session_id,
+                call_type,
+                usage,
+                self.runtime.first_message_db_id,
+                self.runtime.last_message_db_id,
+            )
             .await?;
         Ok(())
     }
@@ -943,6 +960,10 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         if let Some(ref usage) = token_usage {
             self.runtime.stats.record_token_usage(usage);
             let _ = self.persist_token_usage("compact", usage).await;
+            // After compaction the context is replaced with a summary, so
+            // future messages start a new message-id window.
+            self.runtime.first_message_db_id = 0;
+            self.runtime.last_message_db_id = 0;
         }
         let summary = blocks
             .iter()

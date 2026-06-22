@@ -60,11 +60,14 @@ pub trait SessionStore: Send + Sync {
     async fn count_sessions_total(&self) -> Result<i64>;
 
     /// Record per-call token usage (cache hit/miss, reasoning, prompt, completion).
+    /// `first_message_id` / `last_message_id` link this call to the message range sent.
     async fn record_token_usage(
         &self,
         session_id: &str,
         call_type: &str,
         usage: &TokenUsageInfo,
+        first_message_id: i64,
+        last_message_id: i64,
     ) -> Result<()>;
 }
 
