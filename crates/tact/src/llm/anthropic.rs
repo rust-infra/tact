@@ -338,7 +338,7 @@ impl LlmClient for AnthropicAdapter {
                             }
                         }
                         "message_delta" => {
-                            let delta_event: MessageDeltaEvent = serde_json::from_value(value)
+                            let delta_event: MessageDeltaEvent = serde_json::from_value(value.clone())
                                 .map_err(|e| {
                                     LlmError::Anthropic(MessageError::ApiError(format!(
                                         "Failed to parse message_delta: {e}"
@@ -346,14 +346,33 @@ impl LlmClient for AnthropicAdapter {
                                 })?;
                             stop_reason = parse_stop_reason(delta_event.delta.stop_reason);
                             if let Some(usage) = delta_event.usage {
+                                // The SDK's StreamUsage only has input/output
+                                // tokens.  DeepSeek's Anthropic-compatible
+                                // endpoint also returns cache and reasoning
+                                // tokens in the same usage object.  Parse them
+                                // from the raw JSON value so they aren't lost.
+                                let usage_json = &value["usage"];
+                                let cache_hit = usage_json["prompt_cache_hit_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                let cache_miss = usage_json["prompt_cache_miss_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                let reasoning = usage_json["completion_tokens_details"]
+                                    ["reasoning_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
                                 if let Some(ref tx) = ui_tx {
                                     let _ = tx.send(AgentUpdate::TokenUsage {
                                         prompt: usage.input_tokens,
                                         completion: usage.output_tokens,
                                         total: usage.input_tokens + usage.output_tokens,
-                                        prompt_cache_hit_tokens: 0,
-                                        prompt_cache_miss_tokens: 0,
-                                        reasoning_tokens: 0,
+                                        prompt_cache_hit_tokens: cache_hit,
+                                        prompt_cache_miss_tokens: cache_miss,
+                                        reasoning_tokens: reasoning,
                                     });
                                 }
                             }
