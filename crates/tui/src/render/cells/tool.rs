@@ -88,6 +88,79 @@
 //! the border decoration and render only the inner content rows. A full
 //! partial-border implementation will be added when the cell is wired into
 //! the pipeline.
+//!
+//! # TODO — Next steps
+//!
+//! The cell is currently a scaffold; no production code path constructs it yet.
+//! Planned integration order (each step can be its own commit):
+//!
+//! ```text
+//! ┌─ TODO(step 1): wire ToolCell construction into agent.rs ─────────────┐
+//! │                                                                       │
+//! │  In handle_step_completed:                                            │
+//! │    a. Call ToolWidget::build() to produce ToolRenderOutput            │
+//! │    b. Pull accent/bg/fg/success from self.theme                       │
+//! │    c. Pull card_bottom/overflow_tmpl from self.msgs                   │
+//! │    d. ToolCell::from_output(...) → Box<dyn Renderable>                │
+//! │    e. Push into LogColumnRenderer alongside other cells               │
+//! │                                                                       │
+//! │  Files: widgets/state/app/agent.rs                                    │
+//! └───────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─ TODO(step 2): set phase from StepResult.status ──────────────────────┐
+//! │                                                                       │
+//! │  ToolCell.phase is currently hardcoded to ToolPhase::Success. After   │
+//! │  step 1, pass the actual StepStatus through ToolWidget and into       │
+//! │  ToolRenderOutput, then use it in from_output. The phase drives the   │
+//! │  summary icon color: ✔ green / ✖ red / ⏳ yellow.                     │
+//! │                                                                       │
+//! │  Files: render/cells/tool.rs, widgets/tool_widget.rs                  │
+//! └───────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─ TODO(step 3): remove placeholder-row injection from agent.rs ────────┐
+//! │                                                                       │
+//! │  Currently agent.rs computes a placeholder index and pushes a blank   │
+//! │  row into App.messages[] so that DiffBlock card overlays align. Once  │
+//! │  ToolCell handles its own height(), delete:                           │
+//! │    - The DiffBlock struct (widgets/state/mod.rs)                      │
+//! │    - placeholder_index calculation in agent.rs                        │
+//! │    - The blank message push in agent.rs                               │
+//! │                                                                       │
+//! │  Files: widgets/state/app/agent.rs, widgets/state/mod.rs              │
+//! └───────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─ TODO(step 4): remove render_diff_cards overlay from log.rs ──────────┐
+//! │                                                                       │
+//! │  render/log.rs currently renders DiffBlock cards as an overlay pass   │
+//! │  after the main cell list. Once ToolCells carry their own cards,      │
+//! │  remove:                                                              │
+//! │    - render_diff_cards() function                                     │
+//! │    - The DiffBlock iteration in the main render loop                  │
+//! │    - CodeBlock / DiffBlock / DiffPopup from state (if unused)         │
+//! │                                                                       │
+//! │  Files: render/log.rs, render/cells/diff.rs (can delete file)         │
+//! └───────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─ TODO(step 5): partial border drawing when card top is scrolled away ─┐
+//! │                                                                       │
+//! │  Currently when skip_lines > 0, the card's top border is off-screen   │
+//! │  and we draw only raw content lines with no border decoration.        │
+//! │  Implement partial Block rendering: draw left + right + bottom        │
+//! │  borders (and possibly a clipped title) when only a portion of the    │
+//! │  card is visible.                                                     │
+//! │                                                                       │
+//! │  Files: render/cells/tool.rs (render_partial, case B)                 │
+//! └───────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─ TODO(step 6): wire _summary_raw into search ─────────────────────────┐
+//! │                                                                       │
+//! │  _summary_raw is the unstyled copy of the summary line. Once search   │
+//! │  covers LogColumnRenderer cells (not just TextCell raw_text), include │
+//! │  this field in the search corpus.                                     │
+//! │                                                                       │
+//! │  Files: render/cells/tool.rs, widgets/state/app/search.rs             │
+//! └───────────────────────────────────────────────────────────────────────┘
+//! ```
 
 use ratatui::{
     buffer::Buffer,
@@ -111,9 +184,12 @@ pub(crate) struct ToolCell {
     summary_line: Line<'static>,
     /// Raw text of the summary (reserved for future search highlighting, like
     /// `TextCell.raw_text`).
+    ///
+    /// TODO(step 6): include in search corpus when LogColumnRenderer search is wired.
     _summary_raw: String,
-    /// Execution phase (Success / Failure / Running). Currently a placeholder;
-    /// will be inferred from `StepResult` when `ToolCell` is wired into `agent.rs`.
+    /// Execution phase (Success / Failure / Running).
+    ///
+    /// TODO(step 2): set from StepResult.status instead of hardcoding Success.
     phase: ToolPhase,
     /// Whether this tool produced a detail card (file content preview, etc.).
     has_detail_card: bool,
@@ -160,7 +236,7 @@ impl ToolCell {
         Self {
             summary_line: output.summary,
             _summary_raw: output.summary_raw,
-            phase: ToolPhase::Success, // placeholder; will be set from StepResult.status
+            phase: ToolPhase::Success, // TODO(step 2): set from StepResult.status
             has_detail_card: output.layout.has_detail_card,
             detail_title: output.detail_title,
             detail_preview: output.detail_preview,
@@ -389,9 +465,8 @@ impl Renderable for ToolCell {
         // (no rounded corners, no title) and draw only the interior content
         // rows that fall within the viewport.
         //
-        // TODO: when ToolCell replaces diff.rs, implement partial border
-        // drawing so that the left/right/bottom borders still appear when
-        // the top is scrolled away.
+        // TODO(step 5): implement partial border drawing so that left/right/
+        // bottom borders still appear when the top is scrolled away.
         let inner_skip = card_skip.saturating_sub(1); // skip past the (off-screen) top border
         let inner = Rect::new(
             card_area.x + 1,
