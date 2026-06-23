@@ -63,6 +63,10 @@ pub struct ToolLayout {
 pub struct ToolRenderOutput {
     pub summary: Line<'static>,
     pub summary_raw: String,
+    /// Execution phase (Success / Failed / Running).
+    pub phase: ToolPhase,
+    /// Tool argument summary — for file tools this is the filesystem path.
+    pub arg_summary: String,
     pub layout: ToolLayout,
     pub detail_title: Option<String>,
     pub detail_preview: Vec<String>,
@@ -260,6 +264,8 @@ impl<'a> ToolWidget<'a> {
         ToolRenderOutput {
             summary: self.summary_line(),
             summary_raw,
+            phase: self.phase,
+            arg_summary: self.arg_summary.clone(),
             layout,
             detail_title,
             detail_preview,

@@ -501,29 +501,31 @@ pub async fn run_tui(
                                         } else {
                                             app.mouse.last_click_card = None;
                                         }
-                                        // Check if clicked on a diff block (file write preview) → double-click opens popup
-                                        let diff_hit = app
-                                            .diff_blocks
+                                        // Check if clicked on a tool block (file write preview) → double-click opens popup
+                                        let tool_hit = app
+                                            .tool_blocks
                                             .iter()
                                             .enumerate()
                                             .find(|(_, b)| {
-                                                app.phys_to_logical_fast(b.start_idx)
-                                                    .map_or(false, |si| line_idx >= si)
-                                                    && app.phys_to_logical_fast(b.end_idx)
-                                                        .map_or(false, |ei| line_idx < ei)
+                                                app.phys_to_logical_fast(b.phys_idx)
+                                                    .map_or(false, |si| {
+                                                        line_idx >= si
+                                                            && line_idx
+                                                                < si + b.output.layout.placeholder_lines
+                                                    })
                                             });
-                                        if let Some((diff_idx, block)) = diff_hit {
+                                        if let Some((tool_idx, block)) = tool_hit {
                                             if app.mouse.click_count == 1 {
-                                                app.mouse.last_click_diff = Some(diff_idx);
-                                                // Single click: remember diff block for double-click open, don't select text
+                                                app.mouse.last_click_tool = Some(tool_idx);
+                                                // Single click: remember tool block for double-click open, don't select text
                                                 app.mouse.log_word_selection = None;
                                                 app.mouse.log_selection = None;
                                                 app.mouse.dragging_log = false;
                                             } else if app.mouse.click_count == 2
-                                                && app.mouse.last_click_diff == Some(diff_idx)
+                                                && app.mouse.last_click_tool == Some(tool_idx)
                                             {
                                                 // Double click: open diff popup
-                                                app.open_diff_popup(block.start_idx);
+                                                app.open_diff_popup(block.phys_idx);
                                             } else if app.mouse.click_count >= 3 {
                                                 // Triple click: select entire line
                                                 app.mouse.log_word_selection = None;
@@ -531,7 +533,7 @@ pub async fn run_tui(
                                                 app.mouse.dragging_log = true;
                                             }
                                         } else {
-                                            app.mouse.last_click_diff = None;
+                                            app.mouse.last_click_tool = None;
                                             // Check if clicked on a code block → double-click opens popup
                                             let code_hit = app
                                                 .code_blocks

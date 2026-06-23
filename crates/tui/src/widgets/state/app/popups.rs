@@ -175,16 +175,12 @@ impl App {
         self.thinking.popup = None;
     }
 
-    /// Open a file content popup, accepting the diff block's starting line index.
-    pub(crate) fn open_diff_popup(&mut self, start_idx: usize) {
-        if let Some((_, block)) = self
-            .diff_blocks
-            .iter()
-            .enumerate()
-            .find(|(_, b)| b.start_idx == start_idx)
-        {
+    /// Open a file content popup, accepting the tool block's phys index.
+    pub(crate) fn open_diff_popup(&mut self, phys_idx: usize) {
+        if let Some(block) = self.tool_blocks.iter().find(|b| b.phys_idx == phys_idx) {
+            let file_path = block.output.arg_summary.clone();
             self.diff_popup = Some(DiffPopup {
-                file_path: block.file_path.clone(),
+                file_path,
                 scroll: 0,
                 cached_content: None,
             });

@@ -1,4 +1,5 @@
 use crate::widgets::state::*;
+use crate::widgets::tool_widget::ToolWidget;
 use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -117,35 +118,27 @@ impl App {
                 let log_msg = format!("{}{}{}", log_msg, bytes_str, duration_str);
                 self.add_system_message(log_msg);
 
-                // File write operation: insert placeholder lines; render_log_panel's overlay
-                // renders the diff block.
-                if result.tool == "write_file"
-                    && let Some(content) = result.detail
-                {
-                    const MAX_PREVIEW_LINES: usize = 200;
-                    let content_lines = content.lines().count();
-                    let preview_count = content_lines.min(10);
-                    let preview_lines: Vec<String> = content
-                        .lines()
-                        .take(MAX_PREVIEW_LINES)
-                        .map(|s| s.to_string())
-                        .collect();
-                    // Placeholders: top title + preview content + overflow hint (optional) + bottom border + separator blank
-                    let more = if content_lines > 10 { 1 } else { 0 };
-                    let placeholder_count = 2 + preview_count + more + 1;
-                    let start_idx = self.messages.len();
+                // Tool operations with detail output: use ToolWidget to produce a
+                // ToolRenderOutput, then store it as a ToolBlock. phys_idx points
+                // to the summary line so LogColumnRenderer can replace it with a
+                // full ToolCell (summary + detail card).
+                let tool_has_detail = matches!(
+                    result.tool.as_str(),
+                    "write_file" | "read_file" | "bash"
+                );
+                if tool_has_detail && result.detail.is_some() {
+                    let msgs = self.msgs();
+                    let tw = ToolWidget::from_step_result(idx, &result, &self.theme, &msgs);
+                    let output = tw.build();
+
+                    let placeholder_count = output.layout.placeholder_lines;
+                    // phys_idx points to the summary line pushed by add_system_message above.
+                    let phys_idx = self.messages.len().saturating_sub(1);
                     for _ in 0..placeholder_count {
                         self.messages.push(Line::from(""));
                         self.raw_messages.push(String::new());
                     }
-                    let end_idx = self.messages.len();
-                    self.diff_blocks.push(DiffBlock {
-                        start_idx,
-                        end_idx,
-                        file_path: result.arg_summary.clone(),
-                        line_count: content_lines,
-                        preview_lines,
-                    });
+                    self.tool_blocks.push(ToolBlock { phys_idx, output });
                     self.log_scroll.state =
                         ScrollbarState::new(self.total_log_lines().saturating_sub(1));
                     if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal
