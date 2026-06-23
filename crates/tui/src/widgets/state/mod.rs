@@ -173,8 +173,12 @@ pub struct App {
     pub(crate) command_history: Vec<String>,
     /// User input history.
     pub(crate) input_history: InputHistory,
-    /// Project root directory, used to read/write .tact/history.txt.
+    /// Project root directory.
     pub(crate) work_dir: PathBuf,
+    /// Current session id for scoping persisted input history.
+    pub(crate) session_id: String,
+    /// Channel for persisting input history to sqlite.
+    pub(crate) history_save_tx: tokio::sync::mpsc::UnboundedSender<(String, String)>,
     pub(crate) should_quit: bool,
     /// Dirty flag: set to true on input events, agent updates, or size changes;
     /// skips pointless repaints while idle.

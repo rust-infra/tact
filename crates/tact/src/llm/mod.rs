@@ -19,6 +19,7 @@ use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
 use tact_core::AgentUpdate;
+use tact_core::TokenUsageInfo;
 
 /// Holds private LLM configuration information.
 #[derive(Default)]
@@ -146,18 +147,20 @@ impl From<async_openai::error::OpenAIError> for LlmError {
 pub trait LlmClient: Send + Sync {
     /// Stream a message request, emitting real-time updates via `ui_tx`.
     ///
-    /// Returns the final content blocks and stop reason.
+    /// Returns the final content blocks, optional stop reason, and optional token usage info.
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError>;
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>;
 
     /// Non-streaming message request (used for context compaction).
+    ///
+    /// Returns the final content blocks, optional stop reason, and optional token usage info.
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError>;
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>;
 }
 
 /// Supported LLM providers.
@@ -173,7 +176,7 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, ui_tx).await,
             LlmProvider::OpenAi(o) => o.stream_message(request, ui_tx).await,
@@ -183,10 +186,25 @@ impl LlmClient for LlmProvider {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request).await,
             LlmProvider::OpenAi(o) => o.create_message(request).await,
+        }
+    }
+}
+
+impl LlmProvider {
+    /// Set a `user_id` on the underlying client adapter.
+    ///
+    /// For OpenAI-compatible adapters (DeepSeek, Kimi, etc.) this is
+    /// injected into the request body as `"user_id"`.  For Anthropic
+    /// adapters it is injected as `metadata.user_id`.  Both mechanisms
+    /// enable KV cache isolation per session on DeepSeek's endpoints.
+    pub fn set_user_id(&mut self, user_id: &str) {
+        match self {
+            LlmProvider::OpenAi(o) => o.set_user_id(user_id.to_string()),
+            LlmProvider::Anthropic(a) => a.set_user_id(user_id.to_string()),
         }
     }
 }

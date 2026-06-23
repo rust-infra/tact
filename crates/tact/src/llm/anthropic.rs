@@ -5,6 +5,7 @@
 //! upstream `anthropic-ai-sdk` crate has not yet added to its `StopReason`
 //! enum.
 
+use std::error::Error;
 use std::time::Duration;
 
 use anthropic_ai_sdk::types::message::{
@@ -15,7 +16,7 @@ use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::{AgentUpdate, ModelCallParams};
+use tact_core::{AgentUpdate, ModelCallParams, TokenUsageInfo};
 
 use super::{LlmClient, LlmError};
 
@@ -24,6 +25,13 @@ pub struct AnthropicAdapter {
     api_key: String,
     base_url: String,
     api_version: String,
+    /// Optional user identifier sent in the `metadata` body field.
+    ///
+    /// DeepSeek's Anthropic-compatible endpoint uses `metadata.user_id`
+    /// for KV cache isolation: requests with the same `user_id` within a
+    /// session share the KV cache, improving cache hit rate and reducing
+    /// latency / cost.  Session IDs (UUIDs) are natural candidates.
+    user_id: Option<String>,
 }
 
 impl AnthropicAdapter {
@@ -32,7 +40,14 @@ impl AnthropicAdapter {
             api_key: api_key.into(),
             base_url: base_url.into(),
             api_version: "2023-06-01".to_string(),
+            user_id: None,
         }
+    }
+
+    /// Set the `user_id` that will be injected into every outgoing request
+    /// body as `metadata.user_id`.
+    pub fn set_user_id(&mut self, user_id: String) {
+        self.user_id = Some(user_id);
     }
 
     fn messages_url(&self) -> String {
@@ -49,6 +64,22 @@ impl AnthropicAdapter {
         );
         headers
     }
+}
+
+/// Walk an HTTP error's `source()` chain to surface the real root cause.
+///
+/// `reqwest::Error::to_string()` often yields a generic "error sending request
+/// for url (...)" that hides the underlying cause (DNS failure, TLS handshake
+/// error, "connection refused", etc.).  Walking the source chain recovers the
+/// originating `hyper` / `rustls` / `std::io::Error` message.
+fn format_http_error(e: &(dyn Error + 'static)) -> String {
+    let mut parts: Vec<String> = vec![e.to_string()];
+    let mut source = e.source();
+    while let Some(s) = source {
+        parts.push(s.to_string());
+        source = s.source();
+    }
+    parts.join(": ")
 }
 
 fn parse_stop_reason(reason: Option<String>) -> Option<StopReason> {
@@ -122,31 +153,39 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
+        let mut token_usage: Option<TokenUsageInfo> = None;
 
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(true);
+        if let Some(ref uid) = self.user_id {
+            if let Some(meta) = body["metadata"].as_object_mut() {
+                meta.insert("user_id".to_string(), serde_json::json!(uid));
+            } else {
+                body["metadata"] = serde_json::json!({"user_id": uid});
+            }
+        }
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         let mut event_source = client
             .post(&self.messages_url())
             .headers(self.headers())
             .json(&body)
             .eventsource()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
         event_source.set_retry_policy(Box::new(reqwest_eventsource::retry::Never));
 
         while let Some(event) = event_source.next().await {
             match event {
-                Err(e) => return Err(LlmError::Anthropic(MessageError::ApiError(e.to_string()))),
+                Err(e) => return Err(LlmError::Anthropic(MessageError::ApiError(format_http_error(&e)))),
                 Ok(Event::Open) => continue,
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
@@ -300,7 +339,7 @@ impl LlmClient for AnthropicAdapter {
                             }
                         }
                         "message_delta" => {
-                            let delta_event: MessageDeltaEvent = serde_json::from_value(value)
+                            let delta_event: MessageDeltaEvent = serde_json::from_value(value.clone())
                                 .map_err(|e| {
                                     LlmError::Anthropic(MessageError::ApiError(format!(
                                         "Failed to parse message_delta: {e}"
@@ -308,13 +347,41 @@ impl LlmClient for AnthropicAdapter {
                                 })?;
                             stop_reason = parse_stop_reason(delta_event.delta.stop_reason);
                             if let Some(usage) = delta_event.usage {
+                                // The SDK's StreamUsage only has input/output
+                                // tokens.  DeepSeek's Anthropic-compatible
+                                // endpoint also returns cache and reasoning
+                                // tokens in the same usage object.  Parse them
+                                // from the raw JSON value so they aren't lost.
+                                let usage_json = &value["usage"];
+                                let cache_hit = usage_json["prompt_cache_hit_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                let cache_miss = usage_json["prompt_cache_miss_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                let reasoning = usage_json["completion_tokens_details"]
+                                    .get("reasoning_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                token_usage = Some(TokenUsageInfo {
+                                    prompt: usage.input_tokens,
+                                    completion: usage.output_tokens,
+                                    total: usage.input_tokens + usage.output_tokens,
+                                    prompt_cache_hit_tokens: cache_hit,
+                                    prompt_cache_miss_tokens: cache_miss,
+                                    reasoning_tokens: reasoning,
+                                });
                                 if let Some(ref tx) = ui_tx {
                                     let _ = tx.send(AgentUpdate::TokenUsage {
                                         prompt: usage.input_tokens,
                                         completion: usage.output_tokens,
                                         total: usage.input_tokens + usage.output_tokens,
-                                        prompt_cache_hit_tokens: 0,
-                                        prompt_cache_miss_tokens: 0,
+                                        prompt_cache_hit_tokens: cache_hit,
+                                        prompt_cache_miss_tokens: cache_miss,
+                                        reasoning_tokens: reasoning,
                                     });
                                 }
                             }
@@ -340,21 +407,28 @@ impl LlmClient for AnthropicAdapter {
             }
         }
 
-        Ok((response_blocks, stop_reason))
+        Ok((response_blocks, stop_reason, token_usage))
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(false);
+        if let Some(ref uid) = self.user_id {
+            if let Some(meta) = body["metadata"].as_object_mut() {
+                meta.insert("user_id".to_string(), serde_json::json!(uid));
+            } else {
+                body["metadata"] = serde_json::json!({"user_id": uid});
+            }
+        }
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         let response = client
             .post(&self.messages_url())
@@ -362,7 +436,7 @@ impl LlmClient for AnthropicAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -377,6 +451,7 @@ impl LlmClient for AnthropicAdapter {
             content: Vec<ContentBlock>,
             #[serde(rename = "stop_reason")]
             stop_reason: Option<String>,
+            usage: Option<serde_json::Value>,
         }
 
         let payload: CreateMessageResponse = response.json().await.map_err(|e| {
@@ -385,7 +460,30 @@ impl LlmClient for AnthropicAdapter {
             )))
         })?;
 
-        Ok((payload.content, parse_stop_reason(payload.stop_reason)))
+        let token_usage = payload.usage.as_ref().and_then(|raw| {
+            let prompt = raw["input_tokens"].as_u64().map(|n| n as u32)?;
+            let completion = raw["output_tokens"].as_u64().map(|n| n as u32)?;
+            Some(TokenUsageInfo {
+                prompt,
+                completion,
+                total: prompt + completion,
+                prompt_cache_hit_tokens: raw["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: raw["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                reasoning_tokens: raw["completion_tokens_details"]
+                    .get("reasoning_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+            })
+        });
+
+        Ok((payload.content, parse_stop_reason(payload.stop_reason), token_usage))
     }
 }
 

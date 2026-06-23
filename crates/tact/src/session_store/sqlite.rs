@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
+use tact_core::TokenUsageInfo;
 
-use super::{MessageCountByPeriod, SessionSummary};
+use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
 
 pub struct SqliteSessionStore {
     pool: SqlitePool,
@@ -14,7 +15,9 @@ pub struct SqliteSessionStore {
 impl SqliteSessionStore {
     pub async fn new(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.context("failed to create database directory")?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("failed to create database directory")?;
         }
         // sqlx may fail to open a non-existent database file in some environments;
         // create an empty file first to ensure it's present.
@@ -52,8 +55,7 @@ impl SqliteSessionStore {
                 role TEXT NOT NULL,
                 content JSON NOT NULL,
                 ordinal INTEGER NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             "#,
         )
@@ -61,23 +63,105 @@ impl SqliteSessionStore {
         .await
         .context("failed to create messages table")?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);",
-        )
-        .execute(&pool)
-        .await
-        .context("failed to create messages index")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
+            .execute(&pool)
+            .await
+            .context("failed to create messages index")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);")
             .execute(&pool)
             .await
             .context("failed to create messages created_at index")?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                call_type TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                first_message_id INTEGER NOT NULL DEFAULT 0,
+                last_message_id INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create token_usages table")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);",
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create token_usages index")?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS input_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create input_history table")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_input_history_session_id ON input_history(session_id);",
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create input_history index")?;
+
         Ok(Self { pool })
     }
 
     fn now() -> DateTime<Utc> {
         Utc::now()
+    }
+
+    async fn trim_input_history(self: &Self, session_id: &str, keep: usize) -> Result<()> {
+        let pool = self.pool.clone();
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM input_history WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .context("failed to count input history entries")?;
+        let count: i64 = row.try_get("cnt")?;
+        let excess = count - keep as i64;
+        if excess <= 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            DELETE FROM input_history
+            WHERE session_id = ?
+              AND id IN (
+                SELECT id FROM input_history
+                WHERE session_id = ?
+                ORDER BY id ASC
+                LIMIT ?
+              )
+            "#,
+        )
+        .bind(session_id)
+        .bind(session_id)
+        .bind(excess)
+        .execute(&pool)
+        .await
+        .context("failed to trim input history")?;
+        Ok(())
     }
 }
 
@@ -131,8 +215,8 @@ impl super::SessionStore for SqliteSessionStore {
         content: &MessageContent,
         ordinal: i64,
     ) -> Result<i64> {
-        let content_json = serde_json::to_string(content)
-            .context("failed to serialize message content")?;
+        let content_json =
+            serde_json::to_string(content).context("failed to serialize message content")?;
         let now = Self::now();
 
         let id = sqlx::query(
@@ -171,8 +255,8 @@ impl super::SessionStore for SqliteSessionStore {
         for row in rows {
             let role_str: String = row.try_get("role")?;
             let content_json: String = row.try_get("content")?;
-            let content: MessageContent =
-                serde_json::from_str(&content_json).context("failed to deserialize message content")?;
+            let content: MessageContent = serde_json::from_str(&content_json)
+                .context("failed to deserialize message content")?;
             messages.push(Message {
                 role: str_to_role(&role_str)?,
                 content,
@@ -224,11 +308,36 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin delete session transaction")?;
+
+        sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete session messages")?;
+        sqlx::query("DELETE FROM token_usages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete session token usages")?;
+        sqlx::query("DELETE FROM input_history WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete session input history")?;
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .context("failed to delete session")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit delete session transaction")?;
         Ok(())
     }
 
@@ -331,6 +440,65 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to count total sessions")?;
         Ok(row.try_get("cnt")?)
     }
+
+    async fn record_token_usage(
+        &self,
+        session_id: &str,
+        call_type: &str,
+        usage: &TokenUsageInfo,
+        first_message_id: i64,
+        last_message_id: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(call_type)
+        .bind(usage.prompt as i64)
+        .bind(usage.completion as i64)
+        .bind(usage.total as i64)
+        .bind(usage.prompt_cache_hit_tokens as i64)
+        .bind(usage.prompt_cache_miss_tokens as i64)
+        .bind(usage.reasoning_tokens as i64)
+        .bind(first_message_id)
+        .bind(last_message_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to record token usage")?;
+        Ok(())
+    }
+
+    async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>> {
+        let rows =
+            sqlx::query("SELECT content FROM input_history WHERE session_id = ? ORDER BY id ASC")
+                .bind(session_id)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to load input history")?;
+
+        let mut entries: Vec<String> = rows
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("content").ok())
+            .collect();
+
+        if entries.len() > MAX_INPUT_HISTORY {
+            entries = entries.split_off(entries.len() - MAX_INPUT_HISTORY);
+            self.trim_input_history(session_id, MAX_INPUT_HISTORY)
+                .await?;
+        }
+
+        Ok(entries)
+    }
+
+    async fn append_input_history(&self, session_id: &str, content: &str) -> Result<()> {
+        sqlx::query("INSERT INTO input_history (session_id, content) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(content)
+            .execute(&self.pool)
+            .await
+            .context("failed to append input history entry")?;
+        Ok(())
+    }
 }
 
 fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Result<DateTime<Utc>> {
@@ -362,13 +530,18 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", Some("first session")).await.unwrap();
+        store
+            .create_session("session-1", Some("first session"))
+            .await
+            .unwrap();
 
         store
             .append_message(
                 "session-1",
                 Role::User,
-                &MessageContent::Text { content: "hello".to_string() },
+                &MessageContent::Text {
+                    content: "hello".to_string(),
+                },
                 1,
             )
             .await
@@ -377,7 +550,9 @@ mod tests {
             .append_message(
                 "session-1",
                 Role::Assistant,
-                &MessageContent::Text { content: "world".to_string() },
+                &MessageContent::Text {
+                    content: "world".to_string(),
+                },
                 2,
             )
             .await
@@ -404,5 +579,66 @@ mod tests {
         store.delete_session("session-1").await.unwrap();
         let after = store.load_session("session-1").await.unwrap();
         assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_input_history_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        store.create_session("session-1", None).await.unwrap();
+
+        let entries = vec!["first", "second"];
+        for entry in &entries {
+            store
+                .append_input_history("session-1", entry)
+                .await
+                .unwrap();
+        }
+
+        let loaded = store.load_input_history("session-1").await.unwrap();
+        assert_eq!(loaded, entries);
+
+        store
+            .append_input_history("session-1", "third")
+            .await
+            .unwrap();
+        let loaded = store.load_input_history("session-1").await.unwrap();
+        assert_eq!(loaded, vec!["first", "second", "third"]);
+
+        store.create_session("session-2", None).await.unwrap();
+        assert!(
+            store
+                .load_input_history("session-2")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_input_history_trims_on_load() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        store.create_session("session-1", None).await.unwrap();
+
+        let entries: Vec<String> = (0..120).map(|i| format!("entry-{i}")).collect();
+        for entry in &entries {
+            store
+                .append_input_history("session-1", entry)
+                .await
+                .unwrap();
+        }
+
+        let loaded = store.load_input_history("session-1").await.unwrap();
+        assert_eq!(loaded.len(), super::super::MAX_INPUT_HISTORY);
+        assert_eq!(loaded.first().map(String::as_str), Some("entry-20"));
+        assert_eq!(loaded.last().map(String::as_str), Some("entry-119"));
+
+        let reloaded = store.load_input_history("session-1").await.unwrap();
+        assert_eq!(reloaded, loaded);
     }
 }

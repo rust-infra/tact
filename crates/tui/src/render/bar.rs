@@ -86,10 +86,25 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         let cache_str = if app.status_bar.token_total > 0
             || app.status_bar.token_cache_hit > 0
             || app.status_bar.token_cache_miss > 0
+            || app.status_bar.token_reasoning > 0
         {
+            let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
+            let hit_pct = if cache_total > 0 {
+                app.status_bar.token_cache_hit * 100 / cache_total
+            } else {
+                0
+            };
+            let miss_pct = if cache_total > 0 {
+                app.status_bar.token_cache_miss * 100 / cache_total
+            } else {
+                0
+            };
             msgs.bottom_cache_tmpl
-                .replace("{}", &app.status_bar.token_cache_hit.to_string())
-                .replace("{}", &app.status_bar.token_cache_miss.to_string())
+                .replacen("{}", &app.status_bar.token_cache_hit.to_string(), 1)
+                .replacen("{}", &hit_pct.to_string(), 1)
+                .replacen("{}", &app.status_bar.token_cache_miss.to_string(), 1)
+                .replacen("{}", &miss_pct.to_string(), 1)
+                .replacen("{}", &app.status_bar.token_reasoning.to_string(), 1)
         } else {
             String::new()
         };

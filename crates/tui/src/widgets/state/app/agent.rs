@@ -236,12 +236,14 @@ impl App {
                 total,
                 prompt_cache_hit_tokens,
                 prompt_cache_miss_tokens,
+                reasoning_tokens,
             } => {
                 self.status_bar.token_prompt = prompt;
                 self.status_bar.token_completion = completion;
                 self.status_bar.token_total = total;
                 self.status_bar.token_cache_hit = prompt_cache_hit_tokens;
                 self.status_bar.token_cache_miss = prompt_cache_miss_tokens;
+                self.status_bar.token_reasoning = reasoning_tokens;
             }
             // Update balance info
             AgentUpdate::Balance(info) => {

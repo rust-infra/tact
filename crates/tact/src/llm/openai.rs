@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::AgentUpdate;
+use tact_core::{AgentUpdate, TokenUsageInfo};
 
 use super::{LlmClient, LlmError, convert::build_openai_request};
 
@@ -66,8 +66,16 @@ struct StreamFunctionDelta {
 struct StreamUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    /// DeepSeek returns `total_tokens` directly; fall back to prompt+completion.
+    total_tokens: Option<u32>,
     prompt_cache_hit_tokens: Option<u32>,
     prompt_cache_miss_tokens: Option<u32>,
+    completion_tokens_details: Option<StreamCompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamCompletionTokensDetails {
+    reasoning_tokens: Option<u32>,
 }
 
 /// Inject the provider-specific `thinking` block into an OpenAI-compatible JSON body.
@@ -100,6 +108,18 @@ fn inject_thinking_param(
             "type": "enabled",
             "budget_tokens": thinking.budget_tokens,
         });
+    }
+}
+
+/// Inject `user_id` into the request body for KV cache isolation.
+///
+/// DeepSeek uses `user_id` to isolate per-user KV cache.  Requests
+/// that share the same `user_id` can reuse cached prompt tokens,
+/// improving cache hit rate.  Other OpenAI-compatible providers
+/// silently ignore unrecognised fields.
+fn inject_user_id(body: &mut serde_json::Value, user_id: &Option<String>) {
+    if let Some(uid) = user_id {
+        body["user_id"] = serde_json::json!(uid);
     }
 }
 
@@ -182,11 +202,28 @@ impl Config for CompatibleConfig {
 #[derive(Clone)]
 pub struct OpenAiAdapter {
     config: CompatibleConfig,
+    /// Optional user identifier sent as the `user_id` body field.
+    ///
+    /// DeepSeek uses `user_id` for KV cache isolation: requests with the
+    /// same `user_id` within a session share the KV cache, improving cache
+    /// hit rate and reducing latency / cost.
+    ///
+    /// Session IDs (UUIDs) are natural candidates here.
+    user_id: Option<String>,
 }
 
 impl OpenAiAdapter {
     pub fn new(config: CompatibleConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            user_id: None,
+        }
+    }
+
+    /// Set the `user_id` that will be injected into every outgoing request
+    /// body as `"user_id"`.
+    pub fn set_user_id(&mut self, user_id: String) {
+        self.user_id = Some(user_id);
     }
 }
 
@@ -202,7 +239,7 @@ impl LlmClient for OpenAiAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(true);
 
@@ -213,6 +250,7 @@ impl LlmClient for OpenAiAdapter {
         body["stream_options"] = serde_json::json!({"include_usage": true});
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_user_id(&mut body, &self.user_id);
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -237,6 +275,7 @@ impl LlmClient for OpenAiAdapter {
         // (vec of (id, name, args) buffers)
         let mut tool_call_buffers: Vec<(Option<String>, Option<String>, String)> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
+        let mut token_usage: Option<TokenUsageInfo> = None;
 
         while let Some(event) = event_source.next().await {
             match event {
@@ -308,18 +347,36 @@ impl LlmClient for OpenAiAdapter {
                     // ── usage (sent in final chunk when stream_options.include_usage is set) ──
                     if let Some(usage) = &chunk.usage {
                         // Only emit when there are real token counts.
-                        if (usage.prompt_tokens > 0 || usage.completion_tokens > 0)
-                            && let Some(ref tx) = ui_tx
-                        {
-                            let _ = tx.send(AgentUpdate::TokenUsage {
+                        if usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
+                            let cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
+                            let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or(0);
+                            let reasoning = usage
+                                .completion_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.reasoning_tokens)
+                                .unwrap_or(0);
+                            token_usage = Some(TokenUsageInfo {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
-                                total: usage.prompt_tokens + usage.completion_tokens,
-                                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens.unwrap_or(0),
-                                prompt_cache_miss_tokens: usage
-                                    .prompt_cache_miss_tokens
-                                    .unwrap_or(0),
+                                total: usage
+                                    .total_tokens
+                                    .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
+                                prompt_cache_hit_tokens: cache_hit,
+                                prompt_cache_miss_tokens: cache_miss,
+                                reasoning_tokens: reasoning,
                             });
+                            if let Some(ref tx) = ui_tx {
+                                let _ = tx.send(AgentUpdate::TokenUsage {
+                                    prompt: usage.prompt_tokens,
+                                    completion: usage.completion_tokens,
+                                    total: usage
+                                        .total_tokens
+                                        .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
+                                    prompt_cache_hit_tokens: cache_hit,
+                                    prompt_cache_miss_tokens: cache_miss,
+                                    reasoning_tokens: reasoning,
+                                });
+                            }
                         }
                     }
                 }
@@ -346,7 +403,7 @@ impl LlmClient for OpenAiAdapter {
             response_blocks.push(ContentBlock::ToolUse { id, name, input });
         }
 
-        Ok((response_blocks, stop_reason))
+        Ok((response_blocks, stop_reason, token_usage))
     }
 
     /*
@@ -369,7 +426,7 @@ impl LlmClient for OpenAiAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(false);
 
@@ -377,6 +434,7 @@ impl LlmClient for OpenAiAdapter {
             .map_err(|e| LlmError::Other(e.to_string()))?;
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_user_id(&mut body, &self.user_id);
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -448,7 +506,33 @@ impl LlmClient for OpenAiAdapter {
             _ => StopReason::EndTurn,
         });
 
-        Ok((blocks, stop_reason))
+        let token_usage = json["usage"].as_object().map(|u| {
+            let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+            let completion = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
+            TokenUsageInfo {
+                prompt,
+                completion,
+                total: u["total_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(prompt + completion),
+                prompt_cache_hit_tokens: u["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: u["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                reasoning_tokens: u["completion_tokens_details"]
+                    .get("reasoning_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+            }
+        });
+
+        Ok((blocks, stop_reason, token_usage))
     }
 }
 
@@ -532,6 +616,30 @@ mod tests {
             body["thinking"],
             serde_json::json!({"type": "enabled", "keep": "all"})
         );
+    }
+
+    #[test]
+    fn inject_user_id_adds_field_when_set() {
+        let mut body = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let user_id = Some("a1b2c3d4-5678-90ab-cdef-1234567890ab".to_string());
+        inject_user_id(&mut body, &user_id);
+        assert_eq!(
+            body["user_id"],
+            "a1b2c3d4-5678-90ab-cdef-1234567890ab"
+        );
+    }
+
+    #[test]
+    fn inject_user_id_skipped_when_none() {
+        let mut body = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        inject_user_id(&mut body, &None);
+        assert!(body.get("user_id").is_none());
     }
 
     #[test]

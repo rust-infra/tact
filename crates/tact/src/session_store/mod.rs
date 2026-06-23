@@ -5,10 +5,14 @@ use anyhow::Result;
 use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tact_core::TokenUsageInfo;
 
 pub mod sqlite;
 
 pub use sqlite::SqliteSessionStore;
+
+/// Maximum input history entries retained per session.
+pub const MAX_INPUT_HISTORY: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
@@ -57,6 +61,21 @@ pub trait SessionStore: Send + Sync {
     async fn count_messages_total(&self) -> Result<i64>;
 
     async fn count_sessions_total(&self) -> Result<i64>;
+
+    /// Record per-call token usage (cache hit/miss, reasoning, prompt, completion).
+    /// `first_message_id` / `last_message_id` link this call to the message range sent.
+    async fn record_token_usage(
+        &self,
+        session_id: &str,
+        call_type: &str,
+        usage: &TokenUsageInfo,
+        first_message_id: i64,
+        last_message_id: i64,
+    ) -> Result<()>;
+
+    async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;
+
+    async fn append_input_history(&self, session_id: &str, content: &str) -> Result<()>;
 }
 
 pub type DynSessionStore = Arc<dyn SessionStore>;

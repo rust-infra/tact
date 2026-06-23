@@ -77,6 +77,20 @@ impl AgentErrorKind {
     }
 }
 
+/// Token usage info returned from an LLM API call.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsageInfo {
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
+    /// DeepSeek KV cache hit prompt tokens (0 for non-DeepSeek providers)
+    pub prompt_cache_hit_tokens: u32,
+    /// DeepSeek KV cache miss prompt tokens
+    pub prompt_cache_miss_tokens: u32,
+    /// Reasoning tokens consumed by the model (R1 / V3 thinking).
+    pub reasoning_tokens: u32,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
@@ -103,6 +117,10 @@ pub enum AgentUpdate {
         prompt_cache_hit_tokens: u32,
         /// DeepSeek KV cache miss prompt tokens
         prompt_cache_miss_tokens: u32,
+        /// Reasoning tokens consumed by the model (R1 / V3 thinking).
+        /// This is a subset of `completion` exposed via the usage object's
+        /// `completion_tokens_details.reasoning_tokens` field.
+        reasoning_tokens: u32,
     },
     /// Account balance info (DeepSeek only)
     Balance(BalanceInfo),
@@ -389,6 +407,7 @@ impl Agent {
                 total: usage.total_tokens,
                 prompt_cache_hit_tokens: 0,
                 prompt_cache_miss_tokens: 0,
+                reasoning_tokens: 0,
             });
         }
         let content = resp

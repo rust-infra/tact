@@ -30,6 +30,9 @@ impl App {
         agent_rx: UnboundedReceiver<AgentUpdate>,
         user_cmd_tx: UnboundedSender<UserCommand>,
         work_dir: PathBuf,
+        input_history_entries: Vec<String>,
+        session_id: String,
+        history_save_tx: UnboundedSender<(String, String)>,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -81,8 +84,10 @@ impl App {
             palette_selected: 0,
             search: SearchState::new(),
             command_history: Vec::new(),
-            input_history: InputHistory::new(Self::load_history(&work_dir)),
+            input_history: InputHistory::new(input_history_entries),
             work_dir,
+            session_id,
+            history_save_tx,
             should_quit: false,
             dirty: true,
             clipboard_buffer: String::new(),

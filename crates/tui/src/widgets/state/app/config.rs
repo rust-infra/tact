@@ -3,24 +3,11 @@ use crate::widgets::state::*;
 use crate::theme::{Theme, ThemeName};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::path::Path;
-
 impl App {
-    pub(crate) fn load_history(work_dir: &Path) -> Vec<String> {
-        let path = work_dir.join(".tact").join("history.txt");
-        std::fs::read_to_string(&path)
-            .map(|s| s.lines().map(|l| l.to_string()).collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn save_history(&self) {
-        let dir = self.work_dir.join(".tact");
-        if !dir.exists() {
-            let _ = std::fs::create_dir_all(&dir);
-        }
-        let path = dir.join("history.txt");
-        let data = self.input_history.entries.join("\n");
-        let _ = std::fs::write(&path, data);
+    pub(crate) fn save_history(&self, entry: &str) {
+        let _ = self
+            .history_save_tx
+            .send((self.session_id.clone(), entry.to_string()));
     }
 
     pub(crate) fn toggle_theme(&mut self) {
