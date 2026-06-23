@@ -27,10 +27,7 @@ pub(crate) fn handle_insert_mode(
                 let task_text = app.input.clone();
                 if app.input_history.entries.last() != Some(&task_text) {
                     app.input_history.entries.push(task_text.clone());
-                    if app.input_history.entries.len() > 100 {
-                        app.input_history.entries.remove(0);
-                    }
-                    app.save_history();
+                    app.save_history(&task_text);
                 }
                 app.input_history.index = None;
                 app.input_history.saved.clear();

@@ -192,6 +192,25 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Resolve session_id: --session takes priority, then --resume-last, else new uuid.
+    let session_id = if let Some(ref id) = args.session {
+        id.clone()
+    } else if args.resume_last {
+        let sessions = session_store.list_sessions().await?;
+        sessions
+            .into_iter()
+            .next()
+            .map(|s| s.id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+
+    session_store
+        .create_session(&session_id, None)
+        .await?;
+    let input_history = session_store.load_input_history(&session_id).await?;
+
     let client = get_llm_client()?;
 
     let permission_manager = PermissionManager::try_new(PermissionMode::Default)?;
@@ -231,16 +250,7 @@ async fn main() -> anyhow::Result<()> {
         ui_tx: Some(agent_tx.clone()),
     };
 
-    // Resolve session_id: --session takes priority, then --resume-last
-    let session_id = if let Some(ref id) = args.session {
-        Some(id.clone())
-    } else if args.resume_last {
-        let sessions = session_store.list_sessions().await?;
-        sessions.into_iter().next().map(|s| s.id)
-    } else {
-        None
-    };
-
+    let history_store = session_store.clone();
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -250,10 +260,28 @@ async fn main() -> anyhow::Result<()> {
         AgentSystemPrompt::Dynamic,
     )
     .with_ui_channel(agent_tx)
-    .with_session(session_id, session_store);
+    .with_session(Some(session_id.clone()), session_store);
+
+    let (history_save_tx, mut history_save_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    tokio::spawn(async move {
+        while let Some((session_id, entry)) = history_save_rx.recv().await {
+            let _ = history_store
+                .append_input_history(&session_id, &entry)
+                .await;
+        }
+    });
 
     let tui_handle = tokio::spawn(Box::pin(async move {
-        tui::run_tui(agent_rx, user_cmd_tx, tui_work_dir).await
+        tui::run_tui(
+            agent_rx,
+            user_cmd_tx,
+            tui_work_dir,
+            input_history,
+            session_id,
+            history_save_tx,
+        )
+        .await
     }));
 
     // Query DeepSeek balance at startup
@@ -324,6 +352,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tui_handle.await??;
+
+    // Print session ID so user can resume later
+    if let Some(ref sid) = agent.runtime.session_id {
+        eprintln!("[session id: {sid}]");
+    }
+
+    eprintln!("{}", agent.runtime.stats.summary());
+
     Ok(())
 }
 

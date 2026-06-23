@@ -45,7 +45,7 @@ pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
 
 use crate::llm::{LlmClient, LlmProvider};
 use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, Message, MessageContent, MessageError,
+    ContentBlock, CreateMessageParams, Message, MessageContent,
     RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use anyhow::{Context, Result};
@@ -70,7 +70,7 @@ use crate::recovery::{
 use crate::session_store::DynSessionStore;
 use crate::stats::SessionStats;
 use crate::tool::{ToolContext, ToolRouter};
-use tact_core::{AgentUpdate, StepResult, StepStatus};
+use tact_core::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
 
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
@@ -149,6 +149,10 @@ pub struct AgentRuntime {
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     pub session_id: Option<String>,
+    /// DB row id of the first message persisted for the current LLM-call window.
+    pub first_message_db_id: i64,
+    /// DB row id of the last message persisted for the current LLM-call window.
+    pub last_message_db_id: i64,
 }
 
 /// How the agent builds its system prompt.
@@ -195,6 +199,8 @@ impl Agent {
                 cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 session_store: None,
                 session_id: None,
+                first_message_db_id: 0,
+                last_message_db_id: 0,
             },
             tool_context,
             tools,
@@ -278,7 +284,32 @@ impl Agent {
             return Ok(());
         };
         let ordinal = self.runtime.context.len() as i64;
-        store.append_message(session_id, role, content, ordinal).await?;
+        let db_id = store.append_message(session_id, role, content, ordinal).await?;
+        if self.runtime.first_message_db_id == 0 {
+            self.runtime.first_message_db_id = db_id;
+        }
+        self.runtime.last_message_db_id = db_id;
+        Ok(())
+    }
+
+    /// Persist token usage (cache hit/miss, reasoning) to sqlite.
+    /// Links to the message range that was sent ([first_message_db_id .. last_message_db_id]).
+    async fn persist_token_usage(&self, call_type: &str, usage: &TokenUsageInfo) -> Result<()> {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return Ok(());
+        };
+        store
+            .record_token_usage(
+                session_id,
+                call_type,
+                usage,
+                self.runtime.first_message_db_id,
+                self.runtime.last_message_db_id,
+            )
+            .await?;
         Ok(())
     }
 
@@ -313,7 +344,9 @@ impl Agent {
         self.runtime.recovery_state = RecoveryState::default();
 
         // Ensure a session exists and optionally restore history.
-        let _session_id = self.ensure_session().await?;
+        let session_id = self.ensure_session().await?;
+        // Wire the session_id as the DeepSeek `user_id` for KV cache isolation.
+        self.runtime.client.set_user_id(&session_id);
 
         // If history is empty, add the initial user message so it is persisted.
         if self.runtime.context.is_empty() {
@@ -370,7 +403,7 @@ impl Agent {
             self.runtime.stats.total_prompt_chars += prompt_chars;
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason) = match self.stream_message(&request).await {
+            let (content, stop_reason, token_usage) = match self.stream_message(&request).await {
                 Ok(result) => {
                     self.runtime.recovery_state.transport_attempts = 0;
                     result
@@ -422,6 +455,11 @@ impl Agent {
                     self.runtime.stats.thinking_blocks += 1;
                     self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
                 }
+            }
+
+            if let Some(ref usage) = token_usage {
+                self.runtime.stats.record_token_usage(usage);
+                let _ = self.persist_token_usage("stream", usage).await;
             }
 
             self.runtime
@@ -504,13 +542,13 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), MessageError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), anyhow::Error> {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
             .stream_message(request, ui_tx)
             .await
-            .map_err(|e| MessageError::ApiError(e.to_string()))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub async fn execute_tool_call(
@@ -897,7 +935,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
-        let (blocks, _stop_reason) = self
+        let (blocks, _stop_reason, token_usage) = self
             .runtime
             .client
             .create_message(&request)
@@ -918,6 +956,14 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 self.runtime.stats.thinking_blocks += 1;
                 self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
             }
+        }
+        if let Some(ref usage) = token_usage {
+            self.runtime.stats.record_token_usage(usage);
+            let _ = self.persist_token_usage("compact", usage).await;
+            // After compaction the context is replaced with a summary, so
+            // future messages start a new message-id window.
+            self.runtime.first_message_db_id = 0;
+            self.runtime.last_message_db_id = 0;
         }
         let summary = blocks
             .iter()

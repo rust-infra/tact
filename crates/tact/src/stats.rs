@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
+use tact_core::TokenUsageInfo;
+
 /// Tracks per-session statistics for the agent runtime.
 #[derive(Debug)]
 pub struct SessionStats {
@@ -23,6 +25,12 @@ pub struct SessionStats {
     pub llm_call_durations: Vec<Duration>,
     /// Per-tool-execution durations in milliseconds.
     pub tool_durations_ms: Vec<u64>,
+    /// Cumulative KV cache hit prompt tokens (DeepSeek).
+    pub cache_hit_tokens: u64,
+    /// Cumulative KV cache miss prompt tokens (DeepSeek).
+    pub cache_miss_tokens: u64,
+    /// Cumulative reasoning tokens.
+    pub reasoning_tokens: u64,
     /// When the session started.
     pub start_time: Instant,
 }
@@ -39,19 +47,52 @@ impl Default for SessionStats {
             tool_counts: HashMap::new(),
             llm_call_durations: Vec::new(),
             tool_durations_ms: Vec::new(),
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
+            reasoning_tokens: 0,
             start_time: Instant::now(),
         }
     }
 }
 
+/// Format a Duration with the most appropriate unit: s, m:s, h:m, or d:h.
+fn fmt_duration(d: Duration) -> String {
+    let total_secs = d.as_secs_f64();
+    if total_secs < 60.0 {
+        format!("{:.1}s", total_secs)
+    } else if total_secs < 3600.0 {
+        let m = total_secs as u64 / 60;
+        let s = (total_secs as u64) % 60;
+        format!("{}m{}s", m, s)
+    } else if total_secs < 86_400.0 {
+        let h = total_secs as u64 / 3600;
+        let m = ((total_secs as u64) % 3600) / 60;
+        format!("{}h{}m", h, m)
+    } else {
+        let d = total_secs as u64 / 86_400;
+        let h = ((total_secs as u64) % 86_400) / 3600;
+        format!("{}d{}h", d, h)
+    }
+}
+
 impl SessionStats {
+    /// Accumulate token usage info from an LLM call (streaming or compaction).
+    pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
+        self.cache_hit_tokens += usage.prompt_cache_hit_tokens as u64;
+        self.cache_miss_tokens += usage.prompt_cache_miss_tokens as u64;
+        self.reasoning_tokens += usage.reasoning_tokens as u64;
+    }
+
     /// Produce a human-readable summary of all recorded statistics.
     pub fn summary(&self) -> String {
-        let elapsed = self.start_time.elapsed();
         let mut out = String::new();
 
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
-        let _ = writeln!(out, "  Elapsed:               {:>8.1}s", elapsed.as_secs_f64());
+        let _ = writeln!(
+            out,
+            "  Elapsed:               {:>8}",
+            fmt_duration(self.start_time.elapsed())
+        );
 
         let _ = writeln!(out, "  LLM API calls:         {:>8}", self.prompt_count);
 
@@ -60,7 +101,11 @@ impl SessionStats {
             .iter()
             .map(|d| d.as_secs_f64() * 1000.0)
             .sum();
-        let _ = writeln!(out, "  Total LLM time:        {:>8.1}s", total_llm_ms / 1000.0);
+        let _ = writeln!(
+            out,
+            "  Total LLM time:        {:>8}",
+            fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0))
+        );
 
         let _ = writeln!(out, "  Prompt chars sent:     {:>8}", self.total_prompt_chars);
         let _ = writeln!(
@@ -93,12 +138,73 @@ impl SessionStats {
             let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
             let _ = writeln!(
                 out,
-                "  Total tool time:       {:>8.1}s",
-                total_tool_ms as f64 / 1000.0
+                "  Total tool time:       {:>8}",
+                fmt_duration(Duration::from_millis(total_tool_ms))
+            );
+        }
+
+        if self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0 {
+            let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
+            let hit_rate = if cache_total > 0 {
+                (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                out,
+                "  Cache hit tokens:      {:>8}",
+                self.cache_hit_tokens
+            );
+            let _ = writeln!(
+                out,
+                "  Cache miss tokens:     {:>8}",
+                self.cache_miss_tokens
+            );
+            let _ = writeln!(out, "  Cache hit rate:        {:>8.1}%", hit_rate);
+        }
+
+        if self.reasoning_tokens > 0 {
+            let _ = writeln!(
+                out,
+                "  Reasoning tokens:      {:>8}",
+                self.reasoning_tokens
             );
         }
 
         let _ = writeln!(out, "─────────────────────────────────────────────");
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_accumulates_all_fields() {
+        let mut s = SessionStats::default();
+        s.record_token_usage(&TokenUsageInfo {
+            prompt_cache_hit_tokens: 1000,
+            prompt_cache_miss_tokens: 500,
+            reasoning_tokens: 200,
+            ..Default::default()
+        });
+        assert_eq!(s.cache_hit_tokens, 1000);
+        assert_eq!(s.cache_miss_tokens, 500);
+        assert_eq!(s.reasoning_tokens, 200);
+        let _ = s.summary(); // smoke check
+    }
+
+    #[test]
+    fn fmt_duration_picks_unit() {
+        assert_eq!(fmt_duration(Duration::from_secs(0)), "0.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(12)), "12.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(59)), "59.0s");
+        assert_eq!(fmt_duration(Duration::from_secs(60)), "1m0s");
+        assert_eq!(fmt_duration(Duration::from_secs(125)), "2m5s");
+        assert_eq!(fmt_duration(Duration::from_secs(3600)), "1h0m");
+        assert_eq!(fmt_duration(Duration::from_secs(7384)), "2h3m");
+        assert_eq!(fmt_duration(Duration::from_secs(86_400)), "1d0h");
+        assert_eq!(fmt_duration(Duration::from_secs(100_000)), "1d3h");
     }
 }
