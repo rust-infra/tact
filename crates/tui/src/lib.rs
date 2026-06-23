@@ -62,6 +62,9 @@ pub async fn run_tui(
     agent_rx: UnboundedReceiver<AgentUpdate>,
     user_cmd_tx: UnboundedSender<UserCommand>,
     work_dir: PathBuf,
+    input_history_entries: Vec<String>,
+    session_id: String,
+    history_save_tx: UnboundedSender<(String, String)>,
 ) -> Result<()> {
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -77,7 +80,14 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize application state
-    let mut app = App::new(agent_rx, user_cmd_tx.clone(), work_dir);
+    let mut app = App::new(
+        agent_rx,
+        user_cmd_tx.clone(),
+        work_dir,
+        input_history_entries,
+        session_id,
+        history_save_tx,
+    );
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());

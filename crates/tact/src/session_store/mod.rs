@@ -11,6 +11,9 @@ pub mod sqlite;
 
 pub use sqlite::SqliteSessionStore;
 
+/// Maximum input history entries retained per session.
+pub const MAX_INPUT_HISTORY: usize = 100;
+
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: String,
@@ -69,6 +72,10 @@ pub trait SessionStore: Send + Sync {
         first_message_id: i64,
         last_message_id: i64,
     ) -> Result<()>;
+
+    async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;
+
+    async fn append_input_history(&self, session_id: &str, content: &str) -> Result<()>;
 }
 
 pub type DynSessionStore = Arc<dyn SessionStore>;
