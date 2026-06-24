@@ -1,3 +1,4 @@
+use crate::render::cells::tool::ToolCell;
 use crate::render::util::wrap_line;
 use crate::widgets::state::App;
 use ratatui::{
@@ -221,11 +222,13 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut renderer =
         super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
 
-    for logical_i in logical_start..logical_end {
+    let mut logical_i = logical_start;
+    while logical_i < logical_end {
         let cache_start = vs_cache[logical_i];
         let cache_end = vs_cache[logical_i + 1];
         // Skip logical rows that fall entirely outside the visual viewport.
         if cache_end <= visual_scroll || cache_start >= end_visual {
+            logical_i += 1;
             continue;
         }
 
@@ -238,6 +241,46 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 .unwrap_or(false);
 
         let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
+
+        // Tool block: replace the summary TextCell + placeholder rows with a
+        // single ToolCell that renders both summary and detail card.
+        //
+        // Check both exact and range match: when the viewport starts in the
+        // middle of placeholder rows (user scrolled up), the summary phys_idx
+        // is no longer in the loop range, but subsequent placeholder rows
+        // still belong to the same ToolBlock.
+        if let Some(phys) = phys_idx {
+            let tool_match = app.tool_blocks.iter().find(|b| {
+                phys >= b.phys_idx
+                    && phys <= b.phys_idx + b.output.layout.placeholder_lines as usize
+            });
+            if let Some(tb) = tool_match {
+                let rows_before = phys.saturating_sub(tb.phys_idx);
+                // Push at the summary row's visual start so LogColumnRenderer
+                // computes the correct skip_lines for clipping.
+                let vis_start = if rows_before > 0 && rows_before <= logical_i {
+                    vs_cache[logical_i - rows_before]
+                } else {
+                    vs_cache[logical_i]
+                };
+                let card_cell = ToolCell::from_output(
+                    tb.output.clone(),
+                    false, // render summary + card as one unit
+                    app.theme.accent,
+                    app.theme.bg,
+                    app.theme.fg,
+                    app.theme.success,
+                    app.msgs().diff_card_bottom.to_string(),
+                    app.msgs().diff_overflow_tmpl.to_string(),
+                );
+                renderer.push(vis_start, card_cell);
+                // Skip the summary logical row + all placeholder rows.
+                logical_i += 1 + tb.output.layout.placeholder_lines as usize - rows_before;
+                continue;
+            }
+        }
+
+        // Normal row: build TextCell
         let cached_lines: Vec<Line<'static>> =
             app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
         let raw_text = phys_idx
@@ -288,6 +331,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         // Push at this row's visual-line offset; LogColumnRenderer does a second
         // viewport clip and calls TextCell::render_partial for sub-line trimming.
         renderer.push(vs_cache[logical_i], cell);
+        logical_i += 1;
     }
 
     // Render bordered log panel
@@ -306,18 +350,17 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Clear, inner);
     frame.render_widget(renderer, inner);
 
-    // Overlays (thinking / diff / code cards) share the same visual viewport:
+    // Overlays (thinking / code cards) share the same visual viewport.
+    // Diff cards are now handled as ToolCells in LogColumnRenderer (Phase 3).
     //
     // ```text
     //  ┌─ Log panel ─────────────────┐
     //  │  TextCell rows (base layer) │
     //  │  + thinking card overlay    │  each layer clips with
-    //  │  + diff card overlay        │  (visual_scroll, visible_height)
-    //  │  + code card overlay        │
+    //  │  + code card overlay        │  (visual_scroll, visible_height)
     //  └─────────────────────────────┘
     super::cells::thinking::render_thinking_cards(frame, area, app, visual_scroll, visible_height);
 
-    super::cells::diff::render_diff_cards(frame, area, app, visual_scroll, visible_height);
     super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
 
     // Scrollbar thumb follows visual lines, not logical offset:

@@ -1,27 +1,15 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use crate::i18n::{Language, Messages};
-use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
+use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
-    App, CodeBlock, DiffBlock, DiffPopup, FilePicker, FocusedPanel, HistoryEntry, InputHistory,
+    App, FilePicker, FocusedPanel, InputHistory,
     InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
-    StreamState, ThinkingBlock, ThinkingPopup, ThinkingState,
+    StreamState, ThinkingState,
 };
-use arboard::Clipboard;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use chrono::Local;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListState, ScrollbarState};
 use std::path::{Path, PathBuf};
-use tact_core::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
-
-const CODE_BG: Color = Color::Rgb(30, 35, 50);
-const CODE_FG: Color = Color::Rgb(200, 200, 210);
-const STREAMING_INDICATOR: &str = " ▌";
+use tact_core::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {
@@ -98,7 +86,7 @@ impl App {
             workspace_dir,
             select: SelectPopup::new(),
             file_picker: FilePicker::new(),
-            diff_blocks: Vec::new(),
+            tool_blocks: Vec::new(),
             diff_popup: None,
             code_blocks: Vec::new(),
             code_popup: None,

@@ -25,7 +25,7 @@ pub(crate) struct MouseState {
     /// Index of the thinking block hit by the last click (used for double-click popup open).
     pub(crate) last_click_card: Option<usize>,
     /// Index of the diff block hit by the last click (used for double-click popup open).
-    pub(crate) last_click_diff: Option<usize>,
+    pub(crate) last_click_tool: Option<usize>,
     /// Index of the code block hit by the last click (used for double-click popup open).
     pub(crate) last_click_code: Option<usize>,
 }

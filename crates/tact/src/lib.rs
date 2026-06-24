@@ -153,6 +153,9 @@ pub struct AgentRuntime {
     pub first_message_db_id: i64,
     /// DB row id of the last message persisted for the current LLM-call window.
     pub last_message_db_id: i64,
+    /// Cached project-directory snapshot, computed once per session so the
+    /// deterministic output doesn't churn the DeepSeek prefix KV-cache.
+    pub cached_dir_snapshot: Option<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -201,6 +204,7 @@ impl Agent {
                 session_id: None,
                 first_message_db_id: 0,
                 last_message_db_id: 0,
+                cached_dir_snapshot: None,
             },
             tool_context,
             tools,
@@ -1006,7 +1010,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
     }
 
-    fn build_system_prompt(&self) -> Result<String> {
+    fn build_system_prompt(&mut self) -> Result<String> {
         if let AgentSystemPrompt::Static(system_prompt) = &self.system_prompt {
             return Ok(system_prompt.clone());
         }
@@ -1035,7 +1039,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             .skills_available(self.tool_context.skill_registry.describe_available())
             .memory(self.load_memory_prompt()?)
             .claude_md(load_claude_md_prompt(workdir))
-            .dynamic_context(load_dynamic_context(workdir))
+            .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
             .memory_guidance(MEMORY_GUIDANCE.trim())
             .build()?;
 
@@ -1077,7 +1081,29 @@ pub fn extract_text(content: &MessageContent) -> String {
     }
 }
 
-fn load_dynamic_context(workdir: &Path) -> String {
+/// Build the dynamic-context block that appears after `=== DYNAMIC_BOUNDARY ===`.
+///
+/// The directory snapshot is expensive to compute and its output must be
+/// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
+/// can hit.  We compute it once per session and reuse the cached string.
+fn load_dynamic_context(
+    workdir: &Path,
+    cached_snapshot: &mut Option<String>,
+) -> String {
+    let snapshot_limit = std::env::var("TACT_SNAPSHOT_MAX_ITEMS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+
+    let tree = match cached_snapshot {
+        Some(cached) => cached.clone(),
+        None => {
+            let snap = snapshot_dir(workdir, snapshot_limit);
+            *cached_snapshot = snap.clone();
+            snap.unwrap_or_default()
+        }
+    };
+
     let mut lines = vec![
         "# Dynamic context".to_string(),
         format!("Current date: {}", Utc::now().date_naive()),
@@ -1086,12 +1112,7 @@ fn load_dynamic_context(workdir: &Path) -> String {
         format!("Platform: {}", std::env::consts::OS),
     ];
 
-    // Snapshot project directory structure (best-effort; skip if it fails).
-    let snapshot_limit = std::env::var("TACT_SNAPSHOT_MAX_ITEMS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
-    if let Some(tree) = snapshot_dir(workdir, snapshot_limit) {
+    if !tree.is_empty() {
         lines.push(String::new());
         lines.push(tree);
     }
@@ -1101,25 +1122,80 @@ fn load_dynamic_context(workdir: &Path) -> String {
 
 /// Generate a lightweight "tree"-style snapshot of the given directory.
 ///
-/// Ignores common large/binary directories and respects `.gitignore`-like
-/// paths (`target`, `node_modules`, `.git`, etc.).  Returns `None` when the
-/// directory cannot be read.
+/// Ignores common large/binary directories (`target`, `node_modules`, `.git`,
+/// etc.).  Collects **all** entries first, sorts by path, *then* truncates to
+/// `max_items` so the output is deterministic regardless of filesystem
+/// readdir order.  Returns `None` when the directory cannot be read.
 fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     const IGNORE_DIRS: &[&str] = &[
+        // ---- VCS ----
         ".git",
+        ".hg",
+        ".svn",
+        // ---- Rust ----
         "target",
+        // ---- C / C++ / general build outputs ----
+        "build",
+        "cmake-build-debug",
+        "cmake-build-release",
+        "obj",
+        "out",
+        // ---- Node.js / TypeScript / frontend ----
         "node_modules",
+        ".next",
+        ".nuxt",
+        ".output",
+        ".turbo",
+        ".cache",
+        ".parcel-cache",
+        "coverage",
+        ".nyc_output",
+        // ---- Python ----
         ".venv",
         "venv",
+        ".tox",
         "__pycache__",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        ".eggs",
+        // ---- Go ----
+        "vendor",
+        // ---- Java / Kotlin / Scala ----
+        ".gradle",
+        ".bloop",
+        ".metals",
+        ".bsp",
+        // ---- .NET / C# ----
+        "bin",
+        "obj",
+        "packages",
+        // ---- Ruby ----
+        ".bundle",
+        // ---- Elixir ----
+        "_build",
+        "deps",
+        ".elixir_ls",
+        // ---- Haskell ----
+        ".stack-work",
+        "dist-newstyle",
+        // ---- Dart / Flutter ----
+        ".dart_tool",
+        // ---- Swift ----
+        ".build",
+        // ---- IDE / editors ----
+        ".idea",
+        ".fleet",
+        ".devcontainer",
+        // ---- cross-ecosystem build artifacts ----
+        "dist",
+        // ---- macOS ----
+        ".DS_Store",
     ];
 
     use std::collections::BTreeMap;
 
-    // Collect paths first (owned), then group by parent.
+    // Phase 1 — collect all visible entries (ignore dirs are skipped).
     let mut items: Vec<(std::path::PathBuf, bool)> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
@@ -1128,20 +1204,14 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        if items.len() >= max_items {
-            break;
-        }
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            let is_dir = entry.file_type().is_dir();
             if IGNORE_DIRS.contains(&name)
                 || (name.starts_with('.')
                     && !name.eq_ignore_ascii_case(".gitignore")
                     && !name.eq_ignore_ascii_case(".env.example"))
             {
-                if is_dir {
-                    continue;
-                }
+                continue;
             }
         }
         let rel = path.strip_prefix(root).ok()?;
@@ -1152,6 +1222,17 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         return None;
     }
 
+    // Phase 2 — sort by path for deterministic output (filesystem readdir
+    // order is not stable across runs, which would defeat KV-cache).
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    let truncated = if items.len() > max_items {
+        items.truncate(max_items);
+        true
+    } else {
+        false
+    };
+
+    // Phase 3 — group by parent directory.
     let mut dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (rel, is_dir) in &items {
         let parent = rel
@@ -1176,7 +1257,7 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         }
     }
 
-    if items.len() >= max_items {
+    if truncated {
         out.push(format!("(truncated at {} items)", max_items));
     }
 
