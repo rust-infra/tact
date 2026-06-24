@@ -1,5 +1,6 @@
 use crate::i18n::Language;
 use crate::theme::Theme;
+use crate::widgets::tool_widget::ToolRenderOutput;
 use chrono;
 use ratatui::text::Line;
 use std::path::PathBuf;
@@ -70,22 +71,15 @@ pub struct HistoryEntry {
     pub summary: String,
 }
 
-// ========== Diff Types ==========
+// ========== Tool Types ==========
 
-/// Info for a file write diff block.
+/// State for a tool invocation result that includes a detail card.
 #[derive(Debug, Clone)]
-pub(crate) struct DiffBlock {
-    /// Starting line index of the diff block (in messages).
-    pub start_idx: usize,
-    /// Ending line index of the diff block (in messages, exclusive).
-    pub end_idx: usize,
-    pub file_path: String,
-    /// Total number of lines in the written file (cached to avoid recomputing every frame).
-    pub line_count: usize,
-    /// Pre-split content lines used by the diff card preview (cached to avoid
-    /// `lines().collect()` on every render). Only the first `MAX_PREVIEW_LINES`
-    /// are stored to keep memory usage bounded for large files.
-    pub preview_lines: Vec<String>,
+pub(crate) struct ToolBlock {
+    /// Physical index of the first placeholder row in `messages` / `raw_messages`.
+    pub phys_idx: usize,
+    /// Pre-built render output from [`ToolWidget`].
+    pub output: ToolRenderOutput,
 }
 
 /// Popup preview state for file write content.
@@ -95,6 +89,9 @@ pub(crate) struct DiffPopup {
     pub scroll: u16,
     /// Lazily-loaded full file content. `None` until first render/population.
     pub cached_content: Option<String>,
+    /// Pre-rendered syntax-highlighted lines (built once when cached_content is loaded).
+    /// Empty Vec means "not yet highlighted" (or empty file).
+    pub highlighted_lines: Vec<Line<'static>>,
 }
 
 /// A completed LLM code block, rendered as a card overlay in the log panel.
@@ -197,7 +194,7 @@ pub struct App {
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// File write diff block list.
-    pub(crate) diff_blocks: Vec<DiffBlock>,
+    pub(crate) tool_blocks: Vec<ToolBlock>,
     /// File write content popup preview.
     pub(crate) diff_popup: Option<DiffPopup>,
     /// Completed LLM code block overlays.

@@ -95,7 +95,7 @@
 //! Planned integration order (each step can be its own commit):
 //!
 //! ```text
-//! ┌─ TODO(step 1): wire ToolCell construction into agent.rs ─────────────┐
+//! ┌─ TODO(step 1): wire ToolCell construction into agent.rs ──── DONE ✓ ──┐
 //! │                                                                       │
 //! │  In handle_step_completed:                                            │
 //! │    a. Call ToolWidget::build() to produce ToolRenderOutput            │
@@ -107,7 +107,7 @@
 //! │  Files: widgets/state/app/agent.rs                                    │
 //! └───────────────────────────────────────────────────────────────────────┘
 //!
-//! ┌─ TODO(step 2): set phase from StepResult.status ──────────────────────┐
+//! ┌─ TODO(step 2): set phase from StepResult.status ── DONE ✓ ────────────┐
 //! │                                                                       │
 //! │  ToolCell.phase is currently hardcoded to ToolPhase::Success. After   │
 //! │  step 1, pass the actual StepStatus through ToolWidget and into       │
@@ -117,31 +117,27 @@
 //! │  Files: render/cells/tool.rs, widgets/tool_widget.rs                  │
 //! └───────────────────────────────────────────────────────────────────────┘
 //!
-//! ┌─ TODO(step 3): remove placeholder-row injection from agent.rs ────────┐
+//! ┌─ TODO(step 3): remove placeholder-row injection from agent.rs (partial) ─ DONE ✓ ┐
 //! │                                                                       │
-//! │  Currently agent.rs computes a placeholder index and pushes a blank   │
-//! │  row into App.messages[] so that DiffBlock card overlays align. Once  │
-//! │  ToolCell handles its own height(), delete:                           │
-//! │    - The DiffBlock struct (widgets/state/mod.rs)                      │
-//! │    - placeholder_index calculation in agent.rs                        │
+//! │  Placeholder rows are still injected for visual positioning. Once     │
+//! │  ToolCell handles its own height() and independent positioning,       │
+//! │  delete:                                                              │
 //! │    - The blank message push in agent.rs                               │
+//! │    - The placeholder_names tracking                                   │
 //! │                                                                       │
-//! │  Files: widgets/state/app/agent.rs, widgets/state/mod.rs              │
+//! │  Files: widgets/state/app/agent.rs                                    │
 //! └───────────────────────────────────────────────────────────────────────┘
 //!
-//! ┌─ TODO(step 4): remove render_diff_cards overlay from log.rs ──────────┐
+//! ┌─ TODO(step 4): remove render_diff_cards overlay from log.rs ── DONE ✓ ┐
 //! │                                                                       │
-//! │  render/log.rs currently renders DiffBlock cards as an overlay pass   │
-//! │  after the main cell list. Once ToolCells carry their own cards,      │
-//! │  remove:                                                              │
-//! │    - render_diff_cards() function                                     │
-//! │    - The DiffBlock iteration in the main render loop                  │
-//! │    - CodeBlock / DiffBlock / DiffPopup from state (if unused)         │
+//! │  render_diff_cards() has been removed. ToolCells are now pushed       │
+//! │  directly into LogColumnRenderer in the Phase 3 while loop.           │
+//! │  render/cells/diff.rs has been deleted.                               │
 //! │                                                                       │
-//! │  Files: render/log.rs, render/cells/diff.rs (can delete file)         │
+//! │  Done in: render/log.rs, render/cells/mod.rs                          │
 //! └───────────────────────────────────────────────────────────────────────┘
 //!
-//! ┌─ TODO(step 5): partial border drawing when card top is scrolled away ─┐
+//! ┌─ TODO(step 5): partial border drawing when card top is scrolled away ── DONE ✓ ┐
 //! │                                                                       │
 //! │  Currently when skip_lines > 0, the card's top border is off-screen   │
 //! │  and we draw only raw content lines with no border decoration.        │
@@ -152,7 +148,7 @@
 //! │  Files: render/cells/tool.rs (render_partial, case B)                 │
 //! └───────────────────────────────────────────────────────────────────────┘
 //!
-//! ┌─ TODO(step 6): wire _summary_raw into search ─────────────────────────┐
+//! ┌─ TODO(step 6): wire _summary_raw into search ── DEFERRED ─────────────┐
 //! │                                                                       │
 //! │  _summary_raw is the unstyled copy of the summary line. Once search   │
 //! │  covers LogColumnRenderer cells (not just TextCell raw_text), include │
@@ -185,12 +181,14 @@ pub(crate) struct ToolCell {
     /// Raw text of the summary (reserved for future search highlighting, like
     /// `TextCell.raw_text`).
     ///
-    /// TODO(step 6): include in search corpus when LogColumnRenderer search is wired.
+    /// Raw text of the summary line. Already covered by `raw_messages`-based
+    /// search; reserved for future cell-based search in LogColumnRenderer.
     _summary_raw: String,
     /// Execution phase (Success / Failure / Running).
-    ///
-    /// TODO(step 2): set from StepResult.status instead of hardcoding Success.
     phase: ToolPhase,
+    /// When true, the summary line is not rendered by this cell (it's handled by
+    /// a separate `TextCell` in `messages[]`). Only the detail card is drawn.
+    card_only: bool,
     /// Whether this tool produced a detail card (file content preview, etc.).
     has_detail_card: bool,
     /// Card title — e.g. "Wrote src/main.rs (15 lines)". Displayed in the top border.
@@ -221,11 +219,14 @@ impl ToolCell {
     ///
     /// # Parameters
     ///
+    /// - `card_only`: when true, the summary is not rendered by this cell (it's
+    ///   already handled by a separate `TextCell`). Only the detail card is drawn.
     /// - `accent`, `bg`, `fg`, `success`: colors from `Theme`
     /// - `card_bottom`: i18n message for the card's bottom border decoration
     /// - `overflow_tmpl`: i18n template for the "... and N more lines" line
     pub(crate) fn from_output(
         output: ToolRenderOutput,
+        card_only: bool,
         accent: Color,
         bg: Color,
         fg: Color,
@@ -236,7 +237,8 @@ impl ToolCell {
         Self {
             summary_line: output.summary,
             _summary_raw: output.summary_raw,
-            phase: ToolPhase::Success, // TODO(step 2): set from StepResult.status
+            phase: output.phase,
+            card_only,
             has_detail_card: output.layout.has_detail_card,
             detail_title: output.detail_title,
             detail_preview: output.detail_preview,
@@ -335,16 +337,31 @@ impl Renderable for ToolCell {
     /// Total cell height in rows, independent of viewport.
     ///
     /// ```text
-    /// no card:    1 (summary only)
-    /// with card:  1 + 1 + card_inner_rows + 1
-    ///              ^   ^   ^                 ^
-    ///              |   |   |                 bottom border
-    ///              |   |   preview + optional overflow
-    ///              |   top border
-    ///              summary
+    /// card_only = false (full cell):
+    ///   no card:    1 (summary only)
+    ///   with card:  1 + 1 + card_inner_rows + 1
+    ///                ^   ^   ^                 ^
+    ///                |   |   |                 bottom border
+    ///                |   |   preview + optional overflow
+    ///                |   top border
+    ///                summary
+    ///
+    /// card_only = true (summary handled by separate TextCell):
+    ///   no card:    0 (nothing to draw — shouldn't happen)
+    ///   with card:  1 + card_inner_rows + 1
+    ///                ^   ^                 ^
+    ///                |   |                 bottom border
+    ///                |   preview + optional overflow
+    ///                top border
     /// ```
     fn height(&self, _width: u16) -> u16 {
-        if self.has_detail_card {
+        if self.card_only {
+            if self.has_detail_card {
+                1_u16 + self.card_inner_rows() as u16 + 1
+            } else {
+                0
+            }
+        } else if self.has_detail_card {
             1_u16 + 1 + self.card_inner_rows() as u16 + 1
         } else {
             1
@@ -361,6 +378,8 @@ impl Renderable for ToolCell {
     ///
     /// # Row layout within the cell
     ///
+    /// Normal mode (`card_only = false`):
+    ///
     /// ```text
     /// row 0:          summary line (always present)
     /// row 1:          card top border (only if has_detail_card)
@@ -368,7 +387,15 @@ impl Renderable for ToolCell {
     /// row 2+N:        card bottom border
     /// ```
     ///
-    /// # skip_lines semantics
+    /// Card-only mode (`card_only = true`):
+    ///
+    /// ```text
+    /// row 0:          card top border (only if has_detail_card)
+    /// row 1..1+N-1:   card preview lines + optional overflow row
+    /// row 1+N:        card bottom border
+    /// ```
+    ///
+    /// # skip_lines semantics (normal mode)
     ///
     /// | skip_lines | What's visible                      |
     /// |------------|-------------------------------------|
@@ -376,18 +403,27 @@ impl Renderable for ToolCell {
     /// | 1          | Card with borders (summary clipped) |
     /// | 2..2+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
+    ///
+    /// # skip_lines semantics (card-only mode)
+    ///
+    /// | skip_lines | What's visible                      |
+    /// |------------|-------------------------------------|
+    /// | 0          | Card with borders                   |
+    /// | 1..1+N-1   | Card interior only (borders clipped)|
+    /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
         if area.height == 0 || area.width == 0 {
             return;
         }
 
-        // ── Row 0: summary ──────────────────────────────────────────
-        // Only drawn when skip_lines == 0 (the summary is the first row).
-        if skip_lines == 0 {
-            let summary_area = Rect::new(area.x, area.y, area.width, 1);
-            Paragraph::new(vec![self.summary_line.clone()])
-                .style(Style::default().fg(self.fg).bg(self.bg))
-                .render(summary_area, buf);
+        // ── Summary (normal mode only) ───────────────────────────
+        if !self.card_only {
+            if skip_lines == 0 {
+                let summary_area = Rect::new(area.x, area.y, area.width, 1);
+                Paragraph::new(vec![self.summary_line.clone()])
+                    .style(Style::default().fg(self.fg).bg(self.bg))
+                    .render(summary_area, buf);
+            }
         }
 
         // No card → done.
@@ -397,15 +433,20 @@ impl Renderable for ToolCell {
 
         let card_total = 1 + self.card_inner_rows() + 1; // top_border + inner_rows + bottom_border
 
-        // ── Map skip_lines to card-relative coordinates ─────────────
+        // ── Map skip_lines to card-relative coordinates ─────────
         //
-        // If the summary is visible (skip_lines == 0), the card starts at
-        // `area.y + 1`. If the summary is already skipped (skip_lines >= 1),
-        // the card top row lands at `area.y`.
-        let (card_area_y_offset, card_skip) = if skip_lines == 0 {
-            (1, 0) // summary visible → card starts one row down
+        // In normal mode the summary occupies row 0; in card_only mode
+        // the card starts at row 0. We compute `card_skip` (how many card
+        // rows to skip) and whether the card starts at area.y or area.y+1.
+        let (card_area_y_offset, card_skip) = if self.card_only {
+            // Row 0 is the card top border — no summary offset.
+            (0, skip_lines)
+        } else if skip_lines == 0 {
+            // Summary visible (row 0); card starts at area.y + 1.
+            (1, 0)
         } else {
-            (0, skip_lines.saturating_sub(1)) // summary clipped → card starts at area.y
+            // Summary clipped; card starts at area.y.
+            (0, skip_lines.saturating_sub(1))
         };
 
         // Entire card is above the viewport — nothing to draw.
@@ -461,18 +502,30 @@ impl Renderable for ToolCell {
 
         // ── Case B: partial card (card_skip >= 1) ───────────────────
         //
-        // The card's top border is off-screen. We skip the border decoration
-        // (no rounded corners, no title) and draw only the interior content
-        // rows that fall within the viewport.
-        //
-        // TODO(step 5): implement partial border drawing so that left/right/
-        // bottom borders still appear when the top is scrolled away.
+        // The card's top border is off-screen. Draw left + right borders on
+        // every visible row, and a bottom border with rounded corners when
+        // the card's bottom edge is within the viewport.
         let inner_skip = card_skip.saturating_sub(1); // skip past the (off-screen) top border
+        let show_bottom = card_skip + card_area.height as usize >= card_total;
+
+        let mut borders = Borders::LEFT | Borders::RIGHT;
+        if show_bottom {
+            borders |= Borders::BOTTOM;
+        }
+        let bottom_space = if show_bottom { 1_u16 } else { 0 };
+
+        let card_block = Block::default()
+            .borders(borders)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.accent))
+            .style(Style::default().bg(self.bg));
+        card_block.render(card_area, buf);
+
         let inner = Rect::new(
             card_area.x + 1,
-            card_area.y + 1,
+            card_area.y,
             card_area.width.saturating_sub(2),
-            card_area.height.saturating_sub(2),
+            card_area.height.saturating_sub(bottom_space),
         );
 
         if inner.height > 0 {
@@ -505,7 +558,7 @@ impl Renderable for ToolCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::ToolLayout;
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -519,6 +572,8 @@ mod tests {
         ToolRenderOutput {
             summary: Line::from("✔ Step 1: write_file (src/main.rs)"),
             summary_raw: "✔ Step 1: write_file (src/main.rs)".into(),
+            phase: ToolPhase::Success,
+            arg_summary: "src/main.rs".into(),
             layout: ToolLayout {
                 // placeholder_lines is the legacy layout field; tests don't use it
                 placeholder_lines: if has_card {
@@ -541,8 +596,13 @@ mod tests {
 
     /// Construct a `ToolCell` with a fixed theme for deterministic testing.
     fn tool_cell(output: ToolRenderOutput) -> ToolCell {
+        tool_cell_mode(output, false)
+    }
+
+    fn tool_cell_mode(output: ToolRenderOutput, card_only: bool) -> ToolCell {
         ToolCell::from_output(
             output,
+            card_only,
             Color::Cyan,       // accent
             Color::Black,      // bg
             Color::White,      // fg
@@ -551,6 +611,8 @@ mod tests {
             "... and {} more lines".into(),
         )
     }
+
+    // ── Normal mode tests ───────────────────────────────────────
 
     #[test]
     fn height_no_card_is_one() {
@@ -618,6 +680,49 @@ mod tests {
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         cell.render_partial(area, &mut buf, 20);
+        assert_eq!(buf.area, area);
+    }
+
+    // ── Card-only mode tests ────────────────────────────────────
+
+    #[test]
+    fn card_only_height_no_card_is_zero() {
+        let cell = tool_cell_mode(make_output(false, 0, 0), true);
+        assert_eq!(cell.height(80), 0);
+    }
+
+    #[test]
+    fn card_only_height_with_card() {
+        // 5 preview, 5 total → no overflow
+        // height = 1 (top border) + 5 (preview) + 1 (bottom) = 7
+        let cell = tool_cell_mode(make_output(true, 5, 5), true);
+        assert_eq!(cell.height(80), 7);
+    }
+
+    #[test]
+    fn card_only_height_with_overflow() {
+        // 3 preview, 10 total → overflow row present
+        // height = 1 + (3 + 1) + 1 = 6
+        let cell = tool_cell_mode(make_output(true, 3, 10), true);
+        assert_eq!(cell.height(80), 6);
+    }
+
+    #[test]
+    fn card_only_renders_into_buffer() {
+        let cell = tool_cell_mode(make_output(true, 3, 5), true);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        assert_eq!(buf.area, area);
+    }
+
+    #[test]
+    fn card_only_render_partial_skip_borders() {
+        let cell = tool_cell_mode(make_output(true, 5, 5), true);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        // skip_lines=1: skip top border, render interior content
+        cell.render_partial(area, &mut buf, 1);
         assert_eq!(buf.area, area);
     }
 }
