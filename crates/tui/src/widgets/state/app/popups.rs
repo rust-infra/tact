@@ -183,6 +183,7 @@ impl App {
                 file_path,
                 scroll: 0,
                 cached_content: None,
+                highlighted_lines: Vec::new(),
             });
         }
     }

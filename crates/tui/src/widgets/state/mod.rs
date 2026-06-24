@@ -89,6 +89,9 @@ pub(crate) struct DiffPopup {
     pub scroll: u16,
     /// Lazily-loaded full file content. `None` until first render/population.
     pub cached_content: Option<String>,
+    /// Pre-rendered syntax-highlighted lines (built once when cached_content is loaded).
+    /// Empty Vec means "not yet highlighted" (or empty file).
+    pub highlighted_lines: Vec<Line<'static>>,
 }
 
 /// A completed LLM code block, rendered as a card overlay in the log panel.

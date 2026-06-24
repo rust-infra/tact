@@ -87,17 +87,25 @@ fn syntax_highlight(code: &str, lang: &str) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    let file_path = app.diff_popup.as_ref().map(|p| p.file_path.clone());
-    let file_path = match file_path {
+    let file_path = match app.diff_popup.as_ref().map(|p| p.file_path.clone()) {
         Some(p) => p,
         None => return,
     };
 
     let popup = app.diff_popup.as_mut().unwrap();
 
+    // ------------------------------------------------------------------
+    // Lazy-load file content and syntax-highlight it (once).
+    // ------------------------------------------------------------------
     if popup.cached_content.is_none() {
         popup.cached_content = std::fs::read_to_string(&file_path).ok();
+        // Re-highlight whenever content is (re)loaded.
+        if let Some(content) = &popup.cached_content {
+            let lang = lang_from_path(&file_path);
+            popup.highlighted_lines = syntax_highlight(content, lang);
+        }
     }
+
     let content = match &popup.cached_content {
         Some(c) => c,
         None => {
@@ -114,6 +122,9 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let total = content.lines().count();
     if total == 0 { return; }
 
+    // ------------------------------------------------------------------
+    // Layout geometry (same every frame for the same area — fine).
+    // ------------------------------------------------------------------
     let popup_width = (area.width as f32 * 0.8).max(40.0) as u16;
     let popup_height = (area.height as f32 * 0.8).max(10.0) as u16;
     let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
@@ -132,36 +143,53 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let num_style = Style::default().fg(LINE_NUM_FG).bg(CODE_BG);
     let plus_style = Style::default().fg(app.theme.success).bg(CODE_BG);
 
-    // Syntax-highlight the file content.
     let lang = lang_from_path(&file_path);
-    let highlighted = syntax_highlight(content, lang);
 
-    // Build title: file name + line count + optional language
+    // Title: file name + line count + optional language.
     let title = if lang.is_empty() {
         format!(" {} ({} lines) ", file_path, total)
     } else {
         format!(" {} ({} lines, {}) ", file_path, total, lang)
     };
 
+    // ------------------------------------------------------------------
+    // Build the visible lines — reuse pre-rendered highlighted lines.
+    // Truncation reuses the existing Span content without allocating.
+    // ------------------------------------------------------------------
     let visible_end = (scroll + content_height).min(total);
     let mut text = Text::default();
+    let highlighted = &popup.highlighted_lines;
+
     for i in scroll..visible_end {
         let num = format!("{:>nw$}", i + 1, nw = num_width);
-        let content_line = if i < highlighted.len() {
+
+        let content_line: Line<'static> = if i < highlighted.len() {
             let hl_spans: Vec<Span<'static>> = highlighted[i]
                 .spans
                 .iter()
-                .map(|s| Span::styled(
-                    s.content.chars().take(code_width).collect::<String>(),
-                    s.style,
-                ))
+                .map(|s| {
+                    // Truncate inline: take at most code_width chars from the
+                    // existing Span content (no allocation for short lines;
+                    // allocate only for long ones that actually get cut).
+                    if s.content.chars().count() <= code_width {
+                        Span::styled(s.content.clone().into_owned(), s.style)
+                    } else {
+                        Span::styled(
+                            s.content.chars().take(code_width).collect::<String>(),
+                            s.style,
+                        )
+                    }
+                })
                 .collect();
             Line::from(hl_spans)
         } else {
+            // Fallback (shouldn't normally happen when highlighted is kept in
+            // sync): render raw line.
             let raw: String = content.lines().nth(i).unwrap_or("")
                 .chars().take(code_width).collect();
             Line::from(Span::styled(raw, Style::default().fg(CODE_FG).bg(CODE_BG)))
         };
+
         if content_line.spans.is_empty() {
             text.push_line(Line::from(vec![
                 Span::styled(format!(" {} ", num), num_style),
