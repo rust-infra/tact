@@ -468,12 +468,40 @@ impl Renderable for ToolCell {
         if card_skip == 0 {
             let title = self.detail_title.clone().unwrap_or_default();
 
+            // ── Card shadow effect ─────────────────────────────────
+            // Draw a subtle shadow offset by (1,1) to the right and down
+            // using dark shade characters. This creates a floating 3D depth.
+            let shadow_area = Rect::new(
+                card_area.x.saturating_add(1),
+                card_area.y.saturating_add(1),
+                card_area.width,
+                card_area.height,
+            );
+            // Only draw shadow if it stays within the buffer area
+            if shadow_area.right() <= buf.area.right() && shadow_area.bottom() <= buf.area.bottom() {
+                // Extended shadow block for depth
+                let shadow_block = Block::default()
+                    .style(Style::default().bg(Color::Rgb(25, 25, 40)));
+                shadow_block.render(shadow_area, buf);
+            }
+
+            // ── Card border with gradient effect ──────────────────
+            // Use BOLD + accent for the border to make it stand out
             let card_block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(self.accent))
+                .border_style(
+                    Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(self.bg))
-                .title(title)
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .title_bottom(Line::from(Span::styled(
                     &self.card_bottom,
                     Style::default()

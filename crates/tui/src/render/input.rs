@@ -69,19 +69,43 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines: Vec<&str> = app.input.split('\n').collect();
     let start = app.input_scroll as usize;
     let end = (start + visible_lines).min(lines.len());
-    let display_text = lines[start..end].join("\n");
+    let display_text = if app.input.is_empty() {
+        app.msgs().input_box_placeholder.to_string()
+    } else {
+        lines[start..end].join("\n")
+    };
+    let placeholder_mode = app.input.is_empty();
+
+    // Determine border color: accent when focused (insert mode), normal otherwise
+    let border_color = if app.input_mode == InputMode::Insert {
+        app.theme.accent
+    } else {
+        app.theme.border
+    };
 
     let input_para = Paragraph::new(display_text)
         .style(
             Style::default()
-                .fg(app.theme.input_box_fg)
+                .fg(if placeholder_mode {
+                    Color::Rgb(100, 100, 120)  // dim for placeholder
+                } else {
+                    app.theme.input_box_fg
+                })
                 .bg(app.theme.input_box_bg),
         )
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(app.msgs().input_box_title),
+                .border_style(Style::default().fg(border_color))
+                .title(app.msgs().input_box_title)
+                .title_bottom(if !app.input.is_empty() {
+                    let total_lines = lines.len();
+                    let total_chars = app.input.chars().count();
+                    format!(" 📝 {}L · {}chars ", total_lines, total_chars)
+                } else {
+                    String::new()
+                }),
         );
     frame.render_widget(input_para, area);
 

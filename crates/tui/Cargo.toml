@@ -23,3 +23,6 @@ regex = "1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 tui-markdown = "0.3.7"
+
+[build-dependencies]
+toml = "0.8"

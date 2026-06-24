@@ -1,15 +1,24 @@
+use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::widgets::state::*;
 use crate::widgets::tool_widget::ToolWidget;
-use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
+use std::time::Instant;
 use tact_core::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
-use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
+
+fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
+    if !tool_id.is_empty() {
+        if let Some(found) = steps.iter().position(|s| s.tool_id == tool_id) {
+            return found;
+        }
+    }
+    idx
+}
 
 impl App {
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
@@ -20,7 +29,25 @@ impl App {
         if !matches!(update, AgentUpdate::ThinkingChunk(_)) {
             self.flush_and_close_thinking();
         }
+        // Remove the loading placeholder on any content-producing update
+        // (PlanGenerated is the one that inserts it, so skip that)
+        // Metadata-only updates (TokenUsage, Balance, ModelInfo) should NOT
+        // remove the placeholder since they don't produce visible content.
+        match &update {
+            AgentUpdate::PlanGenerated(_)
+            | AgentUpdate::TokenUsage { .. }
+            | AgentUpdate::Balance(_)
+            | AgentUpdate::ModelInfo(_) => {
+                // These don't remove the loading placeholder:
+                // - PlanGenerated: we just inserted it
+                // - TokenUsage / Balance / ModelInfo: metadata only, no content
+            }
+            _ => {
+                self.remove_loading_placeholder();
+            }
+        }
         match update {
+            // PlanGenerated ignore temp
             AgentUpdate::PlanGenerated(plan) => {
                 // New task starts: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -56,17 +83,51 @@ impl App {
                     self.add_system_message(msg);
                 }
                 self.plan.scroll_state = ScrollbarState::new(plan_len.saturating_sub(1));
+
+                // Insert a loading placeholder line for the spinner animation
+                self.messages.push(Line::from(""));
+                self.raw_messages.push(String::new());
+                self.loading_idx = Some(self.messages.len() - 1);
             }
-            AgentUpdate::StepStarted(idx) => {
+            AgentUpdate::StepAdded(step) => {
+                // Flush leftover streaming text, preventing LLM output from appearing
+                // between StepAdded and StepStarted.
+                self.flush_stream_pending();
+                let idx = self.plan.steps.len();
+                self.plan.steps.push(step.clone());
+                self.plan
+                    .steps_set
+                    .insert(step.tool_id.clone(), step.clone());
+                self.plan.collapsed.push(false);
+                // Don't change current_step or total — the step hasn't started yet.
+                // total was set once by PlanGenerated and should not grow with each
+                // tool call dispatch from execute_tool_call().
+                // If we're not yet in Executing (e.g. no PlanGenerated), fall back
+                // to a safe default.
+                self.ensure_executing_status(idx);
+                self.add_new_line();
+                self.add_system_message(format!("  {}. {}", idx + 1, step.description));
+                self.plan.scroll_state =
+                    ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
+            }
+            AgentUpdate::StepStarted(idx, tool_id) => {
+                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 // Flush leftover streaming content first (especially the last thinking line),
                 // ensuring all LLM output before tool execution is fully displayed.
                 self.flush_stream_pending();
                 if let Status::Executing {
                     current_step,
-                    total: _,
+                    total,
                 } = &mut self.status
                 {
                     *current_step = idx;
+                    // Ensure total is at least idx + 1, so the progress bar
+                    // never overshoots 100%. This handles the case where
+                    // there are more tool calls than plan steps (the plan
+                    // had 3 high-level steps but 10 tool calls are dispatched).
+                    if idx >= *total {
+                        *total = idx + 1;
+                    }
                 }
                 if let Some(step) = self.plan.steps.get(idx) {
                     let description = step.description.clone();
@@ -75,7 +136,8 @@ impl App {
                     self.add_system_message(msgs.step_started_tmpl.replace("{}", &description));
                 }
             }
-            AgentUpdate::StepFinished(idx, result) => {
+            AgentUpdate::StepFinished(idx, tool_id, result) => {
+                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 // Close the thinking block for the current step, preventing the next step's
                 // ThinkingChunk from skipping the title because thinking_title_added is still true.
                 self.flush_stream_pending();
@@ -122,10 +184,8 @@ impl App {
                 // ToolRenderOutput, then store it as a ToolBlock. phys_idx points
                 // to the summary line so LogColumnRenderer can replace it with a
                 // full ToolCell (summary + detail card).
-                let tool_has_detail = matches!(
-                    result.tool.as_str(),
-                    "write_file" | "read_file" | "bash"
-                );
+                let tool_has_detail =
+                    matches!(result.tool.as_str(), "write_file" | "read_file" | "bash");
                 if tool_has_detail && result.detail.is_some() {
                     let msgs = self.msgs();
                     let tw = ToolWidget::from_step_result(idx, &result, &self.theme, &msgs);
@@ -155,7 +215,8 @@ impl App {
                     step.output = Some(result.message);
                 }
             }
-            AgentUpdate::StepFailed(idx, error) => {
+            AgentUpdate::StepFailed(idx, tool_id, error) => {
+                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 let msgs = self.msgs();
                 self.add_system_message(
@@ -192,6 +253,7 @@ impl App {
                 self.status = Status::Done;
                 self.task_start_time = None;
                 self.task_done_time = Some(chrono::Local::now());
+                // TODO Add task stats block
             }
             // Error handling
             AgentUpdate::Error(kind) => {
@@ -251,22 +313,6 @@ impl App {
             // Add system message
             AgentUpdate::Info(msg) => {
                 self.add_system_message(msg);
-            }
-            AgentUpdate::StepAdded(step) => {
-                // Flush leftover streaming text, preventing LLM output from appearing
-                // between StepAdded and StepStarted.
-                self.flush_stream_pending();
-                let idx = self.plan.steps.len();
-                self.plan.steps.push(step.clone());
-                self.plan.collapsed.push(false);
-                self.status = Status::Executing {
-                    current_step: idx,
-                    total: self.plan.steps.len(),
-                };
-                self.add_new_line();
-                self.add_system_message(format!("  {}. {}", idx + 1, step.description));
-                self.plan.scroll_state =
-                    ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
             }
             AgentUpdate::RequestSelect {
                 prompt,
@@ -374,11 +420,9 @@ impl App {
                             let stream_end = start_idx + self.stream.code_block_line_count;
 
                             if !lines.is_empty() {
-                                let code_text =
-                                    format!("```{}\n{}\n```", lang, lines.join("\n"));
+                                let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
                                 let (styled, _) = render_markdown_tui(&code_text);
-                                let placeholder_count =
-                                    styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
+                                let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
                                 let placeholders: Vec<Line<'static>> =
                                     (0..placeholder_count).map(|_| Line::from("")).collect();
                                 let raw_placeholders: Vec<String> =
@@ -417,13 +461,18 @@ impl App {
                         if self.stream.code_block_line_count > 1 {
                             if let Some(prev_raw) = self.raw_messages.get_mut(prev_idx) {
                                 if prev_raw.ends_with(STREAMING_INDICATOR) {
-                                    let clean = prev_raw
-                                        .trim_end_matches(STREAMING_INDICATOR)
-                                        .to_string();
+                                    let clean =
+                                        prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
                                     *prev_raw = clean.clone();
                                     self.messages[prev_idx] = Line::from(vec![
-                                        Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                                        Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                                        Span::styled(
+                                            "│ ",
+                                            Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                                        ),
+                                        Span::styled(
+                                            clean,
+                                            Style::default().fg(CODE_FG).bg(CODE_BG),
+                                        ),
                                     ]);
                                 }
                             }
@@ -456,8 +505,7 @@ impl App {
                             self.raw_messages.push(raw_line);
                         }
 
-                        let lang =
-                            trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
+                        let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
                         self.stream.code_block = true;
                         self.stream.code_block_buffer.clear();
                         self.stream.code_block_lang = lang.clone();
@@ -545,6 +593,4 @@ impl App {
             self.update_search_matches();
         }
     }
-
-
 }

@@ -39,9 +39,10 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
+    pub log_search_count_tmpl: &'static str, // " 📋 [Log] ({}/{}) " — shown when search active
     pub thinking_card_title: &'static str, // "🧠 Thinking ({} line{})"
     pub thinking_card_title_pl: &'static str, // "s" / "" for plural
-    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Click for full content | ⏱ {}"
+    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
     pub diff_card_title: &'static str,     // "+{} {}"
     pub diff_card_bottom: &'static str,    // "Double-click for full code"
     pub code_card_bottom: &'static str,    // " Click for full code "
@@ -51,6 +52,7 @@ pub struct Messages {
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
     pub input_box_title: &'static str,
+    pub input_box_placeholder: &'static str,
     pub history_title: &'static str,
     pub help_title: &'static str,
     pub thinking_popup_title: &'static str,
@@ -183,6 +185,7 @@ pub struct Messages {
     // ---- 启动/退出 ----
     pub startup_welcome: &'static str,
     pub startup_mode_hint: &'static str,
+    pub startup_quotes: &'static [&'static str],
     pub exit_bye: &'static str,
 
     // ---- 派对模式 ----
@@ -207,10 +210,11 @@ impl Messages {
 
     fn english() -> Self {
         Self {
-            log_title: " [Log] ",
+            log_title: " 📋 [Log] ",
+            log_search_count_tmpl: " 📋 [Log] ({}/{}) ",
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
-            thinking_card_bottom: " ↕ {}/{} lines | Click for full content | ⏱ {} ",
+            thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
             diff_card_title: " +{} {} ",
             diff_card_bottom: " Double-click for full code ",
             code_card_bottom: " Click for full code ",
@@ -218,8 +222,9 @@ impl Messages {
             plan_title: " 🔥 [Execution Plan] ",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
-            command_title: " Command ",
-            input_box_title: " Input (Shift/Alt+Enter=newline) ",
+            command_title: " 💻 Command ",
+            input_box_title: " ✏️ Input (Shift/Alt+Enter=newline) ",
+            input_box_placeholder: "Type a task and press Enter…",
             history_title: " Task History (Enter to retry, Esc to close) ",
             help_title: " Help (Esc to close) ",
             thinking_popup_title: " (╭ರ_•́) Thinking ",
@@ -242,7 +247,7 @@ impl Messages {
             theme_retro: "Retro",
             theme_kawaii: "Kawaii",
             theme_japanese: "Wa",
-            status_idle_tmpl: "{} {} | [Tab] Focus | [Ctrl+H] Hist | [Ctrl+T] {} | [Ctrl+L] {} | [Ctrl+?] Help | [q] Quit",
+            status_idle_tmpl: "{} {} │ ⭾ Tab Focus │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit",
             status_planning: "Planning...",
             status_executing_tmpl: "Executing step {}/{}",
             status_waiting_user_tmpl: "{} {} | ⚠️ {} (Enter/Esc)",
@@ -255,9 +260,9 @@ impl Messages {
             bottom_tips_plan: "[j/k move] [y copy] [e toggle plan]",
             bottom_branch_unknown: "unknown",
             bottom_model_unknown: "-",
-            bottom_top_tmpl: "Focus:{} | {} | {}",
+            bottom_top_tmpl: "Focus:{} │ {} │ {}",
             bottom_cache_tmpl: " | 💾 cache:{} hit({}%) /{} miss({}%) | 🧠 think:{}",
-            bottom_mid_tmpl: " {} | Tok:{}(p{})+{}(c){} | Cost:{} | Up:{}",
+            bottom_mid_tmpl: " {} │ 📊 Tok:{}(p{})+{}(c){} │ ⏳ Cost:{} │ ⏱ Up:{}",
             bottom_balance_ok: "✅",
             bottom_balance_err: "❌",
             bottom_balance_tmpl: " 💰 Balance:{} {}",
@@ -269,8 +274,8 @@ impl Messages {
             select_empty: "No options",
             select_arrow: "▶ ",
 
-            help_header_shortcuts: "Keyboard Shortcuts:",
-            help_normal_header: "  Normal Mode (Esc from Insert)",
+            help_header_shortcuts: "⌨️  Keyboard Shortcuts:",
+            help_normal_header: "  🔤 Normal Mode (Esc from Insert)",
             help_tab: "    Tab         Switch panel focus (Log/Plan)",
             help_e: "    e           Toggle Execution Plan panel",
             help_jk: "    j/k         Scroll log / move plan selection",
@@ -281,17 +286,17 @@ impl Messages {
             help_slash: "    /           Search in log (/<term> Enter, n/N navigate)",
             help_nN: "    n/N         Next/previous search match",
             help_colon: "    :           Command palette (fuzzy filter & execute)",
-            help_insert_header: "  Insert Mode (i or Enter from Normal)",
+            help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
             help_type_task: "    Type task, Enter to submit, @ to attach file",
             help_ctrl_z: "    Ctrl+Z/Y    Undo/redo input",
-            help_global_header: "  Global",
+            help_global_header: "  🌐 Global",
             help_yn: "    Enter/Esc   Approve/reject step (y/n also work)",
             help_ctrl_h: "    Ctrl+H      Show history",
             help_ctrl_t: "    Ctrl+T      Toggle theme",
             help_ctrl_l: "    Ctrl+L      Toggle language",
             help_ctrl_qmark: "    Ctrl+?      This help",
             help_q: "    q           Quit",
-            help_mouse_header: "  Mouse",
+            help_mouse_header: "  🖱️  Mouse",
             help_click_drag: "    Click/Drag     Select (2x:word, 3x:line)",
             help_scroll: "    Scroll wheel   Scroll panel",
             help_y_copy: "    y              Copy selection to clipboard",
@@ -343,6 +348,17 @@ impl Messages {
 
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, ':' for commands, '/' for search.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
+            startup_quotes: &[
+                "  thoughtful communication",
+                "  🧠 think before you act",
+                "  ⚡ code at the speed of thought",
+                "  🔨 build something great",
+                "  🌟 every line counts",
+                "  🎯 focus on what matters",
+                "  🚀 ship it",
+                "  🤖 beep boop, let's code",
+                "  🌱 grow your ideas",
+            ],
             exit_bye: "Bye! 🔔",
 
             party_msg_1: "  ✨  Hey there! ✨",
@@ -357,10 +373,11 @@ impl Messages {
 
     fn chinese() -> Self {
         Self {
-            log_title: " [日志] ",
+            log_title: " 📋 [日志] ",
+            log_search_count_tmpl: " 📋 [日志] ({}/{}) ",
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
-            thinking_card_bottom: " ↕ {}/{} 行 | 点击查看完整内容 | ⏱ {} ",
+            thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
             diff_card_title: " +{} {} ",
             diff_card_bottom: " 双击查看完整代码 ",
             code_card_bottom: " 点击查看完整代码 ",
@@ -368,8 +385,9 @@ impl Messages {
             plan_title: " 🔥 [执行计划] ",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
-            command_title: " 命令 ",
-            input_box_title: " 输入 (Shift/Alt+Enter 换行) ",
+            command_title: " 💻 命令 ",
+            input_box_title: " ✏️ 输入 (Shift/Alt+Enter 换行) ",
+            input_box_placeholder: "输入任务，按 Enter 提交…",
             history_title: " 任务历史 (Enter 重试, Esc 关闭) ",
             help_title: " 帮助 (Esc 关闭) ",
             thinking_popup_title: " (╭ರ_•́) 思考 ",
@@ -392,7 +410,7 @@ impl Messages {
             theme_retro: "复古",
             theme_kawaii: "可爱",
             theme_japanese: "和風",
-            status_idle_tmpl: "{} {} | [Tab] 切换焦点 | [Ctrl+H] 历史 | [Ctrl+T] {} | [Ctrl+L] {} | [Ctrl+?] 帮助 | [q] 退出",
+            status_idle_tmpl: "{} {} │ ⭾ Tab 切换 │ ⌨H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
             status_planning: "规划中...",
             status_executing_tmpl: "正在执行步骤 {}/{}",
             status_waiting_user_tmpl: "{} {} | ⚠️ {} (Enter/Esc)",
@@ -405,9 +423,9 @@ impl Messages {
             bottom_tips_plan: "[j/k 移动] [y 复制] [e 切换计划]",
             bottom_branch_unknown: "未知",
             bottom_model_unknown: "-",
-            bottom_top_tmpl: "焦点:{} | {} | {}",
+            bottom_top_tmpl: "焦点:{} │ {} │ {}",
             bottom_cache_tmpl: " | 💾 缓存命中:{}({}%) 未命中:{}({}%) | 🧠 思维:{}",
-            bottom_mid_tmpl: " {} | 令牌:{}(输入{})+{}(输出){} | 耗时:{} | 运行:{}",
+            bottom_mid_tmpl: " {} │ 📊 令牌:{}(输入{})+{}(输出){} │ ⏳ 耗时:{} │ ⏱ 运行:{}",
             bottom_balance_ok: "✅",
             bottom_balance_err: "❌",
             bottom_balance_tmpl: " 💰 余额:{} {}",
@@ -419,8 +437,8 @@ impl Messages {
             select_empty: "无选项",
             select_arrow: "▶ ",
 
-            help_header_shortcuts: "键盘快捷键:",
-            help_normal_header: "  普通模式 (在插入模式按 Esc)",
+            help_header_shortcuts: "⌨️  键盘快捷键:",
+            help_normal_header: "  🔤 普通模式 (在插入模式按 Esc)",
             help_tab: "    Tab         切换焦点面板 (日志/计划)",
             help_e: "    e           切换执行计划面板",
             help_jk: "    j/k         滚动日志 / 移动计划选择",
@@ -431,17 +449,17 @@ impl Messages {
             help_slash: "    /           搜索日志 (/关键词 Enter, n/N 导航)",
             help_nN: "    n/N         下一个/上一个搜索结果",
             help_colon: "    :           命令面板 (模糊过滤并执行)",
-            help_insert_header: "  插入模式 (在普通模式按 i 或 Enter)",
+            help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",
             help_type_task: "    输入任务，按 Enter 提交，@ 附加文件",
             help_ctrl_z: "    Ctrl+Z/Y    撤销/重做输入",
-            help_global_header: "  全局",
+            help_global_header: "  🌐 全局",
             help_yn: "    Enter/Esc   批准/拒绝步骤 (y/n 也可)",
             help_ctrl_h: "    Ctrl+H      显示历史",
             help_ctrl_t: "    Ctrl+T      切换主题",
             help_ctrl_l: "    Ctrl+L      切换语言",
             help_ctrl_qmark: "    Ctrl+?      显示帮助",
             help_q: "    q           退出",
-            help_mouse_header: "  鼠标",
+            help_mouse_header: "  🖱️  鼠标",
             help_click_drag: "    双击/三击    选词/选行, 拖拽选择",
             help_scroll: "    滚轮         滚动面板",
             help_y_copy: "    y            复制选中内容到剪贴板",
@@ -493,6 +511,16 @@ impl Messages {
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, ':' 打开命令面板, '/' 搜索。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",
+            startup_quotes: &[
+                "  thoughtful communication",
+                "  🧠 三思而后行",
+                "  ⚡ 以思维的速度编码",
+                "  🔨 构建伟大的东西",
+                "  🌟 每一行都重要",
+                "  🎯 专注于重要的事",
+                "  🚀 出发吧",
+                "  🤖 哔啵哔啵，来写代码吧",
+            ],
             exit_bye: "再见! 🔔",
 
             party_msg_1: "  ✨  你好呀! ✨",

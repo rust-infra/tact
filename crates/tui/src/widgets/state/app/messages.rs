@@ -15,27 +15,66 @@ impl App {
             "     ╚═╝    ",
         ];
 
+        // Gradient: use accent color and increase brightness for each line
+        let accent = self.theme.accent;
+        let line_colors = match accent {
+            Color::Rgb(r, g, b) => {
+                let step = 15u8;
+                [
+                    Color::Rgb(r.saturating_sub(step * 2), g.saturating_sub(step * 2), b),
+                    Color::Rgb(r.saturating_sub(step), g.saturating_sub(step), b),
+                    Color::Rgb(r, g, b),
+                    Color::Rgb(r.saturating_add(step / 2), g.saturating_add(step / 2), b),
+                    Color::Rgb(
+                        r.saturating_add(step),
+                        g.saturating_add(step),
+                        b.saturating_add(step / 2),
+                    ),
+                    Color::Rgb(
+                        r.saturating_add(step * 2),
+                        g.saturating_add(step * 2),
+                        b.saturating_add(step),
+                    ),
+                ]
+            }
+            _ => [
+                Color::Green,
+                Color::LightGreen,
+                Color::Green,
+                Color::LightGreen,
+                Color::Green,
+                Color::LightGreen,
+            ],
+        };
+
         self.add_new_line();
-        for line in &logo {
+        for (i, line) in logo.iter().enumerate() {
+            let color = line_colors[i.min(line_colors.len() - 1)];
             self.messages.push(Line::from(Span::styled(
                 (*line).to_string(),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
             self.raw_messages.push((*line).to_string());
         }
 
-        let title = "  Tact Agent";
+        let version = env!("TACT_VERSION");
+        let title = format!("  Tact Agent  v{}", version);
         self.messages.push(Line::from(Span::styled(
-            title.to_string(),
+            title.clone(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        self.raw_messages.push(title.to_string());
+        self.raw_messages.push(title);
 
-        let tagline = "  thoughtful communication";
+        // Random startup quote
+        let quotes = self.msgs().startup_quotes;
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let idx = (seed as usize) % quotes.len();
+        let tagline = quotes[idx];
         self.messages.push(Line::from(Span::styled(
             tagline.to_string(),
             Style::default()

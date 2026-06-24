@@ -298,4 +298,64 @@ impl App {
         self.raw_messages.extend(raw_lines);
         self.stream.buffer.clear();
     }
+
+    /// Remove the loading placeholder line if it exists.
+    /// Returns true if a loading placeholder was removed.
+    pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
+        if let Some(idx) = self.loading_idx.take() {
+            if idx < self.messages.len() {
+                self.messages.remove(idx);
+                self.raw_messages.remove(idx);
+                // Adjust any code_blocks / tool_blocks / thinking blocks that reference
+                // indices after the removed line
+                for block in &mut self.code_blocks {
+                    if block.start_idx > idx {
+                        block.start_idx -= 1;
+                        block.end_idx -= 1;
+                    }
+                }
+                for block in &mut self.tool_blocks {
+                    if block.phys_idx > idx {
+                        block.phys_idx -= 1;
+                    }
+                }
+                for block in &mut self.thinking.blocks {
+                    if block.title_idx > idx {
+                        block.title_idx -= 1;
+                        block.end_idx -= 1;
+                    }
+                }
+                if let Some(ref mut start) = self.thinking.active_start {
+                    if *start > idx {
+                        *start -= 1;
+                    }
+                }
+                if let Some(ref mut end) = self.thinking.active_end {
+                    if *end > idx {
+                        *end -= 1;
+                    }
+                }
+                if let Some(ref mut start) = self.stream.code_block_start_idx {
+                    if *start > idx {
+                        *start -= 1;
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ensure the status is `Status::Executing`. If it already is, preserve
+    /// current_step and total unchanged. Otherwise transition to Executing
+    /// with a fallback total based on the current plan length.
+    pub(crate) fn ensure_executing_status(&mut self, _step_idx: usize) {
+        if !matches!(self.status, Status::Executing { .. }) {
+            self.status = Status::Executing {
+                current_step: 0,
+                total: self.plan.steps.len(),
+            };
+        }
+    }
 }

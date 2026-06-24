@@ -215,6 +215,12 @@ pub struct App {
     pub(crate) party_mode: bool,
     /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).
     pub(crate) konami_progress: u8,
+    /// Spinner animation frame (0-9) for typing/loading indicator.
+    pub(crate) spinner_frame: u8,
+    /// Loading placeholder index in messages (inserted at PlanGenerated, removed on first content).
+    pub(crate) loading_idx: Option<usize>,
+    /// Panel split ratio (0.0–1.0) for the Plan panel width. 0.20 = 20% plan, 80% log.
+    pub(crate) panel_split_ratio: f64,
     /// Current interface language.
     pub(crate) language: Language,
     /// Brief status bar notification (auto-clears after 3s).

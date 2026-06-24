@@ -15,11 +15,7 @@ const STREAMING_INDICATOR: &str = " ▌";
 impl App {
     pub(crate) fn retry_task(&mut self, task: String) {
         self.add_user_message(task.clone());
-        self.plan.steps.clear();
-        self.plan.collapsed.clear();
-        self.plan.selected = 0;
-        self.plan.list_state = ListState::default();
-        self.plan.scroll_state = ScrollbarState::new(0);
+        self.plan.reset();
         self.status = Status::Planning;
         let _ = self.user_cmd_tx.send(UserCommand::SubmitTask(task));
         self.show_history = false;

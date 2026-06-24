@@ -84,11 +84,11 @@ pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
     /// Step `idx` has started execution
-    StepStarted(usize),
+    StepStarted(usize, String /* tool_id */),
     /// Step `idx` succeeded, with structured result
-    StepFinished(usize, StepResult),
+    StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message
-    StepFailed(usize, String),
+    StepFailed(usize, String /* tool_id */, String),
     /// Requires user approval: prompt text, step index, approval channel (true=accept, false=reject)
     NeedApproval(String, usize, oneshot::Sender<bool>),
     /// The entire task is complete
@@ -146,6 +146,9 @@ pub struct PlanStep {
     pub description: String,
     /// Tool name: read_file / write_file / run_command
     pub tool: String,
+    /// LLM-assigned tool-use id from the assistant message.
+    #[serde(default)]
+    pub tool_id: String,
     /// Tool arguments (key-value pairs)
     pub args: HashMap<String, String>,
     /// Whether user manual approval is required before execution

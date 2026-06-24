@@ -116,6 +116,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
             let para = Paragraph::new(err).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title(app.msgs().diff_popup_title.replace("{}", &file_path)),
             );
             frame.render_widget(para, area);
@@ -138,6 +139,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
     frame.render_widget(Clear, popup_area);
+    super::render_popup_shadow(frame, popup_area);
 
     let content_height = popup_height.saturating_sub(3) as usize;
     let max_scroll = total.saturating_sub(1);

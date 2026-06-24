@@ -70,6 +70,9 @@ pub(crate) fn render_markdown_tui(text: &str) -> (Vec<Line<'static>>, Vec<String
     // Post-process: apply background to code block content lines
     apply_code_background(&mut styled_lines, &raw_lines);
 
+    // Post-process: add ▎ left border to blockquote lines (identified by green fg)
+    apply_blockquote_indicator(&mut styled_lines);
+
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
     (styled_lines, raw_lines)
 }
@@ -116,6 +119,20 @@ fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String]) {
             }
         }
         i += 1;
+    }
+}
+
+/// Adds a `▎` left border indicator to blockquote-styled lines.
+/// Blockquote lines are identified by the green foreground set by `TuiStyleSheet::blockquote`.
+fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>) {
+    let quote_style = Style::new().green();
+    for line in lines.iter_mut() {
+        if line.style.fg == quote_style.fg && line.style.bg == quote_style.bg {
+            // Prepend ▎ with the blockquote green style
+            let mut spans = vec![Span::styled("▎ ", line.style)];
+            spans.extend(std::mem::take(&mut line.spans));
+            line.spans = spans;
+        }
     }
 }
 

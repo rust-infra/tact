@@ -82,7 +82,7 @@ pub struct Theme {
 
 impl Theme {
     /// Returns the color configuration for the given theme name.
-    pub(super) fn by_name(name: ThemeName) -> Self {
+    pub fn by_name(name: ThemeName) -> Self {
         match name {
             ThemeName::Dark => Self {
                 name,

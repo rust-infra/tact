@@ -4,8 +4,11 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
+
+/// Spinner frames for thinking card animation.
+const THINKING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Render thinking block card overlay.
 pub(crate) fn render_thinking_cards(
@@ -15,6 +18,7 @@ pub(crate) fn render_thinking_cards(
     visual_scroll: usize,
     visible_height: usize,
 ) {
+    let spinner_char = THINKING_SPINNER[(app.spinner_frame as usize) % THINKING_SPINNER.len()];
     let vs_cache = &app.log_scroll.visual_start_cache;
     for block in &app.thinking.blocks {
         let Some(title_logical) = app.phys_to_logical_fast(block.title_idx) else {
@@ -42,32 +46,39 @@ pub(crate) fn render_thinking_cards(
         let total_lines = block.end_idx.saturating_sub(block.title_idx);
         let card_style = Style::default().fg(Color::Rgb(140, 140, 220));
         let visible_count = total_lines.min(3);
-        let showing_from = total_lines.saturating_sub(visible_count);
         let msgs = app.msgs();
         let elapsed_str = format_elapsed(block.elapsed);
+
+        // Show line count with "Click for full content" hint
+        let progress_bar = msgs
+            .thinking_card_bottom
+            .replacen("{}", &visible_count.to_string(), 1)
+            .replacen("{}", &total_lines.to_string(), 1)
+            .replacen("{}", &elapsed_str, 1);
+
         let card_block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(card_style)
             .style(Style::default().bg(app.theme.bg))
             .title(
-                msgs.thinking_card_title
-                    .replacen("{}", &total_lines.to_string(), 1)
-                    .replacen(
-                        "{}",
-                        if total_lines == 1 {
-                            ""
-                        } else {
-                            msgs.thinking_card_title_pl
-                        },
-                        1,
-                    ),
+                format!(
+                    " {} {}",
+                    spinner_char,
+                    msgs.thinking_card_title
+                        .replacen("{}", &total_lines.to_string(), 1)
+                        .replacen(
+                            "{}",
+                            if total_lines == 1 {
+                                ""
+                            } else {
+                                msgs.thinking_card_title_pl
+                            },
+                            1,
+                        ),
+                ),
             )
-            .title_bottom(
-                msgs.thinking_card_bottom
-                    .replacen("{}", &(showing_from + 1).to_string(), 1)
-                    .replacen("{}", &total_lines.to_string(), 1)
-                    .replacen("{}", &elapsed_str, 1),
-            );
+            .title_bottom(progress_bar);
 
         let card_area = Rect::new(
             area.x + 1,
