@@ -180,18 +180,16 @@ pub async fn run_tui(
 
         // Done state highlight: auto-revert to Idle after 2s so shortcut hints aren't
         // permanently hidden
-        if let Status::Done = app.status {
-            if let Some(done_time) = app.task_done_time {
-                if chrono::Local::now()
-                    .signed_duration_since(done_time)
-                    .num_seconds()
-                    >= 2
-                {
-                    app.status = Status::Idle;
-                    app.task_done_time = None;
-                    app.dirty = true; // status bar needs repaint to show Idle
-                }
-            }
+        if let Status::Done = app.status
+            && let Some(done_time) = app.task_done_time
+            && chrono::Local::now()
+                .signed_duration_since(done_time)
+                .num_seconds()
+                >= 2
+        {
+            app.status = Status::Idle;
+            app.task_done_time = None;
+            app.dirty = true; // status bar needs repaint to show Idle
         }
 
         // flash_msg auto-clears after 3s
