@@ -27,6 +27,13 @@ impl App {
         self.raw_messages.push(String::new());
     }
 
+    /// Sentinel row — rendered as a full-width dashed rule at draw time.
+    pub(crate) fn add_task_end_separator(&mut self) {
+        self.messages.push(Line::default());
+        self.raw_messages
+            .push(crate::render::cells::separator::TASK_END_SEPARATOR.to_string());
+    }
+
     /// Open the thinking popup, locating the block by its title line index.
     pub(crate) fn open_thinking_popup(&mut self, title_idx: usize) {
         if let Some((bi, block)) = self

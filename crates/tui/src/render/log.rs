@@ -117,17 +117,26 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
         for logical_i in 0..total_logical {
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                let base = &app.messages[phys_idx];
-                if base.spans.is_empty() {
+                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
+                    Line::default()
+                } else if app.messages[phys_idx].spans.is_empty() {
                     Line::default()
                 } else {
-                    base.clone()
+                    app.messages[phys_idx].clone()
                 }
             } else {
                 // Last logical row: live stream text, styled with accent color.
                 Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.accent))
             };
-            let wrapped = wrap_line(&line, wrap_width);
+            let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
+                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
+                    vec![Line::default()]
+                } else {
+                    wrap_line(&line, wrap_width)
+                }
+            } else {
+                wrap_line(&line, wrap_width)
+            };
             app.log_scroll.visual_cache.extend(wrapped);
             app.log_scroll
                 .visual_start_cache
@@ -330,6 +339,17 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 renderer.push(vis_start, card_cell);
                 // Skip the summary logical row + all placeholder rows.
                 logical_i += tb.output.visual_rows(false) - rows_before;
+                continue;
+            }
+        }
+
+        // Task-end rule: full-width dashed line, width resolved at render time.
+        if let Some(phys) = phys_idx {
+            if super::cells::separator::is_task_end_separator(&app.raw_messages[phys]) {
+                let sep =
+                    super::cells::separator::TaskEndSeparator::new(app.theme.border);
+                renderer.push(vs_cache[logical_i], sep);
+                logical_i += 1;
                 continue;
             }
         }

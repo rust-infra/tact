@@ -7,8 +7,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-/// Spinner frames for thinking card animation.
+/// Spinner frames for in-progress thinking animation (see `render_loading_spinner` in log.rs).
 const THINKING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+/// Resting frame for collapsed (completed) thinking cards — static, not animated.
+const THINKING_DONE_ICON: char = THINKING_SPINNER[THINKING_SPINNER.len() - 1];
 
 /// Render thinking block card overlay.
 pub(crate) fn render_thinking_cards(
@@ -18,7 +20,7 @@ pub(crate) fn render_thinking_cards(
     visual_scroll: usize,
     visible_height: usize,
 ) {
-    let spinner_char = THINKING_SPINNER[(app.spinner_frame as usize) % THINKING_SPINNER.len()];
+    let spinner_char = THINKING_DONE_ICON;
     let vs_cache = &app.log_scroll.visual_start_cache;
     for block in &app.thinking.blocks {
         let Some(title_logical) = app.phys_to_logical_fast(block.title_idx) else {

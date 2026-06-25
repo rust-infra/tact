@@ -250,6 +250,12 @@ impl App {
                 if let Some(entry) = self.task_history.last_mut() {
                     entry.summary = summary;
                 }
+                // Trailing separator: bumps messages.len() to rebuild the visual wrap
+                // cache and marks the end of this response.
+                self.add_task_end_separator();
+                if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+                    self.log_scroll.offset = u16::MAX;
+                }
                 self.status = Status::Done;
                 self.task_start_time = None;
                 self.task_done_time = Some(chrono::Local::now());
