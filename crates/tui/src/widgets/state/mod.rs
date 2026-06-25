@@ -12,6 +12,7 @@ pub(crate) use tact_core::PlanStep;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
+mod log_messages;
 mod log_scroll;
 mod mouse_state;
 mod plan_panel;
@@ -134,6 +135,13 @@ pub(crate) enum Status {
     Done,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawMessageType {
+    LLM,
+    LLMThinking,
+    SysTool,
+}
+
 // ========== Main State ==========
 
 /// TUI application main state, holding all UI state, scroll positions,
@@ -146,6 +154,7 @@ pub struct App {
     pub(crate) cmd_line: String,
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
+    pub(crate) raw_message_types: Vec<RawMessageType>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,

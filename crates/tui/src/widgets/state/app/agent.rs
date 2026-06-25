@@ -85,8 +85,7 @@ impl App {
                 self.plan.scroll_state = ScrollbarState::new(plan_len.saturating_sub(1));
 
                 // Insert a loading placeholder line for the spinner animation
-                self.messages.push(Line::from(""));
-                self.raw_messages.push(String::new());
+                self.append_blank(RawMessageType::SysTool);
                 self.loading_idx = Some(self.messages.len() - 1);
             }
             AgentUpdate::StepAdded(step) => {
@@ -195,8 +194,7 @@ impl App {
                     // phys_idx points to the summary line pushed by add_system_message above.
                     let phys_idx = self.messages.len().saturating_sub(1);
                     for _ in 0..placeholder_count {
-                        self.messages.push(Line::from(""));
-                        self.raw_messages.push(String::new());
+                        self.append_blank(RawMessageType::SysTool);
                     }
                     self.tool_blocks.push(ToolBlock { phys_idx, output });
                     self.log_scroll.state =
@@ -340,15 +338,17 @@ impl App {
                         .bg(Color::Rgb(35, 35, 45));
                     // Insert a blank isolation line before the title to establish visual
                     // separation before collapsing
-                    self.messages.push(Line::from(""));
-                    self.raw_messages.push(String::new());
+                    self.append_blank(RawMessageType::LLMThinking);
                     let separator_idx = self.messages.len() - 1;
 
-                    self.messages.push(Line::from(Span::styled(
+                    self.append_msg(
+                        Line::from(Span::styled(
+                            msgs.thinking_title.to_string(),
+                            title_style,
+                        )),
                         msgs.thinking_title.to_string(),
-                        title_style,
-                    )));
-                    self.raw_messages.push(msgs.thinking_title.to_string());
+                        RawMessageType::LLMThinking,
+                    );
                     self.thinking.title_added = true;
                     self.thinking.active_start = Some(separator_idx);
                     self.thinking.thinking_start = Some(Instant::now());
@@ -367,9 +367,11 @@ impl App {
                     } else {
                         msgs.thinking_line_prefix.replace("{}", &line).to_string()
                     };
-                    self.messages
-                        .push(Line::from(Span::styled(text.clone(), style)));
-                    self.raw_messages.push(text);
+                    self.append_msg(
+                        Line::from(Span::styled(text.clone(), style)),
+                        text,
+                        RawMessageType::LLMThinking,
+                    );
                     self.thinking.active_end = Some(self.messages.len() - 1);
                 }
 
@@ -396,9 +398,11 @@ impl App {
                         format!("│ {}", self.thinking.buffer)
                     };
                     if !text.is_empty() {
-                        self.messages
-                            .push(Line::from(Span::styled(text.clone(), style)));
-                        self.raw_messages.push(text);
+                        self.append_msg(
+                            Line::from(Span::styled(text.clone(), style)),
+                            text,
+                            RawMessageType::LLMThinking,
+                        );
                     }
                     self.thinking.buffer.clear();
                 }
@@ -433,14 +437,12 @@ impl App {
                                     (0..placeholder_count).map(|_| Line::from("")).collect();
                                 let raw_placeholders: Vec<String> =
                                     (0..placeholder_count).map(|_| String::new()).collect();
-                                let _: Vec<_> = self
-                                    .messages
-                                    .splice(start_idx..stream_end, placeholders)
-                                    .collect();
-                                let _: Vec<_> = self
-                                    .raw_messages
-                                    .splice(start_idx..stream_end, raw_placeholders)
-                                    .collect();
+                                self.splice_msgs(
+                                    start_idx..stream_end,
+                                    placeholders,
+                                    raw_placeholders,
+                                    RawMessageType::LLM,
+                                );
                                 self.code_blocks.push(CodeBlock {
                                     start_idx,
                                     end_idx: start_idx + placeholder_count,
@@ -449,8 +451,7 @@ impl App {
                                     styled,
                                 });
                             } else {
-                                self.messages.drain(start_idx..stream_end);
-                                self.raw_messages.drain(start_idx..stream_end);
+                                self.drain_msgs(start_idx..stream_end);
                             }
                         } else if !lines.is_empty() {
                             let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
@@ -485,11 +486,14 @@ impl App {
                         }
 
                         let display_line = format!("{}{}", line, STREAMING_INDICATOR);
-                        self.messages.push(Line::from(vec![
-                            Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                            Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
-                        ]));
-                        self.raw_messages.push(line);
+                        self.append_msg(
+                            Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                                Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                            ]),
+                            line,
+                            RawMessageType::LLM,
+                        );
                         self.stream.code_block_line_count += 1;
                     } else if is_code_fence {
                         // Open new code block: flush pending content first
@@ -507,8 +511,7 @@ impl App {
 
                         // Flush completed lines so start_idx is accurate
                         for (styled_line, raw_line) in completed.drain(..) {
-                            self.messages.push(styled_line);
-                            self.raw_messages.push(raw_line);
+                            self.append_msg(styled_line, raw_line, RawMessageType::LLM);
                         }
 
                         let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
@@ -525,11 +528,14 @@ impl App {
                             lang.clone()
                         };
                         let header_text = format!("╭─ {} ", label);
-                        self.messages.push(Line::from(Span::styled(
-                            header_text.clone(),
-                            Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                        )));
-                        self.raw_messages.push(format!("```{}", lang));
+                        self.append_msg(
+                            Line::from(Span::styled(
+                                header_text.clone(),
+                                Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                            )),
+                            format!("```{}", lang),
+                            RawMessageType::LLM,
+                        );
                     } else {
                         // Regular line handling
                         let is_table_line = trimmed.starts_with('|');
@@ -576,8 +582,7 @@ impl App {
                 }
 
                 for (styled_line, raw_line) in completed {
-                    self.messages.push(styled_line);
-                    self.raw_messages.push(raw_line);
+                    self.append_msg(styled_line, raw_line, RawMessageType::LLM);
                 }
 
                 self.log_scroll.state =

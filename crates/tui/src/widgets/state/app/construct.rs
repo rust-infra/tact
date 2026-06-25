@@ -53,6 +53,7 @@ impl App {
             cmd_line: String::new(),
             messages: Vec::new(),
             raw_messages: Vec::new(),
+            raw_message_types: Vec::new(),
             plan: PlanPanel::new(),
             status: Status::Idle,
             agent_rx,

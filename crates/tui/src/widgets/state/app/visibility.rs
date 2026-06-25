@@ -8,63 +8,6 @@ use tact_core::{AgentUpdate, StepStatus};
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const STREAMING_INDICATOR: &str = " ▌";
 
-fn is_plan_step_line(raw: &str) -> bool {
-    raw.strip_prefix("  ").and_then(|rest| {
-        let (num, after) = rest.split_once(". ")?;
-        (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty())
-            .then_some(())
-    })
-    .is_some()
-}
-
-/// Plain-text log rows that belong to the tool execution flow (not rendered via ToolCell).
-fn is_tool_related_message(raw: &str) -> bool {
-    let raw = raw.trim_end();
-
-    if raw.starts_with('▶') {
-        return true;
-    }
-
-    if raw.starts_with("Executing ") || raw.starts_with("Error invoking tool ") {
-        return true;
-    }
-
-    if raw.starts_with('⚠')
-        && (raw.contains("Need approval:") || raw.contains("需要审批:"))
-    {
-        return true;
-    }
-
-    if raw.starts_with("Generated ") && raw.contains(" steps:") {
-        return true;
-    }
-    if raw.starts_with("生成了 ") && raw.contains("个步骤") {
-        return true;
-    }
-
-    if is_plan_step_line(raw) {
-        return true;
-    }
-
-    if raw.starts_with('✓') || raw.starts_with('✗') || raw.starts_with('✔') {
-        if raw.contains("Step ") || raw.contains("步骤 ") {
-            return true;
-        }
-        if raw.contains("Selected:") || raw.contains("已选择:") {
-            return true;
-        }
-        if raw.contains("Step approved")
-            || raw.contains("步骤已批准")
-            || raw.contains("Step rejected")
-            || raw.contains("步骤已拒绝")
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
 impl App {
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
         // messages[] 布局（一个已完成 thinking block 的物理索引范围）:
@@ -87,46 +30,13 @@ impl App {
         true
     }
 
-    /// Whether a physical message row belongs to a thinking block (active or collapsed).
-    pub(crate) fn is_thinking_phys(&self, phys: usize) -> bool {
-        for block in &self.thinking.blocks {
-            let start = block.title_idx.saturating_sub(1);
-            if phys >= start && phys <= block.end_idx + 1 {
-                return true;
-            }
-        }
-        if self.thinking.title_added {
-            if let Some(blank_idx) = self.thinking.active_start {
-                let end = self.thinking.active_end.unwrap_or(blank_idx);
-                if phys >= blank_idx && phys <= end + 1 {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Whether a physical message row belongs to a tool invocation (summary, placeholders, or step status).
-    pub(crate) fn is_tool_phys(&self, phys: usize) -> bool {
-        if self.tool_blocks.iter().any(|b| {
-            phys >= b.phys_idx && phys <= b.phys_idx + b.output.message_placeholder_rows()
-        }) {
-            return true;
-        }
-        self.raw_messages
-            .get(phys)
-            .is_some_and(|raw| is_tool_related_message(raw))
-    }
-
     /// Left indent columns for nested log content at this physical row.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        if self.is_thinking_phys(phys) {
-            crate::render::util::LOG_THINKING_INDENT
-        } else if self.is_tool_phys(phys) {
-            crate::render::util::LOG_TOOL_INDENT
-        } else {
-            0
-        }
+        self.raw_message_types
+            .get(phys)
+            .copied()
+            .unwrap_or(RawMessageType::LLM)
+            .log_indent()
     }
 
     /// Map a logical line number to the physical index in messages.
@@ -237,8 +147,12 @@ impl App {
             // title at blank_idx+1, thinking content lines at blank_idx+2..=end
             if end > blank_idx {
                 // Insert a blank line at the end as visual separator (isolation line above already inserted during streaming)
-                self.messages.insert(end + 1, Line::from(""));
-                self.raw_messages.insert(end + 1, String::new());
+                self.insert_msg(
+                    end + 1,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::LLMThinking,
+                );
 
                 let title_idx = blank_idx + 1;
                 let end_idx = end; // Not affected by insert since insert happens after end
@@ -297,9 +211,11 @@ impl App {
                     format!("│ {}", self.thinking.buffer)
                 };
                 if !flush_text.is_empty() {
-                    self.messages
-                        .push(Line::from(Span::styled(flush_text.clone(), style)));
-                    self.raw_messages.push(flush_text);
+                    self.append_msg(
+                        Line::from(Span::styled(flush_text.clone(), style)),
+                        flush_text,
+                        RawMessageType::LLMThinking,
+                    );
                 }
                 self.thinking.buffer.clear();
                 self.thinking.active_end = Some(self.messages.len() - 1);
@@ -313,8 +229,7 @@ impl App {
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
             let (lines, raw_lines) = format_table(&self.stream.table_buffer, &self.theme);
-            self.messages.extend(lines);
-            self.raw_messages.extend(raw_lines);
+            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             self.stream.table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
@@ -333,14 +248,12 @@ impl App {
                         (0..placeholder_count).map(|_| Line::from("")).collect();
                     let raw_placeholders: Vec<String> =
                         (0..placeholder_count).map(|_| String::new()).collect();
-                    let _: Vec<_> = self
-                        .messages
-                        .splice(start_idx..stream_end, placeholders)
-                        .collect();
-                    let _: Vec<_> = self
-                        .raw_messages
-                        .splice(start_idx..stream_end, raw_placeholders)
-                        .collect();
+                    self.splice_msgs(
+                        start_idx..stream_end,
+                        placeholders,
+                        raw_placeholders,
+                        RawMessageType::LLM,
+                    );
                     self.code_blocks.push(CodeBlock {
                         start_idx,
                         end_idx: start_idx + placeholder_count,
@@ -349,14 +262,12 @@ impl App {
                         styled,
                     });
                 } else {
-                    self.messages.drain(start_idx..stream_end);
-                    self.raw_messages.drain(start_idx..stream_end);
+                    self.drain_msgs(start_idx..stream_end);
                 }
             } else if !code_lines.is_empty() {
                 let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
                 let (lines, raw_lines) = render_markdown_tui(&code_text);
-                self.messages.extend(lines);
-                self.raw_messages.extend(raw_lines);
+                self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             }
             self.stream.code_block = false;
             self.stream.code_block_line_count = 0;
@@ -365,8 +276,7 @@ impl App {
         if !self.stream.paragraph.is_empty() {
             let paragraph = std::mem::take(&mut self.stream.paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph);
-            self.messages.extend(lines);
-            self.raw_messages.extend(raw_lines);
+            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         }
         // Flush leftover thinking lines and close thinking block
         if !self.thinking.buffer.is_empty() {
@@ -380,9 +290,11 @@ impl App {
                 format!("│ {}", self.thinking.buffer)
             };
             if !text.is_empty() {
-                self.messages
-                    .push(Line::from(Span::styled(text.clone(), style)));
-                self.raw_messages.push(text);
+                self.append_msg(
+                    Line::from(Span::styled(text.clone(), style)),
+                    text,
+                    RawMessageType::LLMThinking,
+                );
             }
             self.thinking.buffer.clear();
             self.thinking.active_end = Some(self.messages.len() - 1);
@@ -393,8 +305,7 @@ impl App {
         }
         let display = self.stream.buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display);
-        self.messages.extend(lines);
-        self.raw_messages.extend(raw_lines);
+        self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         self.stream.buffer.clear();
     }
 
@@ -403,8 +314,7 @@ impl App {
     pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
         if let Some(idx) = self.loading_idx.take() {
             if idx < self.messages.len() {
-                self.messages.remove(idx);
-                self.raw_messages.remove(idx);
+                self.remove_msg(idx);
                 // Adjust any code_blocks / tool_blocks / thinking blocks that reference
                 // indices after the removed line
                 for block in &mut self.code_blocks {
