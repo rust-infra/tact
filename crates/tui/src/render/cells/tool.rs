@@ -168,7 +168,7 @@ use ratatui::{
 
 use crate::{
     render::renderable::Renderable,
-    widgets::tool_widget::{ToolPhase, ToolRenderOutput},
+    widgets::tool_widget::{ToolPhase, ToolRenderOutput, tool_card_inner_rows, tool_visual_rows},
 };
 
 /// Owned visual data for one tool invocation result in the log column.
@@ -254,19 +254,8 @@ impl ToolCell {
 
     /// Number of content rows *inside* the card borders (excluding the top and
     /// bottom border lines themselves).
-    ///
-    /// Equals `detail_preview.len()` plus one extra row for the overflow message
-    /// when `total_lines > preview.len()`.
     fn card_inner_rows(&self) -> usize {
-        if !self.has_detail_card {
-            return 0;
-        }
-        let overflow = if self.detail_total_lines > self.detail_preview.len() {
-            1
-        } else {
-            0
-        };
-        self.detail_preview.len() + overflow
+        tool_card_inner_rows(self.detail_preview.len(), self.detail_total_lines)
     }
 
     /// Build the styled content lines for the card's interior, given the available
@@ -355,17 +344,12 @@ impl Renderable for ToolCell {
     ///                top border
     /// ```
     fn height(&self, _width: u16) -> u16 {
-        if self.card_only {
-            if self.has_detail_card {
-                1_u16 + self.card_inner_rows() as u16 + 1
-            } else {
-                0
-            }
-        } else if self.has_detail_card {
-            1_u16 + 1 + self.card_inner_rows() as u16 + 1
-        } else {
-            1
-        }
+        tool_visual_rows(
+            self.has_detail_card,
+            self.detail_preview.len(),
+            self.detail_total_lines,
+            self.card_only,
+        ) as u16
     }
 
     /// Render a rectangular slice of this cell into `buf`, starting `skip_lines`
@@ -586,7 +570,7 @@ impl Renderable for ToolCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, tool_visual_rows};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -596,19 +580,13 @@ mod tests {
         let preview: Vec<String> = (1..=preview_count)
             .map(|i| format!("line-{i:02}"))
             .collect();
-        let overflow = if total > preview_count { 1 } else { 0 };
         ToolRenderOutput {
             summary: Line::from("✔ Step 1: write_file (src/main.rs)"),
             summary_raw: "✔ Step 1: write_file (src/main.rs)".into(),
             phase: ToolPhase::Success,
             arg_summary: "src/main.rs".into(),
             layout: ToolLayout {
-                // placeholder_lines is the legacy layout field; tests don't use it
-                placeholder_lines: if has_card {
-                    2 + preview_count + overflow + 1
-                } else {
-                    1
-                },
+                visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
                 has_detail_card: has_card,
             },

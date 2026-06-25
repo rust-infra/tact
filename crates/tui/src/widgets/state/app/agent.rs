@@ -191,7 +191,7 @@ impl App {
                     let tw = ToolWidget::from_step_result(idx, &result, &self.theme, &msgs);
                     let output = tw.build();
 
-                    let placeholder_count = output.layout.placeholder_lines;
+                    let placeholder_count = output.message_placeholder_rows();
                     // phys_idx points to the summary line pushed by add_system_message above.
                     let phys_idx = self.messages.len().saturating_sub(1);
                     for _ in 0..placeholder_count {

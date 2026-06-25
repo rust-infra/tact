@@ -105,6 +105,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // ```
     //
     // Rebuild when message count or panel width changes.
+    // TODO: dirty detection is incomplete — also invalidate on stream.buffer updates,
+    // in-place message edits (e.g. streaming code blocks), and theme changes.
     let cache_valid = app.log_scroll.visual_cache_ver == app.messages.len()
         && app.log_scroll.visual_cache_width == wrap_width as u16;
 
@@ -304,7 +306,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(phys) = phys_idx {
             let tool_match = app.tool_blocks.iter().find(|b| {
                 phys >= b.phys_idx
-                    && phys <= b.phys_idx + b.output.layout.placeholder_lines as usize
+                    && phys <= b.phys_idx + b.output.message_placeholder_rows()
             });
             if let Some(tb) = tool_match {
                 let rows_before = phys.saturating_sub(tb.phys_idx);
@@ -327,7 +329,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 );
                 renderer.push(vis_start, card_cell);
                 // Skip the summary logical row + all placeholder rows.
-                logical_i += 1 + tb.output.layout.placeholder_lines as usize - rows_before;
+                logical_i += tb.output.visual_rows(false) - rows_before;
                 continue;
             }
         }

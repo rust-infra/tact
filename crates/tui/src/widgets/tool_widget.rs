@@ -50,12 +50,40 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
 /// Layout metadata for reserving placeholder rows in the log panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolLayout {
-    /// Total visual rows required when rendering with a detail card.
-    pub placeholder_lines: usize,
+    /// Total visual rows for a full `ToolCell` (summary + optional detail card).
+    pub visual_rows: usize,
     /// Number of content preview rows inside the card.
     pub preview_lines: usize,
     /// Whether a detail card should be shown.
     pub has_detail_card: bool,
+}
+
+/// Content rows inside the card borders (preview lines + optional overflow row).
+pub(crate) fn tool_card_inner_rows(preview_len: usize, total_lines: usize) -> usize {
+    preview_len + usize::from(total_lines > preview_len)
+}
+
+/// Total visual rows for a tool block in the log column.
+///
+/// When `card_only` is false, the summary line is included. When true, only the
+/// detail card is drawn (summary comes from a separate `TextCell`).
+pub(crate) fn tool_visual_rows(
+    has_detail_card: bool,
+    preview_len: usize,
+    total_lines: usize,
+    card_only: bool,
+) -> usize {
+    if card_only {
+        if has_detail_card {
+            1 + tool_card_inner_rows(preview_len, total_lines) + 1
+        } else {
+            0
+        }
+    } else if has_detail_card {
+        1 + 1 + tool_card_inner_rows(preview_len, total_lines) + 1
+    } else {
+        1
+    }
 }
 
 /// Render-ready output produced by [`ToolWidget`].
@@ -71,6 +99,23 @@ pub struct ToolRenderOutput {
     pub detail_title: Option<String>,
     pub detail_preview: Vec<String>,
     pub detail_total_lines: usize,
+}
+
+impl ToolRenderOutput {
+    /// Total visual rows for this tool block (`card_only` controls summary inclusion).
+    pub fn visual_rows(&self, card_only: bool) -> usize {
+        tool_visual_rows(
+            self.layout.has_detail_card,
+            self.detail_preview.len(),
+            self.detail_total_lines,
+            card_only,
+        )
+    }
+
+    /// Empty lines to append in `messages[]` after the summary row.
+    pub fn message_placeholder_rows(&self) -> usize {
+        self.visual_rows(false).saturating_sub(1)
+    }
 }
 
 /// Unified tool invocation renderer.
@@ -224,7 +269,7 @@ impl<'a> ToolWidget<'a> {
     pub fn layout(&self) -> ToolLayout {
         let Some(detail) = self.detail.as_ref().filter(|d| self.should_show_detail(d)) else {
             return ToolLayout {
-                placeholder_lines: 1,
+                visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
             };
@@ -232,13 +277,8 @@ impl<'a> ToolWidget<'a> {
 
         let total_lines = detail.lines().count();
         let preview_count = total_lines.min(self.preview_lines);
-        let more = if total_lines > self.preview_lines {
-            1
-        } else {
-            0
-        };
         ToolLayout {
-            placeholder_lines: 2 + preview_count + more + 1,
+            visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
             has_detail_card: true,
         }
@@ -514,7 +554,10 @@ mod tests {
         assert_eq!(output.layout.preview_lines, DEFAULT_PREVIEW_LINES);
         assert_eq!(output.detail_preview.len(), DEFAULT_PREVIEW_LINES);
         assert_eq!(output.detail_total_lines, 15);
-        assert_eq!(output.layout.placeholder_lines, 2 + DEFAULT_PREVIEW_LINES + 1 + 1);
+        assert_eq!(
+            output.layout.visual_rows,
+            tool_visual_rows(true, DEFAULT_PREVIEW_LINES, 15, false)
+        );
     }
 
     #[test]
@@ -527,7 +570,7 @@ mod tests {
             .with_detail("match line");
 
         assert!(!widget.has_detail_card());
-        assert_eq!(widget.layout().placeholder_lines, 1);
+        assert_eq!(widget.layout().visual_rows, 1);
     }
 
     #[test]

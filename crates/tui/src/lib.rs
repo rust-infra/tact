@@ -523,8 +523,8 @@ pub async fn run_tui(
                                                 app.phys_to_logical_fast(b.phys_idx)
                                                     .map_or(false, |si| {
                                                         line_idx >= si
-                                                            && line_idx
-                                                                < si + b.output.layout.placeholder_lines
+                                                            &&                                                         line_idx
+                                                            < si + b.output.visual_rows(false)
                                                     })
                                             });
                                         if let Some((tool_idx, block)) = tool_hit {
