@@ -391,6 +391,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             })
         });
 
+        let indent_cols = phys_idx
+            .map(|p| app.nested_log_indent(p))
+            .unwrap_or(0);
+
         let cell = super::cells::text::TextCell::new(
             cached_lines,
             raw_text,
@@ -399,6 +403,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             is_selected,
             word_sel,
             prefix,
+            indent_cols,
             log_fg,
         );
 

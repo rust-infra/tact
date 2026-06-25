@@ -1,3 +1,4 @@
+use crate::render::util::LOG_THINKING_INDENT;
 use crate::widgets::state::App;
 use ratatui::{
     Frame,
@@ -83,9 +84,9 @@ pub(crate) fn render_thinking_cards(
             .title_bottom(progress_bar);
 
         let card_area = Rect::new(
-            area.x + 1,
+            area.x + 1 + LOG_THINKING_INDENT,
             area.y + 1 + y_top,
-            area.width.saturating_sub(2),
+            area.width.saturating_sub(2 + LOG_THINKING_INDENT),
             y_bot - y_top,
         );
         frame.render_widget(Clear, card_area);

@@ -396,6 +396,7 @@ impl Renderable for ToolCell {
     /// | 1..1+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+        let area = crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_INDENT);
         if area.height == 0 || area.width == 0 {
             return;
         }

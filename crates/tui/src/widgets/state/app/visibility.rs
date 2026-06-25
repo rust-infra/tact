@@ -8,6 +8,63 @@ use tact_core::{AgentUpdate, StepStatus};
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const STREAMING_INDICATOR: &str = " ▌";
 
+fn is_plan_step_line(raw: &str) -> bool {
+    raw.strip_prefix("  ").and_then(|rest| {
+        let (num, after) = rest.split_once(". ")?;
+        (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty())
+            .then_some(())
+    })
+    .is_some()
+}
+
+/// Plain-text log rows that belong to the tool execution flow (not rendered via ToolCell).
+fn is_tool_related_message(raw: &str) -> bool {
+    let raw = raw.trim_end();
+
+    if raw.starts_with('▶') {
+        return true;
+    }
+
+    if raw.starts_with("Executing ") || raw.starts_with("Error invoking tool ") {
+        return true;
+    }
+
+    if raw.starts_with('⚠')
+        && (raw.contains("Need approval:") || raw.contains("需要审批:"))
+    {
+        return true;
+    }
+
+    if raw.starts_with("Generated ") && raw.contains(" steps:") {
+        return true;
+    }
+    if raw.starts_with("生成了 ") && raw.contains("个步骤") {
+        return true;
+    }
+
+    if is_plan_step_line(raw) {
+        return true;
+    }
+
+    if raw.starts_with('✓') || raw.starts_with('✗') || raw.starts_with('✔') {
+        if raw.contains("Step ") || raw.contains("步骤 ") {
+            return true;
+        }
+        if raw.contains("Selected:") || raw.contains("已选择:") {
+            return true;
+        }
+        if raw.contains("Step approved")
+            || raw.contains("步骤已批准")
+            || raw.contains("Step rejected")
+            || raw.contains("步骤已拒绝")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 impl App {
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
         // messages[] 布局（一个已完成 thinking block 的物理索引范围）:
@@ -28,6 +85,48 @@ impl App {
             }
         }
         true
+    }
+
+    /// Whether a physical message row belongs to a thinking block (active or collapsed).
+    pub(crate) fn is_thinking_phys(&self, phys: usize) -> bool {
+        for block in &self.thinking.blocks {
+            let start = block.title_idx.saturating_sub(1);
+            if phys >= start && phys <= block.end_idx + 1 {
+                return true;
+            }
+        }
+        if self.thinking.title_added {
+            if let Some(blank_idx) = self.thinking.active_start {
+                let end = self.thinking.active_end.unwrap_or(blank_idx);
+                if phys >= blank_idx && phys <= end + 1 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether a physical message row belongs to a tool invocation (summary, placeholders, or step status).
+    pub(crate) fn is_tool_phys(&self, phys: usize) -> bool {
+        if self.tool_blocks.iter().any(|b| {
+            phys >= b.phys_idx && phys <= b.phys_idx + b.output.message_placeholder_rows()
+        }) {
+            return true;
+        }
+        self.raw_messages
+            .get(phys)
+            .is_some_and(|raw| is_tool_related_message(raw))
+    }
+
+    /// Left indent columns for nested log content at this physical row.
+    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+        if self.is_thinking_phys(phys) {
+            crate::render::util::LOG_THINKING_INDENT
+        } else if self.is_tool_phys(phys) {
+            crate::render::util::LOG_TOOL_INDENT
+        } else {
+            0
+        }
     }
 
     /// Map a logical line number to the physical index in messages.
