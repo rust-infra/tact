@@ -136,7 +136,8 @@ pub async fn run_tui(
                 // Input box height auto-expands with content (1–3 lines of content + 2 for border)
                 let input_lines = app.input.lines().count().max(1).min(3) as u16;
                 let input_height = input_lines + 2;
-                let bottom_height: u16 = if app.balance_info.is_some() { 3 } else { 2 };
+                const BOTTOM_BAR_ROWS: u16 = 3;
+                let bottom_height = BOTTOM_BAR_ROWS;
                 if size != last_size {
                     last_size = size;
                     let log_area = Layout::default()

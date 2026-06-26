@@ -43,6 +43,7 @@ fn render_progress_bar(current: usize, total: usize, _theme: &crate::theme::Them
 /// Render the bottom bar, showing focused panel, shortcut hints, working directory, Git branch,
 /// Model info, token stats, task elapsed time, TUI uptime, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(ratatui::widgets::Clear, area);
     let msgs = app.msgs();
     let focus = match app.focused_panel {
         FocusedPanel::Plan => msgs.bottom_focus_log_plan,
@@ -95,22 +96,18 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     {
-        let has_balance = app.balance_info.is_some();
-        let constraints: Vec<Constraint> = if has_balance {
-            vec![
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![Constraint::Length(1), Constraint::Length(1)]
-        };
+        let constraints = vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ];
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
         let top_area = areas[0];
         let mid_area = areas[1];
+        let bottom_area = areas[2];
         let top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
@@ -160,7 +157,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(bar2, mid_area);
 
         if let Some(bi) = &app.balance_info {
-            let bottom_area = areas[2];
             let status = if bi.is_available {
                 msgs.bottom_balance_ok
             } else {
@@ -183,6 +179,8 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                 .replacen("{}", &entries, 1);
             let bar3 = Paragraph::new(balance_text).style(style);
             frame.render_widget(bar3, bottom_area);
+        } else {
+            frame.render_widget(Paragraph::new("").style(style), bottom_area);
         }
     }
 }

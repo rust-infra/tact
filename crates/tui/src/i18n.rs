@@ -210,8 +210,8 @@ impl Messages {
 
     fn english() -> Self {
         Self {
-            log_title: " 📋 [Log] ",
-            log_search_count_tmpl: " 📋 [Log] ({}/{}) ",
+            log_title: " [Log] ",
+            log_search_count_tmpl: " [Log] ({}/{}) ",
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
             thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
@@ -373,8 +373,8 @@ impl Messages {
 
     fn chinese() -> Self {
         Self {
-            log_title: " 📋 [日志] ",
-            log_search_count_tmpl: " 📋 [日志] ({}/{}) ",
+            log_title: " [日志] ",
+            log_search_count_tmpl: " [日志] ({}/{}) ",
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
             thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",

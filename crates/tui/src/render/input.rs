@@ -107,6 +107,7 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
                     String::new()
                 }),
         );
+    frame.render_widget(Clear, area);
     frame.render_widget(input_para, area);
 
     let cursor_x = area.x + 1 + cursor_col as u16;
