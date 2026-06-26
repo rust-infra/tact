@@ -1,21 +1,64 @@
 use crate::widgets::state::App;
 use crate::widgets::popup_widget::PopupWidget;
-use ratatui::style::Style;
-use ratatui::widgets::ListItem;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{
+    style::{Color, Style},
+    text::Span,
+    widgets::ListItem,
+    Frame, layout::Rect,
+};
 
 
 pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let count = app.task_history.len();
     let items: Vec<ListItem> = app
         .task_history
         .iter()
         .rev()
-        .map(|entry| {
-            let mut text = format!("[{}] {}", entry.timestamp, entry.task);
+        .enumerate()
+        .map(|(idx, entry)| {
+            let is_last = idx == count.saturating_sub(1);
+            let branch = if is_last { "╰──" } else { "├──" };
+
+            let icon = if entry.summary.contains("✅") || entry.summary.contains("✓") {
+                "✅"
+            } else if entry.summary.contains("❌")
+                || entry.summary.contains("✗")
+                || entry.summary.contains("Error")
+            {
+                "❌"
+            } else {
+                "🔄"
+            };
+
+            let task_preview = if entry.task.len() > 40 {
+                format!("{}…", &entry.task[..37])
+            } else {
+                entry.task.clone()
+            };
+
+            let mut text = format!(
+                " {} {} [{}] {}",
+                branch, icon, entry.timestamp, task_preview
+            );
             if !entry.summary.is_empty() {
-                text.push_str(&format!(" -> {}", entry.summary));
+                text.push_str(" → ");
+                let summary_short = if entry.summary.len() > 30 {
+                    format!("{}…", &entry.summary[..27])
+                } else {
+                    entry.summary.clone()
+                };
+                text.push_str(&summary_short);
             }
-            ListItem::new(text).style(Style::default().fg(app.theme.accent))
+
+            let line_color = if entry.summary.contains("❌") || entry.summary.contains("✗") {
+                Color::Rgb(220, 80, 80)
+            } else if entry.summary.contains("✅") || entry.summary.contains("✓") {
+                Color::Rgb(80, 200, 120)
+            } else {
+                app.theme.accent
+            };
+
+            ListItem::new(Span::styled(text, Style::default().fg(line_color)))
         })
         .collect();
     let widget = PopupWidget::default()

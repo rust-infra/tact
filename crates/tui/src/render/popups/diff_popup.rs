@@ -1,10 +1,11 @@
+use crate::widgets::state::App;
 use ratatui::{
-    Frame, layout::Rect,
+    Frame,
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
-use crate::widgets::state::App;
 
 /// Dark background shared with code blocks / markdown rendering.
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
@@ -63,7 +64,9 @@ fn syntax_highlight(code: &str, lang: &str) -> Vec<Line<'static>> {
         let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let trimmed = raw.trim();
         if trimmed.starts_with("```") {
-            if in_code { break; }
+            if in_code {
+                break;
+            }
             in_code = true;
             continue;
         }
@@ -110,17 +113,21 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         Some(c) => c,
         None => {
             let err = format!("Unable to read file: {}", file_path);
-            let para = Paragraph::new(err)
-                .block(Block::default()
+            let para = Paragraph::new(err).block(
+                Block::default()
                     .borders(Borders::ALL)
-                    .title(app.msgs().diff_popup_title.replace("{}", &file_path)));
+                    .border_type(BorderType::Rounded)
+                    .title(app.msgs().diff_popup_title.replace("{}", &file_path)),
+            );
             frame.render_widget(para, area);
             return;
         }
     };
 
     let total = content.lines().count();
-    if total == 0 { return; }
+    if total == 0 {
+        return;
+    }
 
     // ------------------------------------------------------------------
     // Layout geometry (same every frame for the same area — fine).
@@ -132,6 +139,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
     frame.render_widget(Clear, popup_area);
+    super::render_popup_shadow(frame, popup_area);
 
     let content_height = popup_height.saturating_sub(3) as usize;
     let max_scroll = total.saturating_sub(1);
@@ -185,8 +193,13 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             // Fallback (shouldn't normally happen when highlighted is kept in
             // sync): render raw line.
-            let raw: String = content.lines().nth(i).unwrap_or("")
-                .chars().take(code_width).collect();
+            let raw: String = content
+                .lines()
+                .nth(i)
+                .unwrap_or("")
+                .chars()
+                .take(code_width)
+                .collect();
             Line::from(Span::styled(raw, Style::default().fg(CODE_FG).bg(CODE_BG)))
         };
 
@@ -206,32 +219,45 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let para = Paragraph::new(text)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(CODE_BORDER))
-            .title(Span::styled(
-                &title,
-                Style::default()
-                    .fg(Color::Rgb(160, 180, 240))
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::from(vec![
-                Span::styled(" y ", Style::default().fg(app.theme.accent)),
-                Span::styled(app.msgs().popup_copy_hint, Style::default().fg(app.theme.accent)),
-                Span::styled(" j/k ", Style::default().fg(app.theme.accent)),
-                Span::styled(app.msgs().popup_scroll_hint, Style::default().fg(app.theme.accent)),
-                Span::styled(" Esc ", Style::default().fg(app.theme.accent)),
-                Span::styled(app.msgs().popup_close_hint, Style::default().fg(app.theme.accent)),
-            ]))
-            .style(Style::default().bg(CODE_BG)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(CODE_BORDER))
+                .title(Span::styled(
+                    &title,
+                    Style::default()
+                        .fg(Color::Rgb(160, 180, 240))
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .title_bottom(Line::from(vec![
+                    Span::styled(" y ", Style::default().fg(app.theme.accent)),
+                    Span::styled(
+                        app.msgs().popup_copy_hint,
+                        Style::default().fg(app.theme.accent),
+                    ),
+                    Span::styled(" j/k ", Style::default().fg(app.theme.accent)),
+                    Span::styled(
+                        app.msgs().popup_scroll_hint,
+                        Style::default().fg(app.theme.accent),
+                    ),
+                    Span::styled(" Esc ", Style::default().fg(app.theme.accent)),
+                    Span::styled(
+                        app.msgs().popup_close_hint,
+                        Style::default().fg(app.theme.accent),
+                    ),
+                ]))
+                .style(Style::default().bg(CODE_BG)),
+        )
         .wrap(Wrap { trim: false });
 
     frame.render_widget(para, popup_area);
 
-    let scrollbar = Scrollbar::default()
-        .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total).viewport_content_length(content_height).position(scroll);
+    let scrollbar =
+        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
+    let mut state = ScrollbarState::new(total)
+        .viewport_content_length(content_height)
+        .position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
     app.mouse.diff_popup_area = popup_area;

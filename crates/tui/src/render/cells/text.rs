@@ -36,6 +36,8 @@ pub(crate) struct TextCell {
     word_selection: Option<(usize, usize)>,
     /// First line prefix (thinking block collapse indicator).
     prefix: Option<String>,
+    /// Left gutter columns (thinking / tool nesting).
+    indent_cols: u16,
     /// Normal foreground color.
     fg_color: Color,
 }
@@ -50,6 +52,7 @@ impl TextCell {
         is_selected: bool,
         word_selection: Option<(usize, usize)>,
         prefix: Option<String>,
+        indent_cols: u16,
         fg_color: Color,
     ) -> Self {
         TextCell {
@@ -60,6 +63,7 @@ impl TextCell {
             is_selected,
             word_selection,
             prefix,
+            indent_cols,
             fg_color,
         }
     }
@@ -154,7 +158,12 @@ impl Renderable for TextCell {
     }
 
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
-        let lines = self.build_lines(area.width);
+        let x = area.x.saturating_add(self.indent_cols);
+        let width = area.width.saturating_sub(self.indent_cols);
+        if width == 0 {
+            return;
+        }
+        let lines = self.build_lines(width);
         let mut y = area.y;
         for (i, line) in lines.iter().enumerate().skip(skip_lines) {
             if y >= area.y + area.height {
@@ -169,7 +178,7 @@ impl Renderable for TextCell {
                     }
                 }
             }
-            render_line(&line, area.x, y, area.width, buf);
+            render_line(&line, x, y, width, buf);
             y += 1;
         }
     }

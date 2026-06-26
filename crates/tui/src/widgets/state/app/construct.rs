@@ -45,6 +45,7 @@ impl App {
                 _ => "?".to_string(),
             }
         };
+        let detected_theme_name = crate::theme_detection::detect_theme();
         Self {
             input: String::new(),
             input_cursor: 0,
@@ -52,17 +53,13 @@ impl App {
             cmd_line: String::new(),
             messages: Vec::new(),
             raw_messages: Vec::new(),
+            raw_message_types: Vec::new(),
             plan: PlanPanel::new(),
             status: Status::Idle,
             agent_rx,
             user_cmd_tx,
             task_history: Vec::new(),
-            theme: Theme::by_name_str(
-                std::env::var("TACT_THEME")
-                    .ok()
-                    .as_deref()
-                    .unwrap_or("retro"),
-            ),
+            theme: Theme::by_name(detected_theme_name),
             log_scroll: LogScroll::new(),
             show_history: false,
             show_help: false,
@@ -95,6 +92,9 @@ impl App {
             balance_info: None,
             party_mode: false,
             konami_progress: 0,
+            spinner_frame: 0,
+            loading_idx: None,
+            panel_split_ratio: 0.20,
             language: Language::English,
             flash_msg: None,
             undo_stack: Vec::new(),

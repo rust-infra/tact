@@ -3,12 +3,47 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::Paragraph,
 };
+
+/// Spinner animation frames for typing/loading indicator.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Progress bar width in cells.
+const PROGRESS_BAR_WIDTH: u16 = 15;
+
+/// Render a text-based progress bar like `[█████░░░░░] 50%`
+/// Uses a smooth formula: (current + 0.5) / total, so the current step
+/// is treated as half-done. This avoids showing 0% on the first step
+/// and 100% before the last step finishes.
+fn render_progress_bar(current: usize, total: usize, _theme: &crate::theme::Theme) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    // Smooth progress: current step is half-done
+    let filled = ((current as f64 + 0.5) / total as f64).min(1.0);
+    // PROGRESS_BAR_WIDTH - 2 for the '[' and ']'
+    let inner_width = PROGRESS_BAR_WIDTH.saturating_sub(2) as usize;
+    let fill_chars = (filled * inner_width as f64).round() as usize;
+    let mut bar = String::from("[");
+    for i in 0..inner_width {
+        if i < fill_chars {
+            bar.push('█');
+        } else {
+            bar.push('░');
+        }
+    }
+    bar.push(']');
+    let pct = (filled * 100.0).round() as u8;
+    bar.push_str(&format!(" {}%", pct));
+    bar
+}
 
 /// Render the bottom bar, showing focused panel, shortcut hints, working directory, Git branch,
 /// Model info, token stats, task elapsed time, TUI uptime, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(ratatui::widgets::Clear, area);
     let msgs = app.msgs();
     let focus = match app.focused_panel {
         FocusedPanel::Plan => msgs.bottom_focus_log_plan,
@@ -61,22 +96,18 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     {
-        let has_balance = app.balance_info.is_some();
-        let constraints: Vec<Constraint> = if has_balance {
-            vec![
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![Constraint::Length(1), Constraint::Length(1)]
-        };
+        let constraints = vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ];
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
         let top_area = areas[0];
         let mid_area = areas[1];
+        let bottom_area = areas[2];
         let top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
@@ -126,7 +157,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(bar2, mid_area);
 
         if let Some(bi) = &app.balance_info {
-            let bottom_area = areas[2];
             let status = if bi.is_available {
                 msgs.bottom_balance_ok
             } else {
@@ -149,6 +179,8 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                 .replacen("{}", &entries, 1);
             let bar3 = Paragraph::new(balance_text).style(style);
             frame.render_widget(bar3, bottom_area);
+        } else {
+            frame.render_widget(Paragraph::new("").style(style), bottom_area);
         }
     }
 }
@@ -156,18 +188,23 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 /// Render the top status bar, showing current mode, focused panel, and Agent execution state.
 pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let msgs = app.msgs();
-    let mode_indicator = match app.input_mode {
-        InputMode::Normal => msgs.mode_normal,
-        InputMode::Insert => msgs.mode_insert,
-        InputMode::Search => msgs.mode_search,
-        InputMode::Palette => msgs.mode_palette,
-        InputMode::Select => msgs.mode_select,
-        InputMode::FilePicker => msgs.mode_file_picker,
+
+    // Mode indicator with emoji
+    let (mode_emoji, mode_indicator) = match app.input_mode {
+        InputMode::Normal => ("◆", msgs.mode_normal),
+        InputMode::Insert => ("◇", msgs.mode_insert),
+        InputMode::Search => ("◎", msgs.mode_search),
+        InputMode::Palette => ("⚡", msgs.mode_palette),
+        InputMode::Select => ("▣", msgs.mode_select),
+        InputMode::FilePicker => ("📎", msgs.mode_file_picker),
     };
+    let mode_str = format!("{} {}", mode_emoji, mode_indicator);
+
     let focus_str = match app.focused_panel {
         FocusedPanel::Plan => msgs.focus_plan,
         FocusedPanel::Log => msgs.focus_log,
     };
+
     let (status_text, status_style) = match &app.status {
         Status::Idle => {
             let theme_label = match app.theme.name {
@@ -184,7 +221,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             let lang_label = app.language.label();
             (
                 msgs.status_idle_tmpl
-                    .replacen("{}", mode_indicator, 1)
+                    .replacen("{}", &mode_str, 1)
                     .replacen("{}", focus_str, 1)
                     .replacen("{}", theme_label, 1)
                     .replacen("{}", lang_label, 1),
@@ -193,44 +230,61 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(app.theme.fg),
             )
         }
-        Status::Planning => (
-            format!(
-                "{} {} | {}",
-                mode_indicator, focus_str, msgs.status_planning
-            ),
-            Style::default()
-                .bg(app.theme.status_bar_bg)
-                .fg(app.theme.accent),
-        ),
+        Status::Planning => {
+            let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
+            (
+                format!(
+                    "{} {} │ {} {}",
+                    mode_str, focus_str, spinner, msgs.status_planning
+                ),
+                Style::default()
+                    .bg(app.theme.status_bar_bg)
+                    .fg(app.theme.accent),
+            )
+        }
         Status::Executing {
             current_step,
             total,
-        } => (
-            format!(
-                "{} {} | {}",
-                mode_indicator,
-                focus_str,
-                msgs.status_executing_tmpl
-                    .replacen("{}", &(current_step + 1).to_string(), 1)
-                    .replacen("{}", &total.to_string(), 1)
-            ),
-            Style::default()
-                .bg(app.theme.status_bar_bg)
-                .fg(app.theme.warning),
-        ),
-        Status::WaitingForUser { prompt, .. } => (
-            msgs.status_waiting_user_tmpl
-                .replacen("{}", mode_indicator, 1)
-                .replacen("{}", focus_str, 1)
-                .replacen("{}", prompt, 1),
-            Style::default()
-                .bg(app.theme.status_bar_bg)
-                .fg(app.theme.warning),
-        ),
+        } => {
+            let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
+            let step_label = msgs
+                .status_executing_tmpl
+                .replacen("{}", &(current_step + 1).to_string(), 1)
+                .replacen("{}", &total.to_string(), 1);
+            // Smooth progress: treat the current step as half-done so the bar
+            // never shows 0% (we're actively working) nor 100% (not done yet).
+            // Formula: (current_step + 0.5) / total
+            //   1 step:  0.5/1 = 50%
+            //   3-step step 0: 0.5/3 ≈ 17%
+            //   3-step step 1: 1.5/3 = 50%
+            //   3-step step 2: 2.5/3 ≈ 83%
+            let progress_bar = render_progress_bar(*current_step, *total, &app.theme);
+            (
+                format!(
+                    "{} {} │ {} {} {}",
+                    mode_str, focus_str, spinner, step_label, progress_bar
+                ),
+                Style::default()
+                    .bg(app.theme.status_bar_bg)
+                    .fg(app.theme.warning),
+            )
+        }
+        Status::WaitingForUser { prompt, .. } => {
+            let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
+            (
+                msgs.status_waiting_user_tmpl
+                    .replacen("{}", &format!("{} {}", mode_str, spinner), 1)
+                    .replacen("{}", focus_str, 1)
+                    .replacen("{}", prompt, 1),
+                Style::default()
+                    .bg(app.theme.status_bar_bg)
+                    .fg(app.theme.warning),
+            )
+        }
         Status::Done => (
             format!(
-                "{} {} | {}",
-                mode_indicator,
+                "{} {} │ ✅ {}",
+                mode_str,
                 focus_str,
                 msgs.status_done_tmpl.replace("{}", "")
             ),

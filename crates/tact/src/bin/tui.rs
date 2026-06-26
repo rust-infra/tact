@@ -5,7 +5,6 @@ use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role:
 use base64::Engine as _;
 use regex::Regex;
 use tact::{
-    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -14,6 +13,7 @@ use tact::{
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
+    session_store::open_sqlite_session_store,
     skill::get_skill_registry,
     store::StoreRoot,
     task::{SharedTaskManager, TaskManager},
@@ -21,7 +21,7 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_core::{AgentErrorKind, AgentUpdate, PlanStep, UserCommand};
+use tact_core::{AgentErrorKind, AgentUpdate, UserCommand};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
@@ -178,7 +178,10 @@ async fn main() -> anyhow::Result<()> {
         if sessions.is_empty() {
             println!("No sessions found.");
         } else {
-            println!("{:<36}  {:>4}  {:<20}  {:<40}", "SESSION ID", "MSGS", "UPDATED", "TITLE");
+            println!(
+                "{:<36}  {:>4}  {:<20}  {:<40}",
+                "SESSION ID", "MSGS", "UPDATED", "TITLE"
+            );
             println!("{}", "-".repeat(110));
             for s in &sessions {
                 let updated = s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -206,9 +209,7 @@ async fn main() -> anyhow::Result<()> {
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store
-        .create_session(&session_id, None)
-        .await?;
+    session_store.create_session(&session_id, None).await?;
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
@@ -306,14 +307,6 @@ async fn main() -> anyhow::Result<()> {
             UserCommand::SubmitTask(task) => {
                 agent.tool_use_counter = 0;
 
-                agent.emit_update(AgentUpdate::PlanGenerated(vec![PlanStep {
-                    description: "Processing request...".to_string(),
-                    tool: "agent_loop".to_string(),
-                    args: std::collections::HashMap::new(),
-                    need_approval: false,
-                    output: None,
-                }]));
-
                 let task_message = build_user_message(&task, &image_work_dir).await;
                 if let Err(e) = agent.agent_loop(Some(task_message)).await {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
@@ -363,7 +356,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,9 +400,8 @@ mod tests {
         let file_path = dir.join("hello.txt");
         std::fs::write(&file_path, "hello world").unwrap();
 
-        let msg = rt().block_on(async {
-            build_user_message("review @hello.txt please", &dir).await
-        });
+        let msg =
+            rt().block_on(async { build_user_message("review @hello.txt please", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
@@ -426,9 +417,7 @@ mod tests {
         let file_path = dir.join("pixel.png");
         std::fs::write(&file_path, b"not-really-a-png").unwrap();
 
-        let msg = rt().block_on(async {
-            build_user_message("look at @pixel.png", &dir).await
-        });
+        let msg = rt().block_on(async { build_user_message("look at @pixel.png", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 2);
@@ -442,9 +431,8 @@ mod tests {
         let file_path = dir.join("my file.txt");
         std::fs::write(&file_path, "spacy content").unwrap();
 
-        let msg = rt().block_on(async {
-            build_user_message("read @\"my file.txt\" now", &dir).await
-        });
+        let msg =
+            rt().block_on(async { build_user_message("read @\"my file.txt\" now", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
@@ -456,9 +444,7 @@ mod tests {
     fn test_at_missing_file_left_unchanged() {
         let dir = temp_dir();
 
-        let msg = rt().block_on(async {
-            build_user_message("see @missing.txt", &dir).await
-        });
+        let msg = rt().block_on(async { build_user_message("see @missing.txt", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 2);
@@ -477,7 +463,15 @@ mod tests {
         });
 
         let blocks = text_blocks(&msg);
-        assert!(blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
-        assert!(blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main"))));
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }))
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main")))
+        );
     }
 }

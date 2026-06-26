@@ -30,6 +30,15 @@ impl App {
         true
     }
 
+    /// Left indent columns for nested log content at this physical row.
+    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+        self.raw_message_types
+            .get(phys)
+            .copied()
+            .unwrap_or(RawMessageType::LLM)
+            .log_indent()
+    }
+
     /// Map a logical line number to the physical index in messages.
     /// Returns None if the logical line number exceeds the fixed message range
     /// (meaning it's an incomplete streaming line).
@@ -138,8 +147,12 @@ impl App {
             // title at blank_idx+1, thinking content lines at blank_idx+2..=end
             if end > blank_idx {
                 // Insert a blank line at the end as visual separator (isolation line above already inserted during streaming)
-                self.messages.insert(end + 1, Line::from(""));
-                self.raw_messages.insert(end + 1, String::new());
+                self.insert_msg(
+                    end + 1,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::LLMThinking,
+                );
 
                 let title_idx = blank_idx + 1;
                 let end_idx = end; // Not affected by insert since insert happens after end
@@ -198,9 +211,11 @@ impl App {
                     format!("│ {}", self.thinking.buffer)
                 };
                 if !flush_text.is_empty() {
-                    self.messages
-                        .push(Line::from(Span::styled(flush_text.clone(), style)));
-                    self.raw_messages.push(flush_text);
+                    self.append_msg(
+                        Line::from(Span::styled(flush_text.clone(), style)),
+                        flush_text,
+                        RawMessageType::LLMThinking,
+                    );
                 }
                 self.thinking.buffer.clear();
                 self.thinking.active_end = Some(self.messages.len() - 1);
@@ -214,8 +229,7 @@ impl App {
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
             let (lines, raw_lines) = format_table(&self.stream.table_buffer, &self.theme);
-            self.messages.extend(lines);
-            self.raw_messages.extend(raw_lines);
+            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             self.stream.table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
@@ -234,14 +248,12 @@ impl App {
                         (0..placeholder_count).map(|_| Line::from("")).collect();
                     let raw_placeholders: Vec<String> =
                         (0..placeholder_count).map(|_| String::new()).collect();
-                    let _: Vec<_> = self
-                        .messages
-                        .splice(start_idx..stream_end, placeholders)
-                        .collect();
-                    let _: Vec<_> = self
-                        .raw_messages
-                        .splice(start_idx..stream_end, raw_placeholders)
-                        .collect();
+                    self.splice_msgs(
+                        start_idx..stream_end,
+                        placeholders,
+                        raw_placeholders,
+                        RawMessageType::LLM,
+                    );
                     self.code_blocks.push(CodeBlock {
                         start_idx,
                         end_idx: start_idx + placeholder_count,
@@ -250,14 +262,12 @@ impl App {
                         styled,
                     });
                 } else {
-                    self.messages.drain(start_idx..stream_end);
-                    self.raw_messages.drain(start_idx..stream_end);
+                    self.drain_msgs(start_idx..stream_end);
                 }
             } else if !code_lines.is_empty() {
                 let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
                 let (lines, raw_lines) = render_markdown_tui(&code_text);
-                self.messages.extend(lines);
-                self.raw_messages.extend(raw_lines);
+                self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             }
             self.stream.code_block = false;
             self.stream.code_block_line_count = 0;
@@ -266,8 +276,7 @@ impl App {
         if !self.stream.paragraph.is_empty() {
             let paragraph = std::mem::take(&mut self.stream.paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph);
-            self.messages.extend(lines);
-            self.raw_messages.extend(raw_lines);
+            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         }
         // Flush leftover thinking lines and close thinking block
         if !self.thinking.buffer.is_empty() {
@@ -281,9 +290,11 @@ impl App {
                 format!("│ {}", self.thinking.buffer)
             };
             if !text.is_empty() {
-                self.messages
-                    .push(Line::from(Span::styled(text.clone(), style)));
-                self.raw_messages.push(text);
+                self.append_msg(
+                    Line::from(Span::styled(text.clone(), style)),
+                    text,
+                    RawMessageType::LLMThinking,
+                );
             }
             self.thinking.buffer.clear();
             self.thinking.active_end = Some(self.messages.len() - 1);
@@ -294,8 +305,66 @@ impl App {
         }
         let display = self.stream.buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display);
-        self.messages.extend(lines);
-        self.raw_messages.extend(raw_lines);
+        self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         self.stream.buffer.clear();
+    }
+
+    /// Remove the loading placeholder line if it exists.
+    /// Returns true if a loading placeholder was removed.
+    pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
+        if let Some(idx) = self.loading_idx.take() {
+            if idx < self.messages.len() {
+                self.remove_msg(idx);
+                // Adjust any code_blocks / tool_blocks / thinking blocks that reference
+                // indices after the removed line
+                for block in &mut self.code_blocks {
+                    if block.start_idx > idx {
+                        block.start_idx -= 1;
+                        block.end_idx -= 1;
+                    }
+                }
+                for block in &mut self.tool_blocks {
+                    if block.phys_idx > idx {
+                        block.phys_idx -= 1;
+                    }
+                }
+                for block in &mut self.thinking.blocks {
+                    if block.title_idx > idx {
+                        block.title_idx -= 1;
+                        block.end_idx -= 1;
+                    }
+                }
+                if let Some(ref mut start) = self.thinking.active_start {
+                    if *start > idx {
+                        *start -= 1;
+                    }
+                }
+                if let Some(ref mut end) = self.thinking.active_end {
+                    if *end > idx {
+                        *end -= 1;
+                    }
+                }
+                if let Some(ref mut start) = self.stream.code_block_start_idx {
+                    if *start > idx {
+                        *start -= 1;
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ensure the status is `Status::Executing`. If it already is, preserve
+    /// current_step and total unchanged. Otherwise transition to Executing
+    /// with a fallback total based on the current plan length.
+    pub(crate) fn ensure_executing_status(&mut self, _step_idx: usize) {
+        if !matches!(self.status, Status::Executing { .. }) {
+            self.status = Status::Executing {
+                current_step: 0,
+                total: self.plan.steps.len(),
+            };
+        }
     }
 }

@@ -28,6 +28,10 @@ pub(crate) struct MouseState {
     pub(crate) last_click_tool: Option<usize>,
     /// Index of the code block hit by the last click (used for double-click popup open).
     pub(crate) last_click_code: Option<usize>,
+    /// Divider area between Plan and Log panels (for drag-to-resize).
+    pub(crate) divider_area: Rect,
+    /// Whether the user is currently dragging the panel divider.
+    pub(crate) is_resizing_panel: bool,
 }
 
 impl MouseState {

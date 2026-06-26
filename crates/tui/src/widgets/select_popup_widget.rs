@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Widget};
 
 use crate::widgets::state::SelectPopup;
 
@@ -59,6 +59,7 @@ impl Widget for SelectPopupWidget<'_> {
         // Bordered popup outer frame
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title(format!(" {} ", self.state.prompt))
             .style(Style::default().bg(self.bg_color));
         block.render(popup_area, buf);

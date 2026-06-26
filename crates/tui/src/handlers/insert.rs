@@ -42,11 +42,7 @@ pub(crate) fn handle_insert_mode(
                 }
                 let blank_task = format!("{}", task.clone());
                 app.add_user_message(blank_task);
-                app.plan.steps.clear();
-                app.plan.collapsed.clear();
-                app.plan.selected = 0;
-                app.plan.list_state = ListState::default();
-                app.plan.scroll_state = ScrollbarState::new(0);
+                app.plan.reset();
                 app.task_start_time = Some(chrono::Local::now());
                 // Send command to agent
                 let _ = user_cmd_tx.send(UserCommand::SubmitTask(task));

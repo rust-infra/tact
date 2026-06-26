@@ -1,5 +1,20 @@
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Left gutter for thinking blocks inside the log panel.
+pub(crate) const LOG_THINKING_INDENT: u16 = 2;
+/// Left gutter for tool invocations inside the log panel.
+pub(crate) const LOG_TOOL_INDENT: u16 = 4;
+
+pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
+    if cols == 0 {
+        return area;
+    }
+    let x = area.x.saturating_add(cols);
+    let width = area.width.saturating_sub(cols);
+    Rect::new(x, area.y, width, area.height)
+}
 
 /// Split a single line of text at the specified display width, returning (prefix, remainder).
 /// The prefix display width ≤ max_width.

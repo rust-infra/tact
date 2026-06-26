@@ -235,7 +235,7 @@ impl Agent {
                 let summary = text.chars().take(200).collect::<String>();
                 let _ = crate::notifications::notify_task_complete(&summary);
             }
-            AgentUpdate::StepFailed(idx, msg) => {
+            AgentUpdate::StepFailed(idx, _, msg) => {
                 let _ = crate::notifications::notify_step_failed(*idx, msg);
             }
             _ => {}
@@ -587,11 +587,12 @@ impl Agent {
                 self.emit_update(AgentUpdate::StepAdded(tact_core::PlanStep {
                     description: description.clone(),
                     tool: name.clone(),
+                    tool_id: id.clone(),
                     args: std::collections::HashMap::new(),
                     need_approval: false,
                     output: None,
                 }));
-                self.emit_update(AgentUpdate::StepStarted(step_idx));
+                self.emit_update(AgentUpdate::StepStarted(step_idx, id.clone()));
 
                 let mut tool_use = ToolUse {
                     id: id.clone(),
@@ -608,7 +609,11 @@ impl Agent {
                             PermissionBehavior::Allow => {}
                             PermissionBehavior::Deny => {
                                 let msg = format!("Permission denied: {}", decision.reason);
-                                self.emit_update(AgentUpdate::StepFailed(step_idx, msg.clone()));
+                                self.emit_update(AgentUpdate::StepFailed(
+                                    step_idx,
+                                    id.clone(),
+                                    msg.clone(),
+                                ));
                                 return Ok((
                                     vec![ContentBlock::ToolResult {
                                         tool_use_id: id.clone(),
@@ -666,6 +671,7 @@ impl Agent {
                                         );
                                         self.emit_update(AgentUpdate::StepFailed(
                                             step_idx,
+                                            id.clone(),
                                             msg.clone(),
                                         ));
                                         return Ok((
@@ -737,17 +743,29 @@ impl Agent {
                             detail,
                             duration_ms: Some(duration_ms),
                         };
-                        self.emit_update(AgentUpdate::StepFinished(step_idx, step_result));
+                        self.emit_update(AgentUpdate::StepFinished(
+                            step_idx,
+                            id.clone(),
+                            step_result,
+                        ));
                         exec_output
                     }
                     Ok(HookControl::Block(reason)) => {
                         let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                        self.emit_update(AgentUpdate::StepFailed(step_idx, msg.clone()));
+                        self.emit_update(AgentUpdate::StepFailed(
+                            step_idx,
+                            id.clone(),
+                            msg.clone(),
+                        ));
                         msg
                     }
                     Err(error) => {
                         let msg = format!("PreToolUse hook failed: {error}");
-                        self.emit_update(AgentUpdate::StepFailed(step_idx, msg.clone()));
+                        self.emit_update(AgentUpdate::StepFailed(
+                            step_idx,
+                            id.clone(),
+                            msg.clone(),
+                        ));
                         msg
                     }
                 };

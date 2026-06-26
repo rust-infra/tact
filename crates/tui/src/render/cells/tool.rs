@@ -168,7 +168,7 @@ use ratatui::{
 
 use crate::{
     render::renderable::Renderable,
-    widgets::tool_widget::{ToolPhase, ToolRenderOutput},
+    widgets::tool_widget::{ToolPhase, ToolRenderOutput, tool_card_inner_rows, tool_visual_rows},
 };
 
 /// Owned visual data for one tool invocation result in the log column.
@@ -254,19 +254,8 @@ impl ToolCell {
 
     /// Number of content rows *inside* the card borders (excluding the top and
     /// bottom border lines themselves).
-    ///
-    /// Equals `detail_preview.len()` plus one extra row for the overflow message
-    /// when `total_lines > preview.len()`.
     fn card_inner_rows(&self) -> usize {
-        if !self.has_detail_card {
-            return 0;
-        }
-        let overflow = if self.detail_total_lines > self.detail_preview.len() {
-            1
-        } else {
-            0
-        };
-        self.detail_preview.len() + overflow
+        tool_card_inner_rows(self.detail_preview.len(), self.detail_total_lines)
     }
 
     /// Build the styled content lines for the card's interior, given the available
@@ -355,17 +344,12 @@ impl Renderable for ToolCell {
     ///                top border
     /// ```
     fn height(&self, _width: u16) -> u16 {
-        if self.card_only {
-            if self.has_detail_card {
-                1_u16 + self.card_inner_rows() as u16 + 1
-            } else {
-                0
-            }
-        } else if self.has_detail_card {
-            1_u16 + 1 + self.card_inner_rows() as u16 + 1
-        } else {
-            1
-        }
+        tool_visual_rows(
+            self.has_detail_card,
+            self.detail_preview.len(),
+            self.detail_total_lines,
+            self.card_only,
+        ) as u16
     }
 
     /// Render a rectangular slice of this cell into `buf`, starting `skip_lines`
@@ -412,6 +396,7 @@ impl Renderable for ToolCell {
     /// | 1..1+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+        let area = crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_INDENT);
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -468,12 +453,40 @@ impl Renderable for ToolCell {
         if card_skip == 0 {
             let title = self.detail_title.clone().unwrap_or_default();
 
+            // ── Card shadow effect ─────────────────────────────────
+            // Draw a subtle shadow offset by (1,1) to the right and down
+            // using dark shade characters. This creates a floating 3D depth.
+            let shadow_area = Rect::new(
+                card_area.x.saturating_add(1),
+                card_area.y.saturating_add(1),
+                card_area.width,
+                card_area.height,
+            );
+            // Only draw shadow if it stays within the buffer area
+            if shadow_area.right() <= buf.area.right() && shadow_area.bottom() <= buf.area.bottom() {
+                // Extended shadow block for depth
+                let shadow_block = Block::default()
+                    .style(Style::default().bg(Color::Rgb(25, 25, 40)));
+                shadow_block.render(shadow_area, buf);
+            }
+
+            // ── Card border with gradient effect ──────────────────
+            // Use BOLD + accent for the border to make it stand out
             let card_block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(self.accent))
+                .border_style(
+                    Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(self.bg))
-                .title(title)
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .title_bottom(Line::from(Span::styled(
                     &self.card_bottom,
                     Style::default()
@@ -558,7 +571,7 @@ impl Renderable for ToolCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, tool_visual_rows};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -568,19 +581,13 @@ mod tests {
         let preview: Vec<String> = (1..=preview_count)
             .map(|i| format!("line-{i:02}"))
             .collect();
-        let overflow = if total > preview_count { 1 } else { 0 };
         ToolRenderOutput {
             summary: Line::from("✔ Step 1: write_file (src/main.rs)"),
             summary_raw: "✔ Step 1: write_file (src/main.rs)".into(),
             phase: ToolPhase::Success,
             arg_summary: "src/main.rs".into(),
             layout: ToolLayout {
-                // placeholder_lines is the legacy layout field; tests don't use it
-                placeholder_lines: if has_card {
-                    2 + preview_count + overflow + 1
-                } else {
-                    1
-                },
+                visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
                 has_detail_card: has_card,
             },

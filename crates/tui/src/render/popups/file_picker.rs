@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::Span,
-    widgets::{Block, Borders, Clear, List, ListItem},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem},
 };
 use crate::widgets::state::App;
 
@@ -19,6 +19,7 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(app.msgs().file_picker_title)
         .style(Style::default().bg(app.theme.bottom_bar_bg));
     frame.render_widget(block.clone(), popup_area);
@@ -46,13 +47,51 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
             .enumerate()
             .map(|(i, opt)| {
                 let is_selected = i == selected;
-                let style = if is_selected {
-                    Style::default().bg(app.theme.highlight).fg(Color::White)
+
+                // Determine icon: folder or file
+                let (icon, path_display) = if opt.ends_with('/') {
+                    ("📁 ", opt.trim_end_matches('/'))
                 } else {
-                    Style::default().fg(app.theme.fg)
+                    ("📄 ", opt.as_str())
                 };
-                let prefix = if is_selected { app.msgs().select_arrow } else { "  " };
-                ListItem::new(Span::styled(format!("{}{}", prefix, opt), style))
+
+                let prefix = if is_selected {
+                    format!("{} {}", app.msgs().select_arrow, icon)
+                } else {
+                    format!("  {}", icon)
+                };
+
+                let fg = if is_selected {
+                    Color::White
+                } else {
+                    // Color by type: folders use accent, files use extension color
+                    if opt.ends_with('/') {
+                        app.theme.accent
+                    } else {
+                        let ext = opt.rsplit('.').next().unwrap_or("");
+                        match ext {
+                            "rs" => Color::Rgb(239, 146, 65),
+                            "py" => Color::Rgb(55, 118, 171),
+                            "js" | "ts" | "tsx" | "jsx" => Color::Rgb(247, 223, 30),
+                            "md" => Color::Rgb(66, 133, 244),
+                            "toml" | "yaml" | "yml" | "json" => Color::Rgb(108, 192, 128),
+                            "css" | "scss" => Color::Rgb(214, 79, 148),
+                            "html" => Color::Rgb(228, 105, 55),
+                            _ => app.theme.fg,
+                        }
+                    }
+                };
+
+                let style = if is_selected {
+                    Style::default().bg(app.theme.highlight).fg(fg)
+                } else {
+                    Style::default().fg(fg)
+                };
+
+                ListItem::new(Span::styled(
+                    format!("{}{}", prefix, path_display),
+                    style,
+                ))
             })
             .collect()
     };
