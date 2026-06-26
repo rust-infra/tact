@@ -6,7 +6,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     use ratatui::{
         style::{Modifier, Style},
         text::{Line, Span},
-        widgets::{Block, Borders, List, ListItem},
+        widgets::{Block, BorderType, Borders, List, ListItem},
     };
     let items: Vec<ListItem> = app
         .plan
@@ -49,6 +49,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(app.theme.border))
                 .title(app.msgs().plan_title)
                 .style(Style::default().bg(app.theme.bg)),

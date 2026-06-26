@@ -86,22 +86,28 @@ impl App {
             self.add_new_line();
             for (line_num, &line) in cat_art.iter().enumerate() {
                 let color = colors[line_num % colors.len()];
-                self.messages.push(Line::from(Span::styled(
+                self.append_msg(
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    )),
                     line.to_string(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                )));
-                self.raw_messages.push(line.to_string());
+                    RawMessageType::LLM,
+                );
             }
             self.add_new_line();
         } else {
             self.add_new_line();
-            self.messages.push(Line::from(Span::styled(
-                msgs.party_exit,
-                Style::default()
-                    .fg(Color::Rgb(180, 180, 180))
-                    .add_modifier(Modifier::ITALIC),
-            )));
-            self.raw_messages.push(msgs.party_exit.to_string());
+            self.append_msg(
+                Line::from(Span::styled(
+                    msgs.party_exit,
+                    Style::default()
+                        .fg(Color::Rgb(180, 180, 180))
+                        .add_modifier(Modifier::ITALIC),
+                )),
+                msgs.party_exit.to_string(),
+                RawMessageType::LLM,
+            );
             self.add_new_line();
         }
     }

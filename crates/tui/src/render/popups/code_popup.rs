@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
 
 //    total = 10 lines, content_height = 4, scroll = 3
@@ -38,6 +38,7 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
     frame.render_widget(Clear, popup_area);
+    super::render_popup_shadow(frame, popup_area);
 
     let content_height = popup_height.saturating_sub(3) as usize;
     let max_scroll = total.saturating_sub(1);
@@ -74,6 +75,7 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title(format!(" {} ", lang))
                 .title_bottom(Line::from(vec![
                     Span::styled(" y:copy ", Style::default().fg(app.theme.accent)),

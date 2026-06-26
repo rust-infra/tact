@@ -8,6 +8,7 @@ mod handlers;
 mod i18n;
 mod render;
 mod theme;
+mod theme_detection;
 
 mod widgets;
 
@@ -126,12 +127,17 @@ pub async fn run_tui(
         // Done state transitions to Idle after 2s timeout; must keep rendering to check
         // the clock.
         if app.dirty || matches!(app.status, Status::Done) {
+            // Advance spinner frame when in an active state
+            if !matches!(app.status, Status::Idle | Status::Done) {
+                app.spinner_frame = (app.spinner_frame + 1) % 10;
+            }
             terminal.draw(|f| {
                 let size = f.area();
                 // Input box height auto-expands with content (1–3 lines of content + 2 for border)
                 let input_lines = app.input.lines().count().max(1).min(3) as u16;
                 let input_height = input_lines + 2;
-                let bottom_height: u16 = if app.balance_info.is_some() { 3 } else { 2 };
+                const BOTTOM_BAR_ROWS: u16 = 3;
+                let bottom_height = BOTTOM_BAR_ROWS;
                 if size != last_size {
                     last_size = size;
                     let log_area = Layout::default()
@@ -180,18 +186,16 @@ pub async fn run_tui(
 
         // Done state highlight: auto-revert to Idle after 2s so shortcut hints aren't
         // permanently hidden
-        if let Status::Done = app.status {
-            if let Some(done_time) = app.task_done_time {
-                if chrono::Local::now()
-                    .signed_duration_since(done_time)
-                    .num_seconds()
-                    >= 2
-                {
-                    app.status = Status::Idle;
-                    app.task_done_time = None;
-                    app.dirty = true; // status bar needs repaint to show Idle
-                }
-            }
+        if let Status::Done = app.status
+            && let Some(done_time) = app.task_done_time
+            && chrono::Local::now()
+                .signed_duration_since(done_time)
+                .num_seconds()
+                >= 2
+        {
+            app.status = Status::Idle;
+            app.task_done_time = None;
+            app.dirty = true; // status bar needs repaint to show Idle
         }
 
         // flash_msg auto-clears after 3s
@@ -208,11 +212,14 @@ pub async fn run_tui(
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition
         // - Dirty flag set: 10ms, quickly trigger a rerender
+        // - Active (Planning/Executing/WaitingForUser): 150ms to animate spinner
         // - Fully idle: 1000ms, reduce CPU wake frequency
         let idle_ms = if matches!(app.status, Status::Done) || app.flash_msg.is_some() {
             200u64
         } else if app.dirty {
             10u64
+        } else if !matches!(app.status, Status::Idle) {
+            150u64
         } else {
             1000u64
         };
@@ -376,6 +383,10 @@ pub async fn run_tui(
                             && mouse.column < app.mouse.plan_area.x + app.mouse.plan_area.width
                             && mouse.row >= app.mouse.plan_area.y
                             && mouse.row < app.mouse.plan_area.y + app.mouse.plan_area.height;
+                        let in_divider = mouse.column >= app.mouse.divider_area.x
+                            && mouse.column < app.mouse.divider_area.x + app.mouse.divider_area.width
+                            && mouse.row >= app.mouse.divider_area.y
+                            && mouse.row < app.mouse.divider_area.y + app.mouse.divider_area.height;
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 if app.thinking.popup.is_some() {
@@ -436,6 +447,9 @@ pub async fn run_tui(
                                     if !in_popup {
                                         app.close_code_popup();
                                     }
+                                } else if in_divider {
+                                    // Start panel drag resize
+                                    app.mouse.is_resizing_panel = true;
                                 } else if in_log {
                                     app.focused_panel = FocusedPanel::Log;
                                     // Mouse row → visual line → logical line, accounting for wrapping
@@ -510,8 +524,8 @@ pub async fn run_tui(
                                                 app.phys_to_logical_fast(b.phys_idx)
                                                     .map_or(false, |si| {
                                                         line_idx >= si
-                                                            && line_idx
-                                                                < si + b.output.layout.placeholder_lines
+                                                            &&                                                         line_idx
+                                                            < si + b.output.visual_rows(false)
                                                     })
                                             });
                                         if let Some((tool_idx, block)) = tool_hit {
@@ -588,10 +602,10 @@ pub async fn run_tui(
                                                     }
                                                     app.mouse.dragging_log = true;
                                                 } else {
-                                                    // Single click: clear previous selection, no text selection
+                                                    // Single click: start selection for natural press-drag-copy behaviour
                                                     app.mouse.log_word_selection = None;
-                                                    app.mouse.log_selection = None;
-                                                    app.mouse.dragging_log = false;
+                                                    app.mouse.log_selection = Some((line_idx, line_idx));
+                                                    app.mouse.dragging_log = true;
                                                 }
                                             }
                                         }
@@ -610,7 +624,17 @@ pub async fn run_tui(
                                 }
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
-                                if app.mouse.dragging_log && in_log {
+                                if app.mouse.is_resizing_panel {
+                                    // Panel drag resize — convert mouse column to ratio
+                                    let total_width = app.mouse.plan_area.width
+                                        + app.mouse.divider_area.width
+                                        + app.mouse.log_area.width;
+                                    if total_width > 0 {
+                                        let mouse_x = mouse.column.saturating_sub(app.mouse.plan_area.x);
+                                        let new_ratio = mouse_x as f64 / total_width as f64;
+                                        app.panel_split_ratio = new_ratio.clamp(0.10, 0.70);
+                                    }
+                                } else if app.mouse.dragging_log && in_log {
                                     let visual_base = app
                                         .log_scroll
                                         .visual_start
@@ -640,6 +664,7 @@ pub async fn run_tui(
                             MouseEventKind::Up(MouseButton::Left) => {
                                 app.mouse.dragging_log = false;
                                 app.mouse.dragging_plan = false;
+                                app.mouse.is_resizing_panel = false;
                             }
                             _ => {}
                         }
@@ -672,7 +697,12 @@ pub async fn run_tui(
                     None => break, // event channel closed
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(idle_ms)) => {}  // adaptive idle timeout
+            _ = tokio::time::sleep(Duration::from_millis(idle_ms)) => {
+                // Wake from idle timeout: force repaint to advance spinner animation
+                if !matches!(app.status, Status::Idle) {
+                    app.dirty = true;
+                }
+            }
         }
 
         if app.should_quit {

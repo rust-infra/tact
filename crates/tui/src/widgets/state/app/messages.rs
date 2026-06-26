@@ -1,4 +1,5 @@
 use crate::render::render_md::render_markdown_tui;
+use crate::widgets::state::log_messages::classify_system_message;
 use crate::widgets::state::*;
 use chrono::Local;
 use ratatui::style::{Color, Modifier, Style};
@@ -15,34 +16,82 @@ impl App {
             "     ╚═╝    ",
         ];
 
+        // Gradient: use accent color and increase brightness for each line
+        let accent = self.theme.accent;
+        let line_colors = match accent {
+            Color::Rgb(r, g, b) => {
+                let step = 15u8;
+                [
+                    Color::Rgb(r.saturating_sub(step * 2), g.saturating_sub(step * 2), b),
+                    Color::Rgb(r.saturating_sub(step), g.saturating_sub(step), b),
+                    Color::Rgb(r, g, b),
+                    Color::Rgb(r.saturating_add(step / 2), g.saturating_add(step / 2), b),
+                    Color::Rgb(
+                        r.saturating_add(step),
+                        g.saturating_add(step),
+                        b.saturating_add(step / 2),
+                    ),
+                    Color::Rgb(
+                        r.saturating_add(step * 2),
+                        g.saturating_add(step * 2),
+                        b.saturating_add(step),
+                    ),
+                ]
+            }
+            _ => [
+                Color::Green,
+                Color::LightGreen,
+                Color::Green,
+                Color::LightGreen,
+                Color::Green,
+                Color::LightGreen,
+            ],
+        };
+
         self.add_new_line();
-        for line in &logo {
-            self.messages.push(Line::from(Span::styled(
+        for (i, line) in logo.iter().enumerate() {
+            let color = line_colors[i.min(line_colors.len() - 1)];
+            self.append_msg(
+                Line::from(Span::styled(
+                    (*line).to_string(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )),
                 (*line).to_string(),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            self.raw_messages.push((*line).to_string());
+                RawMessageType::LLM,
+            );
         }
 
-        let title = "  Tact Agent";
-        self.messages.push(Line::from(Span::styled(
-            title.to_string(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-        self.raw_messages.push(title.to_string());
+        let version = env!("TACT_VERSION");
+        let title = format!("  Tact Agent  v{}", version);
+        self.append_msg(
+            Line::from(Span::styled(
+                title.clone(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            title,
+            RawMessageType::LLM,
+        );
 
-        let tagline = "  thoughtful communication";
-        self.messages.push(Line::from(Span::styled(
+        // Random startup quote
+        let quotes = self.msgs().startup_quotes;
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let idx = (seed as usize) % quotes.len();
+        let tagline = quotes[idx];
+        self.append_msg(
+            Line::from(Span::styled(
+                tagline.to_string(),
+                Style::default()
+                    .fg(Color::Rgb(128, 128, 128))
+                    .add_modifier(Modifier::ITALIC),
+            )),
             tagline.to_string(),
-            Style::default()
-                .fg(Color::Rgb(128, 128, 128))
-                .add_modifier(Modifier::ITALIC),
-        )));
-        self.raw_messages.push(tagline.to_string());
+            RawMessageType::LLM,
+        );
         self.add_new_line();
     }
 
@@ -81,16 +130,20 @@ impl App {
                 self.theme.accent
             };
             for line in content.split('\n') {
-                self.messages.push(Line::from(Span::styled(
+                let ty = classify_system_message(line);
+                self.append_msg(
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(color),
+                    )),
                     line.to_string(),
-                    Style::default().fg(color),
-                )));
-                self.raw_messages.push(line.to_string());
+                    ty,
+                );
             }
         } else {
+            let ty = classify_system_message(&content);
             let (lines, raw_lines) = render_markdown_tui(&content);
-            self.messages.extend(lines);
-            self.raw_messages.extend(raw_lines);
+            self.extend_msgs(lines, raw_lines, ty);
         }
 
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
@@ -114,11 +167,14 @@ impl App {
             } else {
                 msgs.user_msg_cont.replace("{}", line)
             };
-            self.messages.push(Line::from(Span::styled(
-                text.clone(),
-                Style::default().fg(self.theme.success),
-            )));
-            self.raw_messages.push(text);
+            self.append_msg(
+                Line::from(Span::styled(
+                    text.clone(),
+                    Style::default().fg(self.theme.success),
+                )),
+                text,
+                RawMessageType::LLM,
+            );
             is_first = false;
         }
         let timestamp = Local::now().format("%H:%M:%S").to_string();

@@ -4752,6 +4752,7 @@ dependencies = [
  "tact_core",
  "tokio",
  "tokio-stream",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "tui-markdown",

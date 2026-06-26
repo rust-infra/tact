@@ -15,11 +15,7 @@ const STREAMING_INDICATOR: &str = " ▌";
 impl App {
     pub(crate) fn retry_task(&mut self, task: String) {
         self.add_user_message(task.clone());
-        self.plan.steps.clear();
-        self.plan.collapsed.clear();
-        self.plan.selected = 0;
-        self.plan.list_state = ListState::default();
-        self.plan.scroll_state = ScrollbarState::new(0);
+        self.plan.reset();
         self.status = Status::Planning;
         let _ = self.user_cmd_tx.send(UserCommand::SubmitTask(task));
         self.show_history = false;
@@ -27,8 +23,83 @@ impl App {
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.
     pub(crate) fn add_new_line(&mut self) {
-        self.messages.push(Line::from(""));
-        self.raw_messages.push(String::new());
+        self.append_blank(RawMessageType::LLM);
+    }
+
+    /// Append one log row, keeping `messages`, `raw_messages`, and `raw_message_types` in sync.
+    pub(crate) fn append_msg(
+        &mut self,
+        line_msg: Line<'static>,
+        raw_msg: String,
+        msg_type: RawMessageType,
+    ) {
+        self.messages.push(line_msg);
+        self.raw_messages.push(raw_msg);
+        self.raw_message_types.push(msg_type);
+    }
+
+    pub(crate) fn append_blank(&mut self, msg_type: RawMessageType) {
+        self.append_msg(Line::from(""), String::new(), msg_type);
+    }
+
+    pub(crate) fn extend_msgs(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        raw_lines: Vec<String>,
+        msg_type: RawMessageType,
+    ) {
+        debug_assert_eq!(lines.len(), raw_lines.len());
+        for (line, raw) in lines.into_iter().zip(raw_lines) {
+            self.append_msg(line, raw, msg_type);
+        }
+    }
+
+    pub(crate) fn insert_msg(
+        &mut self,
+        idx: usize,
+        line_msg: Line<'static>,
+        raw_msg: String,
+        msg_type: RawMessageType,
+    ) {
+        self.messages.insert(idx, line_msg);
+        self.raw_messages.insert(idx, raw_msg);
+        self.raw_message_types.insert(idx, msg_type);
+    }
+
+    pub(crate) fn splice_msgs(
+        &mut self,
+        range: std::ops::Range<usize>,
+        lines: Vec<Line<'static>>,
+        raw: Vec<String>,
+        msg_type: RawMessageType,
+    ) {
+        debug_assert_eq!(lines.len(), raw.len());
+        let n = lines.len();
+        self.messages.splice(range.clone(), lines);
+        self.raw_messages.splice(range.clone(), raw);
+        self.raw_message_types
+            .splice(range, std::iter::repeat_n(msg_type, n));
+    }
+
+    pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
+        self.messages.drain(range.clone());
+        self.raw_messages.drain(range.clone());
+        self.raw_message_types.drain(range);
+    }
+
+    pub(crate) fn remove_msg(&mut self, idx: usize) {
+        self.messages.remove(idx);
+        self.raw_messages.remove(idx);
+        self.raw_message_types.remove(idx);
+    }
+
+    /// Sentinel row — rendered as a full-width dashed rule at draw time.
+    pub(crate) fn add_task_end_separator(&mut self) {
+        self.append_msg(
+            Line::default(),
+            crate::render::cells::separator::TASK_END_SEPARATOR.to_string(),
+            RawMessageType::LLM,
+        );
     }
 
     /// Open the thinking popup, locating the block by its title line index.

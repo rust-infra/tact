@@ -4,9 +4,9 @@ use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Scrollbar, ScrollbarState},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
 /// Render the Log panel: wrapping, scrolling, search highlighting, and mouse selection.
@@ -105,6 +105,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // ```
     //
     // Rebuild when message count or panel width changes.
+    // TODO: dirty detection is incomplete — also invalidate on stream.buffer updates,
+    // in-place message edits (e.g. streaming code blocks), and theme changes.
     let cache_valid = app.log_scroll.visual_cache_ver == app.messages.len()
         && app.log_scroll.visual_cache_width == wrap_width as u16;
 
@@ -115,17 +117,26 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
         for logical_i in 0..total_logical {
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                let base = &app.messages[phys_idx];
-                if base.spans.is_empty() {
+                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
+                    Line::default()
+                } else if app.messages[phys_idx].spans.is_empty() {
                     Line::default()
                 } else {
-                    base.clone()
+                    app.messages[phys_idx].clone()
                 }
             } else {
                 // Last logical row: live stream text, styled with accent color.
                 Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.accent))
             };
-            let wrapped = wrap_line(&line, wrap_width);
+            let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
+                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
+                    vec![Line::default()]
+                } else {
+                    wrap_line(&line, wrap_width)
+                }
+            } else {
+                wrap_line(&line, wrap_width)
+            };
             app.log_scroll.visual_cache.extend(wrapped);
             app.log_scroll
                 .visual_start_cache
@@ -222,6 +233,9 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut renderer =
         super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
 
+    // Track message categories for separator insertion
+    let mut prev_category: Option<&'static str> = None;
+
     let mut logical_i = logical_start;
     while logical_i < logical_end {
         let cache_start = vs_cache[logical_i];
@@ -242,6 +256,55 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
         let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
 
+        // ── Message category separator ──────────────────────────────
+        // Between message groups of different types (user ↔ system ↔ assistant),
+        // insert a thin decorative separator line.
+        if let Some(phys) = phys_idx {
+            let raw = app.raw_messages[phys].as_str();
+            // Determine category for this line
+            let category = if raw.starts_with("💬") {
+                "user"
+            } else if raw.starts_with("  ") {
+                // Continuation line: same as previous category
+                prev_category.unwrap_or("assistant")
+            } else if raw.starts_with("✓")
+                || raw.starts_with("✗")
+                || raw.starts_with("⚠")
+                || raw.starts_with("📝")
+                || raw.starts_with("❌")
+                || raw.starts_with("✅")
+                || raw.starts_with("▶")
+                || raw.starts_with("🤖")
+                || raw.starts_with("  ██")
+            {
+                "system"
+            } else {
+                "assistant"
+            };
+
+            // Insert separator if category changed (and not first line)
+            if let Some(prev) = prev_category {
+                if prev != category {
+                    let separator_fg = match category {
+                        "user" => app.theme.accent,
+                        "system" => app.theme.warning,
+                        _ => app.theme.border,
+                    };
+                    let separator_label = match category {
+                        "user" => "💬 user",
+                        "system" => "⚙️ system",
+                        _ => "🤖 assistant",
+                    };
+                    let separator = super::cells::separator::MessageSeparator::new(
+                        separator_label.to_string(),
+                        separator_fg,
+                    );
+                    renderer.push(vs_cache[logical_i], separator);
+                }
+            }
+            prev_category = Some(category);
+        }
+
         // Tool block: replace the summary TextCell + placeholder rows with a
         // single ToolCell that renders both summary and detail card.
         //
@@ -252,7 +315,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(phys) = phys_idx {
             let tool_match = app.tool_blocks.iter().find(|b| {
                 phys >= b.phys_idx
-                    && phys <= b.phys_idx + b.output.layout.placeholder_lines as usize
+                    && phys <= b.phys_idx + b.output.message_placeholder_rows()
             });
             if let Some(tb) = tool_match {
                 let rows_before = phys.saturating_sub(tb.phys_idx);
@@ -275,7 +338,18 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 );
                 renderer.push(vis_start, card_cell);
                 // Skip the summary logical row + all placeholder rows.
-                logical_i += 1 + tb.output.layout.placeholder_lines as usize - rows_before;
+                logical_i += tb.output.visual_rows(false) - rows_before;
+                continue;
+            }
+        }
+
+        // Task-end rule: full-width dashed line, width resolved at render time.
+        if let Some(phys) = phys_idx {
+            if super::cells::separator::is_task_end_separator(&app.raw_messages[phys]) {
+                let sep =
+                    super::cells::separator::TaskEndSeparator::new(app.theme.border);
+                renderer.push(vs_cache[logical_i], sep);
+                logical_i += 1;
                 continue;
             }
         }
@@ -317,6 +391,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             })
         });
 
+        let indent_cols = phys_idx
+            .map(|p| app.nested_log_indent(p))
+            .unwrap_or(0);
+
         let cell = super::cells::text::TextCell::new(
             cached_lines,
             raw_text,
@@ -325,6 +403,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             is_selected,
             word_sel,
             prefix,
+            indent_cols,
             log_fg,
         );
 
@@ -334,11 +413,27 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         logical_i += 1;
     }
 
+    // Build panel title — show search count when search is active
+    let panel_title: String = if has_search {
+        let total = app.search.matches.len();
+        let current = if total > 0 {
+            app.search.current_match + 1
+        } else {
+            0
+        };
+        app.msgs()
+            .log_search_count_tmpl
+            .replacen("{}", &current.to_string(), 1)
+            .replacen("{}", &total.to_string(), 1)
+    } else {
+        app.msgs().log_title.to_string()
+    };
+
     // Render bordered log panel
     let log_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.border))
-        .title(app.msgs().log_title)
+        .title(panel_title)
         .style(Style::default().bg(app.theme.bg));
     let inner = Rect::new(
         area.x + 1,
@@ -362,6 +457,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     super::cells::thinking::render_thinking_cards(frame, area, app, visual_scroll, visible_height);
 
     super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
+
+    // Loading spinner overlay: when a task starts (PlanGenerated) but no content
+    // has arrived yet, show an animated spinner line.
+    render_loading_spinner(frame, area, app, visual_scroll, visible_height);
 
     // Scrollbar thumb follows visual lines, not logical offset:
     //
@@ -393,4 +492,67 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Persist prefix-sum cache for mouse hit-testing and scroll handlers outside render.
     app.log_scroll.visual_start = app.log_scroll.visual_start_cache.clone();
+}
+
+/// Render an animated loading spinner at the loading placeholder position.
+/// Uses `app.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
+/// and displays a "Thinking..." label with a subtle pulse.
+fn render_loading_spinner(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    visual_scroll: usize,
+    visible_height: usize,
+) {
+    let Some(idx) = app.loading_idx else { return };
+    // Find logical row for this physical index
+    let Some(logical_row) = app.log_scroll.phys_to_logical_cache.get(idx).and_then(|&v| v)
+    else {
+        return;
+    };
+    let vs_cache = &app.log_scroll.visual_start_cache;
+    if logical_row >= vs_cache.len().saturating_sub(1) {
+        return;
+    }
+    let vis_top = vs_cache[logical_row];
+    let vis_bot = vs_cache[logical_row + 1];
+    let range_end = visual_scroll + visible_height;
+    if vis_bot <= visual_scroll || vis_top >= range_end {
+        return;
+    }
+    let y = (vis_top.saturating_sub(visual_scroll)) as u16;
+
+    // Spinner characters (10-frame cycle)
+    const SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spinner_char = SPINNERS[(app.spinner_frame as usize) % SPINNERS.len()];
+
+    // Pulse intensity based on spinner_frame (alternating dim/bright)
+    let pulse_intensity = if app.spinner_frame % 2 == 0 {
+        200
+    } else {
+        160
+    };
+
+    let spinner_style = Style::default()
+        .fg(Color::Rgb(pulse_intensity, pulse_intensity, 80))
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default()
+        .fg(Color::Rgb(pulse_intensity, pulse_intensity, 80))
+        .add_modifier(Modifier::ITALIC);
+
+    let spinner_line = Line::from(vec![
+        Span::styled(format!(" {} ", spinner_char), spinner_style),
+        Span::styled("Thinking...", text_style),
+    ]);
+
+    let spinner_area = Rect::new(
+        area.x + 2,
+        area.y + 1 + y,
+        area.width.saturating_sub(4),
+        1,
+    );
+    if spinner_area.bottom() <= area.bottom() {
+        frame.render_widget(Clear, spinner_area);
+        frame.render_widget(Paragraph::new(spinner_line), spinner_area);
+    }
 }

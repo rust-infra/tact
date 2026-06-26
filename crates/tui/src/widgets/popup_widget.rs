@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, Widget},
+    widgets::{Block, BorderType, Borders, List, ListItem, Widget},
 };
 
 use crate::theme::Theme;
@@ -48,6 +48,7 @@ impl<'a> Widget for PopupWidget<'a> {
         let list = List::new(self.list).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(border_color))
                 .title(title),
         );
