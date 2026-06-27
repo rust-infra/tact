@@ -9,6 +9,16 @@ pub(crate) const LOG_TOOL_INDENT: u16 = 4;
 /// Extra indent for rendered tool blocks (title + meta + detail card).
 pub(crate) const LOG_TOOL_BLOCK_INDENT: u16 = LOG_TOOL_INDENT + 4;
 
+/// Truncate by Unicode scalar count, appending `…` when over `max_chars`.
+pub(crate) fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let keep = max_chars.saturating_sub(3).max(1);
+        format!("{}…", s.chars().take(keep).collect::<String>())
+    }
+}
+
 pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
     if cols == 0 {
         return area;

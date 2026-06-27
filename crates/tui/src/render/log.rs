@@ -179,27 +179,16 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let logical_scroll = app.log_scroll.offset as usize;
     let vs_cache = &app.log_scroll.visual_start_cache;
-    let max_visual_scroll = total_visual.saturating_sub(visible_height);
-    // Convert logical offset to the first visible visual line.
-    let visual_scroll = if logical_scroll < vs_cache.len() {
-        vs_cache[logical_scroll].min(max_visual_scroll)
-    } else {
-        max_visual_scroll
-    };
-    let end_visual = (visual_scroll + visible_height).min(total_visual);
-    // Bottom snap: if viewport would extend past the last line, pin to bottom.
-    //
-    // ```text
-    //  before snap          after snap (max_visual_scroll)
-    //  ... [1198][1199]     ... [1180][1181]...[1199]
-    //       └─ viewport ─┘        └─ viewport ─┘
-    //  end >= total_visual  →  visual_scroll = total_visual - visible_height
-    // ```
-    let visual_scroll = if end_visual >= total_visual && total_visual > visible_height {
-        max_visual_scroll
-    } else {
-        visual_scroll
-    };
+    // Map the (already clamped) logical scroll offset to the first visible visual
+    // line. See `resolve_visual_scroll` for the bottom-pinning rule that keeps a
+    // tall last cell (e.g. a tool detail card) fully reachable.
+    let visual_scroll = resolve_visual_scroll(
+        vs_cache,
+        total_visual,
+        visible_height,
+        logical_scroll,
+        effective_max_logical,
+    );
     let end_visual = (visual_scroll + visible_height).min(total_visual);
 
     // Reverse-map visual viewport bounds back to logical row range for cell building.
@@ -521,6 +510,37 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     app.log_scroll.visual_start = app.log_scroll.visual_start_cache.clone();
 }
 
+/// Map a clamped logical scroll offset to the first visible visual line.
+///
+/// The log scrolls in *logical-row* units but renders in *visual lines*. A single
+/// logical row may wrap to many visual lines (long paragraph) or be one of several
+/// 1-line rows (a tool card's reserved placeholder rows).
+///
+/// `effective_max_logical` is the largest logical offset the user can reach. When
+/// the offset is at (or beyond) that maximum we must pin the viewport to the true
+/// visual bottom (`total_visual - visible_height`). Otherwise, when the max logical
+/// row *begins above* `max_visual_scroll` — e.g. a long wrapped paragraph sitting
+/// directly above a tall tool detail card — using `vs_cache[logical_scroll]` would
+/// leave the card's final rows below the viewport, unreachable: the card shows only
+/// its top border (an empty box) and `G` / wheel-down can't scroll into it.
+fn resolve_visual_scroll(
+    vs_cache: &[usize],
+    total_visual: usize,
+    visible_height: usize,
+    logical_scroll: usize,
+    effective_max_logical: usize,
+) -> usize {
+    let max_visual_scroll = total_visual.saturating_sub(visible_height);
+    if logical_scroll >= effective_max_logical {
+        return max_visual_scroll;
+    }
+    vs_cache
+        .get(logical_scroll)
+        .copied()
+        .unwrap_or(max_visual_scroll)
+        .min(max_visual_scroll)
+}
+
 /// Render an animated loading spinner at the loading placeholder position.
 /// Uses `app.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
 /// and displays a "Thinking..." label with a subtle pulse.
@@ -581,5 +601,56 @@ fn render_loading_spinner(
     if spinner_area.bottom() <= area.bottom() {
         frame.render_widget(Clear, spinner_area);
         frame.render_widget(Paragraph::new(spinner_line), spinner_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_visual_scroll;
+
+    /// The max logical row starts *above* `max_visual_scroll` because the row just
+    /// above the last (tall) cell is a long wrapped paragraph. At the max offset the
+    /// viewport must pin to the true bottom so the tall cell's last rows are visible.
+    ///
+    /// Layout: 3 logical rows
+    ///   row0: visual [0..68)   (68-line wrapped paragraph)
+    ///   row1: visual [68..72)  (paragraph just above the card)
+    ///   row2: visual [72..100) (28-row tool detail card)
+    /// total_visual = 100, visible_height = 30 → max_visual_scroll = 70.
+    /// target = 70 falls between vs_cache[1]=68 and vs_cache[2]=72, so
+    /// effective_max_logical = 1, which begins at 68 (< 70).
+    #[test]
+    fn pins_to_bottom_when_max_row_starts_above_max_visual_scroll() {
+        let vs_cache = [0usize, 68, 72, 100];
+        let total_visual = 100;
+        let visible_height = 30;
+        let effective_max_logical = 1;
+
+        // At the max offset, must reach the true bottom (70), not 68.
+        let vs = resolve_visual_scroll(
+            &vs_cache,
+            total_visual,
+            visible_height,
+            effective_max_logical,
+            effective_max_logical,
+        );
+        assert_eq!(vs, 70, "should pin to max_visual_scroll at the bottom");
+        assert_eq!(vs + visible_height, total_visual, "viewport reaches the last line");
+    }
+
+    #[test]
+    fn uses_row_start_when_above_max_offset() {
+        let vs_cache = [0usize, 68, 72, 100];
+        // Mid-scroll (offset 1, max is 2) uses the row's visual start, clamped.
+        let vs = resolve_visual_scroll(&vs_cache, 100, 30, 1, 2);
+        assert_eq!(vs, 68);
+    }
+
+    #[test]
+    fn content_shorter_than_viewport_stays_at_top() {
+        let vs_cache = [0usize, 1, 2, 3];
+        // total_visual (3) <= visible_height (30): everything fits, no scroll.
+        let vs = resolve_visual_scroll(&vs_cache, 3, 30, 0, 0);
+        assert_eq!(vs, 0);
     }
 }

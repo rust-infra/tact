@@ -12,7 +12,7 @@ use tact_core::{StepResult, StepStatus};
 use crate::{i18n::Messages, theme::Theme};
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
-const DEFAULT_PREVIEW_LINES: usize = 10;
+const DEFAULT_PREVIEW_LINES: usize = 3;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];

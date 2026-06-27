@@ -52,6 +52,7 @@ fn copy_text(app: &mut App, text: &str) {
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     s[..cursor]
         .char_indices()
         .last()
@@ -61,6 +62,7 @@ fn prev_char_boundary(s: &str, cursor: usize) -> usize {
 
 /// Returns the byte index of the next char boundary after `cursor`.
 fn next_char_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     s[cursor..]
         .chars()
         .next()
@@ -73,11 +75,13 @@ fn start_of_line(s: &str, cursor: usize) -> usize {
     if cursor == 0 {
         return 0;
     }
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     s[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0)
 }
 
 /// Returns the byte index at the end of the line that contains `cursor` (newline position, or string length for the last line).
 fn end_of_line(s: &str, cursor: usize) -> usize {
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     s[cursor..]
         .find('\n')
         .map(|i| cursor + i)
@@ -153,6 +157,7 @@ fn is_word_char(c: char) -> bool {
 
 /// Returns the byte index of the word start before `cursor` (backward-delete word).
 fn prev_word_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     let mut pos = cursor;
     let mut chars = s[..cursor].chars().rev().peekable();
 
@@ -194,6 +199,7 @@ fn prev_word_boundary(s: &str, cursor: usize) -> usize {
 
 /// Returns the byte index of the word end after `cursor` (forward-delete word).
 fn next_word_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = s.floor_char_boundary(cursor.min(s.len()));
     let mut pos = cursor;
     let mut chars = s[cursor..].chars().peekable();
 

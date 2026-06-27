@@ -11,7 +11,79 @@ pub(crate) fn handle_insert_mode(
     user_cmd_tx: &UnboundedSender<UserCommand>,
 ) {
     match key.code {
+        // --- Slash command popup shortcuts (only when active) ---
+        KeyCode::Up if app.slash_command.active => {
+            let n = app.slash_command.matched_commands(
+                &app.input,
+                app.input_cursor,
+                crate::widgets::state::PALETTE_COMMANDS,
+            ).len();
+            if n > 0 {
+                app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
+            }
+            return;
+        }
+        KeyCode::Down if app.slash_command.active => {
+            let n = app.slash_command.matched_commands(
+                &app.input,
+                app.input_cursor,
+                crate::widgets::state::PALETTE_COMMANDS,
+            ).len();
+            if n > 0 {
+                let max = n.saturating_sub(1);
+                app.slash_command.selected = (app.slash_command.selected + 1).min(max);
+            }
+            return;
+        }
+        KeyCode::Tab if app.slash_command.active => {
+            let cmds = app.slash_command.matched_commands(
+                &app.input,
+                app.input_cursor,
+                crate::widgets::state::PALETTE_COMMANDS,
+            );
+            let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
+            if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
+                let start = app.slash_command.start_pos;
+                let end = app.input_cursor;
+                let replacement = format!("/{cmd} ");
+                app.input.replace_range(start..end, &replacement);
+                app.input_cursor = start + cmd.len() + 2;
+                app.slash_command.active = false;
+            }
+            return;
+        }
+        KeyCode::Esc if app.slash_command.active => {
+            app.slash_command.active = false;
+            return;
+        }
+        KeyCode::Char(' ') if app.slash_command.active => {
+            app.slash_command.active = false;
+            app.input_history.index = None;
+            app.input_history.saved.clear();
+            app.save_undo();
+            app.input.insert(app.input_cursor, ' ');
+            app.input_cursor += 1;
+            return;
+        }
+        KeyCode::Backspace if app.slash_command.active && key.modifiers.is_empty() => {
+            app.input_history.index = None;
+            app.input_history.saved.clear();
+            if app.input_cursor > 0 {
+                let prev = app.input.floor_char_boundary(app.input_cursor - 1);
+                app.save_undo();
+                app.input.replace_range(prev..app.input_cursor, "");
+                app.input_cursor = prev;
+                if app.input_cursor <= app.slash_command.start_pos {
+                    app.slash_command.active = false;
+                }
+            }
+            return;
+        }
+                // --- End slash command shortcuts ---
+
         KeyCode::Enter => {
+            // Deactivate slash command on submit
+            app.slash_command.active = false;
             if key
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::SHIFT)
@@ -237,12 +309,48 @@ pub(crate) fn handle_insert_mode(
                 app.input_cursor = next_cursor;
             }
         }
+        KeyCode::Char('/')
+            if {
+                let cursor = app
+                    .input
+                    .floor_char_boundary(app.input_cursor.min(app.input.len()));
+                cursor == 0
+                    || app.input[..cursor]
+                        .chars()
+                        .next_back()
+                        .map_or(true, |c| c.is_whitespace())
+            } =>
+        {
+            // Activate slash command popup when '/' is typed at input start or after whitespace.
+            app.input_history.index = None;
+            app.input_history.saved.clear();
+            app.save_undo();
+            app.slash_command.start_pos = app.input_cursor;
+            app.slash_command.active = true;
+            app.slash_command.selected = 0;
+            app.input.insert(app.input_cursor, '/');
+            app.input_cursor += '/'.len_utf8();
+        }
+        KeyCode::Char('/') => {
+            // Literal '/' (not at start / after whitespace).
+            app.input_history.index = None;
+            app.input_history.saved.clear();
+            app.save_undo();
+            app.input.insert(app.input_cursor, '/');
+            app.input_cursor += '/'.len_utf8();
+        }
+
         KeyCode::Char('@')
-            if app.input_cursor == 0
-                || app.input[..app.input_cursor]
-                    .chars()
-                    .next_back()
-                    .map_or(true, |c| c.is_whitespace()) =>
+            if {
+                let cursor = app
+                    .input
+                    .floor_char_boundary(app.input_cursor.min(app.input.len()));
+                cursor == 0
+                    || app.input[..cursor]
+                        .chars()
+                        .next_back()
+                        .map_or(true, |c| c.is_whitespace())
+            } =>
         {
             // Open the file picker when '@' is typed at the start of the input
             // or after whitespace.
@@ -261,6 +369,15 @@ pub(crate) fn handle_insert_mode(
             app.input_history.index = None;
             app.input_history.saved.clear();
             app.save_undo();
+            // Deactivate slash command popup if the character is not valid for
+            // a command name (letters, digits, '-', '_', '/' are allowed).
+            // Also reset selection when typing updates the query.
+            if app.slash_command.active {
+                app.slash_command.selected = 0;
+                if !c.is_alphanumeric() && c != '-' && c != '_' && c != '/' {
+                    app.slash_command.active = false;
+                }
+            }
             app.input.insert(app.input_cursor, c);
             app.input_cursor += c.len_utf8();
         }

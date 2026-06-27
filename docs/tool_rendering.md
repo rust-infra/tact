@@ -166,7 +166,7 @@ Shown only when **phase is Success** and tool kind is:
 | `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
 | `Generic` | others | No card (title + meta only) |
 
-Preview: default 10 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
+Preview: default 3 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
 
 ---
 

@@ -18,7 +18,7 @@ use crate::handlers::{
 };
 use crate::render::{
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
-    render_main_area, render_select_popup, render_status_bar,
+    render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use anyhow::Result;
@@ -178,6 +178,9 @@ pub async fn run_tui(
                 }
                 if app.input_mode == InputMode::FilePicker {
                     render_file_picker(f, size, &app);
+                }
+                if app.slash_command.active {
+                    render_slash_command_popup(f, size, &app);
                 }
             })?;
             // Clear dirty flag after painting; next frame only repaints when state changes.
@@ -661,13 +664,12 @@ pub async fn run_tui(
                         match app.input_mode {
                             InputMode::Insert => {
                                 // Multi-line edit: preserve newlines, insert at cursor position
-                                // app.input_cursor is a byte index — use byte-indexed slicing
-                                let before: String =
-                                    app.input[..app.input_cursor].to_string();
-                                let after: String =
-                                    app.input[app.input_cursor..].to_string();
-                                app.input = before + &data + &after;
-                                app.input_cursor += data.len();
+                                let cursor =
+                                    app.input.floor_char_boundary(app.input_cursor.min(app.input.len()));
+                                let before = app.input[..cursor].to_string();
+                                let after = app.input[cursor..].to_string();
+                                app.input = before.clone() + &data + &after;
+                                app.input_cursor = before.len() + data.len();
                             }
                             InputMode::Search | InputMode::Palette => {
                                 // Single-line command: replace newlines with spaces, append to end

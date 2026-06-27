@@ -127,8 +127,12 @@ async fn main() -> anyhow::Result<()> {
     if is_new_session {
         let title = args.prompt.lines().next().unwrap_or("").trim();
         if !title.is_empty() {
-            let title = if title.len() > 80 { &title[..80] } else { title };
-            agent.set_session_title(Some(title)).await?;
+            let title = if title.chars().count() > 80 {
+                format!("{}…", title.chars().take(77).collect::<String>())
+            } else {
+                title.to_string()
+            };
+            agent.set_session_title(Some(&title)).await?;
         }
     }
 
