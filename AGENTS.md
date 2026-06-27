@@ -37,6 +37,11 @@ On Linux CI / fresh machines, install SQLite build deps first (`libsqlite3-dev`,
 
 Full architecture: see `ARCHITECTURE.md`.
 
+## Agent rules
+
+- SQLite schema and migrations: foreign keys are forbidden (`FOREIGN KEY`, `REFERENCES`, `ON DELETE/UPDATE ...`).
+- If a SQL change introduces foreign-key syntax, reject that approach and rewrite it to application-managed integrity (explicit cleanup/update flows + indexed id columns).
+
 ## Context management
 
 This file replaces the auto-generated project tree to keep the prompt prefix stable across edits. When the project structure changes (new files, renames), this file should be updated manually to reflect the new layout.
