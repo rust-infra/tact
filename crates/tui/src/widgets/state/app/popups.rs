@@ -246,51 +246,123 @@ impl App {
         self.thinking.popup = None;
     }
 
-    /// Open a file content popup, accepting the tool block's phys index.
-    pub(crate) fn open_diff_popup(&mut self, phys_idx: usize) {
-        if let Some(block) = self.tool_blocks.iter().find(|b| b.phys_idx == phys_idx) {
-            let file_path = block.output.arg_summary.clone();
-            self.diff_popup = Some(DiffPopup {
-                file_path,
+    /// Find tool render output whose block starts at `phys_idx`.
+    fn tool_output_at(&self, phys_idx: usize) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
+        self.tools
+            .active
+            .iter()
+            .find(|a| a.phys_idx == phys_idx)
+            .map(|a| &a.output)
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| &b.output)
+            })
+    }
+
+    fn popup_from_tool_output(
+        output: &crate::widgets::tool_widget::ToolRenderOutput,
+    ) -> Option<DiffPopup> {
+        if !output.layout.has_detail_card {
+            return None;
+        }
+        match output.tool_name.as_str() {
+            "write_file" | "read_file" => Some(DiffPopup {
+                title: output.arg_summary.clone(),
+                file_path: Some(output.arg_summary.clone()),
+                inline_content: output.detail_full.clone(),
+                lang: crate::render::popups::diff_popup::popup_lang_for_path(&output.arg_summary),
+                use_diff_gutter: output.use_diff_gutter,
                 scroll: 0,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
-            });
+            }),
+            "bash" | "shell" | "run_command" => {
+                let content = output.detail_full.clone()?;
+                Some(DiffPopup {
+                    title: output
+                        .detail_title
+                        .clone()
+                        .unwrap_or_else(|| "Command output".to_string()),
+                    file_path: None,
+                    inline_content: Some(content),
+                    lang: "bash".to_string(),
+                    use_diff_gutter: false,
+                    scroll: 0,
+                    cached_content: None,
+                    highlighted_lines: Vec::new(),
+                })
+            }
+            _ => {
+                let content = output.detail_full.clone()?;
+                Some(DiffPopup {
+                    title: output
+                        .detail_title
+                        .clone()
+                        .unwrap_or_else(|| output.tool_name.clone()),
+                    file_path: None,
+                    inline_content: Some(content),
+                    lang: String::new(),
+                    use_diff_gutter: false,
+                    scroll: 0,
+                    cached_content: None,
+                    highlighted_lines: Vec::new(),
+                })
+            }
+        }
+    }
+
+    /// Open a tool detail popup (file content or command output).
+    pub(crate) fn open_diff_popup(&mut self, phys_idx: usize) {
+        let Some(output) = self.tool_output_at(phys_idx) else {
+            return;
+        };
+        if let Some(popup) = Self::popup_from_tool_output(output) {
+            self.tools.popup = Some(popup);
         }
     }
 
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
-        self.diff_popup = None;
+        self.tools.popup = None;
     }
 
     /// Scroll up within the popup.
     pub(crate) fn diff_popup_scroll_up(&mut self) {
-        if let Some(ref mut popup) = self.diff_popup {
+        if let Some(ref mut popup) = self.tools.popup {
             popup.scroll = popup.scroll.saturating_sub(1);
         }
     }
 
     /// Scroll down within the popup (upper bound clamped by actual line count during render).
     pub(crate) fn diff_popup_scroll_down(&mut self) {
-        if let Some(ref mut popup) = self.diff_popup {
+        if let Some(ref mut popup) = self.tools.popup {
             popup.scroll = popup.scroll.saturating_add(1);
         }
     }
 
-    /// Copy the popup file content to the clipboard.
+    /// Copy the popup content to the clipboard.
     pub(crate) fn copy_diff_popup(&mut self) {
-        let popup = match &self.diff_popup {
+        let popup = match &self.tools.popup {
             Some(p) => p,
             None => return,
         };
-        let path = &popup.file_path;
-        let text = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(e) => {
-                self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
-                return;
+        let text = if let Some(content) = &popup.cached_content {
+            content.clone()
+        } else if let Some(path) = &popup.file_path {
+            match std::fs::read_to_string(path) {
+                Ok(content) => content,
+                Err(e) => {
+                    self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
+                    return;
+                }
             }
+        } else if let Some(content) = &popup.inline_content {
+            content.clone()
+        } else {
+            return;
         };
         let preview = if text.chars().count() > 40 {
             format!("{}…", text.chars().take(40).collect::<String>())
@@ -315,7 +387,7 @@ impl App {
             "📋 Copied to internal buffer (clipboard unavailable): {}",
             preview
         ));
-        self.diff_popup = None;
+        self.tools.popup = None;
     }
 
     // ========== Code Popup ==========

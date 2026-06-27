@@ -53,13 +53,12 @@ impl ProviderInfo {
                 std::env::var("KIMI_API_KEY")?,
                 std::env::var("KIMI_BASE_URL")
                     .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string()),
-                std::env::var("KIMI_MODEL")
-                    .unwrap_or_else(|_| "kimi-for-coding".to_string()),
+                std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-for-coding".to_string()),
             ),
             _ => {
                 return Err(anyhow::anyhow!(
                     "TACT_PROVIDER must be 'openai', 'anthropic', or 'kimi'"
-                ))
+                ));
             }
         };
         Ok(Self {
@@ -90,9 +89,7 @@ impl ProviderInfo {
         if self.model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
             return true;
         }
-        self.model.contains("kimi-k2")
-            || self.model.contains("k2.")
-            || self.model.contains("k2-")
+        self.model.contains("kimi-k2") || self.model.contains("k2.") || self.model.contains("k2-")
     }
 
     /// Returns true specifically for K2.7-code and the Kimi Code stable model.
@@ -142,25 +139,44 @@ impl From<async_openai::error::OpenAIError> for LlmError {
     }
 }
 
+/// Serialized JSON request body actually sent to the LLM API (for session debugging).
+pub type LlmRequestBody = Vec<u8>;
+
 /// Abstract interface for streaming and non-streaming LLM calls.
 #[async_trait::async_trait]
 pub trait LlmClient: Send + Sync {
     /// Stream a message request, emitting real-time updates via `ui_tx`.
     ///
-    /// Returns the final content blocks, optional stop reason, and optional token usage info.
+    /// Returns content blocks, stop reason, token usage, and the serialized request body.
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>;
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    >;
 
     /// Non-streaming message request (used for context compaction).
     ///
-    /// Returns the final content blocks, optional stop reason, and optional token usage info.
+    /// Returns content blocks, stop reason, token usage, and the serialized request body.
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>;
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    >;
 }
 
 /// Supported LLM providers.
@@ -176,7 +192,15 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, ui_tx).await,
             LlmProvider::OpenAi(o) => o.stream_message(request, ui_tx).await,
@@ -186,7 +210,15 @@ impl LlmClient for LlmProvider {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request).await,
             LlmProvider::OpenAi(o) => o.create_message(request).await,
@@ -258,7 +290,9 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
             let config = openai::CompatibleConfig::new(api_key, base_url);
             Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
         }
-        other => anyhow::bail!("Unknown TACT_PROVIDER: {other}. Use 'anthropic', 'openai', or 'kimi'."),
+        other => {
+            anyhow::bail!("Unknown TACT_PROVIDER: {other}. Use 'anthropic', 'openai', or 'kimi'.")
+        }
     }
 }
 

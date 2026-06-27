@@ -14,30 +14,30 @@ const LINE_NUM_FG: Color = Color::Rgb(100, 110, 130);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 
 /// Infer a language label from the file extension.
-fn lang_from_path(path: &str) -> &str {
+fn lang_from_path(path: &str) -> String {
     match std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
     {
-        Some("rs") => "rust",
-        Some("py") => "python",
-        Some("js") | Some("mjs") => "javascript",
-        Some("ts") | Some("tsx") => "typescript",
-        Some("go") => "go",
-        Some("c") | Some("h") => "c",
-        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "cpp",
-        Some("toml") => "toml",
-        Some("yaml") | Some("yml") => "yaml",
-        Some("json") => "json",
-        Some("md") | Some("mdx") => "markdown",
-        Some("sh") | Some("bash") | Some("zsh") => "bash",
-        Some("sql") => "sql",
-        Some("html") => "html",
-        Some("css") => "css",
-        Some("java") => "java",
-        Some("kt") | Some("kts") => "kotlin",
-        Some("swift") => "swift",
-        _ => "",
+        Some("rs") => "rust".to_string(),
+        Some("py") => "python".to_string(),
+        Some("js") | Some("mjs") => "javascript".to_string(),
+        Some("ts") | Some("tsx") => "typescript".to_string(),
+        Some("go") => "go".to_string(),
+        Some("c") | Some("h") => "c".to_string(),
+        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "cpp".to_string(),
+        Some("toml") => "toml".to_string(),
+        Some("yaml") | Some("yml") => "yaml".to_string(),
+        Some("json") => "json".to_string(),
+        Some("md") | Some("mdx") => "markdown".to_string(),
+        Some("sh") | Some("bash") | Some("zsh") => "bash".to_string(),
+        Some("sql") => "sql".to_string(),
+        Some("html") => "html".to_string(),
+        Some("css") => "css".to_string(),
+        Some("java") => "java".to_string(),
+        Some("kt") | Some("kts") => "kotlin".to_string(),
+        Some("swift") => "swift".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -55,7 +55,7 @@ fn syntax_highlight(code: &str, lang: &str) -> Vec<Line<'static>> {
             .collect();
     }
 
-    let md = format!("```{}\n{}\n```", lang, code);
+    let md = format!("```{lang}\n{code}\n```");
     let styled = tui_markdown::from_str(&md);
 
     let mut in_code = false;
@@ -89,143 +89,42 @@ fn syntax_highlight(code: &str, lang: &str) -> Vec<Line<'static>> {
     result
 }
 
-pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    let file_path = match app.diff_popup.as_ref().map(|p| p.file_path.clone()) {
-        Some(p) => p,
-        None => return,
-    };
-
-    let popup = app.diff_popup.as_mut().unwrap();
-
-    // ------------------------------------------------------------------
-    // Lazy-load file content and syntax-highlight it (once).
-    // ------------------------------------------------------------------
-    if popup.cached_content.is_none() {
-        popup.cached_content = std::fs::read_to_string(&file_path).ok();
-        // Re-highlight whenever content is (re)loaded.
-        if let Some(content) = &popup.cached_content {
-            let lang = lang_from_path(&file_path);
-            popup.highlighted_lines = syntax_highlight(content, lang);
-        }
-    }
-
-    let content = match &popup.cached_content {
-        Some(c) => c,
-        None => {
-            let err = format!("Unable to read file: {}", file_path);
-            let para = Paragraph::new(err).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(app.msgs().diff_popup_title.replace("{}", &file_path)),
-            );
-            frame.render_widget(para, area);
-            return;
-        }
-    };
-
-    let total = content.lines().count();
-    if total == 0 {
+fn load_popup_content(popup: &mut crate::widgets::state::DiffPopup) {
+    if popup.cached_content.is_some() {
         return;
     }
+    let content = if let Some(path) = &popup.file_path {
+        std::fs::read_to_string(path)
+            .ok()
+            .or_else(|| popup.inline_content.clone())
+    } else {
+        popup.inline_content.clone()
+    };
+    if let Some(text) = content {
+        popup.highlighted_lines = syntax_highlight(&text, &popup.lang);
+        popup.cached_content = Some(text);
+    }
+}
 
-    // ------------------------------------------------------------------
-    // Layout geometry (same every frame for the same area — fine).
-    // ------------------------------------------------------------------
-    let popup_width = (area.width as f32 * 0.8).max(40.0) as u16;
-    let popup_height = (area.height as f32 * 0.8).max(10.0) as u16;
-    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
+fn render_popup_chrome(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    title: &str,
+    body: Text<'static>,
+) -> Rect {
+    let popup_area = super::centered_popup_area(area);
     frame.render_widget(Clear, popup_area);
     super::render_popup_shadow(frame, popup_area);
 
-    let content_height = popup_height.saturating_sub(3) as usize;
-    let max_scroll = total.saturating_sub(1);
-    let scroll = (popup.scroll as usize).min(max_scroll);
-
-    let num_width = (total + 1).to_string().len().max(3);
-    // │ NNN + content… │  →  borders(2) + spaces(2) + num_width + gutter(2) = num_width + 6
-    let code_width = (popup_width as usize).saturating_sub(6 + num_width);
-    let num_style = Style::default().fg(LINE_NUM_FG).bg(CODE_BG);
-    let plus_style = Style::default().fg(app.theme.success).bg(CODE_BG);
-
-    let lang = lang_from_path(&file_path);
-
-    // Title: file name + line count + optional language.
-    let title = if lang.is_empty() {
-        format!(" {} ({} lines) ", file_path, total)
-    } else {
-        format!(" {} ({} lines, {}) ", file_path, total, lang)
-    };
-
-    // ------------------------------------------------------------------
-    // Build the visible lines — reuse pre-rendered highlighted lines.
-    // Truncation reuses the existing Span content without allocating.
-    // ------------------------------------------------------------------
-    let visible_end = (scroll + content_height).min(total);
-    let mut text = Text::default();
-    let highlighted = &popup.highlighted_lines;
-
-    for i in scroll..visible_end {
-        let num = format!("{:>nw$}", i + 1, nw = num_width);
-
-        let content_line: Line<'static> = if i < highlighted.len() {
-            let hl_spans: Vec<Span<'static>> = highlighted[i]
-                .spans
-                .iter()
-                .map(|s| {
-                    // Truncate inline: take at most code_width chars from the
-                    // existing Span content (no allocation for short lines;
-                    // allocate only for long ones that actually get cut).
-                    if s.content.chars().count() <= code_width {
-                        Span::styled(s.content.clone().into_owned(), s.style)
-                    } else {
-                        Span::styled(
-                            s.content.chars().take(code_width).collect::<String>(),
-                            s.style,
-                        )
-                    }
-                })
-                .collect();
-            Line::from(hl_spans)
-        } else {
-            // Fallback (shouldn't normally happen when highlighted is kept in
-            // sync): render raw line.
-            let raw: String = content
-                .lines()
-                .nth(i)
-                .unwrap_or("")
-                .chars()
-                .take(code_width)
-                .collect();
-            Line::from(Span::styled(raw, Style::default().fg(CODE_FG).bg(CODE_BG)))
-        };
-
-        if content_line.spans.is_empty() {
-            text.push_line(Line::from(vec![
-                Span::styled(format!(" {} ", num), num_style),
-                Span::styled("+ ", plus_style),
-            ]));
-        } else {
-            let mut spans = vec![
-                Span::styled(format!(" {} ", num), num_style),
-                Span::styled("+ ", plus_style),
-            ];
-            spans.extend(content_line.spans);
-            text.push_line(Line::from(spans));
-        }
-    }
-
-    let para = Paragraph::new(text)
+    let para = Paragraph::new(body)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CODE_BORDER))
                 .title(Span::styled(
-                    &title,
+                    title,
                     Style::default()
                         .fg(Color::Rgb(160, 180, 240))
                         .add_modifier(Modifier::BOLD),
@@ -252,6 +151,127 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(para, popup_area);
+    popup_area
+}
+
+pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
+    let snapshot = {
+        let popup = match app.tools.popup.as_mut() {
+            Some(p) => p,
+            None => return,
+        };
+        load_popup_content(popup);
+        (
+            popup.cached_content.clone(),
+            popup.title.clone(),
+            popup.file_path.clone(),
+            popup.lang.clone(),
+            popup.use_diff_gutter,
+            popup.scroll,
+            popup.highlighted_lines.clone(),
+        )
+    };
+
+    let (
+        cached_content,
+        popup_title,
+        file_path,
+        lang,
+        use_diff_gutter,
+        scroll,
+        highlighted_lines,
+    ) = snapshot;
+
+    let Some(content) = cached_content.as_ref() else {
+        let err = if let Some(path) = &file_path {
+            app.msgs()
+                .tool_popup_read_error
+                .replace("{}", path)
+        } else {
+            app.msgs().tool_popup_empty.to_string()
+        };
+        let body = Text::from(Line::from(Span::styled(
+            err,
+            Style::default().fg(app.theme.error).bg(CODE_BG),
+        )));
+        let popup_area = render_popup_chrome(frame, area, app, &popup_title, body);
+        app.mouse.diff_popup_area = popup_area;
+        return;
+    };
+
+    let total = content.lines().count().max(1);
+    let content_height = {
+        let popup_area = super::centered_popup_area(area);
+        popup_area.height.saturating_sub(3) as usize
+    };
+    let max_scroll = total.saturating_sub(1);
+    let scroll = (scroll as usize).min(max_scroll);
+
+    let num_width = (total + 1).to_string().len().max(3);
+    let gutter_cols = usize::from(use_diff_gutter) * 2;
+    let code_width = {
+        let popup_area = super::centered_popup_area(area);
+        (popup_area.width as usize).saturating_sub(6 + num_width + gutter_cols)
+    };
+    let num_style = Style::default().fg(LINE_NUM_FG).bg(CODE_BG);
+    let plus_style = Style::default().fg(app.theme.success).bg(CODE_BG);
+
+    let title = if lang.is_empty() {
+        format!(" {} ({} lines) ", popup_title, total)
+    } else {
+        format!(" {} ({} lines, {}) ", popup_title, total, lang)
+    };
+
+    let visible_end = (scroll + content_height).min(total);
+    let mut text = Text::default();
+
+    for i in scroll..visible_end {
+        let num = format!("{:>nw$}", i + 1, nw = num_width);
+
+        let content_line: Line<'static> = if i < highlighted_lines.len() {
+            let hl_spans: Vec<Span<'static>> = highlighted_lines[i]
+                .spans
+                .iter()
+                .map(|s| {
+                    if s.content.chars().count() <= code_width {
+                        Span::styled(s.content.clone().into_owned(), s.style)
+                    } else {
+                        Span::styled(
+                            s.content.chars().take(code_width).collect::<String>(),
+                            s.style,
+                        )
+                    }
+                })
+                .collect();
+            Line::from(hl_spans)
+        } else {
+            let raw: String = content
+                .lines()
+                .nth(i)
+                .unwrap_or("")
+                .chars()
+                .take(code_width)
+                .collect();
+            Line::from(Span::styled(raw, Style::default().fg(CODE_FG).bg(CODE_BG)))
+        };
+
+        if content_line.spans.is_empty() {
+            let mut spans = vec![Span::styled(format!(" {} ", num), num_style)];
+            if use_diff_gutter {
+                spans.push(Span::styled("+ ", plus_style));
+            }
+            text.push_line(Line::from(spans));
+        } else {
+            let mut spans = vec![Span::styled(format!(" {} ", num), num_style)];
+            if use_diff_gutter {
+                spans.push(Span::styled("+ ", plus_style));
+            }
+            spans.extend(content_line.spans);
+            text.push_line(Line::from(spans));
+        }
+    }
+
+    let popup_area = render_popup_chrome(frame, area, app, &title, text);
 
     let scrollbar =
         Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
@@ -261,4 +281,8 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
     app.mouse.diff_popup_area = popup_area;
+}
+
+pub(crate) fn popup_lang_for_path(path: &str) -> String {
+    lang_from_path(path)
 }

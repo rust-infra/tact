@@ -158,6 +158,8 @@
 //! └───────────────────────────────────────────────────────────────────────┘
 //! ```
 
+use std::time::Instant;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -167,129 +169,132 @@ use ratatui::{
 };
 
 use crate::{
+    i18n::Messages,
     render::renderable::Renderable,
-    widgets::tool_widget::{ToolPhase, ToolRenderOutput, tool_card_inner_rows, tool_visual_rows},
+    widgets::tool_widget::{
+        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_ms, tool_card_inner_rows,
+        tool_visual_rows, TOOL_HEADER_ROWS,
+    },
 };
 
-/// Owned visual data for one tool invocation result in the log column.
-///
-/// All fields are `'static` so the cell can be stored in `LogColumnRenderer`'s
-/// `Vec<(usize, Box<dyn Renderable>)>` without lifetime constraints.
 pub(crate) struct ToolCell {
-    /// Pre-built styled summary line (e.g. "✔ Step 3: write_file (src/main.rs)").
-    summary_line: Line<'static>,
-    /// Raw text of the summary (reserved for future search highlighting, like
-    /// `TextCell.raw_text`).
-    ///
-    /// Raw text of the summary line. Already covered by `raw_messages`-based
-    /// search; reserved for future cell-based search in LogColumnRenderer.
-    _summary_raw: String,
-    /// Execution phase (Success / Failure / Running).
+    title_line: Line<'static>,
+    _title_raw: String,
     phase: ToolPhase,
-    /// When true, the summary line is not rendered by this cell (it's handled by
-    /// a separate `TextCell` in `messages[]`). Only the detail card is drawn.
+    permission_label: Option<String>,
+    error_message: Option<String>,
+    duration_ms: Option<u64>,
+    size_bytes: Option<usize>,
+    started_at: Option<Instant>,
+    spinner_char: char,
     card_only: bool,
-    /// Whether this tool produced a detail card (file content preview, etc.).
     has_detail_card: bool,
-    /// Card title — e.g. "Wrote src/main.rs (15 lines)". Displayed in the top border.
+    use_diff_gutter: bool,
     detail_title: Option<String>,
-    /// First N lines of the tool output, pre-split. Stored as `Vec<String>` instead
-    /// of `Vec<Line>` because the per-line styling (line numbers, "+" gutter) is
-    /// built at render time in `detail_card_lines()`.
     detail_preview: Vec<String>,
-    /// Total number of lines in the tool output (may be greater than
-    /// `detail_preview.len()` when the output is truncated).
     detail_total_lines: usize,
-    /// Decorative bottom border label, e.g. "▔▔▔" — set from i18n messages.
     card_bottom: String,
-    /// Overflow message template, e.g. "... and {} more lines" — set from i18n.
     overflow_tmpl: String,
-    // ── Theme colors (copied at construction time) ──────────────────────
+    tool_phase_running: &'static str,
+    tool_phase_success: &'static str,
+    tool_phase_failed: &'static str,
+    tool_meta_sep: &'static str,
+    step_success_prefix: &'static str,
+    step_fail_prefix: &'static str,
     accent: Color,
     bg: Color,
     fg: Color,
     success: Color,
+    warning: Color,
+    error: Color,
 }
 
 impl ToolCell {
-    /// Build an owned `ToolCell` from the builder's output plus theme / i18n data.
-    ///
-    /// This is a pure data copy — the `ToolRenderOutput` owns no borrowed state,
-    /// so this is just moving fields and adding the color/text singletons.
-    ///
-    /// # Parameters
-    ///
-    /// - `card_only`: when true, the summary is not rendered by this cell (it's
-    ///   already handled by a separate `TextCell`). Only the detail card is drawn.
-    /// - `accent`, `bg`, `fg`, `success`: colors from `Theme`
-    /// - `card_bottom`: i18n message for the card's bottom border decoration
-    /// - `overflow_tmpl`: i18n template for the "... and N more lines" line
     pub(crate) fn from_output(
         output: ToolRenderOutput,
+        started_at: Option<Instant>,
+        spinner_char: char,
         card_only: bool,
         accent: Color,
         bg: Color,
         fg: Color,
         success: Color,
-        card_bottom: String,
-        overflow_tmpl: String,
+        warning: Color,
+        error: Color,
+        msgs: &Messages,
     ) -> Self {
         Self {
-            summary_line: output.summary,
-            _summary_raw: output.summary_raw,
+            title_line: output.title_line,
+            _title_raw: output.title_raw,
             phase: output.phase,
+            permission_label: output.permission_label,
+            error_message: output.error_message,
+            duration_ms: output.duration_ms,
+            size_bytes: output.size_bytes,
+            started_at,
+            spinner_char,
             card_only,
             has_detail_card: output.layout.has_detail_card,
+            use_diff_gutter: output.use_diff_gutter,
             detail_title: output.detail_title,
             detail_preview: output.detail_preview,
             detail_total_lines: output.detail_total_lines,
-            card_bottom,
-            overflow_tmpl,
+            card_bottom: msgs.diff_card_bottom.to_string(),
+            overflow_tmpl: msgs.diff_overflow_tmpl.to_string(),
+            tool_phase_running: msgs.tool_phase_running,
+            tool_phase_success: msgs.tool_phase_success,
+            tool_phase_failed: msgs.tool_phase_failed,
+            tool_meta_sep: msgs.tool_meta_sep,
+            step_success_prefix: msgs.step_success_prefix,
+            step_fail_prefix: msgs.step_fail_prefix,
             accent,
             bg,
             fg,
             success,
+            warning,
+            error,
         }
     }
 
-    /// Number of content rows *inside* the card borders (excluding the top and
-    /// bottom border lines themselves).
+    fn meta_line(&self) -> Line<'static> {
+        let duration_ms = if self.phase == ToolPhase::Running {
+            self.started_at.map(running_elapsed_ms).or(self.duration_ms)
+        } else {
+            self.duration_ms
+        };
+        let text = build_meta_text(
+            self.phase,
+            self.permission_label.as_deref(),
+            self.size_bytes,
+            duration_ms,
+            self.error_message.as_deref(),
+            self.spinner_char,
+            self.tool_phase_running,
+            self.tool_phase_success,
+            self.tool_phase_failed,
+            self.tool_meta_sep,
+            self.step_success_prefix,
+            self.step_fail_prefix,
+        );
+        let style = match self.phase {
+            ToolPhase::Running => Style::default().fg(self.warning),
+            ToolPhase::Success => Style::default().fg(self.success),
+            ToolPhase::Failed => Style::default().fg(self.error),
+        };
+        Line::from(Span::styled(text, style))
+    }
+
     fn card_inner_rows(&self) -> usize {
         tool_card_inner_rows(self.detail_preview.len(), self.detail_total_lines)
     }
 
-    /// Build the styled content lines for the card's interior, given the available
-    /// inner width (already accounting for the 1-char border on each side).
-    ///
-    /// Each line has the format:
-    ///
-    /// ```text
-    ///  NN + content…
-    /// ```
-    ///
-    /// where `NN` is a right-aligned line number padded to `num_width` characters,
-    /// followed by a green `+` gutter and the (possibly truncated) content.
-    ///
-    /// If `total_lines > preview.len()`, a final `"... and N more lines"` row
-    /// is appended using the `overflow_tmpl` template.
-    ///
-    /// # Width allocation
-    ///
-    /// ```text
-    /// |__ num_width __||_ gutter _||_________ code_width ________|
-    ///   NN             +           content…
-    /// ```
-    ///
-    /// `num_width` is at least 3 (to accommodate "999") and grows with the
-    /// total line count (e.g. 4 digits for 1000+ lines).
-    /// `code_width = width - num_width - 3` (the 3 includes the `+ ` gutter
-    /// and one extra safety char).
     fn detail_card_lines(&self, width: u16) -> Vec<Line<'static>> {
         if !self.has_detail_card {
             return Vec::new();
         }
         let num_width = (self.detail_total_lines + 1).to_string().len().max(3);
-        let code_width = (width as usize).saturating_sub(num_width + 3);
+        let gutter_cols = if self.use_diff_gutter { 3 } else { 1 };
+        let code_width = (width as usize).saturating_sub(num_width + gutter_cols + 1);
 
         let num_style = Style::default().fg(Color::Gray).bg(self.bg);
         let text_style = Style::default().fg(self.fg).bg(self.bg);
@@ -302,11 +307,18 @@ impl ToolCell {
             .map(|(i, line)| {
                 let num = format!("{:>nw$}", i + 1, nw = num_width);
                 let trimmed: String = line.chars().take(code_width).collect();
-                Line::from(vec![
-                    Span::styled(format!(" {} ", num), num_style),
-                    Span::styled("+ ", plus_style),
-                    Span::styled(trimmed, text_style),
-                ])
+                if self.use_diff_gutter {
+                    Line::from(vec![
+                        Span::styled(format!(" {} ", num), num_style),
+                        Span::styled("+ ", plus_style),
+                        Span::styled(trimmed, text_style),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(format!(" {} ", num), num_style),
+                        Span::styled(trimmed, text_style),
+                    ])
+                }
             })
             .collect();
 
@@ -396,42 +408,50 @@ impl Renderable for ToolCell {
     /// | 1..1+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
-        let area = crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_INDENT);
+        let area = crate::render::util::indent_rect(
+            area,
+            crate::render::util::LOG_TOOL_BLOCK_INDENT,
+        );
         if area.height == 0 || area.width == 0 {
             return;
         }
 
-        // ── Summary (normal mode only) ───────────────────────────
+        // ── Header rows (title + meta) ───────────────────────────
         if !self.card_only {
-            if skip_lines == 0 {
-                let summary_area = Rect::new(area.x, area.y, area.width, 1);
-                Paragraph::new(vec![self.summary_line.clone()])
-                    .style(Style::default().fg(self.fg).bg(self.bg))
-                    .render(summary_area, buf);
+            for row in 0..TOOL_HEADER_ROWS {
+                if row < skip_lines {
+                    continue;
+                }
+                let vis_off = row - skip_lines;
+                if vis_off >= area.height as usize {
+                    break;
+                }
+                let row_area = Rect::new(area.x, area.y + vis_off as u16, area.width, 1);
+                if row == 0 {
+                    Paragraph::new(vec![self.title_line.clone()])
+                        .style(Style::default().fg(self.fg).bg(self.bg))
+                        .render(row_area, buf);
+                } else {
+                    Paragraph::new(vec![self.meta_line()])
+                        .style(Style::default().bg(self.bg))
+                        .render(row_area, buf);
+                }
             }
         }
 
-        // No card → done.
         if !self.has_detail_card {
             return;
         }
 
-        let card_total = 1 + self.card_inner_rows() + 1; // top_border + inner_rows + bottom_border
+        let card_total = 1 + self.card_inner_rows() + 1;
 
-        // ── Map skip_lines to card-relative coordinates ─────────
-        //
-        // In normal mode the summary occupies row 0; in card_only mode
-        // the card starts at row 0. We compute `card_skip` (how many card
-        // rows to skip) and whether the card starts at area.y or area.y+1.
         let (card_area_y_offset, card_skip) = if self.card_only {
-            // Row 0 is the card top border — no summary offset.
             (0, skip_lines)
-        } else if skip_lines == 0 {
-            // Summary visible (row 0); card starts at area.y + 1.
-            (1, 0)
         } else {
-            // Summary clipped; card starts at area.y.
-            (0, skip_lines.saturating_sub(1))
+            (
+                TOOL_HEADER_ROWS.saturating_sub(skip_lines),
+                skip_lines.saturating_sub(TOOL_HEADER_ROWS),
+            )
         };
 
         // Entire card is above the viewport — nothing to draw.
@@ -444,7 +464,12 @@ impl Renderable for ToolCell {
         if remaining_h == 0 {
             return;
         }
-        let card_area = Rect::new(area.x, area.y + card_area_y_offset, area.width, remaining_h);
+        let card_area = Rect::new(
+            area.x,
+            area.y + card_area_y_offset as u16,
+            area.width,
+            remaining_h,
+        );
 
         // ── Case A: full card (card_skip == 0) ──────────────────────
         //
@@ -453,25 +478,6 @@ impl Renderable for ToolCell {
         if card_skip == 0 {
             let title = self.detail_title.clone().unwrap_or_default();
 
-            // ── Card shadow effect ─────────────────────────────────
-            // Draw a subtle shadow offset by (1,1) to the right and down
-            // using dark shade characters. This creates a floating 3D depth.
-            let shadow_area = Rect::new(
-                card_area.x.saturating_add(1),
-                card_area.y.saturating_add(1),
-                card_area.width,
-                card_area.height,
-            );
-            // Only draw shadow if it stays within the buffer area
-            if shadow_area.right() <= buf.area.right() && shadow_area.bottom() <= buf.area.bottom() {
-                // Extended shadow block for depth
-                let shadow_block = Block::default()
-                    .style(Style::default().bg(Color::Rgb(25, 25, 40)));
-                shadow_block.render(shadow_area, buf);
-            }
-
-            // ── Card border with gradient effect ──────────────────
-            // Use BOLD + accent for the border to make it stand out
             let card_block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -571,7 +577,7 @@ impl Renderable for ToolCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, tool_visual_rows};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, tool_visual_rows, TOOL_HEADER_ROWS};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -582,9 +588,15 @@ mod tests {
             .map(|i| format!("line-{i:02}"))
             .collect();
         ToolRenderOutput {
-            summary: Line::from("✔ Step 1: write_file (src/main.rs)"),
-            summary_raw: "✔ Step 1: write_file (src/main.rs)".into(),
+            title_line: Line::from("Write  src/main.rs"),
+            title_raw: "Write  src/main.rs".into(),
             phase: ToolPhase::Success,
+            permission_label: None,
+            error_message: None,
+            duration_ms: Some(12),
+            size_bytes: Some(128),
+            tool_name: "write_file".into(),
+            use_diff_gutter: true,
             arg_summary: "src/main.rs".into(),
             layout: ToolLayout {
                 visual_rows: tool_visual_rows(has_card, preview_count, total, false),
@@ -598,33 +610,41 @@ mod tests {
             },
             detail_preview: preview,
             detail_total_lines: total,
+            detail_full: None,
         }
     }
 
-    /// Construct a `ToolCell` with a fixed theme for deterministic testing.
     fn tool_cell(output: ToolRenderOutput) -> ToolCell {
-        tool_cell_mode(output, false)
+        tool_cell_mode(output, false, None)
     }
 
-    fn tool_cell_mode(output: ToolRenderOutput, card_only: bool) -> ToolCell {
+    fn tool_cell_mode(
+        output: ToolRenderOutput,
+        card_only: bool,
+        started_at: Option<std::time::Instant>,
+    ) -> ToolCell {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         ToolCell::from_output(
             output,
+            started_at,
+            '⠋',
             card_only,
-            Color::Cyan,       // accent
-            Color::Black,      // bg
-            Color::White,      // fg
-            Color::Green,      // success
-            "▔▔▔".into(),      // card_bottom
-            "... and {} more lines".into(),
+            Color::Cyan,
+            Color::Black,
+            Color::White,
+            Color::Green,
+            Color::Yellow,
+            Color::Red,
+            &msgs,
         )
     }
 
     // ── Normal mode tests ───────────────────────────────────────
 
     #[test]
-    fn height_no_card_is_one() {
+    fn height_no_card_is_two() {
         let cell = tool_cell(make_output(false, 0, 0));
-        assert_eq!(cell.height(80), 1);
+        assert_eq!(cell.height(80), TOOL_HEADER_ROWS as u16);
     }
 
     #[test]
@@ -632,21 +652,19 @@ mod tests {
         // 10 preview lines, 10 total → no overflow row needed
         let cell = tool_cell(make_output(true, 10, 10));
         // 1 (summary) + 1 (top border) + 10 (preview) + 1 (bottom border) = 13
-        assert_eq!(cell.height(80), 13);
+        assert_eq!(cell.height(80), 2 + 1 + 10 + 1);
     }
 
     #[test]
     fn height_with_card_and_overflow() {
-        // 10 preview lines, 15 total → overflow row present
         let cell = tool_cell(make_output(true, 10, 15));
-        // 1 + 1 + (10 preview + 1 overflow) + 1 = 14
-        assert_eq!(cell.height(80), 14);
+        assert_eq!(cell.height(80), 2 + 1 + 11 + 1);
     }
 
     #[test]
     fn height_with_card_small_preview() {
         let cell = tool_cell(make_output(true, 3, 3));
-        assert_eq!(cell.height(80), 1 + 1 + 3 + 1);
+        assert_eq!(cell.height(80), 2 + 1 + 3 + 1);
     }
 
     #[test]
@@ -665,6 +683,25 @@ mod tests {
         let area = Rect::new(0, 0, 60, 2);
         let mut buf = Buffer::empty(area);
         cell.render(area, &mut buf);
+        assert_eq!(buf.area, area);
+    }
+
+    #[test]
+    fn render_partial_single_visible_header_row() {
+        // Viewport shows only 1 row of a 2-row header — must not paint meta below area.
+        let cell = tool_cell(make_output(false, 0, 0));
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render_partial(area, &mut buf, 0);
+        assert_eq!(buf.area, area);
+    }
+
+    #[test]
+    fn render_partial_header_meta_when_title_scrolled_off() {
+        let cell = tool_cell(make_output(false, 0, 0));
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render_partial(area, &mut buf, 1);
         assert_eq!(buf.area, area);
     }
 
@@ -694,7 +731,7 @@ mod tests {
 
     #[test]
     fn card_only_height_no_card_is_zero() {
-        let cell = tool_cell_mode(make_output(false, 0, 0), true);
+        let cell = tool_cell_mode(make_output(false, 0, 0), true, None);
         assert_eq!(cell.height(80), 0);
     }
 
@@ -702,7 +739,7 @@ mod tests {
     fn card_only_height_with_card() {
         // 5 preview, 5 total → no overflow
         // height = 1 (top border) + 5 (preview) + 1 (bottom) = 7
-        let cell = tool_cell_mode(make_output(true, 5, 5), true);
+        let cell = tool_cell_mode(make_output(true, 5, 5), true, None);
         assert_eq!(cell.height(80), 7);
     }
 
@@ -710,13 +747,13 @@ mod tests {
     fn card_only_height_with_overflow() {
         // 3 preview, 10 total → overflow row present
         // height = 1 + (3 + 1) + 1 = 6
-        let cell = tool_cell_mode(make_output(true, 3, 10), true);
+        let cell = tool_cell_mode(make_output(true, 3, 10), true, None);
         assert_eq!(cell.height(80), 6);
     }
 
     #[test]
     fn card_only_renders_into_buffer() {
-        let cell = tool_cell_mode(make_output(true, 3, 5), true);
+        let cell = tool_cell_mode(make_output(true, 3, 5), true, None);
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         cell.render(area, &mut buf);
@@ -725,7 +762,7 @@ mod tests {
 
     #[test]
     fn card_only_render_partial_skip_borders() {
-        let cell = tool_cell_mode(make_output(true, 5, 5), true);
+        let cell = tool_cell_mode(make_output(true, 5, 5), true, None);
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         // skip_lines=1: skip top border, render interior content

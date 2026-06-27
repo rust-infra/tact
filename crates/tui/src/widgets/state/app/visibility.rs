@@ -1,5 +1,6 @@
 use crate::render::render_md::{format_table, render_markdown_tui};
 use crate::widgets::state::*;
+use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
@@ -113,6 +114,34 @@ impl App {
             .get(phys_idx)
             .copied()
             .flatten()
+    }
+
+    /// Find the tool block (active or completed) containing a logical log line.
+    /// Returns `(tool_idx, phys_idx, logical_start, row_count)`.
+    pub(crate) fn find_tool_at_logical(
+        &self,
+        line_idx: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
+        for (i, active) in self.tools.active.iter().enumerate() {
+            let Some(si) = self.phys_to_logical_fast(active.phys_idx) else {
+                continue;
+            };
+            let rows = active.output.visual_rows(false);
+            if line_idx >= si && line_idx < si + rows {
+                return Some((i, active.phys_idx, si, rows));
+            }
+        }
+        let base = self.tools.active.len();
+        for (i, block) in self.tools.blocks.iter().enumerate() {
+            let Some(si) = self.phys_to_logical_fast(block.phys_idx) else {
+                continue;
+            };
+            let rows = block.output.visual_rows(false);
+            if line_idx >= si && line_idx < si + rows {
+                return Some((base + i, block.phys_idx, si, rows));
+            }
+        }
+        None
     }
 
     /// Map a visual line number (mouse click row) back to a logical line number.
@@ -323,9 +352,14 @@ impl App {
                         block.end_idx -= 1;
                     }
                 }
-                for block in &mut self.tool_blocks {
+                for block in &mut self.tools.blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
+                    }
+                }
+                for active in &mut self.tools.active {
+                    if active.phys_idx > idx {
+                        active.phys_idx -= 1;
                     }
                 }
                 for block in &mut self.thinking.blocks {
@@ -365,6 +399,157 @@ impl App {
                 current_step: 0,
                 total: self.plan.steps.len(),
             };
+        }
+    }
+
+    pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
+        let phys_idx = self.messages.len();
+        let rows = output.visual_rows(false);
+        for _ in 0..rows {
+            self.append_blank(RawMessageType::SysTool);
+        }
+        phys_idx
+    }
+
+    fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        let adjust = |idx: &mut usize| {
+            if *idx >= at {
+                *idx = (*idx as isize + delta).max(0) as usize;
+            }
+        };
+        for block in &mut self.tools.blocks {
+            adjust(&mut block.phys_idx);
+        }
+        for active in &mut self.tools.active {
+            adjust(&mut active.phys_idx);
+        }
+        for block in &mut self.code_blocks {
+            if block.start_idx >= at {
+                block.start_idx = (block.start_idx as isize + delta).max(0) as usize;
+                block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
+            }
+        }
+        for block in &mut self.thinking.blocks {
+            if block.title_idx >= at {
+                block.title_idx = (block.title_idx as isize + delta).max(0) as usize;
+                block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
+            }
+        }
+        if let Some(ref mut start) = self.thinking.active_start {
+            if *start >= at {
+                *start = (*start as isize + delta).max(0) as usize;
+            }
+        }
+        if let Some(ref mut end) = self.thinking.active_end {
+            if *end >= at {
+                *end = (*end as isize + delta).max(0) as usize;
+            }
+        }
+        if let Some(ref mut idx) = self.loading_idx {
+            if *idx >= at {
+                *idx = (*idx as isize + delta).max(0) as usize;
+            }
+        }
+        if let Some(ref mut start) = self.stream.code_block_start_idx {
+            if *start >= at {
+                *start = (*start as isize + delta).max(0) as usize;
+            }
+        }
+    }
+
+    fn remove_active_tool_rows(&mut self, active: ActiveToolBlock) {
+        let rows = active.output.visual_rows(false);
+        if rows == 0 {
+            return;
+        }
+        let end = active.phys_idx.saturating_add(rows);
+        if active.phys_idx < self.messages.len() && end <= self.messages.len() {
+            self.drain_msgs(active.phys_idx..end);
+            self.shift_phys_indices_from(end, -(rows as isize));
+        }
+    }
+
+    /// Drop a running tool block and remove its placeholder rows from the log.
+    pub(crate) fn cancel_active_tool(&mut self, tool_id: &str) {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|a| a.tool_id == tool_id)
+        else {
+            return;
+        };
+        let active = self.tools.active.remove(pos);
+        self.remove_active_tool_rows(active);
+    }
+
+    /// Drop all running tool blocks (e.g. when a new plan starts).
+    pub(crate) fn cancel_all_active_tools(&mut self) {
+        let mut actives = std::mem::take(&mut self.tools.active);
+        actives.sort_by_key(|a| std::cmp::Reverse(a.phys_idx));
+        for active in actives {
+            self.remove_active_tool_rows(active);
+        }
+    }
+
+    pub(crate) fn resize_tool_placeholder_rows(
+        &mut self,
+        phys_idx: usize,
+        old_rows: usize,
+        new_rows: usize,
+    ) {
+        if new_rows > old_rows {
+            let insert_at = phys_idx + old_rows;
+            for _ in 0..(new_rows - old_rows) {
+                self.insert_msg(
+                    insert_at,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::SysTool,
+                );
+            }
+            self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
+        } else if new_rows < old_rows {
+            self.drain_msgs(phys_idx + new_rows..phys_idx + old_rows);
+            self.shift_phys_indices_from(
+                phys_idx + new_rows,
+                -((old_rows - new_rows) as isize),
+            );
+        }
+    }
+
+    pub(crate) fn finalize_tool_block(&mut self, tool_id: &str, output: ToolRenderOutput) {
+        if let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|a| a.tool_id == tool_id)
+        {
+            let active = self.tools.active.remove(pos);
+            let old_rows = active.output.visual_rows(false);
+            let new_rows = output.visual_rows(false);
+            self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
+            self.tools.blocks.push(ToolBlock {
+                phys_idx: active.phys_idx,
+                output,
+            });
+        } else {
+            let phys_idx = self.push_tool_placeholder_rows(&output);
+            self.tools.blocks.push(ToolBlock { phys_idx, output });
+        }
+        self.refresh_tool_log_scroll();
+    }
+
+    pub(crate) fn refresh_tool_log_scroll(&mut self) {
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+        if !self.search.term.is_empty() {
+            self.update_search_matches();
         }
     }
 }
