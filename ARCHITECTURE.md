@@ -2,7 +2,7 @@
 
 This document describes the overall architecture, core data flow, and terminal UI layout of `tact` using Mermaid diagrams. It reflects the current implementation rather than the original MVP design.
 
-For detailed state-machine diagrams (TUI status, input mode, task lifecycle, permissions, hooks, etc.), see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI rendering architecture (layout, log panel, popups, Markdown rendering, etc.), see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For the `batch_read`/`batch_edit` execution and TUI interaction flowcharts, see [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md).
+For detailed state-machine diagrams (TUI status, input mode, task lifecycle, permissions, hooks, etc.), see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI rendering architecture (layout, log panel, popups), see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For tool invocation UI (3-tier blocks, concurrent active tools, popups), see [`docs/tool_rendering.md`](./docs/tool_rendering.md). For the `batch_read`/`batch_edit` execution and TUI interaction flowcharts, see [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md).
 
 ---
 
@@ -211,10 +211,10 @@ Key `AgentUpdate` variants used today:
 | Variant | Meaning |
 |---|---|
 | `PlanGenerated(Vec<PlanStep>)` | Initial placeholder plan displayed in the TUI. |
-| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel. |
-| `StepStarted(usize)` | Step `idx` has begun. |
-| `StepFinished(usize, StepResult)` | Step `idx` succeeded with summary/detail/duration. |
-| `StepFailed(usize, String)` | Step `idx` failed. |
+| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = tool name only). |
+| `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block. |
+| `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`. |
+| `StepFailed(usize, tool_id, String)` | Step failed with error message. |
 | `RequestSelect { prompt, options, respond }` | Ask the user to pick an option. |
 | `StreamChunk(String)` | Streaming assistant text fragment. |
 | `ThinkingChunk(String)` | Streaming reasoning/thinking fragment. |
@@ -309,6 +309,39 @@ MCP tool naming convention: `mcp__<server_name>__<tool_name>`. Example: `mcp__fi
 
 ---
 
+## 5.5 System Prompt & Dynamic Context
+
+The runtime builds the system prompt via `SystemPrompt` (Tera template in `crates/tact/src/prompt/`) plus injected blocks:
+
+| Block | Source |
+|---|---|
+| Role / guidelines / constraints | Static template |
+| Skills | `skill_registry.describe_available()` |
+| Memory | `.claude/memory/*.md` via `MemoryManager` |
+| CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir |
+| **Dynamic context** | `load_dynamic_context()` — date, workdir, model, platform, **Project structure** |
+
+### Project structure snapshot
+
+`load_dynamic_context()` calls `snapshot_dir(workdir, max_items)` once per session and caches the result in `AgentRuntime.cached_dir_snapshot` for stable KV-cache prefixes.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TACT_SNAPSHOT_MAX_ITEMS` | `80` | Max files/dirs in the snapshot (truncated after sort) |
+| Walk depth | `4` | Max directory depth from project root |
+
+Snapshot behavior (language-agnostic, works for any repo layout):
+
+1. **Prune ignored dirs at traversal time** via `WalkDir::filter_entry` (`target`, `node_modules`, `.git`, dot-dirs except `.gitignore` / `.env.example`, etc.)
+2. **Sort** by depth (shallow first), then directories before files, then path name
+3. **Truncate** to `max_items`, then group by parent directory for display
+
+`AGENTS.md` provides a stable hand-maintained crate map; the runtime snapshot supplements it with the current working tree.
+
+For a curated map without scanning, prefer keeping `AGENTS.md` up to date — the snapshot is a best-effort overview, not a full tree listing.
+
+---
+
 ## 6. Context Compaction
 
 When the conversation approaches the context limit (`TACT_CONTEXT_LIMIT_CHARS`, default 500_000 characters), the agent compacts history:
@@ -355,7 +388,7 @@ block-beta
     block:main
         columns 2
         plan["Plan Panel<br/>(40% width)<br/>Execution plan list<br/>▼ expanded / ▶ collapsed"]
-        log["Log Panel<br/>(60% width)<br/>Streaming message area<br/>Search highlight / diff cards / code blocks"]
+        log["Log Panel<br/>(60% width)<br/>Streaming messages<br/>Tool blocks / thinking / code cards"]
     end
     block:input
         columns 1
@@ -386,7 +419,7 @@ block-beta
         history["History Panel<br/>Task history"]
         palette["Command Palette<br/>Filterable command list"]
         select["Select Popup<br/>Permission / user choice"]
-        diff["Diff Popup<br/>File write preview"]
+        diff["Diff Popup<br/>File diff or inline command output"]
         code["Code Block Popup"]
         thinking["Thinking Popup"]
     end
@@ -606,6 +639,10 @@ If you are reading older branches or notes, the following major evolutions have 
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
 - `tact_core::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
+- **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`.
+- **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
+- **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
+- **Bottom bar Cost timer** — retains last prompt duration until the next submission.
 
 ---
 
@@ -615,5 +652,7 @@ If you are reading older branches or notes, the following major evolutions have 
 |---|---|
 | [`docs/state_machines.md`](./docs/state_machines.md) | Detailed state-machine diagrams for the TUI, tasks, background jobs, permissions, hooks, and recovery. |
 | [`docs/tui_rendering.md`](./docs/tui_rendering.md) | TUI rendering architecture: layout, log panel, popups, Markdown, cells, performance optimization. |
+| [`docs/tool_rendering.md`](./docs/tool_rendering.md) | Tool block design: ToolWidget → ToolCell pipeline, concurrent tools, detail cards, DiffPopup. |
 | [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md) | `batch_read`/`batch_edit` tool execution flow and interaction sequence diagrams with the TUI. |
 | [`docs/compaction.md`](./docs/compaction.md) | Context compaction behavior and tuning. |
+| [`docs/token_usage_schema.md`](./docs/token_usage_schema.md) | SQLite `token_usages` schema, cache metrics, `request_body` debug column. |

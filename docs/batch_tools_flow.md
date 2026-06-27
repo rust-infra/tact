@@ -2,7 +2,8 @@
 
 This Mermaid diagram document describes the complete data flow from the Agent main loop, through LLM streaming responses, to the actual execution of `batch_read` / `batch_edit`, and finally to the `AgentUpdate` messages sent to the TUI where they are consumed and rendered.
 
-> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/lib.rs`, `crates/tact/src/llm/`, `crates/tui/src/lib.rs`, `crates/tui/src/state/app/agent.rs`
+> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/lib.rs`, `crates/tact/src/llm/`, `crates/tui/src/lib.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/tool_widget.rs`, `crates/tui/src/render/cells/tool.rs`  
+> Tool UI design: [`tool_rendering.md`](./tool_rendering.md)
 
 ---
 
@@ -31,7 +32,7 @@ sequenceDiagram
 
     LLM->>Agent: ToolUse {name: "batch_read", input}
     Agent->>TUI: AgentUpdate::StepAdded(...)
-    Agent->>TUI: AgentUpdate::StepStarted(step_idx)
+    Agent->>TUI: AgentUpdate::StepStarted(step_idx, tool_id, tool_name, arg_summary)
 
     Agent->>Toolset: tools.call(ctx, "batch_read", input)
     Toolset->>BatchRead: Match and execute batch_read
