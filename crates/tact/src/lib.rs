@@ -38,6 +38,7 @@ pub mod store;
 pub mod task;
 pub mod team;
 pub mod tool;
+mod tool_schedule;
 pub mod worktree;
 pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
 
@@ -324,6 +325,23 @@ impl Agent {
         Ok(())
     }
 
+    /// Persist the tool-schedule summary for the current turn, attaching it to
+    /// the token-usage row of the LLM call that produced these tool calls
+    /// (keyed by the assistant message id). Best-effort: failures are ignored.
+    async fn persist_tool_schedule(&self, summary: &tool_schedule::ToolScheduleSummary) {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return;
+        };
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return;
+        };
+        if let Ok(json) = serde_json::to_string(summary) {
+            let _ = store
+                .record_tool_schedule(session_id, self.runtime.last_message_db_id, &json)
+                .await;
+        }
+    }
+
     /// Set or update the session title (displayed in --list-sessions).
     pub async fn set_session_title(&mut self, title: Option<&str>) -> Result<()> {
         let Some(session_id) = self.runtime.session_id.as_ref() else {
@@ -568,218 +586,313 @@ impl Agent {
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
+    /// Dispatch the tool calls in one assistant turn.
+    ///
+    /// Runs in three stages so that independent tools overlap while conflicting
+    /// ones stay ordered:
+    /// 1. **Pre-flight** (sequential): stats, step events, PreToolUse hooks, and
+    ///    permission checks — the latter may prompt the user, so order matters.
+    /// 2. **Execution** (parallel by wave): tools touching disjoint resources
+    ///    run concurrently; a read/write or write/write on the same file (and
+    ///    any unscoped "barrier" tool such as `bash`/MCP) is serialised. See
+    ///    [`tool_schedule`].
+    /// 3. **Post-processing** (sequential): PostToolUse hooks, step-finished
+    ///    events, and bookkeeping, replayed in the model's original tool order.
     pub async fn execute_tool_call(
         &mut self,
         content: &[ContentBlock],
     ) -> Result<(Vec<ContentBlock>, Option<String>)> {
-        let mut result = Vec::new();
-        let mut manual_compact = None;
+        // ── Phase 1: sequential pre-flight ──────────────────────────────────
+        let mut prepared: Vec<PreparedTool> = Vec::new();
         for block in content {
-            if let ContentBlock::ToolUse { id, name, input } = block {
-                *self
-                    .runtime
-                    .stats
-                    .tool_counts
-                    .entry(name.clone())
-                    .or_insert(0) += 1;
-                if self
-                    .runtime
-                    .cancel_flag
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                    return Ok((vec![], None));
-                }
+            let ContentBlock::ToolUse { id, name, input } = block else {
+                continue;
+            };
+            *self
+                .runtime
+                .stats
+                .tool_counts
+                .entry(name.clone())
+                .or_insert(0) += 1;
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                return Ok((vec![], None));
+            }
 
-                let step_idx = self.next_step_idx();
-                // Step row in plan/log should stay compact: args are shown by the tool card.
-                let description = name.clone();
-                self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
-                    description: description.clone(),
-                    tool: name.clone(),
-                    tool_id: id.clone(),
-                    args: std::collections::HashMap::new(),
-                    need_approval: false,
-                    output: None,
-                }));
-                let arg_summary = tool_arg_summary(&name, input);
-                self.emit_update(AgentUpdate::StepStarted(
-                    step_idx,
-                    id.clone(),
-                    name.clone(),
-                    arg_summary.clone(),
-                ));
+            let step_idx = self.next_step_idx();
+            // Step row in plan/log should stay compact: args are shown by the tool card.
+            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
+                description: name.clone(),
+                tool: name.clone(),
+                tool_id: id.clone(),
+                args: std::collections::HashMap::new(),
+                need_approval: false,
+                output: None,
+            }));
+            self.emit_update(AgentUpdate::StepStarted(
+                step_idx,
+                id.clone(),
+                name.clone(),
+                tool_arg_summary(name, input),
+            ));
 
-                let mut tool_use = ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                };
-                let output = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
-                    Ok(HookControl::Continue) => {
-                        let mut permission_label: Option<String> = None;
-                        let decision = self
-                            .runtime
-                            .permission_manager
-                            .check(&tool_use.name, &tool_use.input);
-                        match decision.behavior {
-                            PermissionBehavior::Allow => {}
-                            PermissionBehavior::Deny => {
-                                let msg = format!("Permission denied: {}", decision.reason);
-                                self.emit_update(AgentUpdate::StepFailed(
-                                    step_idx,
-                                    id.clone(),
-                                    msg.clone(),
-                                ));
-                                return Ok((
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: id.clone(),
-                                        content: msg,
-                                    }],
-                                    manual_compact,
-                                ));
-                            }
-                            PermissionBehavior::Ask => {
-                                let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                    let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-                                    let input_preview = tool_use
-                                        .input
-                                        .to_string()
-                                        .chars()
-                                        .take(80)
-                                        .collect::<String>();
-                                    let prompt =
-                                        format!("Allow {}: {}", tool_use.name, input_preview);
-                                    let options = vec![
-                                        "Allow once".to_string(),
-                                        "Deny".to_string(),
-                                        "Always allow this tool".to_string(),
-                                    ];
-                                    let _ = tx.send(AgentUpdate::RequestSelect {
-                                        prompt,
-                                        options,
-                                        respond: respond_tx,
-                                    });
-                                    match respond_rx.await {
-                                        Ok(Some(0)) => Some("allow_once"),
-                                        Ok(Some(2)) => Some("always_allow"),
-                                        _ => Some("deny"),
-                                    }
+            let mut tool_use = ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            };
+            let mut permission_label: Option<String> = None;
+            let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
+                Ok(HookControl::Continue) => {
+                    let decision = self
+                        .runtime
+                        .permission_manager
+                        .check(&tool_use.name, &tool_use.input);
+                    match decision.behavior {
+                        PermissionBehavior::Allow => PreparedState::Run,
+                        PermissionBehavior::Deny => {
+                            let msg = format!("Permission denied: {}", decision.reason);
+                            self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                            return Ok((
+                                vec![ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: msg,
+                                }],
+                                None,
+                            ));
+                        }
+                        PermissionBehavior::Ask => {
+                            let choice = if let Some(tx) = &self.runtime.ui_tx {
+                                let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
+                                let input_preview = tool_use
+                                    .input
+                                    .to_string()
+                                    .chars()
+                                    .take(80)
+                                    .collect::<String>();
+                                let prompt =
+                                    format!("Allow {}: {}", tool_use.name, input_preview);
+                                let options = vec![
+                                    "Allow once".to_string(),
+                                    "Deny".to_string(),
+                                    "Always allow this tool".to_string(),
+                                ];
+                                let _ = tx.send(AgentUpdate::RequestSelect {
+                                    prompt,
+                                    options,
+                                    respond: respond_tx,
+                                });
+                                match respond_rx.await {
+                                    Ok(Some(0)) => Some("allow_once"),
+                                    Ok(Some(2)) => Some("always_allow"),
+                                    _ => Some("deny"),
+                                }
+                            } else {
+                                let choice = self
+                                    .runtime
+                                    .permission_manager
+                                    .ask_user(&tool_use.name, &tool_use.input)?;
+                                if choice {
+                                    Some("allow_once")
                                 } else {
-                                    let choice = self
-                                        .runtime
-                                        .permission_manager
-                                        .ask_user(&tool_use.name, &tool_use.input)?;
-                                    if choice {
-                                        Some("allow_once")
-                                    } else {
-                                        Some("deny")
-                                    }
-                                };
-                                match choice {
-                                    Some("allow_once") => {
-                                        permission_label = Some("Allow once".to_string());
-                                    }
-                                    Some("always_allow") => {
-                                        permission_label =
-                                            Some("Always allow this tool".to_string());
-                                        self.runtime.permission_manager.allow_tool(&tool_use.name);
-                                    }
-                                    _ => {
-                                        let msg = format!(
-                                            "Permission denied by user for {}",
-                                            tool_use.name
-                                        );
-                                        self.emit_update(AgentUpdate::StepFailed(
-                                            step_idx,
-                                            id.clone(),
-                                            msg.clone(),
-                                        ));
-                                        return Ok((
-                                            vec![ContentBlock::ToolResult {
-                                                tool_use_id: id.clone(),
-                                                content: msg,
-                                            }],
-                                            manual_compact,
-                                        ));
-                                    }
+                                    Some("deny")
+                                }
+                            };
+                            match choice {
+                                Some("allow_once") => {
+                                    permission_label = Some("Allow once".to_string());
+                                    PreparedState::Run
+                                }
+                                Some("always_allow") => {
+                                    permission_label = Some("Always allow this tool".to_string());
+                                    self.runtime.permission_manager.allow_tool(&tool_use.name);
+                                    PreparedState::Run
+                                }
+                                _ => {
+                                    let msg = format!(
+                                        "Permission denied by user for {}",
+                                        tool_use.name
+                                    );
+                                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                                    return Ok((
+                                        vec![ContentBlock::ToolResult {
+                                            tool_use_id: id.clone(),
+                                            content: msg,
+                                        }],
+                                        None,
+                                    ));
                                 }
                             }
                         }
+                    }
+                }
+                Ok(HookControl::Block(reason)) => {
+                    let msg = format!("Tool blocked by PreToolUse hook: {reason}");
+                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                    PreparedState::Resolved(msg)
+                }
+                Err(error) => {
+                    let msg = format!("PreToolUse hook failed: {error}");
+                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                    PreparedState::Resolved(msg)
+                }
+            };
+
+            prepared.push(PreparedTool {
+                id: tool_use.id,
+                name: tool_use.name,
+                input: tool_use.input,
+                step_idx,
+                permission_label,
+                state,
+            });
+        }
+
+        // ── Phase 2: execute cleared tools in conflict-free waves ───────────
+        let run_indices: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p.state, PreparedState::Run))
+            .map(|(i, _)| i)
+            .collect();
+        let resources: Vec<tool_schedule::ToolResources> = run_indices
+            .iter()
+            .map(|&i| {
+                tool_schedule::tool_resources(
+                    &prepared[i].name,
+                    &prepared[i].input,
+                    &self.tool_context.work_dir,
+                )
+            })
+            .collect();
+
+        // Record how this turn's tools were scheduled, linked to the same LLM
+        // call as the token usage, so the parallelism can be audited later.
+        if !run_indices.is_empty() {
+            let names: Vec<String> = run_indices.iter().map(|&i| prepared[i].name.clone()).collect();
+            self.persist_tool_schedule(&tool_schedule::summarize(&names, &resources))
+                .await;
+        }
+
+        // Execution output (text + wall-clock ms) keyed by index into `prepared`.
+        let mut outputs: Vec<Option<(String, u64)>> = (0..prepared.len()).map(|_| None).collect();
+
+        for wave in tool_schedule::waves_grouped(&resources) {
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                return Ok((vec![], None));
+            }
+
+            // A barrier wave always holds a single tool. MCP tools need the
+            // stateful router (`&mut self`), so run those sequentially; every
+            // other wave runs concurrently over shared borrows.
+            if wave.len() == 1
+                && MCPToolRouter::is_mcp_tool(&prepared[run_indices[wave[0]]].name)
+            {
+                let pi = run_indices[wave[0]];
+                let start = std::time::Instant::now();
+                let content = self
+                    .execute_mcp(&prepared[pi].name, &prepared[pi].input)
+                    .await;
+                outputs[pi] = Some((content, start.elapsed().as_millis() as u64));
+                continue;
+            }
+
+            let futures: Vec<_> = wave
+                .iter()
+                .map(|&pos| {
+                    let pi = run_indices[pos];
+                    let tools = &self.tools;
+                    let ctx = &self.tool_context;
+                    let prep = &prepared[pi];
+                    async move {
                         let start = std::time::Instant::now();
-                        let mut result = ToolResult {
-                            tool_use_id: tool_use.id.clone(),
-                            content: self
-                                .execute(&tool_use.id, &tool_use.name, &tool_use.input)
-                                .await,
+                        let (content, info) =
+                            run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
+                        (pi, content, info, start.elapsed().as_millis() as u64)
+                    }
+                })
+                .collect();
+            for (pi, content, info, duration_ms) in futures_util::future::join_all(futures).await {
+                if let Some(info) = info {
+                    self.emit_update(AgentUpdate::Info(info));
+                }
+                outputs[pi] = Some((content, duration_ms));
+            }
+        }
+
+        // ── Phase 3: sequential post-processing ─────────────────────────────
+        let mut result = Vec::new();
+        let mut manual_compact = None;
+        for (idx, prep) in prepared.into_iter().enumerate() {
+            let output = match prep.state {
+                PreparedState::Resolved(msg) => msg,
+                PreparedState::Run => {
+                    let (content, duration_ms) = outputs[idx]
+                        .take()
+                        .expect("cleared tool must have produced output");
+                    let tool_use = ToolUse {
+                        id: prep.id.clone(),
+                        name: prep.name.clone(),
+                        input: prep.input.clone(),
+                    };
+                    let mut tool_result = ToolResult {
+                        tool_use_id: prep.id.clone(),
+                        content,
+                    };
+                    let exec_output =
+                        match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
+                            Ok(HookControl::Continue) => tool_result.content,
+                            Ok(HookControl::Block(reason)) => {
+                                format!("Tool blocked by PostToolUse hook: {reason}")
+                            }
+                            Err(error) => format!("PostToolUse hook failed: {error}"),
                         };
-                        let exec_output =
-                            match invoke_hooks!(PostToolUse, self, &tool_use, &mut result) {
-                                Ok(HookControl::Continue) => result.content,
-                                Ok(HookControl::Block(reason)) => {
-                                    format!("Tool blocked by PostToolUse hook: {reason}")
-                                }
-                                Err(error) => format!("PostToolUse hook failed: {error}"),
-                            };
-                        let summary = exec_output.chars().take(200).collect::<String>();
-                        let arg_summary = tool_arg_summary(&tool_use.name, &tool_use.input);
-                        let detail =
-                            tool_detail_content(&tool_use.name, &tool_use.input, &exec_output);
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        self.runtime.stats.tool_durations_ms.push(duration_ms);
-                        let step_result = StepResult {
-                            tool: tool_use.name.clone(),
+                    self.runtime.stats.tool_durations_ms.push(duration_ms);
+                    let summary = exec_output.chars().take(200).collect::<String>();
+                    let arg_summary = tool_arg_summary(&prep.name, &prep.input);
+                    let detail = tool_detail_content(&prep.name, &prep.input, &exec_output);
+                    self.emit_update(AgentUpdate::StepFinished(
+                        prep.step_idx,
+                        prep.id.clone(),
+                        StepResult {
+                            tool: prep.name.clone(),
                             arg_summary,
                             status: StepStatus::Success,
                             message: summary,
                             detail,
                             duration_ms: Some(duration_ms),
-                            permission_label,
-                        };
-                        self.emit_update(AgentUpdate::StepFinished(
-                            step_idx,
-                            id.clone(),
-                            step_result,
-                        ));
-                        exec_output
+                            permission_label: prep.permission_label.clone(),
+                        },
+                    ));
+                    if prep.name == "read_file"
+                        && let Some(path) = prep.input.get("path").and_then(|value| value.as_str())
+                    {
+                        self.remember_recent_file(path);
                     }
-                    Ok(HookControl::Block(reason)) => {
-                        let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                        self.emit_update(AgentUpdate::StepFailed(
-                            step_idx,
-                            id.clone(),
-                            msg.clone(),
-                        ));
-                        msg
+                    if prep.name == "compact" {
+                        manual_compact = prep
+                            .input
+                            .get("focus")
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                            .or_else(|| Some(String::new()));
                     }
-                    Err(error) => {
-                        let msg = format!("PreToolUse hook failed: {error}");
-                        self.emit_update(AgentUpdate::StepFailed(
-                            step_idx,
-                            id.clone(),
-                            msg.clone(),
-                        ));
-                        msg
-                    }
-                };
-                result.push(ContentBlock::ToolResult {
-                    tool_use_id: id.clone(),
-                    content: output,
-                });
-                if tool_use.name == "read_file"
-                    && let Some(path) = tool_use.input.get("path").and_then(|value| value.as_str())
-                {
-                    self.remember_recent_file(path);
+                    exec_output
                 }
-                if tool_use.name == "compact" {
-                    manual_compact = tool_use
-                        .input
-                        .get("focus")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned)
-                        .or_else(|| Some(String::new()));
-                }
-            }
+            };
+            result.push(ContentBlock::ToolResult {
+                tool_use_id: prep.id,
+                content: output,
+            });
         }
         Ok((result, manual_compact))
     }
@@ -812,58 +925,25 @@ impl Agent {
             .collect()
     }
 
-    async fn execute(
-        &mut self,
-        tool_use_id: &str,
-        name: &str,
-        input: &serde_json::Value,
-    ) -> String {
-        if MCPToolRouter::is_mcp_tool(name) {
-            return match self.mcp_router.call(name, input.clone()).await {
-                Ok(output) => {
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "MCP tool:{}\n arg:{}\n output:\n{}\n",
-                        name,
-                        input,
-                        output.chars().take(200).collect::<String>()
-                    )));
-                    output
-                }
-                Err(e) => {
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "Error invoking MCP tool {}: {}",
-                        name, e
-                    )));
-                    format!("Error invoking MCP tool {}: {}", name, e)
-                }
-            };
-        }
-
-        match self
-            .tools
-            .call(&self.tool_context, name, input.clone())
-            .await
-        {
+    /// Run a single MCP tool. The MCP router is stateful (`&mut self`), so MCP
+    /// tools are always scheduled alone in their own wave and invoked here.
+    async fn execute_mcp(&mut self, name: &str, input: &serde_json::Value) -> String {
+        match self.mcp_router.call(name, input.clone()).await {
             Ok(output) => {
-                let output = if name == "bash" {
-                    let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
-                    persist_large_output(&tact_path, tool_use_id, &output).unwrap_or_else(|e| format!("Error persisting large output: {}", e))
-                } else {
-                    output
-                };
-                // let input = input.to_string().chars().take(30).collect::<String>();
-                // self.emit_update(AgentUpdate::Info(format!(
-                //     "Executing {}({})\n",
-                //     name, input
-                // )));
+                self.emit_update(AgentUpdate::Info(format!(
+                    "MCP tool:{}\n arg:{}\n output:\n{}\n",
+                    name,
+                    input,
+                    output.chars().take(200).collect::<String>()
+                )));
                 output
             }
             Err(e) => {
                 self.emit_update(AgentUpdate::Info(format!(
-                    "Error invoking tool {}: {}",
+                    "Error invoking MCP tool {}: {}",
                     name, e
                 )));
-                format!("Error invoking tool {}: {}", name, e)
+                format!("Error invoking MCP tool {}: {}", name, e)
             }
         }
     }
@@ -1072,6 +1152,56 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             .lock()
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
+    }
+}
+
+/// A tool call after phase-1 pre-flight in [`Agent::execute_tool_call`].
+///
+/// Carries everything phases 2 and 3 need so the actual tool work can be
+/// scheduled and run independently of the `&mut self` framework around it.
+struct PreparedTool {
+    id: String,
+    name: String,
+    input: serde_json::Value,
+    step_idx: usize,
+    permission_label: Option<String>,
+    state: PreparedState,
+}
+
+enum PreparedState {
+    /// Cleared to execute in phase 2.
+    Run,
+    /// Pre-flight already produced the final output (blocked by a PreToolUse
+    /// hook); skip execution and surface this text as the tool result.
+    Resolved(String),
+}
+
+/// Run a single native (non-MCP) tool, borrowing only the shared router and
+/// context so calls in the same wave can run concurrently. Returns the output
+/// text plus an optional log line (errors are surfaced via `AgentUpdate::Info`
+/// once the wave completes, matching the previous sequential behaviour).
+async fn run_native_tool(
+    tools: &ToolRouter,
+    ctx: &ToolContext,
+    tool_use_id: &str,
+    name: &str,
+    input: &serde_json::Value,
+) -> (String, Option<String>) {
+    match tools.call(ctx, name, input.clone()).await {
+        Ok(output) => {
+            if name == "bash" {
+                let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
+                let output = persist_large_output(&tact_path, tool_use_id, &output)
+                    .unwrap_or_else(|e| format!("Error persisting large output: {}", e));
+                (output, None)
+            } else {
+                (output, None)
+            }
+        }
+        Err(e) => {
+            let msg = format!("Error invoking tool {}: {}", name, e);
+            (msg.clone(), Some(msg))
+        }
     }
 }
 

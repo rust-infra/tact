@@ -22,6 +22,7 @@ CREATE TABLE token_usages (
     first_message_id        INTEGER NOT NULL DEFAULT 0,
     last_message_id         INTEGER NOT NULL DEFAULT 0,
     request_body            BLOB,                    -- serialized LLM request JSON (debug)
+    tool_schedule           TEXT,                    -- JSON: how this turn's tools were scheduled (see below)
     created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -45,7 +46,44 @@ CREATE INDEX idx_token_usages_session_id ON token_usages(session_id);
 | `first_message_id` | INTEGER | FK-like: `messages.id` of the earliest message sent in this call. `0` means no message range (e.g., compaction sends a synthetic prompt). |
 | `last_message_id` | INTEGER | FK-like: `messages.id` of the latest message sent in this call. |
 | `request_body` | BLOB | Optional. Serialized JSON body sent to the LLM API (stream or compact call). Used for debugging provider/context issues. |
+| `tool_schedule` | TEXT | Optional JSON. Summary of how this turn's tool calls were scheduled into parallel waves. Written by `execute_tool_call()` after the LLM call, keyed by `last_message_id`. See [Tool Schedule](#tool-schedule-column) and [parallel_tool_execution.md](parallel_tool_execution.md). |
 | `created_at` | TIMESTAMP | When this row was written. |
+
+### `tool_schedule` Column
+
+After the LLM responds with tool calls, `execute_tool_call()` schedules them into conflict-free **waves** (see [parallel_tool_execution.md](parallel_tool_execution.md)) and records the resulting shape into the **same** `token_usages` row as the call's token usage, so a turn's cost and its parallelism can be analysed together. The JSON shape is:
+
+```json
+{
+  "total_tools": 3,
+  "wave_count": 2,
+  "max_parallelism": 2,
+  "waves": [
+    { "tools": ["read_file", "search_code"], "barrier": false },
+    { "tools": ["write_file"],               "barrier": false }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `total_tools` | Tools cleared to execute this turn (excludes permission-denied / hook-blocked). |
+| `wave_count` | Number of sequential waves the tools were split into. `1` means everything ran in a single parallel batch. |
+| `max_parallelism` | Size of the largest wave (`1` ⇒ fully serial). |
+| `waves[]` | Per-wave breakdown, in execution order: the concurrent tool names and whether the wave was forced solo by a `barrier` tool (e.g. `bash`/MCP). |
+
+```sql
+-- Turns where tools actually ran in parallel, with the call's token cost.
+SELECT id, last_message_id, total_tokens,
+       json_extract(tool_schedule, '$.total_tools')     AS tools,
+       json_extract(tool_schedule, '$.wave_count')      AS waves,
+       json_extract(tool_schedule, '$.max_parallelism') AS max_parallel
+FROM token_usages
+WHERE session_id = ?
+  AND tool_schedule IS NOT NULL
+  AND json_extract(tool_schedule, '$.max_parallelism') > 1
+ORDER BY id;
+```
 
 ### `call_type` Values
 
@@ -166,8 +204,10 @@ The cache and reasoning lines are only shown when non-zero.
 |------|------|
 | `crates/protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
 | `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
-| `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`. |
-| `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` implementation. |
+| `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
+| `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
+| `crates/tact/src/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
+| `crates/tact/src/lib.rs` | `Agent::persist_tool_schedule()` — attaches the schedule summary to the call's token-usage row. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/lib.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |

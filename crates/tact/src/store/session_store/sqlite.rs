@@ -129,6 +129,12 @@ impl SqliteSessionStore {
             .execute(&pool)
             .await;
 
+        // Migration: add tool_schedule column (JSON summary of how the turn's
+        // tool calls were scheduled into parallel waves).
+        let _ = sqlx::query("ALTER TABLE token_usages ADD COLUMN tool_schedule TEXT")
+            .execute(&pool)
+            .await;
+
         Ok(Self { pool })
     }
 
@@ -489,6 +495,35 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(())
     }
 
+    async fn record_tool_schedule(
+        &self,
+        session_id: &str,
+        last_message_id: i64,
+        schedule_json: &str,
+    ) -> Result<()> {
+        // Update the latest token-usage row for this call window. Uses a
+        // subquery because SQLite's UPDATE has no ORDER BY/LIMIT by default.
+        sqlx::query(
+            r#"
+            UPDATE token_usages
+            SET tool_schedule = ?
+            WHERE id = (
+                SELECT id FROM token_usages
+                WHERE session_id = ? AND last_message_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            "#,
+        )
+        .bind(schedule_json)
+        .bind(session_id)
+        .bind(last_message_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to record tool schedule")?;
+        Ok(())
+    }
+
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>> {
         let rows =
             sqlx::query("SELECT content FROM input_history WHERE session_id = ? ORDER BY id ASC")
@@ -600,6 +635,36 @@ mod tests {
         store.delete_session("session-1").await.unwrap();
         let after = store.load_session("session-1").await.unwrap();
         assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_tool_schedule_attaches_to_token_usage() {
+        use sqlx::Row;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("session-1", None).await.unwrap();
+
+        // A token-usage row for an LLM call whose last message id is 7.
+        store
+            .record_token_usage("session-1", "stream", None, 1, 7, Some(b"{}"))
+            .await
+            .unwrap();
+
+        // The schedule for that turn is recorded afterwards, keyed by the same id.
+        let schedule = r#"{"total_tools":2,"wave_count":1,"max_parallelism":2,"waves":[]}"#;
+        store
+            .record_tool_schedule("session-1", 7, schedule)
+            .await
+            .unwrap();
+
+        let row = sqlx::query("SELECT tool_schedule FROM token_usages WHERE last_message_id = 7")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let stored: Option<String> = row.try_get("tool_schedule").unwrap();
+        assert_eq!(stored.as_deref(), Some(schedule));
     }
 
     #[tokio::test]

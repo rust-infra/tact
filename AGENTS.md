@@ -23,7 +23,7 @@ MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
 - `crates/tui/src/widgets/tool_widget.rs` — `ToolWidget` / `ToolRenderOutput` layout builder
 - `crates/tui/src/widgets/state/tool_state.rs` — concurrent `ActiveToolBlock` list, diff popup state
 - `crates/tui/src/widgets/state/app/` — App state, agent update handler, construct, popups, search
-- `docs/` — batch_tools_flow, compaction, log-panel-analysis, state_machines, tui_rendering, **tool_rendering**, token_usage_schema
+- `docs/` — batch_tools_flow, compaction, log-panel-analysis, state_machines, tui_rendering, **tool_rendering**, token_usage_schema, parallel_tool_execution
 
 ## Build & test
 
