@@ -11,13 +11,12 @@ use std::time::Duration;
 use anthropic_ai_sdk::types::message::{
     ContentBlock, ContentBlockDelta, CreateMessageParams, MessageError, StopReason, StreamUsage,
 };
-use anyhow::Context;
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::{AgentUpdate, ModelCallParams, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, ModelCallParams, TokenUsageInfo};
 
 use super::{LlmClient, LlmError};
 
@@ -154,7 +153,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
@@ -415,7 +414,7 @@ impl LlmClient for AnthropicAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError> {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(false);

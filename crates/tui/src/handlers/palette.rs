@@ -22,7 +22,7 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 let cmd = PALETTE_COMMANDS[filtered[idx]].0;
                 app.cmd_line.clear();
                 app.input_mode = InputMode::Normal;
-                execute_palette_command(app, cmd);
+                let _ = execute_palette_command(app, cmd);
             }
         }
         // Ctrl+W: delete last word

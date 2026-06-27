@@ -4172,7 +4172,8 @@ dependencies = [
  "sqlx",
  "strum 0.27.2",
  "strum_macros 0.27.2",
- "tact_core",
+ "tact_llm",
+ "tact_protocol",
  "tempfile",
  "tera",
  "tokio",
@@ -4186,15 +4187,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "tact_core"
-version = "0.1.0"
+name = "tact_llm"
+version = "0.19.0"
 dependencies = [
+ "anthropic-ai-sdk",
  "anyhow",
  "async-openai",
+ "async-trait",
+ "dotenvy",
+ "futures-util",
+ "reqwest",
+ "reqwest-eventsource",
+ "secrecy",
  "serde",
  "serde_json",
+ "tact_protocol",
  "tokio",
- "tools",
+ "tracing",
+]
+
+[[package]]
+name = "tact_protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -4749,7 +4766,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "tact_core",
+ "tact_protocol",
  "tokio",
  "tokio-stream",
  "toml",

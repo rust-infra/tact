@@ -13,7 +13,8 @@ name = "tact-tui"
 path = "src/bin/tui.rs"
 
 [dependencies]
-tact_core = { path = "../core" }
+tact_protocol = { path = "../protocol" }
+tact_llm = { path = "../tact_llm" }
 tui = { path = "../tui" }
 anthropic-ai-sdk = { workspace = true }
 async-openai = "0.20"

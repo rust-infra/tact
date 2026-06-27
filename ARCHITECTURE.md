@@ -12,21 +12,24 @@ This project is a Cargo Workspace containing the following crates:
 
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
-| `crates/core` | `tact_core` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
+| `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
 | `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
 | `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the two CLI binaries. |
+| `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
 
 Dependency graph:
 
 ```mermaid
 flowchart TB
-    tact --> tact_core
+    tact --> tact_protocol
     tact --> tui
+    tact --> tact_llm
     tact --> tool_refactor_macros
-    tui --> tact_core
-    tact_core --> tools
+    tact_llm --> tact_protocol
+    tui --> tact_protocol
+    tact_protocol --> tools
 ```
 
 Binaries produced by `crates/tact`:
@@ -71,7 +74,7 @@ flowchart TB
         MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
         COMP["compact.rs<br/>micro_compact, transcript persistence"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
-        LLM["llm/<br/>Anthropic / OpenAI adapters"]
+        LLM["tact_llm crate<br/>Anthropic / OpenAI adapters"]
         TASK["task/<br/>persistent task manager"]
         TEAM["team.rs<br/>teammate roster + inbox"]
         BG["background.rs<br/>async shell tasks"]
@@ -85,7 +88,7 @@ flowchart TB
         PROMPT["prompt/<br/>system prompt templates"]
     end
 
-    subgraph core["tact_core — shared types"]
+    subgraph core["tact_protocol — shared types"]
         UPD["AgentUpdate enum"]
         CMD["UserCommand enum"]
         STEP["PlanStep / StepResult"]
@@ -568,7 +571,7 @@ flowchart LR
 
 ## 11. Sandbox Safe Path Resolution
 
-The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` (`crates/tact/src/tool/mod.rs`). The legacy `tools` crate has a similar `safe_path()` implementation used by the old `tact_core::Agent`.
+The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` (`crates/tact/src/tool/mod.rs`). The legacy `tools` crate has a similar `safe_path()` implementation used by the old `tact_protocol::Agent`.
 
 ```mermaid
 flowchart TD
@@ -637,7 +640,7 @@ If you are reading older branches or notes, the following major evolutions have 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
 - Business tools moved from `crates/tools` into `crates/tact/src/tool/`; `crates/tools` now only provides the `Sandbox`.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
-- `tact_core::Agent` is legacy code and is no longer used by the main binaries.
+- `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`.
 - **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.

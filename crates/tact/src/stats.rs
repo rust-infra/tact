@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
-use tact_core::TokenUsageInfo;
+use tact_protocol::TokenUsageInfo;
 
 /// Tracks per-session statistics for the agent runtime.
 #[derive(Debug)]

@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
 use super::{LlmClient, LlmError, convert::build_openai_request};
 
@@ -87,7 +87,7 @@ struct StreamCompletionTokensDetails {
 fn inject_thinking_param(
     request: &CreateMessageParams,
     body: &mut serde_json::Value,
-    provider: &crate::llm::ProviderInfo,
+    provider: &crate::ProviderInfo,
 ) {
     if provider.is_kimi_k27() {
         // K2.7-code forces thinking on; passing `thinking` is unnecessary and can error.
@@ -244,7 +244,7 @@ impl LlmClient for OpenAiAdapter {
             Vec<ContentBlock>,
             Option<StopReason>,
             Option<TokenUsageInfo>,
-            Option<crate::llm::LlmRequestBody>,
+            Option<crate::LlmRequestBody>,
         ),
         LlmError,
     > {
@@ -256,8 +256,8 @@ impl LlmClient for OpenAiAdapter {
         let mut body =
             serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
         body["stream_options"] = serde_json::json!({"include_usage": true});
-        inject_thinking_param(request, &mut body, crate::llm::get_provider());
-        inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_thinking_param(request, &mut body, crate::get_provider());
+        inject_reasoning_content(&mut body, &reasoning_per_message, crate::is_kimi());
         inject_user_id(&mut body, &self.user_id);
         let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
 
@@ -440,7 +440,7 @@ impl LlmClient for OpenAiAdapter {
             Vec<ContentBlock>,
             Option<StopReason>,
             Option<TokenUsageInfo>,
-            Option<crate::llm::LlmRequestBody>,
+            Option<crate::LlmRequestBody>,
         ),
         LlmError,
     > {
@@ -449,8 +449,8 @@ impl LlmClient for OpenAiAdapter {
 
         let mut body = serde_json::to_value(&openai_request)
             .map_err(|e| LlmError::Other(e.to_string()))?;
-        inject_thinking_param(request, &mut body, crate::llm::get_provider());
-        inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
+        inject_thinking_param(request, &mut body, crate::get_provider());
+        inject_reasoning_content(&mut body, &reasoning_per_message, crate::is_kimi());
         inject_user_id(&mut body, &self.user_id);
         let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
 
@@ -557,7 +557,7 @@ impl LlmClient for OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ProviderInfo;
+    use crate::ProviderInfo;
     use anthropic_ai_sdk::types::message::{
         RequiredMessageParams, Thinking, ThinkingType,
     };

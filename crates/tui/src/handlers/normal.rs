@@ -1,6 +1,6 @@
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_core::UserCommand;
+use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 use super::copy_text;
 

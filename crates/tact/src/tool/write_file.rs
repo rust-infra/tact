@@ -3,7 +3,7 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
-use tact_core::{format_bytes, AgentUpdate};
+use tact_protocol::{AgentUpdate, format_bytes};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tool_refactor_macros::tool;

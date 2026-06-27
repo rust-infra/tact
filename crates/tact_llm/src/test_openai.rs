@@ -1,7 +1,7 @@
 //! Debug tests for OpenAI-compatible provider connectivity.
 //!
 //! Run with:
-//!   cargo test -p tact test_openai -- --nocapture
+//!   cargo test -p tact_llm test_openai -- --nocapture
 //!
 //! Required env vars:
 //!   OPENAI_API_KEY=<your-key>

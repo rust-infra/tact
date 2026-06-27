@@ -5,11 +5,11 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
     App, FilePicker, FocusedPanel, InputHistory,
-    InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
+    InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, SlashCommandState, Status, StatusBarState,
     StreamState, ThinkingState, ToolState,
 };
 use std::path::{Path, PathBuf};
-use tact_core::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {
@@ -84,6 +84,7 @@ impl App {
             workspace_dir,
             select: SelectPopup::new(),
             file_picker: FilePicker::new(),
+            slash_command: SlashCommandState::default(),
             tools: ToolState::new(),
             code_blocks: Vec::new(),
             code_popup: None,
