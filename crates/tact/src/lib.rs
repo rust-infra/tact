@@ -296,9 +296,17 @@ impl Agent {
         Ok(())
     }
 
-    /// Persist token usage (cache hit/miss, reasoning) to sqlite.
+    /// Persist token usage and/or request body for an LLM call.
     /// Links to the message range that was sent ([first_message_db_id .. last_message_db_id]).
-    async fn persist_token_usage(&self, call_type: &str, usage: &TokenUsageInfo) -> Result<()> {
+    async fn persist_llm_call(
+        &self,
+        call_type: &str,
+        usage: Option<&TokenUsageInfo>,
+        request_body: Option<&[u8]>,
+    ) -> Result<()> {
+        if usage.is_none() && request_body.is_none() {
+            return Ok(());
+        }
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(());
         };
@@ -312,6 +320,7 @@ impl Agent {
                 usage,
                 self.runtime.first_message_db_id,
                 self.runtime.last_message_db_id,
+                request_body,
             )
             .await?;
         Ok(())
@@ -407,7 +416,7 @@ impl Agent {
             self.runtime.stats.total_prompt_chars += prompt_chars;
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason, token_usage) = match self.stream_message(&request).await {
+            let (content, stop_reason, token_usage, request_body) = match self.stream_message(&request).await {
                 Ok(result) => {
                     self.runtime.recovery_state.transport_attempts = 0;
                     result
@@ -463,8 +472,14 @@ impl Agent {
 
             if let Some(ref usage) = token_usage {
                 self.runtime.stats.record_token_usage(usage);
-                let _ = self.persist_token_usage("stream", usage).await;
             }
+            let _ = self
+                .persist_llm_call(
+                    "stream",
+                    token_usage.as_ref(),
+                    request_body.as_deref(),
+                )
+                .await;
 
             self.runtime
                 .context
@@ -546,7 +561,7 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), anyhow::Error> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), anyhow::Error> {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
@@ -579,11 +594,8 @@ impl Agent {
                 }
 
                 let step_idx = self.next_step_idx();
-                let description = format!(
-                    "{}: {}",
-                    name,
-                    input.to_string().chars().take(100).collect::<String>()
-                );
+                // Step row in plan/log should stay compact: args are shown by the tool card.
+                let description = name.clone();
                 self.emit_update(AgentUpdate::StepAdded(tact_core::PlanStep {
                     description: description.clone(),
                     tool: name.clone(),
@@ -592,7 +604,13 @@ impl Agent {
                     need_approval: false,
                     output: None,
                 }));
-                self.emit_update(AgentUpdate::StepStarted(step_idx, id.clone()));
+                let arg_summary = tool_arg_summary(&name, input);
+                self.emit_update(AgentUpdate::StepStarted(
+                    step_idx,
+                    id.clone(),
+                    name.clone(),
+                    arg_summary.clone(),
+                ));
 
                 let mut tool_use = ToolUse {
                     id: id.clone(),
@@ -601,6 +619,7 @@ impl Agent {
                 };
                 let output = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
                     Ok(HookControl::Continue) => {
+                        let mut permission_label: Option<String> = None;
                         let decision = self
                             .runtime
                             .permission_manager
@@ -660,8 +679,12 @@ impl Agent {
                                     }
                                 };
                                 match choice {
-                                    Some("allow_once") => {}
+                                    Some("allow_once") => {
+                                        permission_label = Some("Allow once".to_string());
+                                    }
                                     Some("always_allow") => {
+                                        permission_label =
+                                            Some("Always allow this tool".to_string());
                                         self.runtime.permission_manager.allow_tool(&tool_use.name);
                                     }
                                     _ => {
@@ -701,38 +724,9 @@ impl Agent {
                                 Err(error) => format!("PostToolUse hook failed: {error}"),
                             };
                         let summary = exec_output.chars().take(200).collect::<String>();
-                        let arg_summary = match tool_use.name.as_str() {
-                            "read_file" | "write_file" => tool_use
-                                .input
-                                .get("path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            "run_command" => tool_use
-                                .input
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            _ => {
-                                let input_str = tool_use.input.to_string();
-                                let char_count = input_str.chars().count();
-                                if char_count > 40 {
-                                    format!("{}...", input_str.chars().take(37).collect::<String>())
-                                } else {
-                                    input_str
-                                }
-                            }
-                        };
-                        let detail = match tool_use.name.as_str() {
-                            "read_file" | "run_command" => Some(exec_output.clone()),
-                            "write_file" => tool_use
-                                .input
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                            _ => None,
-                        };
+                        let arg_summary = tool_arg_summary(&tool_use.name, &tool_use.input);
+                        let detail =
+                            tool_detail_content(&tool_use.name, &tool_use.input, &exec_output);
                         let duration_ms = start.elapsed().as_millis() as u64;
                         self.runtime.stats.tool_durations_ms.push(duration_ms);
                         let step_result = StepResult {
@@ -742,6 +736,7 @@ impl Agent {
                             message: summary,
                             detail,
                             duration_ms: Some(duration_ms),
+                            permission_label,
                         };
                         self.emit_update(AgentUpdate::StepFinished(
                             step_idx,
@@ -858,11 +853,11 @@ impl Agent {
                 } else {
                     output
                 };
-                let input = input.to_string().chars().take(30).collect::<String>();
-                self.emit_update(AgentUpdate::Info(format!(
-                    "Executing {}({})\n",
-                    name, input
-                )));
+                // let input = input.to_string().chars().take(30).collect::<String>();
+                // self.emit_update(AgentUpdate::Info(format!(
+                //     "Executing {}({})\n",
+                //     name, input
+                // )));
                 output
             }
             Err(e) => {
@@ -957,7 +952,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
-        let (blocks, _stop_reason, token_usage) = self
+        let (blocks, _stop_reason, token_usage, request_body) = self
             .runtime
             .client
             .create_message(&request)
@@ -981,12 +976,18 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
         if let Some(ref usage) = token_usage {
             self.runtime.stats.record_token_usage(usage);
-            let _ = self.persist_token_usage("compact", usage).await;
-            // After compaction the context is replaced with a summary, so
-            // future messages start a new message-id window.
-            self.runtime.first_message_db_id = 0;
-            self.runtime.last_message_db_id = 0;
         }
+        let _ = self
+            .persist_llm_call(
+                "compact",
+                token_usage.as_ref(),
+                request_body.as_deref(),
+            )
+            .await;
+        // After compaction the context is replaced with a summary, so
+        // future messages start a new message-id window.
+        self.runtime.first_message_db_id = 0;
+        self.runtime.last_message_db_id = 0;
         let summary = blocks
             .iter()
             .filter_map(|block| match block {
@@ -1073,6 +1074,45 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             .lock()
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
+    }
+}
+
+fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "read_file" | "write_file" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "run_command" | "bash" | "shell" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => {
+            let input_str = input.to_string();
+            let char_count = input_str.chars().count();
+            if char_count > 120 {
+                format!("{}...", input_str.chars().take(117).collect::<String>())
+            } else {
+                input_str
+            }
+        }
+    }
+}
+
+fn tool_detail_content(
+    name: &str,
+    input: &serde_json::Value,
+    exec_output: &str,
+) -> Option<String> {
+    match name {
+        "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
+        "write_file" => input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
     }
 }
 
@@ -1213,26 +1253,31 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
 
     use std::collections::BTreeMap;
 
-    // Phase 1 — collect all visible entries (ignore dirs are skipped).
+    // Phase 1 — collect visible entries.
+    // IMPORTANT: ignored directories must be pruned at traversal time,
+    // otherwise `continue` only skips the directory node itself while still
+    // walking its children.
     let mut items: Vec<(std::path::PathBuf, bool)> = Vec::new();
+
+    let should_keep = |entry: &walkdir::DirEntry| {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return true;
+        };
+        !(IGNORE_DIRS.contains(&name)
+            || (name.starts_with('.')
+                && !name.eq_ignore_ascii_case(".gitignore")
+                && !name.eq_ignore_ascii_case(".env.example")))
+    };
 
     for entry in walkdir::WalkDir::new(root)
         .max_depth(4)
         .follow_links(false)
         .into_iter()
+        .filter_entry(should_keep)
         .filter_map(|e| e.ok())
     {
-        let path = entry.path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if IGNORE_DIRS.contains(&name)
-                || (name.starts_with('.')
-                    && !name.eq_ignore_ascii_case(".gitignore")
-                    && !name.eq_ignore_ascii_case(".env.example"))
-            {
-                continue;
-            }
-        }
-        let rel = path.strip_prefix(root).ok()?;
+        let rel = entry.path().strip_prefix(root).ok()?;
         items.push((rel.to_path_buf(), entry.file_type().is_dir()));
     }
 

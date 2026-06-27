@@ -1,7 +1,6 @@
 use crate::widgets::state::{InputMode, Status};
 use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::widgets::{ListState, ScrollbarState};
 use tact_core::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 use super::{start_of_line, cursor_line_col, end_of_line, exit_history, line_col_to_cursor, line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary};
@@ -43,6 +42,7 @@ pub(crate) fn handle_insert_mode(
                 let blank_task = format!("{}", task.clone());
                 app.add_user_message(blank_task);
                 app.plan.reset();
+                app.last_prompt_elapsed_secs = None;
                 app.task_start_time = Some(chrono::Local::now());
                 // Send command to agent
                 let _ = user_cmd_tx.send(UserCommand::SubmitTask(task));

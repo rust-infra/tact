@@ -239,7 +239,15 @@ impl LlmClient for OpenAiAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::llm::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(true);
 
@@ -251,6 +259,7 @@ impl LlmClient for OpenAiAdapter {
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
         inject_user_id(&mut body, &self.user_id);
+        let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -403,7 +412,7 @@ impl LlmClient for OpenAiAdapter {
             response_blocks.push(ContentBlock::ToolUse { id, name, input });
         }
 
-        Ok((response_blocks, stop_reason, token_usage))
+        Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
     }
 
     /*
@@ -426,7 +435,15 @@ impl LlmClient for OpenAiAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::llm::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(false);
 
@@ -435,6 +452,7 @@ impl LlmClient for OpenAiAdapter {
         inject_thinking_param(request, &mut body, crate::llm::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::llm::is_kimi());
         inject_user_id(&mut body, &self.user_id);
+        let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -532,7 +550,7 @@ impl LlmClient for OpenAiAdapter {
             }
         });
 
-        Ok((blocks, stop_reason, token_usage))
+        Ok((blocks, stop_reason, token_usage, Some(json_body)))
     }
 }
 

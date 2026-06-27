@@ -11,6 +11,7 @@ use std::time::Duration;
 use anthropic_ai_sdk::types::message::{
     ContentBlock, ContentBlockDelta, CreateMessageParams, MessageError, StopReason, StreamUsage,
 };
+use anyhow::Context;
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
@@ -153,7 +154,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
@@ -175,6 +176,7 @@ impl LlmClient for AnthropicAdapter {
             .build()
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
+        let json_body = serde_json::to_vec(&body).unwrap();
         let mut event_source = client
             .post(&self.messages_url())
             .headers(self.headers())
@@ -407,13 +409,13 @@ impl LlmClient for AnthropicAdapter {
             }
         }
 
-        Ok((response_blocks, stop_reason, token_usage))
+        Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), LlmError> {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(false);
@@ -424,6 +426,8 @@ impl LlmClient for AnthropicAdapter {
                 body["metadata"] = serde_json::json!({"user_id": uid});
             }
         }
+
+        let json_body = serde_json::to_vec(&body).unwrap();
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
@@ -483,7 +487,7 @@ impl LlmClient for AnthropicAdapter {
             })
         });
 
-        Ok((payload.content, parse_stop_reason(payload.stop_reason), token_usage))
+        Ok((payload.content, parse_stop_reason(payload.stop_reason), token_usage, Some(json_body)))
     }
 }
 

@@ -313,32 +313,59 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         // is no longer in the loop range, but subsequent placeholder rows
         // still belong to the same ToolBlock.
         if let Some(phys) = phys_idx {
-            let tool_match = app.tool_blocks.iter().find(|b| {
-                phys >= b.phys_idx
-                    && phys <= b.phys_idx + b.output.message_placeholder_rows()
-            });
-            if let Some(tb) = tool_match {
-                let rows_before = phys.saturating_sub(tb.phys_idx);
-                // Push at the summary row's visual start so LogColumnRenderer
-                // computes the correct skip_lines for clipping.
+            let tool_match = app
+                .tools
+                .active
+                .iter()
+                .find(|active| {
+                    phys >= active.phys_idx
+                        && phys <= active.phys_idx + active.output.message_placeholder_rows()
+                })
+                .map(|active| {
+                    (
+                        active.phys_idx,
+                        active.output.clone(),
+                        Some(active.started_at),
+                    )
+                })
+                .or_else(|| {
+                    app.tools.blocks.iter().find_map(|b| {
+                        if phys >= b.phys_idx
+                            && phys <= b.phys_idx + b.output.message_placeholder_rows()
+                        {
+                            Some((b.phys_idx, b.output.clone(), None))
+                        } else {
+                            None
+                        }
+                    })
+                });
+            if let Some((phys_idx, output, started_at)) = tool_match {
+                let rows_before = phys.saturating_sub(phys_idx);
+                let visual_rows = output.visual_rows(false);
                 let vis_start = if rows_before > 0 && rows_before <= logical_i {
                     vs_cache[logical_i - rows_before]
                 } else {
                     vs_cache[logical_i]
                 };
+                let msgs = app.msgs();
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER
+                    [(app.spinner_frame as usize)
+                        % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
                 let card_cell = ToolCell::from_output(
-                    tb.output.clone(),
-                    false, // render summary + card as one unit
+                    output,
+                    started_at,
+                    spinner,
+                    false,
                     app.theme.accent,
                     app.theme.bg,
                     app.theme.fg,
                     app.theme.success,
-                    app.msgs().diff_card_bottom.to_string(),
-                    app.msgs().diff_overflow_tmpl.to_string(),
+                    app.theme.warning,
+                    app.theme.error,
+                    &msgs,
                 );
                 renderer.push(vis_start, card_cell);
-                // Skip the summary logical row + all placeholder rows.
-                logical_i += tb.output.visual_rows(false) - rows_before;
+                logical_i += visual_rows - rows_before;
                 continue;
             }
         }

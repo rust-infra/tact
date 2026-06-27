@@ -1,6 +1,5 @@
 use crate::i18n::Language;
 use crate::theme::Theme;
-use crate::widgets::tool_widget::ToolRenderOutput;
 use chrono;
 use ratatui::text::Line;
 use std::path::PathBuf;
@@ -21,6 +20,7 @@ mod select_popup;
 mod status_bar_state;
 mod stream_state;
 mod thinking_state;
+mod tool_state;
 
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
@@ -32,6 +32,7 @@ pub(crate) use select_popup::SelectPopup;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 pub(crate) use thinking_state::{ThinkingBlock, ThinkingPopup, ThinkingState};
+pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, ToolBlock, ToolState};
 
 // ========== Basic Types ==========
 
@@ -72,28 +73,7 @@ pub struct HistoryEntry {
     pub summary: String,
 }
 
-// ========== Tool Types ==========
-
-/// State for a tool invocation result that includes a detail card.
-#[derive(Debug, Clone)]
-pub(crate) struct ToolBlock {
-    /// Physical index of the first placeholder row in `messages` / `raw_messages`.
-    pub phys_idx: usize,
-    /// Pre-built render output from [`ToolWidget`].
-    pub output: ToolRenderOutput,
-}
-
-/// Popup preview state for file write content.
-#[derive(Debug, Clone)]
-pub(crate) struct DiffPopup {
-    pub file_path: String,
-    pub scroll: u16,
-    /// Lazily-loaded full file content. `None` until first render/population.
-    pub cached_content: Option<String>,
-    /// Pre-rendered syntax-highlighted lines (built once when cached_content is loaded).
-    /// Empty Vec means "not yet highlighted" (or empty file).
-    pub highlighted_lines: Vec<Line<'static>>,
-}
+// ========== Code Block Types ==========
 
 /// A completed LLM code block, rendered as a card overlay in the log panel.
 #[derive(Debug, Clone)]
@@ -195,6 +175,9 @@ pub struct App {
     pub(crate) status_bar: StatusBarState,
     /// Current task start time (for bottom status bar timer).
     pub(crate) task_start_time: Option<chrono::DateTime<chrono::Local>>,
+    /// Frozen elapsed seconds from the most recent submitted prompt.
+    /// Kept until a new prompt is submitted.
+    pub(crate) last_prompt_elapsed_secs: Option<i64>,
     /// Task completion time (for top status bar Done highlight timer;
     /// auto-reverts to Idle display after 2s).
     pub(crate) task_done_time: Option<chrono::DateTime<chrono::Local>>,
@@ -202,10 +185,8 @@ pub struct App {
     pub(crate) process_start_time: chrono::DateTime<chrono::Local>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
-    /// File write diff block list.
-    pub(crate) tool_blocks: Vec<ToolBlock>,
-    /// File write content popup preview.
-    pub(crate) diff_popup: Option<DiffPopup>,
+    /// Tool invocation blocks and diff popup state.
+    pub(crate) tools: ToolState,
     /// Completed LLM code block overlays.
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).

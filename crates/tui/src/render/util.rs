@@ -6,6 +6,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub(crate) const LOG_THINKING_INDENT: u16 = 2;
 /// Left gutter for tool invocations inside the log panel.
 pub(crate) const LOG_TOOL_INDENT: u16 = 4;
+/// Extra indent for rendered tool blocks (title + meta + detail card).
+pub(crate) const LOG_TOOL_BLOCK_INDENT: u16 = LOG_TOOL_INDENT + 4;
 
 pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
     if cols == 0 {

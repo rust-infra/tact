@@ -25,6 +25,8 @@ pub struct StepResult {
     pub detail: Option<String>,
     /// Tool execution duration in milliseconds. None for non-tool steps.
     pub duration_ms: Option<u64>,
+    /// Permission choice label when the user was prompted (e.g. "Allow once").
+    pub permission_label: Option<String>,
 }
 
 /// Parameters for a model API call.
@@ -84,7 +86,7 @@ pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
     /// Step `idx` has started execution
-    StepStarted(usize, String /* tool_id */),
+    StepStarted(usize, String /* tool_id */, String /* tool_name */, String /* arg_summary */),
     /// Step `idx` succeeded, with structured result
     StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message

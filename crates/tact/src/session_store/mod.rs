@@ -64,13 +64,15 @@ pub trait SessionStore: Send + Sync {
 
     /// Record per-call token usage (cache hit/miss, reasoning, prompt, completion).
     /// `first_message_id` / `last_message_id` link this call to the message range sent.
+    /// `request_body` is the serialized JSON body sent to the LLM API (debug).
     async fn record_token_usage(
         &self,
         session_id: &str,
         call_type: &str,
-        usage: &TokenUsageInfo,
+        usage: Option<&TokenUsageInfo>,
         first_message_id: i64,
         last_message_id: i64,
+        request_body: Option<&[u8]>,
     ) -> Result<()>;
 
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;

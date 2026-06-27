@@ -6,7 +6,7 @@ use crate::theme::Theme;
 use crate::widgets::state::{
     App, FilePicker, FocusedPanel, InputHistory,
     InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, Status, StatusBarState,
-    StreamState, ThinkingState,
+    StreamState, ThinkingState, ToolState,
 };
 use std::path::{Path, PathBuf};
 use tact_core::{AgentUpdate, UserCommand};
@@ -78,13 +78,13 @@ impl App {
             clipboard_buffer: String::new(),
             status_bar: StatusBarState::new(git_branch),
             task_start_time: None,
+            last_prompt_elapsed_secs: None,
             task_done_time: None,
             process_start_time: chrono::Local::now(),
             workspace_dir,
             select: SelectPopup::new(),
             file_picker: FilePicker::new(),
-            tool_blocks: Vec::new(),
-            diff_popup: None,
+            tools: ToolState::new(),
             code_blocks: Vec::new(),
             code_popup: None,
             stream: StreamState::new(),
