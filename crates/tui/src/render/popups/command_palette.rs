@@ -13,6 +13,7 @@ fn cmd_emoji(cmd: &str) -> &'static str {
         "search" => "🔍",
         "balance" => "💰",
         "lang" => "🌐",
+        "party" => "🎉",
         _ => "⚡",
     }
 }
@@ -22,7 +23,7 @@ fn cmd_category(cmd: &str) -> &'static str {
     match cmd {
         "save" | "cancel" | "quit" => "  Actions",
         "help" | "history" | "search" => "  Tools",
-        "theme" | "lang" | "balance" => "  Settings",
+        "theme" | "lang" | "balance" | "party" => "  Settings",
         _ => "",
     }
 }

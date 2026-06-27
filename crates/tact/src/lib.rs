@@ -26,14 +26,12 @@ pub mod consts;
 pub mod cron;
 pub mod notifications;
 pub mod hook;
-pub mod llm;
 pub mod lsp;
 pub mod mcp;
 pub mod memory;
 pub mod permission;
 pub mod prompt;
 pub mod recovery;
-pub mod session_store;
 pub mod skill;
 pub mod stats;
 pub mod store;
@@ -43,7 +41,6 @@ pub mod tool;
 pub mod worktree;
 pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
 
-use crate::llm::{LlmClient, LlmProvider};
 use anthropic_ai_sdk::types::message::{
     ContentBlock, CreateMessageParams, Message, MessageContent,
     RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
@@ -67,10 +64,11 @@ use crate::recovery::{
     CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
     is_prompt_too_long_error, is_transient_transport_error,
 };
-use crate::session_store::DynSessionStore;
 use crate::stats::SessionStats;
+use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
-use tact_core::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
+use tact_llm::{LlmClient, LlmProvider};
 
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
@@ -82,7 +80,7 @@ fn context_limit() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| {
-            if crate::llm::is_kimi_k2x() {
+            if tact_llm::is_kimi_k2x() {
                 900_000
             } else {
                 500_000
@@ -98,7 +96,7 @@ fn max_tokens() -> u32 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| {
-            if crate::llm::is_kimi_k2x() {
+            if tact_llm::is_kimi_k2x() {
                 32_000
             } else {
                 8_000
@@ -126,12 +124,12 @@ fn thinking_config() -> Thinking {
 /// Returns the model name from the active provider's environment variable.
 /// Parsed once on first call and cached for the lifetime of the process.
 pub fn get_model() -> &'static str {
-    llm::get_provider().model.as_str()
+    tact_llm::get_provider().model.as_str()
 }
 
 /// Constructs the active LLM client from environment variables.
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    llm::get_llm_client()
+    tact_llm::get_llm_client()
 }
 
 /// Shared state for a running agent session.
@@ -397,7 +395,7 @@ impl Agent {
             .with_stream(true)
             .with_thinking(thinking_config());
 
-            self.emit_update(AgentUpdate::ModelInfo(tact_core::ModelCallParams {
+            self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
@@ -561,7 +559,7 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::llm::LlmRequestBody>), anyhow::Error> {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<tact_llm::LlmRequestBody>), anyhow::Error> {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
@@ -596,7 +594,7 @@ impl Agent {
                 let step_idx = self.next_step_idx();
                 // Step row in plan/log should stay compact: args are shown by the tool card.
                 let description = name.clone();
-                self.emit_update(AgentUpdate::StepAdded(tact_core::PlanStep {
+                self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
                     description: description.clone(),
                     tool: name.clone(),
                     tool_id: id.clone(),
@@ -932,7 +930,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             max_tokens: 2000,
         });
 
-        self.emit_update(AgentUpdate::ModelInfo(tact_core::ModelCallParams {
+        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
             model: model_name,
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),

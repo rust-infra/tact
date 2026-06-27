@@ -85,17 +85,33 @@ impl TextCell {
     fn build_highlighted_line(&self, wrap_width: u16) -> Vec<Line<'static>> {
         let lower_raw = self.raw_text.to_lowercase();
         let lower_term = self.search_term.to_lowercase();
+        // Byte indices from `lower_raw` only align with `raw_text` when lengths match
+        // (e.g. ß → ss would desync). Fall back to unhighlighted rendering.
+        if lower_raw.len() != self.raw_text.len() || lower_term.is_empty() {
+            return wrap_line(
+                &Line::from(Span::styled(
+                    self.raw_text.clone(),
+                    Style::default().fg(self.fg_color),
+                )),
+                wrap_width as usize,
+            );
+        }
+
         let mut spans = Vec::new();
         let mut last_idx = 0;
 
         for (match_idx, _) in lower_raw.match_indices(&lower_term) {
+            let match_idx = self.raw_text.floor_char_boundary(match_idx);
+            let end_idx = self
+                .raw_text
+                .floor_char_boundary(match_idx.saturating_add(lower_term.len()));
             if match_idx > last_idx {
+                let start = self.raw_text.floor_char_boundary(last_idx);
                 spans.push(Span::styled(
-                    self.raw_text[last_idx..match_idx].to_string(),
+                    self.raw_text[start..match_idx].to_string(),
                     Style::default().fg(self.fg_color),
                 ));
             }
-            let end_idx = match_idx + lower_term.len();
             spans.push(Span::styled(
                 self.raw_text[match_idx..end_idx].to_string(),
                 Style::default().bg(Color::Yellow).fg(Color::Black),
@@ -103,8 +119,9 @@ impl TextCell {
             last_idx = end_idx;
         }
         if last_idx < self.raw_text.len() {
+            let start = self.raw_text.floor_char_boundary(last_idx);
             spans.push(Span::styled(
-                self.raw_text[last_idx..].to_string(),
+                self.raw_text[start..].to_string(),
                 Style::default().fg(self.fg_color),
             ));
         }

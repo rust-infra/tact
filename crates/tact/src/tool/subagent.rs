@@ -5,11 +5,12 @@ use serde::Deserialize;
 use tool_refactor_macros::tool;
 
 use crate::{
-    Agent, AgentSystemPrompt, extract_text, get_llm_client,
+    Agent, AgentSystemPrompt, extract_text,
     mcp::MCPToolRouter,
     permission::{PermissionManager, PermissionMode},
     tool::{ToolContext, subagent_toolset},
 };
+use tact_llm::get_llm_client;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SubagentInput {

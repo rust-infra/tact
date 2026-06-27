@@ -1,0 +1,21 @@
+[package]
+name = "tact_llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tact_protocol = { path = "../protocol" }
+anthropic-ai-sdk = { workspace = true }
+anyhow = { workspace = true }
+async-openai = "0.20"
+async-trait = { workspace = true }
+dotenvy = { workspace = true }
+futures-util = "0.3"
+reqwest = { workspace = true }
+reqwest-eventsource = "0.6"
+secrecy = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
+tracing = { workspace = true }

@@ -7,7 +7,7 @@ MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
 
 | Crate | Path | Role |
 |---|---|---|
-| `tact_core` | `crates/core` | Wire types: `AgentUpdate`, `UserCommand`, `StepResult`, etc. |
+| `tact_protocol` | `crates/protocol` | Wire types: `AgentUpdate`, `UserCommand`, `StepResult`, etc. |
 | `tact` | `crates/tact` | Agent runtime, tool router, MCP, hooks, LLM adapters, compaction, session store. Binary entry. |
 | `tui` | `crates/tui` | ratatui terminal UI, widgets, rendering pipeline |
 | `tools` | `crates/tools` | `Sandbox` — secure file I/O + command execution |
@@ -16,7 +16,7 @@ MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
 ## Key directories
 
 - `crates/tact/src/tool/` — 40+ built-in tools (bash, read_file, write_file, edit_file, apply_patch, subagent, web_search, etc.)
-- `crates/tact/src/session_store/` — SQLite session/message/token-usage persistence (`tact.db`)
+- `crates/tact/src/store/session_store/` — SQLite session/message/token-usage persistence (`tact.db`)
 - `crates/tact/src/lib.rs` — `agent_loop()`, `execute_tool_call()`, `snapshot_dir()` (Project structure in system prompt)
 - `crates/tui/src/render/` — log panel, cells (text, tool, code, thinking), popups, LogColumnRenderer
 - `crates/tui/src/render/cells/tool.rs` — `ToolCell` rendering (title + meta + detail card)

@@ -2,7 +2,7 @@
 
 This Mermaid diagram document describes the complete data flow from the Agent main loop, through LLM streaming responses, to the actual execution of `batch_read` / `batch_edit`, and finally to the `AgentUpdate` messages sent to the TUI where they are consumed and rendered.
 
-> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/lib.rs`, `crates/tact/src/llm/`, `crates/tui/src/lib.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/tool_widget.rs`, `crates/tui/src/render/cells/tool.rs`  
+> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/lib.rs`, `crates/tact_llm/src/`, `crates/tui/src/lib.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/tool_widget.rs`, `crates/tui/src/render/cells/tool.rs`  
 > Tool UI design: [`tool_rendering.md`](./tool_rendering.md)
 
 ---
@@ -249,9 +249,9 @@ flowchart LR
 | Tool registration & routing | `crates/tact/src/tool/mod.rs` `ToolSet::call()` |
 | `batch_read` implementation | `crates/tact/src/tool/batch_read.rs` `BatchRead::run()` |
 | `batch_edit` implementation | `crates/tact/src/tool/batch_edit.rs` `BatchEdit::run()` |
-| Streaming response Anthropic | `crates/tact/src/llm/anthropic.rs` `stream_message()` |
-| Streaming response OpenAI | `crates/tact/src/llm/openai.rs` `stream_message()` |
-| AgentUpdate definition | `crates/core/src/lib.rs` |
+| Streaming response Anthropic | `crates/tact_llm/src/anthropic.rs` `stream_message()` |
+| Streaming response OpenAI | `crates/tact_llm/src/openai.rs` `stream_message()` |
+| AgentUpdate definition | `crates/protocol/src/lib.rs` |
 | TUI main loop consumption | `crates/tui/src/lib.rs` `run_tui()` |
 | TUI handle AgentUpdate | `crates/tui/src/state/app/agent.rs` `handle_agent_update()` |
 | Log / card rendering | `crates/tui/src/render/log.rs`, `crates/tui/src/render/cells/` |

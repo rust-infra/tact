@@ -4,7 +4,7 @@ use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
-use tact_core::TokenUsageInfo;
+use tact_protocol::TokenUsageInfo;
 
 use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
 

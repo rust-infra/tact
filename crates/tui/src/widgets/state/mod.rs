@@ -3,10 +3,10 @@ use crate::theme::Theme;
 use chrono;
 use ratatui::text::Line;
 use std::path::PathBuf;
-use tact_core::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-pub(crate) use tact_core::PlanStep;
+pub(crate) use tact_protocol::PlanStep;
 
 pub(crate) mod app;
 mod file_picker;
@@ -17,6 +17,7 @@ mod mouse_state;
 mod plan_panel;
 mod search_state;
 mod select_popup;
+mod slash_command;
 mod status_bar_state;
 mod stream_state;
 mod thinking_state;
@@ -29,6 +30,7 @@ pub(crate) use mouse_state::MouseState;
 pub(crate) use plan_panel::PlanPanel;
 pub(crate) use search_state::SearchState;
 pub(crate) use select_popup::SelectPopup;
+pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 pub(crate) use thinking_state::{ThinkingBlock, ThinkingPopup, ThinkingState};
@@ -58,6 +60,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("search", "Search log messages"),
     ("balance", "Query account balance (DeepSeek)"),
     ("lang", "Toggle language (EN/中文)"),
+    ("party", "Toggle party mode"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -195,12 +198,13 @@ pub struct App {
     pub(crate) select: SelectPopup,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
+    pub(crate) slash_command: SlashCommandState,
     // Streaming output state
     pub(crate) stream: StreamState,
     // Thinking state
     pub(crate) thinking: ThinkingState,
     /// DeepSeek account balance info (queried once on load and cached).
-    pub(crate) balance_info: Option<tact_core::BalanceInfo>,
+    pub(crate) balance_info: Option<tact_protocol::BalanceInfo>,
     /// Party mode: easter egg triggered by Konami Code.
     pub(crate) party_mode: bool,
     /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).

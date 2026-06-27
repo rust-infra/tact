@@ -166,7 +166,7 @@ Shown only when **phase is Success** and tool kind is:
 | `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
 | `Generic` | others | No card (title + meta only) |
 
-Preview: default 10 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
+Preview: default 3 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
 
 ---
 
@@ -225,7 +225,7 @@ Centered modal styling; scroll with `j`/`k`. Permission `RequestSelect` popups s
 
 ## 9. Wire types
 
-File: `crates/core/src/lib.rs`
+File: `crates/protocol/src/lib.rs`
 
 ```rust
 pub struct StepResult {
@@ -263,7 +263,7 @@ No changes to `ToolCell` are needed unless the visual structure itself changes (
 | File | Responsibility |
 |---|---|
 | `crates/tact/src/lib.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
-| `crates/core/src/lib.rs` | `AgentUpdate`, `StepResult` types |
+| `crates/protocol/src/lib.rs` | `AgentUpdate`, `StepResult` types |
 | `crates/tui/src/widgets/state/app/agent.rs` | `handle_agent_update` for tool events |
 | `crates/tui/src/widgets/state/app/visibility.rs` | Placeholders, finalize, cancel, phys index shifting |
 | `crates/tui/src/widgets/state/tool_state.rs` | `ToolState`, `DiffPopup` |

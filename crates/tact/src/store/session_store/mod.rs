@@ -5,7 +5,7 @@ use anyhow::Result;
 use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tact_core::TokenUsageInfo;
+use tact_protocol::TokenUsageInfo;
 
 pub mod sqlite;
 

@@ -7,7 +7,7 @@ use crate::render::render_md::render_markdown_tui;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
-use tact_core::UserCommand;
+use tact_protocol::UserCommand;
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const STREAMING_INDICATOR: &str = " ▌";

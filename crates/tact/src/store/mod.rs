@@ -18,6 +18,9 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
+pub mod session_store;
+pub use session_store::{DynSessionStore, SessionStore, open_sqlite_session_store};
+
 /// Outcome of a successful write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOutcome {

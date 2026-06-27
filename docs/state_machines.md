@@ -241,7 +241,7 @@ Hooks are invoked in this order during a tool call:
 
 ## 7. Step Execution Status
 
-File: `crates/core/src/lib.rs`
+File: `crates/protocol/src/lib.rs`
 
 A small enum attached to `StepResult` for TUI display.
 
@@ -353,7 +353,7 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 | `BackgroundTaskStatus` | `crates/tact/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
 | `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
 | `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
-| `StepStatus` | `crates/core/src/lib.rs` | Tool execution result | Per-step success/failure display. |
+| `StepStatus` | `crates/protocol/src/lib.rs` | Tool execution result | Per-step success/failure display. |
 | `SelectPopup` | `crates/tui/src/widgets/state/select_popup.rs` | `RequestSelect` + keys | User option selection popup. |
 | `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
 | `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |

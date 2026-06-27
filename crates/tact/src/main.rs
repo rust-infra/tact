@@ -4,22 +4,22 @@ use anthropic_ai_sdk::types::message::{Message, Role::User};
 use chrono::{DateTime, Utc};
 
 use tact::{
-    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
-    extract_text, get_llm_client,
+    extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
     skill::get_skill_registry,
-    store::StoreRoot,
+    store::{StoreRoot, open_sqlite_session_store},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
+use tact_llm::get_llm_client;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -127,8 +127,12 @@ async fn main() -> anyhow::Result<()> {
     if is_new_session {
         let title = args.prompt.lines().next().unwrap_or("").trim();
         if !title.is_empty() {
-            let title = if title.len() > 80 { &title[..80] } else { title };
-            agent.set_session_title(Some(title)).await?;
+            let title = if title.chars().count() > 80 {
+                format!("{}…", title.chars().take(77).collect::<String>())
+            } else {
+                title.to_string()
+            };
+            agent.set_session_title(Some(&title)).await?;
         }
     }
 

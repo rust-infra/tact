@@ -1,3 +1,4 @@
+use crate::render::util::truncate_chars_with_ellipsis;
 use crate::widgets::state::App;
 use crate::widgets::popup_widget::PopupWidget;
 use ratatui::{
@@ -30,11 +31,7 @@ pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
                 "🔄"
             };
 
-            let task_preview = if entry.task.len() > 40 {
-                format!("{}…", &entry.task[..37])
-            } else {
-                entry.task.clone()
-            };
+            let task_preview = truncate_chars_with_ellipsis(&entry.task, 40);
 
             let mut text = format!(
                 " {} {} [{}] {}",
@@ -42,11 +39,7 @@ pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
             );
             if !entry.summary.is_empty() {
                 text.push_str(" → ");
-                let summary_short = if entry.summary.len() > 30 {
-                    format!("{}…", &entry.summary[..27])
-                } else {
-                    entry.summary.clone()
-                };
+                let summary_short = truncate_chars_with_ellipsis(&entry.summary, 30);
                 text.push_str(&summary_short);
             }
 

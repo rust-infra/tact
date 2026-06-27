@@ -1,9 +1,10 @@
 [workspace]
 members = [
-    "crates/core",
+    "crates/protocol",
     "crates/tools",
     "crates/tui",
     "crates/tact",
+    "crates/tact_llm",
     "crates/tool_refactor_macros",
 ]
 resolver = "2"

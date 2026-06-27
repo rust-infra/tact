@@ -44,6 +44,7 @@ impl App {
             "search" => msgs.cmd_search.to_string(),
             "balance" => msgs.cmd_balance.to_string(),
             "lang" => msgs.cmd_lang.to_string(),
+            "party" => msgs.cmd_party.to_string(),
             _ => cmd.to_string(),
         }
     }
