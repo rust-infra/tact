@@ -1,11 +1,11 @@
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::widgets::state::*;
-use crate::widgets::tool_widget::ToolWidget;
+use crate::widgets::tool_widget::{ToolPhase, ToolWidget, ToolRenderOutput};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
 use std::time::Instant;
-use tact_core::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
+use tact_core::{AgentErrorKind, AgentUpdate, UserCommand};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -20,7 +20,20 @@ fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     idx
 }
 
+fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
+    chrono::Local::now()
+        .signed_duration_since(start)
+        .num_seconds()
+        .max(0)
+}
+
 impl App {
+    fn freeze_last_prompt_cost(&mut self) {
+        if let Some(start) = self.task_start_time.take() {
+            self.last_prompt_elapsed_secs = Some(elapsed_secs_since(start));
+        }
+    }
+
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
         // Close the previous thinking block: when any non-ThinkingChunk update arrives,
@@ -51,6 +64,7 @@ impl App {
             AgentUpdate::PlanGenerated(plan) => {
                 // New task starts: flush leftover streaming lines
                 self.flush_stream_pending();
+                self.cancel_all_active_tools();
 
                 let plan_len = plan.len();
                 self.plan.steps = plan;
@@ -109,106 +123,44 @@ impl App {
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
             }
-            AgentUpdate::StepStarted(idx, tool_id) => {
+            AgentUpdate::StepStarted(idx, tool_id, tool_name, arg_summary) => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
-                // Flush leftover streaming content first (especially the last thinking line),
-                // ensuring all LLM output before tool execution is fully displayed.
                 self.flush_stream_pending();
+                // Same tool_id restarting without a finish: drop stale placeholder rows.
+                self.cancel_active_tool(&tool_id);
                 if let Status::Executing {
                     current_step,
                     total,
                 } = &mut self.status
                 {
                     *current_step = idx;
-                    // Ensure total is at least idx + 1, so the progress bar
-                    // never overshoots 100%. This handles the case where
-                    // there are more tool calls than plan steps (the plan
-                    // had 3 high-level steps but 10 tool calls are dispatched).
                     if idx >= *total {
                         *total = idx + 1;
                     }
                 }
-                if let Some(step) = self.plan.steps.get(idx) {
-                    let description = step.description.clone();
-                    let msgs = self.msgs();
-                    // Insert a blank line between content and tool invocation as visual separator
-                    self.add_system_message(msgs.step_started_tmpl.replace("{}", &description));
-                }
+                let msgs = self.msgs();
+                let output = ToolWidget::new(&self.theme, &msgs)
+                    .with_tool(tool_name)
+                    .with_arg_summary(arg_summary)
+                    .with_phase(ToolPhase::Running)
+                    .with_duration_ms(0)
+                    .build();
+                let phys_idx = self.push_tool_placeholder_rows(&output);
+                self.tools.active.push(ActiveToolBlock {
+                    phys_idx,
+                    tool_id,
+                    output,
+                    started_at: Instant::now(),
+                });
+                self.refresh_tool_log_scroll();
             }
             AgentUpdate::StepFinished(idx, tool_id, result) => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
-                // Close the thinking block for the current step, preventing the next step's
-                // ThinkingChunk from skipping the title because thinking_title_added is still true.
                 self.flush_stream_pending();
                 let msgs = self.msgs();
-                let icon = match result.status {
-                    StepStatus::Success => msgs.step_success_prefix,
-                    StepStatus::Failed => msgs.step_fail_prefix,
-                };
-                let log_msg = if result.arg_summary.is_empty() {
-                    msgs.step_finished_simple_tmpl
-                        .replacen("{}", icon, 1)
-                        .replacen("{}", &(idx + 1).to_string(), 1)
-                        .replacen("{}", &result.tool, 1)
-                } else {
-                    msgs.step_finished_args_tmpl
-                        .replacen("{}", icon, 1)
-                        .replacen("{}", &(idx + 1).to_string(), 1)
-                        .replacen("{}", &result.tool, 1)
-                        .replacen("{}", &result.arg_summary, 1)
-                };
-                let bytes_str = match result.tool.as_str() {
-                    "read_file" | "write_file" => result
-                        .detail
-                        .as_ref()
-                        .map(|d| msgs.step_bytes_tmpl.replace("{}", &d.len().to_string()))
-                        .unwrap_or_default(),
-                    _ => String::new(),
-                };
-                let duration_str = result.duration_ms.map_or(String::new(), |ms| {
-                    if ms < 1000 {
-                        msgs.step_ms_tmpl.replace("{}", &ms.to_string())
-                    } else {
-                        format!(
-                            "{}",
-                            msgs.step_sec_tmpl
-                                .replace("{}", &format!("{:.1}", ms as f64 / 1000.0))
-                        )
-                    }
-                });
-                let log_msg = format!("{}{}{}", log_msg, bytes_str, duration_str);
-                self.add_system_message(log_msg);
+                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs).build();
+                self.finalize_tool_block(&tool_id, output);
 
-                // Tool operations with detail output: use ToolWidget to produce a
-                // ToolRenderOutput, then store it as a ToolBlock. phys_idx points
-                // to the summary line so LogColumnRenderer can replace it with a
-                // full ToolCell (summary + detail card).
-                let tool_has_detail =
-                    matches!(result.tool.as_str(), "write_file" | "read_file" | "bash");
-                if tool_has_detail && result.detail.is_some() {
-                    let msgs = self.msgs();
-                    let tw = ToolWidget::from_step_result(idx, &result, &self.theme, &msgs);
-                    let output = tw.build();
-
-                    let placeholder_count = output.message_placeholder_rows();
-                    // phys_idx points to the summary line pushed by add_system_message above.
-                    let phys_idx = self.messages.len().saturating_sub(1);
-                    for _ in 0..placeholder_count {
-                        self.append_blank(RawMessageType::SysTool);
-                    }
-                    self.tool_blocks.push(ToolBlock { phys_idx, output });
-                    self.log_scroll.state =
-                        ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-                    if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal
-                    {
-                        self.log_scroll.offset = u16::MAX;
-                    }
-                    if !self.search.term.is_empty() {
-                        self.update_search_matches();
-                    }
-                }
-
-                // Store output preview in plan step for Plan panel display
                 if let Some(step) = self.plan.steps.get_mut(idx) {
                     step.output = Some(result.message);
                 }
@@ -216,14 +168,34 @@ impl App {
             AgentUpdate::StepFailed(idx, tool_id, error) => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
-                let msgs = self.msgs();
-                self.add_system_message(
-                    msgs.step_failed_tmpl
-                        .replacen("{}", &(idx + 1).to_string(), 1)
-                        .replacen("{}", &error, 1),
-                );
+                if let Some(active) = self
+                    .tools
+                    .active
+                    .iter()
+                    .find(|a| a.tool_id == tool_id)
+                {
+                    let elapsed_ms = active.started_at.elapsed().as_millis() as u64;
+                    let tool_name = active.output.tool_name.clone();
+                    let arg_summary = active.output.arg_summary.clone();
+                    let msgs = self.msgs();
+                    let output = ToolWidget::new(&self.theme, &msgs)
+                        .with_tool(tool_name)
+                        .with_arg_summary(arg_summary)
+                        .with_phase(ToolPhase::Failed)
+                        .with_duration_ms(elapsed_ms)
+                        .with_message(error.clone())
+                        .build();
+                    self.finalize_tool_block(&tool_id, output);
+                } else {
+                    let msgs = self.msgs();
+                    self.add_system_message(
+                        msgs.step_failed_tmpl
+                            .replacen("{}", &(idx + 1).to_string(), 1)
+                            .replacen("{}", &error, 1),
+                    );
+                }
                 self.status = Status::Idle;
-                self.task_start_time = None;
+                self.freeze_last_prompt_cost();
             }
             // Handle cases requiring user approval
             AgentUpdate::NeedApproval(prompt, step_idx, tx) => {
@@ -255,7 +227,7 @@ impl App {
                     self.log_scroll.offset = u16::MAX;
                 }
                 self.status = Status::Done;
-                self.task_start_time = None;
+                self.freeze_last_prompt_cost();
                 self.task_done_time = Some(chrono::Local::now());
                 // TODO Add task stats block
             }
@@ -284,7 +256,7 @@ impl App {
                         let msgs = self.msgs();
                         self.add_system_message(msgs.error_tmpl.replace("{}", &msg));
                         self.status = Status::Idle;
-                        self.task_start_time = None;
+                        self.freeze_last_prompt_cost();
                     }
                 }
             }
@@ -323,7 +295,7 @@ impl App {
                 options,
                 respond,
             } => {
-                self.select.set(prompt, options, respond);
+                self.select.set(prompt, options, respond, false);
                 self.input_mode = InputMode::Select;
             }
             AgentUpdate::ThinkingChunk(text) => {

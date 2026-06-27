@@ -79,6 +79,7 @@ impl SqliteSessionStore {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 call_type TEXT NOT NULL,
+                request_body BLOB NOT NULL,
                 prompt_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +123,11 @@ impl SqliteSessionStore {
         .execute(&pool)
         .await
         .context("failed to create input_history index")?;
+
+        // Migration: add request_body column for LLM call debugging.
+        let _ = sqlx::query("ALTER TABLE token_usages ADD COLUMN request_body BLOB")
+            .execute(&pool)
+            .await;
 
         Ok(Self { pool })
     }
@@ -445,23 +451,38 @@ impl super::SessionStore for SqliteSessionStore {
         &self,
         session_id: &str,
         call_type: &str,
-        usage: &TokenUsageInfo,
+        usage: Option<&TokenUsageInfo>,
         first_message_id: i64,
         last_message_id: i64,
+        request_body: Option<&[u8]>,
     ) -> Result<()> {
+        let (prompt, completion, total, cache_hit, cache_miss, reasoning) = usage
+            .map(|u| {
+                (
+                    u.prompt as i64,
+                    u.completion as i64,
+                    u.total as i64,
+                    u.prompt_cache_hit_tokens as i64,
+                    u.prompt_cache_miss_tokens as i64,
+                    u.reasoning_tokens as i64,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0, 0, 0));
+
         sqlx::query(
-            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(call_type)
-        .bind(usage.prompt as i64)
-        .bind(usage.completion as i64)
-        .bind(usage.total as i64)
-        .bind(usage.prompt_cache_hit_tokens as i64)
-        .bind(usage.prompt_cache_miss_tokens as i64)
-        .bind(usage.reasoning_tokens as i64)
+        .bind(prompt)
+        .bind(completion)
+        .bind(total)
+        .bind(cache_hit)
+        .bind(cache_miss)
+        .bind(reasoning)
         .bind(first_message_id)
         .bind(last_message_id)
+        .bind(request_body)
         .execute(&self.pool)
         .await
         .context("failed to record token usage")?;

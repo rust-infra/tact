@@ -47,6 +47,10 @@ pub struct Messages {
     pub diff_card_bottom: &'static str,    // "Double-click for full code"
     pub code_card_bottom: &'static str,    // " Click for full code "
     pub diff_overflow_tmpl: &'static str,  // "... and {} more lines ..."
+    pub tool_phase_running: &'static str,
+    pub tool_phase_success: &'static str,
+    pub tool_phase_failed: &'static str,
+    pub tool_meta_sep: &'static str,
     pub plan_title: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
@@ -57,6 +61,8 @@ pub struct Messages {
     pub help_title: &'static str,
     pub thinking_popup_title: &'static str,
     pub diff_popup_title: &'static str, // "{}" (file path)
+    pub tool_popup_read_error: &'static str, // "{}" (path)
+    pub tool_popup_empty: &'static str,
 
     // ---- 状态栏 ----
     pub mode_normal: &'static str,
@@ -219,6 +225,10 @@ impl Messages {
             diff_card_bottom: " Double-click for full code ",
             code_card_bottom: " Click for full code ",
             diff_overflow_tmpl: " ... and {} more lines ...",
+            tool_phase_running: "Running",
+            tool_phase_success: "Success",
+            tool_phase_failed: "Failed",
+            tool_meta_sep: " · ",
             plan_title: " 🔥 [Execution Plan] ",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
@@ -229,6 +239,8 @@ impl Messages {
             help_title: " Help (Esc to close) ",
             thinking_popup_title: " (╭ರ_•́) Thinking ",
             diff_popup_title: " {} ",
+            tool_popup_read_error: "Could not read file: {}",
+            tool_popup_empty: "No content available.",
 
             mode_normal: " NORMAL ",
             mode_insert: " INSERT ",
@@ -382,6 +394,10 @@ impl Messages {
             diff_card_bottom: " 双击查看完整代码 ",
             code_card_bottom: " 点击查看完整代码 ",
             diff_overflow_tmpl: " ... 还有 {} 行 ...",
+            tool_phase_running: "运行中",
+            tool_phase_success: "成功",
+            tool_phase_failed: "失败",
+            tool_meta_sep: " · ",
             plan_title: " 🔥 [执行计划] ",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
@@ -392,6 +408,8 @@ impl Messages {
             help_title: " 帮助 (Esc 关闭) ",
             thinking_popup_title: " (╭ರ_•́) 思考 ",
             diff_popup_title: " {} ",
+            tool_popup_read_error: "无法读取文件: {}",
+            tool_popup_empty: "没有可显示的内容。",
 
             mode_normal: " 普通 ",
             mode_insert: " 插入 ",

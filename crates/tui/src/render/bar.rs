@@ -3,7 +3,6 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
     widgets::Paragraph,
 };
 
@@ -12,6 +11,11 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 
 /// Progress bar width in cells.
 const PROGRESS_BAR_WIDTH: u16 = 15;
+
+fn format_mm_ss(total_secs: i64) -> String {
+    let secs = total_secs.max(0);
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
 
 /// Render a text-based progress bar like `[█████░░░░░] 50%`
 /// Uses a smooth formula: (current + 0.5) / total, so the current step
@@ -70,14 +74,17 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         info
     };
-    let elapsed = app
-        .task_start_time
-        .map(|t| {
-            let dur = chrono::Local::now().signed_duration_since(t);
-            let secs = dur.num_seconds().max(0);
-            format!("{:02}:{:02}", secs / 60, secs % 60)
-        })
-        .unwrap_or_else(|| "--:--".to_string());
+    let elapsed = if let Some(start) = app.task_start_time {
+        let secs = chrono::Local::now()
+            .signed_duration_since(start)
+            .num_seconds()
+            .max(0);
+        format_mm_ss(secs)
+    } else if let Some(secs) = app.last_prompt_elapsed_secs {
+        format_mm_ss(secs)
+    } else {
+        "--:--".to_string()
+    };
 
     let uptime = {
         let dur = chrono::Local::now().signed_duration_since(app.process_start_time);

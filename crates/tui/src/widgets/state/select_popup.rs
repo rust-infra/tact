@@ -8,6 +8,9 @@ pub(crate) struct SelectPopup {
     pub(crate) selected: usize,
     /// Response channel for sending the selected option index back to the caller.
     pub(crate) respond: Option<tokio::sync::oneshot::Sender<Option<usize>>>,
+    /// When false, confirming does not append a separate log line (e.g. permission
+    /// choices are already shown on the tool meta row).
+    pub(crate) log_confirm: bool,
 }
 
 impl SelectPopup {
@@ -17,6 +20,7 @@ impl SelectPopup {
             options: Vec::new(),
             selected: 0,
             respond: None,
+            log_confirm: true,
         }
     }
 
@@ -26,11 +30,13 @@ impl SelectPopup {
         prompt: String,
         options: Vec<String>,
         respond: tokio::sync::oneshot::Sender<Option<usize>>,
+        log_confirm: bool,
     ) {
         self.prompt = prompt;
         self.options = options;
         self.selected = 0;
         self.respond = Some(respond);
+        self.log_confirm = log_confirm;
     }
 
     /// Confirm current selection: send the selected index and clear respond.

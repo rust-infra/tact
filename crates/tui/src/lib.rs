@@ -126,7 +126,7 @@ pub async fn run_tui(
         // high-frequency refreshes while idle.
         // Done state transitions to Idle after 2s timeout; must keep rendering to check
         // the clock.
-        if app.dirty || matches!(app.status, Status::Done) {
+        if app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty() {
             // Advance spinner frame when in an active state
             if !matches!(app.status, Status::Idle | Status::Done) {
                 app.spinner_frame = (app.spinner_frame + 1) % 10;
@@ -257,7 +257,7 @@ pub async fn run_tui(
                                 }
                                 _ => {}
                             }
-                        } else if app.diff_popup.is_some() {
+                        } else if app.tools.popup.is_some() {
                             // Keyboard handling for file diff popup
                             match key.code {
                                 KeyCode::Esc => {
@@ -391,7 +391,7 @@ pub async fn run_tui(
                             MouseEventKind::ScrollUp => {
                                 if app.thinking.popup.is_some() {
                                     app.thinking_popup_scroll_up();
-                                } else if app.diff_popup.is_some() {
+                                } else if app.tools.popup.is_some() {
                                     app.diff_popup_scroll_up();
                                 } else if app.code_popup.is_some() {
                                     app.code_popup_scroll_up();
@@ -405,7 +405,7 @@ pub async fn run_tui(
                             MouseEventKind::ScrollDown => {
                                 if app.thinking.popup.is_some() {
                                     app.thinking_popup_scroll_down();
-                                } else if app.diff_popup.is_some() {
+                                } else if app.tools.popup.is_some() {
                                     app.diff_popup_scroll_down();
                                 } else if app.code_popup.is_some() {
                                     app.code_popup_scroll_down();
@@ -429,7 +429,7 @@ pub async fn run_tui(
                                     if !in_popup {
                                         app.close_thinking_popup();
                                     }
-                                } else if app.diff_popup.is_some() {
+                                } else if app.tools.popup.is_some() {
                                     let pa = app.mouse.diff_popup_area;
                                     let in_popup = mouse.column >= pa.x
                                         && mouse.column < pa.x + pa.width
@@ -516,32 +516,19 @@ pub async fn run_tui(
                                             app.mouse.last_click_card = None;
                                         }
                                         // Check if clicked on a tool block (file write preview) → double-click opens popup
-                                        let tool_hit = app
-                                            .tool_blocks
-                                            .iter()
-                                            .enumerate()
-                                            .find(|(_, b)| {
-                                                app.phys_to_logical_fast(b.phys_idx)
-                                                    .map_or(false, |si| {
-                                                        line_idx >= si
-                                                            &&                                                         line_idx
-                                                            < si + b.output.visual_rows(false)
-                                                    })
-                                            });
-                                        if let Some((tool_idx, block)) = tool_hit {
+                                        if let Some((tool_idx, phys_idx, _, _)) =
+                                            app.find_tool_at_logical(line_idx)
+                                        {
                                             if app.mouse.click_count == 1 {
                                                 app.mouse.last_click_tool = Some(tool_idx);
-                                                // Single click: remember tool block for double-click open, don't select text
                                                 app.mouse.log_word_selection = None;
                                                 app.mouse.log_selection = None;
                                                 app.mouse.dragging_log = false;
                                             } else if app.mouse.click_count == 2
                                                 && app.mouse.last_click_tool == Some(tool_idx)
                                             {
-                                                // Double click: open diff popup
-                                                app.open_diff_popup(block.phys_idx);
+                                                app.open_diff_popup(phys_idx);
                                             } else if app.mouse.click_count >= 3 {
-                                                // Triple click: select entire line
                                                 app.mouse.log_word_selection = None;
                                                 app.mouse.log_selection = Some((line_idx, line_idx));
                                                 app.mouse.dragging_log = true;
