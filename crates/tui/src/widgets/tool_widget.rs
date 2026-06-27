@@ -7,7 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
-use tact_core::{StepResult, StepStatus};
+use tact_protocol::{StepResult, StepStatus};
 
 use crate::{i18n::Messages, theme::Theme};
 

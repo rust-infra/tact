@@ -7,7 +7,7 @@ MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
 
 | Crate | Path | Role |
 |---|---|---|
-| `tact_core` | `crates/core` | Wire types: `AgentUpdate`, `UserCommand`, `StepResult`, etc. |
+| `tact_protocol` | `crates/protocol` | Wire types: `AgentUpdate`, `UserCommand`, `StepResult`, etc. |
 | `tact` | `crates/tact` | Agent runtime, tool router, MCP, hooks, LLM adapters, compaction, session store. Binary entry. |
 | `tui` | `crates/tui` | ratatui terminal UI, widgets, rendering pipeline |
 | `tools` | `crates/tools` | `Sandbox` — secure file I/O + command execution |

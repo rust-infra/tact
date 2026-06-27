@@ -43,7 +43,7 @@ use std::{
     time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tact_core::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 

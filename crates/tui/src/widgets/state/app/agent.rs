@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
 use std::time::Instant;
-use tact_core::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);

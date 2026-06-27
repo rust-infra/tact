@@ -41,7 +41,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
-use tact_core::AgentUpdate;
+use tact_protocol::AgentUpdate;
 
 mod apply_patch;
 mod ask_user;

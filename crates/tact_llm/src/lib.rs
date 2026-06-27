@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_core::AgentUpdate;
-use tact_core::TokenUsageInfo;
+use tact_protocol::AgentUpdate;
+use tact_protocol::TokenUsageInfo;
 
 /// Holds private LLM configuration information.
 #[derive(Default)]
@@ -317,7 +317,7 @@ pub fn is_deepseek() -> bool {
 ///
 /// Calls `GET https://api.deepseek.com/user/balance` with the provided API key.
 /// Returns `BalanceInfo` on success.
-pub async fn query_deepseek_balance() -> anyhow::Result<tact_core::BalanceInfo> {
+pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
     let provider = ProviderInfo::get_provider_from_env()?;
     let api_key = provider.api_key;
     let base_url = provider.base_url;
@@ -375,12 +375,12 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_core::BalanceInfo> 
     let raw: RawBalanceResponse =
         serde_json::from_str(&body).context("Failed to parse DeepSeek balance response")?;
 
-    Ok(tact_core::BalanceInfo {
+    Ok(tact_protocol::BalanceInfo {
         is_available: raw.is_available,
         balance_infos: raw
             .balance_infos
             .into_iter()
-            .map(|e| tact_core::BalanceEntry {
+            .map(|e| tact_protocol::BalanceEntry {
                 currency: e.currency,
                 total_balance: e.total_balance,
                 granted_balance: e.granted_balance,

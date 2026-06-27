@@ -9,7 +9,7 @@ use tact::{
     background::SharedBackgroundManager,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
-    extract_text, get_llm_client,
+    extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
@@ -20,6 +20,7 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
+use tact_llm::get_llm_client;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

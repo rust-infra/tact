@@ -20,7 +20,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::{ListState, ScrollbarState};
-use tact_core::UserCommand;
+use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 fn copy_text(app: &mut App, text: &str) {
@@ -353,7 +353,7 @@ mod tests {
     use super::execute_palette_command;
     use crate::widgets::state::{App, PALETTE_COMMANDS, Status};
     use std::path::PathBuf;
-    use tact_core::{AgentUpdate, UserCommand};
+    use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {

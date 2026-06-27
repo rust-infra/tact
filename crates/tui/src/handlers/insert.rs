@@ -1,7 +1,7 @@
 use crate::widgets::state::{InputMode, Status};
 use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_core::UserCommand;
+use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 use super::{cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor, line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary, start_of_line};
 
@@ -530,7 +530,7 @@ mod tests {
     use crate::widgets::state::{App, Status};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
-    use tact_core::{AgentUpdate, UserCommand};
+    use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {

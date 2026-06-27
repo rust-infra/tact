@@ -9,7 +9,7 @@ use crate::widgets::state::{
     StreamState, ThinkingState, ToolState,
 };
 use std::path::{Path, PathBuf};
-use tact_core::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {

@@ -3,10 +3,10 @@ use crate::theme::Theme;
 use chrono;
 use ratatui::text::Line;
 use std::path::PathBuf;
-use tact_core::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-pub(crate) use tact_core::PlanStep;
+pub(crate) use tact_protocol::PlanStep;
 
 pub(crate) mod app;
 mod file_picker;
@@ -204,7 +204,7 @@ pub struct App {
     // Thinking state
     pub(crate) thinking: ThinkingState,
     /// DeepSeek account balance info (queried once on load and cached).
-    pub(crate) balance_info: Option<tact_core::BalanceInfo>,
+    pub(crate) balance_info: Option<tact_protocol::BalanceInfo>,
     /// Party mode: easter egg triggered by Konami Code.
     pub(crate) party_mode: bool,
     /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).

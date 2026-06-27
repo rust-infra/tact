@@ -9,7 +9,7 @@ use tact::{
     background::SharedBackgroundManager,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
-    extract_text, get_llm_client,
+    extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
@@ -21,7 +21,8 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_core::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_llm::{get_llm_client, is_deepseek, query_deepseek_balance};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
@@ -286,10 +287,10 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     // Query DeepSeek balance at startup
-    if tact::llm::is_deepseek() {
+    if is_deepseek() {
         let balance_tx = agent_tx2;
         tokio::spawn(async move {
-            match tact::llm::query_deepseek_balance().await {
+            match query_deepseek_balance().await {
                 Ok(balance) => {
                     let _ = balance_tx.send(AgentUpdate::Balance(balance));
                 }
@@ -325,8 +326,8 @@ async fn main() -> anyhow::Result<()> {
                 agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::QueryBalance => {
-                if tact::llm::is_deepseek() {
-                    match tact::llm::query_deepseek_balance().await {
+                if is_deepseek() {
+                    match query_deepseek_balance().await {
                         Ok(balance) => {
                             agent.emit_update(AgentUpdate::Balance(balance));
                         }

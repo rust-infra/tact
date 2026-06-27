@@ -4,7 +4,7 @@ use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
-use tact_core::{AgentUpdate, StepStatus};
+use tact_protocol::{AgentUpdate, StepStatus};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const STREAMING_INDICATOR: &str = " ▌";
