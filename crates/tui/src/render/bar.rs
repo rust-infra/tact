@@ -250,14 +250,34 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             )
         }
         Status::Executing {
-            current_step,
+            current_step: _,
             total,
         } => {
             let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
+            // With parallel tools, `current_step` is no longer a reliable UI
+            // progress anchor. Derive progress from completed + active steps.
+            let completed = app
+                .plan
+                .steps
+                .iter()
+                .filter(|s| s.output.as_ref().is_some())
+                .count()
+                .min(*total);
+            let running = app.tools.active.len();
+            let display_step = if *total == 0 {
+                0
+            } else if running > 0 {
+                (completed + 1).min(*total)
+            } else {
+                completed.max(1).min(*total)
+            };
             let step_label = msgs
                 .status_executing_tmpl
-                .replacen("{}", &(current_step + 1).to_string(), 1)
+                .replacen("{}", &display_step.to_string(), 1)
                 .replacen("{}", &total.to_string(), 1);
+            let running_label = msgs
+                .status_running_tmpl
+                .replacen("{}", &running.to_string(), 1);
             // Smooth progress: treat the current step as half-done so the bar
             // never shows 0% (we're actively working) nor 100% (not done yet).
             // Formula: (current_step + 0.5) / total
@@ -265,12 +285,19 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             //   3-step step 0: 0.5/3 ≈ 17%
             //   3-step step 1: 1.5/3 = 50%
             //   3-step step 2: 2.5/3 ≈ 83%
-            let progress_bar = render_progress_bar(*current_step, *total, &app.theme);
+            let progress_idx = if *total == 0 {
+                0
+            } else {
+                completed.min(total.saturating_sub(1))
+            };
+            let progress_bar = render_progress_bar(progress_idx, *total, &app.theme);
+            let exec_right = if running > 0 {
+                format!("{} │ {} {}", step_label, running_label, progress_bar)
+            } else {
+                format!("{} {}", step_label, progress_bar)
+            };
             (
-                format!(
-                    "{} {} │ {} {} {}",
-                    mode_str, focus_str, spinner, step_label, progress_bar
-                ),
+                format!("{} {} │ {} {}", mode_str, focus_str, spinner, exec_right),
                 Style::default()
                     .bg(app.theme.status_bar_bg)
                     .fg(app.theme.warning),
