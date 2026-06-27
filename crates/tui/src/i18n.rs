@@ -166,6 +166,7 @@ pub struct Messages {
     pub cmd_search: &'static str,
     pub cmd_balance: &'static str,
     pub cmd_lang: &'static str,
+    pub cmd_party: &'static str,
 
     // ---- 系统消息 ----
     pub plan_generated_tmpl: &'static str,
@@ -337,6 +338,7 @@ impl Messages {
             cmd_search: "Search log messages",
             cmd_balance: "Query account balance (DeepSeek)",
             cmd_lang: "Toggle language (EN/中文)",
+            cmd_party: "Toggle party mode",
 
             plan_generated_tmpl: "Generated {} steps:",
             plan_step_tmpl: "  {}. {}",
@@ -506,6 +508,7 @@ impl Messages {
             cmd_search: "搜索日志消息",
             cmd_balance: "查询账户余额 (DeepSeek)",
             cmd_lang: "切换语言 (EN/中文)",
+            cmd_party: "切换派对模式",
 
             plan_generated_tmpl: "生成了 {} 个步骤:",
             plan_step_tmpl: "  {}. {}",

@@ -239,10 +239,23 @@ fn next_word_boundary(s: &str, cursor: usize) -> usize {
     pos
 }
 
-/// Execute the selected command in the command palette.
-pub(super) fn execute_palette_command(app: &mut App, cmd: &str) {
+/// Execute a command from palette/slash input.
+///
+/// Returns whether the caller should clear the input box afterwards.
+pub(super) struct CommandExecOutcome {
+    pub handled: bool,
+    pub clear_input: bool,
+}
+
+pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
     match cmd {
-        "theme" => app.toggle_theme(),
+        "theme" => {
+            app.toggle_theme();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "save" => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let filename = format!("agent_log_{}.txt", timestamp);
@@ -257,34 +270,126 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) {
                 let msgs = app.msgs();
                 app.add_system_message(msgs.log_save_failed.to_string());
             }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
-        "quit" => app.should_quit = true,
+        "quit" => {
+            app.should_quit = true;
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "help" => {
             app.show_help = !app.show_help;
             app.show_history = false;
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
         "history" => {
             app.show_history = !app.show_history;
             app.show_help = false;
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
         "search" => {
             app.input_mode = InputMode::Search;
             app.cmd_line.clear();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
         "cancel" => {
             if !matches!(app.status, Status::Idle) {
                 let _ = app.user_cmd_tx.send(UserCommand::Cancel);
+                CommandExecOutcome {
+                    handled: true,
+                    clear_input: true,
+                }
+            } else {
+                CommandExecOutcome {
+                    handled: true,
+                    clear_input: false,
+                }
             }
         }
         "balance" => {
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
         "lang" => {
             app.toggle_language();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
         "party" => {
             app.toggle_party_mode();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
         }
-        _ => {}
+        _ => CommandExecOutcome {
+            handled: false,
+            clear_input: false,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_palette_command;
+    use crate::widgets::state::{App, PALETTE_COMMANDS, Status};
+    use std::path::PathBuf;
+    use tact_core::{AgentUpdate, UserCommand};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
+        let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
+        drop(agent_tx);
+        let app = App::new(
+            agent_rx,
+            user_cmd_tx.clone(),
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+        );
+        (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn palette_commands_are_all_handled() {
+        let (mut app, _user_cmd_rx) = make_app();
+
+        for (cmd, _desc) in PALETTE_COMMANDS {
+            if *cmd == "cancel" {
+                app.status = Status::Planning;
+            }
+            let outcome = execute_palette_command(&mut app, cmd);
+            assert!(outcome.handled, "expected command `{cmd}` to be handled");
+        }
+    }
+
+    #[test]
+    fn unknown_command_is_not_handled() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let outcome = execute_palette_command(&mut app, "nonexistent");
+        assert!(!outcome.handled);
+        assert!(!outcome.clear_input);
     }
 }

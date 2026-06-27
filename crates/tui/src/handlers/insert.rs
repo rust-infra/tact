@@ -3,7 +3,88 @@ use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_core::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
-use super::{start_of_line, cursor_line_col, end_of_line, exit_history, line_col_to_cursor, line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary};
+use super::{cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor, line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary, start_of_line};
+
+fn apply_selected_slash_command(app: &mut App) -> bool {
+    let cmds = app.slash_command.matched_commands(
+        &app.input,
+        app.input_cursor,
+        crate::widgets::state::PALETTE_COMMANDS,
+    );
+    let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
+    if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
+        let start = app.slash_command.start_pos;
+        let end = app.input_cursor;
+        let replacement = format!("/{cmd} ");
+        app.input.replace_range(start..end, &replacement);
+        app.input_cursor = start + cmd.len() + 2;
+        app.slash_command.active = false;
+        return true;
+    }
+    false
+}
+
+fn handle_enter_submit(
+    app: &mut App,
+    key: &KeyEvent,
+    user_cmd_tx: &UnboundedSender<UserCommand>,
+) {
+    // Deactivate slash command on submit.
+    app.slash_command.active = false;
+    if key
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::SHIFT)
+        || key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::ALT)
+    {
+        // insert blank charater for writing next line
+        app.save_undo();
+        app.input.insert(app.input_cursor, '\n');
+        app.input_cursor += 1;
+    } else if !app.input.is_empty() {
+        let trimmed = app.input.trim();
+        if let Some(rest) = trimmed.strip_prefix('/') {
+            let cmd = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let outcome = execute_palette_command(app, &cmd);
+            if outcome.handled {
+                if outcome.clear_input {
+                    app.input.clear();
+                    app.input_cursor = 0;
+                }
+                return;
+            }
+        }
+        // Save to history (skip consecutive duplicates)
+        let task_text = app.input.clone();
+        if app.input_history.entries.last() != Some(&task_text) {
+            app.input_history.entries.push(task_text.clone());
+            app.save_history(&task_text);
+        }
+        app.input_history.index = None;
+        app.input_history.saved.clear();
+        let task = std::mem::take(&mut app.input);
+        app.input_cursor = 0;
+        // If waiting for approval, reject it before starting new task
+        let old_status = std::mem::replace(&mut app.status, Status::Planning);
+        if let Status::WaitingForUser { approval_tx, .. } = old_status {
+            let _ = approval_tx.send(false);
+            let msgs = app.msgs();
+            app.add_system_message(msgs.approval_cancelled.to_string());
+        }
+        let blank_task = format!("{}", task.clone());
+        app.add_user_message(blank_task);
+        app.plan.reset();
+        app.last_prompt_elapsed_secs = None;
+        app.task_start_time = Some(chrono::Local::now());
+        // Send command to agent
+        let _ = user_cmd_tx.send(UserCommand::SubmitTask(task));
+    }
+}
 
 pub(crate) fn handle_insert_mode(
     app: &mut App,
@@ -36,20 +117,16 @@ pub(crate) fn handle_insert_mode(
             return;
         }
         KeyCode::Tab if app.slash_command.active => {
-            let cmds = app.slash_command.matched_commands(
-                &app.input,
-                app.input_cursor,
-                crate::widgets::state::PALETTE_COMMANDS,
-            );
-            let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
-            if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
-                let start = app.slash_command.start_pos;
-                let end = app.input_cursor;
-                let replacement = format!("/{cmd} ");
-                app.input.replace_range(start..end, &replacement);
-                app.input_cursor = start + cmd.len() + 2;
-                app.slash_command.active = false;
+            apply_selected_slash_command(app);
+            return;
+        }
+        KeyCode::Enter if app.slash_command.active => {
+            // Enter accepts the selected slash command from popup, same as Tab.
+            if apply_selected_slash_command(app) {
+                return;
             }
+            // If no command matches, fallback to the normal Enter behavior.
+            handle_enter_submit(app, &key, user_cmd_tx);
             return;
         }
         KeyCode::Esc if app.slash_command.active => {
@@ -82,43 +159,7 @@ pub(crate) fn handle_insert_mode(
                 // --- End slash command shortcuts ---
 
         KeyCode::Enter => {
-            // Deactivate slash command on submit
-            app.slash_command.active = false;
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::SHIFT)
-                || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
-            {
-                // insert blank charater for writing next line
-                app.save_undo();
-                app.input.insert(app.input_cursor, '\n');
-                app.input_cursor += 1;
-            } else if !app.input.is_empty() {
-                // Save to history (skip consecutive duplicates)
-                let task_text = app.input.clone();
-                if app.input_history.entries.last() != Some(&task_text) {
-                    app.input_history.entries.push(task_text.clone());
-                    app.save_history(&task_text);
-                }
-                app.input_history.index = None;
-                app.input_history.saved.clear();
-                let task = std::mem::take(&mut app.input);
-                app.input_cursor = 0;
-                // If waiting for approval, reject it before starting new task
-                let old_status = std::mem::replace(&mut app.status, Status::Planning);
-                if let Status::WaitingForUser { approval_tx, .. } = old_status {
-                    let _ = approval_tx.send(false);
-                    let msgs = app.msgs();
-                    app.add_system_message(msgs.approval_cancelled.to_string());
-                }
-                let blank_task = format!("{}", task.clone());
-                app.add_user_message(blank_task);
-                app.plan.reset();
-                app.last_prompt_elapsed_secs = None;
-                app.task_start_time = Some(chrono::Local::now());
-                // Send command to agent
-                let _ = user_cmd_tx.send(UserCommand::SubmitTask(task));
-            }
+            handle_enter_submit(app, &key, user_cmd_tx);
         }
         // Quick word delete
         KeyCode::Char('w')
@@ -480,5 +521,171 @@ pub(crate) fn handle_insert_mode(
         }
         KeyCode::Esc => app.input_mode = InputMode::Normal,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_insert_mode;
+    use crate::widgets::state::{App, Status};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    use tact_core::{AgentUpdate, UserCommand};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
+        let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
+        drop(agent_tx);
+        let app = App::new(
+            agent_rx,
+            user_cmd_tx.clone(),
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+        );
+        (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn slash_quit_exits_without_submitting_task() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/quit".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(app.should_quit, "expected /quit to set should_quit");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected /quit not to dispatch SubmitTask"
+        );
+    }
+
+    #[test]
+    fn slash_cancel_sends_cancel_without_submitting_task() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Planning;
+        app.input = "/cancel".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        let cmd = user_cmd_rx
+            .try_recv()
+            .expect("expected /cancel to dispatch UserCommand::Cancel");
+        assert!(matches!(cmd, UserCommand::Cancel));
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected /cancel not to dispatch SubmitTask"
+        );
+    }
+
+    #[test]
+    fn slash_popup_enter_completes_selected_command_without_submit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/qu".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "/quit ");
+        assert_eq!(app.input_cursor, app.input.len());
+        assert!(!app.slash_command.active);
+        assert!(!app.should_quit);
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected popup Enter completion not to submit task"
+        );
+    }
+
+    #[test]
+    fn slash_popup_enter_with_no_match_falls_back_to_submit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/zzzzzz".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        let cmd = user_cmd_rx
+            .try_recv()
+            .expect("expected no-match slash Enter to submit task");
+        match cmd {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "/zzzzzz"),
+            other => panic!("expected SubmitTask, got {:?}", other),
+        }
+        assert!(!app.slash_command.active);
+    }
+
+    #[test]
+    fn slash_cancel_idle_keeps_input_and_does_not_submit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Idle;
+        app.input = "/cancel".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "/cancel");
+        assert_eq!(app.input_cursor, app.input.len());
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected idle /cancel not to dispatch UserCommand"
+        );
+    }
+
+    #[test]
+    fn slash_party_toggles_party_mode_without_submit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/party".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(app.party_mode, "expected /party to toggle party mode");
+        assert_eq!(app.input, "");
+        assert_eq!(app.input_cursor, 0);
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected /party not to submit task"
+        );
     }
 }
