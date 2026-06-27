@@ -166,8 +166,8 @@ The cache and reasoning lines are only shown when non-zero.
 |------|------|
 | `crates/protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
 | `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
-| `crates/tact/src/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`. |
-| `crates/tact/src/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` implementation. |
+| `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`. |
+| `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` implementation. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/lib.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |

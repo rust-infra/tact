@@ -4,7 +4,6 @@ use anthropic_ai_sdk::types::message::{Message, Role::User};
 use chrono::{DateTime, Utc};
 
 use tact::{
-    session_store::open_sqlite_session_store,
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
     consts::TactPath,
@@ -14,7 +13,7 @@ use tact::{
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
     skill::get_skill_registry,
-    store::StoreRoot,
+    store::{StoreRoot, open_sqlite_session_store},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},

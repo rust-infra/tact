@@ -16,7 +16,7 @@ MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
 ## Key directories
 
 - `crates/tact/src/tool/` — 40+ built-in tools (bash, read_file, write_file, edit_file, apply_patch, subagent, web_search, etc.)
-- `crates/tact/src/session_store/` — SQLite session/message/token-usage persistence (`tact.db`)
+- `crates/tact/src/store/session_store/` — SQLite session/message/token-usage persistence (`tact.db`)
 - `crates/tact/src/lib.rs` — `agent_loop()`, `execute_tool_call()`, `snapshot_dir()` (Project structure in system prompt)
 - `crates/tui/src/render/` — log panel, cells (text, tool, code, thinking), popups, LogColumnRenderer
 - `crates/tui/src/render/cells/tool.rs` — `ToolCell` rendering (title + meta + detail card)

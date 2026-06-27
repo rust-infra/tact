@@ -32,7 +32,6 @@ pub mod memory;
 pub mod permission;
 pub mod prompt;
 pub mod recovery;
-pub mod session_store;
 pub mod skill;
 pub mod stats;
 pub mod store;
@@ -65,8 +64,8 @@ use crate::recovery::{
     CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
     is_prompt_too_long_error, is_transient_transport_error,
 };
-use crate::session_store::DynSessionStore;
 use crate::stats::SessionStats;
+use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
 use tact_llm::{LlmClient, LlmProvider};
