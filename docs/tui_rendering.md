@@ -28,6 +28,7 @@ crates/tui/src/render/
 ├── cells/              # card rendering cells
 │   ├── text.rs
 │   ├── thinking.rs
+│   ├── tool.rs         # tool invocation blocks (title + meta + detail card)
 │   ├── diff.rs
 │   └── code.rs
 └── popups/             # popups
@@ -47,7 +48,7 @@ crates/tui/src/render/
 The main loop is in `run_tui()` in `crates/tui/src/lib.rs`:
 
 1. **Consume Agent updates**: drain `agent_rx` before drawing to keep state consistent.
-2. **Dirty check**: redraw only when `app.dirty` is `true` or the status is `Status::Done`.
+2. **Dirty check**: redraw when `app.dirty` is `true`, `Status::Done`, or any tool is still running (`!app.tools.active.is_empty()` — keeps live elapsed time updating).
 3. **Compute layout**: split the area based on terminal size, input box height, and balance row count.
 4. **Render by layer**: status bar → main area → input box → bottom bar → popups.
 5. **Clean up state**: e.g., `Done` highlight reverts to `Idle` after 2s, `flash_msg` clears after 3s.
@@ -113,8 +114,9 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 - Focus panel hint
 - Working directory, Git branch
 - Current model, max tokens, thinking budget
-- Token statistics (prompt / completion / cache hit)
-- Task elapsed time and TUI uptime
+- Token statistics (prompt / completion / cache hit / reasoning)
+- **Cost**: elapsed time for the current prompt (live while running; frozen after task complete/fail until the next prompt)
+- **Up**: total TUI process uptime
 - DeepSeek account balance (optional third row)
 
 ---
@@ -167,6 +169,31 @@ Three card types are overlaid on the log panel:
 | Thinking card | `cells/thinking.rs` | Collapsed thinking block, up to 3 preview lines |
 | Diff card | `cells/diff.rs` | File write preview with line numbers and `+` prefix |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting |
+
+### 6.5 Tool Blocks (`cells/tool.rs`)
+
+Tool invocations are rendered as dedicated log rows (not plain `Info` text). Each block uses a **3-tier layout**:
+
+1. **Title row** — step number + display name + argument summary (e.g. `2. Bash: git status`)
+2. **Meta row** — phase spinner / success or fail prefix, permission label, duration (live while running via `started_at`)
+3. **Detail card** (optional) — command output, file preview, or error text; double-click opens `DiffPopup`
+
+Key types:
+
+| Type | File | Role |
+|---|---|---|
+| `ToolWidget` | `widgets/tool_widget.rs` | Builds `ToolRenderOutput` from tool name, phase, args, detail |
+| `ToolCell` | `render/cells/tool.rs` | Ratatui `Renderable` for one tool block |
+| `ActiveToolBlock` | `widgets/state/tool_state.rs` | In-flight tool; supports **concurrent** running tools (`tools.active: Vec<_>`) |
+| `ToolBlock` | `widgets/state/tool_state.rs` | Completed tool placeholder rows in the log |
+
+`StepAdded` plan rows show **tool name only** (no JSON args); full arguments appear in the tool card below.
+
+Indent: tool blocks use `LOG_TOOL_BLOCK_INDENT` (8 columns) in `render/util.rs`.
+
+Mouse hit-testing uses `find_tool_at_logical()` so concurrent tool rows map correctly.
+
+Full design (data flow, state model, extension guide): [`docs/tool_rendering.md`](./tool_rendering.md).
 
 ### 6.5 Scrollbar
 
@@ -229,7 +256,7 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
 | Thinking detail | `thinking_popup.rs` | View full thinking content |
-| File detail | `diff_popup.rs` | View full content of written files |
+| File detail | `diff_popup.rs` | Full tool output, file diff, or inline bash/command text |
 | Code detail | `code_popup.rs` | View full code block |
 
 Popups usually:

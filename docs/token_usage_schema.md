@@ -4,7 +4,7 @@
 
 Every LLM API call (streaming conversation or context compaction) records per-call token usage to the local SQLite database. This includes KV cache hit/miss counts from DeepSeek's Context Caching on Disk, as well as reasoning tokens.
 
-The data lives in the `token_usages` table inside the session database (`~/.tact/sessions.db`).
+The data lives in the `token_usages` table inside the session database at `<workdir>/.claude/tact.db` (one DB per project working directory).
 
 ## Table: `token_usages`
 
@@ -21,6 +21,7 @@ CREATE TABLE token_usages (
     reasoning_tokens        INTEGER NOT NULL DEFAULT 0,
     first_message_id        INTEGER NOT NULL DEFAULT 0,
     last_message_id         INTEGER NOT NULL DEFAULT 0,
+    request_body            BLOB,                    -- serialized LLM request JSON (debug)
     created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -43,6 +44,7 @@ CREATE INDEX idx_token_usages_session_id ON token_usages(session_id);
 | `reasoning_tokens` | INTEGER | Reasoning tokens consumed by the model (R1 / V3 thinking). |
 | `first_message_id` | INTEGER | FK-like: `messages.id` of the earliest message sent in this call. `0` means no message range (e.g., compaction sends a synthetic prompt). |
 | `last_message_id` | INTEGER | FK-like: `messages.id` of the latest message sent in this call. |
+| `request_body` | BLOB | Optional. Serialized JSON body sent to the LLM API (stream or compact call). Used for debugging provider/context issues. |
 | `created_at` | TIMESTAMP | When this row was written. |
 
 ### `call_type` Values
@@ -126,6 +128,8 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
+**TUI cache display:** The bottom-bar `cache hit / miss` percentages come directly from the latest LLM call's `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
+
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 
 Cached data is evicted after hours to days of inactivity.
@@ -166,5 +170,6 @@ The cache and reasoning lines are only shown when non-zero.
 | `crates/tact/src/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` implementation. |
 | `crates/tact/src/llm/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact/src/llm/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
-| `crates/tact/src/lib.rs` | `Agent::persist_token_usage()` — called from `agent_loop()` and `compact_history()`. |
+| `crates/tact/src/lib.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
+| `crates/tact/src/llm/mod.rs` | `LlmRequestBody` type alias; OpenAI adapter serializes final request JSON after all injections. |
 | `crates/tact/src/bin/tui.rs` | Print session stats on TUI exit. |
