@@ -16,6 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install SQLite build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
     - name: Build
       run: cargo build --verbose
     # - name: Run tests

@@ -1151,7 +1151,7 @@ fn load_dynamic_context(
     let snapshot_limit = std::env::var("TACT_SNAPSHOT_MAX_ITEMS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
+        .unwrap_or(80);
 
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
@@ -1252,6 +1252,7 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     ];
 
     use std::collections::BTreeMap;
+    use std::cmp::Ordering;
 
     // Phase 1 — collect visible entries.
     // IMPORTANT: ignored directories must be pruned at traversal time,
@@ -1278,6 +1279,10 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         .filter_map(|e| e.ok())
     {
         let rel = entry.path().strip_prefix(root).ok()?;
+        if rel.as_os_str().is_empty() {
+            // Skip workspace root itself.
+            continue;
+        }
         items.push((rel.to_path_buf(), entry.file_type().is_dir()));
     }
 
@@ -1285,9 +1290,22 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         return None;
     }
 
-    // Phase 2 — sort by path for deterministic output (filesystem readdir
-    // order is not stable across runs, which would defeat KV-cache).
-    items.sort_by(|a, b| a.0.cmp(&b.0));
+    // Phase 2 — deterministic, language-agnostic sort:
+    // prioritize shallow paths (project overview first), then directories before
+    // files at the same depth, then lexical path order.
+    let priority = |path: &Path, is_dir: bool| -> (usize, u8) {
+        let depth = path.components().count();
+        let kind = if is_dir { 0 } else { 1 };
+        (depth, kind)
+    };
+    items.sort_by(|a, b| {
+        let pa = priority(&a.0, a.1);
+        let pb = priority(&b.0, b.1);
+        match pa.cmp(&pb) {
+            Ordering::Equal => a.0.cmp(&b.0),
+            other => other,
+        }
+    });
     let truncated = if items.len() > max_items {
         items.truncate(max_items);
         true
