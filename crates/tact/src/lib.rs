@@ -778,8 +778,9 @@ impl Agent {
                 .await;
         }
 
-        // Execution output (text + wall-clock ms) keyed by index into `prepared`.
-        let mut outputs: Vec<Option<(String, u64)>> = (0..prepared.len()).map(|_| None).collect();
+        // Execution output (text + status + wall-clock ms) keyed by index into `prepared`.
+        let mut outputs: Vec<Option<(String, StepStatus, u64)>> =
+            (0..prepared.len()).map(|_| None).collect();
 
         for wave in tool_schedule::waves_grouped(&resources) {
             if self
@@ -799,10 +800,10 @@ impl Agent {
             {
                 let pi = run_indices[wave[0]];
                 let start = std::time::Instant::now();
-                let content = self
+                let exec = self
                     .execute_mcp(&prepared[pi].name, &prepared[pi].input)
                     .await;
-                outputs[pi] = Some((content, start.elapsed().as_millis() as u64));
+                outputs[pi] = Some((exec.content, exec.status, start.elapsed().as_millis() as u64));
                 continue;
             }
 
@@ -815,17 +816,15 @@ impl Agent {
                     let prep = &prepared[pi];
                     async move {
                         let start = std::time::Instant::now();
-                        let (content, info) =
+                        let exec =
                             run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
-                        (pi, content, info, start.elapsed().as_millis() as u64)
+                        (pi, exec.content, exec.status, start.elapsed().as_millis() as u64)
                     }
                 })
                 .collect();
-            for (pi, content, info, duration_ms) in futures_util::future::join_all(futures).await {
-                if let Some(info) = info {
-                    self.emit_update(AgentUpdate::Info(info));
-                }
-                outputs[pi] = Some((content, duration_ms));
+            for (pi, content, status, duration_ms) in futures_util::future::join_all(futures).await
+            {
+                outputs[pi] = Some((content, status, duration_ms));
             }
         }
 
@@ -836,7 +835,7 @@ impl Agent {
             let output = match prep.state {
                 PreparedState::Resolved(msg) => msg,
                 PreparedState::Run => {
-                    let (content, duration_ms) = outputs[idx]
+                    let (content, exec_status, duration_ms) = outputs[idx]
                         .take()
                         .expect("cleared tool must have produced output");
                     let tool_use = ToolUse {
@@ -848,13 +847,16 @@ impl Agent {
                         tool_use_id: prep.id.clone(),
                         content,
                     };
-                    let exec_output =
+                    let (exec_output, final_status) =
                         match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                            Ok(HookControl::Continue) => tool_result.content,
+                            Ok(HookControl::Continue) => (tool_result.content, exec_status),
                             Ok(HookControl::Block(reason)) => {
-                                format!("Tool blocked by PostToolUse hook: {reason}")
+                                (
+                                    format!("Tool blocked by PostToolUse hook: {reason}"),
+                                    StepStatus::Failed,
+                                )
                             }
-                            Err(error) => format!("PostToolUse hook failed: {error}"),
+                            Err(error) => (format!("PostToolUse hook failed: {error}"), StepStatus::Failed),
                         };
                     self.runtime.stats.tool_durations_ms.push(duration_ms);
                     let summary = exec_output.chars().take(200).collect::<String>();
@@ -866,7 +868,7 @@ impl Agent {
                         StepResult {
                             tool: prep.name.clone(),
                             arg_summary,
-                            status: StepStatus::Success,
+                            status: final_status,
                             message: summary,
                             detail,
                             duration_ms: Some(duration_ms),
@@ -927,24 +929,16 @@ impl Agent {
 
     /// Run a single MCP tool. The MCP router is stateful (`&mut self`), so MCP
     /// tools are always scheduled alone in their own wave and invoked here.
-    async fn execute_mcp(&mut self, name: &str, input: &serde_json::Value) -> String {
+    async fn execute_mcp(&mut self, name: &str, input: &serde_json::Value) -> ExecResult {
         match self.mcp_router.call(name, input.clone()).await {
-            Ok(output) => {
-                self.emit_update(AgentUpdate::Info(format!(
-                    "MCP tool:{}\n arg:{}\n output:\n{}\n",
-                    name,
-                    input,
-                    output.chars().take(200).collect::<String>()
-                )));
-                output
-            }
-            Err(e) => {
-                self.emit_update(AgentUpdate::Info(format!(
-                    "Error invoking MCP tool {}: {}",
-                    name, e
-                )));
-                format!("Error invoking MCP tool {}: {}", name, e)
-            }
+            Ok(output) => ExecResult {
+                content: output,
+                status: StepStatus::Success,
+            },
+            Err(e) => ExecResult {
+                content: format!("Error invoking MCP tool {}: {}", name, e),
+                status: StepStatus::Failed,
+            },
         }
     }
 
@@ -1177,32 +1171,38 @@ enum PreparedState {
 }
 
 /// Run a single native (non-MCP) tool, borrowing only the shared router and
-/// context so calls in the same wave can run concurrently. Returns the output
-/// text plus an optional log line (errors are surfaced via `AgentUpdate::Info`
-/// once the wave completes, matching the previous sequential behaviour).
+/// context so calls in the same wave can run concurrently.
 async fn run_native_tool(
     tools: &ToolRouter,
     ctx: &ToolContext,
     tool_use_id: &str,
     name: &str,
     input: &serde_json::Value,
-) -> (String, Option<String>) {
+) -> ExecResult {
     match tools.call(ctx, name, input.clone()).await {
         Ok(output) => {
-            if name == "bash" {
+            let content = if name == "bash" {
                 let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-                let output = persist_large_output(&tact_path, tool_use_id, &output)
-                    .unwrap_or_else(|e| format!("Error persisting large output: {}", e));
-                (output, None)
+                persist_large_output(&tact_path, tool_use_id, &output)
+                    .unwrap_or_else(|e| format!("Error persisting large output: {}", e))
             } else {
-                (output, None)
+                output
+            };
+            ExecResult {
+                content,
+                status: StepStatus::Success,
             }
         }
-        Err(e) => {
-            let msg = format!("Error invoking tool {}: {}", name, e);
-            (msg.clone(), Some(msg))
-        }
+        Err(e) => ExecResult {
+            content: format!("Error invoking tool {}: {}", name, e),
+            status: StepStatus::Failed,
+        },
     }
+}
+
+struct ExecResult {
+    content: String,
+    status: StepStatus,
 }
 
 fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {

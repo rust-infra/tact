@@ -192,9 +192,13 @@ pub struct ToolLayout {
     pub has_detail_card: bool,
 }
 
-/// Content rows inside the card borders (preview lines + optional overflow row).
+/// Content rows inside the card borders.
+///
+/// Overflow text is rendered in the bottom hint (`title_bottom`) so it does not
+/// consume an extra preview row.
 pub(crate) fn tool_card_inner_rows(preview_len: usize, total_lines: usize) -> usize {
-    preview_len + usize::from(total_lines > preview_len)
+    let _ = total_lines;
+    preview_len
 }
 
 /// Total visual rows for a tool block in the log column.
