@@ -1,0 +1,285 @@
+# Tool Rendering Design
+
+This document describes how tool invocations are displayed in the TUI log panel: data flow from the agent runtime, state ownership, visual layout, concurrent tools, and extension points.
+
+For the broader rendering pipeline see [`tui_rendering.md`](./tui_rendering.md). For state transitions see [`state_machines.md`](./state_machines.md) §7.5.
+
+---
+
+## 1. Goals
+
+| Goal | Approach |
+|---|---|
+| One cohesive block per tool call | Title + meta + optional detail card in a single `ToolCell` |
+| Concurrent tool calls | `ToolState.active: Vec<ActiveToolBlock>` instead of a single slot |
+| Live elapsed while running | `started_at: Instant` + 10ms dirty tick when `active` is non-empty |
+| Scroll / clip / hit-test correctness | Placeholder rows in `messages[]` + `LogColumnRenderer` |
+| No duplicate args in plan vs log | Plan `StepAdded` shows tool name only; args on the tool card |
+| Permission choice visible once | `StepResult.permission_label` on meta row; select popup uses `log_confirm = false` |
+
+---
+
+## 2. End-to-end data flow
+
+```mermaid
+sequenceDiagram
+    participant LLM
+    participant Agent as tact::Agent
+    participant TUI as tui::App
+    participant Log as render/log.rs
+
+    LLM-->>Agent: ToolUse blocks
+    Agent->>TUI: StepAdded(PlanStep { description: tool_name })
+    Agent->>TUI: StepStarted(idx, tool_id, tool_name, arg_summary)
+    Note over TUI: ToolWidget.build() → push placeholder rows → active.push()
+
+    Agent->>Agent: permission + hooks + execute()
+    Agent->>TUI: StepFinished(idx, tool_id, StepResult)
+    Note over TUI: finalize_tool_block() → resize placeholders → blocks.push()
+
+    loop Each frame while active non-empty
+        TUI->>Log: ToolCell with running_elapsed_ms(started_at)
+    end
+```
+
+### Runtime (`crates/tact/src/lib.rs`)
+
+| Step | What happens |
+|---|---|
+| `execute_tool_call()` | Increments step index; emits `StepAdded` then `StepStarted` |
+| `StepAdded.description` | **Tool name only** (e.g. `web_search`) — no JSON args |
+| `StepStarted` | Carries `tool_id`, `tool_name`, `arg_summary` from `tool_arg_summary()` |
+| Tool execution | Builds `StepResult` with `message`, `detail`, `duration_ms`, `permission_label` |
+| `StepFinished` | TUI finalizes the matching `ActiveToolBlock` by `tool_id` |
+
+Helper functions:
+
+- `tool_arg_summary(name, input)` — path for file tools, command for bash, truncated JSON otherwise
+- `tool_detail_content(name, input, output)` — full stdout for bash/read; written content for `write_file`
+
+### Legacy `Info` lines
+
+`Agent::execute()` still emits `AgentUpdate::Info("Executing {}({})")` after a tool returns. These appear as plain system log rows (`RawMessageType::SysTool`). The **canonical** tool UI is the structured tool block from `StepStarted` / `StepFinished`, not these Info lines.
+
+---
+
+## 3. TUI state model
+
+File: `crates/tui/src/widgets/state/tool_state.rs`
+
+```rust
+pub(crate) struct ToolState {
+    pub active: Vec<ActiveToolBlock>,   // in-flight
+    pub blocks: Vec<ToolBlock>,         // completed
+    pub popup: Option<DiffPopup>,      // full-content modal
+}
+
+pub(crate) struct ActiveToolBlock {
+    pub phys_idx: usize,                // first row in messages[]
+    pub tool_id: String,                // LLM tool_use id
+    pub output: ToolRenderOutput,       // pre-built layout
+    pub started_at: Instant,
+}
+
+pub(crate) struct ToolBlock {
+    pub phys_idx: usize,
+    pub output: ToolRenderOutput,
+}
+```
+
+### Lifecycle
+
+| Event | Handler | Effect |
+|---|---|---|
+| `StepStarted` | `agent.rs` | `cancel_active_tool(tool_id)` if restart; `push_tool_placeholder_rows`; `active.push` |
+| `StepFinished` | `agent.rs` | `ToolWidget::from_step_result().build()` → `finalize_tool_block` |
+| `StepFailed` | `agent.rs` | Rebuild output as `ToolPhase::Failed` or fallback system message |
+| `PlanGenerated` | `agent.rs` | `cancel_all_active_tools()` |
+| Double-click tool row | `lib.rs` / `popups.rs` | Open `DiffPopup` from `detail_full` or file path |
+
+`finalize_tool_block()` either resizes existing placeholder rows (normal path) or inserts new ones (no matching active entry).
+
+---
+
+## 4. Two-stage render pipeline
+
+Tool display splits **layout** (borrowed i18n/theme) from **render** (owned, storable):
+
+```text
+  ToolWidget (builder)          ToolRenderOutput (owned)         ToolCell (Renderable)
+  ───────────────────          ────────────────────────         ─────────────────────
+  borrows Theme, Messages  →   title_line, meta fields,    →   ratatui draw + height()
+                                 layout, detail_preview           skip_lines clipping
+```
+
+| Type | File | Role |
+|---|---|---|
+| `ToolWidget` | `widgets/tool_widget.rs` | Fluent builder; computes layout, preview lines, card title |
+| `ToolRenderOutput` | `widgets/tool_widget.rs` | Serializable snapshot for state + log renderer |
+| `ToolCell` | `render/cells/tool.rs` | Implements `Renderable`; draws title, meta, detail card |
+
+Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must live across frames inside `LogColumnRenderer` without lifetime ties.
+
+---
+
+## 5. Visual layout (3 tiers)
+
+```text
+  ← LOG_TOOL_BLOCK_INDENT (8 cols)
+  │
+  ├─ Row 1  Title     "2. Bash  git status"          (bold)
+  ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · Always allow · 21ms"
+  └─ Card   (optional, Success + detail only)
+            ╭─ Command output (24 lines) ─────────╮
+            │ $ git status                         │
+            │  M crates/tact/src/lib.rs            │
+            ╰─ double-click for full content ──────╯
+```
+
+Constants (`render/util.rs`):
+
+| Constant | Value | Used for |
+|---|---|---|
+| `LOG_TOOL_INDENT` | 4 | Plain `Executing …` system lines |
+| `LOG_TOOL_BLOCK_INDENT` | 8 | Full tool block (`ToolCell`) |
+
+### Meta row (`build_meta_text`)
+
+Built from phase, permission label, byte size (file tools), duration, and truncated error:
+
+| Phase | Prefix | Color |
+|---|---|---|
+| `Running` | Braille spinner + "Running" | `theme.warning` |
+| `Success` | `✓ Success` | `theme.success` |
+| `Failed` | `✗ Failed` + error snippet | `theme.error` |
+
+Running duration uses `running_elapsed_ms(started_at)` until `StepFinished` supplies `duration_ms`.
+
+### Detail card rules (`ToolWidget::should_show_detail`)
+
+Shown only when **phase is Success** and tool kind is:
+
+| Kind | Tools | Card content |
+|---|---|---|
+| `FileWrite` | `write_file` | Written content; green `+` gutter |
+| `FileRead` | `read_file` | Read file body |
+| `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
+| `Generic` | others | No card (title + meta only) |
+
+Preview: default 10 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
+
+---
+
+## 6. Log panel integration
+
+File: `render/log.rs`
+
+1. Each logical log row maps to a physical index in `messages[]`.
+2. Before building a `TextCell`, the loop checks whether `phys_idx` falls inside an active or completed tool block range.
+3. If yes, it emits one `ToolCell` spanning `output.visual_rows()` visual lines and skips placeholder rows.
+4. Viewport clipping uses `Renderable::render_partial` with `skip_lines` when the block is partially scrolled off-screen.
+
+Placeholder strategy (`visibility.rs::push_tool_placeholder_rows`):
+
+- Reserve N blank `SysTool` rows up front so scroll height and mouse mapping stay stable.
+- On finish, `resize_tool_placeholder_rows` grows or shrinks the range if final layout differs from running layout.
+
+---
+
+## 7. Concurrent tools
+
+Multiple `ToolUse` blocks in one assistant turn each get:
+
+- Distinct `tool_id` (from the LLM)
+- Separate `ActiveToolBlock` in `tools.active`
+- Independent placeholder row ranges
+
+Mouse hit-testing (`find_tool_at_logical`) iterates **all** active blocks first, then completed `blocks`, returning `(active_index, phys_idx, logical_start, row_count)`.
+
+Main loop dirty rule (`lib.rs`):
+
+```rust
+if app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty() {
+    // redraw — keeps running elapsed updating
+}
+```
+
+---
+
+## 8. Diff / detail popup
+
+File: `widgets/state/tool_state.rs` + `render/popups/diff_popup.rs`
+
+`DiffPopup` supports:
+
+| Field | Use |
+|---|---|
+| `file_path` | Read from disk (write_file / read_file) |
+| `inline_content` | Bash output or other in-memory text (avoids treating command output as a path) |
+| `use_diff_gutter` | Green `+` prefix for file writes |
+| `title` | Modal header |
+
+Centered modal styling; scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
+
+---
+
+## 9. Wire types
+
+File: `crates/core/src/lib.rs`
+
+```rust
+pub struct StepResult {
+    pub tool: String,
+    pub arg_summary: String,
+    pub status: StepStatus,
+    pub message: String,              // short summary (≤200 chars in runtime)
+    pub detail: Option<String>,       // full content for card + popup
+    pub duration_ms: Option<u64>,
+    pub permission_label: Option<String>,  // e.g. "Allow once", "Always allow this tool"
+}
+
+// AgentUpdate variants (abbreviated)
+StepStarted(usize, String /* tool_id */, String /* tool_name */, String /* arg_summary */),
+StepFinished(usize, String /* tool_id */, StepResult),
+StepFailed(usize, String /* tool_id */, String),
+```
+
+---
+
+## 10. Adding a new tool display kind
+
+1. **Runtime detail** — extend `tool_detail_content()` if the tool should show a card body.
+2. **Arg summary** — extend `tool_arg_summary()` for a human-readable one-liner.
+3. **Display kind** — add a arm in `display_kind()` / `tool_display_name()` in `tool_widget.rs`.
+4. **Card rules** — update `should_show_detail()` and `detail_card_title()` if the card should appear.
+5. **Gutter** — set `use_diff_gutter` in `build()` for diff-style lines.
+
+No changes to `ToolCell` are needed unless the visual structure itself changes (e.g. a fourth header row).
+
+---
+
+## 11. File index
+
+| File | Responsibility |
+|---|---|
+| `crates/tact/src/lib.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
+| `crates/core/src/lib.rs` | `AgentUpdate`, `StepResult` types |
+| `crates/tui/src/widgets/state/app/agent.rs` | `handle_agent_update` for tool events |
+| `crates/tui/src/widgets/state/app/visibility.rs` | Placeholders, finalize, cancel, phys index shifting |
+| `crates/tui/src/widgets/state/tool_state.rs` | `ToolState`, `DiffPopup` |
+| `crates/tui/src/widgets/tool_widget.rs` | Layout builder, `ToolRenderOutput` |
+| `crates/tui/src/render/cells/tool.rs` | `ToolCell` drawing |
+| `crates/tui/src/render/log.rs` | Tool block detection in log loop |
+| `crates/tui/src/render/popups/diff_popup.rs` | Full-content modal |
+| `crates/tui/src/widgets/state/log_messages.rs` | `SysTool` classification for plain system lines |
+| `crates/tui/src/render/util.rs` | Indent constants |
+
+---
+
+## 12. Related tests
+
+Integration-style unit tests live in `render/cells/tool.rs` (`make_output`, height / partial render cases). Run:
+
+```bash
+cargo test -p tui tool_cell
+```

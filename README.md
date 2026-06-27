@@ -140,6 +140,13 @@ api_key = "sk-ant-..."
 mode = "default"   # "default" | "plan" | "auto"
 ```
 
+Optional environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `TACT_SNAPSHOT_MAX_ITEMS` | `80` | Max entries in the system-prompt Project structure snapshot |
+| `TACT_CONTEXT_LIMIT_CHARS` | `500000` | Soft context limit before auto-compaction |
+
 ### 3. Run
 
 ```bash
@@ -268,6 +275,13 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 ## Installation
 
 ### From Source
+
+**Linux:** install SQLite build dependencies first (required by `sqlx` / session store):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+```
 
 ```bash
 git clone https://github.com/Rg0x80/tact.git

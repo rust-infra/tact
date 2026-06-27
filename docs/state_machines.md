@@ -6,7 +6,7 @@ This document describes the state machines used across the `tact` codebase. Most
 
 ## 1. TUI Execution Status
 
-File: `crates/tui/src/state/mod.rs`
+File: `crates/tui/src/widgets/state/mod.rs`
 
 This is the highest-level UI state. It drives the status bar, the plan panel, and whether the user is being asked for approval.
 
@@ -47,19 +47,19 @@ stateDiagram-v2
 |---|---|---|---|
 | `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; plan panel is cleared. |
 | `Planning` | `Executing` | `AgentUpdate::PlanGenerated` or `StepAdded`. | `total` is set to current plan length. |
-| `Executing` | `Executing` | `AgentUpdate::StepStarted(idx)`. | `current_step` is updated to `idx`. |
+| `Executing` | `Executing` | `AgentUpdate::StepStarted(idx, tool_id, …)`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
 | `Executing` | `WaitingForUser` | `AgentUpdate::NeedApproval` or `AgentUpdate::RequestSelect`. | `input_mode` is forced to `Normal` or `Select`. |
 | `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. |
-| `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | `task_start_time` is cleared. |
+| `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
 | `WaitingForUser` | `Executing` | User presses `y` / `Enter` to approve. | `approval_tx.send(true)`. |
 | `WaitingForUser` | `Idle` | User presses `n` / `Esc` to deny. | `approval_tx.send(false)`. |
-| `Done` | `Idle` | 2-second auto-timeout elapses. | Implemented in the main TUI loop. |
+| `Done` | `Idle` | 2-second auto-timeout elapses. | Implemented in the main TUI loop. Cost timer is frozen via `last_prompt_elapsed_secs` and kept until the next prompt. |
 
 ---
 
 ## 2. TUI Input Mode
 
-File: `crates/tui/src/state/mod.rs`
+File: `crates/tui/src/widgets/state/mod.rs`
 
 Determines how keyboard input is interpreted.
 
@@ -256,9 +256,39 @@ This is not a lifecycle state machine by itself; it is the outcome of a single t
 
 ---
 
+## 7.5 Tool Block State (concurrent active tools)
+
+Files: `crates/tui/src/widgets/state/tool_state.rs`, `crates/tui/src/widgets/state/app/visibility.rs`
+
+Each running tool call gets an `ActiveToolBlock` entry in `ToolState.active: Vec<ActiveToolBlock>`. Multiple tools can be active at once (e.g. parallel tool uses in one assistant turn).
+
+```rust
+pub(crate) struct ActiveToolBlock {
+    pub phys_idx: usize,           // first placeholder row in messages[]
+    pub tool_id: String,           // LLM tool_use id
+    pub output: ToolRenderOutput,
+    pub started_at: Instant,       // live elapsed in meta row while Running
+}
+```
+
+Transitions:
+
+| Event | Action |
+|---|---|
+| `StepStarted(_, tool_id, …)` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
+| `StepFinished(_, tool_id, result)` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
+| `StepFailed(_, tool_id, …)` | Same finalize path, or fallback system message if no active block |
+| `PlanGenerated` / new task | `cancel_all_active_tools()` |
+
+`StepResult` (from runtime) includes `permission_label` (e.g. `"Allow once"`, `"Always allow this tool"`) shown in the tool meta row.
+
+See [`tool_rendering.md`](./tool_rendering.md) for the full tool UI design.
+
+---
+
 ## 8. Select Popup State
 
-File: `crates/tui/src/state/select_popup.rs`
+File: `crates/tui/src/widgets/state/select_popup.rs`
 
 The select popup has its own implicit state machine managed through the `respond` oneshot channel.
 
@@ -278,7 +308,7 @@ stateDiagram-v2
 
 ## 9. Streaming / Parsing State
 
-File: `crates/tui/src/state/stream_state.rs` and `crates/tui/src/state/thinking_state.rs`
+File: `crates/tui/src/widgets/state/stream_state.rs` and `crates/tui/src/widgets/state/thinking_state.rs`
 
 The TUI maintains mutable streaming parsers for assistant output:
 
@@ -316,13 +346,14 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 
 | State machine | File | Driven by | Purpose |
 |---|---|---|---|
-| `Status` | `crates/tui/src/state/mod.rs` | `AgentUpdate` + user input | Top-level TUI execution state. |
-| `InputMode` | `crates/tui/src/state/mod.rs` | Keyboard events | Keyboard input interpretation. |
+| `Status` | `crates/tui/src/widgets/state/mod.rs` | `AgentUpdate` + user input | Top-level TUI execution state. |
+| `InputMode` | `crates/tui/src/widgets/state/mod.rs` | Keyboard events | Keyboard input interpretation. |
+| `ToolState` | `crates/tui/src/widgets/state/tool_state.rs` | `StepStarted` / `StepFinished` | Concurrent running tool blocks + diff popup. |
 | `TaskStatus` | `crates/tact/src/task/mod.rs` | `task_*` tools | Persistent task lifecycle. |
 | `BackgroundTaskStatus` | `crates/tact/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
 | `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
 | `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
 | `StepStatus` | `crates/core/src/lib.rs` | Tool execution result | Per-step success/failure display. |
-| `SelectPopup` | `crates/tui/src/state/select_popup.rs` | `RequestSelect` + keys | User option selection popup. |
-| `StreamState` / `ThinkingState` | `crates/tui/src/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
+| `SelectPopup` | `crates/tui/src/widgets/state/select_popup.rs` | `RequestSelect` + keys | User option selection popup. |
+| `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
 | `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |

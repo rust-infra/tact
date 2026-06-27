@@ -1,6 +1,7 @@
 /target/
 *.log
 .env
+.DS_Store
 .ideal
 .idea/
 .claude

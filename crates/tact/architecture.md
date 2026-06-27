@@ -1,4 +1,7 @@
-# sfull Architecture
+# tact Runtime Architecture (crate-level)
+
+> **Canonical docs:** [`ARCHITECTURE.md`](../../ARCHITECTURE.md) at repo root, plus [`docs/tui_rendering.md`](../../docs/tui_rendering.md), [`docs/state_machines.md`](../../docs/state_machines.md), [`docs/token_usage_schema.md`](../../docs/token_usage_schema.md).  
+> This file is a high-level crate diagram; it may lag behind the root docs.
 
 ```mermaid
 graph TB
@@ -38,6 +41,7 @@ graph TB
     end
 
     %% ── Persistence ──
+    SessionStore["SessionStore (SQLite)<br/>.claude/tact.db<br/>messages + token_usages"]
     Store["Store / CollectionStore<br/>JSON file persistence"]
 
     %% ── Prompt Builder ──
@@ -99,6 +103,7 @@ graph TB
     Agent -->|owns| Hooks
     Agent -->|owns| Perm
     Agent -->|uses| Prompt
+    Agent -->|persist| SessionStore
     Agent -->|agent_loop| Compact
     Agent -->|agent_loop| Recovery
 
