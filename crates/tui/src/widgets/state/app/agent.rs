@@ -356,6 +356,7 @@ impl App {
                 self.log_scroll.offset = u16::MAX;
             }
             AgentUpdate::StreamChunk(text) => {
+                self.ensure_gap_after_tools();
                 // Flush leftover thinking lines (the last line without trailing newline)
                 // Note: the thinking block has already been closed by the gate at
                 // the entry of handle_agent_update.
