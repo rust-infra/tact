@@ -160,10 +160,10 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize config: CLI args > env vars > TOML config file
-    let args = tact::config::init();
+    // Initialize config: CLI args > TOML config file
+    let args = tact::config::init()?;
 
-    if std::env::var("TOKIO_CONSOLE").is_ok() {
+    if tact::config::settings().tokio_console {
         console_subscriber::init();
         eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
     }
@@ -273,6 +273,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let theme = tact::config::settings().ui.theme.clone();
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(
             agent_rx,
@@ -281,6 +282,7 @@ async fn main() -> anyhow::Result<()> {
             input_history,
             session_id,
             history_save_tx,
+            theme,
         )
         .await
     }));

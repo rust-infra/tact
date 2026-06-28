@@ -46,4 +46,4 @@ Full architecture: see `ARCHITECTURE.md`.
 
 This file replaces the auto-generated project tree to keep the prompt prefix stable across edits. When the project structure changes (new files, renames), this file should be updated manually to reflect the new layout.
 
-At runtime, `load_dynamic_context()` also injects a **Project structure** snapshot (cached per session, default 80 entries via `TACT_SNAPSHOT_MAX_ITEMS`). See `ARCHITECTURE.md` §5.5.
+At runtime, `load_dynamic_context()` also injects a **Project structure** snapshot (cached per session, default 80 entries via `agent.snapshot_max_items` in config). See `ARCHITECTURE.md` §5.5.

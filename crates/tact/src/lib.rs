@@ -74,45 +74,18 @@ use tact_llm::{LlmClient, LlmProvider};
 
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
-///
-/// Defaults to 500_000 (~125K tokens), raised to 900_000 for Kimi K2.x which
-/// has a 256K-token context window. Override with `TACT_CONTEXT_LIMIT_CHARS`.
 fn context_limit() -> usize {
-    std::env::var("TACT_CONTEXT_LIMIT_CHARS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            if tact_llm::is_kimi_k2x() {
-                900_000
-            } else {
-                500_000
-            }
-        })
+    crate::config::settings().agent.context_limit_chars
 }
 
 /// Maximum tokens to generate per LLM call.
-/// Defaults to 8000, raised to 32000 for Kimi K2.x thinking models because
-/// they emit both reasoning_content and content. Override with `TACT_MAX_TOKENS`.
 fn max_tokens() -> u32 {
-    std::env::var("TACT_MAX_TOKENS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            if tact_llm::is_kimi_k2x() {
-                32_000
-            } else {
-                8_000
-            }
-        })
+    crate::config::settings().agent.max_tokens
 }
 
 /// Budget tokens for extended thinking.
-/// Defaults to 32000. Override with `TACT_THINKING_BUDGET`.
 fn thinking_budget() -> usize {
-    std::env::var("TACT_THINKING_BUDGET")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(32000)
+    crate::config::settings().agent.thinking_budget
 }
 
 /// Returns the thinking configuration to use.
@@ -129,7 +102,7 @@ pub fn get_model() -> &'static str {
     tact_llm::get_provider().model.as_str()
 }
 
-/// Constructs the active LLM client from environment variables.
+/// Constructs the active LLM client from the installed configuration.
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
     tact_llm::get_llm_client()
 }
@@ -1348,10 +1321,7 @@ fn load_dynamic_context(
     workdir: &Path,
     cached_snapshot: &mut Option<String>,
 ) -> String {
-    let snapshot_limit = std::env::var("TACT_SNAPSHOT_MAX_ITEMS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(80);
+    let snapshot_limit = crate::config::settings().agent.snapshot_max_items;
 
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),

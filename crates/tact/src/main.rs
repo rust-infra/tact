@@ -23,8 +23,8 @@ use tact_llm::get_llm_client;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize config: CLI args > env vars > TOML config file
-    let args = tact::config::init();
+    // Initialize config: CLI args > TOML config file
+    let args = tact::config::init()?;
 
     let tact_path = TactPath::from_cwd()?;
     let store_root = StoreRoot::new(tact_path.claude_dir())?;
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let client = get_llm_client()?;
 
-    // Permission mode: CLI/env/config, default to "auto" for non-interactive MVP
+    // Permission mode: CLI/config, default to "auto" for non-interactive MVP
     let mode = match args.permission_mode.as_deref() {
         Some("plan") => PermissionMode::Plan,
         Some("default") => PermissionMode::Default,

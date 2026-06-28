@@ -1,16 +1,19 @@
 //! Configuration management for tact.
 //!
-//! Merges configuration from three sources (priority: high to low):
+//! Merges configuration from two sources (priority: high to low):
 //! 1. CLI arguments
-//! 2. Environment variables
-//! 3. TOML config file (`.tact/config.toml` or `$TACT_CONFIG`)
+//! 2. TOML config file (`.tact/config.toml`, `tact.toml`, or `--config`)
 //!
-//! After merging, environment variables are set so the rest of the code
-//! (which reads from env vars) continues to work unchanged.
+//! Resolved settings are stored in a process-global [`ResolvedConfig`] via
+//! [`install`] and accessed through [`settings`].
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use tact_llm::ProviderInfo;
+
+static SETTINGS: OnceLock<ResolvedConfig> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // CLI arguments (shared by all binaries)
@@ -25,7 +28,7 @@ pub struct CliArgs {
     pub prompt: String,
 
     /// Path to a TOML config file
-    #[arg(short, long, env = "TACT_CONFIG")]
+    #[arg(short, long)]
     pub config: Option<PathBuf>,
 
     /// LLM provider: "anthropic", "openai", or "kimi"
@@ -53,7 +56,7 @@ pub struct CliArgs {
     pub thinking_budget: Option<usize>,
 
     /// Permission mode: "default", "plan", or "auto" (tact CLI only)
-    #[arg(short = 'm', long, env = "TACT_PERMISSION_MODE")]
+    #[arg(short = 'm', long)]
     pub permission_mode: Option<String>,
 
     /// Resume a specific session by ID
@@ -77,8 +80,24 @@ pub struct CliArgs {
     pub context_limit_chars: Option<usize>,
 
     /// UI theme name (e.g. "retro", "nord", "dark").
-    #[arg(long, env = "TACT_THEME")]
+    #[arg(long)]
     pub theme: Option<String>,
+
+    /// Max entries in the system-prompt project structure snapshot.
+    #[arg(long)]
+    pub snapshot_max_items: Option<usize>,
+
+    /// Disable micro-compaction of old tool results.
+    #[arg(long)]
+    pub no_micro_compact: bool,
+
+    /// Brave Search API key for the web_search tool.
+    #[arg(long)]
+    pub brave_search_api_key: Option<String>,
+
+    /// Enable tokio-console debugging subscriber.
+    #[arg(long)]
+    pub tokio_console: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +119,9 @@ pub struct TactTomlConfig {
 
     /// UI settings
     pub ui: UiTomlConfig,
+
+    /// Tool-specific settings
+    pub tools: ToolsTomlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -111,7 +133,7 @@ pub struct LlmTomlConfig {
     /// Model name
     pub model: Option<String>,
 
-    /// API key (can also be set via env var)
+    /// API key
     pub api_key: Option<String>,
 
     /// API base URL
@@ -147,6 +169,12 @@ pub struct AgentTomlConfig {
 
     /// Enable desktop notifications (default: true)
     pub notifications_enabled: Option<bool>,
+
+    /// Max entries in the system-prompt project structure snapshot.
+    pub snapshot_max_items: Option<usize>,
+
+    /// Enable micro-compaction of old tool results (default: true)
+    pub micro_compact_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -156,20 +184,92 @@ pub struct UiTomlConfig {
     pub theme: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ToolsTomlConfig {
+    /// Brave Search API key for the web_search tool.
+    pub brave_search_api_key: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Resolved runtime settings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LlmSettings {
+    pub provider: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+impl LlmSettings {
+    pub fn provider_info(&self) -> ProviderInfo {
+        ProviderInfo {
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            provider: self.provider.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSettings {
+    pub max_tokens: u32,
+    pub thinking_budget: usize,
+    pub context_limit_chars: usize,
+    pub notifications_enabled: bool,
+    pub snapshot_max_items: usize,
+    pub micro_compact_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiSettings {
+    pub theme: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolSettings {
+    pub brave_search_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedConfig {
+    pub llm: LlmSettings,
+    pub agent: AgentSettings,
+    pub ui: UiSettings,
+    pub tools: ToolSettings,
+    pub permission_mode: Option<String>,
+    pub tokio_console: bool,
+}
+
+/// Install resolved settings for the process. Must be called once at startup.
+pub fn install(config: ResolvedConfig) {
+    tact_llm::init_provider(config.llm.provider_info());
+    SETTINGS
+        .set(config)
+        .expect("tact config must be installed exactly once");
+}
+
+/// Access the installed runtime settings.
+pub fn settings() -> &'static ResolvedConfig {
+    SETTINGS
+        .get()
+        .expect("tact config not installed; call tact::config::init() first")
+}
+
 // ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
 
-/// Search paths for config file, in order.
 fn config_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // .tact/config.toml — repo-level config (relative to cwd)
     let cwd = std::env::current_dir().unwrap_or_default();
     paths.push(cwd.join(".tact").join("config.toml"));
     paths.push(cwd.join("tact.toml"));
 
-    // ~/.tact/config.toml — user-level config
     if let Some(home) = dirs_next_home() {
         paths.push(home.join(".tact").join("config.toml"));
     }
@@ -184,7 +284,6 @@ fn dirs_next_home() -> Option<PathBuf> {
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
 }
 
-/// Load TOML config from the given path, or auto-discover.
 fn load_toml_config(path: Option<&PathBuf>) -> TactTomlConfig {
     if let Some(p) = path {
         match std::fs::read_to_string(p) {
@@ -203,7 +302,6 @@ fn load_toml_config(path: Option<&PathBuf>) -> TactTomlConfig {
         }
     }
 
-    // Auto-discover
     for p in config_search_paths() {
         if p.exists() {
             if let Ok(content) = std::fs::read_to_string(&p) {
@@ -218,155 +316,162 @@ fn load_toml_config(path: Option<&PathBuf>) -> TactTomlConfig {
     TactTomlConfig::default()
 }
 
-/// Merge CLI args, environment variables, and TOML config.
-///
-/// This function:
-/// 1. Parses CLI args via clap
-/// 2. Loads TOML config from the specified path or auto-discovery
-/// 3. Merges with priority: CLI > env > toml
-/// 4. Sets environment variables so existing code works unchanged
-///
-/// Returns the parsed CLI args.
-pub fn init_config() -> CliArgs {
-    // SAFETY: set_var is called in single-threaded context at program start,
-    // before any other threads are spawned or any env access occurs.
-    fn set_env(key: &str, val: &str) {
-        unsafe { std::env::set_var(key, val); }
+fn default_base_url(provider: &str) -> Option<String> {
+    match provider {
+        "openai" => Some("https://api.openai.com/v1".to_string()),
+        "kimi" => Some("https://api.kimi.com/coding/v1".to_string()),
+        _ => None,
     }
+}
 
-    let args = CliArgs::parse();
-    let toml_cfg = load_toml_config(args.config.as_ref());
+fn default_model(provider: &str) -> Option<String> {
+    match provider {
+        "kimi" => Some("kimi-for-coding".to_string()),
+        _ => None,
+    }
+}
 
-    // ---- Provider ----
-    let provider = args
-        .provider
+fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<String> {
+    if let Some(ref p) = args.provider {
+        return Ok(p.clone());
+    }
+    if let Some(ref p) = toml_cfg.llm.provider {
+        return Ok(p.clone());
+    }
+    anyhow::bail!(
+        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|kimi"
+    )
+}
+
+fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmSettings> {
+    let provider = resolve_provider(args, toml_cfg)?;
+
+    let api_key = args
+        .api_key
         .clone()
-        .or_else(|| std::env::var("TACT_PROVIDER").ok())
-        .or_else(|| toml_cfg.llm.provider.clone());
-    if let Some(ref p) = provider {
-        set_env("TACT_PROVIDER", p);
-    }
+        .or_else(|| toml_cfg.llm.api_key.clone())
+        .ok_or_else(|| anyhow::anyhow!("api_key not configured for provider '{provider}'"))?;
 
-    // Helper to get the right env var name for the current provider
-    let provider_env = |var_base: &str| -> String {
-        let prov = provider.as_deref().unwrap_or("openai");
-        match prov {
-            "anthropic" => format!("ANTHROPIC_{var_base}"),
-            "kimi" => format!("KIMI_{var_base}"),
-            _ => format!("OPENAI_{var_base}"),
-        }
-    };
-
-    // ---- API Key ----
-    {
-        let env_name = provider_env("API_KEY");
-        let api_key = args
-            .api_key
-            .clone()
-            .or_else(|| std::env::var(&env_name).ok())
-            .or_else(|| toml_cfg.llm.api_key.clone());
-        if let Some(ref key) = api_key {
-            set_env(&env_name, key);
-        }
-    }
-
-    // ---- Model ----
-    {
-        let env_name = provider_env("MODEL");
-        let model = args
-            .model
-            .clone()
-            .or_else(|| std::env::var(&env_name).ok())
-            .or_else(|| toml_cfg.llm.model.clone());
-        if let Some(ref m) = model {
-            set_env(&env_name, m);
-        }
-    }
-
-    // ---- Base URL ----
-    {
-        let env_name = provider_env("BASE_URL");
-        let base_url = args
-            .base_url
-            .clone()
-            .or_else(|| std::env::var(&env_name).ok())
-            .or_else(|| toml_cfg.llm.base_url.clone());
-        if let Some(ref url) = base_url {
-            set_env(&env_name, url);
-        }
-    }
-
-    // ---- Max tokens ----
-    {
-        let max_tokens = args
-            .max_tokens
-            .or_else(|| std::env::var("TACT_MAX_TOKENS").ok().and_then(|s| s.parse().ok()))
-            .or_else(|| toml_cfg.llm.max_tokens);
-        if let Some(ref v) = max_tokens {
-            set_env("TACT_MAX_TOKENS", &v.to_string());
-        }
-    }
-
-    // ---- Thinking budget ----
-    {
-        let thinking_budget = args
-            .thinking_budget
-            .or_else(|| std::env::var("TACT_THINKING_BUDGET").ok().and_then(|s| s.parse().ok()))
-            .or_else(|| toml_cfg.llm.thinking_budget);
-        if let Some(ref v) = thinking_budget {
-            set_env("TACT_THINKING_BUDGET", &v.to_string());
-        }
-    }
-
-    // ---- Permission mode ----
-    let perm_mode = args
-        .permission_mode
+    let base_url = args
+        .base_url
         .clone()
-        .or_else(|| std::env::var("TACT_PERMISSION_MODE").ok())
-        .or_else(|| toml_cfg.permission.mode.clone());
-    if let Some(ref mode) = perm_mode {
-        set_env("TACT_PERMISSION_MODE", mode);
-    }
+        .or_else(|| toml_cfg.llm.base_url.clone())
+        .or_else(|| default_base_url(&provider))
+        .ok_or_else(|| {
+            anyhow::anyhow!("base_url not configured for provider '{provider}'")
+        })?;
 
-    // ---- Notifications ----
-    // Priority: CLI > env > TOML > default(true)
+    let model = args
+        .model
+        .clone()
+        .or_else(|| toml_cfg.llm.model.clone())
+        .or_else(|| default_model(&provider))
+        .unwrap_or_default();
+
+    Ok(LlmSettings {
+        provider,
+        api_key,
+        base_url,
+        model,
+    })
+}
+
+fn resolve_config(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ResolvedConfig> {
+    let llm = resolve_llm(args, toml_cfg)?;
+    let provider_info = llm.provider_info();
+
+    let max_tokens = args
+        .max_tokens
+        .or(toml_cfg.llm.max_tokens)
+        .unwrap_or_else(|| {
+            if provider_info.is_kimi_k2x() {
+                32_000
+            } else {
+                8_000
+            }
+        });
+
+    let thinking_budget = args
+        .thinking_budget
+        .or(toml_cfg.llm.thinking_budget)
+        .unwrap_or(32_000);
+
+    let context_limit_chars = args
+        .context_limit_chars
+        .or(toml_cfg.agent.context_limit_chars)
+        .unwrap_or_else(|| {
+            if provider_info.is_kimi_k2x() {
+                900_000
+            } else {
+                500_000
+            }
+        });
+
     let notifications_enabled = args
         .notifications
-        .map(|v| v.to_string())
-        .or_else(|| std::env::var("TACT_NOTIFICATIONS_ENABLED").ok())
-        .or_else(|| toml_cfg.agent.notifications_enabled.map(|v| v.to_string()));
-    if let Some(ref v) = notifications_enabled {
-        set_env("TACT_NOTIFICATIONS_ENABLED", v);
+        .or(toml_cfg.agent.notifications_enabled)
+        .unwrap_or(true);
+
+    let snapshot_max_items = args
+        .snapshot_max_items
+        .or(toml_cfg.agent.snapshot_max_items)
+        .unwrap_or(80);
+
+    let micro_compact_enabled = if args.no_micro_compact {
+        false
     } else {
-        // default: enabled
-        set_env("TACT_NOTIFICATIONS_ENABLED", "true");
-    }
+        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
+    };
 
-    // ---- Context limit ----
-    let context_limit = args
-        .context_limit_chars
-        .or_else(|| std::env::var("TACT_CONTEXT_LIMIT_CHARS").ok().and_then(|s| s.parse().ok()))
-        .or_else(|| toml_cfg.agent.context_limit_chars);
-    if let Some(ref v) = context_limit {
-        set_env("TACT_CONTEXT_LIMIT_CHARS", &v.to_string());
-    }
-
-    // ---- Theme ----
-    // Priority: CLI > env > TOML > default("retro")
     let theme = args
         .theme
         .clone()
-        .or_else(|| std::env::var("TACT_THEME").ok())
         .or_else(|| toml_cfg.ui.theme.clone())
         .unwrap_or_else(|| "retro".to_string());
-    set_env("TACT_THEME", &theme);
 
-    args
+    let brave_search_api_key = args
+        .brave_search_api_key
+        .clone()
+        .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
+        .filter(|k| !k.is_empty());
+
+    let permission_mode = args
+        .permission_mode
+        .clone()
+        .or_else(|| toml_cfg.permission.mode.clone());
+
+    Ok(ResolvedConfig {
+        llm,
+        agent: AgentSettings {
+            max_tokens,
+            thinking_budget,
+            context_limit_chars,
+            notifications_enabled,
+            snapshot_max_items,
+            micro_compact_enabled,
+        },
+        ui: UiSettings { theme },
+        tools: ToolSettings {
+            brave_search_api_key,
+        },
+        permission_mode,
+        tokio_console: args.tokio_console,
+    })
+}
+
+/// Parse CLI args, load TOML config, merge with priority CLI > TOML, and install
+/// the resolved settings for the process.
+pub fn init_config() -> anyhow::Result<CliArgs> {
+    let args = CliArgs::parse();
+    let toml_cfg = load_toml_config(args.config.as_ref());
+    let resolved = resolve_config(&args, &toml_cfg)?;
+    install(resolved);
+    Ok(args)
 }
 
 /// Convenience: initialize config and return CLI args.
 /// Call this at the very start of `main()`.
-pub fn init() -> CliArgs {
+pub fn init() -> anyhow::Result<CliArgs> {
     init_config()
 }
 
@@ -406,9 +511,14 @@ mode = "auto"
 
 [agent]
 context_limit_chars = 500000
+snapshot_max_items = 120
+micro_compact_enabled = false
 
 [ui]
 theme = "nord"
+
+[tools]
+brave_search_api_key = "bsk-test"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("openai"));
@@ -419,40 +529,50 @@ theme = "nord"
         assert_eq!(cfg.llm.thinking_budget, Some(64000));
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
         assert_eq!(cfg.agent.context_limit_chars, Some(500000));
+        assert_eq!(cfg.agent.snapshot_max_items, Some(120));
+        assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
+        assert_eq!(cfg.tools.brave_search_api_key.as_deref(), Some("bsk-test"));
     }
 
     #[test]
-    fn parse_ui_theme() {
-        let toml_str = r#"
-[ui]
-theme = "retro"
-"#;
-        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.ui.theme.as_deref(), Some("retro"));
-    }
-
-    #[test]
-    fn parse_kimi_config() {
-        let toml_str = r#"
+    fn resolve_config_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
 [llm]
-provider = "kimi"
-model = "kimi-k2.7-code"
-api_key = "sk-kimi-test"
-"#;
-        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.llm.provider.as_deref(), Some("kimi"));
-        assert_eq!(cfg.llm.model.as_deref(), Some("kimi-k2.7-code"));
-        assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-kimi-test"));
-    }
-
-    #[test]
-    fn parse_empty_config() {
-        let cfg: TactTomlConfig = toml::from_str("").unwrap();
-        assert_eq!(cfg.llm.provider, None);
-        assert_eq!(cfg.permission.mode.as_deref(), Some("default"));
-        assert_eq!(cfg.agent.context_limit_chars, None);
-        assert_eq!(cfg.llm.max_tokens, None);
-        assert_eq!(cfg.llm.thinking_budget, None);
+provider = "openai"
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            prompt: String::new(),
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, "openai");
+        assert_eq!(resolved.llm.api_key, "sk-test");
+        assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
+        assert_eq!(resolved.agent.max_tokens, 8000);
+        assert_eq!(resolved.ui.theme, "retro");
+        assert!(resolved.agent.micro_compact_enabled);
     }
 }

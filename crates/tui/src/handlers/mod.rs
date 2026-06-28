@@ -368,6 +368,7 @@ mod tests {
             Vec::new(),
             "test-session".to_string(),
             history_tx,
+            "retro".to_string(),
         );
         (app, user_cmd_rx)
     }

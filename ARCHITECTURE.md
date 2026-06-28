@@ -84,7 +84,7 @@ flowchart TB
         WT["worktree/<br/>git worktree lanes"]
         REC["recovery.rs<br/>transport/prompt-too-large recovery"]
         STATS["stats.rs<br/>session statistics"]
-        CFG["config.rs<br/>CLI/env/TOML config"]
+        CFG["config.rs<br/>CLI/TOML config"]
         PROMPT["prompt/<br/>system prompt templates"]
     end
 
@@ -328,9 +328,9 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 
 `load_dynamic_context()` calls `snapshot_dir(workdir, max_items)` once per session and caches the result in `AgentRuntime.cached_dir_snapshot` for stable KV-cache prefixes.
 
-| Setting | Default | Description |
-|---|---|---|
-| `TACT_SNAPSHOT_MAX_ITEMS` | `80` | Max files/dirs in the snapshot (truncated after sort) |
+| Setting | Config key / CLI | Default | Description |
+|---|---|---|---|
+| Snapshot size | `agent.snapshot_max_items` / `--snapshot-max-items` | `80` | Max files/dirs in the snapshot (truncated after sort) |
 | Walk depth | `4` | Max directory depth from project root |
 
 Snapshot behavior (language-agnostic, works for any repo layout):
@@ -347,7 +347,7 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 
 ## 6. Context Compaction
 
-When the conversation approaches the context limit (`TACT_CONTEXT_LIMIT_CHARS`, default 500_000 characters), the agent compacts history:
+When the conversation approaches the context limit (`agent.context_limit_chars`, default 500_000 characters), the agent compacts history:
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
 2. If still over the limit, `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, and replaces the context with a single summary message.
@@ -604,17 +604,17 @@ flowchart TD
 `tact::config::init()` merges configuration from (highest priority first):
 
 1. CLI arguments (`--model`, `--permission-mode`, positional prompt, etc.).
-2. Environment variables (`TACT_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
-3. TOML config files: `<project>/.tact/config.toml`, `<project>/tact.toml`, `~/.tact/config.toml`.
+2. TOML config files: `<project>/.tact/config.toml`, `<project>/tact.toml`, `~/.tact/config.toml`, or `--config`.
 
-LLM provider selection:
+Resolved settings are stored in a process-global `ResolvedConfig` (via `config::install()`) and accessed at runtime through `config::settings()`. LLM provider credentials are passed to `tact_llm::init_provider()` at startup.
 
-| `TACT_PROVIDER` | Required env vars |
+LLM provider selection (set in `[llm]` or via CLI):
+
+| `provider` | Required fields |
 |---|---|
-| `anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `openai` | `OPENAI_API_KEY`; optional `OPENAI_BASE_URL` |
-
-If `TACT_PROVIDER` is unset but `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is present, the provider is inferred from the key.
+| `anthropic` | `api_key`, `base_url` |
+| `openai` | `api_key`; optional `base_url` (defaults to OpenAI) |
+| `kimi` | `api_key`; optional `base_url` (defaults to Kimi Code API) |
 
 ---
 

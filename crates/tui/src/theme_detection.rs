@@ -4,25 +4,28 @@
 
 use crate::theme::ThemeName;
 
+/// Resolve the configured theme name from CLI/config.
+///
+/// When set to `"auto"`, falls back to terminal/system detection.
+pub(crate) fn resolve_theme(configured: &str) -> ThemeName {
+    let trimmed = configured.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return detect_terminal_theme();
+    }
+    trimmed
+        .parse::<ThemeName>()
+        .unwrap_or(ThemeName::Retro)
+}
+
 /// Detect terminal background brightness and return a matching ThemeName.
 ///
 /// Detection priority:
-/// 1. `TACT_THEME` env var — if set, skip detection entirely
-/// 2. macOS: `defaults read -g AppleInterfaceStyle`
-/// 3. `COLORFGBG` env var (set by xterm, gnome-terminal, etc.)
-/// 4. `COLORTERM` env var
-/// 5. Fallback: Retro (neutral dark)
-pub(crate) fn detect_theme() -> ThemeName {
-    // Priority 1: TACT_THEME env var — explicit user choice
-    if let Ok(val) = std::env::var("TACT_THEME") {
-        if !val.is_empty() {
-            if let Ok(name) = val.parse::<ThemeName>() {
-                return name;
-            }
-        }
-    }
-
-    // Priority 2: COLORFGBG env var
+/// 1. macOS: `defaults read -g AppleInterfaceStyle`
+/// 2. `COLORFGBG` env var (set by xterm, gnome-terminal, etc.)
+/// 3. `COLORTERM` env var
+/// 4. Fallback: Retro (neutral dark)
+pub(crate) fn detect_terminal_theme() -> ThemeName {
+    // Priority 1: COLORFGBG env var
     // Format: "0;15" (fg=0 black, bg=15 white) or "15;0" (fg=15 white, bg=0 black)
     // Set by many terminals (xterm, gnome-terminal, etc.)
     if let Ok(val) = std::env::var("COLORFGBG") {
@@ -39,7 +42,7 @@ pub(crate) fn detect_theme() -> ThemeName {
         }
     }
 
-    // Priority 3: macOS system appearance
+    // Priority 2: macOS system appearance
     #[cfg(target_os = "macos")]
     {
         if let Some(theme) = detect_macos_appearance() {
@@ -47,7 +50,7 @@ pub(crate) fn detect_theme() -> ThemeName {
         }
     }
 
-    // Priority 4: COLORTERM heuristic
+    // Priority 3: COLORTERM heuristic
     if let Ok(val) = std::env::var("COLORTERM") {
         let val = val.to_ascii_lowercase();
         if val.contains("light") || val.contains("white") {
@@ -88,36 +91,39 @@ fn detect_macos_appearance() -> Option<ThemeName> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn resolve_theme_explicit() {
+        assert_eq!(resolve_theme("nord"), ThemeName::Nord);
+        assert_eq!(resolve_theme("retro"), ThemeName::Retro);
+    }
+
     /// Consolidated env-var-based test to avoid parallel test races on env vars.
     #[test]
-    fn test_detect_theme_env_vars() {
+    fn test_detect_terminal_theme_env_vars() {
         // 1. COLORFGBG dark (bg=0 ≤ 6)
-        unsafe { std::env::remove_var("TACT_THEME"); }
         unsafe { std::env::set_var("COLORFGBG", "15;0"); }
-        assert_eq!(detect_theme(), ThemeName::Dark);
+        assert_eq!(detect_terminal_theme(), ThemeName::Dark);
 
         // 2. COLORFGBG light (bg=15 ≥ 7)
         unsafe { std::env::set_var("COLORFGBG", "0;15"); }
-        assert_eq!(detect_theme(), ThemeName::Light);
+        assert_eq!(detect_terminal_theme(), ThemeName::Light);
 
-        // 3. TACT_THEME overrides everything
-        unsafe { std::env::set_var("TACT_THEME", "nord"); }
-        assert_eq!(detect_theme(), ThemeName::Nord);
+        // 3. auto resolves via terminal detection
+        unsafe { std::env::set_var("COLORFGBG", "15;0"); }
+        assert_eq!(resolve_theme("auto"), ThemeName::Dark);
 
         // 4. COLORTERM light hint (only verifiable on non-macOS or if macOS returns None)
-        unsafe { std::env::remove_var("TACT_THEME"); }
         unsafe { std::env::remove_var("COLORFGBG"); }
         unsafe { std::env::set_var("COLORTERM", "light"); }
-        let colorterm_result = detect_theme();
+        let colorterm_result = detect_terminal_theme();
         // On macOS, system appearance may override COLORTERM; accept either
         assert!(colorterm_result == ThemeName::Light || cfg!(target_os = "macos"));
 
         // 5. Fallback with no relevant env vars
-        unsafe { std::env::remove_var("TACT_THEME"); }
         unsafe { std::env::remove_var("COLORFGBG"); }
         unsafe { std::env::remove_var("COLORTERM"); }
         // On macOS this may detect system appearance; just ensure it's valid
-        let theme = detect_theme();
+        let theme = detect_terminal_theme();
         match theme {
             ThemeName::Dark | ThemeName::Light | ThemeName::Retro => {}
             other => panic!("unexpected fallback theme: {other:?}"),
