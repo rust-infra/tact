@@ -49,7 +49,7 @@ sequenceDiagram
 | `execute_tool_call()` | Increments step index; emits `StepAdded` then `StepStarted` |
 | `StepAdded.description` | **Tool name only** (e.g. `web_search`) — no JSON args |
 | `StepStarted` | Carries `tool_id`, `tool_name`, `arg_summary` from `tool_arg_summary()` |
-| Tool execution | Builds `StepResult` with `message`, `detail`, `duration_ms`, `permission_label` |
+| Tool execution | Builds `StepResult` with `message`, `detail`, `duration_us`, `permission_label` |
 | `StepFinished` | TUI finalizes the matching `ActiveToolBlock` by `tool_id` |
 
 Helper functions:
@@ -153,7 +153,7 @@ Built from phase, permission label, byte size (file tools), duration, and trunca
 | `Success` | `✓ Success` | `theme.success` |
 | `Failed` | `✗ Failed` + error snippet | `theme.error` |
 
-Running duration uses `running_elapsed_ms(started_at)` until `StepFinished` supplies `duration_ms`.
+Running duration uses `running_elapsed_us(started_at)` until `StepFinished` supplies `duration_us`.
 
 ### Detail card rules (`ToolWidget::should_show_detail`)
 
@@ -166,7 +166,7 @@ Shown only when **phase is Success** and tool kind is:
 | `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
 | `Generic` | others | No card (title + meta only) |
 
-Preview: default 3 lines inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
+Preview: default 1 line inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
 
 ---
 
@@ -234,7 +234,7 @@ pub struct StepResult {
     pub status: StepStatus,
     pub message: String,              // short summary (≤200 chars in runtime)
     pub detail: Option<String>,       // full content for card + popup
-    pub duration_ms: Option<u64>,
+    pub duration_us: Option<u64>,
     pub permission_label: Option<String>,  // e.g. "Allow once", "Always allow this tool"
 }
 

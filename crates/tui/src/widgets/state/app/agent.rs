@@ -143,7 +143,7 @@ impl App {
                     .with_tool(tool_name)
                     .with_arg_summary(arg_summary)
                     .with_phase(ToolPhase::Running)
-                    .with_duration_ms(0)
+                    .with_duration_us(0)
                     .build();
                 let phys_idx = self.push_tool_placeholder_rows(&output);
                 self.tools.active.push(ActiveToolBlock {
@@ -174,7 +174,7 @@ impl App {
                     .iter()
                     .find(|a| a.tool_id == tool_id)
                 {
-                    let elapsed_ms = active.started_at.elapsed().as_millis() as u64;
+                    let elapsed_us = active.started_at.elapsed().as_micros() as u64;
                     let tool_name = active.output.tool_name.clone();
                     let arg_summary = active.output.arg_summary.clone();
                     let msgs = self.msgs();
@@ -182,7 +182,7 @@ impl App {
                         .with_tool(tool_name)
                         .with_arg_summary(arg_summary)
                         .with_phase(ToolPhase::Failed)
-                        .with_duration_ms(elapsed_ms)
+                        .with_duration_us(elapsed_us)
                         .with_message(error.clone())
                         .build();
                     self.finalize_tool_block(&tool_id, output);

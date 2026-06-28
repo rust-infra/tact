@@ -48,6 +48,7 @@ use anthropic_ai_sdk::types::message::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::path::Path;
 
 use crate::compact::{
@@ -778,9 +779,12 @@ impl Agent {
                 .await;
         }
 
-        // Execution output (text + status + wall-clock ms) keyed by index into `prepared`.
-        let mut outputs: Vec<Option<(String, StepStatus, u64)>> =
-            (0..prepared.len()).map(|_| None).collect();
+        // Final tool outputs keyed by index into `prepared`. We still collect
+        // them for deterministic tool_result ordering, but StepFinished is now
+        // emitted immediately when each tool completes (instead of after a
+        // whole wave joins), so parallel progress is visible in the UI.
+        let mut outputs: Vec<Option<String>> = (0..prepared.len()).map(|_| None).collect();
+        let mut manual_compact = None;
 
         for wave in tool_schedule::waves_grouped(&resources) {
             if self
@@ -803,93 +807,161 @@ impl Agent {
                 let exec = self
                     .execute_mcp(&prepared[pi].name, &prepared[pi].input)
                     .await;
-                outputs[pi] = Some((exec.content, exec.status, start.elapsed().as_millis() as u64));
+                let duration_us = start.elapsed().as_micros() as u64;
+                let prep_id = prepared[pi].id.clone();
+                let prep_name = prepared[pi].name.clone();
+                let prep_input = prepared[pi].input.clone();
+                let prep_step_idx = prepared[pi].step_idx;
+                let prep_permission_label = prepared[pi].permission_label.clone();
+
+                let tool_use = ToolUse {
+                    id: prep_id.clone(),
+                    name: prep_name.clone(),
+                    input: prep_input.clone(),
+                };
+                let mut tool_result = ToolResult {
+                    tool_use_id: prep_id.clone(),
+                    content: exec.content,
+                };
+                let (exec_output, final_status) =
+                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
+                        Ok(HookControl::Continue) => (tool_result.content, exec.status),
+                        Ok(HookControl::Block(reason)) => {
+                            (
+                                format!("Tool blocked by PostToolUse hook: {reason}"),
+                                StepStatus::Failed,
+                            )
+                        }
+                        Err(error) => (
+                            format!("PostToolUse hook failed: {error}"),
+                            StepStatus::Failed,
+                        ),
+                    };
+                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+                let summary = exec_output.chars().take(200).collect::<String>();
+                let arg_summary = tool_arg_summary(&prep_name, &prep_input);
+                let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
+                self.emit_update(AgentUpdate::StepFinished(
+                    prep_step_idx,
+                    prep_id,
+                    StepResult {
+                        tool: prep_name.clone(),
+                        arg_summary,
+                        status: final_status,
+                        message: summary,
+                        detail,
+                        duration_us: Some(duration_us),
+                        permission_label: prep_permission_label,
+                    },
+                ));
+                if prep_name == "read_file"
+                    && let Some(path) = prep_input.get("path").and_then(|value| value.as_str())
+                {
+                    self.remember_recent_file(path);
+                }
+                if prep_name == "compact" {
+                    manual_compact = prep_input
+                        .get("focus")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                        .or_else(|| Some(String::new()));
+                }
+                outputs[pi] = Some(exec_output);
                 continue;
             }
 
-            let futures: Vec<_> = wave
-                .iter()
-                .map(|&pos| {
-                    let pi = run_indices[pos];
-                    let tools = &self.tools;
-                    let ctx = &self.tool_context;
-                    let prep = &prepared[pi];
-                    async move {
-                        let start = std::time::Instant::now();
-                        let exec =
-                            run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
-                        (pi, exec.content, exec.status, start.elapsed().as_millis() as u64)
-                    }
-                })
-                .collect();
-            for (pi, content, status, duration_ms) in futures_util::future::join_all(futures).await
-            {
-                outputs[pi] = Some((content, status, duration_ms));
+            let mut futures = FuturesUnordered::new();
+            for &pos in &wave {
+                let pi = run_indices[pos];
+                let tools = &self.tools;
+                let ctx = &self.tool_context;
+                let prep = &prepared[pi];
+                futures.push(async move {
+                    let start = std::time::Instant::now();
+                    let exec = run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
+                    (pi, exec.content, exec.status, start.elapsed().as_micros() as u64)
+                });
+            }
+            let mut pending_durations_us: Vec<u64> = Vec::new();
+            let mut pending_recent_files: Vec<String> = Vec::new();
+            while let Some((pi, content, exec_status, duration_us)) = futures.next().await {
+                let prep_id = prepared[pi].id.clone();
+                let prep_name = prepared[pi].name.clone();
+                let prep_input = prepared[pi].input.clone();
+                let prep_step_idx = prepared[pi].step_idx;
+                let prep_permission_label = prepared[pi].permission_label.clone();
+
+                let tool_use = ToolUse {
+                    id: prep_id.clone(),
+                    name: prep_name.clone(),
+                    input: prep_input.clone(),
+                };
+                let mut tool_result = ToolResult {
+                    tool_use_id: prep_id.clone(),
+                    content,
+                };
+                let (exec_output, final_status) =
+                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
+                        Ok(HookControl::Continue) => (tool_result.content, exec_status),
+                        Ok(HookControl::Block(reason)) => {
+                            (
+                                format!("Tool blocked by PostToolUse hook: {reason}"),
+                                StepStatus::Failed,
+                            )
+                        }
+                        Err(error) => (
+                            format!("PostToolUse hook failed: {error}"),
+                            StepStatus::Failed,
+                        ),
+                    };
+                pending_durations_us.push(duration_us);
+                let summary = exec_output.chars().take(200).collect::<String>();
+                let arg_summary = tool_arg_summary(&prep_name, &prep_input);
+                let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
+                self.emit_update(AgentUpdate::StepFinished(
+                    prep_step_idx,
+                    prep_id,
+                    StepResult {
+                        tool: prep_name.clone(),
+                        arg_summary,
+                        status: final_status,
+                        message: summary,
+                        detail,
+                        duration_us: Some(duration_us),
+                        permission_label: prep_permission_label,
+                    },
+                ));
+                if prep_name == "read_file"
+                    && let Some(path) = prep_input.get("path").and_then(|value| value.as_str())
+                {
+                    pending_recent_files.push(path.to_string());
+                }
+                if prep_name == "compact" {
+                    manual_compact = prep_input
+                        .get("focus")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                        .or_else(|| Some(String::new()));
+                }
+                outputs[pi] = Some(exec_output);
+            }
+            drop(futures);
+            for duration_us in pending_durations_us {
+                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+            }
+            for path in pending_recent_files {
+                self.remember_recent_file(&path);
             }
         }
 
-        // ── Phase 3: sequential post-processing ─────────────────────────────
+        // ── Phase 3: build tool_result blocks in deterministic order ─────────
         let mut result = Vec::new();
-        let mut manual_compact = None;
         for (idx, prep) in prepared.into_iter().enumerate() {
             let output = match prep.state {
                 PreparedState::Resolved(msg) => msg,
-                PreparedState::Run => {
-                    let (content, exec_status, duration_ms) = outputs[idx]
-                        .take()
-                        .expect("cleared tool must have produced output");
-                    let tool_use = ToolUse {
-                        id: prep.id.clone(),
-                        name: prep.name.clone(),
-                        input: prep.input.clone(),
-                    };
-                    let mut tool_result = ToolResult {
-                        tool_use_id: prep.id.clone(),
-                        content,
-                    };
-                    let (exec_output, final_status) =
-                        match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                            Ok(HookControl::Continue) => (tool_result.content, exec_status),
-                            Ok(HookControl::Block(reason)) => {
-                                (
-                                    format!("Tool blocked by PostToolUse hook: {reason}"),
-                                    StepStatus::Failed,
-                                )
-                            }
-                            Err(error) => (format!("PostToolUse hook failed: {error}"), StepStatus::Failed),
-                        };
-                    self.runtime.stats.tool_durations_ms.push(duration_ms);
-                    let summary = exec_output.chars().take(200).collect::<String>();
-                    let arg_summary = tool_arg_summary(&prep.name, &prep.input);
-                    let detail = tool_detail_content(&prep.name, &prep.input, &exec_output);
-                    self.emit_update(AgentUpdate::StepFinished(
-                        prep.step_idx,
-                        prep.id.clone(),
-                        StepResult {
-                            tool: prep.name.clone(),
-                            arg_summary,
-                            status: final_status,
-                            message: summary,
-                            detail,
-                            duration_ms: Some(duration_ms),
-                            permission_label: prep.permission_label.clone(),
-                        },
-                    ));
-                    if prep.name == "read_file"
-                        && let Some(path) = prep.input.get("path").and_then(|value| value.as_str())
-                    {
-                        self.remember_recent_file(path);
-                    }
-                    if prep.name == "compact" {
-                        manual_compact = prep
-                            .input
-                            .get("focus")
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                            .or_else(|| Some(String::new()));
-                    }
-                    exec_output
-                }
+                PreparedState::Run => outputs[idx]
+                    .take()
+                    .expect("cleared tool must have produced output"),
             };
             result.push(ContentBlock::ToolResult {
                 tool_use_id: prep.id,

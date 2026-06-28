@@ -172,7 +172,7 @@ use crate::{
     i18n::Messages,
     render::renderable::Renderable,
     widgets::tool_widget::{
-        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_ms, tool_card_inner_rows,
+        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us, tool_card_inner_rows,
         tool_visual_rows, TOOL_HEADER_ROWS,
     },
 };
@@ -183,7 +183,7 @@ pub(crate) struct ToolCell {
     phase: ToolPhase,
     permission_label: Option<String>,
     error_message: Option<String>,
-    duration_ms: Option<u64>,
+    duration_us: Option<u64>,
     size_bytes: Option<usize>,
     started_at: Option<Instant>,
     spinner_char: char,
@@ -228,7 +228,7 @@ impl ToolCell {
             phase: output.phase,
             permission_label: output.permission_label,
             error_message: output.error_message,
-            duration_ms: output.duration_ms,
+            duration_us: output.duration_us,
             size_bytes: output.size_bytes,
             started_at,
             spinner_char,
@@ -255,16 +255,16 @@ impl ToolCell {
     }
 
     fn meta_line(&self) -> Line<'static> {
-        let duration_ms = if self.phase == ToolPhase::Running {
-            self.started_at.map(running_elapsed_ms).or(self.duration_ms)
+        let duration_us = if self.phase == ToolPhase::Running {
+            self.started_at.map(running_elapsed_us).or(self.duration_us)
         } else {
-            self.duration_ms
+            self.duration_us
         };
         let text = build_meta_text(
             self.phase,
             self.permission_label.as_deref(),
             self.size_bytes,
-            duration_ms,
+            duration_us,
             self.error_message.as_deref(),
             self.spinner_char,
             self.tool_phase_running,
@@ -597,7 +597,7 @@ mod tests {
             phase: ToolPhase::Success,
             permission_label: None,
             error_message: None,
-            duration_ms: Some(12),
+            duration_us: Some(12_000),
             size_bytes: Some(128),
             tool_name: "write_file".into(),
             use_diff_gutter: true,
