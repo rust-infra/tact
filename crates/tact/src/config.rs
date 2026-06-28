@@ -11,6 +11,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use anyhow::Context as _;
 use tact_llm::ProviderInfo;
 
 static SETTINGS: OnceLock<ResolvedConfig> = OnceLock::new();
@@ -71,9 +72,13 @@ pub struct CliArgs {
     #[arg(long = "list-sessions")]
     pub list_sessions: bool,
 
-    /// Enable desktop notifications (macOS only). Use --no-notifications to disable.
+    /// Enable desktop notifications (macOS only).
     #[arg(long)]
     pub notifications: Option<bool>,
+
+    /// Disable desktop notifications.
+    #[arg(long)]
+    pub no_notifications: bool,
 
     /// Soft context limit in characters before auto-compaction is triggered.
     #[arg(long)]
@@ -252,6 +257,13 @@ pub fn install(config: ResolvedConfig) {
         .expect("tact config must be installed exactly once");
 }
 
+/// Install non-LLM settings for commands that never call the model (e.g. `--list-sessions`).
+pub fn install_without_llm(config: ResolvedConfig) {
+    SETTINGS
+        .set(config)
+        .expect("tact config must be installed exactly once");
+}
+
 /// Access the installed runtime settings.
 pub fn settings() -> &'static ResolvedConfig {
     SETTINGS
@@ -284,22 +296,14 @@ fn dirs_next_home() -> Option<PathBuf> {
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
 }
 
-fn load_toml_config(path: Option<&PathBuf>) -> TactTomlConfig {
+fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<TactTomlConfig> {
     if let Some(p) = path {
-        match std::fs::read_to_string(p) {
-            Ok(content) => match toml::from_str(&content) {
-                Ok(cfg) => {
-                    eprintln!("[config] loaded {:?}", p);
-                    return cfg;
-                }
-                Err(e) => {
-                    eprintln!("[config] parse error in {:?}: {e}", p);
-                }
-            },
-            Err(e) => {
-                eprintln!("[config] cannot read {:?}: {e}", p);
-            }
-        }
+        let content = std::fs::read_to_string(p)
+            .with_context(|| format!("cannot read config file {:?}", p))?;
+        let cfg: TactTomlConfig = toml::from_str(&content)
+            .with_context(|| format!("parse error in config file {:?}", p))?;
+        eprintln!("[config] loaded {:?}", p);
+        return Ok(cfg);
     }
 
     for p in config_search_paths() {
@@ -307,13 +311,13 @@ fn load_toml_config(path: Option<&PathBuf>) -> TactTomlConfig {
             if let Ok(content) = std::fs::read_to_string(&p) {
                 if let Ok(cfg) = toml::from_str(&content) {
                     eprintln!("[config] loaded {:?}", p);
-                    return cfg;
+                    return Ok(cfg);
                 }
             }
         }
     }
 
-    TactTomlConfig::default()
+    Ok(TactTomlConfig::default())
 }
 
 fn default_base_url(provider: &str) -> Option<String> {
@@ -376,6 +380,67 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     })
 }
 
+fn resolve_non_llm_settings(args: &CliArgs, toml_cfg: &TactTomlConfig) -> ResolvedConfig {
+    let notifications_enabled = if args.no_notifications {
+        false
+    } else {
+        args.notifications
+            .or(toml_cfg.agent.notifications_enabled)
+            .unwrap_or(true)
+    };
+
+    let snapshot_max_items = args
+        .snapshot_max_items
+        .or(toml_cfg.agent.snapshot_max_items)
+        .unwrap_or(80);
+
+    let micro_compact_enabled = if args.no_micro_compact {
+        false
+    } else {
+        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
+    };
+
+    let theme = args
+        .theme
+        .clone()
+        .or_else(|| toml_cfg.ui.theme.clone())
+        .unwrap_or_else(|| "retro".to_string());
+
+    let brave_search_api_key = args
+        .brave_search_api_key
+        .clone()
+        .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
+        .filter(|k| !k.is_empty());
+
+    let permission_mode = args
+        .permission_mode
+        .clone()
+        .or_else(|| toml_cfg.permission.mode.clone());
+
+    ResolvedConfig {
+        llm: LlmSettings {
+            provider: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+        },
+        agent: AgentSettings {
+            max_tokens: 8_000,
+            thinking_budget: 32_000,
+            context_limit_chars: 500_000,
+            notifications_enabled,
+            snapshot_max_items,
+            micro_compact_enabled,
+        },
+        ui: UiSettings { theme },
+        tools: ToolSettings {
+            brave_search_api_key,
+        },
+        permission_mode,
+        tokio_console: args.tokio_console,
+    }
+}
+
 fn resolve_config(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ResolvedConfig> {
     let llm = resolve_llm(args, toml_cfg)?;
     let provider_info = llm.provider_info();
@@ -407,10 +472,13 @@ fn resolve_config(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<R
             }
         });
 
-    let notifications_enabled = args
-        .notifications
-        .or(toml_cfg.agent.notifications_enabled)
-        .unwrap_or(true);
+    let notifications_enabled = if args.no_notifications {
+        false
+    } else {
+        args.notifications
+            .or(toml_cfg.agent.notifications_enabled)
+            .unwrap_or(true)
+    };
 
     let snapshot_max_items = args
         .snapshot_max_items
@@ -463,7 +531,13 @@ fn resolve_config(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<R
 /// the resolved settings for the process.
 pub fn init_config() -> anyhow::Result<CliArgs> {
     let args = CliArgs::parse();
-    let toml_cfg = load_toml_config(args.config.as_ref());
+    let toml_cfg = load_toml_config(args.config.as_ref())?;
+
+    if args.list_sessions {
+        install_without_llm(resolve_non_llm_settings(&args, &toml_cfg));
+        return Ok(args);
+    }
+
     let resolved = resolve_config(&args, &toml_cfg)?;
     install(resolved);
     Ok(args)
@@ -564,6 +638,7 @@ model = "gpt-4o"
             theme: None,
             snapshot_max_items: None,
             no_micro_compact: false,
+            no_notifications: false,
             brave_search_api_key: None,
             tokio_console: false,
         };
@@ -574,5 +649,34 @@ model = "gpt-4o"
         assert_eq!(resolved.agent.max_tokens, 8000);
         assert_eq!(resolved.ui.theme, "retro");
         assert!(resolved.agent.micro_compact_enabled);
+    }
+
+    #[test]
+    fn list_sessions_does_not_require_llm() {
+        let args = CliArgs {
+            prompt: String::new(),
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: true,
+            notifications: None,
+            context_limit_chars: None,
+            theme: Some("nord".to_string()),
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default());
+        assert_eq!(resolved.ui.theme, "nord");
+        assert!(resolved.llm.api_key.is_empty());
     }
 }
