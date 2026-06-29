@@ -20,7 +20,9 @@ ANTHROPIC_BASE_URL=your_anthropic_compatible_base_url
 Run:
 
 ```bash
-cargo run -p tact
+cargo run -p tact          # launches tact-ui (default TUI)
+# or
+cargo run -p tact -- headless "your prompt"
 ```
 
 Choose a permission mode at startup:
@@ -53,7 +55,7 @@ exit()
 ```text
 tact/
 ├── src/
-│   ├── main.rs
+│   ├── bin/tui.rs
 │   ├── lib.rs
 │   ├── store.rs
 │   ├── prompt.rs
@@ -74,7 +76,7 @@ tact/
 └── tact.md
 ```
 
-Read [`src/main.rs`](./src/main.rs) first, then [`src/lib.rs`](./src/lib.rs), then the domain managers and tool modules.
+Read [`src/bin/tui.rs`](./src/bin/tui.rs) first, then [`src/lib.rs`](./src/lib.rs), then the domain managers and tool modules.
 
 ## Startup Flow
 
