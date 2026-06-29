@@ -168,15 +168,15 @@ Three card types are overlaid on the log panel:
 |---|---|---|
 | Thinking card | `cells/thinking.rs` | Collapsed thinking block, up to 3 preview lines |
 | Diff card | `cells/diff.rs` | File write preview with line numbers and `+` prefix |
-| Code card | `cells/code.rs` | Completed code block card with syntax highlighting |
+| Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
 
 Tool invocations are rendered as dedicated log rows (not plain `Info` text). Each block uses a **3-tier layout**:
 
-1. **Title row** — step number + display name + argument summary (e.g. `2. Bash: git status`)
+1. **Title row** — step number + tool name + argument summary (e.g. `2. bash (git status)`; truncated at 120 chars)
 2. **Meta row** — phase spinner / success or fail prefix, permission label, duration (live while running via `started_at`)
-3. **Detail card** (optional) — command output, file preview, or error text; double-click opens `DiffPopup`
+3. **Detail card** (optional) — command output, file preview, or error text; double-click opens `DiffPopup` with full args when truncated
 
 Key types:
 
@@ -187,7 +187,9 @@ Key types:
 | `ActiveToolBlock` | `widgets/state/tool_state.rs` | In-flight tool; supports **concurrent** running tools (`tools.active: Vec<_>`) |
 | `ToolBlock` | `widgets/state/tool_state.rs` | Completed tool placeholder rows in the log |
 
-`StepAdded` plan rows show **tool name only** (no JSON args); full arguments appear in the tool card below.
+`StepAdded` updates the **plan panel only** (`description` = `tool (arg_summary)`); it no longer inserts a separate log line. The log block appears on `StepStarted`. Untruncated args are available in the detail popup via `StepResult.arg_full`.
+
+One blank line separates tool blocks from preceding content (`ensure_gap_before_tools`) and from closed thinking blocks.
 
 Indent: tool blocks use `LOG_TOOL_BLOCK_INDENT` (8 columns) in `render/util.rs`.
 
@@ -263,6 +265,7 @@ Popups usually:
 
 - Occupy 80% × 80% of the screen
 - Render `Clear` first to erase the background
+- No drop shadow (avoids dark bands on some terminals)
 - Show hints like `[y] Copy`, `[Esc] Close`, `[j/k] Scroll`
 - Record their area in `app.mouse.*_popup_area` for click-outside-to-close
 
