@@ -7,7 +7,7 @@
 //! Resolved settings are stored in a process-global [`ResolvedConfig`] via
 //! [`install`] and accessed through [`settings`].
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -22,11 +22,10 @@ static SETTINGS: OnceLock<ResolvedConfig> = OnceLock::new();
 
 /// tact — terminal-first AI coding agent
 #[derive(Parser, Debug)]
-#[command(name = "tact", version, about, long_about = None)]
+#[command(version, about, long_about = None)]
 pub struct CliArgs {
-    /// The task prompt to execute (non-interactive mode)
-    #[arg(default_value = "")]
-    pub prompt: String,
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
 
     /// Path to a TOML config file
     #[arg(short, long)]
@@ -56,7 +55,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub thinking_budget: Option<usize>,
 
-    /// Permission mode: "default", "plan", or "auto" (tact CLI only)
+    /// Permission mode: "default", "plan", or "auto"
     #[arg(short = 'm', long)]
     pub permission_mode: Option<String>,
 
@@ -103,6 +102,15 @@ pub struct CliArgs {
     /// Enable tokio-console debugging subscriber.
     #[arg(long)]
     pub tokio_console: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CliCommand {
+    /// Run a single task without the interactive TUI
+    Headless {
+        /// The task prompt to execute
+        prompt: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +629,7 @@ model = "gpt-4o"
         )
         .unwrap();
         let args = CliArgs {
-            prompt: String::new(),
+            command: None,
             config: None,
             provider: None,
             model: None,
@@ -654,7 +662,7 @@ model = "gpt-4o"
     #[test]
     fn list_sessions_does_not_require_llm() {
         let args = CliArgs {
-            prompt: String::new(),
+            command: None,
             config: None,
             provider: None,
             model: None,

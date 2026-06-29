@@ -15,7 +15,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
 | `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the two CLI binaries. |
+| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the CLI binary. |
 | `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
 
@@ -36,8 +36,7 @@ Binaries produced by `crates/tact`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact` | `crates/tact/src/main.rs` | Headless / CI / non-interactive |
-| `tact-tui` | `crates/tact/src/bin/tui.rs` | Interactive terminal UI |
+| `tact-tui` | `crates/tact/src/bin/tui.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
 
 ---
 
@@ -46,8 +45,7 @@ Binaries produced by `crates/tact`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact src/main.rs<br/>headless CLI"]
-        B2["tact-tui src/bin/tui.rs<br/>TUI entry"]
+        B1["tact-tui<br/>src/bin/tui.rs"]
     end
 
     subgraph tact_lib["tact/src/lib.rs — Agent Runtime"]
@@ -113,7 +111,7 @@ flowchart TB
     end
 
     B1 --> A
-    B2 --> T
+    B1 --> T
     T -- UnboundedSender<UserCommand> --> A
     A -- UnboundedSender<AgentUpdate> --> T
 

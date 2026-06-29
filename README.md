@@ -35,7 +35,7 @@ tact is a **terminal-first AI coding agent** that lives inside your terminal. It
 - 🧩 **Extensible** — MCP plugins, custom skills, hooks, and tool macros
 
 ```
-$ tact "Add a --verbose flag to the CLI and update the README"
+$ tact-tui headless "Add a --verbose flag to the CLI and update the README"
 ```
 
 That's it. No YAML config wizard. No "sign up for waitlist." Just a prompt and a terminal.
@@ -92,7 +92,7 @@ Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connec
 ### 📡 TUI & Headless
 
 - **TUI mode** (`tact-tui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
-- **Headless mode** (`tact`) — CI/CD pipelines, scripts, or non-interactive workflows
+- **Headless mode** (`tact-tui headless`) — CI/CD pipelines, scripts, or non-interactive workflows
 
 ### 💾 Persistent State
 
@@ -109,7 +109,7 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 git clone https://github.com/Rg0x80/tact.git
 cd tact
 cargo build --release
-./target/release/tact --help
+./target/release/tact-tui --help
 
 # Or via cargo install (coming soon to crates.io)
 cargo install tact
@@ -155,17 +155,17 @@ Optional agent settings (config file or CLI):
 ### 3. Run
 
 ```bash
-# Interactive coding task
-tact "Fix all clippy warnings in src/ and run cargo test"
-
-# TUI mode (streaming output, permission dialogs)
+# Interactive TUI (default)
 tact-tui
 
+# Headless single-shot task
+tact-tui headless "Fix all clippy warnings in src/ and run cargo test"
+
 # With specific model
-tact --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
+tact-tui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
 
 # Plan-only mode (review before execution)
-tact -m plan "Add rate limiting to the API client"
+tact-tui -m plan headless "Add rate limiting to the API client"
 ```
 
 ---
@@ -295,8 +295,7 @@ cargo build --release
 ```
 
 Binaries:
-- `./target/release/tact` — headless CLI
-- `./target/release/tact-tui` — interactive TUI
+- `./target/release/tact-tui` — interactive TUI by default; use `headless` subcommand for non-interactive runs
 
 ### Via Cargo (soon)
 

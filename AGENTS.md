@@ -1,7 +1,7 @@
 # tact — Terminal-first AI Coding Agent
 
 A Rust workspace (~5 crates). Terminal-first AI coding agent.
-MIT licensed. Two binaries: `tact` (headless) and `tact-tui` (interactive).
+MIT licensed. Binary `tact-tui` provides interactive TUI by default and a `headless` subcommand for non-interactive runs.
 
 ## Crates
 

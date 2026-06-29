@@ -8,10 +8,17 @@
 # Or pass an explicit path:
 #   tact-tui --config /path/to/tact.toml
 #
+# Interactive TUI (default):
+#   tact-tui
+#
+# Headless single-shot task:
+#   tact-tui headless "fix all clippy warnings"
+#   tact-tui headless "refactor error handling in lib.rs"
+#
 # Priority: CLI flags override values in this file.
 
 # ---------------------------------------------------------------------------
-# LLM (required for tact / tact-tui unless overridden via CLI)
+# LLM (required for tact-tui unless overridden via CLI)
 # ---------------------------------------------------------------------------
 [llm]
 # Provider: "anthropic" | "openai" | "kimi"
@@ -44,7 +51,7 @@ base_url = "https://api.anthropic.com"
 # api_key = "sk-kimi-..."
 
 # ---------------------------------------------------------------------------
-# Permission (tact CLI; tact-tui always uses "default")
+# Permission
 # ---------------------------------------------------------------------------
 [permission]
 # "default" | "plan" | "auto"
