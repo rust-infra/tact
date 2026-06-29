@@ -14,7 +14,8 @@ For the broader rendering pipeline see [`tui_rendering.md`](./tui_rendering.md).
 | Concurrent tool calls | `ToolState.active: Vec<ActiveToolBlock>` instead of a single slot |
 | Live elapsed while running | `started_at: Instant` + 10ms dirty tick when `active` is non-empty |
 | Scroll / clip / hit-test correctness | Placeholder rows in `messages[]` + `LogColumnRenderer` |
-| No duplicate args in plan vs log | Plan `StepAdded` shows tool name only; args on the tool card |
+| Readable args without log clutter | Truncated summary in plan + log title; full args in popup / `StepResult.arg_full` |
+| Visual separation | One blank line before tool blocks and after thinking blocks |
 | Permission choice visible once | `StepResult.permission_label` on meta row; select popup uses `log_confirm = false` |
 
 ---
@@ -29,9 +30,9 @@ sequenceDiagram
     participant Log as render/log.rs
 
     LLM-->>Agent: ToolUse blocks
-    Agent->>TUI: StepAdded(PlanStep { description: tool_name })
+    Agent->>TUI: StepAdded(PlanStep { description: "bash (git status)" })
     Agent->>TUI: StepStarted(idx, tool_id, tool_name, arg_summary)
-    Note over TUI: ToolWidget.build() → push placeholder rows → active.push()
+    Note over TUI: ensure_gap_before_tools(); ToolWidget.build() → placeholder rows → active.push()
 
     Agent->>Agent: permission + hooks + execute()
     Agent->>TUI: StepFinished(idx, tool_id, StepResult)
@@ -47,15 +48,18 @@ sequenceDiagram
 | Step | What happens |
 |---|---|
 | `execute_tool_call()` | Increments step index; emits `StepAdded` then `StepStarted` |
-| `StepAdded.description` | **Tool name only** (e.g. `web_search`) — no JSON args |
-| `StepStarted` | Carries `tool_id`, `tool_name`, `arg_summary` from `tool_arg_summary()` |
-| Tool execution | Builds `StepResult` with `message`, `detail`, `duration_us`, `permission_label` |
+| `StepAdded.description` | `tool (arg_summary)` — e.g. `bash (git status --short)`; also stored in `PlanStep.args` |
+| `StepStarted` | Carries `tool_id`, `tool_name`, truncated `arg_summary` from `tool_arg_summary()` |
+| Tool execution | Builds `StepResult` with `arg_full`, `message`, `detail`, `duration_us`, `permission_label` |
 | `StepFinished` | TUI finalizes the matching `ActiveToolBlock` by `tool_id` |
 
 Helper functions:
 
-- `tool_arg_summary(name, input)` — path for file tools, command for bash, truncated JSON otherwise
+- `tool_arg_full(name, input)` — untruncated path / command / JSON string
+- `tool_arg_summary(name, input)` — same extraction, truncated to 120 chars for display
 - `tool_detail_content(name, input, output)` — full stdout for bash/read; written content for `write_file`
+
+TUI note: `StepAdded` updates the **plan panel only** — it no longer inserts a separate log line. The log block appears on `StepStarted`.
 
 ### Legacy `Info` lines
 
@@ -127,7 +131,7 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
 ```text
   ← LOG_TOOL_BLOCK_INDENT (8 cols)
   │
-  ├─ Row 1  Title     "2. Bash  git status"          (bold)
+  ├─ Row 1  Title     "2. bash (git status)"         (bold; truncated at 120 chars)
   ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · Always allow · 21ms"
   └─ Card   (optional, Success + detail only)
             ╭─ Command output (24 lines) ─────────╮
@@ -135,6 +139,11 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
             │  M crates/tact/src/lib.rs            │
             ╰─ double-click for full content ──────╯
 ```
+
+Title format (`ToolWidget::title_text`):
+
+- Command tools (`bash`, etc.): `{step}. {tool} ({arg_summary})`
+- Other tools: `{step}. {label}  {arg_summary}` (double space before arg)
 
 Constants (`render/util.rs`):
 
@@ -181,8 +190,11 @@ File: `render/log.rs`
 
 Placeholder strategy (`visibility.rs::push_tool_placeholder_rows`):
 
+- Call `ensure_gap_before_tools()` first — inserts one blank line when the previous visible row is normal content.
 - Reserve N blank `SysTool` rows up front so scroll height and mouse mapping stay stable.
 - On finish, `resize_tool_placeholder_rows` grows or shrinks the range if final layout differs from running layout.
+
+Thinking blocks insert one trailing blank line on close; the next tool block reuses that gap instead of adding a second separator.
 
 ---
 
@@ -214,12 +226,14 @@ File: `widgets/state/tool_state.rs` + `render/popups/diff_popup.rs`
 
 | Field | Use |
 |---|---|
-| `file_path` | Read from disk (write_file / read_file) |
+| `file_path` | Read from disk (write_file / read_file); uses full path from `arg_full` |
 | `inline_content` | Bash output or other in-memory text (avoids treating command output as a path) |
 | `use_diff_gutter` | Green `+` prefix for file writes |
-| `title` | Modal header |
+| `title` | Modal header — for bash, `bash (<full command>)` even when the log title was truncated |
 
-Centered modal styling; scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
+For `bash` / `run_command` / `shell`, popup content is prefixed with `$ <full command>` before the captured output. This is the primary place to read untruncated arguments.
+
+Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
 ---
 
@@ -230,7 +244,8 @@ File: `crates/protocol/src/lib.rs`
 ```rust
 pub struct StepResult {
     pub tool: String,
-    pub arg_summary: String,
+    pub arg_summary: String,          // truncated display string (≤120 chars)
+    pub arg_full: Option<String>,     // untruncated path / command / JSON for popups
     pub status: StepStatus,
     pub message: String,              // short summary (≤200 chars in runtime)
     pub detail: Option<String>,       // full content for card + popup

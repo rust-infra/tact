@@ -25,6 +25,14 @@ Maintain module boundaries similar to Rust to reduce migration risk:
 - `tact` runtime -> `internal/agent`, `internal/tool`, `internal/store`, `internal/mcp`, `internal/permission`, `internal/hook`, `internal/compact`
 - `tact_llm` -> `internal/llm`
 - `tui` -> `internal/tui`
+- `tools` (Sandbox only) -> `internal/sandbox` or equivalent secure I/O wrapper
+
+Binary entry (must match Rust):
+
+- Rust ships a **single** CLI binary: `tact-ui` (`crates/tact/src/bin/tui.rs`).
+- Default mode: interactive TUI.
+- Non-interactive runs use a **`headless` subcommand** (not a separate binary).
+- Go equivalent: `cmd/tact-ui` with the same default/subcommand split. Do **not** introduce a second headless-only binary unless explicitly documented as a divergence.
 
 Rules:
 
@@ -63,9 +71,42 @@ Migration must preserve the scheduler semantics from `crates/tact/src/tool_sched
 - MCP/stateful tool calls remain serialized unless explicitly proven safe.
 - Record scheduling summary (`tool_schedule`) for observability.
 
+Phase 1 lifecycle events (`StepAdded`, `StepStarted`, `StepFinished`) must stay aligned with Rust:
+
+- Emit `StepAdded` then `StepStarted` per tool during pre-flight (before parallel execution).
+- `StepAdded(PlanStep).description` = `tool (arg_summary)` when args exist; full untruncated args live in `PlanStep.args`.
+- `StepStarted` carries truncated `arg_summary` (same extraction as Rust `tool_arg_summary`, max **120** runes/chars).
+- `StepFinished` / `StepResult` must include optional `arg_full` for popup/detail views.
+- `StepAdded` updates the plan panel only — it must **not** insert a separate log line; the log block appears on `StepStarted`.
+
+See `docs/parallel_tool_execution.md` for the three-phase pipeline and `docs/tool_rendering.md` for TUI consumption rules.
+
 ---
 
-## 5. Storage and Schema Rules
+## 5. Protocol Wire-Type Rules
+
+Port `tact_protocol` types faithfully before UI work:
+
+| Rust type / variant | Go must preserve |
+|---|---|
+| `AgentUpdate::StepAdded(PlanStep)` | Plan append only; `description` + `args` shape |
+| `AgentUpdate::StepStarted(idx, tool_id, tool_name, arg_summary)` | Running tool block trigger |
+| `AgentUpdate::StepFinished(idx, tool_id, StepResult)` | Includes `arg_full`, `permission_label`, `duration_us` |
+| `StepResult.arg_summary` | Truncated display string (≤120 chars) |
+| `StepResult.arg_full` | Optional full path/command/JSON for popups |
+| `PlanStep.args` | Full argument map (string values) |
+
+Helper parity (runtime):
+
+- `tool_arg_full(name, input)` — untruncated extraction (path, command, or JSON)
+- `tool_arg_summary(name, input)` — same extraction, truncated to 120 chars
+- Truncation uses character count, not byte count, when feasible in Go.
+
+Any new field on Rust wire types must be mirrored in Go or documented as an intentional divergence in `docs/go/go_migration_plan.md`.
+
+---
+
+## 6. Storage and Schema Rules
 
 SQLite persistence semantics must be preserved.
 
@@ -77,7 +118,7 @@ SQLite persistence semantics must be preserved.
 
 ---
 
-## 6. LLM Provider Rules
+## 7. LLM Provider Rules
 
 - Keep provider abstraction stable (`anthropic`, `openai`, `deepseek` behavior equivalents).
 - Preserve tool-call handling semantics and stop-reason logic.
@@ -86,7 +127,7 @@ SQLite persistence semantics must be preserved.
 
 ---
 
-## 7. TUI Migration Rules
+## 8. TUI Migration Rules
 
 When TUI migration starts:
 
@@ -95,9 +136,30 @@ When TUI migration starts:
 - Preserve scroll correctness, long-block rendering, and popup interaction behavior.
 - Add regression tests/golden snapshots for known historical issues.
 
+Tool-block parity checklist (must match `docs/tool_rendering.md`):
+
+| Behavior | Rust reference |
+|---|---|
+| 3-tier layout (title + meta + detail card) | `ToolWidget` / `ToolCell` |
+| Concurrent running tools | `ToolState.active: Vec<ActiveToolBlock>` |
+| Title: command tools | `{step}. {tool} ({arg_summary})` e.g. `2. bash (git status)` |
+| Title: other tools | `{step}. {label}  {arg_summary}` (double space) |
+| Arg truncation in title/meta | 120 chars via `tool_arg_summary` |
+| Full args in popup | `StepResult.arg_full`; bash popup prefixes `$ <full command>` |
+| Spacing before tool blocks | One blank line when following normal content |
+| Spacing after thinking | One trailing blank line; next tool reuses it |
+| Popups | Centered modal, **no drop shadow** |
+| Code cards | Plain language label in title; no side emoji icons |
+| Permission select | `log_confirm = false` — no duplicate approval text in log |
+
+Canonical Rust docs to re-read when syncing Go work:
+
+- `docs/tool_rendering.md`, `docs/tui_rendering.md`, `docs/parallel_tool_execution.md`
+- `ARCHITECTURE.md` (AgentUpdate table, §14 changelog)
+
 ---
 
-## 8. Testing and Verification Rules
+## 9. Testing and Verification Rules
 
 For each migrated subsystem:
 
@@ -111,7 +173,7 @@ For each migrated subsystem:
 
 ---
 
-## 9. Performance Rules
+## 10. Performance Rules
 
 - Optimize only after parity and correctness are verified.
 - Measure:
@@ -123,7 +185,7 @@ For each migrated subsystem:
 
 ---
 
-## 10. Change Control Rules
+## 11. Change Control Rules
 
 - Document major decisions and divergences in the migration plan.
 - Keep incremental PR-sized changes.
