@@ -1,3 +1,4 @@
+use crate::theme::ThemeName;
 use ratatui::text::Line;
 use ratatui::widgets::ScrollbarState;
 
@@ -20,6 +21,8 @@ pub(crate) struct LogScroll {
     pub(crate) visual_cache_width: u16,
     /// messages.len() when cache was last built; invalidated on change.
     pub(crate) visual_cache_ver: usize,
+    /// Theme active when cache was last built.
+    pub(crate) visual_cache_theme: ThemeName,
     /// messages.len() when visible_indices was last built.
     pub(crate) visible_indices_ver: usize,
     /// Visible index cache: logical line → physical msg index.
@@ -40,6 +43,7 @@ impl LogScroll {
             visual_start_cache: Vec::new(),
             visual_cache_width: 0,
             visual_cache_ver: 0,
+            visual_cache_theme: ThemeName::Retro,
             visible_indices_ver: 0,
             phys_to_logical_cache: Vec::new(),
         }

@@ -62,7 +62,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(app.theme.block_border_type())
                 .border_style(Style::default().fg(app.theme.border))
                 .title(app.msgs().plan_title)
                 .style(Style::default().bg(app.theme.bg)),

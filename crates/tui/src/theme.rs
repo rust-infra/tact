@@ -3,6 +3,7 @@
 // foreground, accent, warning, error, and other UI element colors.
 
 use ratatui::style::Color;
+use ratatui::widgets::BorderType;
 use std::str::FromStr;
 
 /// Built-in theme name enum.
@@ -17,6 +18,7 @@ pub enum ThemeName {
     Retro,
     Kawaii,
     Japanese,
+    Brutal,
 }
 
 impl ThemeName {
@@ -31,6 +33,7 @@ impl ThemeName {
             ThemeName::Retro,
             ThemeName::Kawaii,
             ThemeName::Japanese,
+            ThemeName::Brutal,
         ]
     }
     /// Cycle to the next theme.
@@ -55,6 +58,9 @@ impl FromStr for ThemeName {
             "retro" => Ok(Self::Retro),
             "kawaii" => Ok(Self::Kawaii),
             "japanese" => Ok(Self::Japanese),
+            "brutal" | "neo-brutal" | "neo-brutalism" | "neobrutal" | "neobrutalism" => {
+                Ok(Self::Brutal)
+            }
             other => Err(format!("unknown theme: {other}")),
         }
     }
@@ -228,6 +234,119 @@ impl Theme {
                 input_box_bg: Color::Rgb(25, 30, 45),
                 input_box_fg: Color::Rgb(200, 60, 40),
             },
+            ThemeName::Brutal => Self {
+                name,
+                bg: Color::Rgb(255, 255, 255),
+                fg: Color::Rgb(20, 20, 20),
+                accent: Color::Rgb(255, 221, 87),       // active tab yellow
+                warning: Color::Rgb(255, 190, 60),    // running / emphasis
+                error: Color::Rgb(255, 70, 70),
+                success: Color::Rgb(170, 240, 150),   // tag green
+                highlight: Color::Rgb(160, 210, 255), // reply blue
+                border: Color::Rgb(0, 0, 0),          // thick black outlines
+                status_bar_bg: Color::Rgb(255, 221, 87),
+                bottom_bar_bg: Color::Rgb(255, 255, 255),
+                bottom_bar_fg: Color::Rgb(20, 20, 20),
+                input_box_bg: Color::Rgb(255, 255, 255),
+                input_box_fg: Color::Rgb(20, 20, 20),
+            },
+        }
+    }
+
+    /// Panel/card border style. Neo-Brutal uses square corners instead of rounded.
+    pub fn block_border_type(&self) -> BorderType {
+        match self.name {
+            ThemeName::Brutal => BorderType::Plain,
+            _ => BorderType::Rounded,
+        }
+    }
+
+    /// Whether the theme uses a light background (drives code block / card colors).
+    pub fn is_light(&self) -> bool {
+        match self.bg {
+            Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b) > 600,
+            Color::White => true,
+            Color::Black => false,
+            _ => matches!(
+                self.name,
+                ThemeName::Light | ThemeName::SolarizedLight | ThemeName::Kawaii | ThemeName::Brutal
+            ),
+        }
+    }
+
+    pub fn code_block_bg(&self) -> Color {
+        if self.is_light() {
+            Color::Rgb(248, 248, 248)
+        } else {
+            Color::Rgb(30, 35, 50)
+        }
+    }
+
+    pub fn code_block_fg(&self) -> Color {
+        if self.is_light() {
+            self.fg
+        } else {
+            Color::Rgb(200, 200, 210)
+        }
+    }
+
+    pub fn code_card_bg(&self) -> Color {
+        self.code_block_bg()
+    }
+
+    pub fn code_card_border(&self) -> Color {
+        if self.is_light() {
+            self.border
+        } else {
+            Color::Rgb(100, 120, 180)
+        }
+    }
+
+    pub fn code_card_title_fg(&self) -> Color {
+        if self.is_light() {
+            self.fg
+        } else {
+            Color::Rgb(160, 180, 240)
+        }
+    }
+
+    pub fn thinking_card_border(&self) -> Color {
+        if self.is_light() {
+            self.border
+        } else {
+            Color::Rgb(140, 140, 220)
+        }
+    }
+
+    pub fn thinking_preview_fg(&self) -> Color {
+        if self.is_light() {
+            self.fg
+        } else {
+            Color::Rgb(180, 180, 200)
+        }
+    }
+
+    pub fn muted_fg(&self) -> Color {
+        if self.is_light() {
+            Color::Rgb(120, 120, 120)
+        } else {
+            Color::Rgb(128, 128, 128)
+        }
+    }
+
+    pub fn search_match_bg(&self) -> Color {
+        if self.is_light() {
+            self.highlight
+        } else {
+            Color::Yellow
+        }
+    }
+
+    pub fn search_match_fg(&self) -> Color {
+        if self.is_light() {
+            self.fg
+        } else {
+            Color::Black
         }
     }
 

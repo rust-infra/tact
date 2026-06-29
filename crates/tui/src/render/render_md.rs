@@ -2,53 +2,61 @@ use crate::theme::Theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Custom StyleSheet that provides dark background and monospace style for code blocks.
-#[derive(Clone, Copy, Debug, Default)]
-struct TuiStyleSheet;
+/// Theme-aware StyleSheet for tui-markdown.
+#[derive(Clone, Copy, Debug)]
+struct TuiStyleSheet {
+    theme: Theme,
+}
+
+impl TuiStyleSheet {
+    fn new(theme: Theme) -> Self {
+        Self { theme }
+    }
+}
 
 impl tui_markdown::StyleSheet for TuiStyleSheet {
     fn heading(&self, level: u8) -> Style {
         match level {
-            1 => Style::new().on_cyan().bold().underlined(),
-            2 => Style::new().cyan().bold(),
-            3 => Style::new().cyan().bold().italic(),
-            4 => Style::new().light_cyan().italic(),
-            5 => Style::new().light_cyan().italic(),
-            _ => Style::new().light_cyan().italic(),
+            1 => Style::new()
+                .fg(self.theme.accent)
+                .bg(self.theme.highlight)
+                .bold()
+                .underlined(),
+            2 => Style::new().fg(self.theme.accent).bold(),
+            3 => Style::new().fg(self.theme.accent).bold().italic(),
+            4 => Style::new().fg(self.theme.fg).bold().italic(),
+            5 => Style::new().fg(self.theme.fg).italic(),
+            _ => Style::new().fg(self.theme.fg).italic(),
         }
     }
 
     fn code(&self) -> Style {
         Style::new()
-            .fg(Color::Rgb(220, 220, 220))
-            .bg(Color::Rgb(30, 35, 50))
+            .fg(self.theme.code_block_fg())
+            .bg(self.theme.code_block_bg())
     }
 
     fn link(&self) -> Style {
-        Style::new().blue().underlined()
+        Style::new().fg(Color::Blue).underlined()
     }
 
     fn blockquote(&self) -> Style {
-        Style::new().green()
+        Style::new().fg(self.theme.success)
     }
 
     fn heading_meta(&self) -> Style {
-        Style::new().dim()
+        Style::new().fg(self.theme.muted_fg())
     }
 
     fn metadata_block(&self) -> Style {
-        Style::new().light_yellow()
+        Style::new().fg(self.theme.warning)
     }
 }
 
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
-/// Post-processes code blocks: adds top separator (with language label), line numbers, and bottom separator.
-pub(crate) fn render_markdown_tui(text: &str) -> (Vec<Line<'static>>, Vec<String>) {
-    // NOTE: Do NOT call process_hyperlinks here — ratatui strips raw ESC sequences
-    // (including OSC 8) from Span text, causing broken ]8;; garbage to appear on screen.
-    // Plain URLs render fine in the TUI and can be copied via clipboard.
-    let options = tui_markdown::Options::new(TuiStyleSheet);
-    let tui_text = tui_markdown::from_str_with_options(&text, &options);
+pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
+    let options = tui_markdown::Options::new(TuiStyleSheet::new(*theme));
+    let tui_text = tui_markdown::from_str_with_options(text, &options);
     let mut styled_lines: Vec<Line<'static>> = tui_text
         .lines
         .into_iter()
@@ -67,27 +75,21 @@ pub(crate) fn render_markdown_tui(text: &str) -> (Vec<Line<'static>>, Vec<String
         .collect();
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
 
-    // Post-process: apply background to code block content lines
-    apply_code_background(&mut styled_lines, &raw_lines);
-
-    // Post-process: add ▎ left border to blockquote lines (identified by green fg)
-    apply_blockquote_indicator(&mut styled_lines);
+    apply_code_background(&mut styled_lines, &raw_lines, theme);
+    apply_blockquote_indicator(&mut styled_lines, theme);
 
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
     (styled_lines, raw_lines)
 }
 
-/// Adds a uniform dark background to code block content lines, preserving tui-markdown's native syntax highlighting.
-/// ``` marker lines are kept as-is (rendered by tui-markdown).
-fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String]) {
-    let code_bg = Color::Rgb(30, 35, 50);
-    let code_fg = Color::Rgb(200, 200, 210);
+fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String], theme: &Theme) {
+    let code_bg = theme.code_block_bg();
+    let code_fg = theme.code_block_fg();
 
     let mut i = 0;
     while i < raw.len() {
         let trimmed = raw[i].trim();
         if trimmed.starts_with("```") {
-            // Find closing ```
             let mut end_marker = None;
             let mut j = i + 1;
             while j < raw.len() {
@@ -99,7 +101,6 @@ fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String]) {
             }
 
             if let Some(end) = end_marker {
-                // Add background to content lines (``` markers kept as-is)
                 for line_idx in (i + 1)..end {
                     let mut spans: Vec<Span<'static>> = Vec::new();
                     for span in &lines[line_idx].spans {
@@ -122,13 +123,10 @@ fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String]) {
     }
 }
 
-/// Adds a `▎` left border indicator to blockquote-styled lines.
-/// Blockquote lines are identified by the green foreground set by `TuiStyleSheet::blockquote`.
-fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>) {
-    let quote_style = Style::new().green();
+fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>, theme: &Theme) {
+    let quote_style = Style::new().fg(theme.success);
     for line in lines.iter_mut() {
         if line.style.fg == quote_style.fg && line.style.bg == quote_style.bg {
-            // Prepend ▎ with the blockquote green style
             let mut spans = vec![Span::styled("▎ ", line.style)];
             spans.extend(std::mem::take(&mut line.spans));
             line.spans = spans;
@@ -159,7 +157,6 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
         .iter()
         .map(|line| {
             let mut cells: Vec<String> = line.split('|').map(|s| s.trim().to_string()).collect();
-            // Strip empty cells caused by leading/trailing |
             if cells.first().map(|s| s.is_empty()).unwrap_or(false) {
                 cells.remove(0);
             }
@@ -174,7 +171,6 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
         return (Vec::new(), Vec::new());
     }
 
-    // Calculate max width per column
     let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut col_widths = vec![0; col_count];
     for row in &rows {
@@ -196,13 +192,11 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
         }
         let line_text = format!("|{}|", cells.join("|"));
 
-        // Detect separator row (all cells contain only -, :, and whitespace)
         let is_sep = row.iter().all(|c| {
             c.chars()
                 .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
         });
 
-        // Skip rendering separator row to prevent data rows from being mistakenly colored Gray
         if is_sep {
             continue;
         }

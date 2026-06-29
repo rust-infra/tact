@@ -138,7 +138,7 @@ micro_compact_enabled = true
 notifications_enabled = true
 
 [ui]
-theme = "retro"   # or "auto" for terminal detection
+theme = "retro"   # retro | brutal | nord | dark | auto ...
 
 [tools]
 brave_search_api_key = "bsk-..."   # optional, for web_search
@@ -333,7 +333,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | `cron_list` | List scheduled prompts |
 | `cron_delete` | Delete a scheduled prompt |
 | `ask_user` | Ask the user a question |
-| `add` | Add two integers (utility) |
 
 ---
 

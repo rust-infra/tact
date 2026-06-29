@@ -1,0 +1,24 @@
+=encoding utf8
+
+=head1 NAME
+
+fib - compute Fibonacci numbers
+
+=head1 SYNOPSIS
+
+  perl fib.pl 10
+
+=head1 DESCRIPTION
+
+Prints the first N Fibonacci numbers using an iterative algorithm
+with big-integer support.
+
+=cut
+
+use bigint;
+my $n = shift || 20;
+my ($a, $b) = (0, 1);
+for (1..$n) {
+    print "$a\n";
+    ($a, $b) = ($b, $a + $b);
+}

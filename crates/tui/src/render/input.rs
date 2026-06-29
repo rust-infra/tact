@@ -96,7 +96,7 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(app.theme.block_border_type())
                 .border_style(Style::default().fg(border_color))
                 .title(app.msgs().input_box_title)
                 .title_bottom(if !app.input.is_empty() {

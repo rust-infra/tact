@@ -80,7 +80,7 @@ mode = "default"
 # Theme name, or "auto" for terminal/system detection.
 # Supported: dark, light, solarized-dark, solarized-light, gruvbox-dark,
 #            nord, retro (default), kawaii, japanese
-theme = "retro"
+theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 
 # ---------------------------------------------------------------------------
 # Tools

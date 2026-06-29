@@ -138,27 +138,27 @@ pub async fn run_tui(
                 // Input box height auto-expands with content (1–3 lines of content + 2 for border)
                 let input_lines = app.input.lines().count().max(1).min(3) as u16;
                 let input_height = input_lines + 2;
-                const BOTTOM_BAR_ROWS: u16 = 3;
-                let bottom_height = BOTTOM_BAR_ROWS;
+                // Third row is balance info only; omit when unavailable to reclaim space.
+                let bottom_height = if app.balance_info.is_some() { 3 } else { 2 };
+                let log_area = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(3),
+                        Constraint::Length(input_height),
+                        Constraint::Length(bottom_height),
+                    ])
+                    .split(size)[1];
                 if size != last_size {
                     last_size = size;
-                    let log_area = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(1),
-                            Constraint::Min(3),
-                            Constraint::Length(input_height),
-                            Constraint::Length(bottom_height),
-                        ])
-                        .split(size)[1];
-                    let main_chunks = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                        .split(log_area);
-                    app.log_scroll.height = main_chunks[1].height.saturating_sub(2);
                     app.log_scroll.state =
                         ScrollbarState::new(app.messages.len().saturating_sub(1));
                 }
+                let main_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .split(log_area);
+                app.log_scroll.height = main_chunks[1].height.saturating_sub(2);
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([

@@ -197,7 +197,7 @@ impl App {
                         raw_content.push('\n');
                     }
                 }
-                let (styled_lines, _) = render_markdown_tui(&raw_content);
+                let (styled_lines, _) = render_markdown_tui(&raw_content, &self.theme);
 
                 let elapsed = self
                     .thinking
@@ -319,7 +319,7 @@ impl App {
                 let stream_end = start_idx + self.stream.code_block_line_count;
                 if !code_lines.is_empty() {
                     let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
-                    let (styled, _) = render_markdown_tui(&code_text);
+                    let (styled, _) = render_markdown_tui(&code_text, &self.theme);
                     let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2;
                     let placeholders: Vec<Line<'static>> =
                         (0..placeholder_count).map(|_| Line::from("")).collect();
@@ -343,7 +343,7 @@ impl App {
                 }
             } else if !code_lines.is_empty() {
                 let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
-                let (lines, raw_lines) = render_markdown_tui(&code_text);
+                let (lines, raw_lines) = render_markdown_tui(&code_text, &self.theme);
                 self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             }
             self.stream.code_block = false;
@@ -352,7 +352,7 @@ impl App {
         // Flush accumulated paragraph (content not yet separated by blank lines, e.g. the last paragraph at stream end)
         if !self.stream.paragraph.is_empty() {
             let paragraph = std::mem::take(&mut self.stream.paragraph);
-            let (lines, raw_lines) = render_markdown_tui(&paragraph);
+            let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         }
         // Flush leftover thinking lines and close thinking block
@@ -381,7 +381,7 @@ impl App {
             return;
         }
         let display = self.stream.buffer.clone();
-        let (lines, raw_lines) = render_markdown_tui(&display);
+        let (lines, raw_lines) = render_markdown_tui(&display, &self.theme);
         self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         self.stream.buffer.clear();
     }
