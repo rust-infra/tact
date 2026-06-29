@@ -103,18 +103,17 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     {
-        let constraints = vec![
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ];
+        let row_count = area.height.max(1) as usize;
+        let constraints: Vec<Constraint> = (0..row_count)
+            .map(|_| Constraint::Length(1))
+            .collect();
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
         let top_area = areas[0];
-        let mid_area = areas[1];
-        let bottom_area = areas[2];
+        let mid_area = areas.get(1).copied().unwrap_or(top_area);
+        let bottom_area = areas.get(2).copied();
         let top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
@@ -163,7 +162,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(bar1, top_area);
         frame.render_widget(bar2, mid_area);
 
-        if let Some(bi) = &app.balance_info {
+        if let (Some(bi), Some(bottom_area)) = (&app.balance_info, bottom_area) {
             let status = if bi.is_available {
                 msgs.bottom_balance_ok
             } else {
@@ -186,8 +185,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                 .replacen("{}", &entries, 1);
             let bar3 = Paragraph::new(balance_text).style(style);
             frame.render_widget(bar3, bottom_area);
-        } else {
-            frame.render_widget(Paragraph::new("").style(style), bottom_area);
         }
     }
 }

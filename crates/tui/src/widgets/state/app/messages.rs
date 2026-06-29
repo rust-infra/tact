@@ -186,5 +186,6 @@ impl App {
         if self.task_history.len() > 20 {
             self.task_history.remove(0);
         }
+        self.refresh_tool_log_scroll();
     }
 }

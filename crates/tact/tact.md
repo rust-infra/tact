@@ -223,7 +223,7 @@ These belong to the agent runtime. This boundary prevents the tool layer from in
 
 `toolset()` registers the complete tool set:
 
-- Basic: `add`, `bash`, `read_file`, `write_file`, `edit_file`
+- Basic: `bash`, `read_file`, `write_file`, `edit_file`
 - Skill: `load_skill`
 - Memory: `save_memory`
 - Compact: `compact`

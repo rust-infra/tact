@@ -618,7 +618,7 @@ LLM provider selection (set in `[llm]` or via CLI):
 
 ## 13. `#[tool]` Proc Macro
 
-The `tool_refactor_macros` crate provides the `#[tool(name = "...", description = "...")]` attribute macro. It is used by many built-in tools (e.g., `tool/bash.rs`, `tool/math.rs`) to auto-generate:
+The `tool_refactor_macros` crate provides the `#[tool(name = "...", description = "...")]` attribute macro. It is used by many built-in tools (e.g., `tool/bash.rs`, `tool/sleep.rs`) to auto-generate:
 
 - A JSON input schema via `schemars`.
 - A wrapper struct implementing the `Tool` trait.

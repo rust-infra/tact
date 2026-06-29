@@ -125,6 +125,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                         &app.messages[phys_idx],
                         &app.raw_messages[phys_idx],
                         &app.theme,
+                        app.raw_message_types[phys_idx],
+                        super::log_style::is_user_message_line(&app.raw_messages, phys_idx),
                     )
                 }
             } else {

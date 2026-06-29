@@ -333,7 +333,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | `cron_list` | List scheduled prompts |
 | `cron_delete` | Delete a scheduled prompt |
 | `ask_user` | Ask the user a question |
-| `add` | Add two integers (utility) |
 
 ---
 
