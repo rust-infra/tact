@@ -33,11 +33,13 @@ pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<Stri
     debug!(query = %input.query, num_results, "Web search");
 
     // Try Brave Search API first, then fall back to DuckDuckGo
-    if let Some(api_key) = std::env::var("BRAVE_SEARCH_API_KEY")
-        .ok()
+    if let Some(api_key) = crate::config::settings()
+        .tools
+        .brave_search_api_key
+        .as_deref()
         .filter(|k| !k.is_empty())
     {
-        search_brave(&input.query, num_results, &api_key).await
+        search_brave(&input.query, num_results, api_key).await
     } else {
         search_duckduckgo(&input.query, num_results).await
     }

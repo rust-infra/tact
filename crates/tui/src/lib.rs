@@ -66,6 +66,7 @@ pub async fn run_tui(
     input_history_entries: Vec<String>,
     session_id: String,
     history_save_tx: UnboundedSender<(String, String)>,
+    theme: String,
 ) -> Result<()> {
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -88,6 +89,7 @@ pub async fn run_tui(
         input_history_entries,
         session_id,
         history_save_tx,
+        theme,
     );
     app.add_startup_logo();
     let msgs = app.msgs();

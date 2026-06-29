@@ -21,6 +21,7 @@ impl App {
         input_history_entries: Vec<String>,
         session_id: String,
         history_save_tx: UnboundedSender<(String, String)>,
+        theme: String,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -45,7 +46,7 @@ impl App {
                 _ => "?".to_string(),
             }
         };
-        let detected_theme_name = crate::theme_detection::detect_theme();
+        let theme_name = crate::theme_detection::resolve_theme(&theme);
         Self {
             input: String::new(),
             input_cursor: 0,
@@ -59,7 +60,7 @@ impl App {
             agent_rx,
             user_cmd_tx,
             task_history: Vec::new(),
-            theme: Theme::by_name(detected_theme_name),
+            theme: Theme::by_name(theme_name),
             log_scroll: LogScroll::new(),
             show_history: false,
             show_help: false,

@@ -75,6 +75,17 @@ pub trait SessionStore: Send + Sync {
         request_body: Option<&[u8]>,
     ) -> Result<()>;
 
+    /// Attach a serialized tool-schedule summary (JSON) to the most recent
+    /// token-usage row for `last_message_id` — the LLM call whose tool calls
+    /// were just scheduled. Links scheduling strategy to token usage for later
+    /// performance/troubleshooting analysis.
+    async fn record_tool_schedule(
+        &self,
+        session_id: &str,
+        last_message_id: i64,
+        schedule_json: &str,
+    ) -> Result<()>;
+
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;
 
     async fn append_input_history(&self, session_id: &str, content: &str) -> Result<()>;

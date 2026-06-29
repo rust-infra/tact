@@ -11,3 +11,4 @@
 skills
 .qoder/
 .worktrees/
+crates/tui/agent_log_*.txt

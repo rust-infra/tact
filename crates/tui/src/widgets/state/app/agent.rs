@@ -1,11 +1,11 @@
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::widgets::state::*;
-use crate::widgets::tool_widget::{ToolPhase, ToolWidget, ToolRenderOutput};
+use crate::widgets::tool_widget::{ToolPhase, ToolWidget};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
 use std::time::Instant;
-use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{AgentErrorKind, AgentUpdate};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -18,6 +18,20 @@ fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
         }
     }
     idx
+}
+
+fn plan_step_arg_full(step: &PlanStep) -> String {
+    match step.tool.as_str() {
+        "read_file" | "write_file" => step.args.get("path").cloned().unwrap_or_default(),
+        "run_command" | "bash" | "shell" => step.args.get("command").cloned().unwrap_or_default(),
+        _ => {
+            if step.args.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&step.args).unwrap_or_default()
+            }
+        }
+    }
 }
 
 fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
@@ -118,8 +132,6 @@ impl App {
                 // If we're not yet in Executing (e.g. no PlanGenerated), fall back
                 // to a safe default.
                 self.ensure_executing_status(idx);
-                self.add_new_line();
-                self.add_system_message(format!("  {}. {}", idx + 1, step.description));
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
             }
@@ -139,11 +151,19 @@ impl App {
                     }
                 }
                 let msgs = self.msgs();
+                let full_arg = self
+                    .plan
+                    .steps
+                    .get(idx)
+                    .map(plan_step_arg_full)
+                    .unwrap_or_default();
                 let output = ToolWidget::new(&self.theme, &msgs)
                     .with_tool(tool_name)
                     .with_arg_summary(arg_summary)
+                    .with_arg_full(full_arg)
+                    .with_step_index(idx)
                     .with_phase(ToolPhase::Running)
-                    .with_duration_ms(0)
+                    .with_duration_us(0)
                     .build();
                 let phys_idx = self.push_tool_placeholder_rows(&output);
                 self.tools.active.push(ActiveToolBlock {
@@ -158,7 +178,9 @@ impl App {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 let msgs = self.msgs();
-                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs).build();
+                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+                    .with_step_index(idx)
+                    .build();
                 self.finalize_tool_block(&tool_id, output);
 
                 if let Some(step) = self.plan.steps.get_mut(idx) {
@@ -174,15 +196,16 @@ impl App {
                     .iter()
                     .find(|a| a.tool_id == tool_id)
                 {
-                    let elapsed_ms = active.started_at.elapsed().as_millis() as u64;
+                    let elapsed_us = active.started_at.elapsed().as_micros() as u64;
                     let tool_name = active.output.tool_name.clone();
                     let arg_summary = active.output.arg_summary.clone();
                     let msgs = self.msgs();
                     let output = ToolWidget::new(&self.theme, &msgs)
                         .with_tool(tool_name)
                         .with_arg_summary(arg_summary)
+                        .with_step_index(idx)
                         .with_phase(ToolPhase::Failed)
-                        .with_duration_ms(elapsed_ms)
+                        .with_duration_us(elapsed_us)
                         .with_message(error.clone())
                         .build();
                     self.finalize_tool_block(&tool_id, output);
@@ -356,6 +379,7 @@ impl App {
                 self.log_scroll.offset = u16::MAX;
             }
             AgentUpdate::StreamChunk(text) => {
+                self.ensure_gap_after_tools();
                 // Flush leftover thinking lines (the last line without trailing newline)
                 // Note: the thinking block has already been closed by the gate at
                 // the entry of handle_agent_update.

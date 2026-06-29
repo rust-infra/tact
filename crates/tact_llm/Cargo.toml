@@ -10,7 +10,6 @@ anthropic-ai-sdk = { workspace = true }
 anyhow = { workspace = true }
 async-openai = "0.20"
 async-trait = { workspace = true }
-dotenvy = { workspace = true }
 futures-util = "0.3"
 reqwest = { workspace = true }
 reqwest-eventsource = "0.6"

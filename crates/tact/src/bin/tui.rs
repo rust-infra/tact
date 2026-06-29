@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role::User};
 use base64::Engine as _;
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use tact::{
     Agent, AgentSystemPrompt,
     background::SharedBackgroundManager,
+    config::{CliArgs, CliCommand},
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
     extract_text,
@@ -14,7 +16,7 @@ use tact::{
     memory::get_memory_manager,
     permission::{PermissionManager, PermissionMode},
     skill::get_skill_registry,
-    store::{StoreRoot, open_sqlite_session_store},
+    store::{DynSessionStore, StoreRoot, open_sqlite_session_store},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
@@ -65,7 +67,6 @@ async fn build_user_message(task: &str, work_dir: &Path) -> Message {
 
     for (start, end, prefix_len, r) in refs {
         let content_start = start + prefix_len;
-        // Text between the previous reference and the start of this reference.
         if content_start > last_end {
             blocks.push(ContentBlock::Text {
                 text: task[last_end..content_start].to_string(),
@@ -118,7 +119,6 @@ async fn build_user_message(task: &str, work_dir: &Path) -> Message {
     }
 
     if blocks.is_empty() {
-        // Fallback for empty input.
         return Message::new_text(User, "");
     }
 
@@ -158,44 +158,148 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
     })
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize config: CLI args > env vars > TOML config file
-    let args = tact::config::init();
-
-    if std::env::var("TOKIO_CONSOLE").is_ok() {
-        console_subscriber::init();
-        eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
+fn permission_mode_for_headless() -> PermissionMode {
+    match tact::config::settings().permission_mode.as_deref() {
+        Some("plan") => PermissionMode::Plan,
+        Some("default") => PermissionMode::Default,
+        _ => PermissionMode::Auto,
     }
+}
 
-    let tact_path = TactPath::from_cwd()?;
-    let db_path = tact_path.claude_dir().join("tact.db");
-    let session_store = open_sqlite_session_store(&db_path).await?;
+fn format_timestamp(dt: DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
 
-    // --list-sessions: print recent sessions and exit
-    if args.list_sessions {
-        let sessions = session_store.list_sessions().await?;
-        if sessions.is_empty() {
-            println!("No sessions found.");
-        } else {
+async fn print_sessions(session_store: &DynSessionStore) -> anyhow::Result<()> {
+    let sessions = session_store.list_sessions().await?;
+    if sessions.is_empty() {
+        println!("No sessions found.");
+    } else {
+        println!(
+            "{:<36}  {:>4}  {:<20}  {:<40}",
+            "SESSION ID", "MSGS", "UPDATED", "TITLE"
+        );
+        println!("{}", "-".repeat(110));
+        for s in &sessions {
+            let updated = format_timestamp(s.updated_at);
+            let title = s.title.as_deref().unwrap_or("(untitled)");
             println!(
-                "{:<36}  {:>4}  {:<20}  {:<40}",
-                "SESSION ID", "MSGS", "UPDATED", "TITLE"
+                "{:<36}  {:>4}  {:<20}  {:.40}",
+                s.id, s.message_count, updated, title
             );
-            println!("{}", "-".repeat(110));
-            for s in &sessions {
-                let updated = s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string();
-                let title = s.title.as_deref().unwrap_or("(untitled)");
-                println!(
-                    "{:<36}  {:>4}  {:<20}  {:.40}",
-                    s.id, s.message_count, updated, title
-                );
-            }
         }
-        return Ok(());
+    }
+    Ok(())
+}
+
+async fn run_headless(
+    args: CliArgs,
+    prompt: String,
+    tact_path: TactPath,
+    session_store: DynSessionStore,
+) -> anyhow::Result<()> {
+    if prompt.trim().is_empty() {
+        eprintln!("Usage: tact-ui headless <PROMPT>");
+        eprintln!("Try 'tact-ui headless --help' for more information.");
+        std::process::exit(1);
     }
 
-    // Resolve session_id: --session takes priority, then --resume-last, else new uuid.
+    let session_id = if let Some(ref id) = args.session {
+        Some(id.clone())
+    } else if args.resume_last {
+        let sessions = session_store.list_sessions().await?;
+        sessions.into_iter().next().map(|s| s.id)
+    } else {
+        None
+    };
+
+    if let Some(ref sid) = session_id {
+        eprintln!("[session: {sid}]");
+    }
+
+    let client = get_llm_client()?;
+    let mode = permission_mode_for_headless();
+    let permission_manager = PermissionManager::try_new(mode)?;
+    eprintln!("[permission: {mode}]");
+
+    let store_root = StoreRoot::new(tact_path.claude_dir())?;
+    let work_dir = tact_path.workdir().to_path_buf();
+    let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
+    let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
+    let background_manager = SharedBackgroundManager::new(&store_root)?;
+    let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
+    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
+    let worktree_manager =
+        SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
+    let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
+        tact_path.memory_dir(),
+    )?));
+    let mcp_router = load_mcp_router().await?;
+
+    let tools = toolset();
+    let tool_context = ToolContext {
+        skill_registry: skill_registry.clone(),
+        memory_manager,
+        work_dir: work_dir.clone(),
+        task_manager,
+        background_manager,
+        cron_scheduler,
+        teammate_manager,
+        worktree_manager,
+        ui_tx: None,
+    };
+
+    let is_new_session = session_id.is_none();
+    let mut agent = Agent::new(
+        client.clone(),
+        tool_context,
+        tools,
+        mcp_router,
+        permission_manager,
+        AgentSystemPrompt::Dynamic,
+    )
+    .with_session(session_id, session_store);
+
+    let _ = agent.ensure_session().await?;
+
+    if is_new_session {
+        let title = prompt.lines().next().unwrap_or("").trim();
+        if !title.is_empty() {
+            let title = if title.chars().count() > 80 {
+                format!("{}…", title.chars().take(77).collect::<String>())
+            } else {
+                title.to_string()
+            };
+            agent.set_session_title(Some(&title)).await?;
+        }
+    }
+
+    let prompt_message = build_user_message(&prompt, &work_dir).await;
+    agent.agent_loop(Some(prompt_message)).await?;
+
+    if let Some(ref sid) = agent.runtime.session_id {
+        eprintln!("[session id: {sid}]");
+    }
+
+    eprintln!("{}", agent.runtime.stats.summary());
+
+    let Some(final_content) = agent.runtime.context.last() else {
+        return Ok(());
+    };
+    let text = extract_text(&final_content.content);
+    println!("{text}");
+
+    let summary = text.chars().take(200).collect::<String>();
+    let _ = tact::notifications::notify_task_complete(&summary);
+
+    Ok(())
+}
+
+async fn run_interactive(
+    args: CliArgs,
+    tact_path: TactPath,
+    session_store: DynSessionStore,
+) -> anyhow::Result<()> {
     let session_id = if let Some(ref id) = args.session {
         id.clone()
     } else if args.resume_last {
@@ -213,7 +317,6 @@ async fn main() -> anyhow::Result<()> {
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
-
     let permission_manager = PermissionManager::try_new(PermissionMode::Default)?;
 
     let work_dir = tact_path.workdir().to_path_buf();
@@ -234,8 +337,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, mut user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    // Clone a copy for background tasks like balance query at startup
     let agent_tx2 = agent_tx.clone();
 
     let tools = toolset();
@@ -273,6 +374,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let theme = tact::config::settings().ui.theme.clone();
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(
             agent_rx,
@@ -281,23 +383,16 @@ async fn main() -> anyhow::Result<()> {
             input_history,
             session_id,
             history_save_tx,
+            theme,
         )
         .await
     }));
 
-    // Query DeepSeek balance at startup
     if is_deepseek() {
         let balance_tx = agent_tx2;
         tokio::spawn(async move {
-            match query_deepseek_balance().await {
-                Ok(balance) => {
-                    let _ = balance_tx.send(AgentUpdate::Balance(balance));
-                }
-                Err(_) => {
-                    //  let _ = balance_tx.send(AgentUpdate::Error(
-                    //     AgentErrorKind::BalanceQueryFailed(e.to_string()),
-                    // ));
-                }
+            if let Ok(balance) = query_deepseek_balance().await {
+                let _ = balance_tx.send(AgentUpdate::Balance(balance));
             }
         });
     }
@@ -337,7 +432,6 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 } else {
-                    //eprintln!("Only supported on DeepSeek");
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::BalanceNotSupported));
                 }
             }
@@ -346,7 +440,6 @@ async fn main() -> anyhow::Result<()> {
 
     tui_handle.await??;
 
-    // Print session ID so user can resume later
     if let Some(ref sid) = agent.runtime.session_id {
         eprintln!("[session id: {sid}]");
     }
@@ -354,6 +447,31 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("{}", agent.runtime.stats.summary());
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let mut args = tact::config::init()?;
+
+    if tact::config::settings().tokio_console {
+        console_subscriber::init();
+        eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
+    }
+
+    let tact_path = TactPath::from_cwd()?;
+    let db_path = tact_path.claude_dir().join("tact.db");
+    let session_store = open_sqlite_session_store(&db_path).await?;
+
+    if args.list_sessions {
+        print_sessions(&session_store).await?;
+        return Ok(());
+    }
+
+    if let Some(CliCommand::Headless { prompt }) = args.command.take() {
+        return run_headless(args, prompt, tact_path, session_store).await;
+    }
+
+    run_interactive(args, tact_path, session_store).await
 }
 
 #[cfg(test)]

@@ -19,12 +19,14 @@ pub enum StepStatus {
 pub struct StepResult {
     pub tool: String,
     pub arg_summary: String,
+    /// Full tool argument summary (untruncated), used by detailed UI views.
+    pub arg_full: Option<String>,
     pub status: StepStatus,
     pub message: String,
     /// Additional details, e.g. full content of a written file or raw command output.
     pub detail: Option<String>,
-    /// Tool execution duration in milliseconds. None for non-tool steps.
-    pub duration_ms: Option<u64>,
+    /// Tool execution duration in microseconds. None for non-tool steps.
+    pub duration_us: Option<u64>,
     /// Permission choice label when the user was prompted (e.g. "Allow once").
     pub permission_label: Option<String>,
 }

@@ -3,11 +3,7 @@ use crate::widgets::state::*;
 use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListState, ScrollbarState};
-use tact_protocol::{AgentUpdate, StepStatus};
-
-const CODE_BG: Color = Color::Rgb(30, 35, 50);
-const STREAMING_INDICATOR: &str = " ▌";
+use ratatui::widgets::ScrollbarState;
 
 impl App {
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
@@ -253,8 +249,60 @@ impl App {
         }
     }
 
+    fn last_visible_phys_idx(&self) -> Option<usize> {
+        (0..self.messages.len())
+            .rev()
+            .find(|&idx| self.is_message_visible(idx))
+    }
+
+    fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
+        self.tools.active.iter().any(|active| {
+            phys >= active.phys_idx
+                && phys <= active.phys_idx + active.output.message_placeholder_rows()
+        }) || self.tools.blocks.iter().any(|block| {
+            phys >= block.phys_idx
+                && phys <= block.phys_idx + block.output.message_placeholder_rows()
+        })
+    }
+
+    /// Blank line before assistant stream content when it follows a tool card.
+    pub(crate) fn ensure_gap_after_tools(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if !self.phys_idx_in_tool_block(phys) {
+            return;
+        }
+        self.append_blank(RawMessageType::LLM);
+    }
+
+    /// Blank line before a tool block when it follows normal content.
+    pub(crate) fn ensure_gap_before_tools(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if self.phys_idx_in_tool_block(phys) {
+            return;
+        }
+        if self
+            .raw_messages
+            .get(phys)
+            .is_some_and(|line| line.is_empty())
+        {
+            return;
+        }
+        self.append_blank(RawMessageType::SysTool);
+    }
+
     /// Flush residual content from the streaming buffer into the message list.
     pub(crate) fn flush_stream_pending(&mut self) {
+        let will_flush_llm = !self.stream.table_buffer.is_empty()
+            || self.stream.code_block
+            || !self.stream.paragraph.is_empty()
+            || !self.stream.buffer.is_empty();
+        if will_flush_llm {
+            self.ensure_gap_after_tools();
+        }
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
             let (lines, raw_lines) = format_table(&self.stream.table_buffer, &self.theme);
@@ -403,6 +451,7 @@ impl App {
     }
 
     pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
+        self.ensure_gap_before_tools();
         let phys_idx = self.messages.len();
         let rows = output.visual_rows(false);
         for _ in 0..rows {

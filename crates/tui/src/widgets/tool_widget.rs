@@ -3,7 +3,7 @@ use std::time::Instant;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
@@ -12,7 +12,7 @@ use tact_protocol::{StepResult, StepStatus};
 use crate::{i18n::Messages, theme::Theme};
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
-const DEFAULT_PREVIEW_LINES: usize = 3;
+const DEFAULT_PREVIEW_LINES: usize = 1;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -73,11 +73,14 @@ pub fn tool_display_name(tool: &str) -> String {
     }
 }
 
-pub fn format_duration_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
+pub fn format_duration_us(us: u64) -> String {
+    if us < 1000 {
+        format!("{us}us")
+    } else if us < 1_000_000 {
+        let ms = us as f64 / 1000.0;
+        format!("{ms:.2}ms")
     } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
+        format!("{:.2}s", us as f64 / 1_000_000.0)
     }
 }
 
@@ -96,7 +99,7 @@ pub fn build_meta_text(
     phase: ToolPhase,
     permission_label: Option<&str>,
     size_bytes: Option<usize>,
-    duration_ms: Option<u64>,
+    duration_us: Option<u64>,
     error_message: Option<&str>,
     spinner_char: char,
     phase_running: &str,
@@ -124,8 +127,8 @@ pub fn build_meta_text(
     if let Some(label) = permission_label.filter(|s| !s.is_empty()) {
         parts.push(label.to_string());
     }
-    if let Some(ms) = duration_ms {
-        parts.push(format_duration_ms(ms));
+    if let Some(us) = duration_us {
+        parts.push(format_duration_us(us));
     }
     parts.join(meta_sep)
 }
@@ -147,7 +150,7 @@ pub fn build_meta_line(
     phase: ToolPhase,
     permission_label: Option<&str>,
     size_bytes: Option<usize>,
-    duration_ms: Option<u64>,
+    duration_us: Option<u64>,
     error_message: Option<&str>,
     spinner_char: char,
     theme: &Theme,
@@ -163,7 +166,7 @@ pub fn build_meta_line(
             phase,
             permission_label,
             size_bytes,
-            duration_ms,
+            duration_us,
             error_message,
             spinner_char,
             msgs.tool_phase_running,
@@ -177,8 +180,8 @@ pub fn build_meta_line(
     ))
 }
 
-pub fn running_elapsed_ms(started_at: Instant) -> u64 {
-    started_at.elapsed().as_millis() as u64
+pub fn running_elapsed_us(started_at: Instant) -> u64 {
+    started_at.elapsed().as_micros() as u64
 }
 
 /// Layout metadata for reserving placeholder rows in the log panel.
@@ -192,9 +195,13 @@ pub struct ToolLayout {
     pub has_detail_card: bool,
 }
 
-/// Content rows inside the card borders (preview lines + optional overflow row).
+/// Content rows inside the card borders.
+///
+/// Overflow text is rendered in the bottom hint (`title_bottom`) so it does not
+/// consume an extra preview row.
 pub(crate) fn tool_card_inner_rows(preview_len: usize, total_lines: usize) -> usize {
-    preview_len + usize::from(total_lines > preview_len)
+    let _ = total_lines;
+    preview_len
 }
 
 /// Total visual rows for a tool block in the log column.
@@ -225,12 +232,14 @@ pub struct ToolRenderOutput {
     pub phase: ToolPhase,
     pub permission_label: Option<String>,
     pub error_message: Option<String>,
-    pub duration_ms: Option<u64>,
+    pub duration_us: Option<u64>,
     pub size_bytes: Option<usize>,
     pub tool_name: String,
     pub use_diff_gutter: bool,
     /// Tool argument summary — for file tools this is the filesystem path.
     pub arg_summary: String,
+    /// Full tool argument summary (untruncated), used by popups/details.
+    pub arg_full: String,
     pub layout: ToolLayout,
     pub detail_title: Option<String>,
     pub detail_preview: Vec<String>,
@@ -258,9 +267,11 @@ impl ToolRenderOutput {
 pub struct ToolWidget<'a> {
     tool_name: String,
     arg_summary: String,
+    arg_full: String,
+    step_index: Option<usize>,
     phase: ToolPhase,
     detail: Option<String>,
-    duration_ms: Option<u64>,
+    duration_us: Option<u64>,
     permission_label: Option<String>,
     error_message: Option<String>,
     theme: &'a Theme,
@@ -274,9 +285,11 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: String::new(),
             arg_summary: String::new(),
+            arg_full: String::new(),
+            step_index: None,
             phase: ToolPhase::Running,
             detail: None,
-            duration_ms: None,
+            duration_us: None,
             permission_label: None,
             error_message: None,
             theme,
@@ -292,7 +305,21 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn with_arg_summary(mut self, summary: impl Into<String>) -> Self {
-        self.arg_summary = summary.into();
+        let summary = summary.into();
+        self.arg_summary = summary.clone();
+        if self.arg_full.is_empty() {
+            self.arg_full = summary;
+        }
+        self
+    }
+
+    pub fn with_arg_full(mut self, full: impl Into<String>) -> Self {
+        self.arg_full = full.into();
+        self
+    }
+
+    pub fn with_step_index(mut self, step_index: usize) -> Self {
+        self.step_index = Some(step_index);
         self
     }
 
@@ -306,8 +333,8 @@ impl<'a> ToolWidget<'a> {
         self
     }
 
-    pub fn with_duration_ms(mut self, duration_ms: u64) -> Self {
-        self.duration_ms = Some(duration_ms);
+    pub fn with_duration_us(mut self, duration_us: u64) -> Self {
+        self.duration_us = Some(duration_us);
         self
     }
 
@@ -334,9 +361,14 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
+            arg_full: result
+                .arg_full
+                .clone()
+                .unwrap_or_else(|| result.arg_summary.clone()),
+            step_index: None,
             phase: ToolPhase::from_status(&result.status),
             detail: result.detail.clone(),
-            duration_ms: result.duration_ms,
+            duration_us: result.duration_us,
             permission_label: result.permission_label.clone(),
             error_message: if matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed) {
                 Some(result.message.clone())
@@ -351,11 +383,29 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn title_text(&self) -> String {
-        let label = tool_display_name(&self.tool_name);
-        if self.arg_summary.is_empty() {
-            label
+        let base = match display_kind(&self.tool_name) {
+            ToolDisplayKind::Command => {
+                let label = self.tool_name.to_lowercase();
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label} ({})", self.arg_summary)
+                }
+            }
+            _ => {
+                let label = tool_display_name(&self.tool_name);
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label}  {}", self.arg_summary)
+                }
+            }
+        };
+
+        if let Some(idx) = self.step_index {
+            format!("{}. {}", idx + 1, base)
         } else {
-            format!("{label}  {}", self.arg_summary)
+            base
         }
     }
 
@@ -422,11 +472,16 @@ impl<'a> ToolWidget<'a> {
             phase: self.phase,
             permission_label: self.permission_label.clone(),
             error_message: self.error_message.clone(),
-            duration_ms: self.duration_ms,
+            duration_us: self.duration_us,
             size_bytes: self.size_bytes(),
             tool_name: self.tool_name.clone(),
             use_diff_gutter,
             arg_summary: self.arg_summary.clone(),
+            arg_full: if self.arg_full.is_empty() {
+                self.arg_summary.clone()
+            } else {
+                self.arg_full.clone()
+            },
             layout,
             detail_title,
             detail_preview,
@@ -474,7 +529,7 @@ impl Widget for ToolWidget<'_> {
             output.phase,
             output.permission_label.as_deref(),
             output.size_bytes,
-            output.duration_ms,
+            output.duration_us,
             output.error_message.as_deref(),
             RUNNING_SPINNER[0],
             self.theme,
@@ -543,12 +598,12 @@ mod tests {
             .with_arg_summary("echo hello")
             .with_phase(ToolPhase::Running);
 
-        assert_eq!(widget.title_text(), "Bash  echo hello");
+        assert_eq!(widget.title_text(), "bash (echo hello)");
     }
 
     #[test]
     fn meta_running_includes_spinner_and_zero_ms() {
-        let (theme, msgs) = fixture();
+        let (_theme, msgs) = fixture();
         let text = build_meta_text(
             ToolPhase::Running,
             None,
@@ -564,12 +619,12 @@ mod tests {
             msgs.step_fail_prefix,
         );
         assert!(text.contains("Running"));
-        assert!(text.contains("0ms"));
+        assert!(text.contains("0us"));
     }
 
     #[test]
     fn meta_failed_includes_error_message() {
-        let (theme, msgs) = fixture();
+        let (_theme, msgs) = fixture();
         let text = build_meta_text(
             ToolPhase::Failed,
             None,
@@ -586,7 +641,7 @@ mod tests {
         );
         assert!(text.contains("Failed"));
         assert!(text.contains("Permission denied"));
-        assert!(text.contains("42ms"));
+        assert!(text.contains("42us"));
     }
 
     #[test]
@@ -646,16 +701,17 @@ mod tests {
         let result = StepResult {
             tool: "bash".to_string(),
             arg_summary: "sleep 1".to_string(),
+            arg_full: Some("sleep 1".to_string()),
             status: StepStatus::Success,
             message: "ok".to_string(),
             detail: Some("done\n".to_string()),
-            duration_ms: Some(1200),
+            duration_us: Some(1_200_000),
             permission_label: Some("Always allow this tool".to_string()),
         };
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
 
-        assert_eq!(output.duration_ms, Some(1200));
+        assert_eq!(output.duration_us, Some(1_200_000));
         assert_eq!(
             output.permission_label.as_deref(),
             Some("Always allow this tool")
@@ -670,7 +726,7 @@ mod tests {
             .with_tool("grep")
             .with_arg_summary(r#"{"pattern":"foo"}"#)
             .with_phase(ToolPhase::Success)
-            .with_duration_ms(7);
+            .with_duration_us(7_000);
 
         assert_eq!(widget.layout().visual_rows, TOOL_HEADER_ROWS);
     }

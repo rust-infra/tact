@@ -1,39 +1,90 @@
 # tact configuration (TOML)
-# Place this at any of these locations:
-#   ./.tact/config.toml     (project-level)
-#   ./tact.toml              (project-level, alternative)
-#   ~/.tact/config.toml      (user-global)
 #
-# Priority: CLI args > environment variables > this config file.
+# Copy to one of these locations (auto-discovered):
+#   ./.tact/config.toml      project-level
+#   ./tact.toml              project-level (alternative)
+#   ~/.tact/config.toml      user-global
+#
+# Or pass an explicit path:
+#   tact-ui --config /path/to/tact.toml
+#
+# Interactive TUI (default):
+#   tact-ui
+#
+# Headless single-shot task:
+#   tact-ui headless "fix all clippy warnings"
+#   tact-ui headless "refactor error handling in lib.rs"
+#
+# Priority: CLI flags override values in this file.
 
+# ---------------------------------------------------------------------------
+# LLM (required for tact-ui unless overridden via CLI)
+# ---------------------------------------------------------------------------
 [llm]
-# LLM provider: "anthropic", "openai", or "kimi"
-# provider = "anthropic"
+# Provider: "anthropic" | "openai" | "kimi"
+provider = "anthropic"
 
-# Model name
-# model = "claude-sonnet-4-20250514"
+# Model name (optional for openai; kimi defaults to "kimi-for-coding")
+model = "claude-sonnet-4-20250514"
 
-# API key (alternative to ANTHROPIC_API_KEY / OPENAI_API_KEY / KIMI_API_KEY env vars)
+# API key
+api_key = "sk-ant-..."
+
+# API base URL (required for anthropic; openai/kimi have defaults)
+base_url = "https://api.anthropic.com"
+
+# Max tokens per LLM call (default: 8000; kimi K2.x defaults to 32000)
+# max_tokens = 8000
+
+# Extended thinking budget (default: 32000)
+# thinking_budget = 32000
+
+# OpenAI-compatible example:
+# provider = "openai"
+# model = "gpt-4o"
 # api_key = "sk-..."
+# base_url = "https://api.openai.com/v1"
 
-# API base URL (for proxies or alternative endpoints)
-# base_url = "https://api.anthropic.com"
-
-# Kimi example (provider="kimi" will default to https://api.kimi.com/coding/v1):
+# Kimi example (base_url defaults to https://api.kimi.com/coding/v1):
 # provider = "kimi"
 # model = "kimi-for-coding"
 # api_key = "sk-kimi-..."
 
+# ---------------------------------------------------------------------------
+# Permission
+# ---------------------------------------------------------------------------
 [permission]
-# Permission mode: "default" (ask before each tool), "plan" (plan first), "auto" (auto-approve)
-# mode = "default"
+# "default" | "plan" | "auto"
+mode = "default"
 
+# ---------------------------------------------------------------------------
+# Agent runtime
+# ---------------------------------------------------------------------------
 [agent]
-# Maximum context size in characters before auto-compaction
+# Soft context limit in characters before auto-compaction (default: 500000)
 # context_limit_chars = 500000
 
+# Max entries in the system-prompt project structure snapshot (default: 80)
+# snapshot_max_items = 80
+
+# Truncate old tool results in context (default: true)
+# micro_compact_enabled = true
+
+# Desktop notifications on macOS (default: true)
+# notifications_enabled = true
+
+# ---------------------------------------------------------------------------
+# TUI
+# ---------------------------------------------------------------------------
 [ui]
-# TUI theme name. Supported values:
-#   dark, light, solarized-dark, solarized-light, gruvbox-dark,
-#   nord, retro (default), kawaii, japanese
-# theme = "retro"
+# Theme name, or "auto" for terminal/system detection.
+# Supported: dark, light, solarized-dark, solarized-light, gruvbox-dark,
+#            nord, retro (default), kawaii, japanese
+theme = "retro"
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+[tools]
+# Brave Search API key for web_search (falls back to DuckDuckGo if unset)
+# brave_search_api_key = "bsk-..."

@@ -14,7 +14,7 @@ use anthropic_ai_sdk::types::message::{
     ContentBlock, CreateMessageParams, MessageError, StopReason,
 };
 use anyhow::Context;
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -22,7 +22,7 @@ use tact_protocol::AgentUpdate;
 use tact_protocol::TokenUsageInfo;
 
 /// Holds private LLM configuration information.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
@@ -31,42 +31,49 @@ pub struct ProviderInfo {
 }
 
 impl ProviderInfo {
-    pub fn get_provider_from_env() -> anyhow::Result<Self> {
-        let provider = std::env::var("TACT_PROVIDER")?;
-        if provider.is_empty() {
-            return Err(anyhow::anyhow!(
-                "TACT_PROVIDER environment variable not set"
-            ));
-        }
-        let (api_key, base_url, model) = match provider.as_str() {
-            "openai" => (
-                std::env::var("OPENAI_API_KEY")?,
-                std::env::var("OPENAI_BASE_URL").unwrap_or_default(),
-                std::env::var("OPENAI_MODEL").unwrap_or_default(),
-            ),
-            "anthropic" => (
-                std::env::var("ANTHROPIC_API_KEY")?,
-                std::env::var("ANTHROPIC_BASE_URL").unwrap_or_default(),
-                std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
-            ),
-            "kimi" => (
-                std::env::var("KIMI_API_KEY")?,
-                std::env::var("KIMI_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string()),
-                std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-for-coding".to_string()),
-            ),
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "TACT_PROVIDER must be 'openai', 'anthropic', or 'kimi'"
-                ));
+    /// Build an LLM client for this provider configuration.
+    pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
+        match self.provider.as_str() {
+            "anthropic" => {
+                if self.api_key.is_empty() {
+                    anyhow::bail!("api_key not configured for provider 'anthropic'");
+                }
+                if self.base_url.is_empty() {
+                    anyhow::bail!("base_url not configured for provider 'anthropic'");
+                }
+                Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
+                    self.api_key.clone(),
+                    self.base_url.clone(),
+                )))
             }
-        };
-        Ok(Self {
-            api_key,
-            base_url,
-            model,
-            provider,
-        })
+            "openai" => {
+                if self.api_key.is_empty() {
+                    anyhow::bail!("api_key not configured for provider 'openai'");
+                }
+                let base_url = if self.base_url.is_empty() {
+                    "https://api.openai.com/v1".to_string()
+                } else {
+                    self.base_url.clone()
+                };
+                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
+                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
+            }
+            "kimi" => {
+                if self.api_key.is_empty() {
+                    anyhow::bail!("api_key not configured for provider 'kimi'");
+                }
+                let base_url = if self.base_url.is_empty() {
+                    "https://api.kimi.com/coding/v1".to_string()
+                } else {
+                    self.base_url.clone()
+                };
+                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
+                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
+            }
+            other => {
+                anyhow::bail!("Unknown provider: {other}. Use 'anthropic', 'openai', or 'kimi'.")
+            }
+        }
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.
@@ -241,75 +248,27 @@ impl LlmProvider {
     }
 }
 
-/// Returns the active LLM client based on environment variables.
-///
-/// Environment variables:
-/// - `TACT_PROVIDER` = `anthropic` | `openai` | `kimi` (optional; inferred from API keys if absent)
-/// - `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`
-/// - `OPENAI_API_KEY`, `OPENAI_BASE_URL` (optional), `OPENAI_MODEL`
-/// - `KIMI_API_KEY`, `KIMI_BASE_URL` (optional), `KIMI_MODEL` (optional)
+static PROVIDER: OnceLock<ProviderInfo> = OnceLock::new();
+
+/// Install the active LLM provider configuration. Must be called once at startup.
+pub fn init_provider(info: ProviderInfo) {
+    PROVIDER
+        .set(info)
+        .expect("LLM provider must be initialized exactly once");
+}
+
+/// Returns the active LLM client from the installed provider configuration.
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    dotenvy::dotenv().ok();
-
-    let provider = std::env::var("TACT_PROVIDER")
-        .ok()
-        .or_else(|| {
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                Some("anthropic".to_string())
-            } else if std::env::var("KIMI_API_KEY").is_ok() {
-                Some("kimi".to_string())
-            } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                Some("openai".to_string())
-            } else {
-                None
-            }
-        })
-        .context("No LLM provider configured. Set TACT_PROVIDER=anthropic|openai|kimi or provide ANTHROPIC_API_KEY / OPENAI_API_KEY / KIMI_API_KEY")?;
-
-    match provider.as_str() {
-        "anthropic" => {
-            let api_key =
-                std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY is not set")?;
-            let base_url =
-                std::env::var("ANTHROPIC_BASE_URL").context("ANTHROPIC_BASE_URL is not set")?;
-            Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
-                api_key, base_url,
-            )))
-        }
-        "openai" => {
-            let api_key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY is not set")?;
-            let base_url = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-            let config = openai::CompatibleConfig::new(api_key, base_url);
-            Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-        }
-        "kimi" => {
-            let api_key = std::env::var("KIMI_API_KEY").context("KIMI_API_KEY is not set")?;
-            let base_url = std::env::var("KIMI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string());
-            let config = openai::CompatibleConfig::new(api_key, base_url);
-            Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-        }
-        other => {
-            anyhow::bail!("Unknown TACT_PROVIDER: {other}. Use 'anthropic', 'openai', or 'kimi'.")
-        }
-    }
+    get_provider().build_client()
 }
 
 /// Returns `true` if the configured provider is DeepSeek.
-///
-/// Detects DeepSeek by checking if `OPENAI_BASE_URL` or `OPENAI_MODEL`
-/// contains "deepseek".
 pub fn is_deepseek() -> bool {
-    let provider = std::env::var("TACT_PROVIDER").unwrap_or_default();
-    if provider == "anthropic" {
-        let base_url = std::env::var("ANTHROPIC_BASE_URL").unwrap_or_default();
-        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_default();
-        base_url.contains("deepseek") || model.contains("deepseek")
+    let provider = get_provider();
+    if provider.provider == "anthropic" {
+        provider.base_url.contains("deepseek") || provider.model.contains("deepseek")
     } else {
-        let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-        let model = std::env::var("OPENAI_MODEL").unwrap_or_default();
-        base_url.contains("deepseek") || model.contains("deepseek")
+        provider.base_url.contains("deepseek") || provider.model.contains("deepseek")
     }
 }
 
@@ -318,9 +277,9 @@ pub fn is_deepseek() -> bool {
 /// Calls `GET https://api.deepseek.com/user/balance` with the provided API key.
 /// Returns `BalanceInfo` on success.
 pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
-    let provider = ProviderInfo::get_provider_from_env()?;
-    let api_key = provider.api_key;
-    let base_url = provider.base_url;
+    let provider = get_provider();
+    let api_key = provider.api_key.clone();
+    let base_url = provider.base_url.clone();
 
     // Construct the balance endpoint URL from the base URL
     let balance_url = if base_url.contains("api.deepseek.com") {
@@ -390,12 +349,11 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
     })
 }
 
-/// Returns the provider information from the active provider's environment variables.
-/// Parsed once on first call and cached for the lifetime of the process.
+/// Returns the provider information installed at startup.
 pub fn get_provider() -> &'static ProviderInfo {
-    static PROVIDER: LazyLock<ProviderInfo> =
-        LazyLock::new(|| ProviderInfo::get_provider_from_env().unwrap_or_default());
-    &PROVIDER
+    PROVIDER
+        .get()
+        .expect("LLM provider not initialized; call tact_llm::init_provider first")
 }
 
 /// Returns true if the active provider/target is Kimi/Moonshot.
