@@ -107,7 +107,7 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 **Linux / macOS**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
 ```
 
 Or from a clone:
@@ -119,7 +119,7 @@ Or from a clone:
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
 ```
 
 Or from a clone:
@@ -144,7 +144,7 @@ Install options:
 
 ```bash
 # From source (requires Rust toolchain)
-git clone https://github.com/Rg0x80/tact.git
+git clone https://github.com/rust-infra/tact.git
 cd tact
 cargo build --release
 ./target/release/tact-ui --help
@@ -322,13 +322,13 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 **Linux / macOS**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
 ```
 
 From a local clone: `./scripts/install.sh --from-source` or `.\scripts\install.ps1 -FromSource`.
@@ -347,7 +347,7 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 ```
 
 ```bash
-git clone https://github.com/Rg0x80/tact.git
+git clone https://github.com/rust-infra/tact.git
 cd tact
 cargo build --release
 ```
@@ -373,7 +373,7 @@ git push origin v0.19.0
 GitHub Actions (`.github/workflows/release.yml`) uploads assets named `tact-ui-v<version>-<target-triple>.tar.gz` (Linux/macOS) or `.zip` (Windows), plus `SHA256SUMS`. The install script downloads these automatically with `--release` / `-Release`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash -s -- --release
+curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash -s -- --release
 ```
 
 ---

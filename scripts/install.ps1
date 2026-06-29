@@ -13,7 +13,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "Rg0x80/tact" }
+$Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "rust-infra/tact" }
 $BinaryName = "tact-ui"
 $CratePackage = "tact"
 $DefaultVersion = "0.19.0"
@@ -38,7 +38,7 @@ Environment:
   TACT_INSTALL_REPO    GitHub repo (owner/name)
 
 Examples:
-  irm https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.ps1 | iex
+  irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
   .\scripts\install.ps1 -FromSource
   .\scripts\install.ps1 -Release -InstallDir "$env:USERPROFILE\.local\bin"
 "@
