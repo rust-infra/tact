@@ -2,7 +2,7 @@
 # Install tact-ui on Linux or macOS (build from source, or download a GitHub release when available).
 set -euo pipefail
 
-REPO="${TACT_INSTALL_REPO:-Rg0x80/tact}"
+REPO="${TACT_INSTALL_REPO:-rust-infra/tact}"
 GIT_REF="${TACT_INSTALL_GIT_REF:-main}"
 BINARY_NAME="tact-ui"
 CRATE_PACKAGE="tact"
@@ -38,7 +38,7 @@ Environment:
   TACT_INSTALL_GIT_REF   Git ref when cloning from source
 
 Examples:
-  curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
   ./scripts/install.sh --from-source
   ./scripts/install.sh --release --install-dir ~/.local/bin
 EOF
