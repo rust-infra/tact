@@ -13,7 +13,7 @@
   <a href="#features"><strong>Features</strong></a> ·
   <a href="#architecture"><strong>Architecture</strong></a> ·
   <a href="#comparison"><strong>Comparison</strong></a> ·
-  <a href="#installation"><strong>Installation</strong></a>
+  <a href="#configuration"><strong>Configuration</strong></a>
 </p>
 
 <p align="center">
@@ -39,6 +39,136 @@ $ tact-ui headless "Add a --verbose flag to the CLI and update the README"
 ```
 
 That's it. No YAML config wizard. No "sign up for waitlist." Just a prompt and a terminal.
+
+---
+
+## Quick Start
+
+### 1. Install
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
+```
+
+Or from a clone:
+
+```bash
+./scripts/install.sh --from-source
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
+```
+
+Or from a clone:
+
+```powershell
+.\scripts\install.ps1 -FromSource
+```
+
+The installer builds `tact-ui` from source by default (installs Rust via rustup if needed). When GitHub release assets are published, pass `--release` / `-Release` to download a pre-built binary instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash -s -- --release
+```
+
+Install options:
+
+| Platform | Flag | Meaning |
+|----------|------|---------|
+| Unix | `--install-dir DIR` | Install location (default: `~/.local/bin`) |
+| Unix | `--system` | Install to `/usr/local/bin` |
+| Unix | `--release` | Prefer GitHub release, fall back to source |
+| Windows | `-InstallDir PATH` | Install location (default: `%USERPROFILE%\.local\bin`) |
+| Windows | `-Release` | Prefer GitHub release, fall back to source |
+
+**Manual build from source**
+
+Linux: install SQLite build dependencies first (required by `sqlx` / session store):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+```
+
+```bash
+git clone https://github.com/rust-infra/tact.git
+cd tact
+cargo build --release
+./target/release/tact-ui --help
+```
+
+Via Cargo (coming soon to crates.io):
+
+```bash
+cargo install tact   # installs the tact-ui binary
+```
+
+**Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
+
+```bash
+git tag v0.19.0
+git push origin v0.19.0
+```
+
+GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
+
+### 2. Configure
+
+Create `tact.toml` in your project root (or `~/.tact/config.toml` for user-level defaults):
+
+```toml
+[llm]
+provider = "anthropic"   # "anthropic" | "openai" | "kimi"
+model = "claude-sonnet-4-20250514"
+api_key = "sk-ant-..."
+base_url = "https://api.anthropic.com"  # required for anthropic
+
+[permission]
+mode = "default"   # "default" | "plan" | "auto"
+
+[agent]
+context_limit_chars = 500000
+snapshot_max_items = 80
+micro_compact_enabled = true
+notifications_enabled = true
+
+[ui]
+theme = "retro"   # or "auto" for terminal detection
+
+[tools]
+brave_search_api_key = "bsk-..."   # optional, for web_search
+```
+
+CLI flags override the config file (e.g. `--model`, `--api-key`, `--theme`).
+
+Optional agent settings (config file or CLI):
+
+| Setting | CLI flag | Default | Description |
+|---|---|---|---|
+| `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
+| `context_limit_chars` | `--context-limit-chars` | `500000` | Soft context limit before auto-compaction |
+| `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
+
+### 3. Run
+
+```bash
+# Interactive TUI (default)
+tact-ui
+
+# Headless single-shot task
+tact-ui headless "Fix all clippy warnings in src/ and run cargo test"
+
+# With specific model
+tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
+
+# Plan-only mode (review before execution)
+tact-ui -m plan headless "Add rate limiting to the API client"
+```
 
 ---
 
@@ -97,114 +227,6 @@ Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connec
 ### 💾 Persistent State
 
 Transcripts, tool results, memories, cron jobs, and task state all persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
-
----
-
-## Quick Start
-
-### 1. Install
-
-**Linux / macOS**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
-```
-
-Or from a clone:
-
-```bash
-./scripts/install.sh --from-source
-```
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
-```
-
-Or from a clone:
-
-```powershell
-.\scripts\install.ps1 -FromSource
-```
-
-The installer builds `tact-ui` from source by default (installs Rust via rustup if needed). When GitHub release assets are published, pass `--release` / `-Release` to download a pre-built binary instead.
-
-Install options:
-
-| Platform | Flag | Meaning |
-|----------|------|---------|
-| Unix | `--install-dir DIR` | Install location (default: `~/.local/bin`) |
-| Unix | `--system` | Install to `/usr/local/bin` |
-| Unix | `--release` | Prefer GitHub release, fall back to source |
-| Windows | `-InstallDir PATH` | Install location (default: `%USERPROFILE%\.local\bin`) |
-| Windows | `-Release` | Prefer GitHub release, fall back to source |
-
-**Manual build from source**
-
-```bash
-# From source (requires Rust toolchain)
-git clone https://github.com/rust-infra/tact.git
-cd tact
-cargo build --release
-./target/release/tact-ui --help
-
-# Or via cargo install (coming soon to crates.io)
-cargo install tact   # installs the tact-ui binary
-```
-
-### 2. Configure
-
-Create `tact.toml` in your project root (or `~/.tact/config.toml` for user-level defaults):
-
-```toml
-[llm]
-provider = "anthropic"   # "anthropic" | "openai" | "kimi"
-model = "claude-sonnet-4-20250514"
-api_key = "sk-ant-..."
-base_url = "https://api.anthropic.com"  # required for anthropic
-
-[permission]
-mode = "default"   # "default" | "plan" | "auto"
-
-[agent]
-context_limit_chars = 500000
-snapshot_max_items = 80
-micro_compact_enabled = true
-notifications_enabled = true
-
-[ui]
-theme = "retro"   # or "auto" for terminal detection
-
-[tools]
-brave_search_api_key = "bsk-..."   # optional, for web_search
-```
-
-CLI flags override the config file (e.g. `--model`, `--api-key`, `--theme`).
-
-Optional agent settings (config file or CLI):
-
-| Setting | CLI flag | Default | Description |
-|---|---|---|---|
-| `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
-| `context_limit_chars` | `--context-limit-chars` | `500000` | Soft context limit before auto-compaction |
-| `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
-
-### 3. Run
-
-```bash
-# Interactive TUI (default)
-tact-ui
-
-# Headless single-shot task
-tact-ui headless "Fix all clippy warnings in src/ and run cargo test"
-
-# With specific model
-tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
-
-# Plan-only mode (review before execution)
-tact-ui -m plan headless "Add rate limiting to the API client"
-```
 
 ---
 
@@ -312,69 +334,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | `cron_delete` | Delete a scheduled prompt |
 | `ask_user` | Ask the user a question |
 | `add` | Add two integers (utility) |
-
----
-
-## Installation
-
-### Install script (recommended)
-
-**Linux / macOS**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash
-```
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
-```
-
-From a local clone: `./scripts/install.sh --from-source` or `.\scripts\install.ps1 -FromSource`.
-
-The script installs the `tact-ui` binary to `~/.local/bin` (Unix) or `%USERPROFILE%\.local\bin` (Windows) and adds that directory to PATH when possible. On Linux it installs SQLite/clang build deps via apt/dnf/pacman/apk when run with sufficient privileges.
-
-Use `--release` / `-Release` to prefer GitHub release binaries (falls back to source build if none exist yet).
-
-### From Source
-
-**Linux:** install SQLite build dependencies first (required by `sqlx` / session store):
-
-```bash
-sudo apt-get update
-sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
-```
-
-```bash
-git clone https://github.com/rust-infra/tact.git
-cd tact
-cargo build --release
-```
-
-Binaries:
-- `./target/release/tact-ui` — interactive TUI by default; use `headless` subcommand for non-interactive runs
-
-### Via Cargo (soon)
-
-```bash
-cargo install tact   # binary name: tact-ui
-```
-
-### Binary Releases
-
-Push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
-
-```bash
-git tag v0.19.0
-git push origin v0.19.0
-```
-
-GitHub Actions (`.github/workflows/release.yml`) uploads assets named `tact-ui-v<version>-<target-triple>.tar.gz` (Linux/macOS) or `.zip` (Windows), plus `SHA256SUMS`. The install script downloads these automatically with `--release` / `-Release`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash -s -- --release
-```
 
 ---
 

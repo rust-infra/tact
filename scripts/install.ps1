@@ -129,7 +129,7 @@ function Install-WindowsDeps {
         return
     }
 
-    Write-Warn "SQLite may be required to build sqlx. Source installs use --features bundled-sqlite on Windows."
+    Write-Warn "Windows builds compile SQLite from source via sqlx; Visual Studio C++ build tools may be required."
 }
 
 function Install-BinaryFile([string]$SourcePath, [string]$DestDir) {
@@ -149,7 +149,7 @@ function Build-FromSource([string]$Root) {
 
     Push-Location $Root
     try {
-        & cargo build --release -p $CratePackage --features bundled-sqlite
+        & cargo build --release -p $CratePackage
         if ($LASTEXITCODE -ne 0) {
             Fail "cargo build failed"
         }
