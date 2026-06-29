@@ -118,7 +118,18 @@ impl App {
                 // If we're not yet in Executing (e.g. no PlanGenerated), fall back
                 // to a safe default.
                 self.ensure_executing_status(idx);
-                self.add_new_line();
+                // Thinking blocks already insert one trailing isolation blank line
+                // when they close. Avoid adding a second gap before the step line.
+                let has_thinking_tail_gap = self.raw_messages.last().is_some_and(|s| s.is_empty())
+                    && self
+                        .raw_message_types
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .is_some_and(|t| matches!(t, RawMessageType::LLMThinking));
+                if !has_thinking_tail_gap {
+                    self.add_new_line();
+                }
                 self.add_system_message(format!("  {}. {}", idx + 1, step.description));
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
