@@ -11,8 +11,6 @@ pub(crate) mod thinking_popup;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
-    widgets::Block,
 };
 
 /// Centered popup geometry (80% of parent, minimum 40×10).
@@ -24,23 +22,7 @@ pub(crate) fn centered_popup_area(area: Rect) -> Rect {
     Rect::new(popup_x, popup_y, popup_width, popup_height)
 }
 
-/// Render a subtle shadow behind a popup for a 3D depth effect.
-///
-/// The shadow is rendered as a dark block offset by (2, 1) cells to the
-/// right and down from the popup area. This creates a floating-window
-/// appearance without needing true alpha blending.
-pub(crate) fn render_popup_shadow(frame: &mut Frame, popup_area: Rect) {
-    if popup_area.width == 0 || popup_area.height == 0 {
-        return;
-    }
-    // Shadow offset: 2 right, 1 down
-    let shadow_area = Rect::new(
-        popup_area.x.saturating_add(2),
-        popup_area.y.saturating_add(1),
-        popup_area.width,
-        popup_area.height,
-    );
-    // Semi-transparent dark fill for shadow
-    let shadow = Block::default().style(Style::default().bg(Color::Rgb(15, 15, 28)));
-    frame.render_widget(shadow, shadow_area);
+/// Popup shadow rendering is intentionally disabled to avoid visible right/bottom
+/// dark bands in terminal themes with low contrast.
+pub(crate) fn render_popup_shadow(_frame: &mut Frame, _popup_area: Rect) {
 }
