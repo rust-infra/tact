@@ -818,6 +818,7 @@ impl Agent {
                 self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
+                let arg_full = tool_arg_full(&prep_name, &prep_input);
                 let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
                 self.emit_update(AgentUpdate::StepFinished(
                     prep_step_idx,
@@ -825,6 +826,7 @@ impl Agent {
                     StepResult {
                         tool: prep_name.clone(),
                         arg_summary,
+                        arg_full: Some(arg_full),
                         status: final_status,
                         message: summary,
                         detail,
@@ -895,6 +897,7 @@ impl Agent {
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
+                let arg_full = tool_arg_full(&prep_name, &prep_input);
                 let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
                 self.emit_update(AgentUpdate::StepFinished(
                     prep_step_idx,
@@ -902,6 +905,7 @@ impl Agent {
                     StepResult {
                         tool: prep_name.clone(),
                         arg_summary,
+                        arg_full: Some(arg_full),
                         status: final_status,
                         message: summary,
                         detail,
@@ -1270,7 +1274,12 @@ fn truncate_tool_arg_summary(s: &str) -> String {
 }
 
 fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
-    let raw = match name {
+    let raw = tool_arg_full(name, input);
+    truncate_tool_arg_summary(&raw)
+}
+
+fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
+    match name {
         "read_file" | "write_file" => input
             .get("path")
             .and_then(|v| v.as_str())
@@ -1282,8 +1291,7 @@ fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
             .unwrap_or("")
             .to_string(),
         _ => input.to_string(),
-    };
-    truncate_tool_arg_summary(&raw)
+    }
 }
 
 fn tool_args_map(input: &serde_json::Value) -> std::collections::HashMap<String, String> {

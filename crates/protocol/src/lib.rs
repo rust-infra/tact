@@ -19,6 +19,8 @@ pub enum StepStatus {
 pub struct StepResult {
     pub tool: String,
     pub arg_summary: String,
+    /// Full tool argument summary (untruncated), used by detailed UI views.
+    pub arg_full: Option<String>,
     pub status: StepStatus,
     pub message: String,
     /// Additional details, e.g. full content of a written file or raw command output.

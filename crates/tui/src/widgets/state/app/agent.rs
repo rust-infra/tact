@@ -20,6 +20,20 @@ fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     idx
 }
 
+fn plan_step_arg_full(step: &PlanStep) -> String {
+    match step.tool.as_str() {
+        "read_file" | "write_file" => step.args.get("path").cloned().unwrap_or_default(),
+        "run_command" | "bash" | "shell" => step.args.get("command").cloned().unwrap_or_default(),
+        _ => {
+            if step.args.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&step.args).unwrap_or_default()
+            }
+        }
+    }
+}
+
 fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
     chrono::Local::now()
         .signed_duration_since(start)
@@ -137,9 +151,16 @@ impl App {
                     }
                 }
                 let msgs = self.msgs();
+                let full_arg = self
+                    .plan
+                    .steps
+                    .get(idx)
+                    .map(plan_step_arg_full)
+                    .unwrap_or_default();
                 let output = ToolWidget::new(&self.theme, &msgs)
                     .with_tool(tool_name)
                     .with_arg_summary(arg_summary)
+                    .with_arg_full(full_arg)
                     .with_step_index(idx)
                     .with_phase(ToolPhase::Running)
                     .with_duration_us(0)

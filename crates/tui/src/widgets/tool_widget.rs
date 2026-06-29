@@ -238,6 +238,8 @@ pub struct ToolRenderOutput {
     pub use_diff_gutter: bool,
     /// Tool argument summary — for file tools this is the filesystem path.
     pub arg_summary: String,
+    /// Full tool argument summary (untruncated), used by popups/details.
+    pub arg_full: String,
     pub layout: ToolLayout,
     pub detail_title: Option<String>,
     pub detail_preview: Vec<String>,
@@ -265,6 +267,7 @@ impl ToolRenderOutput {
 pub struct ToolWidget<'a> {
     tool_name: String,
     arg_summary: String,
+    arg_full: String,
     step_index: Option<usize>,
     phase: ToolPhase,
     detail: Option<String>,
@@ -282,6 +285,7 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: String::new(),
             arg_summary: String::new(),
+            arg_full: String::new(),
             step_index: None,
             phase: ToolPhase::Running,
             detail: None,
@@ -301,7 +305,16 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn with_arg_summary(mut self, summary: impl Into<String>) -> Self {
-        self.arg_summary = summary.into();
+        let summary = summary.into();
+        self.arg_summary = summary.clone();
+        if self.arg_full.is_empty() {
+            self.arg_full = summary;
+        }
+        self
+    }
+
+    pub fn with_arg_full(mut self, full: impl Into<String>) -> Self {
+        self.arg_full = full.into();
         self
     }
 
@@ -348,6 +361,10 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
+            arg_full: result
+                .arg_full
+                .clone()
+                .unwrap_or_else(|| result.arg_summary.clone()),
             step_index: None,
             phase: ToolPhase::from_status(&result.status),
             detail: result.detail.clone(),
@@ -460,6 +477,11 @@ impl<'a> ToolWidget<'a> {
             tool_name: self.tool_name.clone(),
             use_diff_gutter,
             arg_summary: self.arg_summary.clone(),
+            arg_full: if self.arg_full.is_empty() {
+                self.arg_summary.clone()
+            } else {
+                self.arg_full.clone()
+            },
             layout,
             detail_title,
             detail_preview,
@@ -679,6 +701,7 @@ mod tests {
         let result = StepResult {
             tool: "bash".to_string(),
             arg_summary: "sleep 1".to_string(),
+            arg_full: Some("sleep 1".to_string()),
             status: StepStatus::Success,
             message: "ok".to_string(),
             detail: Some("done\n".to_string()),

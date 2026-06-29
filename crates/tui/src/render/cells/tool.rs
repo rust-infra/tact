@@ -602,6 +602,7 @@ mod tests {
             tool_name: "write_file".into(),
             use_diff_gutter: true,
             arg_summary: "src/main.rs".into(),
+            arg_full: "src/main.rs".into(),
             layout: ToolLayout {
                 visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
