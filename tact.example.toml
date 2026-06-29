@@ -6,19 +6,19 @@
 #   ~/.tact/config.toml      user-global
 #
 # Or pass an explicit path:
-#   tact-tui --config /path/to/tact.toml
+#   tact-ui --config /path/to/tact.toml
 #
 # Interactive TUI (default):
-#   tact-tui
+#   tact-ui
 #
 # Headless single-shot task:
-#   tact-tui headless "fix all clippy warnings"
-#   tact-tui headless "refactor error handling in lib.rs"
+#   tact-ui headless "fix all clippy warnings"
+#   tact-ui headless "refactor error handling in lib.rs"
 #
 # Priority: CLI flags override values in this file.
 
 # ---------------------------------------------------------------------------
-# LLM (required for tact-tui unless overridden via CLI)
+# LLM (required for tact-ui unless overridden via CLI)
 # ---------------------------------------------------------------------------
 [llm]
 # Provider: "anthropic" | "openai" | "kimi"

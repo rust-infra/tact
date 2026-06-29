@@ -199,8 +199,8 @@ async fn run_headless(
     session_store: DynSessionStore,
 ) -> anyhow::Result<()> {
     if prompt.trim().is_empty() {
-        eprintln!("Usage: tact-tui headless <PROMPT>");
-        eprintln!("Try 'tact-tui headless --help' for more information.");
+        eprintln!("Usage: tact-ui headless <PROMPT>");
+        eprintln!("Try 'tact-ui headless --help' for more information.");
         std::process::exit(1);
     }
 

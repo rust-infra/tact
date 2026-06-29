@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "tact-tui"
+name = "tact-ui"
 path = "src/bin/tui.rs"
 
 [dependencies]

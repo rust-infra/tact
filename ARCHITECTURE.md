@@ -36,7 +36,7 @@ Binaries produced by `crates/tact`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact-tui` | `crates/tact/src/bin/tui.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-ui` | `crates/tact/src/bin/tui.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
 
 ---
 
@@ -45,7 +45,7 @@ Binaries produced by `crates/tact`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact-tui<br/>src/bin/tui.rs"]
+        B1["tact-ui<br/>src/bin/tui.rs"]
     end
 
     subgraph tact_lib["tact/src/lib.rs — Agent Runtime"]
@@ -157,7 +157,7 @@ The runtime no longer pre-generates a fixed JSON plan. Instead it runs a streami
 sequenceDiagram
     actor U as User
     participant TUI as TUI Module
-    participant Main as tact-tui main()
+    participant Main as tact-ui main()
     participant Agent as Agent::agent_loop()
     participant LLM as LLM API
     participant Perm as PermissionManager
