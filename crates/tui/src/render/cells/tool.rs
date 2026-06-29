@@ -206,6 +206,7 @@ pub(crate) struct ToolCell {
     success: Color,
     warning: Color,
     error: Color,
+    card_border_type: BorderType,
 }
 
 impl ToolCell {
@@ -220,6 +221,7 @@ impl ToolCell {
         success: Color,
         warning: Color,
         error: Color,
+        card_border_type: BorderType,
         msgs: &Messages,
     ) -> Self {
         Self {
@@ -251,6 +253,7 @@ impl ToolCell {
             success,
             warning,
             error,
+            card_border_type,
         }
     }
 
@@ -484,7 +487,7 @@ impl Renderable for ToolCell {
 
             let card_block = Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(self.card_border_type)
                 .border_style(
                     Style::default()
                         .fg(self.accent)
@@ -539,7 +542,7 @@ impl Renderable for ToolCell {
 
         let card_block = Block::default()
             .borders(borders)
-            .border_type(BorderType::Rounded)
+            .border_type(self.card_border_type)
             .border_style(Style::default().fg(self.accent))
             .style(Style::default().bg(self.bg));
         card_block.render(card_area, buf);
@@ -640,6 +643,7 @@ mod tests {
             Color::Green,
             Color::Yellow,
             Color::Red,
+            BorderType::Rounded,
             &msgs,
         )
     }

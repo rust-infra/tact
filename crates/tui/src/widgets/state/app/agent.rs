@@ -427,7 +427,7 @@ impl App {
 
                             if !lines.is_empty() {
                                 let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                                let (styled, _) = render_markdown_tui(&code_text);
+                                let (styled, _) = render_markdown_tui(&code_text, &self.theme);
                                 let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
                                 let placeholders: Vec<Line<'static>> =
                                     (0..placeholder_count).map(|_| Line::from("")).collect();
@@ -451,7 +451,7 @@ impl App {
                             }
                         } else if !lines.is_empty() {
                             let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                            let (styled, raw) = render_markdown_tui(&code_text);
+                            let (styled, raw) = render_markdown_tui(&code_text, &self.theme);
                             completed.extend(styled.into_iter().zip(raw));
                         }
                         self.stream.code_block = false;
@@ -495,7 +495,7 @@ impl App {
                         // Open new code block: flush pending content first
                         if !self.stream.paragraph.is_empty() {
                             let paragraph = std::mem::take(&mut self.stream.paragraph);
-                            let (styled, raw) = render_markdown_tui(&paragraph);
+                            let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
                             completed.extend(styled.into_iter().zip(raw));
                         }
                         if !self.stream.table_buffer.is_empty() {
@@ -541,14 +541,14 @@ impl App {
                         if is_table_line {
                             if !self.stream.paragraph.is_empty() {
                                 let paragraph = std::mem::take(&mut self.stream.paragraph);
-                                let (styled, raw) = render_markdown_tui(&paragraph);
+                                let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
                                 completed.extend(styled.into_iter().zip(raw));
                             }
                             self.stream.table_buffer.push(line);
                         } else if is_blank || is_hr {
                             if !self.stream.paragraph.is_empty() {
                                 let paragraph = std::mem::take(&mut self.stream.paragraph);
-                                let (styled, raw) = render_markdown_tui(&paragraph);
+                                let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
                                 completed.extend(styled.into_iter().zip(raw));
                             }
                             if !self.stream.table_buffer.is_empty() {

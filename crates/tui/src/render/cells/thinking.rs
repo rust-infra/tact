@@ -47,7 +47,7 @@ pub(crate) fn render_thinking_cards(
         }
 
         let total_lines = block.end_idx.saturating_sub(block.title_idx);
-        let card_style = Style::default().fg(Color::Rgb(140, 140, 220));
+        let card_style = Style::default().fg(app.theme.thinking_card_border());
         let visible_count = total_lines.min(3);
         let msgs = app.msgs();
         let elapsed_str = format_elapsed(block.elapsed);
@@ -61,7 +61,7 @@ pub(crate) fn render_thinking_cards(
 
         let card_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(app.theme.block_border_type())
             .border_style(card_style)
             .style(Style::default().bg(app.theme.bg))
             .title(
@@ -100,7 +100,7 @@ pub(crate) fn render_thinking_cards(
         );
         if inner.height > 0 && !block.cached_preview.is_empty() {
             let preview_style = Style::default()
-                .fg(Color::Rgb(180, 180, 200))
+                .fg(app.theme.thinking_preview_fg())
                 .bg(app.theme.bg);
             let start_preview = block.cached_preview.len().saturating_sub(3);
             let preview_lines: Vec<Line> = block.cached_preview[start_preview..]

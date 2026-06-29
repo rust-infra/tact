@@ -75,7 +75,7 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(app.theme.block_border_type())
                 .title(format!(" {} ", lang))
                 .title_bottom(Line::from(vec![
                     Span::styled(" y:copy ", Style::default().fg(app.theme.accent)),

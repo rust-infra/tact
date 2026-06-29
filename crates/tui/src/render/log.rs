@@ -104,11 +104,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     //  visual_cache       = [line0, line1, line2, ...]
     // ```
     //
-    // Rebuild when message count or panel width changes.
-    // TODO: dirty detection is incomplete — also invalidate on stream.buffer updates,
-    // in-place message edits (e.g. streaming code blocks), and theme changes.
+    // Rebuild when message count, panel width, or theme changes.
     let cache_valid = app.log_scroll.visual_cache_ver == app.messages.len()
-        && app.log_scroll.visual_cache_width == wrap_width as u16;
+        && app.log_scroll.visual_cache_width == wrap_width as u16
+        && app.log_scroll.visual_cache_theme == app.theme.name;
 
     if !cache_valid {
         app.log_scroll.visual_cache.clear();
@@ -122,7 +121,11 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 } else if app.messages[phys_idx].spans.is_empty() {
                     Line::default()
                 } else {
-                    app.messages[phys_idx].clone()
+                    super::log_style::restyle_log_line(
+                        &app.messages[phys_idx],
+                        &app.raw_messages[phys_idx],
+                        &app.theme,
+                    )
                 }
             } else {
                 // Last logical row: live stream text, styled with accent color.
@@ -144,6 +147,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         app.log_scroll.visual_cache_width = wrap_width as u16;
         app.log_scroll.visual_cache_ver = app.messages.len();
+        app.log_scroll.visual_cache_theme = app.theme.name;
     }
 
     // Phase 2: map logical scroll offset to a visual viewport.
@@ -351,6 +355,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     app.theme.success,
                     app.theme.warning,
                     app.theme.error,
+                    app.theme.block_border_type(),
                     &msgs,
                 );
                 renderer.push(vis_start, card_cell);
@@ -421,6 +426,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             prefix,
             indent_cols,
             log_fg,
+            app.theme.search_match_bg(),
+            app.theme.search_match_fg(),
         );
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
@@ -448,6 +455,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // Render bordered log panel
     let log_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(app.theme.block_border_type())
         .border_style(Style::default().fg(app.theme.border))
         .title(panel_title)
         .style(Style::default().bg(app.theme.bg));
@@ -458,7 +466,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         area.height.saturating_sub(2),
     );
     frame.render_widget(log_block, area);
-    frame.render_widget(Clear, inner);
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(app.theme.bg)),
+        inner,
+    );
     frame.render_widget(renderer, inner);
 
     // Overlays (thinking / code cards) share the same visual viewport.
@@ -573,18 +584,11 @@ fn render_loading_spinner(
     const SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner_char = SPINNERS[(app.spinner_frame as usize) % SPINNERS.len()];
 
-    // Pulse intensity based on spinner_frame (alternating dim/bright)
-    let pulse_intensity = if app.spinner_frame % 2 == 0 {
-        200
-    } else {
-        160
-    };
-
     let spinner_style = Style::default()
-        .fg(Color::Rgb(pulse_intensity, pulse_intensity, 80))
+        .fg(app.theme.warning)
         .add_modifier(Modifier::BOLD);
     let text_style = Style::default()
-        .fg(Color::Rgb(pulse_intensity, pulse_intensity, 80))
+        .fg(app.theme.accent)
         .add_modifier(Modifier::ITALIC);
 
     let spinner_line = Line::from(vec![

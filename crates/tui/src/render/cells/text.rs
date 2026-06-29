@@ -40,6 +40,8 @@ pub(crate) struct TextCell {
     indent_cols: u16,
     /// Normal foreground color.
     fg_color: Color,
+    search_match_bg: Color,
+    search_match_fg: Color,
 }
 
 impl TextCell {
@@ -54,6 +56,8 @@ impl TextCell {
         prefix: Option<String>,
         indent_cols: u16,
         fg_color: Color,
+        search_match_bg: Color,
+        search_match_fg: Color,
     ) -> Self {
         TextCell {
             cached_lines,
@@ -65,6 +69,8 @@ impl TextCell {
             prefix,
             indent_cols,
             fg_color,
+            search_match_bg,
+            search_match_fg,
         }
     }
 
@@ -114,7 +120,7 @@ impl TextCell {
             }
             spans.push(Span::styled(
                 self.raw_text[match_idx..end_idx].to_string(),
-                Style::default().bg(Color::Yellow).fg(Color::Black),
+                Style::default().bg(self.search_match_bg).fg(self.search_match_fg),
             ));
             last_idx = end_idx;
         }

@@ -67,7 +67,7 @@ impl App {
             Line::from(Span::styled(
                 title.clone(),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(self.theme.accent)
                     .add_modifier(Modifier::BOLD),
             )),
             title,
@@ -86,7 +86,7 @@ impl App {
             Line::from(Span::styled(
                 tagline.to_string(),
                 Style::default()
-                    .fg(Color::Rgb(128, 128, 128))
+                    .fg(self.theme.muted_fg())
                     .add_modifier(Modifier::ITALIC),
             )),
             tagline.to_string(),
@@ -142,7 +142,7 @@ impl App {
             }
         } else {
             let ty = classify_system_message(&content);
-            let (lines, raw_lines) = render_markdown_tui(&content);
+            let (lines, raw_lines) = render_markdown_tui(&content, &self.theme);
             self.extend_msgs(lines, raw_lines, ty);
         }
 

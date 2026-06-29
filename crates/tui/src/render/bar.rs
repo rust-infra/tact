@@ -224,6 +224,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 crate::theme::ThemeName::Retro => msgs.theme_retro,
                 crate::theme::ThemeName::Kawaii => msgs.theme_kawaii,
                 crate::theme::ThemeName::Japanese => msgs.theme_japanese,
+                crate::theme::ThemeName::Brutal => msgs.theme_brutal,
             };
             let lang_label = app.language.label();
             (

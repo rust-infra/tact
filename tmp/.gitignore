@@ -1,0 +1,11 @@
+# This is a .gitignore for a temporary scratch directory
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.local

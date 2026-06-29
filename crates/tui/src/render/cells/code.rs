@@ -79,24 +79,24 @@ pub(crate) fn render_code_cards(
         let msgs = app.msgs();
         let card_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Rgb(100, 120, 180)))
-            .style(Style::default().bg(Color::Rgb(20, 24, 38)))
+            .border_type(app.theme.block_border_type())
+            .border_style(Style::default().fg(app.theme.code_card_border()))
+            .style(Style::default().bg(app.theme.code_card_bg()))
             .title(Span::styled(
                 format!(" {} ", lang_label),
                 Style::default()
-                    .fg(Color::Rgb(160, 180, 240))
+                    .fg(app.theme.code_card_title_fg())
                     .add_modifier(Modifier::BOLD),
             ))
             .title_bottom(if total_styled > shown {
                 Line::from(Span::styled(
                     format!(" +{} lines | {}", total_styled - shown, msgs.code_card_bottom),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(app.theme.muted_fg()),
                 ))
             } else {
                 Line::from(Span::styled(
                     msgs.code_card_bottom,
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(app.theme.muted_fg()),
                 ))
             });
 
@@ -130,7 +130,7 @@ pub(crate) fn render_code_cards(
                 .collect();
             frame.render_widget(
                 Paragraph::new(lines)
-                    .style(Style::default().bg(Color::Rgb(20, 24, 38))),
+                    .style(Style::default().bg(app.theme.code_card_bg())),
                 inner,
             );
         }

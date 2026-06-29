@@ -43,7 +43,7 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
     let para = Paragraph::new(text)
         .block(Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(app.theme.block_border_type())
             .title(app.msgs().thinking_popup_title)
             .title_bottom(Line::from(vec![
                 Span::styled(app.msgs().popup_copy_hint, Style::default().fg(app.theme.accent)),

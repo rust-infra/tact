@@ -138,7 +138,7 @@ micro_compact_enabled = true
 notifications_enabled = true
 
 [ui]
-theme = "retro"   # or "auto" for terminal detection
+theme = "retro"   # retro | brutal | nord | dark | auto ...
 
 [tools]
 brave_search_api_key = "bsk-..."   # optional, for web_search
