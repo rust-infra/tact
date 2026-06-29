@@ -3,7 +3,7 @@ use std::time::Instant;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
@@ -265,6 +265,7 @@ impl ToolRenderOutput {
 pub struct ToolWidget<'a> {
     tool_name: String,
     arg_summary: String,
+    step_index: Option<usize>,
     phase: ToolPhase,
     detail: Option<String>,
     duration_us: Option<u64>,
@@ -281,6 +282,7 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: String::new(),
             arg_summary: String::new(),
+            step_index: None,
             phase: ToolPhase::Running,
             detail: None,
             duration_us: None,
@@ -300,6 +302,11 @@ impl<'a> ToolWidget<'a> {
 
     pub fn with_arg_summary(mut self, summary: impl Into<String>) -> Self {
         self.arg_summary = summary.into();
+        self
+    }
+
+    pub fn with_step_index(mut self, step_index: usize) -> Self {
+        self.step_index = Some(step_index);
         self
     }
 
@@ -341,6 +348,7 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
+            step_index: None,
             phase: ToolPhase::from_status(&result.status),
             detail: result.detail.clone(),
             duration_us: result.duration_us,
@@ -358,11 +366,29 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn title_text(&self) -> String {
-        let label = tool_display_name(&self.tool_name);
-        if self.arg_summary.is_empty() {
-            label
+        let base = match display_kind(&self.tool_name) {
+            ToolDisplayKind::Command => {
+                let label = self.tool_name.to_lowercase();
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label} ({})", self.arg_summary)
+                }
+            }
+            _ => {
+                let label = tool_display_name(&self.tool_name);
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label}  {}", self.arg_summary)
+                }
+            }
+        };
+
+        if let Some(idx) = self.step_index {
+            format!("{}. {}", idx + 1, base)
         } else {
-            format!("{label}  {}", self.arg_summary)
+            base
         }
     }
 
@@ -550,7 +576,7 @@ mod tests {
             .with_arg_summary("echo hello")
             .with_phase(ToolPhase::Running);
 
-        assert_eq!(widget.title_text(), "Bash  echo hello");
+        assert_eq!(widget.title_text(), "bash (echo hello)");
     }
 
     #[test]

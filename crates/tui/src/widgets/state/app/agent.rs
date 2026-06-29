@@ -1,11 +1,11 @@
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::widgets::state::*;
-use crate::widgets::tool_widget::{ToolPhase, ToolWidget, ToolRenderOutput};
+use crate::widgets::tool_widget::{ToolPhase, ToolWidget};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
 use std::time::Instant;
-use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{AgentErrorKind, AgentUpdate};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -118,19 +118,6 @@ impl App {
                 // If we're not yet in Executing (e.g. no PlanGenerated), fall back
                 // to a safe default.
                 self.ensure_executing_status(idx);
-                // Thinking blocks already insert one trailing isolation blank line
-                // when they close. Avoid adding a second gap before the step line.
-                let has_thinking_tail_gap = self.raw_messages.last().is_some_and(|s| s.is_empty())
-                    && self
-                        .raw_message_types
-                        .iter()
-                        .rev()
-                        .nth(1)
-                        .is_some_and(|t| matches!(t, RawMessageType::LLMThinking));
-                if !has_thinking_tail_gap {
-                    self.add_new_line();
-                }
-                self.add_system_message(format!("  {}. {}", idx + 1, step.description));
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
             }
@@ -153,6 +140,7 @@ impl App {
                 let output = ToolWidget::new(&self.theme, &msgs)
                     .with_tool(tool_name)
                     .with_arg_summary(arg_summary)
+                    .with_step_index(idx)
                     .with_phase(ToolPhase::Running)
                     .with_duration_us(0)
                     .build();
@@ -169,7 +157,9 @@ impl App {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 let msgs = self.msgs();
-                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs).build();
+                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+                    .with_step_index(idx)
+                    .build();
                 self.finalize_tool_block(&tool_id, output);
 
                 if let Some(step) = self.plan.steps.get_mut(idx) {
@@ -192,6 +182,7 @@ impl App {
                     let output = ToolWidget::new(&self.theme, &msgs)
                         .with_tool(tool_name)
                         .with_arg_summary(arg_summary)
+                        .with_step_index(idx)
                         .with_phase(ToolPhase::Failed)
                         .with_duration_us(elapsed_us)
                         .with_message(error.clone())

@@ -598,12 +598,17 @@ impl Agent {
             }
 
             let step_idx = self.next_step_idx();
-            // Step row in plan/log should stay compact: args are shown by the tool card.
+            let arg_summary = tool_arg_summary(name, input);
+            let step_description = if arg_summary.is_empty() {
+                name.clone()
+            } else {
+                format!("{name} ({arg_summary})")
+            };
             self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
-                description: name.clone(),
+                description: step_description,
                 tool: name.clone(),
                 tool_id: id.clone(),
-                args: std::collections::HashMap::new(),
+                args: tool_args_map(input),
                 need_approval: false,
                 output: None,
             }));
@@ -611,7 +616,7 @@ impl Agent {
                 step_idx,
                 id.clone(),
                 name.clone(),
-                tool_arg_summary(name, input),
+                arg_summary,
             ));
 
             let mut tool_use = ToolUse {
@@ -1250,8 +1255,22 @@ struct ExecResult {
     status: StepStatus,
 }
 
+const MAX_TOOL_ARG_SUMMARY_CHARS: usize = 120;
+
+fn truncate_tool_arg_summary(s: &str) -> String {
+    if s.chars().count() <= MAX_TOOL_ARG_SUMMARY_CHARS {
+        return s.to_string();
+    }
+    format!(
+        "{}...",
+        s.chars()
+            .take(MAX_TOOL_ARG_SUMMARY_CHARS.saturating_sub(3))
+            .collect::<String>()
+    )
+}
+
 fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
-    match name {
+    let raw = match name {
         "read_file" | "write_file" => input
             .get("path")
             .and_then(|v| v.as_str())
@@ -1262,16 +1281,25 @@ fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        _ => {
-            let input_str = input.to_string();
-            let char_count = input_str.chars().count();
-            if char_count > 120 {
-                format!("{}...", input_str.chars().take(117).collect::<String>())
-            } else {
-                input_str
-            }
-        }
-    }
+        _ => input.to_string(),
+    };
+    truncate_tool_arg_summary(&raw)
+}
+
+fn tool_args_map(input: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    input
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .map(|(k, v)| {
+                    let val = v
+                        .as_str()
+                        .map_or_else(|| v.to_string(), |s| s.to_string());
+                    (k.clone(), val)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn tool_detail_content(
@@ -1286,6 +1314,27 @@ fn tool_detail_content(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_arg_summary;
+
+    #[test]
+    fn long_bash_summary_is_truncated() {
+        let command = "x".repeat(200);
+        let input = serde_json::json!({ "command": command });
+        let summary = tool_arg_summary("bash", &input);
+        assert_eq!(summary.chars().count(), 120);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn short_bash_summary_is_preserved() {
+        let input = serde_json::json!({ "command": "git status --short" });
+        let summary = tool_arg_summary("bash", &input);
+        assert_eq!(summary, "git status --short");
     }
 }
 
