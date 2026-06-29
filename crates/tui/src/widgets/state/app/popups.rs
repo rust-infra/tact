@@ -270,10 +270,25 @@ impl App {
         }
         match output.tool_name.as_str() {
             "write_file" | "read_file" => Some(DiffPopup {
-                title: output.arg_summary.clone(),
-                file_path: Some(output.arg_summary.clone()),
+                title: if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                },
+                file_path: Some(if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                }),
                 inline_content: output.detail_full.clone(),
-                lang: crate::render::popups::diff_popup::popup_lang_for_path(&output.arg_summary),
+                lang: crate::render::popups::diff_popup::popup_lang_for_path(if output
+                    .arg_full
+                    .is_empty()
+                {
+                    &output.arg_summary
+                } else {
+                    &output.arg_full
+                }),
                 use_diff_gutter: output.use_diff_gutter,
                 scroll: 0,
                 cached_content: None,
@@ -281,13 +296,26 @@ impl App {
             }),
             "bash" | "shell" | "run_command" => {
                 let content = output.detail_full.clone()?;
+                let full_arg = if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                };
                 Some(DiffPopup {
-                    title: output
-                        .detail_title
-                        .clone()
-                        .unwrap_or_else(|| "Command output".to_string()),
+                    title: if full_arg.is_empty() {
+                        output
+                            .detail_title
+                            .clone()
+                            .unwrap_or_else(|| "Command output".to_string())
+                    } else {
+                        format!("bash ({full_arg})")
+                    },
                     file_path: None,
-                    inline_content: Some(content),
+                    inline_content: Some(if full_arg.is_empty() {
+                        content
+                    } else {
+                        format!("$ {full_arg}\n\n{content}")
+                    }),
                     lang: "bash".to_string(),
                     use_diff_gutter: false,
                     scroll: 0,

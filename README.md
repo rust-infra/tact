@@ -35,7 +35,7 @@ tact is a **terminal-first AI coding agent** that lives inside your terminal. It
 - 🧩 **Extensible** — MCP plugins, custom skills, hooks, and tool macros
 
 ```
-$ tact "Add a --verbose flag to the CLI and update the README"
+$ tact-ui headless "Add a --verbose flag to the CLI and update the README"
 ```
 
 That's it. No YAML config wizard. No "sign up for waitlist." Just a prompt and a terminal.
@@ -91,8 +91,8 @@ Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connec
 
 ### 📡 TUI & Headless
 
-- **TUI mode** (`tact-tui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
-- **Headless mode** (`tact`) — CI/CD pipelines, scripts, or non-interactive workflows
+- **TUI mode** (`tact-ui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
+- **Headless mode** (`tact-ui headless`) — CI/CD pipelines, scripts, or non-interactive workflows
 
 ### 💾 Persistent State
 
@@ -109,7 +109,7 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 git clone https://github.com/Rg0x80/tact.git
 cd tact
 cargo build --release
-./target/release/tact --help
+./target/release/tact-ui --help
 
 # Or via cargo install (coming soon to crates.io)
 cargo install tact
@@ -117,50 +117,55 @@ cargo install tact
 
 ### 2. Configure
 
-Set your API key. That's the only required step.
-
-```bash
-# Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Or OpenAI-compatible
-export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional proxy
-```
-
-For persistent config, create `tact.toml` in your project root:
+Create `tact.toml` in your project root (or `~/.tact/config.toml` for user-level defaults):
 
 ```toml
 [llm]
-provider = "anthropic"
+provider = "anthropic"   # "anthropic" | "openai" | "kimi"
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
+base_url = "https://api.anthropic.com"  # required for anthropic
 
 [permission]
 mode = "default"   # "default" | "plan" | "auto"
+
+[agent]
+context_limit_chars = 500000
+snapshot_max_items = 80
+micro_compact_enabled = true
+notifications_enabled = true
+
+[ui]
+theme = "retro"   # or "auto" for terminal detection
+
+[tools]
+brave_search_api_key = "bsk-..."   # optional, for web_search
 ```
 
-Optional environment variables:
+CLI flags override the config file (e.g. `--model`, `--api-key`, `--theme`).
 
-| Variable | Default | Description |
-|---|---|---|
-| `TACT_SNAPSHOT_MAX_ITEMS` | `80` | Max entries in the system-prompt Project structure snapshot |
-| `TACT_CONTEXT_LIMIT_CHARS` | `500000` | Soft context limit before auto-compaction |
+Optional agent settings (config file or CLI):
+
+| Setting | CLI flag | Default | Description |
+|---|---|---|---|
+| `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
+| `context_limit_chars` | `--context-limit-chars` | `500000` | Soft context limit before auto-compaction |
+| `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
 
 ### 3. Run
 
 ```bash
-# Interactive coding task
-tact "Fix all clippy warnings in src/ and run cargo test"
+# Interactive TUI (default)
+tact-ui
 
-# TUI mode (streaming output, permission dialogs)
-tact-tui
+# Headless single-shot task
+tact-ui headless "Fix all clippy warnings in src/ and run cargo test"
 
 # With specific model
-tact --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
+tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
 
 # Plan-only mode (review before execution)
-tact -m plan "Add rate limiting to the API client"
+tact-ui -m plan headless "Add rate limiting to the API client"
 ```
 
 ---
@@ -290,8 +295,7 @@ cargo build --release
 ```
 
 Binaries:
-- `./target/release/tact` — headless CLI
-- `./target/release/tact-tui` — interactive TUI
+- `./target/release/tact-ui` — interactive TUI by default; use `headless` subcommand for non-interactive runs
 
 ### Via Cargo (soon)
 
@@ -307,11 +311,13 @@ Pre-built binaries for macOS (ARM64 / x86_64) and Linux (x86_64).
 
 ## Configuration
 
-tact merges config from three sources (priority: high → low):
+tact merges config from two sources (priority: high → low):
 
 ```
-CLI args  >  Environment variables  >  tact.toml
+CLI args  >  tact.toml
 ```
+
+Use `--config /path/to/config.toml` to point at a specific file instead of auto-discovery.
 
 ### Config file locations (auto-discovered)
 
@@ -325,28 +331,46 @@ CLI args  >  Environment variables  >  tact.toml
 
 ```toml
 [llm]
-provider = "anthropic"           # or "openai"
+provider = "anthropic"           # "anthropic" | "openai" | "kimi"
 model = "claude-sonnet-4-20250514"
-api_key = "sk-ant-..."           # also via ANTHROPIC_API_KEY / OPENAI_API_KEY
+api_key = "sk-ant-..."
 base_url = "https://..."         # proxy or compatible endpoint
+max_tokens = 8000
+thinking_budget = 32000
 
 [permission]
 mode = "default"                 # "default" | "plan" | "auto"
 
 [agent]
 context_limit_chars = 500000     # auto-compact threshold
+snapshot_max_items = 80
+micro_compact_enabled = true
+notifications_enabled = true
+
+[ui]
+theme = "retro"                  # or "auto"
+
+[tools]
+brave_search_api_key = "bsk-..."
 ```
 
-### Environment variables
+### CLI flags (override config)
 
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `OPENAI_BASE_URL` | Custom OpenAI-compatible endpoint |
-| `ANTHROPIC_MODEL` / `OPENAI_MODEL` | Model name |
-| `TACT_PROVIDER` | `anthropic` or `openai` |
-| `TACT_CONFIG` | Path to config file |
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to config file |
+| `--provider` | LLM provider |
+| `--model` | Model name |
+| `--api-key` | API key |
+| `--base-url` | API base URL |
+| `--max-tokens` | Max tokens per LLM call |
+| `--thinking-budget` | Extended thinking budget |
+| `--permission-mode` / `-m` | Permission mode |
+| `--theme` | TUI theme |
+| `--snapshot-max-items` | Project structure snapshot size |
+| `--no-micro-compact` | Disable micro-compaction |
+| `--brave-search-api-key` | Brave Search API key |
+| `--tokio-console` | Enable tokio-console debugging |
 
 ---
 

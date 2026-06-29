@@ -7,31 +7,31 @@ use ratatui::{
 };
 use crate::widgets::state::App;
 
-/// Map language names to emoji + label for code card titles.
-fn lang_emoji(lang: &str) -> String {
+/// Map language names to plain labels for code card titles.
+fn lang_label(lang: &str) -> String {
     match lang.to_ascii_lowercase().as_str() {
-        "rust" | "rs" => "🦀 rust".to_string(),
-        "python" | "py" => "🐍 python".to_string(),
-        "javascript" | "js" => "🟨 js".to_string(),
-        "typescript" | "ts" => "🔷 ts".to_string(),
-        "html" => "🌐 html".to_string(),
-        "css" => "🎨 css".to_string(),
-        "json" => "📋 json".to_string(),
-        "yaml" | "yml" => "⚙ yaml".to_string(),
-        "toml" => "⚙ toml".to_string(),
-        "markdown" | "md" => "📝 md".to_string(),
-        "shell" | "sh" | "bash" | "zsh" => "🐚 bash".to_string(),
-        "go" => "🔵 go".to_string(),
-        "ruby" | "rb" => "💎 ruby".to_string(),
-        "java" => "☕ java".to_string(),
-        "c" => "⚡ c".to_string(),
-        "cpp" | "c++" => "⚡ cpp".to_string(),
-        "sql" => "🗄 sql".to_string(),
-        "dockerfile" | "docker" => "🐳 docker".to_string(),
-        "makefile" | "make" => "🔧 make".to_string(),
-        "diff" => "📊 diff".to_string(),
-        "text" | "txt" => "📄 text".to_string(),
-        "xml" => "📰 xml".to_string(),
+        "rust" | "rs" => "rust".to_string(),
+        "python" | "py" => "python".to_string(),
+        "javascript" | "js" => "js".to_string(),
+        "typescript" | "ts" => "ts".to_string(),
+        "html" => "html".to_string(),
+        "css" => "css".to_string(),
+        "json" => "json".to_string(),
+        "yaml" | "yml" => "yaml".to_string(),
+        "toml" => "toml".to_string(),
+        "markdown" | "md" => "md".to_string(),
+        "shell" | "sh" | "bash" | "zsh" => "bash".to_string(),
+        "go" => "go".to_string(),
+        "ruby" | "rb" => "ruby".to_string(),
+        "java" => "java".to_string(),
+        "c" => "c".to_string(),
+        "cpp" | "c++" => "cpp".to_string(),
+        "sql" => "sql".to_string(),
+        "dockerfile" | "docker" => "docker".to_string(),
+        "makefile" | "make" => "make".to_string(),
+        "diff" => "diff".to_string(),
+        "text" | "txt" => "text".to_string(),
+        "xml" => "xml".to_string(),
         _ => lang.to_string(),
     }
 }
@@ -69,9 +69,9 @@ pub(crate) fn render_code_cards(
         }
 
         let lang_label = if block.lang.is_empty() {
-            "📄 code".to_string()
+            "code".to_string()
         } else {
-            lang_emoji(&block.lang)
+            lang_label(&block.lang)
         };
         let total_styled = block.styled.len();
         let inner_h = (y_bot.saturating_sub(y_top).saturating_sub(2)) as usize;
@@ -83,7 +83,7 @@ pub(crate) fn render_code_cards(
             .border_style(Style::default().fg(Color::Rgb(100, 120, 180)))
             .style(Style::default().bg(Color::Rgb(20, 24, 38)))
             .title(Span::styled(
-                format!(" {}  📋 ", lang_label),
+                format!(" {} ", lang_label),
                 Style::default()
                     .fg(Color::Rgb(160, 180, 240))
                     .add_modifier(Modifier::BOLD),

@@ -56,13 +56,13 @@
 //! │  │                                                     │ │
 //! │  │    1 + use std::io;                                 │ │  ← preview lines (N rows)
 //! │  │    2 + fn main() {                                  │ │
-//! │  │  ... and 10 more lines                              │ │  ← overflow line (1 row, optional)
+//! │  │                                                     │ │
 //! │  │                                                     │ │
 //! │  ╰▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔╯ │  ← card: bottom border + label
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! Height formula: `1 (summary) + 1 (top border) + N (preview + optional overflow) + 1 (bottom border)`.
+//! Height formula: `1 (summary) + 1 (top border) + N (preview) + 1 (bottom border)`.
 //!
 //! ## Rendering with `skip_lines`
 //!
@@ -100,7 +100,7 @@
 //! │  In handle_step_completed:                                            │
 //! │    a. Call ToolWidget::build() to produce ToolRenderOutput            │
 //! │    b. Pull accent/bg/fg/success from self.theme                       │
-//! │    c. Pull card_bottom/overflow_tmpl from self.msgs                   │
+//! │    c. Pull card_bottom from self.msgs                                  │
 //! │    d. ToolCell::from_output(...) → Box<dyn Renderable>                │
 //! │    e. Push into LogColumnRenderer alongside other cells               │
 //! │                                                                       │
@@ -172,7 +172,7 @@ use crate::{
     i18n::Messages,
     render::renderable::Renderable,
     widgets::tool_widget::{
-        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_ms, tool_card_inner_rows,
+        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us, tool_card_inner_rows,
         tool_visual_rows, TOOL_HEADER_ROWS,
     },
 };
@@ -183,7 +183,7 @@ pub(crate) struct ToolCell {
     phase: ToolPhase,
     permission_label: Option<String>,
     error_message: Option<String>,
-    duration_ms: Option<u64>,
+    duration_us: Option<u64>,
     size_bytes: Option<usize>,
     started_at: Option<Instant>,
     spinner_char: char,
@@ -194,7 +194,6 @@ pub(crate) struct ToolCell {
     detail_preview: Vec<String>,
     detail_total_lines: usize,
     card_bottom: String,
-    overflow_tmpl: String,
     tool_phase_running: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
@@ -229,7 +228,7 @@ impl ToolCell {
             phase: output.phase,
             permission_label: output.permission_label,
             error_message: output.error_message,
-            duration_ms: output.duration_ms,
+            duration_us: output.duration_us,
             size_bytes: output.size_bytes,
             started_at,
             spinner_char,
@@ -240,7 +239,6 @@ impl ToolCell {
             detail_preview: output.detail_preview,
             detail_total_lines: output.detail_total_lines,
             card_bottom: msgs.diff_card_bottom.to_string(),
-            overflow_tmpl: msgs.diff_overflow_tmpl.to_string(),
             tool_phase_running: msgs.tool_phase_running,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
@@ -257,16 +255,16 @@ impl ToolCell {
     }
 
     fn meta_line(&self) -> Line<'static> {
-        let duration_ms = if self.phase == ToolPhase::Running {
-            self.started_at.map(running_elapsed_ms).or(self.duration_ms)
+        let duration_us = if self.phase == ToolPhase::Running {
+            self.started_at.map(running_elapsed_us).or(self.duration_us)
         } else {
-            self.duration_ms
+            self.duration_us
         };
         let text = build_meta_text(
             self.phase,
             self.permission_label.as_deref(),
             self.size_bytes,
-            duration_ms,
+            duration_us,
             self.error_message.as_deref(),
             self.spinner_char,
             self.tool_phase_running,
@@ -322,15 +320,21 @@ impl ToolCell {
             })
             .collect();
 
-        if self.detail_total_lines > self.detail_preview.len() {
-            let remaining = self.detail_total_lines - self.detail_preview.len();
-            lines.push(Line::from(Span::styled(
-                self.overflow_tmpl.replace("{}", &remaining.to_string()),
-                Style::default().fg(Color::Gray).bg(self.bg),
-            )));
-        }
-
         lines
+    }
+
+    fn card_bottom_text(&self) -> String {
+        let base = self.card_bottom.trim();
+        if self.detail_total_lines > self.detail_preview.len() {
+            format!(
+                " {}/{} lines | {} ",
+                self.detail_preview.len(),
+                self.detail_total_lines,
+                base
+            )
+        } else {
+            self.card_bottom.clone()
+        }
     }
 }
 
@@ -494,7 +498,7 @@ impl Renderable for ToolCell {
                         .add_modifier(Modifier::BOLD),
                 ))
                 .title_bottom(Line::from(Span::styled(
-                    &self.card_bottom,
+                    self.card_bottom_text(),
                     Style::default()
                         .fg(self.accent)
                         .add_modifier(Modifier::ITALIC),
@@ -593,11 +597,12 @@ mod tests {
             phase: ToolPhase::Success,
             permission_label: None,
             error_message: None,
-            duration_ms: Some(12),
+            duration_us: Some(12_000),
             size_bytes: Some(128),
             tool_name: "write_file".into(),
             use_diff_gutter: true,
             arg_summary: "src/main.rs".into(),
+            arg_full: "src/main.rs".into(),
             layout: ToolLayout {
                 visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
@@ -658,7 +663,8 @@ mod tests {
     #[test]
     fn height_with_card_and_overflow() {
         let cell = tool_cell(make_output(true, 10, 15));
-        assert_eq!(cell.height(80), 2 + 1 + 11 + 1);
+        // Overflow is merged into the bottom hint, so no extra inner row.
+        assert_eq!(cell.height(80), 2 + 1 + 10 + 1);
     }
 
     #[test]
@@ -746,9 +752,10 @@ mod tests {
     #[test]
     fn card_only_height_with_overflow() {
         // 3 preview, 10 total → overflow row present
-        // height = 1 + (3 + 1) + 1 = 6
+        // Overflow is merged into the bottom hint, so no extra inner row.
+        // height = 1 + 3 + 1 = 5
         let cell = tool_cell_mode(make_output(true, 3, 10), true, None);
-        assert_eq!(cell.height(80), 6);
+        assert_eq!(cell.height(80), 5);
     }
 
     #[test]
@@ -768,5 +775,13 @@ mod tests {
         // skip_lines=1: skip top border, render interior content
         cell.render_partial(area, &mut buf, 1);
         assert_eq!(buf.area, area);
+    }
+
+    #[test]
+    fn overflow_is_merged_into_bottom_hint() {
+        let cell = tool_cell(make_output(true, 3, 10));
+        let bottom = cell.card_bottom_text();
+        assert!(bottom.contains("3/10 lines"));
+        assert!(bottom.contains("Double-click for full code"));
     }
 }

@@ -5,20 +5,14 @@
 //! the terminal is not in focus.  On other platforms the module is a safe
 //! no-op.
 //!
-//! Notifications can be disabled via the `TACT_NOTIFICATIONS_ENABLED`
-//! environment variable (set to `"false"`) or through the TOML/cli config.
-//! Notifications are enabled by default.
+//! Notifications can be disabled via config (`agent.notifications_enabled = false`
+//! or `--no-notifications`). Notifications are enabled by default.
 
 use anyhow::Result;
 
 /// Returns `true` if desktop notifications are enabled.
-///
-/// Checks the `TACT_NOTIFICATIONS_ENABLED` env var.  Defaults to `true`.
 pub fn is_enabled() -> bool {
-    std::env::var("TACT_NOTIFICATIONS_ENABLED")
-        .as_deref()
-        .map(|v| v == "true" || v == "1" || v.is_empty())
-        .unwrap_or(true)
+    crate::config::settings().agent.notifications_enabled
 }
 
 /// Sends a desktop notification.

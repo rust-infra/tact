@@ -1,5 +1,6 @@
 use crate::widgets::state::{App, Status};
 use ratatui::{Frame, layout::Rect};
+use std::collections::HashSet;
 
 /// Render the Execution Plan panel, showing step list, execution status, and selection highlight.
 pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -8,6 +9,20 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         text::{Line, Span},
         widgets::{Block, BorderType, Borders, List, ListItem},
     };
+    // Under parallel tool execution, multiple steps can be running at once.
+    // Highlight all active steps instead of a single `current_step`.
+    let running_indices: HashSet<usize> = app
+        .tools
+        .active
+        .iter()
+        .filter_map(|active| {
+            app.plan
+                .steps
+                .iter()
+                .position(|step| step.tool_id == active.tool_id)
+        })
+        .collect();
+
     let items: Vec<ListItem> = app
         .plan
         .steps
@@ -15,10 +30,8 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, step)| {
             let mut style = Style::default().fg(app.theme.fg);
-            if let Status::Executing { current_step, .. } = app.status {
-                if i == current_step {
-                    style = style.fg(app.theme.warning).add_modifier(Modifier::BOLD);
-                }
+            if matches!(app.status, Status::Executing { .. }) && running_indices.contains(&i) {
+                style = style.fg(app.theme.warning).add_modifier(Modifier::BOLD);
             }
             let is_selected = app
                 .mouse
