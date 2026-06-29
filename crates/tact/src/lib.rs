@@ -24,11 +24,11 @@ pub mod compact;
 pub mod config;
 pub mod consts;
 pub mod cron;
-pub mod notifications;
 pub mod hook;
 pub mod lsp;
 pub mod mcp;
 pub mod memory;
+pub mod notifications;
 pub mod permission;
 pub mod prompt;
 pub mod recovery;
@@ -43,8 +43,8 @@ pub mod worktree;
 pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
 
 use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, Message, MessageContent,
-    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
+    ContentBlock, CreateMessageParams, Message, MessageContent, RequiredMessageParams, Role,
+    StopReason, Thinking, ThinkingType,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -69,8 +69,8 @@ use crate::recovery::{
 use crate::stats::SessionStats;
 use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
 use tact_llm::{LlmClient, LlmProvider};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo};
 
 /// Soft context limit in characters. When the serialized context exceeds
 /// this threshold the agent will attempt micro-compaction.
@@ -249,11 +249,7 @@ impl Agent {
         self.persist_message(message.role, &blocks).await
     }
 
-    async fn persist_message(
-        &mut self,
-        role: Role,
-        content: &MessageContent,
-    ) -> Result<()> {
+    async fn persist_message(&mut self, role: Role, content: &MessageContent) -> Result<()> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(());
         };
@@ -261,7 +257,9 @@ impl Agent {
             return Ok(());
         };
         let ordinal = self.runtime.context.len() as i64;
-        let db_id = store.append_message(session_id, role, content, ordinal).await?;
+        let db_id = store
+            .append_message(session_id, role, content, ordinal)
+            .await?;
         if self.runtime.first_message_db_id == 0 {
             self.runtime.first_message_db_id = db_id;
         }
@@ -341,9 +339,7 @@ impl Agent {
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
-    pub async fn agent_loop(&mut self,
-        initial_user_message: Option<Message>,
-    ) -> Result<()> {
+    pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
 
         // Ensure a session exists and optionally restore history.
@@ -360,7 +356,6 @@ impl Agent {
             self.push_message(msg).await?;
         }
 
-        let system = self.build_system_prompt()?;
         loop {
             if self
                 .runtime
@@ -375,6 +370,10 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
+
+            // Re-render the system prompt each turn so memory/dynamic_context stay fresh.
+            // Stable sections are placed before DYNAMIC_BOUNDARY to keep prefix cache-friendly.
+            let system = self.build_system_prompt()?;
 
             let model_name = get_model().to_string();
             let request = CreateMessageParams::new(RequiredMessageParams {
@@ -406,7 +405,10 @@ impl Agent {
             self.runtime.stats.total_prompt_chars += prompt_chars;
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason, token_usage, request_body) = match self.stream_message(&request).await {
+            let (content, stop_reason, token_usage, request_body) = match self
+                .stream_message(&request)
+                .await
+            {
                 Ok(result) => {
                     self.runtime.recovery_state.transport_attempts = 0;
                     result
@@ -464,11 +466,7 @@ impl Agent {
                 self.runtime.stats.record_token_usage(usage);
             }
             let _ = self
-                .persist_llm_call(
-                    "stream",
-                    token_usage.as_ref(),
-                    request_body.as_deref(),
-                )
+                .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
                 .await;
 
             self.runtime
@@ -482,7 +480,13 @@ impl Agent {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
-            self.persist_message(Role::Assistant, &MessageContent::Blocks { content: content.clone() }).await?;
+            self.persist_message(
+                Role::Assistant,
+                &MessageContent::Blocks {
+                    content: content.clone(),
+                },
+            )
+            .await?;
 
             if matches!(stop_reason, Some(StopReason::MaxTokens))
                 && self.runtime.recovery_state.continuation_attempts < MAX_RECOVERY_ATTEMPTS
@@ -494,7 +498,13 @@ impl Agent {
                     self.runtime
                         .context
                         .push(Message::new_blocks(Role::User, tool_result.clone()));
-                    self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
+                    self.persist_message(
+                        Role::User,
+                        &MessageContent::Blocks {
+                            content: tool_result,
+                        },
+                    )
+                    .await?;
                     if let Some(focus) = manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
                         self.compact_history(Some(focus.as_str())).await?;
@@ -539,7 +549,13 @@ impl Agent {
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::User, tool_result.clone()));
-            self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
+            self.persist_message(
+                Role::User,
+                &MessageContent::Blocks {
+                    content: tool_result,
+                },
+            )
+            .await?;
 
             if let Some(focus) = manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));
@@ -551,7 +567,15 @@ impl Agent {
     async fn stream_message(
         &mut self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<tact_llm::LlmRequestBody>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<tact_llm::LlmRequestBody>,
+        ),
+        anyhow::Error,
+    > {
         let ui_tx = self.runtime.ui_tx.clone();
         self.runtime
             .client
@@ -635,7 +659,11 @@ impl Agent {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
                             let msg = format!("Permission denied: {}", decision.reason);
-                            self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                            self.emit_update(AgentUpdate::StepFailed(
+                                step_idx,
+                                id.clone(),
+                                msg.clone(),
+                            ));
                             return Ok((
                                 vec![ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
@@ -653,8 +681,7 @@ impl Agent {
                                     .chars()
                                     .take(80)
                                     .collect::<String>();
-                                let prompt =
-                                    format!("Allow {}: {}", tool_use.name, input_preview);
+                                let prompt = format!("Allow {}: {}", tool_use.name, input_preview);
                                 let options = vec![
                                     "Allow once".to_string(),
                                     "Deny".to_string(),
@@ -692,11 +719,13 @@ impl Agent {
                                     PreparedState::Run
                                 }
                                 _ => {
-                                    let msg = format!(
-                                        "Permission denied by user for {}",
-                                        tool_use.name
-                                    );
-                                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                                    let msg =
+                                        format!("Permission denied by user for {}", tool_use.name);
+                                    self.emit_update(AgentUpdate::StepFailed(
+                                        step_idx,
+                                        id.clone(),
+                                        msg.clone(),
+                                    ));
                                     return Ok((
                                         vec![ContentBlock::ToolResult {
                                             tool_use_id: id.clone(),
@@ -752,7 +781,10 @@ impl Agent {
         // Record how this turn's tools were scheduled, linked to the same LLM
         // call as the token usage, so the parallelism can be audited later.
         if !run_indices.is_empty() {
-            let names: Vec<String> = run_indices.iter().map(|&i| prepared[i].name.clone()).collect();
+            let names: Vec<String> = run_indices
+                .iter()
+                .map(|&i| prepared[i].name.clone())
+                .collect();
             self.persist_tool_schedule(&tool_schedule::summarize(&names, &resources))
                 .await;
         }
@@ -777,9 +809,7 @@ impl Agent {
             // A barrier wave always holds a single tool. MCP tools need the
             // stateful router (`&mut self`), so run those sequentially; every
             // other wave runs concurrently over shared borrows.
-            if wave.len() == 1
-                && MCPToolRouter::is_mcp_tool(&prepared[run_indices[wave[0]]].name)
-            {
+            if wave.len() == 1 && MCPToolRouter::is_mcp_tool(&prepared[run_indices[wave[0]]].name) {
                 let pi = run_indices[wave[0]];
                 let start = std::time::Instant::now();
                 let exec = self
@@ -804,18 +834,19 @@ impl Agent {
                 let (exec_output, final_status) =
                     match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
                         Ok(HookControl::Continue) => (tool_result.content, exec.status),
-                        Ok(HookControl::Block(reason)) => {
-                            (
-                                format!("Tool blocked by PostToolUse hook: {reason}"),
-                                StepStatus::Failed,
-                            )
-                        }
+                        Ok(HookControl::Block(reason)) => (
+                            format!("Tool blocked by PostToolUse hook: {reason}"),
+                            StepStatus::Failed,
+                        ),
                         Err(error) => (
                             format!("PostToolUse hook failed: {error}"),
                             StepStatus::Failed,
                         ),
                     };
-                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+                self.runtime
+                    .stats
+                    .tool_durations_ms
+                    .push(duration_us / 1000);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
@@ -859,7 +890,12 @@ impl Agent {
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     let exec = run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
-                    (pi, exec.content, exec.status, start.elapsed().as_micros() as u64)
+                    (
+                        pi,
+                        exec.content,
+                        exec.status,
+                        start.elapsed().as_micros() as u64,
+                    )
                 });
             }
             let mut pending_durations_us: Vec<u64> = Vec::new();
@@ -883,12 +919,10 @@ impl Agent {
                 let (exec_output, final_status) =
                     match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
                         Ok(HookControl::Continue) => (tool_result.content, exec_status),
-                        Ok(HookControl::Block(reason)) => {
-                            (
-                                format!("Tool blocked by PostToolUse hook: {reason}"),
-                                StepStatus::Failed,
-                            )
-                        }
+                        Ok(HookControl::Block(reason)) => (
+                            format!("Tool blocked by PostToolUse hook: {reason}"),
+                            StepStatus::Failed,
+                        ),
                         Err(error) => (
                             format!("PostToolUse hook failed: {error}"),
                             StepStatus::Failed,
@@ -929,7 +963,10 @@ impl Agent {
             }
             drop(futures);
             for duration_us in pending_durations_us {
-                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+                self.runtime
+                    .stats
+                    .tool_durations_ms
+                    .push(duration_us / 1000);
             }
             for path in pending_recent_files {
                 self.remember_recent_file(&path);
@@ -1104,11 +1141,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             self.runtime.stats.record_token_usage(usage);
         }
         let _ = self
-            .persist_llm_call(
-                "compact",
-                token_usage.as_ref(),
-                request_body.as_deref(),
-            )
+            .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
             .await;
         // After compaction the context is replaced with a summary, so
         // future messages start a new message-id window.
@@ -1300,9 +1333,7 @@ fn tool_args_map(input: &serde_json::Value) -> std::collections::HashMap<String,
         .map(|obj| {
             obj.iter()
                 .map(|(k, v)| {
-                    let val = v
-                        .as_str()
-                        .map_or_else(|| v.to_string(), |s| s.to_string());
+                    let val = v.as_str().map_or_else(|| v.to_string(), |s| s.to_string());
                     (k.clone(), val)
                 })
                 .collect()
@@ -1310,11 +1341,7 @@ fn tool_args_map(input: &serde_json::Value) -> std::collections::HashMap<String,
         .unwrap_or_default()
 }
 
-fn tool_detail_content(
-    name: &str,
-    input: &serde_json::Value,
-    exec_output: &str,
-) -> Option<String> {
+fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str) -> Option<String> {
     match name {
         "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
         "write_file" => input
@@ -1374,10 +1401,7 @@ pub fn extract_text(content: &MessageContent) -> String {
 /// The directory snapshot is expensive to compute and its output must be
 /// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
 /// can hit.  We compute it once per session and reuse the cached string.
-fn load_dynamic_context(
-    workdir: &Path,
-    cached_snapshot: &mut Option<String>,
-) -> String {
+fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) -> String {
     let snapshot_limit = crate::config::settings().agent.snapshot_max_items;
 
     let tree = match cached_snapshot {
@@ -1478,8 +1502,8 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         ".DS_Store",
     ];
 
-    use std::collections::BTreeMap;
     use std::cmp::Ordering;
+    use std::collections::BTreeMap;
 
     // Phase 1 — collect visible entries.
     // IMPORTANT: ignored directories must be pruned at traversal time,
