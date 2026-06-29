@@ -112,7 +112,7 @@ cargo build --release
 ./target/release/tact-ui --help
 
 # Or via cargo install (coming soon to crates.io)
-cargo install tact
+cargo install tact   # installs the tact-ui binary
 ```
 
 ### 2. Configure
@@ -300,7 +300,7 @@ Binaries:
 ### Via Cargo (soon)
 
 ```bash
-cargo install tact
+cargo install tact   # binary name: tact-ui
 ```
 
 ### Binary Releases (soon)

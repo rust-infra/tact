@@ -17,6 +17,7 @@ MIT licensed. Binary `tact-ui` provides interactive TUI by default and a `headle
 
 - `crates/tact/src/tool/` — 40+ built-in tools (bash, read_file, write_file, edit_file, apply_patch, subagent, web_search, etc.)
 - `crates/tact/src/store/session_store/` — SQLite session/message/token-usage persistence (`tact.db`)
+- `crates/tact/src/bin/tui.rs` — `tact-ui` binary: interactive TUI by default, `headless` subcommand
 - `crates/tact/src/lib.rs` — `agent_loop()`, `execute_tool_call()`, `snapshot_dir()` (Project structure in system prompt)
 - `crates/tui/src/render/` — log panel, cells (text, tool, code, thinking), popups, LogColumnRenderer
 - `crates/tui/src/render/cells/tool.rs` — `ToolCell` rendering (title + meta + detail card)
