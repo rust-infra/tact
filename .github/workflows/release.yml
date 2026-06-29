@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: tact-ui
+  CRATE_PACKAGE: tact
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+
+      - name: Build release binary
+        run: |
+          features=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            features="--features bundled-sqlite"
+          fi
+          cargo build --release -p "${CRATE_PACKAGE}" --target "${{ matrix.target }}" ${features}
+        shell: bash
+
+      - name: Package release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          fi
+
+          target="${{ matrix.target }}"
+          archive="${{ matrix.archive }}"
+          asset="${BINARY_NAME}-v${version}-${target}.${archive}"
+          bin_path="target/${target}/release/${BINARY_NAME}"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            bin_path="${bin_path}.exe"
+            cp "${bin_path}" "${BINARY_NAME}.exe"
+            tar -a -cf "${asset}" "${BINARY_NAME}.exe"
+          else
+            cp "${bin_path}" "${BINARY_NAME}"
+            if command -v strip >/dev/null 2>&1; then
+              strip "${BINARY_NAME}" || true
+            fi
+            tar -czf "${asset}" "${BINARY_NAME}"
+          fi
+
+          echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
+          echo "Built ${asset}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET_PATH }}
+          if-no-files-found: error
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          sha256sum ${BINARY_NAME}-v* > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

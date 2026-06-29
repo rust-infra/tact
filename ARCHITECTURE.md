@@ -212,9 +212,9 @@ Key `AgentUpdate` variants used today:
 | Variant | Meaning |
 |---|---|
 | `PlanGenerated(Vec<PlanStep>)` | Initial placeholder plan displayed in the TUI. |
-| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = tool name only). |
-| `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block. |
-| `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`. |
+| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
+| `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
+| `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
 | `StepFailed(usize, tool_id, String)` | Step failed with error message. |
 | `RequestSelect { prompt, options, respond }` | Ask the user to pick an option. |
 | `StreamChunk(String)` | Streaming assistant text fragment. |
@@ -640,7 +640,9 @@ If you are reading older branches or notes, the following major evolutions have 
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
-- **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`.
+- **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`, truncated args in title with `arg_full` in popups, spacing gaps before tools/thinking.
+- **CLI** — single `tact-ui` binary (`src/bin/tui.rs`); default TUI, `headless` subcommand for non-interactive runs; legacy `tact` / `main.rs` entry removed.
+- **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
 - **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
 - **Bottom bar Cost timer** — retains last prompt duration until the next submission.
