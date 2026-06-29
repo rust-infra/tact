@@ -8,6 +8,10 @@ license.workspace = true
 name = "tact-ui"
 path = "src/bin/tui.rs"
 
+[features]
+# Used by Windows release/CI builds where system libsqlite3 is unavailable.
+bundled-sqlite = ["sqlx/bundled"]
+
 [dependencies]
 tact_protocol = { path = "../protocol" }
 tact_llm = { path = "../tact_llm" }

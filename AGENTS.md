@@ -25,6 +25,7 @@ MIT licensed. Binary `tact-ui` provides interactive TUI by default and a `headle
 - `crates/tui/src/widgets/state/tool_state.rs` — concurrent `ActiveToolBlock` list, diff popup state
 - `crates/tui/src/widgets/state/app/` — App state, agent update handler, construct, popups, search
 - `docs/` — batch_tools_flow, compaction, log-panel-analysis, state_machines, tui_rendering, **tool_rendering**, token_usage_schema, parallel_tool_execution, go/go_adaptation_rules, go/go_migration_plan
+- `scripts/install.sh`, `scripts/install.ps1` — cross-platform installers (Linux, macOS, Windows)
 
 ## Build & test
 

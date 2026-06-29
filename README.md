@@ -104,6 +104,44 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 
 ### 1. Install
 
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash
+```
+
+Or from a clone:
+
+```bash
+./scripts/install.sh --from-source
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.ps1 | iex
+```
+
+Or from a clone:
+
+```powershell
+.\scripts\install.ps1 -FromSource
+```
+
+The installer builds `tact-ui` from source by default (installs Rust via rustup if needed). When GitHub release assets are published, pass `--release` / `-Release` to download a pre-built binary instead.
+
+Install options:
+
+| Platform | Flag | Meaning |
+|----------|------|---------|
+| Unix | `--install-dir DIR` | Install location (default: `~/.local/bin`) |
+| Unix | `--system` | Install to `/usr/local/bin` |
+| Unix | `--release` | Prefer GitHub release, fall back to source |
+| Windows | `-InstallDir PATH` | Install location (default: `%USERPROFILE%\.local\bin`) |
+| Windows | `-Release` | Prefer GitHub release, fall back to source |
+
+**Manual build from source**
+
 ```bash
 # From source (requires Rust toolchain)
 git clone https://github.com/Rg0x80/tact.git
@@ -279,6 +317,26 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 
 ## Installation
 
+### Install script (recommended)
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.ps1 | iex
+```
+
+From a local clone: `./scripts/install.sh --from-source` or `.\scripts\install.ps1 -FromSource`.
+
+The script installs the `tact-ui` binary to `~/.local/bin` (Unix) or `%USERPROFILE%\.local\bin` (Windows) and adds that directory to PATH when possible. On Linux it installs SQLite/clang build deps via apt/dnf/pacman/apk when run with sufficient privileges.
+
+Use `--release` / `-Release` to prefer GitHub release binaries (falls back to source build if none exist yet).
+
 ### From Source
 
 **Linux:** install SQLite build dependencies first (required by `sqlx` / session store):
@@ -303,9 +361,20 @@ Binaries:
 cargo install tact   # binary name: tact-ui
 ```
 
-### Binary Releases (soon)
+### Binary Releases
 
-Pre-built binaries for macOS (ARM64 / x86_64) and Linux (x86_64).
+Push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
+
+```bash
+git tag v0.19.0
+git push origin v0.19.0
+```
+
+GitHub Actions (`.github/workflows/release.yml`) uploads assets named `tact-ui-v<version>-<target-triple>.tar.gz` (Linux/macOS) or `.zip` (Windows), plus `SHA256SUMS`. The install script downloads these automatically with `--release` / `-Release`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rg0x80/tact/main/scripts/install.sh | bash -s -- --release
+```
 
 ---
 
