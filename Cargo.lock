@@ -4193,6 +4193,7 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
+ "dotenvy",
  "futures-util",
  "reqwest",
  "reqwest-eventsource",

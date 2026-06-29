@@ -58,28 +58,15 @@ impl ProviderInfo {
                 let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
                 Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
             }
-            "kimi" => {
-                if self.api_key.is_empty() {
-                    anyhow::bail!("api_key not configured for provider 'kimi'");
-                }
-                let base_url = if self.base_url.is_empty() {
-                    "https://api.kimi.com/coding/v1".to_string()
-                } else {
-                    self.base_url.clone()
-                };
-                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
-                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-            }
             other => {
-                anyhow::bail!("Unknown provider: {other}. Use 'anthropic', 'openai', or 'kimi'.")
+                anyhow::bail!("Unknown provider: {other}. Use 'anthropic' or 'openai'.")
             }
         }
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.
     pub fn is_kimi(&self) -> bool {
-        self.provider == "kimi"
-            || self.base_url.contains("moonshot")
+        self.base_url.contains("moonshot")
             || self.base_url.contains("kimi")
             || self.model.contains("kimi")
     }
@@ -248,6 +235,7 @@ impl LlmProvider {
     }
 }
 
+/// The active LLM provider configuration.
 static PROVIDER: OnceLock<ProviderInfo> = OnceLock::new();
 
 /// Install the active LLM provider configuration. Must be called once at startup.

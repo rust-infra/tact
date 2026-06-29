@@ -447,8 +447,8 @@ impl LlmClient for OpenAiAdapter {
         let (mut openai_request, reasoning_per_message) = build_openai_request(request);
         openai_request.stream = Some(false);
 
-        let mut body = serde_json::to_value(&openai_request)
-            .map_err(|e| LlmError::Other(e.to_string()))?;
+        let mut body =
+            serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
         inject_thinking_param(request, &mut body, crate::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::is_kimi());
         inject_user_id(&mut body, &self.user_id);
@@ -558,9 +558,7 @@ impl LlmClient for OpenAiAdapter {
 mod tests {
     use super::*;
     use crate::ProviderInfo;
-    use anthropic_ai_sdk::types::message::{
-        RequiredMessageParams, Thinking, ThinkingType,
-    };
+    use anthropic_ai_sdk::types::message::{RequiredMessageParams, Thinking, ThinkingType};
 
     fn sample_request_with_thinking() -> CreateMessageParams {
         CreateMessageParams::new(RequiredMessageParams {
@@ -596,7 +594,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "kimi".to_string(),
+            provider: "openai".to_string(),
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.7-code".to_string(),
@@ -610,7 +608,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "kimi".to_string(),
+            provider: "openai".to_string(),
             api_key: String::new(),
             base_url: "https://api.kimi.com/coding/v1".to_string(),
             model: "kimi-for-coding".to_string(),
@@ -624,7 +622,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "kimi".to_string(),
+            provider: "openai".to_string(),
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.6".to_string(),
@@ -644,10 +642,7 @@ mod tests {
         });
         let user_id = Some("a1b2c3d4-5678-90ab-cdef-1234567890ab".to_string());
         inject_user_id(&mut body, &user_id);
-        assert_eq!(
-            body["user_id"],
-            "a1b2c3d4-5678-90ab-cdef-1234567890ab"
-        );
+        assert_eq!(body["user_id"], "a1b2c3d4-5678-90ab-cdef-1234567890ab");
     }
 
     #[test]
@@ -671,10 +666,7 @@ mod tests {
         });
         let reasoning = vec![None, Some("let me think".to_string()), None];
         inject_reasoning_content(&mut body, &reasoning, true);
-        assert_eq!(
-            body["messages"][1]["reasoning_content"],
-            "let me think"
-        );
+        assert_eq!(body["messages"][1]["reasoning_content"], "let me think");
     }
 
     #[test]
