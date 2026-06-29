@@ -163,7 +163,7 @@ Runtime policy such as permissions, recovery, hooks, and model context stays out
 
 The full toolset includes:
 
-- base: `add`, `bash`, `read_file`, `write_file`, `edit_file`
+- base: `bash`, `read_file`, `write_file`, `edit_file`
 - skill: `load_skill`
 - memory: `save_memory`
 - compact: `compact`

@@ -95,6 +95,8 @@ mod tests {
     fn resolve_theme_explicit() {
         assert_eq!(resolve_theme("nord"), ThemeName::Nord);
         assert_eq!(resolve_theme("retro"), ThemeName::Retro);
+        assert_eq!(resolve_theme("brutal"), ThemeName::Brutal);
+        assert_eq!(resolve_theme("neo-brutalism"), ThemeName::Brutal);
     }
 
     /// Consolidated env-var-based test to avoid parallel test races on env vars.

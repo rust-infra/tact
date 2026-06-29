@@ -546,7 +546,7 @@ impl Widget for ToolWidget<'_> {
         let title = output.detail_title.unwrap_or_default();
         let card_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(self.theme.block_border_type())
             .border_style(Style::default().fg(self.theme.accent))
             .style(Style::default().bg(self.theme.bg))
             .title(title)

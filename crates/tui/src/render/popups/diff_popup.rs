@@ -121,7 +121,7 @@ fn render_popup_chrome(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(app.theme.block_border_type())
                 .border_style(Style::default().fg(CODE_BORDER))
                 .title(Span::styled(
                     title,

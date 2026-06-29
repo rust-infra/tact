@@ -54,7 +54,6 @@ mod cron;
 mod edit_file;
 mod load_skill;
 mod lsp;
-mod math;
 mod memory;
 mod read_file;
 mod search_code;
@@ -77,7 +76,6 @@ use cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use edit_file::EditFileTool;
 use load_skill::LoadSkillTool;
 use lsp::QueryLspTool;
-use math::AddTool;
 use memory::SaveMemoryTool;
 use read_file::ReadFileTool;
 use search_code::SearchCodeTool;
@@ -116,7 +114,6 @@ pub struct ToolContext {
 /// Assembles the full tool set for the main agent loop.
 pub fn toolset() -> ToolRouter {
     ToolRouter::new()
-        .route(AddTool)
         .route(ApplyPatchTool)
         .route(AskUserTool)
         .route(BashTool)
@@ -342,23 +339,22 @@ mod tests {
 
     #[tokio::test]
     async fn proc_macro_supports_plain_function_tools() {
-        let router = ToolRouter::new().route(AddTool);
+        let router = ToolRouter::new().route(SleepTool);
         let context = test_context("proc_macro_supports_plain_function_tools");
 
         let output = router
-            .call(&context, "add", serde_json::json!({ "a": 2, "b": 3 }))
+            .call(&context, "sleep", serde_json::json!({ "ms": 0 }))
             .await
             .unwrap();
 
-        assert_eq!(output, "5");
+        assert_eq!(output, "Slept for 0ms.");
 
-        let schema = AddTool.tool_spec().input_schema;
-        assert_eq!(schema["properties"]["a"]["type"], "integer");
+        let schema = SleepTool.tool_spec().input_schema;
+        assert_eq!(schema["properties"]["ms"]["type"], "integer");
         assert_eq!(
-            schema["properties"]["a"]["description"],
-            "Left integer operand."
+            schema["properties"]["ms"]["description"],
+            "Duration to sleep in milliseconds (max 300000 = 5 minutes)."
         );
-        assert_eq!(schema["properties"]["b"]["type"], "integer");
     }
 
     #[tokio::test]

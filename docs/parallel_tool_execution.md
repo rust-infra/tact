@@ -66,7 +66,7 @@ Each cleared tool is mapped to the workspace files it touches:
 | `search_code` | `input.path` or workspace root | read (directory scope) |
 | `write_file`, `edit_file` | `input.path` | write |
 | `batch_edit` | `input.edits[].file_path` | write |
-| `web_search`, `web_fetch`, `lsp`, `sleep`, `add` | — | independent (never conflicts) |
+| `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent (never conflicts) |
 | **everything else** (`bash`, `apply_patch`, `task`/subagent, MCP, state mutations, unknown) | — | **barrier** (conflicts with all) |
 
 Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths

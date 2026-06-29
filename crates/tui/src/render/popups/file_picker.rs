@@ -19,7 +19,7 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(app.theme.block_border_type())
         .title(app.msgs().file_picker_title)
         .style(Style::default().bg(app.theme.bottom_bar_bg));
     frame.render_widget(block.clone(), popup_area);

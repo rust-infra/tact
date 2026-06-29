@@ -23,6 +23,7 @@ impl App {
             ThemeName::Retro => msgs.theme_retro,
             ThemeName::Kawaii => msgs.theme_kawaii,
             ThemeName::Japanese => msgs.theme_japanese,
+            ThemeName::Brutal => msgs.theme_brutal,
         };
         self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
         self.theme = Theme::by_name(next_name);

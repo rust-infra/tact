@@ -117,7 +117,7 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
         },
         // Side-effect-free tools that touch no workspace file: safe to run
         // concurrently with anything.
-        "web_search" | "web_fetch" | "lsp" | "sleep" | "add" => ToolResources::independent(),
+        "web_search" | "web_fetch" | "lsp" | "sleep" => ToolResources::independent(),
         // bash, apply_patch (multi-file diff), task/subagent, worktree_run,
         // MCP tools, and all state mutations have effects we cannot scope.
         _ => ToolResources::barrier(),
