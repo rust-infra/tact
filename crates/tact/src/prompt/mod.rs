@@ -421,3 +421,87 @@ impl From<String> for Prompt {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_full() -> String {
+        SystemPrompt::builder()
+            .role("Senior Rust engineer")
+            .skills_available("- bash\n- read_file")
+            .claude_md("# Project rules\n\nUse Rust.")
+            .add_guideline("Keep functions small")
+            .add_constraint("Never expose secrets")
+            .memory_guidance("Save user preferences")
+            .additional("Extra context here")
+            .memory("You previously discussed async runtime")
+            .dynamic_context("Current file: src/prompt/mod.rs")
+            .build()
+            .unwrap()
+            .to_prompt()
+            .render()
+            .unwrap()
+    }
+
+    #[test]
+    fn renders_all_sections() {
+        let output = render_full();
+
+        assert!(output.contains("# Your role"));
+        assert!(output.contains("Senior Rust engineer"));
+        assert!(output.contains("# Available skills"));
+        assert!(output.contains("# Project rules"));
+        assert!(output.contains("# Guidelines you need to follow"));
+        assert!(output.contains("- Keep functions small"));
+        assert!(output.contains("# Constraints that must be adhered to"));
+        assert!(output.contains("- Never expose secrets"));
+        assert!(output.contains("# Memory guidance"));
+        assert!(output.contains("# Additional context"));
+        assert!(output.contains("=== DYNAMIC_BOUNDARY ==="));
+        assert!(output.contains("## Memory"));
+        assert!(output.contains("You previously discussed async runtime"));
+        assert!(output.contains("## Dynamic context"));
+        assert!(output.contains("Current file: src/prompt/mod.rs"));
+    }
+
+    #[test]
+    fn does_not_use_xml_tags_for_dynamic_context() {
+        let output = render_full();
+        assert!(!output.contains("<memory>"));
+        assert!(!output.contains("</memory>"));
+        assert!(!output.contains("<dynamic_context>"));
+        assert!(!output.contains("</dynamic_context>"));
+    }
+
+    #[test]
+    fn stable_sections_come_before_dynamic_boundary() {
+        let output = render_full();
+        let boundary = output.find("=== DYNAMIC_BOUNDARY ===").unwrap();
+        assert!(output.find("# Project rules").unwrap() < boundary);
+        assert!(output.find("# Guidelines you need to follow").unwrap() < boundary);
+        assert!(
+            output
+                .find("# Constraints that must be adhered to")
+                .unwrap()
+                < boundary
+        );
+    }
+
+    #[test]
+    fn omits_empty_sections() {
+        let output = SystemPrompt::builder()
+            .role("Coder")
+            .build()
+            .unwrap()
+            .to_prompt()
+            .render()
+            .unwrap();
+
+        assert!(output.contains("# Your role"));
+        assert!(!output.contains("# Available skills"));
+        assert!(!output.contains("# Guidelines you need to follow"));
+        assert!(!output.contains("# Constraints that must be adhered to"));
+        assert!(!output.contains("=== DYNAMIC_BOUNDARY ==="));
+    }
+}

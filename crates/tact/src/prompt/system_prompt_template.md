@@ -10,6 +10,10 @@
 {{skills_available}}
 {% endif -%}
 
+{% if claude_md -%}
+{{claude_md}}
+{% endif -%}
+
 {% if guidelines and guidelines | length > 0 -%}
 # Guidelines you need to follow
 
@@ -30,10 +34,6 @@
 {% endfor %}
 {% endif -%}
 
-{% if claude_md -%}
-{{claude_md}}
-{% endif -%}
-
 {% if memory_guidance -%}
 # Memory guidance
 
@@ -41,6 +41,8 @@
 {% endif -%}
 
 {% if additional -%}
+# Additional context
+
 {{additional}}
 {% endif -%}
 
@@ -52,10 +54,15 @@
    invalidated when these sections change. #}
 
 {% if memory -%}
-{{memory}}
-{% endif -%}
+## Memory
 
+{{memory}}
+
+{% endif -%}
 {% if dynamic_context -%}
+## Dynamic context
+
 {{dynamic_context}}
+
 {% endif -%}
 {% endif -%}
