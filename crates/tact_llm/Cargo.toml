@@ -8,12 +8,12 @@ license.workspace = true
 tact_protocol = { path = "../protocol" }
 anthropic-ai-sdk = { workspace = true }
 anyhow = { workspace = true }
-async-openai = "0.20"
+async-openai = { workspace = true }
 async-trait = { workspace = true }
-futures-util = "0.3"
+futures-util = { workspace = true }
 reqwest = { workspace = true }
-reqwest-eventsource = "0.6"
-secrecy = "0.8"
+reqwest-eventsource = { workspace = true }
+secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
