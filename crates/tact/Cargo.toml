@@ -8,45 +8,41 @@ license.workspace = true
 name = "tact-ui"
 path = "src/bin/tui.rs"
 
-[features]
-# Used by Windows release/CI builds where system libsqlite3 is unavailable.
-bundled-sqlite = ["sqlx/bundled"]
-
 [dependencies]
 tact_protocol = { path = "../protocol" }
 tact_llm = { path = "../tact_llm" }
 tui = { path = "../tui" }
+tool_refactor_macros = { path = "../tool_refactor_macros" }
 anthropic-ai-sdk = { workspace = true }
-async-openai = "0.20"
-secrecy = "0.8"
 anyhow = { workspace = true }
+async-openai = { workspace = true }
 async-trait = { workspace = true }
-base64 = "0.22"
-chrono = { workspace = true, features = ["serde"] }
+base64 = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
-dashmap = { workspace = true }
-reqwest = { workspace = true }
 console-subscriber = { workspace = true }
+dashmap = { workspace = true }
 derive_builder = { workspace = true }
-futures-util = "0.3"
-reqwest-eventsource = "0.6"
-regex = "1"
-rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
-schemars.workspace = true
+futures-util = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-tool_refactor_macros = { path = "../tool_refactor_macros" }
+sqlx = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 tera = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process", "sync", "time", "tracing"] }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = "0.3"
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 walkdir = { workspace = true }
-uuid = { version = "1", features = ["v4", "serde"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "migrate"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

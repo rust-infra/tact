@@ -17,25 +17,44 @@ license = "MIT"
 [workspace.dependencies]
 anthropic-ai-sdk = "0.2"
 anyhow = "1.0"
+arboard = "3"
+async-openai = "0.20"
 async-trait = "0.1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+console-subscriber = "0.5"
+crossterm = { version = "0.28", features = ["event-stream"] }
+dashmap = "6"
 derive_builder = "0.20"
 dotenvy = "0.15"
+futures-util = "0.3"
 proc-macro2 = "1.0"
+pulldown-cmark = "0.13"
 quote = "1.0"
+ratatui = "0.30"
+regex = "1"
+reqwest = { version = "0.12", features = ["json"] }
+reqwest-eventsource = "0.6"
+rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
 schemars = "1.0"
+secrecy = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "migrate"] }
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
 syn = { version = "2.0", features = ["full"] }
+tempfile = "3"
 tera = "1"
-console-subscriber = "0.5"
-tracing = "0.1"
-dashmap = "6"
-reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["tracing"] }
+tokio = { version = "1" }
+tokio-stream = "0.1"
 toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tui-markdown = "0.3.7"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
