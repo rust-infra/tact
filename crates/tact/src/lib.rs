@@ -233,7 +233,7 @@ impl Agent {
             }
         };
 
-        store.create_session(&session_id, None).await?;
+        store.create_session(&session_id).await?;
 
         if self.runtime.context.is_empty() {
             let history = store.load_session(&session_id).await?;
@@ -312,17 +312,6 @@ impl Agent {
                 .record_tool_schedule(session_id, self.runtime.last_message_db_id, &json)
                 .await;
         }
-    }
-
-    /// Set or update the session title (displayed in --list-sessions).
-    pub async fn set_session_title(&mut self, title: Option<&str>) -> Result<()> {
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return Ok(());
-        };
-        if let Some(store) = self.runtime.session_store.as_ref() {
-            store.update_session_title(session_id, title).await?;
-        }
-        Ok(())
     }
 
     fn next_step_idx(&mut self) -> usize {
@@ -1414,7 +1403,7 @@ fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) ->
     };
 
     let mut lines = vec![
-        "# Dynamic context".to_string(),
+        // "# Dynamic context".to_string(),
         format!("Current date: {}", Utc::now().date_naive()),
         format!("Working directory: {}", workdir.display()),
         format!("Model: {}", get_model()),
@@ -1429,12 +1418,12 @@ fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) ->
     lines.join("\n")
 }
 
-/// Generate a lightweight "tree"-style snapshot of the given directory.
+/// Generate a lightweight directory-only snapshot of the given workspace.
 ///
 /// Ignores common large/binary directories (`target`, `node_modules`, `.git`,
-/// etc.).  Collects **all** entries first, sorts by path, *then* truncates to
-/// `max_items` so the output is deterministic regardless of filesystem
-/// readdir order.  Returns `None` when the directory cannot be read.
+/// etc.).  Collects **directories only** first, sorts by path, *then*
+/// truncates to `max_items` so the output is deterministic regardless of
+/// filesystem readdir order.  Returns `None` when the directory cannot be read.
 fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     const IGNORE_DIRS: &[&str] = &[
         // ---- VCS ----
@@ -1505,11 +1494,11 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     use std::cmp::Ordering;
     use std::collections::BTreeMap;
 
-    // Phase 1 — collect visible entries.
+    // Phase 1 — collect visible directories only.
     // IMPORTANT: ignored directories must be pruned at traversal time,
     // otherwise `continue` only skips the directory node itself while still
     // walking its children.
-    let mut items: Vec<(std::path::PathBuf, bool)> = Vec::new();
+    let mut items: Vec<std::path::PathBuf> = Vec::new();
 
     let should_keep = |entry: &walkdir::DirEntry| {
         let path = entry.path();
@@ -1534,26 +1523,21 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
             // Skip workspace root itself.
             continue;
         }
-        items.push((rel.to_path_buf(), entry.file_type().is_dir()));
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        items.push(rel.to_path_buf());
     }
 
     if items.is_empty() {
         return None;
     }
 
-    // Phase 2 — deterministic, language-agnostic sort:
-    // prioritize shallow paths (project overview first), then directories before
-    // files at the same depth, then lexical path order.
-    let priority = |path: &Path, is_dir: bool| -> (usize, u8) {
-        let depth = path.components().count();
-        let kind = if is_dir { 0 } else { 1 };
-        (depth, kind)
-    };
+    // Phase 2 — deterministic sort: shallow paths first, then lexical order.
     items.sort_by(|a, b| {
-        let pa = priority(&a.0, a.1);
-        let pb = priority(&b.0, b.1);
-        match pa.cmp(&pb) {
-            Ordering::Equal => a.0.cmp(&b.0),
+        let depth = |path: &Path| path.components().count();
+        match depth(a).cmp(&depth(b)) {
+            Ordering::Equal => a.cmp(b),
             other => other,
         }
     });
@@ -1566,26 +1550,23 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
 
     // Phase 3 — group by parent directory.
     let mut dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (rel, is_dir) in &items {
+    for rel in &items {
         let parent = rel
             .parent()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| ".".to_string());
         let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let display = if *is_dir {
-            format!("{}/", name)
-        } else {
-            name.to_string()
-        };
-        dirs.entry(parent).or_default().push(display);
+        dirs.entry(parent)
+            .or_default()
+            .push(format!("{name}/"));
     }
 
     let mut out = vec!["## Project structure".to_string(), String::new()];
-    for (dir, mut files) in dirs {
+    for (dir, mut children) in dirs {
         out.push(dir);
-        files.sort();
-        for file in files {
-            out.push(format!("  {}", file));
+        children.sort();
+        for child in children {
+            out.push(format!("  {child}"));
         }
     }
 

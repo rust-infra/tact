@@ -176,16 +176,15 @@ async fn print_sessions(session_store: &DynSessionStore) -> anyhow::Result<()> {
         println!("No sessions found.");
     } else {
         println!(
-            "{:<36}  {:>4}  {:<20}  {:<40}",
-            "SESSION ID", "MSGS", "UPDATED", "TITLE"
+            "{:<36}  {:>4}  {:<20}",
+            "SESSION ID", "MSGS", "UPDATED"
         );
-        println!("{}", "-".repeat(110));
+        println!("{}", "-".repeat(66));
         for s in &sessions {
             let updated = format_timestamp(s.updated_at);
-            let title = s.title.as_deref().unwrap_or("(untitled)");
             println!(
-                "{:<36}  {:>4}  {:<20}  {:.40}",
-                s.id, s.message_count, updated, title
+                "{:<36}  {:>4}  {:<20}",
+                s.id, s.message_count, updated
             );
         }
     }
@@ -249,7 +248,6 @@ async fn run_headless(
         ui_tx: None,
     };
 
-    let is_new_session = session_id.is_none();
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -261,18 +259,6 @@ async fn run_headless(
     .with_session(session_id, session_store);
 
     let _ = agent.ensure_session().await?;
-
-    if is_new_session {
-        let title = prompt.lines().next().unwrap_or("").trim();
-        if !title.is_empty() {
-            let title = if title.chars().count() > 80 {
-                format!("{}…", title.chars().take(77).collect::<String>())
-            } else {
-                title.to_string()
-            };
-            agent.set_session_title(Some(&title)).await?;
-        }
-    }
 
     let prompt_message = build_user_message(&prompt, &work_dir).await;
     agent.agent_loop(Some(prompt_message)).await?;
@@ -313,7 +299,7 @@ async fn run_interactive(
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store.create_session(&session_id, None).await?;
+    session_store.create_session(&session_id).await?;
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
