@@ -1403,7 +1403,6 @@ fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) ->
     };
 
     let mut lines = vec![
-        // "# Dynamic context".to_string(),
         format!("Current date: {}", Utc::now().date_naive()),
         format!("Working directory: {}", workdir.display()),
         format!("Model: {}", get_model()),
@@ -1418,86 +1417,18 @@ fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) ->
     lines.join("\n")
 }
 
-/// Generate a lightweight directory-only snapshot of the given workspace.
-///
-/// Ignores common large/binary directories (`target`, `node_modules`, `.git`,
-/// etc.).  Collects **directories only** first, sorts by path, *then*
-/// truncates to `max_items` so the output is deterministic regardless of
-/// filesystem readdir order.  Returns `None` when the directory cannot be read.
+/// Directory-only workspace snapshot for the system prompt.
 fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     const IGNORE_DIRS: &[&str] = &[
-        // ---- VCS ----
-        ".git",
-        ".hg",
-        ".svn",
-        // ---- Rust ----
-        "target",
-        // ---- C / C++ / general build outputs ----
-        "build",
-        "cmake-build-debug",
-        "cmake-build-release",
-        "obj",
-        "out",
-        // ---- Node.js / TypeScript / frontend ----
-        "node_modules",
-        ".next",
-        ".nuxt",
-        ".output",
-        ".turbo",
-        ".cache",
-        ".parcel-cache",
-        "coverage",
-        ".nyc_output",
-        // ---- Python ----
-        ".venv",
-        "venv",
-        ".tox",
-        "__pycache__",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".eggs",
-        // ---- Go ----
-        "vendor",
-        // ---- Java / Kotlin / Scala ----
-        ".gradle",
-        ".bloop",
-        ".metals",
-        ".bsp",
-        // ---- .NET / C# ----
-        "bin",
-        "obj",
-        "packages",
-        // ---- Ruby ----
-        ".bundle",
-        // ---- Elixir ----
-        "_build",
-        "deps",
-        ".elixir_ls",
-        // ---- Haskell ----
-        ".stack-work",
-        "dist-newstyle",
-        // ---- Dart / Flutter ----
-        ".dart_tool",
-        // ---- Swift ----
-        ".build",
-        // ---- IDE / editors ----
-        ".idea",
-        ".fleet",
-        ".devcontainer",
-        // ---- cross-ecosystem build artifacts ----
-        "dist",
-        // ---- macOS ----
-        ".DS_Store",
+        ".git", ".hg", ".svn", "target", "build", "node_modules", "vendor", "dist",
+        ".next", ".nuxt", ".turbo", ".cache", "coverage", ".venv", "venv", "__pycache__",
+        ".gradle", "bin", "obj", "_build", "deps", ".idea", ".DS_Store",
     ];
 
     use std::cmp::Ordering;
     use std::collections::BTreeMap;
 
-    // Phase 1 — collect visible directories only.
-    // IMPORTANT: ignored directories must be pruned at traversal time,
-    // otherwise `continue` only skips the directory node itself while still
-    // walking its children.
+    // filter_entry prunes ignored dirs during the walk, not after.
     let mut items: Vec<std::path::PathBuf> = Vec::new();
 
     let should_keep = |entry: &walkdir::DirEntry| {
@@ -1520,7 +1451,6 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     {
         let rel = entry.path().strip_prefix(root).ok()?;
         if rel.as_os_str().is_empty() {
-            // Skip workspace root itself.
             continue;
         }
         if !entry.file_type().is_dir() {
@@ -1533,7 +1463,6 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         return None;
     }
 
-    // Phase 2 — deterministic sort: shallow paths first, then lexical order.
     items.sort_by(|a, b| {
         let depth = |path: &Path| path.components().count();
         match depth(a).cmp(&depth(b)) {
@@ -1548,7 +1477,6 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         false
     };
 
-    // Phase 3 — group by parent directory.
     let mut dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for rel in &items {
         let parent = rel

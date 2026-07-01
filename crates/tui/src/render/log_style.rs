@@ -1,7 +1,6 @@
-use crate::render::util::merge_line_span_style;
-use crate::theme::{Theme, ThemeName};
+use crate::theme::Theme;
 use crate::widgets::state::RawMessageType;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
@@ -73,30 +72,20 @@ pub(crate) fn restyle_log_line(
         .spans
         .iter()
         .map(|span| {
-            let style = restyle_assistant_style(merge_line_span_style(line_style, span.style), theme);
+            let mut style = line_style.patch(span.style);
+            if style.bg == Some(Color::Rgb(70, 90, 140)) {
+                style.bg = Some(theme.highlight);
+            }
+            style.fg = match style.fg {
+                Some(Color::Blue) | Some(Color::LightBlue) => style.fg,
+                Some(Color::Green) => Some(theme.success),
+                Some(Color::Cyan) => Some(theme.accent),
+                _ => Some(theme.fg),
+            };
             Span::styled(span.content.to_string(), style)
         })
         .collect();
     Line::from(spans)
-}
-
-fn restyle_assistant_style(style: Style, theme: &Theme) -> Style {
-    let mut style = style;
-    if style.bg == Some(Color::Rgb(70, 90, 140)) {
-        style.bg = Some(theme.highlight);
-    }
-    if style.add_modifier.contains(Modifier::BOLD) && style.fg == Some(Color::Cyan) {
-        style.fg = Some(theme.accent);
-    } else if style.fg == Some(Color::Blue) || style.fg == Some(Color::LightBlue) {
-        // keep link color
-    } else if style.fg == Some(Color::Green) {
-        style.fg = Some(theme.success);
-    } else if style.fg == Some(Color::Cyan) {
-        style.fg = Some(theme.accent);
-    } else {
-        style.fg = Some(theme.fg);
-    }
-    style
 }
 
 fn single_span(text: &str, fg: Color) -> Line<'static> {
@@ -255,10 +244,11 @@ mod tests {
     }
 
     #[test]
-    fn markdown_heading_line_style_survives_restyle_and_wrap() {
+    fn heading_style_after_wrap() {
         use crate::render::render_md::render_markdown_tui;
         use crate::render::util::wrap_line;
         use crate::theme::ThemeName;
+        use ratatui::style::Modifier;
 
         let theme = Theme::by_name(ThemeName::Dark);
         let (lines, raw) = render_markdown_tui("### Popular exchanges in HK", &theme);

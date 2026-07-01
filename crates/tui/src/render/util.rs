@@ -46,13 +46,7 @@ fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
     (text, "")
 }
 
-/// Merge line-level style into a span style (ratatui renders `line.style.patch(span.style)`).
-pub(crate) fn merge_line_span_style(line_style: Style, span_style: Style) -> Style {
-    line_style.patch(span_style)
-}
-
 /// Split a styled Line by display width into multiple Lines not exceeding max_width.
-/// Line-level styles are merged into spans; wrapped segments inherit the merged style.
 pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
     let line_style = line.style;
     let text: String = line
@@ -61,12 +55,8 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
         .map(|s| s.content.as_ref())
         .collect::<Vec<_>>()
         .concat();
-    let base_style = merge_line_span_style(
-        line_style,
-        line.spans.first().map(|s| s.style).unwrap_or_default(),
-    );
+    let base_style = line_style.patch(line.spans.first().map(|s| s.style).unwrap_or_default());
 
-    // Multi-span lines that fit on one row: preserve per-span styling.
     if !text.contains('\n') && UnicodeWidthStr::width(text.as_str()) <= max_width {
         let spans: Vec<Span<'static>> = line
             .spans
@@ -74,7 +64,7 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
             .map(|span| {
                 Span::styled(
                     span.content.clone().into_owned(),
-                    merge_line_span_style(line_style, span.style),
+                    line_style.patch(span.style),
                 )
             })
             .collect();
@@ -128,7 +118,7 @@ mod wrap_tests {
     use ratatui::style::{Color, Modifier, Style};
 
     #[test]
-    fn wrap_line_preserves_line_level_style() {
+    fn line_style_after_wrap() {
         let line = Line::from(vec![
             Span::styled("### ", Style::default()),
             Span::styled("Heading", Style::default()),
