@@ -111,6 +111,7 @@ fn restyle_code_line(stored: &Line, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeName;
 
     fn brutal() -> Theme {
         Theme::by_name(ThemeName::Brutal)

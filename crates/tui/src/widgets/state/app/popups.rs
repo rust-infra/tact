@@ -1,3 +1,4 @@
+use crate::widgets::tool_widget::ToolPhase;
 use crate::widgets::state::*;
 use arboard::Clipboard;
 use base64::Engine;
@@ -267,6 +268,22 @@ impl App {
     ) -> Option<DiffPopup> {
         if !output.layout.has_detail_card {
             return None;
+        }
+        if output.phase == ToolPhase::Failed {
+            let content = output.detail_full.clone()?;
+            return Some(DiffPopup {
+                title: output
+                    .detail_title
+                    .clone()
+                    .unwrap_or_else(|| output.tool_name.clone()),
+                file_path: None,
+                inline_content: Some(content),
+                lang: String::new(),
+                use_diff_gutter: false,
+                scroll: 0,
+                cached_content: None,
+                highlighted_lines: Vec::new(),
+            });
         }
         match output.tool_name.as_str() {
             "write_file" | "read_file" => Some(DiffPopup {

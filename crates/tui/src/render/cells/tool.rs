@@ -240,7 +240,7 @@ impl ToolCell {
             detail_title: output.detail_title,
             detail_preview: output.detail_preview,
             detail_total_lines: output.detail_total_lines,
-            card_bottom: msgs.diff_card_bottom.to_string(),
+            card_bottom: output.card_bottom,
             tool_phase_running: msgs.tool_phase_running,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
@@ -268,7 +268,9 @@ impl ToolCell {
             self.permission_label.as_deref(),
             self.size_bytes,
             duration_us,
-            self.error_message.as_deref(),
+            self.error_message.as_deref().filter(|_| {
+                !(self.has_detail_card && self.phase == ToolPhase::Failed)
+            }),
             self.spinner_char,
             self.tool_phase_running,
             self.tool_phase_success,
@@ -619,6 +621,7 @@ mod tests {
             detail_preview: preview,
             detail_total_lines: total,
             detail_full: None,
+            card_bottom: " Double-click for full code ".into(),
         }
     }
 

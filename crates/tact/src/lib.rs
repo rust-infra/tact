@@ -839,7 +839,7 @@ impl Agent {
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
-                let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
+                let detail = step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
                 self.emit_update(AgentUpdate::StepFinished(
                     prep_step_idx,
                     prep_id,
@@ -921,7 +921,7 @@ impl Agent {
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
-                let detail = tool_detail_content(&prep_name, &prep_input, &exec_output);
+                let detail = step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
                 self.emit_update(AgentUpdate::StepFinished(
                     prep_step_idx,
                     prep_id,
@@ -1341,9 +1341,52 @@ fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str)
     }
 }
 
+fn step_result_detail(
+    name: &str,
+    input: &serde_json::Value,
+    exec_output: &str,
+    status: &StepStatus,
+) -> Option<String> {
+    if matches!(status, StepStatus::Failed) {
+        Some(exec_output.to_string())
+    } else {
+        tool_detail_content(name, input, exec_output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::tool_arg_summary;
+    use super::{step_result_detail, tool_arg_summary};
+    use tact_protocol::StepStatus;
+
+    #[test]
+    fn step_result_detail_on_failure_returns_full_output() {
+        let input = serde_json::json!({"edits": []});
+        let out = step_result_detail(
+            "batch_edit",
+            &input,
+            "BatchEdit aborted — 1 validation error(s):\nEdit 0: bad",
+            &StepStatus::Failed,
+        );
+        assert_eq!(
+            out.as_deref(),
+            Some("BatchEdit aborted — 1 validation error(s):\nEdit 0: bad")
+        );
+    }
+
+    #[test]
+    fn step_result_detail_on_success_uses_tool_specific_rules() {
+        let input = serde_json::json!({"command": "echo hi"});
+        let out = step_result_detail("bash", &input, "hi\n", &StepStatus::Success);
+        assert_eq!(out.as_deref(), Some("hi\n"));
+
+        let write = serde_json::json!({"path": "a.rs", "content": "fn main(){}"});
+        let out = step_result_detail("write_file", &write, "wrote", &StepStatus::Success);
+        assert_eq!(out.as_deref(), Some("fn main(){}"));
+
+        let out = step_result_detail("grep", &serde_json::json!({}), "matches", &StepStatus::Success);
+        assert!(out.is_none());
+    }
 
     #[test]
     fn long_bash_summary_is_truncated() {
