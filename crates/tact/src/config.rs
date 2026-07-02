@@ -331,6 +331,8 @@ fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<TactTomlConfig> {
 fn default_base_url(provider: &str) -> Option<String> {
     match provider {
         "openai" => Some("https://api.openai.com/v1".to_string()),
+        "deepseek" => Some("https://api.deepseek.com".to_string()),
+        "kimi" => Some("https://api.moonshot.cn/v1".to_string()),
         _ => None,
     }
 }
@@ -651,6 +653,86 @@ model = "gpt-4o"
         assert_eq!(resolved.agent.max_tokens, 8000);
         assert_eq!(resolved.ui.theme, "retro");
         assert!(resolved.agent.micro_compact_enabled);
+    }
+
+    #[test]
+    fn resolve_deepseek_config_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+api_key = "sk-test"
+model = "deepseek-chat"
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, "deepseek");
+        assert_eq!(resolved.llm.api_key, "sk-test");
+        assert_eq!(resolved.llm.model, "deepseek-chat");
+        assert_eq!(resolved.llm.base_url, "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn resolve_kimi_config_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "kimi"
+api_key = "mk-test"
+model = "kimi-k2.5"
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, "kimi");
+        assert_eq!(resolved.llm.api_key, "mk-test");
+        assert_eq!(resolved.llm.model, "kimi-k2.5");
+        assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
     }
 
     #[test]
