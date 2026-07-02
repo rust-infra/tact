@@ -16,7 +16,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
 | `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the CLI binary. |
-| `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI adapters, request conversion, provider/env resolution). |
+| `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
 
 Dependency graph:
@@ -72,7 +72,7 @@ flowchart TB
         MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
         COMP["compact.rs<br/>micro_compact, transcript persistence"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
-        LLM["tact_llm crate<br/>Anthropic / OpenAI adapters"]
+        LLM["tact_llm crate<br/>Anthropic / OpenAI / DeepSeek / Kimi adapters"]
         TASK["task/<br/>persistent task manager"]
         TEAM["team.rs<br/>teammate roster + inbox"]
         BG["background.rs<br/>async shell tasks"]
@@ -221,7 +221,7 @@ Key `AgentUpdate` variants used today:
 | `ThinkingChunk(String)` | Streaming reasoning/thinking fragment. |
 | `ModelInfo(ModelCallParams)` | Model name, max tokens, thinking budget. |
 | `TokenUsage { ... }` | Prompt/completion/cache token counts. |
-| `Balance(BalanceInfo)` | DeepSeek account balance. |
+| `Balance(BalanceInfo)` | DeepSeek / Kimi account balance (where available). |
 | `Info(String)` | Informational notice. |
 | `TaskComplete(String)` | The entire task finished. |
 | `Error(AgentErrorKind)` | Classified error. |
@@ -563,7 +563,7 @@ flowchart LR
 |---|---|
 | `SubmitTask(String)` | Submit a new natural-language task. |
 | `Cancel` | Cancel the current task. |
-| `QueryBalance` | Query DeepSeek account balance. |
+| `QueryBalance` | Query DeepSeek / Kimi account balance. |
 
 ---
 
