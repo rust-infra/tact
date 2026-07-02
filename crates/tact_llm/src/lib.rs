@@ -458,3 +458,102 @@ pub fn is_kimi_k2x() -> bool {
 pub fn is_kimi_k27() -> bool {
     get_provider().is_kimi_k27()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_info(provider: &str, api_key: &str, base_url: &str, model: &str) -> ProviderInfo {
+        ProviderInfo {
+            provider: provider.to_string(),
+            api_key: api_key.to_string(),
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    #[test]
+    fn build_client_requires_api_key() {
+        let p = provider_info("deepseek", "", "", "deepseek-chat");
+        assert!(p.build_client().is_err());
+    }
+
+    #[test]
+    fn deepseek_builds_openai_adapter_with_default_base_url() {
+        let p = provider_info("deepseek", "sk-test", "", "deepseek-chat");
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAi(adapter) = result.unwrap() else {
+            panic!("expected OpenAi adapter for deepseek");
+        };
+        assert_eq!(adapter.base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn kimi_builds_openai_adapter_with_default_base_url() {
+        let p = provider_info("kimi", "sk-test", "", "kimi-k2.5");
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAi(adapter) = result.unwrap() else {
+            panic!("expected OpenAi adapter for kimi");
+        };
+        assert_eq!(adapter.base_url(), "https://api.moonshot.cn/v1");
+    }
+
+    #[test]
+    fn custom_base_url_is_preserved() {
+        let p = provider_info(
+            "kimi",
+            "sk-test",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
+        let result = p.build_client().unwrap();
+        let LlmProvider::OpenAi(adapter) = result else {
+            panic!("expected OpenAi adapter");
+        };
+        assert_eq!(adapter.base_url(), "https://api.kimi.com/coding/v1");
+    }
+
+    #[test]
+    fn is_kimi_detection() {
+        assert!(provider_info("kimi", "", "", "kimi-k2.5").is_kimi());
+        assert!(provider_info("openai", "", "https://api.moonshot.cn/v1", "").is_kimi());
+        assert!(provider_info("openai", "", "https://api.kimi.com/coding/v1", "").is_kimi());
+        assert!(provider_info("openai", "", "", "kimi-k2.5").is_kimi());
+        assert!(!provider_info("anthropic", "", "", "claude-sonnet-4").is_kimi());
+    }
+
+    #[test]
+    fn is_kimi_k2x_and_k27() {
+        let k25 = provider_info("kimi", "", "", "kimi-k2.5");
+        assert!(k25.is_kimi_k2x());
+        assert!(!k25.is_kimi_k27());
+
+        let k27 = provider_info("kimi", "", "", "kimi-k2.7");
+        assert!(k27.is_kimi_k2x());
+        assert!(k27.is_kimi_k27());
+
+        let coding = provider_info(
+            "openai",
+            "",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
+        assert!(coding.is_kimi_k2x());
+        assert!(coding.is_kimi_k27());
+    }
+
+    #[test]
+    fn unknown_provider_errors() {
+        let p = provider_info("google", "sk-test", "", "gemini");
+        match p.build_client() {
+            Ok(_) => panic!("expected error for unknown provider"),
+            Err(e) => {
+                let err = e.to_string();
+                assert!(err.contains("Unknown provider"));
+                assert!(err.contains("google"));
+            }
+        }
+    }
+}
