@@ -312,3 +312,133 @@ fn merge_unique(target: &mut Vec<u64>, mut additions: Vec<u64>) {
     target.sort_unstable();
     target.dedup();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_manager(name: &str) -> (TaskManager, std::path::PathBuf) {
+        let root_dir = std::env::temp_dir().join(format!("tact-task-test-{name}"));
+        let _ = std::fs::remove_dir_all(&root_dir);
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let store_root = StoreRoot::new(root_dir.join(".claude")).unwrap();
+        (TaskManager::new(&store_root).unwrap(), root_dir)
+    }
+
+    #[test]
+    fn create_assigns_incrementing_ids() {
+        let (mut manager, _dir) = test_manager("create_assigns_incrementing_ids");
+
+        let first = manager
+            .create("First".to_string(), None)
+            .unwrap();
+        let second = manager
+            .create("Second".to_string(), Some("details".to_string()))
+            .unwrap();
+
+        assert_eq!(first.id, 1);
+        assert_eq!(first.subject, "First");
+        assert_eq!(first.status, TaskStatus::Pending);
+        assert_eq!(second.id, 2);
+        assert_eq!(second.description.as_deref(), Some("details"));
+    }
+
+    #[test]
+    fn update_changes_status_and_owner() {
+        let (mut manager, _dir) = test_manager("update_changes_status_and_owner");
+        let task = manager.create("Work".to_string(), None).unwrap();
+
+        let updated = manager
+            .update(
+                task.id,
+                TaskUpdate {
+                    status: Some(TaskStatus::InProgress),
+                    owner: Some("alice".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.status, TaskStatus::InProgress);
+        assert_eq!(updated.owner, "alice");
+    }
+
+    #[test]
+    fn update_add_blocks_creates_reverse_dependency() {
+        let (mut manager, _dir) = test_manager("update_add_blocks_creates_reverse_dependency");
+        let blocker = manager.create("Blocker".to_string(), None).unwrap();
+        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+
+        let updated = manager
+            .update(
+                blocker.id,
+                TaskUpdate {
+                    add_blocks: vec![blocked.id],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.blocks, vec![blocked.id]);
+
+        let blocked = manager.get(blocked.id).unwrap();
+        assert_eq!(blocked.blocked_by, vec![blocker.id]);
+    }
+
+    #[test]
+    fn completing_task_clears_blocked_by() {
+        let (mut manager, _dir) = test_manager("completing_task_clears_blocked_by");
+        let blocker = manager.create("Blocker".to_string(), None).unwrap();
+        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+        manager
+            .update(
+                blocker.id,
+                TaskUpdate {
+                    add_blocks: vec![blocked.id],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        manager
+            .update(
+                blocker.id,
+                TaskUpdate {
+                    status: Some(TaskStatus::Completed),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let blocked = manager.get(blocked.id).unwrap();
+        assert!(blocked.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn render_task_list_empty_and_populated() {
+        assert_eq!(render_task_list(vec![]), "No tasks.");
+
+        let task = TaskRecord {
+            id: 1,
+            subject: "Ship".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            blocked_by: vec![2],
+            blocks: vec![],
+            owner: "bob".to_string(),
+        };
+        let rendered = render_task_list(vec![task]);
+        assert!(rendered.contains("[>] #1: Ship"));
+        assert!(rendered.contains("owner=bob"));
+        assert!(rendered.contains("blocked by: [2]"));
+    }
+
+    #[test]
+    fn render_task_json_round_trip() {
+        let task = TaskRecord::new(1, "Test".to_string(), Some("desc".to_string()));
+        let json = render_task_json(&task).unwrap();
+        assert!(json.contains("\"subject\": \"Test\""));
+        assert!(json.contains("\"description\": \"desc\""));
+        assert!(json.contains("\"status\": \"pending\""));
+    }
+}
