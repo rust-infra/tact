@@ -342,7 +342,7 @@ impl Messages {
             cmd_help: "Show help panel",
             cmd_history: "Show task history",
             cmd_search: "Search log messages",
-            cmd_balance: "Query account balance (DeepSeek)",
+            cmd_balance: "Query account balance (DeepSeek/Kimi)",
             cmd_lang: "Toggle language (EN/中文)",
             cmd_party: "Toggle party mode",
 
@@ -515,7 +515,7 @@ impl Messages {
             cmd_help: "显示帮助面板",
             cmd_history: "显示任务历史",
             cmd_search: "搜索日志消息",
-            cmd_balance: "查询账户余额 (DeepSeek)",
+            cmd_balance: "查询账户余额 (DeepSeek/Kimi)",
             cmd_lang: "切换语言 (EN/中文)",
             cmd_party: "切换派对模式",
 

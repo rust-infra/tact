@@ -58,7 +58,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("help", "Show help panel"),
     ("history", "Show task history"),
     ("search", "Search log messages"),
-    ("balance", "Query account balance (DeepSeek)"),
+    ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
     ("party", "Toggle party mode"),
 ];
