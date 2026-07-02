@@ -139,7 +139,7 @@ pub enum UserCommand {
     SubmitTask(String),
     /// Cancel the current task (full cancellation logic not yet implemented)
     Cancel,
-    /// Query account balance (DeepSeek only)
+    /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
 }
 
