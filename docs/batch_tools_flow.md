@@ -13,7 +13,7 @@ This Mermaid diagram document describes the complete data flow from the Agent ma
 sequenceDiagram
     participant TUI as TUI Main Thread
     participant Agent as Agent Runtime<br/><Tact>
-    participant LLM as LLM Provider<br/>(Anthropic/OpenAI)
+    participant LLM as LLM Provider<br/>(Anthropic/OpenAI/DeepSeek/Kimi)
     participant Toolset as ToolSet
     participant BatchRead as batch_read impl
     participant BatchEdit as batch_edit impl

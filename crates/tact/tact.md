@@ -13,8 +13,19 @@ When an agent harness accumulates more and more capabilities, how do you organiz
 Configure `.env` at the repository root:
 
 ```bash
-ANTHROPIC_API_KEY=your_api_key
-ANTHROPIC_BASE_URL=your_anthropic_compatible_base_url
+  # Configure the provider
+  # Options: "anthropic" | "openai" | "deepseek" | "kimi"
+  export TACT_LLM_PROVIDER=anthropic
+
+  # API keys (set at least the one for the active provider)
+  export ANTHROPIC_API_KEY=your_anthropic_api_key
+  export ANTHROPIC_BASE_URL=your_anthropic_compatible_base_url
+  export DEEPSEEK_API_KEY=your_deepseek_api_key
+  export DEEPSEEK_BASE_URL=your_deepseek_base_url
+  export KIMI_API_KEY=your_kimi_api_key
+  export KIMI_BASE_URL=your_kimi_base_url
+  export OPENAI_API_KEY=your_openai_api_key
+  export OPENAI_BASE_URL=your_openai_base_url
 ```
 
 Run:
