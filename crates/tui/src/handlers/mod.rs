@@ -13,15 +13,12 @@ pub(crate) use palette::handle_palette_mode;
 pub(crate) use search::handle_search_mode;
 pub(crate) use select::handle_select_mode;
 
-use crate::widgets::state::{App, FocusedPanel, InputMode, PALETTE_COMMANDS, Status};
+use crate::widgets::state::{App, InputMode, Status};
 use arboard::Clipboard;
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use chrono::Local;
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::widgets::{ListState, ScrollbarState};
 use tact_protocol::UserCommand;
-use tokio::sync::mpsc::UnboundedSender;
 
 fn copy_text(app: &mut App, text: &str) {
     let preview = text.chars().take(40).collect::<String>();
@@ -351,7 +348,7 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
 #[cfg(test)]
 mod tests {
     use super::execute_palette_command;
-    use crate::widgets::state::{App, PALETTE_COMMANDS, Status};
+    use crate::widgets::state::{App, Status, PALETTE_COMMANDS};
     use std::path::PathBuf;
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;

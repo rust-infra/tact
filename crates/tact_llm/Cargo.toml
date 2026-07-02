@@ -18,3 +18,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+dotenvy = { workspace = true }

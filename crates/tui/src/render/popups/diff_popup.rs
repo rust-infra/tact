@@ -1,10 +1,10 @@
 use crate::widgets::state::App;
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    Frame,
 };
 
 /// Dark background shared with code blocks / markdown rendering.

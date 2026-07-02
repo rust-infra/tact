@@ -2,11 +2,11 @@ use crate::render::cells::tool::ToolCell;
 use crate::render::util::wrap_line;
 use crate::widgets::state::App;
 use ratatui::{
-    Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+    Frame,
 };
 
 /// Render the Log panel: wrapping, scrolling, search highlighting, and mouse selection.
@@ -343,9 +343,9 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     vs_cache[logical_i]
                 };
                 let msgs = app.msgs();
-                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER
-                    [(app.spinner_frame as usize)
-                        % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
+                    as usize)
+                    % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
                 let card_cell = ToolCell::from_output(
                     output,
                     started_at,
@@ -369,8 +369,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         // Task-end rule: full-width dashed line, width resolved at render time.
         if let Some(phys) = phys_idx {
             if super::cells::separator::is_task_end_separator(&app.raw_messages[phys]) {
-                let sep =
-                    super::cells::separator::TaskEndSeparator::new(app.theme.border);
+                let sep = super::cells::separator::TaskEndSeparator::new(app.theme.border);
                 renderer.push(vs_cache[logical_i], sep);
                 logical_i += 1;
                 continue;
@@ -414,9 +413,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             })
         });
 
-        let indent_cols = phys_idx
-            .map(|p| app.nested_log_indent(p))
-            .unwrap_or(0);
+        let indent_cols = phys_idx.map(|p| app.nested_log_indent(p)).unwrap_or(0);
 
         let cell = super::cells::text::TextCell::new(
             cached_lines,
@@ -566,7 +563,11 @@ fn render_loading_spinner(
 ) {
     let Some(idx) = app.loading_idx else { return };
     // Find logical row for this physical index
-    let Some(logical_row) = app.log_scroll.phys_to_logical_cache.get(idx).and_then(|&v| v)
+    let Some(logical_row) = app
+        .log_scroll
+        .phys_to_logical_cache
+        .get(idx)
+        .and_then(|&v| v)
     else {
         return;
     };
@@ -598,12 +599,7 @@ fn render_loading_spinner(
         Span::styled("Thinking...", text_style),
     ]);
 
-    let spinner_area = Rect::new(
-        area.x + 2,
-        area.y + 1 + y,
-        area.width.saturating_sub(4),
-        1,
-    );
+    let spinner_area = Rect::new(area.x + 2, area.y + 1 + y, area.width.saturating_sub(4), 1);
     if spinner_area.bottom() <= area.bottom() {
         frame.render_widget(Clear, spinner_area);
         frame.render_widget(Paragraph::new(spinner_line), spinner_area);
@@ -641,7 +637,11 @@ mod tests {
             effective_max_logical,
         );
         assert_eq!(vs, 70, "should pin to max_visual_scroll at the bottom");
-        assert_eq!(vs + visible_height, total_visual, "viewport reaches the last line");
+        assert_eq!(
+            vs + visible_height,
+            total_visual,
+            "viewport reaches the last line"
+        );
     }
 
     #[test]

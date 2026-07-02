@@ -123,7 +123,7 @@ Create `tact.toml` in your project root (or `~/.tact/config.toml` for user-level
 
 ```toml
 [llm]
-provider = "anthropic"   # "anthropic" | "openai" | "kimi"
+provider = "anthropic"   # "anthropic" | "openai"
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
 base_url = "https://api.anthropic.com"  # required for anthropic
@@ -358,7 +358,7 @@ Use `--config /path/to/config.toml` to point at a specific file instead of auto-
 
 ```toml
 [llm]
-provider = "anthropic"           # "anthropic" | "openai" | "kimi"
+provider = "anthropic"           # "anthropic" | "openai"
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
 base_url = "https://..."         # proxy or compatible endpoint

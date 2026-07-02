@@ -1,5 +1,5 @@
 use crate::widgets::state::{App, Status};
-use ratatui::{Frame, layout::Rect};
+use ratatui::{layout::Rect, Frame};
 use std::collections::HashSet;
 
 /// Render the Execution Plan panel, showing step list, execution status, and selection highlight.
@@ -7,7 +7,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     use ratatui::{
         style::{Modifier, Style},
         text::{Line, Span},
-        widgets::{Block, BorderType, Borders, List, ListItem},
+        widgets::{Block, Borders, List, ListItem},
     };
     // Under parallel tool execution, multiple steps can be running at once.
     // Highlight all active steps instead of a single `current_step`.

@@ -1,10 +1,10 @@
 use crate::widgets::state::App;
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    Frame,
 };
 
 //    total = 10 lines, content_height = 4, scroll = 3
