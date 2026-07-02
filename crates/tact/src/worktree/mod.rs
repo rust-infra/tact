@@ -12,7 +12,7 @@
 
 use std::{
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
 };
 
@@ -74,7 +74,7 @@ impl WorktreeManager {
         }
         let dir = self.repo_root.join(".worktrees").join(&name);
         let branch = format!("wt/{name}");
-        let status = Command::new("git")
+        let output = Command::new("git")
             .current_dir(&self.repo_root)
             .args([
                 "worktree",
@@ -84,11 +84,17 @@ impl WorktreeManager {
                 &dir.display().to_string(),
                 &base_ref,
             ])
-            .status();
-        if let Ok(status) = status
-            && !status.success()
-        {
-            anyhow::bail!("git worktree add failed with {status}");
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .context("failed to run git worktree add")?;
+        if !output.status.success() {
+            let stderr_lossy = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr_lossy.trim();
+            if stderr.is_empty() {
+                anyhow::bail!("git worktree add failed with {}", output.status);
+            }
+            anyhow::bail!("git worktree add failed: {stderr}");
         }
         let record = WorktreeRecord {
             name: name.clone(),

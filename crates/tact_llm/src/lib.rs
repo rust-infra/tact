@@ -1,7 +1,9 @@
 //! LLM provider abstraction.
 //!
-//! Supports Anthropic (Messages API) and OpenAI-compatible providers
-//! (Chat Completions API) via the `async-openai` crate.
+//! Supports Anthropic (Messages API), OpenAI-compatible providers
+//! (Chat Completions API) via the `async-openai` crate, DeepSeek
+//! (which uses the OpenAI-compatible API), and Kimi/Moonshot
+//! (also OpenAI-compatible).
 
 pub mod anthropic;
 pub mod convert;
@@ -58,15 +60,40 @@ impl ProviderInfo {
                 let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
                 Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
             }
+            "deepseek" => {
+                if self.api_key.is_empty() {
+                    anyhow::bail!("api_key not configured for provider 'deepseek'");
+                }
+                let base_url = if self.base_url.is_empty() {
+                    "https://api.deepseek.com".to_string()
+                } else {
+                    self.base_url.clone()
+                };
+                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
+                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
+            }
+            "kimi" => {
+                if self.api_key.is_empty() {
+                    anyhow::bail!("api_key not configured for provider 'kimi'");
+                }
+                let base_url = if self.base_url.is_empty() {
+                    "https://api.moonshot.cn/v1".to_string()
+                } else {
+                    self.base_url.clone()
+                };
+                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
+                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
+            }
             other => {
-                anyhow::bail!("Unknown provider: {other}. Use 'anthropic' or 'openai'.")
+                anyhow::bail!("Unknown provider: {other}. Use 'anthropic', 'openai', 'deepseek', or 'kimi'.")
             }
         }
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.
     pub fn is_kimi(&self) -> bool {
-        self.base_url.contains("moonshot")
+        self.provider == "kimi"
+            || self.base_url.contains("moonshot")
             || self.base_url.contains("kimi")
             || self.model.contains("kimi")
     }
@@ -251,13 +278,15 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
 }
 
 /// Returns `true` if the configured provider is DeepSeek.
+///
+/// DeepSeek can be configured either as the dedicated `"deepseek"`
+/// provider or as an OpenAI-compatible endpoint that targets DeepSeek
+/// (e.g. `provider = "openai"` with a `deepseek.com` base URL).
 pub fn is_deepseek() -> bool {
     let provider = get_provider();
-    if provider.provider == "anthropic" {
-        provider.base_url.contains("deepseek") || provider.model.contains("deepseek")
-    } else {
-        provider.base_url.contains("deepseek") || provider.model.contains("deepseek")
-    }
+    provider.provider == "deepseek"
+        || provider.base_url.contains("deepseek")
+        || provider.model.contains("deepseek")
 }
 
 /// Query DeepSeek account balance.
@@ -334,6 +363,77 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
                 topped_up_balance: e.topped_up_balance,
             })
             .collect(),
+    })
+}
+
+/// Query Kimi/Moonshot account balance.
+///
+/// Calls `GET https://api.moonshot.cn/v1/users/me/balance` with the configured API key.
+/// Returns `BalanceInfo` on success.
+pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
+    let provider = get_provider();
+    let api_key = provider.api_key.clone();
+
+    let balance_url = if provider.base_url.contains("api.moonshot.cn") {
+        let origin = provider
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches("/v1/");
+        format!("{origin}/users/me/balance")
+    } else {
+        "https://api.moonshot.cn/v1/users/me/balance".to_string()
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&balance_url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .timeout(Duration::from_millis(5000))
+        .send()
+        .await
+        .with_context(|| format!("Failed to query Kimi balance at {balance_url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let error_body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "Kimi balance query returned HTTP {}: {}",
+            status,
+            error_body.trim()
+        );
+    }
+
+    let body = resp
+        .text()
+        .await
+        .context("Failed to read Kimi balance response")?;
+
+    #[derive(serde::Deserialize)]
+    struct RawKimiBalanceData {
+        total_balance: String,
+        granted_balance: String,
+        topped_up_balance: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawKimiBalanceResponse {
+        data: RawKimiBalanceData,
+        #[serde(default)]
+        succeed: bool,
+    }
+
+    let raw: RawKimiBalanceResponse =
+        serde_json::from_str(&body).context("Failed to parse Kimi balance response")?;
+
+    Ok(tact_protocol::BalanceInfo {
+        is_available: raw.succeed,
+        balance_infos: vec![tact_protocol::BalanceEntry {
+            currency: "CNY".to_string(),
+            total_balance: raw.data.total_balance,
+            granted_balance: raw.data.granted_balance,
+            topped_up_balance: raw.data.topped_up_balance,
+        }],
     })
 }
 

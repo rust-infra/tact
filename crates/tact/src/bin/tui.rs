@@ -22,7 +22,7 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_llm::{get_llm_client, is_deepseek, query_deepseek_balance};
+use tact_llm::{get_llm_client, is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance};
 use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
@@ -368,10 +368,15 @@ async fn run_interactive(
         .await
     }));
 
-    if is_deepseek() {
+    if is_deepseek() || is_kimi() {
         let balance_tx = agent_tx2;
         tokio::spawn(async move {
-            if let Ok(balance) = query_deepseek_balance().await {
+            let result = if is_deepseek() {
+                query_deepseek_balance().await
+            } else {
+                query_kimi_balance().await
+            };
+            if let Ok(balance) = result {
                 let _ = balance_tx.send(AgentUpdate::Balance(balance));
             }
         });
@@ -400,19 +405,22 @@ async fn run_interactive(
                 agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::QueryBalance => {
-                if is_deepseek() {
-                    match query_deepseek_balance().await {
-                        Ok(balance) => {
-                            agent.emit_update(AgentUpdate::Balance(balance));
-                        }
-                        Err(e) => {
-                            agent.emit_update(AgentUpdate::Error(
-                                AgentErrorKind::BalanceQueryFailed(e.to_string()),
-                            ));
-                        }
-                    }
+                let result = if is_deepseek() {
+                    query_deepseek_balance().await
+                } else if is_kimi() {
+                    query_kimi_balance().await
                 } else {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::BalanceNotSupported));
+                    Err(anyhow::anyhow!("balance query not supported for current provider"))
+                };
+                match result {
+                    Ok(balance) => {
+                        agent.emit_update(AgentUpdate::Balance(balance));
+                    }
+                    Err(e) => {
+                        agent.emit_update(AgentUpdate::Error(
+                            AgentErrorKind::BalanceQueryFailed(e.to_string()),
+                        ));
+                    }
                 }
             }
         }
