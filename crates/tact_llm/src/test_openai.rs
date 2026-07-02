@@ -1,7 +1,8 @@
 //! Debug tests for OpenAI-compatible provider connectivity.
 //!
-//! Run with:
-//!   cargo test -p tact_llm test_openai -- --nocapture
+//! These tests hit real provider endpoints and require API keys, so they are
+//! ignored by default. Run with:
+//!   cargo test -p tact_llm test_openai -- --ignored --nocapture
 //!
 //! Required env vars:
 //!   OPENAI_API_KEY=<your-key>
@@ -49,6 +50,7 @@ fn build_test_request(model: String) -> CreateChatCompletionRequest {
 }
 
 /// Test non-streaming chat completion with raw reqwest.
+#[ignore = "hits a real LLM endpoint and requires OPENAI_API_KEY"]
 #[tokio::test]
 async fn test_openai_raw_reqwest() {
     dotenvy::dotenv().ok();
@@ -74,6 +76,7 @@ async fn test_openai_raw_reqwest() {
     let resp = client
         .post(&url)
         .headers(headers.clone())
+        .header("content-type", "application/json")
         .body(body)
         .send()
         .await
@@ -95,6 +98,7 @@ async fn test_openai_raw_reqwest() {
 }
 
 /// Test non-streaming chat completion through async-openai client.
+#[ignore = "hits a real LLM endpoint and requires OPENAI_API_KEY"]
 #[tokio::test]
 async fn test_openai_async_openai_non_stream() {
     dotenvy::dotenv().ok();
@@ -128,6 +132,7 @@ async fn test_openai_async_openai_non_stream() {
 }
 
 /// Test streaming chat completion through async-openai client.
+#[ignore = "hits a real LLM endpoint and requires OPENAI_API_KEY"]
 #[tokio::test]
 async fn test_openai_async_openai_stream() {
     dotenvy::dotenv().ok();
