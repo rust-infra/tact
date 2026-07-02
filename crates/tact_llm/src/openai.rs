@@ -220,6 +220,11 @@ impl OpenAiAdapter {
         }
     }
 
+    /// Expose the configured API base URL for diagnostics/tests.
+    pub fn base_url(&self) -> &str {
+        self.config.api_base()
+    }
+
     /// Set the `user_id` that will be injected into every outgoing request
     /// body as `"user_id"`.
     pub fn set_user_id(&mut self, user_id: String) {
