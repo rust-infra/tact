@@ -1,5 +1,5 @@
-use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}, text::{Line, Span, Text}, widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap}};
 use crate::widgets::state::App;
+use ratatui::{layout::Rect, style::{Modifier, Style}, text::{Line, Span, Text}, widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap}, Frame};
 
 pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = match &app.thinking.popup {

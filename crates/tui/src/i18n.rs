@@ -48,7 +48,6 @@ pub struct Messages {
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str,    // " Click for full code "
-    pub diff_overflow_tmpl: &'static str,  // "... and {} more lines ..."
     pub tool_phase_running: &'static str,
     pub tool_phase_success: &'static str,
     pub tool_phase_failed: &'static str,
@@ -231,7 +230,6 @@ impl Messages {
             tool_error_card_title: " Error ",
             tool_error_card_bottom: " Double-click for full error ",
             code_card_bottom: " Click for full code ",
-            diff_overflow_tmpl: " ... and {} more lines ...",
             tool_phase_running: "Running",
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
@@ -405,7 +403,6 @@ impl Messages {
             tool_error_card_title: " 错误 ",
             tool_error_card_bottom: " 双击查看完整错误 ",
             code_card_bottom: " 点击查看完整代码 ",
-            diff_overflow_tmpl: " ... 还有 {} 行 ...",
             tool_phase_running: "运行中",
             tool_phase_success: "成功",
             tool_phase_failed: "失败",

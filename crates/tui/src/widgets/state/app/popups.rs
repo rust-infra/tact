@@ -1,17 +1,10 @@
-use crate::widgets::tool_widget::ToolPhase;
 use crate::widgets::state::*;
+use crate::widgets::tool_widget::ToolPhase;
 use arboard::Clipboard;
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use chrono::Local;
-use crate::render::render_md::render_markdown_tui;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListState, ScrollbarState};
+use base64::Engine;
+use ratatui::text::Line;
 use tact_protocol::UserCommand;
-
-const CODE_BG: Color = Color::Rgb(30, 35, 50);
-const STREAMING_INDICATOR: &str = " ▌";
 
 impl App {
     pub(crate) fn retry_task(&mut self, task: String) {
@@ -248,7 +241,10 @@ impl App {
     }
 
     /// Find tool render output whose block starts at `phys_idx`.
-    fn tool_output_at(&self, phys_idx: usize) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
+    fn tool_output_at(
+        &self,
+        phys_idx: usize,
+    ) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
         self.tools
             .active
             .iter()
@@ -298,14 +294,13 @@ impl App {
                     output.arg_full.clone()
                 }),
                 inline_content: output.detail_full.clone(),
-                lang: crate::render::popups::diff_popup::popup_lang_for_path(if output
-                    .arg_full
-                    .is_empty()
-                {
-                    &output.arg_summary
-                } else {
-                    &output.arg_full
-                }),
+                lang: crate::render::popups::diff_popup::popup_lang_for_path(
+                    if output.arg_full.is_empty() {
+                        &output.arg_summary
+                    } else {
+                        &output.arg_full
+                    },
+                ),
                 use_diff_gutter: output.use_diff_gutter,
                 scroll: 0,
                 cached_content: None,

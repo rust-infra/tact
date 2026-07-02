@@ -1,11 +1,11 @@
 use crate::render::util::LOG_THINKING_INDENT;
 use crate::widgets::state::App;
 use ratatui::{
-    Frame,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 /// Spinner frames for in-progress thinking animation (see `render_loading_spinner` in log.rs).

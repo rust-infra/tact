@@ -303,7 +303,7 @@ impl ToolCell {
         let text_style = Style::default().fg(self.fg).bg(self.bg);
         let plus_style = Style::default().fg(self.success).bg(self.bg);
 
-        let mut lines: Vec<Line<'static>> = self
+        let lines: Vec<Line<'static>> = self
             .detail_preview
             .iter()
             .enumerate()

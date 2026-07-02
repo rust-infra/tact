@@ -1,11 +1,11 @@
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
-};
 use crate::widgets::state::App;
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
+};
 
 /// Map language names to plain labels for code card titles.
 fn lang_label(lang: &str) -> String {

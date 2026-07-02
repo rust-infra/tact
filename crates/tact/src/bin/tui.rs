@@ -22,8 +22,8 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 use tact_llm::{get_llm_client, is_deepseek, query_deepseek_balance};
+use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
@@ -175,17 +175,11 @@ async fn print_sessions(session_store: &DynSessionStore) -> anyhow::Result<()> {
     if sessions.is_empty() {
         println!("No sessions found.");
     } else {
-        println!(
-            "{:<36}  {:>4}  {:<20}",
-            "SESSION ID", "MSGS", "UPDATED"
-        );
+        println!("{:<36}  {:>4}  {:<20}", "SESSION ID", "MSGS", "UPDATED");
         println!("{}", "-".repeat(66));
         for s in &sessions {
             let updated = format_timestamp(s.updated_at);
-            println!(
-                "{:<36}  {:>4}  {:<20}",
-                s.id, s.message_count, updated
-            );
+            println!("{:<36}  {:>4}  {:<20}", s.id, s.message_count, updated);
         }
     }
     Ok(())
