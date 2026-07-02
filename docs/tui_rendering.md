@@ -117,7 +117,7 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 - Token statistics (prompt / completion / cache hit / reasoning)
 - **Cost**: elapsed time for the current prompt (live while running; frozen after task complete/fail until the next prompt)
 - **Up**: total TUI process uptime
-- DeepSeek account balance (optional third row)
+- DeepSeek and Kimi account balances (optional extra rows)
 
 ---
 
