@@ -17,7 +17,6 @@ pub const MAX_INPUT_HISTORY: usize = 100;
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: String,
-    pub title: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
@@ -32,9 +31,7 @@ pub struct MessageCountByPeriod {
 
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    async fn create_session(&self, id: &str, title: Option<&str>) -> Result<()>;
-
-    async fn update_session_title(&self, id: &str, title: Option<&str>) -> Result<()>;
+    async fn create_session(&self, id: &str) -> Result<()>;
 
     async fn append_message(
         &self,

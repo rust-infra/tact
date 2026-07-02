@@ -7,11 +7,11 @@
 //! Resolved settings are stored in a process-global [`ResolvedConfig`] via
 //! [`install`] and accessed through [`settings`].
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use anyhow::Context as _;
 use tact_llm::ProviderInfo;
 
 static SETTINGS: OnceLock<ResolvedConfig> = OnceLock::new();
@@ -31,11 +31,11 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
-    /// LLM provider: "anthropic", "openai", or "kimi"
+    /// LLM provider: "anthropic" or "openai"
     #[arg(long)]
     pub provider: Option<String>,
 
-    /// Model name (e.g. "claude-sonnet-4-20250514", "gpt-4o")
+    /// Model name (e.g. "kimi-for-coding", "deepseek-v4-pro", "gpt-4o")
     #[arg(long)]
     pub model: Option<String>,
 
@@ -140,7 +140,7 @@ pub struct TactTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LlmTomlConfig {
-    /// Provider name: "anthropic", "openai", or "kimi"
+    /// Provider name: "anthropic" or "openai"
     pub provider: Option<String>,
 
     /// Model name
@@ -331,16 +331,12 @@ fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<TactTomlConfig> {
 fn default_base_url(provider: &str) -> Option<String> {
     match provider {
         "openai" => Some("https://api.openai.com/v1".to_string()),
-        "kimi" => Some("https://api.kimi.com/coding/v1".to_string()),
         _ => None,
     }
 }
 
-fn default_model(provider: &str) -> Option<String> {
-    match provider {
-        "kimi" => Some("kimi-for-coding".to_string()),
-        _ => None,
-    }
+fn default_model(_provider: &str) -> Option<String> {
+    None
 }
 
 fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<String> {
@@ -351,7 +347,7 @@ fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result
         return Ok(p.clone());
     }
     anyhow::bail!(
-        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|kimi"
+        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai"
     )
 }
 
@@ -369,9 +365,7 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .clone()
         .or_else(|| toml_cfg.llm.base_url.clone())
         .or_else(|| default_base_url(&provider))
-        .ok_or_else(|| {
-            anyhow::anyhow!("base_url not configured for provider '{provider}'")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("base_url not configured for provider '{provider}'"))?;
 
     let model = args
         .model

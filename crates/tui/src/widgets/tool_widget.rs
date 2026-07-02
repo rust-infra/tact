@@ -13,6 +13,7 @@ use crate::{i18n::Messages, theme::Theme};
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
+const ERROR_PREVIEW_LINES: usize = 5;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -246,6 +247,7 @@ pub struct ToolRenderOutput {
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
+    pub card_bottom: String,
 }
 
 impl ToolRenderOutput {
@@ -358,6 +360,14 @@ impl<'a> ToolWidget<'a> {
         theme: &'a Theme,
         msgs: &'a Messages,
     ) -> Self {
+        let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
+        let detail = result.detail.clone().or_else(|| {
+            if failed && !result.message.is_empty() {
+                Some(result.message.clone())
+            } else {
+                None
+            }
+        });
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
@@ -367,14 +377,10 @@ impl<'a> ToolWidget<'a> {
                 .unwrap_or_else(|| result.arg_summary.clone()),
             step_index: None,
             phase: ToolPhase::from_status(&result.status),
-            detail: result.detail.clone(),
+            detail,
             duration_us: result.duration_us,
             permission_label: result.permission_label.clone(),
-            error_message: if matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed) {
-                Some(result.message.clone())
-            } else {
-                None
-            },
+            error_message: None,
             theme,
             msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
@@ -430,16 +436,28 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn layout(&self) -> ToolLayout {
-        let Some(detail) = self.detail.as_ref().filter(|d| self.should_show_detail(d)) else {
+        let Some(detail) = self.display_detail() else {
             return ToolLayout {
                 visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
             };
         };
+        if !self.should_show_detail(detail) {
+            return ToolLayout {
+                visual_rows: tool_visual_rows(false, 0, 0, false),
+                preview_lines: 0,
+                has_detail_card: false,
+            };
+        }
 
         let total_lines = detail.lines().count();
-        let preview_count = total_lines.min(self.preview_lines);
+        let preview_cap = if matches!(self.phase, ToolPhase::Failed) {
+            ERROR_PREVIEW_LINES
+        } else {
+            self.preview_lines
+        };
+        let preview_count = total_lines.min(preview_cap);
         ToolLayout {
             visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
@@ -451,7 +469,7 @@ impl<'a> ToolWidget<'a> {
         let layout = self.layout();
         let use_diff_gutter = matches!(display_kind(&self.tool_name), ToolDisplayKind::FileWrite);
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
-            let detail = self.detail.as_deref().unwrap_or_default();
+            let detail = self.display_detail().unwrap_or_default();
             let lines: Vec<String> = detail
                 .lines()
                 .take(self.max_detail_lines)
@@ -466,6 +484,11 @@ impl<'a> ToolWidget<'a> {
 
         let title_raw = self.title_text();
         let has_detail_card = layout.has_detail_card;
+        let card_bottom = if matches!(self.phase, ToolPhase::Failed) {
+            self.msgs.tool_error_card_bottom.to_string()
+        } else {
+            self.msgs.diff_card_bottom.to_string()
+        };
         ToolRenderOutput {
             title_line: self.title_line(),
             title_raw,
@@ -487,16 +510,31 @@ impl<'a> ToolWidget<'a> {
             detail_preview,
             detail_total_lines,
             detail_full: if has_detail_card {
-                self.detail.clone()
+                self.display_detail().map(str::to_string)
             } else {
                 None
             },
+            card_bottom,
+        }
+    }
+
+    fn display_detail(&self) -> Option<&str> {
+        if matches!(self.phase, ToolPhase::Failed) {
+            self.detail
+                .as_deref()
+                .or(self.error_message.as_deref())
+                .filter(|s| !s.is_empty())
+        } else {
+            self.detail.as_deref().filter(|s| !s.is_empty())
         }
     }
 
     fn should_show_detail(&self, detail: &str) -> bool {
         if detail.is_empty() {
             return false;
+        }
+        if matches!(self.phase, ToolPhase::Failed) {
+            return true;
         }
         matches!(
             display_kind(&self.tool_name),
@@ -505,6 +543,9 @@ impl<'a> ToolWidget<'a> {
     }
 
     fn detail_card_title(&self, total_lines: usize) -> String {
+        if matches!(self.phase, ToolPhase::Failed) {
+            return self.msgs.tool_error_card_title.to_string();
+        }
         match display_kind(&self.tool_name) {
             ToolDisplayKind::FileWrite => self
                 .msgs
@@ -656,6 +697,24 @@ mod tests {
             output.error_message.as_deref(),
             Some("hook blocked execution")
         );
+        assert!(output.layout.has_detail_card);
+        assert_eq!(output.layout.preview_lines, 1);
+        assert_eq!(output.detail_preview, vec!["hook blocked execution".to_string()]);
+    }
+
+    #[test]
+    fn failed_tool_shows_error_card_with_preview() {
+        let (theme, msgs) = fixture();
+        let error = "BatchEdit aborted — 1 validation error(s):\nEdit 0: old_string not found";
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("batch_edit")
+            .with_phase(ToolPhase::Failed)
+            .with_detail(error)
+            .build();
+        assert!(output.layout.has_detail_card);
+        assert_eq!(output.layout.preview_lines, 2);
+        assert_eq!(output.detail_preview.len(), 2);
+        assert!(output.card_bottom.contains("error"));
     }
 
     #[test]
@@ -693,6 +752,25 @@ mod tests {
         let output = widget.build();
         assert!(output.layout.has_detail_card);
         assert!(!output.use_diff_gutter);
+    }
+
+    #[test]
+    fn from_step_result_failed_keeps_detail_only() {
+        let (theme, msgs) = fixture();
+        let result = StepResult {
+            tool: "batch_edit".to_string(),
+            arg_summary: r#"{"edits":[]}"#.to_string(),
+            arg_full: None,
+            status: StepStatus::Failed,
+            message: "truncated summary".to_string(),
+            detail: Some("full error\nline two".to_string()),
+            duration_us: Some(1_940),
+            permission_label: Some("Always allow this tool".to_string()),
+        };
+        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        assert!(output.error_message.is_none());
+        assert!(output.layout.has_detail_card);
+        assert_eq!(output.detail_full.as_deref(), Some("full error\nline two"));
     }
 
     #[test]

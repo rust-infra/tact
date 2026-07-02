@@ -1,6 +1,6 @@
-use crate::theme::{Theme, ThemeName};
+use crate::theme::Theme;
 use crate::widgets::state::RawMessageType;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
@@ -67,23 +67,21 @@ pub(crate) fn restyle_log_line(
         return restyle_code_line(stored, theme);
     }
 
+    let line_style = stored.style;
     let spans: Vec<Span<'static>> = stored
         .spans
         .iter()
         .map(|span| {
-            let mut style = span.style;
-            if style.bg.is_some() {
-                return Span::styled(span.content.to_string(), style);
+            let mut style = line_style.patch(span.style);
+            if style.bg == Some(Color::Rgb(70, 90, 140)) {
+                style.bg = Some(theme.highlight);
             }
-            if style.add_modifier.contains(Modifier::BOLD) && style.fg == Some(Color::Cyan) {
-                style = style.fg(theme.accent);
-            } else if style.fg == Some(Color::Blue) || style.fg == Some(Color::LightBlue) {
-                // keep link color
-            } else if style.fg == Some(Color::Green) {
-                style = style.fg(theme.success);
-            } else {
-                style = style.fg(theme.fg);
-            }
+            style.fg = match style.fg {
+                Some(Color::Blue) | Some(Color::LightBlue) => style.fg,
+                Some(Color::Green) => Some(theme.success),
+                Some(Color::Cyan) => Some(theme.accent),
+                _ => Some(theme.fg),
+            };
             Span::styled(span.content.to_string(), style)
         })
         .collect();
@@ -113,6 +111,7 @@ fn restyle_code_line(stored: &Line, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeName;
 
     fn brutal() -> Theme {
         Theme::by_name(ThemeName::Brutal)
@@ -243,5 +242,24 @@ mod tests {
             "  still assistant".to_string(),
         ];
         assert!(!is_user_message_line(&raw_messages, 1));
+    }
+
+    #[test]
+    fn heading_style_after_wrap() {
+        use crate::render::render_md::render_markdown_tui;
+        use crate::render::util::wrap_line;
+        use crate::theme::ThemeName;
+        use ratatui::style::Modifier;
+
+        let theme = Theme::by_name(ThemeName::Dark);
+        let (lines, raw) = render_markdown_tui("### Popular exchanges in HK", &theme);
+        assert_eq!(lines.len(), 1);
+        let restyled = restyle_log_line(&lines[0], &raw[0], &theme, RawMessageType::LLM, false);
+        let wrapped = wrap_line(&restyled, 80);
+        assert_eq!(wrapped.len(), 1);
+        let span = &wrapped[0].spans[0];
+        assert_eq!(span.style.fg, Some(theme.accent));
+        assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        assert!(span.style.add_modifier.contains(Modifier::ITALIC));
     }
 }

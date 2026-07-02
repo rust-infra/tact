@@ -206,7 +206,7 @@ impl App {
                         .with_step_index(idx)
                         .with_phase(ToolPhase::Failed)
                         .with_duration_us(elapsed_us)
-                        .with_message(error.clone())
+                        .with_detail(error)
                         .build();
                     self.finalize_tool_block(&tool_id, output);
                 } else {

@@ -1,5 +1,5 @@
-use ratatui::{Frame, layout::Rect, style::{Color, Style}, text::{Line, Span}, widgets::{Block, BorderType, Borders, Clear, List, ListItem}};
 use crate::widgets::state::{App, PALETTE_COMMANDS};
+use ratatui::{layout::Rect, style::{Color, Style}, text::{Line, Span}, widgets::{Block, Borders, Clear, List, ListItem}, Frame};
 
 /// Map command name to emoji icon for palette display.
 fn cmd_emoji(cmd: &str) -> &'static str {

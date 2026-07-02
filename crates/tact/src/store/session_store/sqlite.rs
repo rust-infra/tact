@@ -37,7 +37,6 @@ impl SqliteSessionStore {
             r#"
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY NOT NULL,
-                title TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -135,6 +134,11 @@ impl SqliteSessionStore {
             .execute(&pool)
             .await;
 
+        // Migration: drop deprecated title column from sessions.
+        let _ = sqlx::query("ALTER TABLE sessions DROP COLUMN title")
+            .execute(&pool)
+            .await;
+
         Ok(Self { pool })
     }
 
@@ -194,29 +198,17 @@ fn str_to_role(s: &str) -> Result<Role> {
 
 #[async_trait::async_trait]
 impl super::SessionStore for SqliteSessionStore {
-    async fn create_session(&self, id: &str, title: Option<&str>) -> Result<()> {
+    async fn create_session(&self, id: &str) -> Result<()> {
         let now = Self::now();
         sqlx::query(
-            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, title = COALESCE(excluded.title, sessions.title)",
+            "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at",
         )
         .bind(id)
-        .bind(title)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await
         .context("failed to create session")?;
-        Ok(())
-    }
-
-    async fn update_session_title(&self, id: &str, title: Option<&str>) -> Result<()> {
-        sqlx::query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(title)
-            .bind(Self::now())
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .context("failed to update session title")?;
         Ok(())
     }
 
@@ -283,7 +275,6 @@ impl super::SessionStore for SqliteSessionStore {
             r#"
             SELECT
                 s.id,
-                s.title,
                 s.created_at,
                 s.updated_at,
                 COUNT(m.id) as message_count
@@ -301,7 +292,6 @@ impl super::SessionStore for SqliteSessionStore {
         for row in rows {
             sessions.push(SessionSummary {
                 id: row.try_get("id")?,
-                title: row.try_get("title")?,
                 created_at: parse_timestamp(
                     &row,
                     "created_at",
@@ -586,10 +576,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store
-            .create_session("session-1", Some("first session"))
-            .await
-            .unwrap();
+        store.create_session("session-1").await.unwrap();
 
         store
             .append_message(
@@ -644,7 +631,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", None).await.unwrap();
+        store.create_session("session-1").await.unwrap();
 
         // A token-usage row for an LLM call whose last message id is 7.
         store
@@ -673,7 +660,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", None).await.unwrap();
+        store.create_session("session-1").await.unwrap();
 
         let entries = vec!["first", "second"];
         for entry in &entries {
@@ -693,7 +680,7 @@ mod tests {
         let loaded = store.load_input_history("session-1").await.unwrap();
         assert_eq!(loaded, vec!["first", "second", "third"]);
 
-        store.create_session("session-2", None).await.unwrap();
+        store.create_session("session-2").await.unwrap();
         assert!(
             store
                 .load_input_history("session-2")
@@ -709,7 +696,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", None).await.unwrap();
+        store.create_session("session-1").await.unwrap();
 
         let entries: Vec<String> = (0..120).map(|i| format!("entry-{i}")).collect();
         for entry in &entries {
