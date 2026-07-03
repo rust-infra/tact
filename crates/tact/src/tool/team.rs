@@ -109,3 +109,100 @@ pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result
         input.body,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    async fn spawn(context: &ToolContext, name: &str, role: &str) {
+        run_tool(
+            context,
+            SpawnTeammateTool,
+            "spawn_teammate",
+            serde_json::json!({ "name": name, "role": role }),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_teammate_rejects_duplicate_name() {
+        let context = test_context("spawn_teammate_rejects_duplicate_name");
+        spawn(&context, "alice", "reviewer").await;
+
+        let error = run_tool(
+            &context,
+            SpawnTeammateTool,
+            "spawn_teammate",
+            serde_json::json!({ "name": "alice", "role": "other" }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn broadcast_delivers_to_all_teammates() {
+        let context = test_context("broadcast_delivers_to_all_teammates");
+        spawn(&context, "alice", "reviewer").await;
+        spawn(&context, "bob", "tester").await;
+
+        run_tool(
+            &context,
+            BroadcastTool,
+            "broadcast",
+            serde_json::json!({
+                "from": "lead",
+                "body": "Standup in 5"
+            }),
+        )
+        .await
+        .unwrap();
+
+        for teammate in ["alice", "bob"] {
+            let inbox = run_tool(
+                &context,
+                ReadInboxTool,
+                "read_inbox",
+                serde_json::json!({ "owner": teammate }),
+            )
+            .await
+            .unwrap();
+            assert!(inbox.contains("Standup in 5"));
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_approval_sends_protocol_message() {
+        let context = test_context("plan_approval_sends_protocol_message");
+        spawn(&context, "alice", "reviewer").await;
+
+        let output = run_tool(
+            &context,
+            PlanApprovalTool,
+            "plan_approval",
+            serde_json::json!({
+                "from": "lead",
+                "to": "alice",
+                "body": "Approve plan v2"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("sent protocol request"));
+        let inbox = run_tool(
+            &context,
+            ReadInboxTool,
+            "read_inbox",
+            serde_json::json!({ "owner": "alice" }),
+        )
+        .await
+        .unwrap();
+        assert!(inbox.contains("Approve plan v2"));
+        assert!(inbox.contains("plan_approval"));
+    }
+}

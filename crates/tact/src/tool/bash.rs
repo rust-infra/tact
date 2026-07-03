@@ -55,3 +55,26 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         Err(_) => Err(anyhow::anyhow!("Error: Timeout (120s)")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn bash_returns_placeholder_for_empty_output() {
+        let context = test_context("bash_returns_placeholder_for_empty_output");
+
+        let output = run_tool(
+            &context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": "true" }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "(no output)");
+    }
+}

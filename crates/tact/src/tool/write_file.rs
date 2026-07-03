@@ -95,3 +95,32 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
         path.display()
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn write_file_writes_into_existing_subdirectory() {
+        let context = test_context("write_file_writes_into_existing_subdirectory");
+        std::fs::create_dir_all(context.work_dir.join("nested/dir")).unwrap();
+
+        run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({
+                "path": "nested/dir/file.txt",
+                "content": "nested content\n"
+            }),
+        )
+        .await
+        .unwrap();
+
+        let written =
+            std::fs::read_to_string(context.work_dir.join("nested/dir/file.txt")).unwrap();
+        assert_eq!(written, "nested content\n");
+    }
+}

@@ -41,3 +41,37 @@ pub struct CronListInput {}
 pub async fn cron_list(ctx: ToolContext, _input: CronListInput) -> Result<String> {
     ctx.cron_scheduler.list()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn cron_delete_errors_for_unknown_id() {
+        let context = test_context("cron_delete_errors_for_unknown_id");
+
+        let error = run_tool(
+            &context,
+            CronDeleteTool,
+            "cron_delete",
+            serde_json::json!({ "id": "00000099" }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn cron_list_empty_by_default() {
+        let context = test_context("cron_list_empty_by_default");
+
+        let output = run_tool(&context, CronListTool, "cron_list", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(output, "No scheduled tasks.");
+    }
+}

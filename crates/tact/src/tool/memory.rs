@@ -32,3 +32,31 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
         .save_memory(&input.name, &input.description, memory_type, &input.content)
         .context("failed to save memory")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn save_memory_rejects_invalid_type() {
+        let context = test_context("save_memory_rejects_invalid_type");
+
+        let error = run_tool(
+            &context,
+            SaveMemoryTool,
+            "save_memory",
+            serde_json::json!({
+                "name": "Bad Type",
+                "description": "test",
+                "type": "invalid",
+                "content": "content"
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+    }
+}

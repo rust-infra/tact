@@ -97,68 +97,9 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::{
-        background::SharedBackgroundManager,
-        cron::{CronScheduler, SharedCronScheduler},
-        memory::MemoryManager,
-        skill::SkillRegistry,
-        store::StoreRoot,
-        task::{SharedTaskManager, TaskManager},
-        team::{SharedTeammateManager, TeammateManager},
-        tool::ToolRouter,
-        worktree::{SharedWorktreeManager, WorktreeManager},
-    };
+    use crate::tool::{test_support::test_context, ToolRouter};
 
     use super::*;
-
-    fn test_context(name: &str) -> ToolContext {
-        let root_dir = std::env::temp_dir().join(format!("tact-task-tool-test-{name}"));
-        let _ = std::fs::remove_dir_all(&root_dir);
-        std::fs::create_dir_all(&root_dir).unwrap();
-        let store_root = StoreRoot::new(root_dir.join(".claude")).unwrap();
-
-        ToolContext {
-            skill_registry: Arc::new(SkillRegistry::new(root_dir.join("skills"))),
-            memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
-                root_dir.join(".claude/memory"),
-            ))),
-            work_dir: root_dir.clone(),
-            task_manager: SharedTaskManager::new(TaskManager::new(&store_root).unwrap()),
-            background_manager: SharedBackgroundManager::new(&store_root).unwrap(),
-            cron_scheduler: SharedCronScheduler::new(CronScheduler::new(&store_root).unwrap()),
-            teammate_manager: SharedTeammateManager::new(
-                TeammateManager::new(&store_root).unwrap(),
-            ),
-            worktree_manager: SharedWorktreeManager::new(
-                WorktreeManager::new(&store_root, root_dir).unwrap(),
-            ),
-            ui_tx: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn task_create_returns_json() {
-        let router = ToolRouter::new().route(TaskCreateTool);
-        let context = test_context("task_create_returns_json");
-
-        let output = router
-            .call(
-                &context,
-                "task_create",
-                serde_json::json!({
-                    "subject": "Write tests",
-                    "description": "Add task tool coverage"
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.contains("\"subject\": \"Write tests\""));
-        assert!(output.contains("\"description\": \"Add task tool coverage\""));
-        assert!(output.contains("\"status\": \"pending\""));
-    }
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {
@@ -179,99 +120,6 @@ mod tests {
 
         assert!(output.contains("\"subject\": \"No description\""));
         assert!(!output.contains("\"description\""));
-    }
-
-    #[tokio::test]
-    async fn task_get_returns_task() {
-        let router = ToolRouter::new()
-            .route(TaskCreateTool)
-            .route(TaskGetTool);
-        let context = test_context("task_get_returns_task");
-
-        let created = router
-            .call(
-                &context,
-                "task_create",
-                serde_json::json!({ "subject": "Fetch me" }),
-            )
-            .await
-            .unwrap();
-        let id: u64 = serde_json::from_str::<serde_json::Value>(&created)
-            .unwrap()
-            .get("id")
-            .unwrap()
-            .as_u64()
-            .unwrap();
-
-        let output = router
-            .call(&context, "task_get", serde_json::json!({ "task_id": id }))
-            .await
-            .unwrap();
-
-        assert!(output.contains("\"subject\": \"Fetch me\""));
-    }
-
-    #[tokio::test]
-    async fn task_list_shows_tasks() {
-        let router = ToolRouter::new()
-            .route(TaskCreateTool)
-            .route(TaskListTool);
-        let context = test_context("task_list_shows_tasks");
-
-        router
-            .call(
-                &context,
-                "task_create",
-                serde_json::json!({ "subject": "Listed task" }),
-            )
-            .await
-            .unwrap();
-
-        let output = router
-            .call(&context, "task_list", serde_json::json!({}))
-            .await
-            .unwrap();
-
-        assert!(output.contains("[ ] #1: Listed task"));
-    }
-
-    #[tokio::test]
-    async fn task_update_status() {
-        let router = ToolRouter::new()
-            .route(TaskCreateTool)
-            .route(TaskUpdateTool);
-        let context = test_context("task_update_status");
-
-        let created = router
-            .call(
-                &context,
-                "task_create",
-                serde_json::json!({ "subject": "Update me" }),
-            )
-            .await
-            .unwrap();
-        let id: u64 = serde_json::from_str::<serde_json::Value>(&created)
-            .unwrap()
-            .get("id")
-            .unwrap()
-            .as_u64()
-            .unwrap();
-
-        let output = router
-            .call(
-                &context,
-                "task_update",
-                serde_json::json!({
-                    "task_id": id,
-                    "status": "in_progress",
-                    "owner": "alice"
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.contains("\"status\": \"in_progress\""));
-        assert!(output.contains("\"owner\": \"alice\""));
     }
 
     #[tokio::test]

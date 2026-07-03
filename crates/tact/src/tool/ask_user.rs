@@ -42,3 +42,47 @@ pub async fn ask_user(_ctx: ToolContext, input: AskUserInput) -> Result<String> 
 
     Ok(response)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn ask_user_formats_question() {
+        let context = test_context("ask_user_formats_question");
+
+        let output = run_tool(
+            &context,
+            AskUserTool,
+            "ask_user",
+            serde_json::json!({ "question": "Continue?" }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "Question: Continue?");
+    }
+
+    #[tokio::test]
+    async fn ask_user_includes_numbered_options() {
+        let context = test_context("ask_user_includes_numbered_options");
+
+        let output = run_tool(
+            &context,
+            AskUserTool,
+            "ask_user",
+            serde_json::json!({
+                "question": "Pick one",
+                "options": ["A", "B"]
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("Question: Pick one"));
+        assert!(output.contains("1. A"));
+        assert!(output.contains("2. B"));
+    }
+}
