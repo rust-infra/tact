@@ -133,3 +133,55 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
     // Hard cap at 200 KB to avoid blowing up context
     Ok(output.chars().take(200_000).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn batch_read_rejects_invalid_path_before_reading() {
+        let context = test_context("batch_read_rejects_invalid_path_before_reading");
+        write_workspace_file(&context.work_dir, "ok.txt", "content");
+
+        let error = run_tool(
+            &context,
+            BatchReadTool,
+            "batch_read",
+            serde_json::json!({
+                "files": [
+                    { "path": "ok.txt" },
+                    { "path": "../../../etc/passwd" }
+                ]
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("BatchRead aborted"));
+        assert!(error.to_string().contains("invalid path"));
+    }
+
+    #[tokio::test]
+    async fn batch_read_applies_offset_and_limit() {
+        let context = test_context("batch_read_applies_offset_and_limit");
+        write_workspace_file(&context.work_dir, "lines.txt", "a\nb\nc\nd\n");
+
+        let output = run_tool(
+            &context,
+            BatchReadTool,
+            "batch_read",
+            serde_json::json!({
+                "files": [{ "path": "lines.txt", "offset": 2, "limit": 2 }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("BatchRead 1 file"));
+        assert!(output.contains("... (1 lines skipped) ..."));
+        assert!(output.contains("b"));
+        assert!(output.contains("... (1 more lines)"));
+    }
+}

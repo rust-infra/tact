@@ -38,3 +38,34 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
 
     Ok(format!("Edited {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn edit_file_replaces_only_first_match() {
+        let context = test_context("edit_file_replaces_only_first_match");
+        write_workspace_file(&context.work_dir, "dup.txt", "foo bar foo");
+
+        run_tool(
+            &context,
+            EditFileTool,
+            "edit_file",
+            serde_json::json!({
+                "path": "dup.txt",
+                "old_text": "foo",
+                "new_text": "FOO"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(),
+            "FOO bar foo"
+        );
+    }
+}

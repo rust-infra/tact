@@ -71,3 +71,37 @@ pub struct WorktreeEventsInput {
 pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Result<String> {
     ctx.worktree_manager.events(input.limit.unwrap_or(20))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn worktree_list_empty_by_default() {
+        let context = test_context("worktree_list_empty_by_default");
+
+        let output = run_tool(&context, WorktreeListTool, "worktree_list", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(output, "No worktrees.");
+    }
+
+    #[tokio::test]
+    async fn worktree_events_empty_by_default() {
+        let context = test_context("worktree_events_empty_by_default");
+
+        let output = run_tool(
+            &context,
+            WorktreeEventsTool,
+            "worktree_events",
+            serde_json::json!({ "limit": 5 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "");
+    }
+}

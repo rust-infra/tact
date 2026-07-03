@@ -24,6 +24,7 @@ console-subscriber = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures-util = { workspace = true }
+globset = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
