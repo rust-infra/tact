@@ -20,6 +20,10 @@ pub struct SleepInput {
     pub ms: u64,
 }
 
+fn capped_sleep_ms(ms: u64) -> u64 {
+    ms.min(300_000)
+}
+
 #[tool(
     name = "sleep",
     description = "Wait for a specified duration in milliseconds. \
@@ -27,10 +31,39 @@ pub struct SleepInput {
                     process and can run concurrently with other tools."
 )]
 pub async fn sleep(_ctx: ToolContext, input: SleepInput) -> Result<String> {
-    let duration_ms = input.ms.min(300_000);
+    let duration_ms = capped_sleep_ms(input.ms);
     debug!(ms = duration_ms, "Sleeping");
 
     tokio::time::sleep(Duration::from_millis(duration_ms)).await;
 
     Ok(format!("Slept for {}ms.", duration_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[test]
+    fn capped_sleep_ms_limits_to_five_minutes() {
+        assert_eq!(capped_sleep_ms(999_999), 300_000);
+        assert_eq!(capped_sleep_ms(100), 100);
+    }
+
+    #[tokio::test]
+    async fn sleep_accepts_duration_ms_alias() {
+        let context = test_context("sleep_accepts_duration_ms_alias");
+
+        let output = run_tool(
+            &context,
+            SleepTool,
+            "sleep",
+            serde_json::json!({ "duration_ms": 0 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "Slept for 0ms.");
+    }
 }

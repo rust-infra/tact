@@ -4159,6 +4159,7 @@ dependencies = [
  "dashmap",
  "derive_builder",
  "futures-util",
+ "globset",
  "regex",
  "reqwest",
  "reqwest-eventsource",

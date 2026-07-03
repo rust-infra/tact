@@ -18,3 +18,27 @@ pub struct LoadSkillInput {
 pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<String> {
     Ok(ctx.skill_registry.load_full_text(&input.name))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn load_skill_reports_unknown_skill() {
+        let context = test_context("load_skill_reports_unknown_skill");
+
+        let output = run_tool(
+            &context,
+            LoadSkillTool,
+            "load_skill",
+            serde_json::json!({ "name": "missing" }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("Error: Unknown skill 'missing'"));
+        assert!(output.contains("Available:"));
+    }
+}

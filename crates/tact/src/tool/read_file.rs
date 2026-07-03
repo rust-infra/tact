@@ -53,3 +53,46 @@ pub async fn read_file(ctx: ToolContext, input: ReadFileInput) -> Result<String>
 
     Ok(result.chars().take(50000).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn read_file_errors_when_file_missing() {
+        let context = test_context("read_file_errors_when_file_missing");
+
+        let error = run_tool(
+            &context,
+            ReadFileTool,
+            "read_file",
+            serde_json::json!({ "path": "missing.txt" }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("No such file")
+                || error.to_string().contains("Error:")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_returns_empty_when_offset_past_end() {
+        let context = test_context("read_file_returns_empty_when_offset_past_end");
+        write_workspace_file(&context.work_dir, "short.txt", "only line\n");
+
+        let output = run_tool(
+            &context,
+            ReadFileTool,
+            "read_file",
+            serde_json::json!({ "path": "short.txt", "offset": 99 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "");
+    }
+}

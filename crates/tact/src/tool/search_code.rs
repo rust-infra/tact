@@ -67,6 +67,34 @@ pub async fn search_code(ctx: ToolContext, input: SearchCodeInput) -> Result<Str
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn search_code_reports_no_matches() {
+        let context = test_context("search_code_reports_no_matches");
+        write_workspace_file(&context.work_dir, "empty.rs", "fn main() {}\n");
+
+        let output = run_tool(
+            &context,
+            SearchCodeTool,
+            "search_code",
+            serde_json::json!({
+                "query": "needle_not_present_xyz",
+                "path": ".",
+                "glob": "*.rs"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "No matches found.");
+    }
+}
+
 async fn run_ripgrep(
     query: &str,
     path: &std::path::Path,

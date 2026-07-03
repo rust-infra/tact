@@ -22,3 +22,37 @@ pub async fn compact(_ctx: ToolContext, input: CompactInput) -> Result<String> {
         .unwrap_or_default();
     Ok(format!("Compacting conversation...{focus}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::{run_tool, test_context};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn compact_without_focus() {
+        let context = test_context("compact_without_focus");
+
+        let output = run_tool(&context, CompactTool, "compact", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(output, "Compacting conversation...");
+    }
+
+    #[tokio::test]
+    async fn compact_with_focus() {
+        let context = test_context("compact_with_focus");
+
+        let output = run_tool(
+            &context,
+            CompactTool,
+            "compact",
+            serde_json::json!({ "focus": "open tasks" }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "Compacting conversation... Focus to preserve: open tasks");
+    }
+}

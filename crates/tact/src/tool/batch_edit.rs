@@ -16,7 +16,11 @@ use tracing::debug;
 pub struct SingleEdit {
     #[schemars(description = "Absolute or workspace-relative path to the file.")]
     pub file_path: String,
-    #[schemars(description = "Text to replace (must occur exactly once in the file).")]
+    #[schemars(
+        description = "Exact text to replace. Must occur exactly once in the file's original \
+                       content. For multiple edits on the same file, old_string values must not \
+                       overlap or nest (e.g. do not combine \"alpha beta\" and \"beta\")."
+    )]
     pub old_string: String,
     #[schemars(description = "Replacement text.")]
     pub new_string: String,
@@ -24,7 +28,12 @@ pub struct SingleEdit {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BatchEditInput {
-    #[schemars(description = "List of edits to apply atomically.")]
+    #[schemars(
+        description = "Edits to apply atomically. All old_string values are validated against \
+                       the original file contents before any write. Same-file edits must use \
+                       non-overlapping, uniquely matching old_string values; chained edits that \
+                       depend on prior replacements belong in edit_file or a single merged edit."
+    )]
     pub edits: Vec<SingleEdit>,
     #[schemars(description = "Optional human-readable description of what this batch edit does.")]
     #[serde(default)]
@@ -34,9 +43,13 @@ pub struct BatchEditInput {
 
 #[tool(
     name = "batch_edit",
-    description = "Apply multiple file edits atomically. All edits are validated before any \
-                    file is modified. If any edit would fail (old_string not found or not \
-                    unique) the entire batch is rejected with no changes made."
+    description = "Apply multiple file edits atomically. All edits are validated against the \
+                    original file contents before any file is modified; if any edit fails, the \
+                    entire batch is rejected and no files are changed. Rules: each old_string \
+                    must match exactly once; same-file edits must not overlap or nest (e.g. \
+                    \"alpha beta\" and \"beta\" together); edits on one file cannot depend on \
+                    another edit's new_string—use edit_file sequentially or merge into one edit \
+                    instead."
 )]
 pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<String> {
     if input.edits.is_empty() {
@@ -217,4 +230,152 @@ pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<Strin
         file_count,
         if file_count != 1 { "s" } else { "" },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::{test_support::{test_context, write_workspace_file}, ToolRouter};
+
+    use super::*;
+
+    async fn run_batch_edit(
+        context: &ToolContext,
+        edits: serde_json::Value,
+    ) -> Result<String> {
+        ToolRouter::new()
+            .route(BatchEditTool)
+            .call(context, "batch_edit", serde_json::json!({ "edits": edits }))
+            .await
+    }
+
+    #[tokio::test]
+    async fn batch_edit_rejects_empty_edits() {
+        let context = test_context("batch_edit_rejects_empty_edits");
+
+        let error = run_batch_edit(&context, serde_json::json!([]))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("edits array must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn batch_edit_leaves_files_unchanged_on_validation_failure() {
+        let context = test_context("batch_edit_leaves_files_unchanged_on_validation_failure");
+        write_workspace_file(&context.work_dir, "one.txt", "keep one");
+        write_workspace_file(&context.work_dir, "two.txt", "keep two");
+
+        let error = run_batch_edit(
+            &context,
+            serde_json::json!([
+                {
+                    "file_path": "one.txt",
+                    "old_string": "keep one",
+                    "new_string": "changed one"
+                },
+                {
+                    "file_path": "two.txt",
+                    "old_string": "missing",
+                    "new_string": "changed two"
+                }
+            ]),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("BatchEdit aborted"));
+        assert!(error.to_string().contains("old_string not found"));
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("one.txt")).unwrap(),
+            "keep one"
+        );
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("two.txt")).unwrap(),
+            "keep two"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_edit_rejects_non_unique_old_string() {
+        let context = test_context("batch_edit_rejects_non_unique_old_string");
+        write_workspace_file(&context.work_dir, "dup.txt", "same same");
+
+        let error = run_batch_edit(
+            &context,
+            serde_json::json!([{
+                "file_path": "dup.txt",
+                "old_string": "same",
+                "new_string": "changed"
+            }]),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("must be unique"));
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(),
+            "same same"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_edit_applies_multiple_edits_to_same_file() {
+        let context = test_context("batch_edit_applies_multiple_edits_to_same_file");
+        write_workspace_file(&context.work_dir, "multi.txt", "aaa bbb ccc");
+
+        let output = run_batch_edit(
+            &context,
+            serde_json::json!([
+                {
+                    "file_path": "multi.txt",
+                    "old_string": "aaa",
+                    "new_string": "AAA"
+                },
+                {
+                    "file_path": "multi.txt",
+                    "old_string": "bbb",
+                    "new_string": "BBB"
+                }
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("2 edits across 1 file"));
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("multi.txt")).unwrap(),
+            "AAA BBB ccc"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_edit_rejects_overlapping_edits_in_same_file() {
+        let context = test_context("batch_edit_rejects_overlapping_edits_in_same_file");
+        write_workspace_file(&context.work_dir, "overlap.txt", "alpha beta gamma");
+
+        let error = run_batch_edit(
+            &context,
+            serde_json::json!([
+                {
+                    "file_path": "overlap.txt",
+                    "old_string": "alpha beta",
+                    "new_string": "ALPHA"
+                },
+                {
+                    "file_path": "overlap.txt",
+                    "old_string": "beta",
+                    "new_string": "BETA"
+                }
+            ]),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("BatchEdit aborted"));
+        assert!(error.to_string().contains("consumed by a prior edit"));
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("overlap.txt")).unwrap(),
+            "alpha beta gamma"
+        );
+    }
 }

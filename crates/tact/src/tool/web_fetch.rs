@@ -5,7 +5,7 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use crate::tool::ToolContext;
+use crate::tool::{http::validate_public_http_url, http::http_client, web_refs, ToolContext};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -16,10 +16,15 @@ use std::{fs, time::Duration};
 use tool_refactor_macros::tool;
 use tracing::{debug, warn};
 
+const MAX_CONTENT_CHARS: usize = 100_000;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WebFetchInput {
-    #[schemars(description = "The URL to fetch.")]
-    pub url: String,
+    #[schemars(description = "Public http(s) URL to fetch.")]
+    pub url: Option<String>,
+    #[schemars(description = "Optional result id from web_search output, e.g. ws_ab12cd.")]
+    #[serde(default)]
+    pub result_id: Option<String>,
     #[schemars(description = "Optional prompt for how to process the content.")]
     #[serde(default)]
     #[allow(dead_code)]
@@ -37,6 +42,13 @@ fn url_hash(url: &str) -> String {
 fn get_cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".tact").join("web_cache")
+}
+
+fn resolve_requested_url(input: &WebFetchInput) -> Result<String> {
+    web_refs::resolve_fetch_target(
+        input.url.as_deref(),
+        input.result_id.as_deref(),
+    )
 }
 
 /// Attempt to load cached extracted content for a URL.
@@ -201,34 +213,51 @@ fn strip_html(html: &str) -> String {
     collapsed.trim().to_string()
 }
 
+fn truncate_content(text: &str, max_len: usize) -> String {
+    let total_chars = text.chars().count();
+    if total_chars <= max_len {
+        return text.to_string();
+    }
+
+    let truncated: String = text.chars().take(max_len).collect();
+    format!(
+        "{truncated}\n\n... (truncated, {total_chars} total characters)"
+    )
+}
+
 #[tool(
     name = "web_fetch",
-    description = "Fetches a web page URL and returns its content as text. HTML is \
-                    automatically converted to plain text. Use this for reading \
-                    documentation, APIs, and other web resources."
+    description = "Fetches a public http(s) page and returns plain text. Accepts either a URL \
+                    or a web_search result_id. HTML is converted \
+                    to text; responses are cached locally. Only public URLs are allowed \
+                    (localhost and private-network hosts are blocked). JS-heavy pages may \
+                    return incomplete text."
 )]
 pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String> {
-    debug!(url = %input.url, "Fetching web page");
+    let request_url = resolve_requested_url(&input)?;
+    debug!(url = %request_url, "Fetching web page");
+    let url = validate_public_http_url(&request_url)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
+    if let Some(cached) = load_cached_extraction(&request_url) {
+        return Ok(cached);
+    }
+
+    let client = http_client();
 
     let resp = client
-        .get(&input.url)
+        .get(url.clone())
         .header("User-Agent", "tact/1.0")
+        .timeout(Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {}", input.url, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {}", request_url, e))?;
 
     let status = resp.status();
     if !status.is_success() {
         return Err(anyhow::anyhow!(
             "HTTP {} when fetching {}",
             status,
-            input.url
+            request_url
         ));
     }
 
@@ -244,43 +273,128 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
-    // Try to load from cache first
-    if let Some(cached) = load_cached_extraction(&input.url) {
-        return Ok(cached);
-    }
-
-    // Convert HTML to text if applicable
     let text = if content_type.contains("html") {
-        strip_html(&body)
+        let extracted = strip_html(&body);
+        if is_edge_case_html(&body, &extracted) {
+            debug!(
+                url = %request_url,
+                "JS-heavy page detected; basic HTML stripping may produce incomplete output"
+            );
+            format!(
+                "[warning: page looks JS-heavy; extracted text may be incomplete]\n\n{extracted}"
+            )
+        } else {
+            extracted
+        }
     } else {
-        body.clone()
+        body
     };
 
-    // Detect JS-heavy pages (SPAs, React/Vue apps).
-    // Basic HTML stripping is used since tools don't have access to the LLM client;
-    // the agent can follow up with a manual read if the output looks incomplete.
-    if content_type.contains("html") && is_edge_case_html(&body, &text) {
-        debug!(
-            url = %input.url,
-            "JS-heavy page detected; basic HTML stripping may produce incomplete output"
+    let text = truncate_content(&text, MAX_CONTENT_CHARS);
+    save_cached_extraction(&request_url, &text);
+
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::test_support::test_context;
+
+    use super::*;
+
+    #[test]
+    fn resolve_requested_url_uses_explicit_url() {
+        let input = WebFetchInput {
+            url: Some("https://example.com".to_string()),
+            result_id: None,
+            prompt: None,
+        };
+        assert_eq!(
+            resolve_requested_url(&input).unwrap(),
+            "https://example.com".to_string()
         );
     }
 
-    // Truncate very long content
-    const MAX_LEN: usize = 100_000;
-    let text_chars = text.chars().take(MAX_LEN).collect::<String>();
-    let text = if text_chars.len() > MAX_LEN {
-        format!(
-            "{}\n\n... (truncated, {} total characters)",
-            text_chars,
-            text_chars.len()
+    #[test]
+    fn resolve_requested_url_requires_url_or_result_id() {
+        let input = WebFetchInput {
+            url: None,
+            result_id: None,
+            prompt: None,
+        };
+        let err = resolve_requested_url(&input).unwrap_err().to_string();
+        assert!(err.contains("requires either `url` or `result_id`"));
+    }
+
+    #[test]
+    fn resolve_requested_url_reports_unknown_result_id() {
+        let input = WebFetchInput {
+            url: None,
+            result_id: Some("ws_missing".to_string()),
+            prompt: None,
+        };
+        let err = resolve_requested_url(&input).unwrap_err().to_string();
+        assert!(err.contains("Unknown result_id"));
+    }
+
+    #[test]
+    fn resolve_requested_url_loads_persisted_web_search_reference() {
+        web_refs::with_test_web_cache("web_fetch_ref", || {
+            let url = "https://example.com/web-search-link";
+            let result_id = web_refs::search_result_id(url);
+            web_refs::save_search_reference(&result_id, url);
+
+            let input = WebFetchInput {
+                url: None,
+                result_id: Some(result_id),
+                prompt: None,
+            };
+            assert_eq!(resolve_requested_url(&input).unwrap(), url);
+        });
+    }
+
+    #[test]
+    fn result_id_validation_blocks_path_like_values() {
+        assert!(web_refs::is_valid_result_id("ws_deadbeef"));
+        assert!(!web_refs::is_valid_result_id("deadbeef"));
+        assert!(!web_refs::is_valid_result_id("ws_../secret"));
+        assert!(!web_refs::is_valid_result_id("ws_"));
+        assert!(!web_refs::is_valid_result_id("ws_dead_beef"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_does_not_bypass_host_validation_with_cache() {
+        let context = test_context("web_fetch_does_not_bypass_host_validation_with_cache");
+        let blocked_url = "http://127.0.0.1/private";
+        save_cached_extraction(blocked_url, "should_not_be_returned");
+
+        let err = web_fetch(
+            context,
+            WebFetchInput {
+                url: Some(blocked_url.to_string()),
+                result_id: None,
+                prompt: None,
+            },
         )
-    } else {
-        text_chars
-    };
+        .await
+        .unwrap_err()
+        .to_string();
 
-    // Cache the final result
-    save_cached_extraction(&input.url, &text);
+        assert!(err.contains("Blocked host"));
+    }
 
-    Ok(text)
+    #[test]
+    fn truncate_content_reports_original_length() {
+        let text = "x".repeat(MAX_CONTENT_CHARS + 50);
+        let truncated = truncate_content(&text, MAX_CONTENT_CHARS);
+
+        assert!(truncated.contains("... (truncated, 100050 total characters)"));
+        assert!(truncated.chars().count() > MAX_CONTENT_CHARS);
+    }
+
+    #[test]
+    fn truncate_content_leaves_short_text_unchanged() {
+        let text = "hello";
+        assert_eq!(truncate_content(text, MAX_CONTENT_CHARS), "hello");
+    }
 }
