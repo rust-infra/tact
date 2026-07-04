@@ -52,7 +52,10 @@ if [[ -z "$chapter" || "$chapter" == "--help" || "$mode" == "--help" ]]; then
   exit 0
 fi
 
-SOURCE_MD="$BOOK/chapter_${chapter}.md"
+SOURCE_MD=$(find "$BOOK" -maxdepth 1 -name "*_chapter_${chapter}.md" -print -quit)
+if [[ -z "$SOURCE_MD" ]]; then
+  SOURCE_MD="$BOOK/${chapter}.md"
+fi
 OUT_DIR="$BOOK/output/${chapter}"
 SCENES="$OUT_DIR/scenes.json"
 EXAMPLE="$OUT_DIR/scenes.example.json"

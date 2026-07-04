@@ -18,7 +18,7 @@ Output: `book/output/mcp/mcp.mp4`
 ## Recommended AI workflow
 
 ```
-book/chapter_mcp.md
+book/01_chapter_mcp.md
     │
     ▼  LLM + book/prompts/scene-generator.md
 book/output/mcp/scenes.json
@@ -40,7 +40,7 @@ publish
 
 1. Open `book/prompts/scene-generator.md`
 2. Replace `{{CHAPTER}}` with `mcp`
-3. Paste the contents of `book/chapter_mcp.md`
+3. Paste the contents of `book/01_chapter_mcp.md`
 4. Save the JSON response to `book/output/mcp/scenes.json`
 
 Or bootstrap from the example:
@@ -86,7 +86,7 @@ See `book/output/mcp/scenes.example.json`:
 {
   "title": "Episode title",
   "chapter": "mcp",
-  "source": "book/chapter_mcp.md",
+  "source": "book/01_chapter_mcp.md",
   "scenes": [
     {
       "id": "01",
