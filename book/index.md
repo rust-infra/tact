@@ -4,6 +4,52 @@ This directory collects design notes and hands-on tutorials for Tact and related
 
 ---
 
+## Overall Architecture
+
+```mermaid
+graph TB
+    subgraph UI
+        TUI[tact-ui TUI]
+    end
+
+    subgraph Runtime["tact runtime"]
+        Agent[Agent]
+        Prompt[System Prompt]
+        Scheduler[Tool Scheduler]
+        Permissions[Permission Manager]
+        Memory[Memory Manager]
+        Hooks[Pre/Post Tool Hooks]
+    end
+
+    subgraph Tools
+        Native[Native Tools]
+        MCP[MCP Servers]
+    end
+
+    subgraph Providers
+        Anthropic[Anthropic]
+        OpenAI[OpenAI / Kimi / DeepSeek]
+    end
+
+    subgraph Store
+        SQLite[(SQLite Session Store)]
+    end
+
+    TUI -->|user input / updates| Agent
+    Agent -->|render| Prompt
+    Agent -->|stream| Anthropic
+    Agent -->|stream| OpenAI
+    Agent -->|schedule| Scheduler
+    Scheduler -->|call| Native
+    Scheduler -->|call| MCP
+    Agent -->|check| Permissions
+    Agent -->|load / save| Memory
+    Agent -->|persist messages & token usage| SQLite
+    Agent -->|run| Hooks
+```
+
+---
+
 ## Table of Contents
 
 | Chapter | Description |
