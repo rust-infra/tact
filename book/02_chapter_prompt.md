@@ -87,7 +87,7 @@ Sections above `=== DYNAMIC_BOUNDARY ===` change rarely. Sections below it may c
 
 ```rust
 let prompt = SystemPrompt::builder()
-    .role("You are a coding agent operating in /home/rg/Projects/tact.")
+    .role("You are a coding agent operating in /home/xxxx/Projects/tact.")
     .skills_available("- bash\n- read_file")
     .add_guideline("Think before you act")
     .add_constraint("Never expose secrets")
@@ -187,7 +187,7 @@ Keep the `=== DYNAMIC_BOUNDARY ===` convention if you want to benefit from prefi
 
 Given:
 
-- role = "You are a coding agent operating in /home/rg/Projects/tact."
+- role = "You are a coding agent operating in /home/xxxx/Projects/tact."
 - guidelines = ["Think before you act"]
 - constraints = ["Never expose secrets"]
 - memory = "User prefers concise responses."
@@ -198,7 +198,7 @@ The rendered prompt looks like:
 ```markdown
 # Your role
 
-You are a coding agent operating in /home/rg/Projects/tact.
+You are a coding agent operating in /home/xxxx/Projects/tact.
 
 # Guidelines you need to follow
 
