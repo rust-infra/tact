@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::ToolSpec;
 use crate::background::SharedBackgroundManager;
@@ -195,12 +195,14 @@ pub trait Tool: Send + Sync {
 /// [`ToolSpec`] values for inclusion in the LLM API request.
 pub struct ToolRouter {
     tools: HashMap<String, Box<dyn Tool>>,
+    cached_specs: OnceLock<Vec<ToolSpec>>,
 }
 
 impl ToolRouter {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            cached_specs: OnceLock::new(),
         }
     }
 
@@ -213,7 +215,11 @@ impl ToolRouter {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.tools.values().map(|tool| tool.tool_spec()).collect()
+        self.cached_specs
+            .get_or_init(|| self.tools.values().map(|tool| tool.tool_spec()).collect())
+            .iter()
+            .map(copy_tool_spec)
+            .collect()
     }
 
     pub async fn call(&self, context: &ToolContext, name: &str, input: Value) -> Result<String> {
@@ -237,6 +243,14 @@ where
     T: JsonSchema,
 {
     serde_json::to_value(schemars::schema_for!(T)).expect("schema generation should not fail")
+}
+
+pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
+    ToolSpec {
+        name: spec.name.clone(),
+        description: spec.description.clone(),
+        input_schema: spec.input_schema.clone(),
+    }
 }
 
 fn safe_path(work_dir: &Path, path: &str) -> Result<PathBuf> {

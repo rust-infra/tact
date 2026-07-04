@@ -18,6 +18,7 @@
 use std::{collections::HashMap, fs, path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, bail};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, RawContent, ResourceContents, Tool as McpTool},
@@ -28,7 +29,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
-use crate::ToolSpec;
+use crate::{ToolSpec, tool::copy_tool_spec};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +102,7 @@ pub struct McpClient {
     pub server_name: String,
     service: RunningService<RoleClient, ()>,
     tools: Vec<McpTool>,
+    tool_specs: Vec<ToolSpec>,
 }
 
 impl McpClient {
@@ -108,11 +110,15 @@ impl McpClient {
         let server_name = server_name.into();
         let service = Self::connect(&server_name, config).await?;
         match Self::fetch_tools(&server_name, &service).await {
-            Ok(tools) => Ok(Self {
-                server_name,
-                service,
-                tools,
-            }),
+            Ok(tools) => {
+                let tool_specs = build_tool_specs(&server_name, &tools);
+                Ok(Self {
+                    server_name,
+                    service,
+                    tools,
+                    tool_specs,
+                })
+            }
             Err(err) => {
                 let _ = service.cancel().await;
                 Err(err)
@@ -154,7 +160,7 @@ impl McpClient {
             .with_context(|| format!("failed to list tools from {server_name}"))
     }
 
-    pub async fn call_tool(&mut self, tool_name: &str, arguments: Value) -> Result<String> {
+    pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<String> {
         let arguments = match arguments {
             Value::Object(map) => Some(map),
             Value::Null => None,
@@ -180,15 +186,8 @@ impl McpClient {
         Ok(join_mcp_content(&result.content))
     }
 
-    pub fn agent_tools(&self) -> Vec<ToolSpec> {
-        self.tools
-            .iter()
-            .map(|tool| ToolSpec {
-                name: format!("mcp__{}__{}", self.server_name, tool.name),
-                description: tool.description.as_ref().map(ToString::to_string),
-                input_schema: Value::Object((*tool.input_schema).clone()),
-            })
-            .collect()
+    pub fn agent_tools(&self) -> &[ToolSpec] {
+        &self.tool_specs
     }
 
     pub fn tool_count(&self) -> usize {
@@ -245,11 +244,11 @@ impl MCPToolRouter {
         tool_name.starts_with("mcp__")
     }
 
-    pub async fn call(&mut self, tool_name: &str, arguments: Value) -> Result<String> {
+    pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {
         let parsed = McpToolName::try_from(tool_name)?;
         let client = self
             .clients
-            .get_mut(&parsed.server)
+            .get(&parsed.server)
             .with_context(|| format!("unknown MCP server {}", parsed.server))?;
 
         client.call_tool(&parsed.tool, arguments).await
@@ -258,7 +257,7 @@ impl MCPToolRouter {
     pub fn all_tools(&self) -> Vec<ToolSpec> {
         self.clients
             .values()
-            .flat_map(McpClient::agent_tools)
+            .flat_map(|client| client.tool_specs.iter().map(copy_tool_spec))
             .collect()
     }
 
@@ -279,6 +278,17 @@ impl MCPToolRouter {
     }
 }
 
+fn build_tool_specs(server_name: &str, tools: &[McpTool]) -> Vec<ToolSpec> {
+    tools
+        .iter()
+        .map(|tool| ToolSpec {
+            name: format!("mcp__{server_name}__{}", tool.name),
+            description: tool.description.as_ref().map(ToString::to_string),
+            input_schema: Value::Object((*tool.input_schema).clone()),
+        })
+        .collect()
+}
+
 pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     let cwd = std::env::current_dir()?;
     let mut loader = PluginLoader::new(vec![cwd]);
@@ -290,8 +300,15 @@ pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     }
 
     let mut router = MCPToolRouter::new();
+    let mut connections = FuturesUnordered::new();
     for (server_name, config) in loader.mcp_servers() {
-        match McpClient::try_new(server_name.clone(), config).await {
+        connections.push(async move {
+            let result = McpClient::try_new(server_name.clone(), config).await;
+            (server_name, result)
+        });
+    }
+    while let Some((server_name, result)) = connections.next().await {
+        match result {
             Ok(client) => {
                 println!(
                     "[MCP connected: {server_name} ({} tools)]",

@@ -152,6 +152,7 @@ pub struct Agent {
     pub hooks: Vec<Hook>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
+    cached_tool_specs: Vec<ToolSpec>,
 }
 
 impl Agent {
@@ -163,6 +164,11 @@ impl Agent {
         permission_manager: PermissionManager,
         system_prompt: AgentSystemPrompt,
     ) -> Self {
+        let cached_tool_specs = tools
+            .tool_specs()
+            .into_iter()
+            .chain(mcp_router.all_tools())
+            .collect();
         Self {
             runtime: AgentRuntime {
                 client,
@@ -185,6 +191,7 @@ impl Agent {
             hooks: Vec::new(),
             system_prompt,
             tool_use_counter: 0,
+            cached_tool_specs,
         }
     }
 
@@ -795,90 +802,23 @@ impl Agent {
                 return Ok((vec![], None));
             }
 
-            // A barrier wave always holds a single tool. MCP tools need the
-            // stateful router (`&mut self`), so run those sequentially; every
-            // other wave runs concurrently over shared borrows.
-            if wave.len() == 1 && MCPToolRouter::is_mcp_tool(&prepared[run_indices[wave[0]]].name) {
-                let pi = run_indices[wave[0]];
-                let start = std::time::Instant::now();
-                let exec = self
-                    .execute_mcp(&prepared[pi].name, &prepared[pi].input)
-                    .await;
-                let duration_us = start.elapsed().as_micros() as u64;
-                let prep_id = prepared[pi].id.clone();
-                let prep_name = prepared[pi].name.clone();
-                let prep_input = prepared[pi].input.clone();
-                let prep_step_idx = prepared[pi].step_idx;
-                let prep_permission_label = prepared[pi].permission_label.clone();
-
-                let tool_use = ToolUse {
-                    id: prep_id.clone(),
-                    name: prep_name.clone(),
-                    input: prep_input.clone(),
-                };
-                let mut tool_result = ToolResult {
-                    tool_use_id: prep_id.clone(),
-                    content: exec.content,
-                };
-                let (exec_output, final_status) =
-                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                        Ok(HookControl::Continue) => (tool_result.content, exec.status),
-                        Ok(HookControl::Block(reason)) => (
-                            format!("Tool blocked by PostToolUse hook: {reason}"),
-                            StepStatus::Failed,
-                        ),
-                        Err(error) => (
-                            format!("PostToolUse hook failed: {error}"),
-                            StepStatus::Failed,
-                        ),
-                    };
-                self.runtime
-                    .stats
-                    .tool_durations_ms
-                    .push(duration_us / 1000);
-                let summary = exec_output.chars().take(200).collect::<String>();
-                let arg_summary = tool_arg_summary(&prep_name, &prep_input);
-                let arg_full = tool_arg_full(&prep_name, &prep_input);
-                let detail = step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
-                self.emit_update(AgentUpdate::StepFinished(
-                    prep_step_idx,
-                    prep_id,
-                    StepResult {
-                        tool: prep_name.clone(),
-                        arg_summary,
-                        arg_full: Some(arg_full),
-                        status: final_status,
-                        message: summary,
-                        detail,
-                        duration_us: Some(duration_us),
-                        permission_label: prep_permission_label,
-                    },
-                ));
-                if prep_name == "read_file"
-                    && let Some(path) = prep_input.get("path").and_then(|value| value.as_str())
-                {
-                    self.remember_recent_file(path);
-                }
-                if prep_name == "compact" {
-                    manual_compact = prep_input
-                        .get("focus")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned)
-                        .or_else(|| Some(String::new()));
-                }
-                outputs[pi] = Some(exec_output);
-                continue;
-            }
-
+            // A barrier wave always holds a single tool. Every other wave runs
+            // concurrently over shared borrows (native and MCP).
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
                 let pi = run_indices[pos];
                 let tools = &self.tools;
+                let mcp = &self.mcp_router;
                 let ctx = &self.tool_context;
                 let prep = &prepared[pi];
+                let is_mcp = MCPToolRouter::is_mcp_tool(&prep.name);
                 futures.push(async move {
                     let start = std::time::Instant::now();
-                    let exec = run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await;
+                    let exec = if is_mcp {
+                        run_mcp_tool(mcp, &prep.name, &prep.input).await
+                    } else {
+                        run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await
+                    };
                     (
                         pi,
                         exec.content,
@@ -1000,26 +940,10 @@ impl Agent {
     }
 
     pub fn all_tool_specs(&self) -> Vec<ToolSpec> {
-        self.tools
-            .tool_specs()
-            .into_iter()
-            .chain(self.mcp_router.all_tools())
+        self.cached_tool_specs
+            .iter()
+            .map(crate::tool::copy_tool_spec)
             .collect()
-    }
-
-    /// Run a single MCP tool. The MCP router is stateful (`&mut self`), so MCP
-    /// tools are always scheduled alone in their own wave and invoked here.
-    async fn execute_mcp(&mut self, name: &str, input: &serde_json::Value) -> ExecResult {
-        match self.mcp_router.call(name, input.clone()).await {
-            Ok(output) => ExecResult {
-                content: output,
-                status: StepStatus::Success,
-            },
-            Err(e) => ExecResult {
-                content: format!("Error invoking MCP tool {}: {}", name, e),
-                status: StepStatus::Failed,
-            },
-        }
     }
 
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
@@ -1271,6 +1195,25 @@ async fn run_native_tool(
         }
         Err(e) => ExecResult {
             content: format!("Error invoking tool {}: {}", name, e),
+            status: StepStatus::Failed,
+        },
+    }
+}
+
+/// Run a single MCP tool. The router is shared immutably so different servers
+/// can execute concurrently within the same wave.
+async fn run_mcp_tool(
+    mcp_router: &MCPToolRouter,
+    name: &str,
+    input: &serde_json::Value,
+) -> ExecResult {
+    match mcp_router.call(name, input.clone()).await {
+        Ok(output) => ExecResult {
+            content: output,
+            status: StepStatus::Success,
+        },
+        Err(e) => ExecResult {
+            content: format!("Error invoking MCP tool {}: {}", name, e),
             status: StepStatus::Failed,
         },
     }
