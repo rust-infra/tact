@@ -2,7 +2,7 @@
 
 This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.claude/` and the separate SQLite session database. Together they hold conversation history, domain state (tasks, cron, teammates, …), and observability data.
 
-Memory ([Persistent Memory](./07_chapter_memory.md)) uses Markdown files in `.claude/memory/` and is **not** part of the JSON store API.
+Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in `.claude/memory/` and is **not** part of the JSON store API.
 
 ---
 
@@ -109,7 +109,7 @@ tasks: root.collection("tasks")?,           // tasks/{id}.json
 index: root.file("tasks/index.json")?,      // next_id counter
 ```
 
-See [Tasks and Tool Scheduling](./03_chapter_task.md) for task lifecycle; this chapter covers only the storage primitives.
+See [Tasks and Tool Scheduling](./11_chapter_task.md) for task lifecycle; this chapter covers only the storage primitives.
 
 ---
 
@@ -119,9 +119,9 @@ See [Tasks and Tool Scheduling](./03_chapter_task.md) for task lifecycle; this c
 |--------|-------------|---------|
 | `task/` | `tasks/`, `tasks/index.json` | Collection + index |
 | `cron/` | `cron/scheduled_tasks.json` | Single `Store<ScheduledTaskIndex>` |
-| `background.rs` ([Background Tasks](./16_chapter_background.md)) | `background/tasks/` | Collection |
-| `team.rs` ([Team Coordination](./13_chapter_team.md)) | `team/config.json`, `team/inbox/` | Store + collection |
-| `worktree/` ([Worktree Lanes](./14_chapter_worktree.md)) | `worktrees/index.json` | Single `Store<WorktreeIndex>` |
+| `background.rs` ([Background Tasks](./13_chapter_background.md)) | `background/tasks/` | Collection |
+| `team.rs` ([Team Coordination](./14_chapter_team.md)) | `team/config.json`, `team/inbox/` | Store + collection |
+| `worktree/` ([Worktree Lanes](./15_chapter_worktree.md)) | `worktrees/index.json` | Single `Store<WorktreeIndex>` |
 
 Each domain module wraps the raw store in `Arc<Mutex<…>>` (e.g. `SharedTaskManager`) and exposes tool-facing APIs — callers should not manipulate `CollectionStore` directly.
 
@@ -218,8 +218,8 @@ sequenceDiagram
 
 ## Related Docs
 
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — task tools backed by `CollectionStore`
-- [Cron Scheduling](./05_chapter_cron.md) — cron index file layout
-- [Persistent Memory](./07_chapter_memory.md) — Markdown memories (not JSON store)
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — task tools backed by `CollectionStore`
+- [Cron Scheduling](./16_chapter_cron.md) — cron index file layout
+- [Persistent Memory](./03_chapter_memory.md) — Markdown memories (not JSON store)
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store and token usage notes
 - [docs/token_usage_schema.md](../docs/token_usage_schema.md) — `token_usages` column details

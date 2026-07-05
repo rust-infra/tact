@@ -109,41 +109,43 @@ sequenceDiagram
     end
 ```
 
-**Stable vs. dynamic sections:** everything above `=== DYNAMIC_BOUNDARY ===` (role, guidelines, CLAUDE.md) is rebuilt but intended to stay byte-identical for prefix caching. Memory and dynamic context below the boundary refresh every turn. See [System Prompt](./02_chapter_prompt.md).
+**Stable vs. dynamic sections:** everything above `=== DYNAMIC_BOUNDARY ===` (role, guidelines, CLAUDE.md) is rebuilt but intended to stay byte-identical for prefix caching. Memory and dynamic context below the boundary refresh every turn. See [System Prompt](./04_chapter_prompt.md).
 
 **Tool turns:** when the model returns `ToolUse`, the loop does not exit — tool results are appended to `runtime.context` and the next iteration runs steps 5–12 again with an updated message list and a freshly rendered system prompt.
 
-**Compaction and recovery:** `micro_compact` / `compact_history` in the diagram are covered in [Context Compaction](./15_chapter_compact.md); retries and continuations around the LLM call are covered in [Error Recovery](./12_chapter_recovery.md).
+**Compaction and recovery:** `micro_compact` / `compact_history` in the diagram are covered in [Context Compaction](./05_chapter_compact.md); retries and continuations around the LLM call are covered in [Error Recovery](./06_chapter_recovery.md).
 
 ---
 
 ## Table of Contents
 
-| Chapter | Description |
-|---------|-------------|
-| [MCP Protocol and Agent Integration](./01_chapter_mcp.md) | Model Context Protocol fundamentals, step-by-step protocol flow, and MCP integration in Tact (configuration, handshake, tool calls, dynamic updates, graceful shutdown) |
-| [System Prompt](./02_chapter_prompt.md) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
-| [Tasks and Tool Scheduling](./03_chapter_task.md) | How a single agent turn runs tools through pre-flight, parallel wave execution, and post-processing while keeping conflicting operations ordered |
-| [Agent Lifecycle Hooks](./04_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
-| [Cron Scheduling](./05_chapter_cron.md) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
-| [Permission Model](./06_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
-| [Persistent Memory](./07_chapter_memory.md) | Markdown memories under `.claude/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
-| [Desktop Notifications](./08_chapter_notify.md) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
-| [Store and Persistence](./09_chapter_store.md) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
-| [Tool System](./10_chapter_tool.md) | `Tool` trait, `ToolRouter`, `ToolContext`, `toolset` / `subagent_toolset`, path safety, and `#[tool]` macro |
-| [Skill Registry](./11_chapter_skill.md) | `SKILL.md` discovery, prompt summaries, `load_skill` on-demand loading, and `<skill>` tag format |
-| [Error Recovery](./12_chapter_recovery.md) | `RecoveryState`, transport back-off retries, prompt-too-long compaction, and output-limit continuation in `agent_loop` |
-| [Team Coordination](./13_chapter_team.md) | Teammate roster under `.claude/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
-| [Worktree Lanes](./14_chapter_worktree.md) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
-| [Context Compaction](./15_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
-| [Background Tasks](./16_chapter_background.md) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
-| [Subagents](./17_chapter_subagent.md) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
+Chapters follow **`Agent::agent_loop` execution order**: session → prompt inputs → compaction → LLM recovery → tool pipeline → domain tools → side systems.
+
+| # | Chapter | Description |
+|---|---------|-------------|
+| 1 | [Store and Persistence](./01_chapter_store.md) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
+| 2 | [Skill Registry](./02_chapter_skill.md) | `SKILL.md` discovery, prompt summaries, `load_skill` on-demand loading, and `<skill>` tag format |
+| 3 | [Persistent Memory](./03_chapter_memory.md) | Markdown memories under `.claude/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
+| 4 | [System Prompt](./04_chapter_prompt.md) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
+| 5 | [Context Compaction](./05_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
+| 6 | [Error Recovery](./06_chapter_recovery.md) | `RecoveryState`, transport back-off retries, prompt-too-long compaction, and output-limit continuation in `agent_loop` |
+| 7 | [Tool System](./07_chapter_tool.md) | `Tool` trait, `ToolRouter`, `ToolContext`, `toolset` / `subagent_toolset`, path safety, and `#[tool]` macro |
+| 8 | [MCP Protocol and Agent Integration](./08_chapter_mcp.md) | Model Context Protocol fundamentals, step-by-step protocol flow, and MCP integration in Tact (configuration, handshake, tool calls, dynamic updates, graceful shutdown) |
+| 9 | [Agent Lifecycle Hooks](./09_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
+| 10 | [Permission Model](./10_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
+| 11 | [Tasks and Tool Scheduling](./11_chapter_task.md) | How a single agent turn runs tools through pre-flight, parallel wave execution, and post-processing while keeping conflicting operations ordered |
+| 12 | [Subagents](./12_chapter_subagent.md) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
+| 13 | [Background Tasks](./13_chapter_background.md) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
+| 14 | [Team Coordination](./14_chapter_team.md) | Teammate roster under `.claude/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
+| 15 | [Worktree Lanes](./15_chapter_worktree.md) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
+| 16 | [Cron Scheduling](./16_chapter_cron.md) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
+| 17 | [Desktop Notifications](./17_chapter_notify.md) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
 
 ---
 
 ## How to Read
 
-- **Protocol first, code second**: Each “Step N” in the tutorials maps cleanly to `crates/tact/src/mcp/mod.rs`.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
@@ -152,7 +154,7 @@ sequenceDiagram
 
 These topics are not written yet; they will be added over time:
 
-- Agent main loop (`agent_loop`) — turn structure, cancellation (recovery and compaction are now covered in chapters [12](./12_chapter_recovery.md) and [15](./15_chapter_compact.md))
+- Agent main loop (`agent_loop`) — turn structure, cancellation (recovery and compaction are covered in chapters [6](./06_chapter_recovery.md) and [5](./05_chapter_compact.md))
 
 ---
 
@@ -185,5 +187,7 @@ Turn a chapter into slide + narration video with minimal manual work:
 
 1. Generate `scenes.json` using the LLM prompt in [prompts/scene-generator.md](./prompts/scene-generator.md)
 2. Run the pipeline: `./book/scripts/generate.sh <chapter> --all`
+
+`<chapter>` is the **slug** in the filename (e.g. `mcp` → `08_chapter_mcp.md`, `store` → `01_chapter_store.md`), not the numeric prefix.
 
 Full docs: [scripts/README.md](./scripts/README.md)

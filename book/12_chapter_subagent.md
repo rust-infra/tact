@@ -4,7 +4,7 @@ This chapter explains how Tact spawns **isolated worker agents** through the `ta
 
 Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/mod.rs`.
 
-Do not confuse this with [Team Coordination](./13_chapter_team.md) — `spawn_teammate` only writes roster/inbox records; `task` actually runs a nested `Agent::agent_loop`.
+Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_teammate` only writes roster/inbox records; `task` actually runs a nested `Agent::agent_loop`.
 
 ---
 
@@ -125,9 +125,9 @@ let system_prompt = format!(
 );
 ```
 
-`build_system_prompt()` returns this string verbatim every turn — no skill summaries, memory injection, CLAUDE.md, or directory snapshot. See [System Prompt](./02_chapter_prompt.md) for how the main agent differs.
+`build_system_prompt()` returns this string verbatim every turn — no skill summaries, memory injection, CLAUDE.md, or directory snapshot. See [System Prompt](./04_chapter_prompt.md) for how the main agent differs.
 
-Compaction and recovery **do** still run inside the subagent loop ([Context Compaction](./15_chapter_compact.md), [Error Recovery](./12_chapter_recovery.md)): `micro_compact`, `compact_history`, transport retries, and continuation messages apply to the subagent's private `runtime.context`.
+Compaction and recovery **do** still run inside the subagent loop ([Context Compaction](./05_chapter_compact.md), [Error Recovery](./06_chapter_recovery.md)): `micro_compact`, `compact_history`, transport retries, and continuation messages apply to the subagent's private `runtime.context`.
 
 ---
 
@@ -145,13 +145,13 @@ if let Some(tx) = ctx.ui_tx {
 }
 ```
 
-Permission prompts and stream updates from the subagent therefore appear in the same terminal session. See [Permission Model](./06_chapter_permission.md).
+Permission prompts and stream updates from the subagent therefore appear in the same terminal session. See [Permission Model](./10_chapter_permission.md).
 
 ---
 
 ## 7. Scheduling Interaction
 
-In `tool_schedule.rs`, `task` falls through to the default `_ => ToolResources::barrier()` branch. A `task` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./03_chapter_task.md).
+In `tool_schedule.rs`, `task` falls through to the default `_ => ToolResources::barrier()` branch. A `task` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
 
 ---
 
@@ -190,7 +190,7 @@ That string becomes the `task` tool's JSON/text result and is appended to the **
 | Persistence | In-memory only | `.claude/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 
-See [Team Coordination](./13_chapter_team.md).
+See [Team Coordination](./14_chapter_team.md).
 
 ---
 
@@ -226,10 +226,10 @@ See [Team Coordination](./13_chapter_team.md).
 
 ## Related Docs
 
-- [Tool System](./10_chapter_tool.md) — `toolset` vs `subagent_toolset`, `ToolContext`
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — barrier semantics
-- [Permission Model](./06_chapter_permission.md) — High-risk `task`, inherited `ui_tx`
-- [System Prompt](./02_chapter_prompt.md) — dynamic main-agent prompt
-- [Skill Registry](./11_chapter_skill.md) — `load_skill` unavailable to subagents
-- [Team Coordination](./13_chapter_team.md) — roster-only teammates
+- [Tool System](./07_chapter_tool.md) — `toolset` vs `subagent_toolset`, `ToolContext`
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — barrier semantics
+- [Permission Model](./10_chapter_permission.md) — High-risk `task`, inherited `ui_tx`
+- [System Prompt](./04_chapter_prompt.md) — dynamic main-agent prompt
+- [Skill Registry](./02_chapter_skill.md) — `load_skill` unavailable to subagents
+- [Team Coordination](./14_chapter_team.md) — roster-only teammates
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — workspace tool table

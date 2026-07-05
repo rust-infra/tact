@@ -109,11 +109,11 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 ## 6. Interaction with the Agent Loop
 
-`background_run` returns immediately, so from the scheduler's perspective ([Tasks and Tool Scheduling](./03_chapter_task.md)) it is a cheap call — but note that as a shell-adjacent tool it takes its permission classification from the [Permission Model](./06_chapter_permission.md) under the name `background_run`, not `bash`.
+`background_run` returns immediately, so from the scheduler's perspective ([Tasks and Tool Scheduling](./11_chapter_task.md)) it is a cheap call — but note that as a shell-adjacent tool it takes its permission classification from the [Permission Model](./10_chapter_permission.md) under the name `background_run`, not `bash`.
 
-There is **no completion notification**: the agent (or the model driving it) must poll `check_background`. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./10_chapter_tool.md) exists partly to make that polling loop possible.
+There is **no completion notification**: the agent (or the model driving it) must poll `check_background`. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
 
-Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./15_chapter_compact.md)) — instead it is hard-capped at 50k chars in the record itself, and the full JSON (including output) lands in context when polled.
+Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — instead it is hard-capped at 50k chars in the record itself, and the full JSON (including output) lands in context when polled.
 
 ---
 
@@ -147,9 +147,9 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 
 ## Related Docs
 
-- [Tool System](./10_chapter_tool.md) — `ToolContext`, `toolset()`, and the synchronous `bash` counterpart
-- [Permission Model](./06_chapter_permission.md) — how `background_run` is gated
-- [Context Compaction](./15_chapter_compact.md) — the output-spill mechanism background tasks bypass
-- [Store and Persistence](./09_chapter_store.md) — the `background/` collection store
+- [Tool System](./07_chapter_tool.md) — `ToolContext`, `toolset()`, and the synchronous `bash` counterpart
+- [Permission Model](./10_chapter_permission.md) — how `background_run` is gated
+- [Context Compaction](./05_chapter_compact.md) — the output-spill mechanism background tasks bypass
+- [Store and Persistence](./01_chapter_store.md) — the `background/` collection store
 - [docs/state_machines.md](../docs/state_machines.md) — background job states
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 background tasks row

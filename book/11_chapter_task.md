@@ -127,9 +127,9 @@ Before a tool enters scheduling, `PermissionManager` classifies its intent:
 - **Write**: asks in Default mode (unless allowlisted); auto-approved in Auto mode; denied in Plan mode.
 - **High-risk**: always asks (even if allowlisted); includes `task`, destructive tool names, and dangerous bash patterns.
 
-See [Permission Model](./06_chapter_permission.md) for classification rules, modes, and the TUI approval flow.
+See [Permission Model](./10_chapter_permission.md) for classification rules, modes, and the TUI approval flow.
 
-Hooks (`PreToolUse`, `PostToolUse`) live in `crates/tact/src/hook/mod.rs` and can inspect or modify tool input/output. They run sequentially around the parallel core. See [Agent Lifecycle Hooks](./04_chapter_hook.md) for the full design.
+Hooks (`PreToolUse`, `PostToolUse`) live in `crates/tact/src/hook/mod.rs` and can inspect or modify tool input/output. They run sequentially around the parallel core. See [Agent Lifecycle Hooks](./09_chapter_hook.md) for the full design.
 
 ---
 
@@ -187,11 +187,11 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 
 ## Related Docs
 
-- [Permission Model](./06_chapter_permission.md)
-- [Tool System](./10_chapter_tool.md) — `ToolRouter` and native tool dispatch
-- [Context Compaction](./15_chapter_compact.md) — `persist_large_output` and manual `compact` detection in dispatch
-- [Background Tasks](./16_chapter_background.md) — async counterpart to synchronous `bash` steps
-- [Subagents](./17_chapter_subagent.md) — nested `task` tool and scheduling barrier
+- [Permission Model](./10_chapter_permission.md)
+- [Tool System](./07_chapter_tool.md) — `ToolRouter` and native tool dispatch
+- [Context Compaction](./05_chapter_compact.md) — `persist_large_output` and manual `compact` detection in dispatch
+- [Background Tasks](./13_chapter_background.md) — async counterpart to synchronous `bash` steps
+- [Subagents](./12_chapter_subagent.md) — nested `task` tool and scheduling barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)

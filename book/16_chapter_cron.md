@@ -248,6 +248,6 @@ When a runtime is added, likely touch points are: a tokio interval in `tui.rs` o
 ## Related Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Sub-agents, team, tasks, worktrees table (Cron row)
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — how tool calls run once the model acts (orthogonal to cron firing)
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — how tool calls run once the model acts (orthogonal to cron firing)
 - [crates/tact/tact.md](../crates/tact/tact.md) — domain managers and `.claude/` layout
 - [docs/state_machines.md](../docs/state_machines.md) — background task lifecycle (contrast with cron)

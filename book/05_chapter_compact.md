@@ -2,7 +2,7 @@
 
 This chapter explains how Tact keeps a long-running conversation **inside the model's context window**: cheap in-place truncation every turn (`micro_compact`), full LLM-generated summarization when the limit is reached (`compact_history`), and disk spill for both transcripts and oversized tool outputs. The primitives live in `crates/tact/src/compact.rs`; the orchestration lives in `Agent::compact_history` in `crates/tact/src/agent/mod.rs`.
 
-Compaction is also a **recovery strategy**: when the provider rejects a request as too long, the agent compacts and retries. See [Error Recovery](./12_chapter_recovery.md).
+Compaction is also a **recovery strategy**: when the provider rejects a request as too long, the agent compacts and retries. See [Error Recovery](./06_chapter_recovery.md).
 
 ---
 
@@ -156,7 +156,7 @@ Both are resolved through the layered config in `crates/tact/src/config/` (CLI f
 | Gap | Detail |
 |-----|--------|
 | Char-based estimation | 500k chars ≈ token budget only loosely; multibyte-heavy or code-dense contexts skew the ratio |
-| Summarization is lossy and unguarded | The compaction LLM call has no retry ([Error Recovery](./12_chapter_recovery.md) does not cover it) and a poor summary silently degrades the session |
+| Summarization is lossy and unguarded | The compaction LLM call has no retry ([Error Recovery](./06_chapter_recovery.md) does not cover it) and a poor summary silently degrades the session |
 | Only the last ~80k chars are summarized | Early conversation survives only via the transcript file, which the model is not told about in the summary message |
 | Spill limited to `bash` | Other tools and MCP results can still flood the context in one turn |
 | Transcripts accumulate | `.claude/transcripts/` and `.claude/tool-results/` are never pruned |
@@ -167,9 +167,9 @@ Both are resolved through the layered config in `crates/tact/src/config/` (CLI f
 
 ## Related Docs
 
-- [Error Recovery](./12_chapter_recovery.md) — compaction as the prompt-too-long strategy
-- [System Prompt](./02_chapter_prompt.md) — what is rebuilt (not compacted) every turn
-- [Store and Persistence](./09_chapter_store.md) — session store message-id window reset
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — where `manual_compact` is detected in dispatch
+- [Error Recovery](./06_chapter_recovery.md) — compaction as the prompt-too-long strategy
+- [System Prompt](./04_chapter_prompt.md) — what is rebuilt (not compacted) every turn
+- [Store and Persistence](./01_chapter_store.md) — session store message-id window reset
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — where `manual_compact` is detected in dispatch
 - [docs/compaction.md](../docs/compaction.md) — tuning notes
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §6 context compaction

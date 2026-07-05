@@ -2,7 +2,7 @@
 
 This chapter explains how Tact loads **custom instruction files** (skills) from the workspace: scanning `SKILL.md` files, exposing summaries in the system prompt, and loading full bodies on demand through the `load_skill` tool.
 
-Skills are related to but distinct from [Persistent Memory](./07_chapter_memory.md) — skills are author-written playbooks; memories are facts learned during conversations.
+Skills are related to but distinct from [Persistent Memory](./03_chapter_memory.md) — skills are author-written playbooks; memories are facts learned during conversations.
 
 ---
 
@@ -151,7 +151,7 @@ Used in `tui.rs` at startup; result wrapped in `Arc<SkillRegistry>` on `ToolCont
 .skills_available(self.tool_context.skill_registry.describe_available())
 ```
 
-Rendered under `# Available skills` in the template. See [System Prompt](./02_chapter_prompt.md) — this section is above the dynamic boundary (mostly stable unless skills are added on disk mid-session without reload).
+Rendered under `# Available skills` in the template. See [System Prompt](./04_chapter_prompt.md) — this section is above the dynamic boundary (mostly stable unless skills are added on disk mid-session without reload).
 
 ### load_skill tool
 
@@ -216,7 +216,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 
 ## Related Docs
 
-- [System Prompt](./02_chapter_prompt.md) — `# Available skills` section and cache boundary
-- [Tool System](./10_chapter_tool.md) — `load_skill` and `ToolContext`
-- [Persistent Memory](./07_chapter_memory.md) — complementary persistence model
+- [System Prompt](./04_chapter_prompt.md) — `# Available skills` section and cache boundary
+- [Tool System](./07_chapter_tool.md) — `load_skill` and `ToolContext`
+- [Persistent Memory](./03_chapter_memory.md) — complementary persistence model
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — skills in prompt assembly table

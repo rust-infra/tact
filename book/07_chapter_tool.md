@@ -2,7 +2,7 @@
 
 This chapter explains how Tact defines, registers, and executes **native tools**: the `Tool` trait, shared `ToolContext`, `ToolRouter` dispatch, the main vs sub-agent tool sets, workspace path safety, and the `#[tool]` proc macro.
 
-MCP tools follow a parallel path through `MCPToolRouter` — see [MCP Protocol and Agent Integration](./01_chapter_mcp.md). The three-phase execution pipeline (pre-flight, parallel waves, results) is covered in [Tasks and Tool Scheduling](./03_chapter_task.md).
+MCP tools follow a parallel path through `MCPToolRouter` — see [MCP Protocol and Agent Integration](./08_chapter_mcp.md). The three-phase execution pipeline (pre-flight, parallel waves, results) is covered in [Tasks and Tool Scheduling](./11_chapter_task.md).
 
 ---
 
@@ -131,7 +131,7 @@ Restricted set for isolated workers spawned by the `task` tool:
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above. Full spawn lifecycle: [Subagents](./17_chapter_subagent.md).
+Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 
@@ -180,7 +180,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 
 Failure message: `"Path escapes workspace"`.
 
-This is separate from `StoreRoot` path rules ([Store and Persistence](./09_chapter_store.md)) which guard `.claude/` JSON files.
+This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.claude/` JSON files.
 
 ---
 
@@ -198,7 +198,7 @@ let exec = if is_mcp {
 
 `run_native_tool` calls `tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to `.claude/tool-results/{tool_use_id}.txt` via `persist_large_output` when output exceeds context limits.
 
-Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Permission Model](./06_chapter_permission.md) and [Agent Lifecycle Hooks](./04_chapter_hook.md).
+Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Permission Model](./10_chapter_permission.md) and [Agent Lifecycle Hooks](./09_chapter_hook.md).
 
 ---
 
@@ -210,10 +210,10 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `batch_read.rs`, `batch_edit.rs` | batch ops | Atomic batch edit |
 | `bash.rs` | `bash` | Shell + `validate_shell_command` |
 | `search_code.rs` | `search_code` | Ripgrep wrapper |
-| `memory.rs` | `save_memory` | See [Persistent Memory](./07_chapter_memory.md) |
-| `load_skill.rs` | `load_skill` | See [Skill Registry](./11_chapter_skill.md) |
+| `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
+| `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
 | `task.rs`, `subagent.rs` | `task` | Spawns sub-agent with `subagent_toolset()` |
-| `cron.rs` | `cron_*` | See [Cron Scheduling](./05_chapter_cron.md) |
+| `cron.rs` | `cron_*` | See [Cron Scheduling](./16_chapter_cron.md) |
 | `compact.rs` | `compact` | Context compaction trigger |
 | `web/` | `web_fetch`, `web_search` | HTTP tools |
 
@@ -248,11 +248,11 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 
 ## Related Docs
 
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — parallel execution and scheduling
-- [Permission Model](./06_chapter_permission.md) — pre-flight gate before `call`
-- [Agent Lifecycle Hooks](./04_chapter_hook.md) — PreToolUse / PostToolUse
-- [MCP Protocol and Agent Integration](./01_chapter_mcp.md) — external tools
-- [Team Coordination](./13_chapter_team.md), [Worktree Lanes](./14_chapter_worktree.md), [Background Tasks](./16_chapter_background.md) — manager-backed tool families on `ToolContext`
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — parallel execution and scheduling
+- [Permission Model](./10_chapter_permission.md) — pre-flight gate before `call`
+- [Agent Lifecycle Hooks](./09_chapter_hook.md) — PreToolUse / PostToolUse
+- [MCP Protocol and Agent Integration](./08_chapter_mcp.md) — external tools
+- [Team Coordination](./14_chapter_team.md), [Worktree Lanes](./15_chapter_worktree.md), [Background Tasks](./13_chapter_background.md) — manager-backed tool families on `ToolContext`
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI tool blocks
 - [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read / batch_edit flow
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — macro overview

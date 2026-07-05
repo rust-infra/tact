@@ -2,7 +2,7 @@
 
 This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `.claude/memory/`. They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
 
-For how memory fits into prompt assembly and the dynamic boundary, see [System Prompt](./02_chapter_prompt.md). For the tool that writes memories, see [Tool System](./10_chapter_tool.md).
+For how memory fits into prompt assembly and the dynamic boundary, see [System Prompt](./04_chapter_prompt.md). For the tool that writes memories, see [Tool System](./07_chapter_tool.md).
 
 ---
 
@@ -146,7 +146,7 @@ On every `save_memory`, `rebuild_index()` writes `MEMORY.md` — a human-readabl
 .memory_guidance(MEMORY_GUIDANCE.trim())
 ```
 
-Both run every turn inside the agent loop. Memory content appears **below** `=== DYNAMIC_BOUNDARY ===` (dynamic section). See [System Prompt](./02_chapter_prompt.md).
+Both run every turn inside the agent loop. Memory content appears **below** `=== DYNAMIC_BOUNDARY ===` (dynamic section). See [System Prompt](./04_chapter_prompt.md).
 
 ### ToolContext
 
@@ -170,7 +170,7 @@ Constructed in `tui.rs` alongside other session services. Sub-agents inherit the
 | `<workdir>/.claude/memory/{name}.md` | Individual memory files |
 | `<workdir>/.claude/memory/MEMORY.md` | Auto-generated index (not loaded as a memory) |
 
-Memory uses **Markdown files directly**, not the JSON `Store` layer described in [Store and Persistence](./09_chapter_store.md).
+Memory uses **Markdown files directly**, not the JSON `Store` layer described in [Store and Persistence](./01_chapter_store.md).
 
 ---
 
@@ -202,7 +202,7 @@ Memory uses **Markdown files directly**, not the JSON `Store` layer described in
 
 ## Related Docs
 
-- [System Prompt](./02_chapter_prompt.md) — dynamic boundary and memory section placement
-- [Tool System](./10_chapter_tool.md) — `save_memory` and `ToolContext`
-- [Store and Persistence](./09_chapter_store.md) — JSON store layer (memory is separate)
+- [System Prompt](./04_chapter_prompt.md) — dynamic boundary and memory section placement
+- [Tool System](./07_chapter_tool.md) — `save_memory` and `ToolContext`
+- [Store and Persistence](./01_chapter_store.md) — JSON store layer (memory is separate)
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — high-level memory mention in prompt assembly

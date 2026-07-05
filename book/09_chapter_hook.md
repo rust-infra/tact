@@ -59,7 +59,7 @@ If a hook returns `Err(...)`, the agent treats it like a block with a generic fa
 
 ## 4. Where Hooks Sit in the Turn Pipeline
 
-Hooks wrap the parallel core described in [Tasks and Tool Scheduling](./03_chapter_task.md):
+Hooks wrap the parallel core described in [Tasks and Tool Scheduling](./11_chapter_task.md):
 
 ```text
 For each ToolUse in the assistant message (Phase 1 — sequential):
@@ -248,8 +248,8 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 
 ## Related Docs
 
-- [Permission Model](./06_chapter_permission.md) — runs immediately after PreToolUse in the pipeline
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — three-phase tool pipeline hooks wrap
+- [Permission Model](./10_chapter_permission.md) — runs immediately after PreToolUse in the pipeline
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — three-phase tool pipeline hooks wrap
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Hook Engine section
 - [Tool Rendering](../docs/tool_rendering.md) — how blocked/failed steps appear in the TUI
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md) — where hooks do *not* run

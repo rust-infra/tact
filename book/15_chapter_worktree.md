@@ -16,7 +16,7 @@ A "lane" is Tact's term for one named worktree: its directory, its dedicated bra
 | `worktree_run` | `run` | Runs one `sh -c` command inside the lane, returns stdout+stderr |
 | `worktree_events` | `events` | Last N lines of the audit log (default 20) |
 
-`base_ref` defaults to `HEAD` when omitted; `task_id` optionally links the lane to a record from the task manager ([Tasks and Tool Scheduling](./03_chapter_task.md)).
+`base_ref` defaults to `HEAD` when omitted; `task_id` optionally links the lane to a record from the task manager ([Tasks and Tool Scheduling](./11_chapter_task.md)).
 
 ---
 
@@ -99,7 +99,7 @@ Every successful `create` appends a line to `index.events`:
 
 ## 5. Concurrency and Wiring
 
-`SharedWorktreeManager` is the usual `Arc<Mutex<WorktreeManager>>` wrapper with a `with_manager` accessor, mirroring the [team](./13_chapter_team.md) and task managers. Constructed at startup in `tui.rs`:
+`SharedWorktreeManager` is the usual `Arc<Mutex<WorktreeManager>>` wrapper with a `with_manager` accessor, mirroring the [team](./14_chapter_team.md) and task managers. Constructed at startup in `tui.rs`:
 
 ```rust
 let worktree_manager =
@@ -116,7 +116,7 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 ## 6. Interaction with Permissions and Shell Safety
 
-`worktree_run` executes arbitrary shell strings but does **not** go through `validate_shell_command` (unlike `bash` and `background_run`), and its permission classification is whatever the [Permission Model](./06_chapter_permission.md) assigns to the `worktree_run` tool name — the embedded command string is not inspected for high-risk patterns. Treat lanes as having the same blast radius as `bash`.
+`worktree_run` executes arbitrary shell strings but does **not** go through `validate_shell_command` (unlike `bash` and `background_run`), and its permission classification is whatever the [Permission Model](./10_chapter_permission.md) assigns to the `worktree_run` tool name — the embedded command string is not inspected for high-risk patterns. Treat lanes as having the same blast radius as `bash`.
 
 ---
 
@@ -149,8 +149,8 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 ## Related Docs
 
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — the task records `task_id` refers to
-- [Team Coordination](./13_chapter_team.md) — the coordination layer worktrees are designed to pair with
-- [Permission Model](./06_chapter_permission.md) — how `worktree_run` is (and isn't) gated
-- [Store and Persistence](./09_chapter_store.md) — `Store<WorktreeIndex>` under `.claude/worktrees/`
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — the task records `task_id` refers to
+- [Team Coordination](./14_chapter_team.md) — the coordination layer worktrees are designed to pair with
+- [Permission Model](./10_chapter_permission.md) — how `worktree_run` is (and isn't) gated
+- [Store and Persistence](./01_chapter_store.md) — `Store<WorktreeIndex>` under `.claude/worktrees/`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 sub-agents, team, tasks, worktrees

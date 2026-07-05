@@ -158,5 +158,5 @@ There is no notification for session start, compaction, or MCP connection events
 
 ## Related Docs
 
-- [Tasks and Tool Scheduling](./03_chapter_task.md) — when `StepFailed` is emitted
+- [Tasks and Tool Scheduling](./11_chapter_task.md) — when `StepFailed` is emitted
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — agent update flow overview
