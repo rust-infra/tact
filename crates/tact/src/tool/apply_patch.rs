@@ -281,11 +281,33 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
         ));
     }
 
-    // Write all modified files
-    for (path, _original_bytes, new_content) in &to_write {
-        tokio::fs::write(path, new_content)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
+    // Write all modified files atomically; roll back on failure.
+    let mut written: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    for (path, original_bytes, new_content) in &to_write {
+        match tokio::fs::write(path, new_content).await {
+            Ok(()) => written.push((path.clone(), original_bytes.clone())),
+            Err(e) => {
+                let mut rollback_errors: Vec<String> = Vec::new();
+                for (rb_path, rb_original) in &written {
+                    if let Err(re) = tokio::fs::write(rb_path, rb_original).await {
+                        rollback_errors.push(format!("  rollback {}: {}", rb_path.display(), re));
+                    }
+                }
+                let mut msg = format!(
+                    "Failed to write {} ({}). Rolled back {} file(s).",
+                    path.display(),
+                    e,
+                    written.len()
+                );
+                if !rollback_errors.is_empty() {
+                    msg.push_str(&format!(
+                        "\nRollback errors:\n{}",
+                        rollback_errors.join("\n")
+                    ));
+                }
+                return Err(anyhow::anyhow!("{msg}"));
+            }
+        }
     }
 
     Ok(format!(

@@ -21,7 +21,7 @@ const READ_PREFIXES: &[&str] = &[
     "read", "list", "get", "show", "search", "query", "inspect", "find",
 ];
 const HIGH_PREFIXES: &[&str] = &["delete", "remove", "drop", "shutdown"];
-const HIGH_BASH_PATTERNS: &[&str] = &["rm -rf", "sudo", "shutdown", "reboot"];
+use crate::shell::is_high_risk_shell_command;
 const READ_ONLY_BASH_COMMANDS: &[&str] = &["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep"];
 const READ_ONLY_GIT_SUBCOMMANDS: &[&str] = &["status", "diff", "log", "show", "branch"];
 
@@ -276,10 +276,7 @@ fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        return if HIGH_BASH_PATTERNS
-            .iter()
-            .any(|pattern| command.contains(pattern))
-        {
+        return if is_high_risk_shell_command(&command) {
             CapabilityRisk::High
         } else if is_read_only_bash_command(&command) {
             CapabilityRisk::Read
@@ -361,6 +358,13 @@ mod tests {
         assert_eq!(intent.source, CapabilitySource::Native);
         assert_eq!(intent.server, None);
         assert_eq!(intent.tool, "delete_file");
+        assert_eq!(intent.risk, CapabilityRisk::High);
+    }
+
+    #[test]
+    fn classifies_destructive_rm_as_high_risk() {
+        let intent = normalize_capability("bash", &json!({ "command": "rm -rf /*" }));
+
         assert_eq!(intent.risk, CapabilityRisk::High);
     }
 

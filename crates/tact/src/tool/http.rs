@@ -6,17 +6,40 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Url;
+use reqwest::redirect::Policy;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// HTTP client for trusted, hard-coded API endpoints (e.g. web search providers).
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("too many redirects");
+                }
+                match validate_public_http_url(attempt.url().as_str()) {
+                    Ok(_) => attempt.follow(),
+                    Err(e) => attempt.error(e),
+                }
+            }))
             .build()
             .expect("failed to build shared HTTP client")
+    })
+}
+
+/// HTTP client for user-supplied URLs. Redirects are disabled and callers must
+/// run [`validate_public_http_url_resolved`] before fetching.
+pub fn public_fetch_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(Policy::none())
+            .build()
+            .expect("failed to build public fetch HTTP client")
     })
 }
 
@@ -44,6 +67,41 @@ pub fn validate_public_http_url(raw: &str) -> Result<Url> {
     Ok(url)
 }
 
+/// Validates a URL and resolves hostnames to ensure they do not point at
+/// private or internal addresses (DNS rebinding mitigation at lookup time).
+pub async fn validate_public_http_url_resolved(raw: &str) -> Result<Url> {
+    let url = validate_public_http_url(raw)?;
+
+    if let Some(host) = url.host_str()
+        && host.parse::<IpAddr>().is_err()
+    {
+        let port = url.port_or_known_default().unwrap_or(443);
+        validate_resolved_host(host, port).await?;
+    }
+
+    Ok(url)
+}
+
+async fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
+    let mut resolved_any = false;
+    let mut addrs = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("failed to resolve host {host}"))?;
+
+    for addr in addrs.by_ref() {
+        resolved_any = true;
+        if is_blocked_ip(addr.ip()) {
+            anyhow::bail!("Blocked host: {host} resolves to private/internal address");
+        }
+    }
+
+    if !resolved_any {
+        anyhow::bail!("host {host} did not resolve to any addresses");
+    }
+
+    Ok(())
+}
+
 fn is_blocked_host(host: &str) -> bool {
     let host_lower = host.to_lowercase();
     if host_lower == "localhost" || host_lower.ends_with(".localhost") {
@@ -66,19 +124,28 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
                 || v4.is_unspecified()
                 || v4.is_broadcast()
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unicast_link_local()
+                || v6.is_unique_local()
+        }
     }
 }
 
 pub fn encode_query(value: &str) -> String {
-    let mut encoded = String::new();
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len());
+    let mut buf = [0u8; 4];
     for ch in value.chars() {
         match ch {
             'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => encoded.push(ch),
             ' ' => encoded.push('+'),
             _ => {
-                for byte in ch.to_string().as_bytes() {
-                    encoded.push_str(&format!("%{:02X}", byte));
+                for &byte in ch.encode_utf8(&mut buf).as_bytes() {
+                    // Writing to a String is infallible.
+                    let _ = write!(encoded, "%{byte:02X}");
                 }
             }
         }
@@ -110,5 +177,27 @@ mod tests {
     #[test]
     fn validate_public_http_url_blocks_non_http_schemes() {
         assert!(validate_public_http_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_public_http_url_blocks_credentials() {
+        assert!(validate_public_http_url("https://user:pass@example.com/").is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_public_http_url_resolved_blocks_localhost_dns() {
+        let err = validate_public_http_url_resolved("http://localhost/admin")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Blocked host"));
+    }
+
+    #[test]
+    fn encode_query_percent_encodes_reserved_and_unicode() {
+        assert_eq!(encode_query("a b"), "a+b");
+        assert_eq!(encode_query("a&b=c"), "a%26b%3Dc");
+        assert_eq!(encode_query("café"), "caf%C3%A9");
+        assert_eq!(encode_query("safe-._~"), "safe-._~");
     }
 }
