@@ -201,3 +201,6 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — tool branch of the loop
 - [Subagents](./12_chapter_subagent.md) — nested `agent_loop`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §2 Agent Task Execution Flow
+- [Configuration](./21_chapter_config.md) — `max_tokens`, `context_limit_chars`, `thinking_budget`
+- [LLM Providers](./22_chapter_llm.md) — `stream_message` adapters
+- [Terminal UI](./23_chapter_tui.md) — `TaskComplete` and channel wiring

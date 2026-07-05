@@ -143,25 +143,22 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 18 | [Agent Main Loop](./18_chapter_agent_loop.md) | Capstone: `agent_loop` turn cycle, streaming, `cancel_flag`, `AgentUpdate`, TUI `TaskComplete` wiring |
 | 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.claude/tasks/` |
 | 20 | [LSP Code Intelligence](./20_chapter_lsp.md) | `LspManager`, `~/.tact/lsp_servers.json`, native `lsp` tool actions |
+| 21 | [Configuration](./21_chapter_config.md) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
+| 22 | [LLM Providers](./22_chapter_llm.md) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
+| 23 | [Terminal UI](./23_chapter_tui.md) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
 
 ## Planned Chapters
 
-These topics are not written yet; they will be added over time:
-
-| Priority | Topic | Notes |
-|----------|-------|-------|
-| Medium | **Configuration** (`config/`) | TOML/CLI merge, `ResolvedConfig`, provider init |
-| Medium | **LLM providers** (`tact_llm`) | Adapters, streaming, thinking budget, token usage |
-| Medium | **TUI** (`tui` crate) | Optional; detailed UI docs live in `docs/tui_rendering.md` today |
+No chapters are queued at this time. Future additions may cover testing strategy, deployment, or plugin APIs.
 
 ---
 
@@ -188,6 +185,11 @@ These topics are not written yet; they will be added over time:
 - Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)
 - Tact task manager source: [crates/tact/src/task/mod.rs](../crates/tact/src/task/mod.rs)
 - Tact LSP source: [crates/tact/src/lsp.rs](../crates/tact/src/lsp.rs)
+- Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
+- Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
+- Tact TUI source: [crates/tui/src/lib.rs](../crates/tui/src/lib.rs)
+- Tact UI binary: [crates/tact/src/bin/tui.rs](../crates/tact/src/bin/tui.rs)
+- TUI rendering deep dive: [docs/tui_rendering.md](../docs/tui_rendering.md)
 
 ---
 
