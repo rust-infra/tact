@@ -127,7 +127,7 @@ Before a tool enters scheduling, `PermissionManager` classifies its intent:
 - **High-risk write**: asks the user (or checks the allowlist in `plan`/`auto` modes).
 - **Unknown / stateful**: treated conservatively.
 
-Hooks (`PreToolUse`, `PostToolUse`) live in `crates/tact/src/hooks.rs` and can inspect or modify tool input/output. They run sequentially around the parallel core.
+Hooks (`PreToolUse`, `PostToolUse`) live in `crates/tact/src/hook/mod.rs` and can inspect or modify tool input/output. They run sequentially around the parallel core. See [Agent Lifecycle Hooks](./04_chapter_hook.md) for the full design.
 
 ---
 
@@ -177,7 +177,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 | `crates/tact/src/lib.rs` | `Agent::agent_loop`, `Agent::execute_tool_call`, three-phase orchestration |
 | `crates/tact/src/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary` |
 | `crates/tact/src/permission.rs` | Intent classification and permission decisions |
-| `crates/tact/src/hooks.rs` | `PreToolUse` / `PostToolUse` hooks |
+| `crates/tact/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hooks |
 | `crates/tact/src/tool/mod.rs` | `ToolRouter`, tool registration, native tool dispatch |
 | `crates/tact/src/store/session_store/` | `record_tool_schedule` — persists schedule summary |
 

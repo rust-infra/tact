@@ -57,6 +57,7 @@ graph TB
 | [MCP Protocol and Agent Integration](./01_chapter_mcp.md) | Model Context Protocol fundamentals, step-by-step protocol flow, and MCP integration in Tact (configuration, handshake, tool calls, dynamic updates, graceful shutdown) |
 | [System Prompt](./02_chapter_prompt.md) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
 | [Tasks and Tool Scheduling](./03_chapter_task.md) | How a single agent turn runs tools through pre-flight, parallel wave execution, and post-processing while keeping conflicting operations ordered |
+| [Agent Lifecycle Hooks](./04_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 
 ---
 
@@ -74,8 +75,6 @@ These topics are not written yet; they will be added over time:
 - Agent main loop (`agent_loop`) and tool scheduling
 - Permission model and `PermissionManager`
 - Context compaction and session persistence
-- Sub-agents and team collaboration
-- System prompt customization and dynamic context
 
 ---
 
@@ -84,6 +83,7 @@ These topics are not written yet; they will be added over time:
 - Project architecture: [ARCHITECTURE.md](../ARCHITECTURE.md)
 - MCP official docs: <https://modelcontextprotocol.io/docs/learn/architecture>
 - Tact MCP source: [crates/tact/src/mcp/mod.rs](../crates/tact/src/mcp/mod.rs)
+- Tact hook source: [crates/tact/src/hook/mod.rs](../crates/tact/src/hook/mod.rs)
 
 ---
 
