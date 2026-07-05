@@ -370,6 +370,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 ## Related Docs
 
 - [Tasks and Tool Scheduling](./03_chapter_task.md) — three-phase pipeline permissions sit inside
+- [Subagents](./17_chapter_subagent.md) — `task` High risk, separate `PermissionManager`, inherited `ui_tx`
 - [Agent Lifecycle Hooks](./04_chapter_hook.md) — PreToolUse runs immediately before permission check
 - [ARCHITECTURE.md](../ARCHITECTURE.md#3-permission-system) — architecture diagram and mode table
 - [docs/state_machines.md](../docs/state_machines.md) — permission decision state machine

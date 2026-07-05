@@ -131,7 +131,7 @@ Restricted set for isolated workers spawned by the `task` tool:
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above.
+Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above. Full spawn lifecycle: [Subagents](./17_chapter_subagent.md).
 
 ---
 

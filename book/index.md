@@ -137,6 +137,7 @@ sequenceDiagram
 | [Worktree Lanes](./14_chapter_worktree.md) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
 | [Context Compaction](./15_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
 | [Background Tasks](./16_chapter_background.md) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
+| [Subagents](./17_chapter_subagent.md) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
 
 ---
 
@@ -174,6 +175,7 @@ These topics are not written yet; they will be added over time:
 - Tact worktree source: [crates/tact/src/worktree/mod.rs](../crates/tact/src/worktree/mod.rs)
 - Tact compaction source: [crates/tact/src/compact.rs](../crates/tact/src/compact.rs)
 - Tact background source: [crates/tact/src/background.rs](../crates/tact/src/background.rs)
+- Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
 
 ---
 

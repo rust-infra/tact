@@ -173,5 +173,6 @@ The intended pattern is that a coordinating agent uses the roster as shared stat
 
 - [Store and Persistence](./09_chapter_store.md) — `Store` / `CollectionStore` primitives and `team/` paths
 - [Tool System](./10_chapter_tool.md) — `ToolContext` plumbing and sub-agent toolsets
+- [Subagents](./17_chapter_subagent.md) — `task` runs a real nested agent; teammates do not
 - [Worktree Lanes](./14_chapter_worktree.md) — the isolation primitive a real multi-agent team would pair with
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 sub-agents, team, tasks, worktrees

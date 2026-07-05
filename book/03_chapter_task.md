@@ -191,6 +191,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 - [Tool System](./10_chapter_tool.md) — `ToolRouter` and native tool dispatch
 - [Context Compaction](./15_chapter_compact.md) — `persist_large_output` and manual `compact` detection in dispatch
 - [Background Tasks](./16_chapter_background.md) — async counterpart to synchronous `bash` steps
+- [Subagents](./17_chapter_subagent.md) — nested `task` tool and scheduling barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)
