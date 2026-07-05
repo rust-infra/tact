@@ -1,4 +1,4 @@
-use crate::tool::ToolContext;
+use crate::tool::{safe_path, ToolContext};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -35,7 +35,7 @@ fn default_max_results() -> usize {
 pub async fn search_code(ctx: ToolContext, input: SearchCodeInput) -> Result<String> {
     let max_results = input.max_results.max(1).min(200);
     let search_path = input.path.unwrap_or_else(|| ".".to_string());
-    let full_path = ctx.work_dir.join(&search_path);
+    let full_path = safe_path(&ctx.work_dir, &search_path)?;
 
     // Prefer ripgrep, fall back to grep
     let has_rg = Command::new("rg")
@@ -92,6 +92,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, "No matches found.");
+    }
+
+    #[tokio::test]
+    async fn search_code_rejects_paths_outside_workspace() {
+        let context = test_context("search_code_rejects_paths_outside_workspace");
+        write_workspace_file(&context.work_dir, "inside.rs", "fn main() {}\n");
+
+        let err = run_tool(
+            &context,
+            SearchCodeTool,
+            "search_code",
+            serde_json::json!({
+                "query": "main",
+                "path": "/etc"
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("Path escapes workspace"));
     }
 }
 

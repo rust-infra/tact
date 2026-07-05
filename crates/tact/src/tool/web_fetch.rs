@@ -5,7 +5,7 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use crate::tool::{http::validate_public_http_url, http::http_client, web_refs, ToolContext};
+use crate::tool::{http::public_fetch_client, http::validate_public_http_url_resolved, web_refs, ToolContext};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -236,13 +236,13 @@ fn truncate_content(text: &str, max_len: usize) -> String {
 pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String> {
     let request_url = resolve_requested_url(&input)?;
     debug!(url = %request_url, "Fetching web page");
-    let url = validate_public_http_url(&request_url)?;
+    let url = validate_public_http_url_resolved(&request_url).await?;
 
     if let Some(cached) = load_cached_extraction(&request_url) {
         return Ok(cached);
     }
 
-    let client = http_client();
+    let client = public_fetch_client();
 
     let resp = client
         .get(url.clone())
