@@ -120,6 +120,7 @@ sequenceDiagram
 | [Tasks and Tool Scheduling](./03_chapter_task.md) | How a single agent turn runs tools through pre-flight, parallel wave execution, and post-processing while keeping conflicting operations ordered |
 | [Agent Lifecycle Hooks](./04_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 | [Cron Scheduling](./05_chapter_cron.md) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
+| [Permission Model](./06_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
 
 ---
 
@@ -135,7 +136,6 @@ sequenceDiagram
 These topics are not written yet; they will be added over time:
 
 - Agent main loop (`agent_loop`) and tool scheduling
-- Permission model and `PermissionManager`
 - Context compaction and session persistence
 
 ---
@@ -147,6 +147,7 @@ These topics are not written yet; they will be added over time:
 - Tact MCP source: [crates/tact/src/mcp/mod.rs](../crates/tact/src/mcp/mod.rs)
 - Tact hook source: [crates/tact/src/hook/mod.rs](../crates/tact/src/hook/mod.rs)
 - Tact cron source: [crates/tact/src/cron/mod.rs](../crates/tact/src/cron/mod.rs)
+- Tact permission source: [crates/tact/src/permission/mod.rs](../crates/tact/src/permission/mod.rs)
 
 ---
 

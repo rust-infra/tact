@@ -124,8 +124,10 @@ Unknown tools are treated as barriers. Adding a new tool can never accidentally 
 Before a tool enters scheduling, `PermissionManager` classifies its intent:
 
 - **Read-only**: generally allowed.
-- **High-risk write**: asks the user (or checks the allowlist in `plan`/`auto` modes).
-- **Unknown / stateful**: treated conservatively.
+- **Write**: asks in Default mode (unless allowlisted); auto-approved in Auto mode; denied in Plan mode.
+- **High-risk**: always asks (even if allowlisted); includes `task`, destructive tool names, and dangerous bash patterns.
+
+See [Permission Model](./06_chapter_permission.md) for classification rules, modes, and the TUI approval flow.
 
 Hooks (`PreToolUse`, `PostToolUse`) live in `crates/tact/src/hook/mod.rs` and can inspect or modify tool input/output. They run sequentially around the parallel core. See [Agent Lifecycle Hooks](./04_chapter_hook.md) for the full design.
 
@@ -176,7 +178,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 |------|------|
 | `crates/tact/src/lib.rs` | `Agent::agent_loop`, `Agent::execute_tool_call`, three-phase orchestration |
 | `crates/tact/src/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary` |
-| `crates/tact/src/permission.rs` | Intent classification and permission decisions |
+| `crates/tact/src/permission/mod.rs` | Intent classification and permission decisions |
 | `crates/tact/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hooks |
 | `crates/tact/src/tool/mod.rs` | `ToolRouter`, tool registration, native tool dispatch |
 | `crates/tact/src/store/session_store/` | `record_tool_schedule` — persists schedule summary |
@@ -185,6 +187,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 
 ## Related Docs
 
+- [Permission Model](./06_chapter_permission.md)
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)

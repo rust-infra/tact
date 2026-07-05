@@ -248,6 +248,7 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 
 ## Related Docs
 
+- [Permission Model](./06_chapter_permission.md) — runs immediately after PreToolUse in the pipeline
 - [Tasks and Tool Scheduling](./03_chapter_task.md) — three-phase tool pipeline hooks wrap
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Hook Engine section
 - [Tool Rendering](../docs/tool_rendering.md) — how blocked/failed steps appear in the TUI
