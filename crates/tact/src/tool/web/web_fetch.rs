@@ -10,8 +10,6 @@ use super::{http, web_refs};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::{fs, time::Duration};
 use tool_refactor_macros::tool;
@@ -33,11 +31,16 @@ pub struct WebFetchInput {
     pub prompt: Option<String>,
 }
 
-/// Compute a simple hash of the URL for cache purposes.
+/// Stable FNV-1a hash for cache filenames (`DefaultHasher` is not stable across runs).
 fn url_hash(url: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in url.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:x}")
 }
 
 /// Get the cache directory for web_fetch content.
