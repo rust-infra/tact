@@ -5,7 +5,7 @@
 // `~/.tact/lsp_servers.json`.
 
 use crate::lsp::{self, LspManager};
-use crate::tool::ToolContext;
+use crate::tool::{safe_path, ToolContext};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -41,12 +41,10 @@ pub async fn query_lsp(ctx: ToolContext, input: LspInput) -> Result<String> {
     let line = input.line.unwrap_or(1);
     let column = input.column.unwrap_or(1);
 
-    // Resolve to absolute path
-    let file_path = if std::path::Path::new(&file_raw).is_absolute() {
-        file_raw.clone()
-    } else {
-        ctx.work_dir.join(&file_raw).to_string_lossy().into_owned()
-    };
+    // Resolve to an absolute path within the workspace.
+    let file_path = safe_path(&ctx.work_dir, &file_raw)?
+        .to_string_lossy()
+        .into_owned();
 
     // Seed the global LSP manager from the default config file
     let lsp_manager_arc = lsp::global_lsp_manager();

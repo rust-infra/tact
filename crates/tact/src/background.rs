@@ -12,16 +12,19 @@
 
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::store::{CollectionStore, StoreRoot};
 
@@ -68,7 +71,9 @@ impl SharedBackgroundManager {
         })
     }
 
-    pub fn run(&self, command: String) -> Result<String> {
+    pub fn run(&self, command: String, work_dir: &Path) -> Result<String> {
+        crate::shell::validate_shell_command(&command)?;
+
         let id = format!("{:08x}", self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let record = BackgroundTaskRecord {
             id: id.clone(),
@@ -82,30 +87,46 @@ impl SharedBackgroundManager {
 
         let manager = self.clone();
         let command_for_task = command.clone();
+        let work_dir = work_dir.to_path_buf();
         tokio::spawn(async move {
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg(&command_for_task)
-                .output()
-                .await;
+            const MAX_OUTPUT_CHARS: usize = 50_000;
+            const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+            let output = timeout(
+                COMMAND_TIMEOUT,
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(&command_for_task)
+                    .current_dir(&work_dir)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
             let mut record = record;
             record.finished_at = Some(Utc::now());
             match output {
-                Ok(output) => {
+                Ok(Ok(output)) => {
                     record.status = if output.status.success() {
                         BackgroundTaskStatus::Completed
                     } else {
                         BackgroundTaskStatus::Error
                     };
-                    record.output = format!(
+                    let combined = format!(
                         "{}{}",
                         String::from_utf8_lossy(&output.stdout),
                         String::from_utf8_lossy(&output.stderr)
                     );
+                    record.output = combined.chars().take(MAX_OUTPUT_CHARS).collect();
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     record.status = BackgroundTaskStatus::Error;
                     record.output = error.to_string();
+                }
+                Err(_) => {
+                    record.status = BackgroundTaskStatus::Error;
+                    record.output = format!("Error: Timeout ({COMMAND_TIMEOUT:?})");
                 }
             }
             let _ = manager.save_record(record);

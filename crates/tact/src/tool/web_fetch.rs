@@ -17,6 +17,7 @@ use tool_refactor_macros::tool;
 use tracing::{debug, warn};
 
 const MAX_CONTENT_CHARS: usize = 100_000;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WebFetchInput {
@@ -268,10 +269,20 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
         .unwrap_or("")
         .to_string();
 
-    let body = resp
-        .text()
+    let body_bytes = resp
+        .bytes()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+
+    if body_bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(anyhow::anyhow!(
+            "Response too large ({} bytes, max {} bytes)",
+            body_bytes.len(),
+            MAX_RESPONSE_BYTES
+        ));
+    }
+
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
     let text = if content_type.contains("html") {
         let extracted = strip_html(&body);
