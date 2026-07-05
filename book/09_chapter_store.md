@@ -119,9 +119,9 @@ See [Tasks and Tool Scheduling](./03_chapter_task.md) for task lifecycle; this c
 |--------|-------------|---------|
 | `task/` | `tasks/`, `tasks/index.json` | Collection + index |
 | `cron/` | `cron/scheduled_tasks.json` | Single `Store<ScheduledTaskIndex>` |
-| `background.rs` | `background/` | Collection |
-| `team.rs` | `team/config.json`, `team/inbox/` | Store + collection |
-| `worktree/` | under `.claude/worktrees/` | Store helpers |
+| `background.rs` ([Background Tasks](./16_chapter_background.md)) | `background/tasks/` | Collection |
+| `team.rs` ([Team Coordination](./13_chapter_team.md)) | `team/config.json`, `team/inbox/` | Store + collection |
+| `worktree/` ([Worktree Lanes](./14_chapter_worktree.md)) | `worktrees/index.json` | Single `Store<WorktreeIndex>` |
 
 Each domain module wraps the raw store in `Arc<Mutex<…>>` (e.g. `SharedTaskManager`) and exposes tool-facing APIs — callers should not manipulate `CollectionStore` directly.
 

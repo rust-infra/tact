@@ -113,6 +113,8 @@ sequenceDiagram
 
 **Tool turns:** when the model returns `ToolUse`, the loop does not exit — tool results are appended to `runtime.context` and the next iteration runs steps 5–12 again with an updated message list and a freshly rendered system prompt.
 
+**Compaction and recovery:** `micro_compact` / `compact_history` in the diagram are covered in [Context Compaction](./15_chapter_compact.md); retries and continuations around the LLM call are covered in [Error Recovery](./12_chapter_recovery.md).
+
 ---
 
 ## Table of Contents
@@ -130,6 +132,11 @@ sequenceDiagram
 | [Store and Persistence](./09_chapter_store.md) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
 | [Tool System](./10_chapter_tool.md) | `Tool` trait, `ToolRouter`, `ToolContext`, `toolset` / `subagent_toolset`, path safety, and `#[tool]` macro |
 | [Skill Registry](./11_chapter_skill.md) | `SKILL.md` discovery, prompt summaries, `load_skill` on-demand loading, and `<skill>` tag format |
+| [Error Recovery](./12_chapter_recovery.md) | `RecoveryState`, transport back-off retries, prompt-too-long compaction, and output-limit continuation in `agent_loop` |
+| [Team Coordination](./13_chapter_team.md) | Teammate roster under `.claude/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
+| [Worktree Lanes](./14_chapter_worktree.md) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
+| [Context Compaction](./15_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
+| [Background Tasks](./16_chapter_background.md) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
 
 ---
 
@@ -144,8 +151,7 @@ sequenceDiagram
 
 These topics are not written yet; they will be added over time:
 
-- Agent main loop (`agent_loop`) — turn structure, recovery, cancellation
-- Context compaction (`micro_compact`, `compact_history`, transcript spill)
+- Agent main loop (`agent_loop`) — turn structure, cancellation (recovery and compaction are now covered in chapters [12](./12_chapter_recovery.md) and [15](./15_chapter_compact.md))
 
 ---
 
@@ -163,6 +169,11 @@ These topics are not written yet; they will be added over time:
 - Tact session store source: [crates/tact/src/store/session_store/](../crates/tact/src/store/session_store/)
 - Tact tool source: [crates/tact/src/tool/mod.rs](../crates/tact/src/tool/mod.rs)
 - Tact skill source: [crates/tact/src/skill/mod.rs](../crates/tact/src/skill/mod.rs)
+- Tact recovery source: [crates/tact/src/recovery.rs](../crates/tact/src/recovery.rs)
+- Tact team source: [crates/tact/src/team.rs](../crates/tact/src/team.rs)
+- Tact worktree source: [crates/tact/src/worktree/mod.rs](../crates/tact/src/worktree/mod.rs)
+- Tact compaction source: [crates/tact/src/compact.rs](../crates/tact/src/compact.rs)
+- Tact background source: [crates/tact/src/background.rs](../crates/tact/src/background.rs)
 
 ---
 

@@ -252,6 +252,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 - [Permission Model](./06_chapter_permission.md) — pre-flight gate before `call`
 - [Agent Lifecycle Hooks](./04_chapter_hook.md) — PreToolUse / PostToolUse
 - [MCP Protocol and Agent Integration](./01_chapter_mcp.md) — external tools
+- [Team Coordination](./13_chapter_team.md), [Worktree Lanes](./14_chapter_worktree.md), [Background Tasks](./16_chapter_background.md) — manager-backed tool families on `ToolContext`
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI tool blocks
 - [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read / batch_edit flow
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — macro overview
