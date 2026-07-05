@@ -2,6 +2,8 @@
 
 This chapter explains how Tact's agent loop **survives failures without losing the session**: transient transport errors are retried with exponential back-off, oversized prompts trigger context compaction, and truncated model output is continued mid-sentence. The classification logic lives in `crates/tact/src/recovery.rs`; the decisions are wired into `agent_loop` in `crates/tact/src/agent/mod.rs`.
 
+For the full loop structure see [Agent Main Loop](./18_chapter_agent_loop.md).
+
 Recovery works hand-in-hand with [Context Compaction](./05_chapter_compact.md) — one of the three strategies *is* compaction.
 
 ---

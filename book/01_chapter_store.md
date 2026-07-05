@@ -109,7 +109,7 @@ tasks: root.collection("tasks")?,           // tasks/{id}.json
 index: root.file("tasks/index.json")?,      // next_id counter
 ```
 
-See [Tasks and Tool Scheduling](./11_chapter_task.md) for task lifecycle; this chapter covers only the storage primitives.
+TaskManager persistence is covered here; the **`task_*` tools and dependency model** are not yet a dedicated chapter (see [Planned Chapters](./index.md#planned-chapters)). [Ch 11](./11_chapter_task.md) covers **tool parallel scheduling**, not TaskManager.
 
 ---
 
@@ -218,7 +218,7 @@ sequenceDiagram
 
 ## Related Docs
 
-- [Tasks and Tool Scheduling](./11_chapter_task.md) — task tools backed by `CollectionStore`
+- [Ch 11 Tool Scheduling](./11_chapter_task.md) — wave/barrier model (includes `task` tool as barrier, not TaskManager API)
 - [Cron Scheduling](./16_chapter_cron.md) — cron index file layout
 - [Persistent Memory](./03_chapter_memory.md) — Markdown memories (not JSON store)
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store and token usage notes

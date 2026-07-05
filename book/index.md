@@ -133,19 +133,22 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 8 | [MCP Protocol and Agent Integration](./08_chapter_mcp.md) | Model Context Protocol fundamentals, step-by-step protocol flow, and MCP integration in Tact (configuration, handshake, tool calls, dynamic updates, graceful shutdown) |
 | 9 | [Agent Lifecycle Hooks](./09_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 | 10 | [Permission Model](./10_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
-| 11 | [Tasks and Tool Scheduling](./11_chapter_task.md) | How a single agent turn runs tools through pre-flight, parallel wave execution, and post-processing while keeping conflicting operations ordered |
+| 11 | [Tasks and Tool Scheduling](./11_chapter_task.md) | **Tool** parallel scheduling (waves/barriers) — not [Ch 19 Persistent Tasks](./19_chapter_persistent_tasks.md) |
 | 12 | [Subagents](./12_chapter_subagent.md) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
 | 13 | [Background Tasks](./13_chapter_background.md) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
 | 14 | [Team Coordination](./14_chapter_team.md) | Teammate roster under `.claude/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
 | 15 | [Worktree Lanes](./15_chapter_worktree.md) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
 | 16 | [Cron Scheduling](./16_chapter_cron.md) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
 | 17 | [Desktop Notifications](./17_chapter_notify.md) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
+| 18 | [Agent Main Loop](./18_chapter_agent_loop.md) | Capstone: `agent_loop` turn cycle, streaming, `cancel_flag`, `AgentUpdate`, TUI `TaskComplete` wiring |
+| 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.claude/tasks/` |
+| 20 | [LSP Code Intelligence](./20_chapter_lsp.md) | `LspManager`, `~/.tact/lsp_servers.json`, native `lsp` tool actions |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
@@ -154,7 +157,11 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 
 These topics are not written yet; they will be added over time:
 
-- Agent main loop (`agent_loop`) — turn structure, cancellation (recovery and compaction are covered in chapters [6](./06_chapter_recovery.md) and [5](./05_chapter_compact.md))
+| Priority | Topic | Notes |
+|----------|-------|-------|
+| Medium | **Configuration** (`config/`) | TOML/CLI merge, `ResolvedConfig`, provider init |
+| Medium | **LLM providers** (`tact_llm`) | Adapters, streaming, thinking budget, token usage |
+| Medium | **TUI** (`tui` crate) | Optional; detailed UI docs live in `docs/tui_rendering.md` today |
 
 ---
 
@@ -178,6 +185,9 @@ These topics are not written yet; they will be added over time:
 - Tact compaction source: [crates/tact/src/compact.rs](../crates/tact/src/compact.rs)
 - Tact background source: [crates/tact/src/background.rs](../crates/tact/src/background.rs)
 - Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
+- Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)
+- Tact task manager source: [crates/tact/src/task/mod.rs](../crates/tact/src/task/mod.rs)
+- Tact LSP source: [crates/tact/src/lsp.rs](../crates/tact/src/lsp.rs)
 
 ---
 

@@ -2,6 +2,8 @@
 
 This chapter walks through what happens after the LLM decides to act: how Tact turns a set of `ToolUse` blocks into executed commands, results, and the next conversation turn.
 
+**Not to be confused with** [Persistent Task Manager](./19_chapter_persistent_tasks.md) (`task_create` / `task_list` tools) or the [Subagents](./12_chapter_subagent.md) `task` spawn tool.
+
 ---
 
 ## 1. A Task Is a Turn of the Agent Loop
