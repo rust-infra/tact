@@ -188,6 +188,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 ## Related Docs
 
 - [Permission Model](./06_chapter_permission.md)
+- [Tool System](./10_chapter_tool.md) — `ToolRouter` and native tool dispatch
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)

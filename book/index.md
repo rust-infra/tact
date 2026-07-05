@@ -6,6 +6,8 @@ This directory collects design notes and hands-on tutorials for Tact and related
 
 ## Overall Architecture
 
+High-level component map. For module-level detail see [ARCHITECTURE.md](../ARCHITECTURE.md).
+
 ```mermaid
 graph TB
     subgraph UI
@@ -13,39 +15,41 @@ graph TB
     end
 
     subgraph Runtime["tact runtime"]
-        Agent[Agent]
+        Agent[Agent / agent_loop]
         Prompt[System Prompt]
-        Scheduler[Tool Scheduler]
+        Dispatch[Tool Dispatch]
         Permissions[Permission Manager]
-        Memory[Memory Manager]
         Hooks[Pre/Post Tool Hooks]
     end
 
     subgraph Tools
         Native[Native Tools]
-        MCP[MCP Servers]
+        MCP[MCP ToolRouter]
     end
 
     subgraph Providers
-        Anthropic[Anthropic]
-        OpenAI[OpenAI / Kimi / DeepSeek]
+        LLM[tact_llm → LLM APIs]
     end
 
     subgraph Store
         SQLite[(SQLite Session Store)]
+        Files[(.claude/ Store)]
     end
 
-    TUI -->|user input / updates| Agent
-    Agent -->|render| Prompt
-    Agent -->|stream| Anthropic
-    Agent -->|stream| OpenAI
-    Agent -->|schedule| Scheduler
-    Scheduler -->|call| Native
-    Scheduler -->|call| MCP
-    Agent -->|check| Permissions
-    Agent -->|load / save| Memory
-    Agent -->|persist messages & token usage| SQLite
-    Agent -->|run| Hooks
+    MCPSrv[MCP Servers]
+
+    TUI -->|user input| Agent
+    Agent -->|updates| TUI
+    Agent --> Prompt
+    Agent -->|stream| LLM
+    Agent --> Dispatch
+    Dispatch --> Hooks
+    Dispatch --> Permissions
+    Dispatch --> Native
+    Dispatch --> MCP
+    MCP --> MCPSrv
+    Agent -->|messages & tokens| SQLite
+    Agent -->|skills, memory, tasks| Files
 ```
 
 ---
@@ -121,6 +125,11 @@ sequenceDiagram
 | [Agent Lifecycle Hooks](./04_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 | [Cron Scheduling](./05_chapter_cron.md) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
 | [Permission Model](./06_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
+| [Persistent Memory](./07_chapter_memory.md) | Markdown memories under `.claude/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
+| [Desktop Notifications](./08_chapter_notify.md) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
+| [Store and Persistence](./09_chapter_store.md) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
+| [Tool System](./10_chapter_tool.md) | `Tool` trait, `ToolRouter`, `ToolContext`, `toolset` / `subagent_toolset`, path safety, and `#[tool]` macro |
+| [Skill Registry](./11_chapter_skill.md) | `SKILL.md` discovery, prompt summaries, `load_skill` on-demand loading, and `<skill>` tag format |
 
 ---
 
@@ -135,8 +144,8 @@ sequenceDiagram
 
 These topics are not written yet; they will be added over time:
 
-- Agent main loop (`agent_loop`) and tool scheduling
-- Context compaction and session persistence
+- Agent main loop (`agent_loop`) — turn structure, recovery, cancellation
+- Context compaction (`micro_compact`, `compact_history`, transcript spill)
 
 ---
 
@@ -148,6 +157,12 @@ These topics are not written yet; they will be added over time:
 - Tact hook source: [crates/tact/src/hook/mod.rs](../crates/tact/src/hook/mod.rs)
 - Tact cron source: [crates/tact/src/cron/mod.rs](../crates/tact/src/cron/mod.rs)
 - Tact permission source: [crates/tact/src/permission/mod.rs](../crates/tact/src/permission/mod.rs)
+- Tact memory source: [crates/tact/src/memory/mod.rs](../crates/tact/src/memory/mod.rs)
+- Tact notifications source: [crates/tact/src/notifications/mod.rs](../crates/tact/src/notifications/mod.rs)
+- Tact store source: [crates/tact/src/store/mod.rs](../crates/tact/src/store/mod.rs)
+- Tact session store source: [crates/tact/src/store/session_store/](../crates/tact/src/store/session_store/)
+- Tact tool source: [crates/tact/src/tool/mod.rs](../crates/tact/src/tool/mod.rs)
+- Tact skill source: [crates/tact/src/skill/mod.rs](../crates/tact/src/skill/mod.rs)
 
 ---
 

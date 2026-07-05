@@ -245,5 +245,6 @@ cargo test -p tact prompt
 - Template: [`crates/tact/src/prompt/system_prompt_template.md`](../crates/tact/src/prompt/system_prompt_template.md)
 - Builder / render logic: [`crates/tact/src/prompt/mod.rs`](../crates/tact/src/prompt/mod.rs)
 - Agent wiring: [`crates/tact/src/lib.rs`](../crates/tact/src/lib.rs) (`Agent::build_system_prompt`)
-- Memory manager: [`crates/tact/src/memory/mod.rs`](../crates/tact/src/memory/mod.rs)
+- Memory manager: [`crates/tact/src/memory/mod.rs`](../crates/tact/src/memory/mod.rs) — see [Persistent Memory](./07_chapter_memory.md)
+- Skill registry: [`crates/tact/src/skill/mod.rs`](../crates/tact/src/skill/mod.rs) — see [Skill Registry](./11_chapter_skill.md)
 - Dynamic context loader: [`crates/tact/src/lib.rs`](../crates/tact/src/lib.rs) (`fn load_dynamic_context`)
