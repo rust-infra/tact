@@ -62,10 +62,22 @@ pub struct SharedBackgroundManager {
 
 impl SharedBackgroundManager {
     pub fn new(root: &StoreRoot) -> Result<Self> {
+        let records = root.collection::<BackgroundTaskRecord>("background/tasks")?;
+        let mut tasks = HashMap::new();
+        for mut record in records.list()? {
+            if record.status == BackgroundTaskStatus::Running {
+                record.status = BackgroundTaskStatus::Error;
+                record.finished_at = Some(Utc::now());
+                record.output = "Process interrupted (agent restarted)".to_string();
+                records.write(&record.id, &record)?;
+            }
+            tasks.insert(record.id.clone(), record);
+        }
+
         Ok(Self {
             inner: Arc::new(BackgroundManager {
-                records: root.collection("background/tasks")?,
-                tasks: Mutex::new(HashMap::new()),
+                records,
+                tasks: Mutex::new(tasks),
                 next_id: AtomicU64::new(Utc::now().timestamp_millis().max(0) as u64),
             }),
         })
@@ -136,7 +148,7 @@ impl SharedBackgroundManager {
     }
 
     pub fn check(&self, task_id: Option<&str>) -> Result<String> {
-        let tasks = self
+        let mut tasks = self
             .inner
             .tasks
             .lock()
@@ -149,6 +161,12 @@ impl SharedBackgroundManager {
                 .or_else(|| self.inner.records.read(task_id).ok())
                 .with_context(|| format!("Unknown background task {task_id}"))?;
             return serde_json::to_string_pretty(&record).context("failed to serialize task");
+        }
+
+        if tasks.is_empty() {
+            for record in self.inner.records.list()? {
+                tasks.insert(record.id.clone(), record);
+            }
         }
 
         if tasks.is_empty() {
@@ -180,5 +198,40 @@ impl std::ops::Deref for SharedBackgroundManager {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::StoreRoot;
+    use tempfile::TempDir;
+
+    #[test]
+    fn marks_stale_running_tasks_on_startup() {
+        let tmp = TempDir::new().unwrap();
+        let root = StoreRoot::new(tmp.path()).unwrap();
+        let records = root
+            .collection::<BackgroundTaskRecord>("background/tasks")
+            .unwrap();
+        records
+            .write(
+                "deadbeef",
+                &BackgroundTaskRecord {
+                    id: "deadbeef".to_string(),
+                    status: BackgroundTaskStatus::Running,
+                    command: "sleep 999".to_string(),
+                    started_at: Utc::now(),
+                    finished_at: None,
+                    output: String::new(),
+                },
+            )
+            .unwrap();
+
+        let manager = SharedBackgroundManager::new(&root).unwrap();
+        let output = manager.check(Some("deadbeef")).unwrap();
+
+        assert!(output.contains("error"));
+        assert!(output.contains("Process interrupted (agent restarted)"));
     }
 }
