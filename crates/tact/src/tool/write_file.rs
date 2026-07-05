@@ -29,7 +29,9 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
     let path = safe_path_allow_missing(&ctx.work_dir, &input.path)?;
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.ok();
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| anyhow::anyhow!("Error creating parent directories: {}", e))?;
     }
 
     let total = input.content.len();

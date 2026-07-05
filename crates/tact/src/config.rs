@@ -315,14 +315,15 @@ fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<TactTomlConfig> {
     }
 
     for p in config_search_paths() {
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                if let Ok(cfg) = toml::from_str(&content) {
-                    eprintln!("[config] loaded {:?}", p);
-                    return Ok(cfg);
-                }
-            }
+        if !p.exists() {
+            continue;
         }
+        let content = std::fs::read_to_string(&p)
+            .with_context(|| format!("cannot read config file {:?}", p))?;
+        let cfg: TactTomlConfig = toml::from_str(&content)
+            .with_context(|| format!("parse error in config file {:?}", p))?;
+        eprintln!("[config] loaded {:?}", p);
+        return Ok(cfg);
     }
 
     Ok(TactTomlConfig::default())
@@ -374,7 +375,12 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .clone()
         .or_else(|| toml_cfg.llm.model.clone())
         .or_else(|| default_model(&provider))
-        .unwrap_or_default();
+        .filter(|m| !m.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "model not configured for provider '{provider}'. Set llm.model in config.toml or pass --model"
+            )
+        })?;
 
     Ok(LlmSettings {
         provider,
@@ -733,6 +739,42 @@ model = "kimi-k2.5"
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
+    }
+
+    #[test]
+    fn resolve_config_requires_model() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let err = resolve_config(&args, &toml_cfg).unwrap_err().to_string();
+        assert!(err.contains("model not configured"));
     }
 
     #[test]
