@@ -16,7 +16,8 @@ pub struct BackgroundRunInput {
     description = "Run a shell command in the background."
 )]
 pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
-    ctx.background_manager.run(input.command)
+    ctx.background_manager
+        .run(input.command, &ctx.work_dir)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

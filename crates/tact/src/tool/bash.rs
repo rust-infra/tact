@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::shell::validate_shell_command;
 use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -20,10 +21,7 @@ pub struct BashInput {
 pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let command = input.command;
 
-    let dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
-    if dangerous.iter().any(|item| command.contains(item)) {
-        return Err(anyhow::anyhow!("Error: Dangerous command blocked"));
-    }
+    validate_shell_command(&command)?;
 
     let child = match Command::new("sh")
         .arg("-c")

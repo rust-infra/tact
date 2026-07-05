@@ -38,7 +38,7 @@ sqlx = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 tera = { workspace = true }
-tokio = { workspace = true, features = ["fs", "process", "sync", "time", "tracing"] }
+tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "tracing"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

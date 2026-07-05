@@ -5,7 +5,7 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use crate::tool::{http::validate_public_http_url, http::http_client, web_refs, ToolContext};
+use crate::tool::{http::public_fetch_client, http::validate_public_http_url_resolved, web_refs, ToolContext};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,6 +17,7 @@ use tool_refactor_macros::tool;
 use tracing::{debug, warn};
 
 const MAX_CONTENT_CHARS: usize = 100_000;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WebFetchInput {
@@ -236,13 +237,13 @@ fn truncate_content(text: &str, max_len: usize) -> String {
 pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String> {
     let request_url = resolve_requested_url(&input)?;
     debug!(url = %request_url, "Fetching web page");
-    let url = validate_public_http_url(&request_url)?;
+    let url = validate_public_http_url_resolved(&request_url).await?;
 
     if let Some(cached) = load_cached_extraction(&request_url) {
         return Ok(cached);
     }
 
-    let client = http_client();
+    let client = public_fetch_client();
 
     let resp = client
         .get(url.clone())
@@ -268,10 +269,20 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
         .unwrap_or("")
         .to_string();
 
-    let body = resp
-        .text()
+    let body_bytes = resp
+        .bytes()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+
+    if body_bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(anyhow::anyhow!(
+            "Response too large ({} bytes, max {} bytes)",
+            body_bytes.len(),
+            MAX_RESPONSE_BYTES
+        ));
+    }
+
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
     let text = if content_type.contains("html") {
         let extracted = strip_html(&body);

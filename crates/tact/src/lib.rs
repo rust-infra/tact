@@ -32,6 +32,7 @@ pub mod notifications;
 pub mod permission;
 pub mod prompt;
 pub mod recovery;
+pub mod shell;
 pub mod skill;
 pub mod stats;
 pub mod store;
@@ -607,7 +608,8 @@ impl Agent {
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                return Ok((vec![], None));
+                self.append_cancelled_tool_uses(&mut prepared, content);
+                return Ok((build_tool_results(prepared, vec![]), None));
             }
 
             let step_idx = self.next_step_idx();
@@ -653,13 +655,7 @@ impl Agent {
                                 id.clone(),
                                 msg.clone(),
                             ));
-                            return Ok((
-                                vec![ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: msg,
-                                }],
-                                None,
-                            ));
+                            PreparedState::Resolved(msg)
                         }
                         PermissionBehavior::Ask => {
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
@@ -715,13 +711,7 @@ impl Agent {
                                         id.clone(),
                                         msg.clone(),
                                     ));
-                                    return Ok((
-                                        vec![ContentBlock::ToolResult {
-                                            tool_use_id: id.clone(),
-                                            content: msg,
-                                        }],
-                                        None,
-                                    ));
+                                    PreparedState::Resolved(msg)
                                 }
                             }
                         }
@@ -792,7 +782,7 @@ impl Agent {
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                return Ok((vec![], None));
+                return Ok((build_tool_results(prepared, outputs), manual_compact));
             }
 
             // A barrier wave always holds a single tool. MCP tools need the
@@ -963,20 +953,33 @@ impl Agent {
         }
 
         // ── Phase 3: build tool_result blocks in deterministic order ─────────
-        let mut result = Vec::new();
-        for (idx, prep) in prepared.into_iter().enumerate() {
-            let output = match prep.state {
-                PreparedState::Resolved(msg) => msg,
-                PreparedState::Run => outputs[idx]
-                    .take()
-                    .expect("cleared tool must have produced output"),
+        Ok((build_tool_results(prepared, outputs), manual_compact))
+    }
+
+    fn append_cancelled_tool_uses(
+        &mut self,
+        prepared: &mut Vec<PreparedTool>,
+        content: &[ContentBlock],
+    ) {
+        for block in content.iter().skip(prepared.len()) {
+            let ContentBlock::ToolUse { id, name, input } = block else {
+                continue;
             };
-            result.push(ContentBlock::ToolResult {
-                tool_use_id: prep.id,
-                content: output,
+            let step_idx = self.next_step_idx();
+            self.emit_update(AgentUpdate::StepFailed(
+                step_idx,
+                id.clone(),
+                TOOL_CANCELLED_MSG.to_string(),
+            ));
+            prepared.push(PreparedTool {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+                step_idx,
+                permission_label: None,
+                state: PreparedState::Resolved(TOOL_CANCELLED_MSG.to_string()),
             });
         }
-        Ok((result, manual_compact))
     }
 
     pub fn session_start(&mut self, hook: impl SessionStartFn + 'static) {
@@ -1244,6 +1247,30 @@ enum PreparedState {
     /// Pre-flight already produced the final output (blocked by a PreToolUse
     /// hook); skip execution and surface this text as the tool result.
     Resolved(String),
+}
+
+const TOOL_CANCELLED_MSG: &str = "Cancelled by user";
+
+fn build_tool_results(
+    prepared: Vec<PreparedTool>,
+    mut outputs: Vec<Option<String>>,
+) -> Vec<ContentBlock> {
+    prepared
+        .into_iter()
+        .enumerate()
+        .map(|(idx, prep)| {
+            let content = match prep.state {
+                PreparedState::Resolved(msg) => msg,
+                PreparedState::Run => outputs[idx]
+                    .take()
+                    .unwrap_or_else(|| TOOL_CANCELLED_MSG.to_string()),
+            };
+            ContentBlock::ToolResult {
+                tool_use_id: prep.id,
+                content,
+            }
+        })
+        .collect()
 }
 
 /// Run a single native (non-MCP) tool, borrowing only the shared router and
