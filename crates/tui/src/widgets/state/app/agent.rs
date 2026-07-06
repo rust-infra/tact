@@ -48,6 +48,7 @@ impl App {
         }
     }
 
+    #[allow(deprecated)]
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
         // Close the previous thinking block: when any non-ThinkingChunk update arrives,

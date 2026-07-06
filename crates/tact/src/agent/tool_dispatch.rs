@@ -232,14 +232,12 @@ impl Agent {
             } else {
                 format!("{name} ({arg_summary})")
             };
-            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
-                description: step_description,
-                tool: name.clone(),
-                tool_id: id.clone(),
-                args: tool_args_map(input),
-                need_approval: false,
-                output: None,
-            }));
+            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+                step_description,
+                name.clone(),
+                id.clone(),
+                tool_args_map(input),
+            )));
             self.emit_update(AgentUpdate::StepStarted(
                 step_idx,
                 id.clone(),

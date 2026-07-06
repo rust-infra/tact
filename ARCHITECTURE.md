@@ -36,7 +36,9 @@ Binaries produced by `crates/tact-ui`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact-ui` | `crates/tact-ui/src/main.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+
+`tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, `user_message.rs`, `permission.rs`, `sessions.rs`.
 
 ---
 
@@ -198,7 +200,8 @@ Key `AgentUpdate` variants used today:
 
 | Variant | Meaning |
 |---|---|
-| `PlanGenerated(Vec<PlanStep>)` | **Legacy.** TUI handler still exists; current agent code does **not** emit this. Plan panel is driven by `StepAdded` instead. |
+| `PlanGenerated(Vec<PlanStep>)` | **Deprecated (0.19.0).** TUI handler retained; agent emits `StepAdded` / `StepStarted` instead. |
+| `NeedApproval(...)` | **Deprecated (0.19.0).** TUI handler retained; agent uses `RequestSelect` instead. |
 | `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |

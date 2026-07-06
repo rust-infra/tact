@@ -361,7 +361,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | Allowlist not persisted | "Always allow this tool" lasts only for the current process |
 | No runtime mode switch API | User must restart with a different mode; stderr only suggests Plan after repeated denials |
 | Headless auto-denies all Ask | No non-interactive approval path except Auto/Plan/Default logic that avoids Ask |
-| `PlanStep.need_approval` unused | Permission flow does not set this flag; approval is driven entirely by `PermissionManager` |
+| `PlanStep.need_approval` deprecated | Field marked `#[deprecated(since = "0.19.0")]`; use `PlanStep::new()` — permission is driven by `PermissionManager` |
 | Permission vs hook overlap | Both can block tools; hooks run first and skip permission on `Block` |
 
 ---
