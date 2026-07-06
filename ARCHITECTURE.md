@@ -203,7 +203,9 @@ sequenceDiagram
         end
     end
 
-    Agent ->> TUI: TaskComplete(final text)
+    Agent ->> TUI: Step* / StreamChunk / … (during loop)
+    Note over Agent,TUI: TaskComplete is sent by tui.rs after agent_loop returns
+    TUI ->> Agent: (loop already finished)
     TUI ->> U: Show completion / statistics
 ```
 
@@ -211,7 +213,7 @@ Key `AgentUpdate` variants used today:
 
 | Variant | Meaning |
 |---|---|
-| `PlanGenerated(Vec<PlanStep>)` | Initial placeholder plan displayed in the TUI. |
+| `PlanGenerated(Vec<PlanStep>)` | **Legacy.** TUI handler still exists; current agent code does **not** emit this. Plan panel is driven by `StepAdded` instead. |
 | `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |

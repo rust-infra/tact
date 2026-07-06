@@ -187,9 +187,9 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 |-----|--------|
 | **`SessionStart` not invoked** | Hooks can be registered via `session_start()` but `agent_loop` never runs them ([Ch 9](./09_chapter_hook.md)) |
 | **`TaskComplete` heuristic** | TUI uses last message in context, not explicitly last assistant text |
-| **Headless path** | `headless` subcommand may duplicate or omit some `AgentUpdate` semantics |
+| **Headless path** | No `ui_tx`; no `TaskComplete` emit — single direct `notify_task_complete` after stdout ([Ch 17](./17_chapter_notify.md)) |
 | **No dedicated cancel API on Agent** | Only atomic flag; subagents have separate flags |
-| **Plan mode placeholder** | TUI may still emit legacy plan events; loop itself is tool-stream driven |
+| **`PlanGenerated` legacy** | TUI still handles `PlanGenerated` / loading spinner; agent never emits — plan panel driven by `StepAdded` |
 
 ---
 

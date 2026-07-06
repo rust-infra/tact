@@ -110,9 +110,11 @@ sequenceDiagram
     Agent->>TUI: ui_tx.send(update)
 ```
 
-### Headless duplicate
+### Headless path
 
-`run_headless` in `crates/tact/src/bin/tui.rs` also calls `notify_task_complete` after printing final text — in addition to any notification already sent via `emit_update` during `agent_loop`. Headless runs may therefore show **two** completion notifications on macOS.
+Headless runs set `ui_tx: None`, so `agent_loop` never sends `AgentUpdate::TaskComplete` to a TUI. Completion is notified **once**: `run_headless` calls `notify_task_complete` directly after printing final text to stdout (`tui.rs`). There is no duplicate notification from `emit_update` during the loop.
+
+Interactive runs differ: `tui.rs` emits `TaskComplete` after `agent_loop` returns, and `emit_update` triggers `notify_task_complete` from that update.
 
 Errors from notification calls are discarded (`let _ = …`) everywhere — a failed `osascript` does not fail the agent.
 
@@ -150,7 +152,7 @@ There is no notification for session start, compaction, or MCP connection events
 | macOS only | Linux and Windows users get no desktop alerts |
 | `notify_info` unused | No call sites in the codebase |
 | Errors swallowed | `osascript` failures are ignored; no TUI fallback message |
-| Duplicate TaskComplete (headless) | Both `emit_update` and `run_headless` may notify on success |
+| Interactive-only `TaskComplete` notify | Headless skips `emit_update(TaskComplete)`; only direct `notify_task_complete` |
 | No rate limiting | Rapid step failures could spam notifications |
 | No custom titles per session | All notifications use fixed "Tact — …" prefixes |
 

@@ -8,7 +8,7 @@ This chapter walks through what happens after the LLM decides to act: how Tact t
 
 ## 1. A Task Is a Turn of the Agent Loop
 
-In Tact, a **task** is the work performed in one iteration of `Agent::agent_loop` (`crates/tact/src/lib.rs`):
+In Tact, a **task** is the work performed in one iteration of `Agent::agent_loop` (`crates/tact/src/agent/mod.rs`):
 
 ```text
 ┌─────────────┐    LLM call    ┌─────────────────────┐
@@ -41,7 +41,7 @@ The loop keeps running until the model stops, asks the user, or hits a completio
 
 ## 2. The Three-Phase Pipeline
 
-`Agent::execute_tool_call` (`crates/tact/src/lib.rs`) splits every turn into three phases.
+`Agent::execute_tool_call` (`crates/tact/src/agent/tool_dispatch.rs`) splits every turn into three phases.
 
 ### Phase 1 — Pre-flight (sequential)
 
@@ -178,7 +178,8 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 
 | File | Role |
 |------|------|
-| `crates/tact/src/lib.rs` | `Agent::agent_loop`, `Agent::execute_tool_call`, three-phase orchestration |
+| `crates/tact/src/agent/mod.rs` | `Agent::agent_loop`, `stream_message`, session helpers |
+| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, three-phase orchestration |
 | `crates/tact/src/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary` |
 | `crates/tact/src/permission/mod.rs` | Intent classification and permission decisions |
 | `crates/tact/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hooks |

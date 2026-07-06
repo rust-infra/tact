@@ -87,7 +87,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `ThinkingChunk` | Thinking card / preview |
 | `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | Tool timeline ([Ch 11](./11_chapter_task.md)) |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
-| `NeedApproval` | Legacy approval path |
+| `NeedApproval` | **Legacy** — agent does not emit; permission flow uses `RequestSelect` |
 | `TokenUsage` | Status bar counters |
 | `ModelInfo` | Model name / limits display |
 | `Balance` | Balance widget |
@@ -119,7 +119,7 @@ See [Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration).
    - Drain all pending `AgentUpdate`s **before** render (avoids scroll/hit-test races).
    - Repaint only when `dirty`, `Status::Done`, or a tool is still running (live elapsed time).
    - Dispatch keyboard/mouse to mode-specific handlers.
-5. **Balance timer** — random 5–15 s interval re-queries DeepSeek/Kimi balance when supported.
+5. **Balance timer** — when DeepSeek or Kimi is active, random 5–15 s interval sends `UserCommand::QueryBalance` (same gate as startup fetch).
 6. **Shutdown** — restore terminal on exit.
 
 Timed state cleanup also runs outside `draw`: `Status::Done` reverts to `Idle` after 2 s; `flash_msg` clears after 3 s.
@@ -359,7 +359,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **Thinking internals** | Gray italic `│ …` lines under a title row | Collapsed to ≤3 visible rows after block closes; see [§6.14](#614-visibility-rules) |
 | **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
-| **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | Spinner painted over it until first content arrives |
+| **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
 | **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end` | Rendered as a full-width dashed rule, not plain text |
 
 Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `messages[]`:
@@ -378,18 +378,20 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 `handle_agent_update` (`widgets/state/app/agent.rs`) is the sole writer of log rows from agent events. Every update sets `dirty = true`. Two global gates run before the match arm:
 
 1. **Thinking gate** — any update *except* `ThinkingChunk` calls `flush_and_close_thinking()`, closing the active thinking region so later output cannot leak inside it.
-2. **Loading gate** — most updates call `remove_loading_placeholder()`; metadata-only updates (`PlanGenerated`, `TokenUsage`, `Balance`, `ModelInfo`) leave the spinner row intact.
+2. **Loading gate** — most updates call `remove_loading_placeholder()`. Metadata-only updates (`TokenUsage`, `Balance`, `ModelInfo`) skip removal. **`PlanGenerated`** also skips removal in code, but the agent never emits it — the loading row path is legacy.
+
+**Active agent path:** `StepAdded` updates the plan panel only (no log row). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
 
 | `AgentUpdate` | Physical rows inserted / updated | Side effects |
 |---------------|----------------------------------|--------------|
 | **`StreamChunk`** | Completed lines → `append_msg` (`LLM`); incomplete tail stays in `stream.buffer` | Auto-scroll; code/table/paragraph sub-parsers; closes thinking (gate) |
 | **`ThinkingChunk`** | First chunk: blank + title row; each `\n`: `│ …` line (`LLMThinking`) | Does *not* trigger thinking gate; auto-scroll |
-| **`PlanGenerated`** | System lines for plan summary + each step; blank loading row | Flushes stream; cancels active tools; sets `loading_idx` |
-| **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream |
+| **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
+| **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream; first step transitions `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
 | **`StepFinished`** | Resize placeholders → `ToolBlock` | Flushes stream; plan step output updated |
 | **`StepFailed`** | Finalize tool card *or* system error line | Status → `Idle` |
-| **`NeedApproval`** | System approval prompt | Flushes stream; `WaitingForUser` |
+| **`NeedApproval`** | *(legacy handler)* System approval prompt | Agent **does not emit**; use `RequestSelect` instead |
 | **`RequestSelect`** | *(none)* | Opens select popup |
 | **`Info`** | System message line(s) | Markdown if no system prefix |
 | **`Error`** | System error line (fatal) or flash only (balance) | Flushes stream on fatal |
@@ -501,7 +503,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
 | **Thinking card** | Overlay | Spans title through trailing blank logical rows | Opens `thinking_popup` |
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
-| **Loading spinner** | Overlay | 1 row at `loading_idx` | — |
+| **Loading spinner** | Overlay | 1 row at `loading_idx` if set | — (usually inactive — see `PlanGenerated` legacy) |
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Search matches rebuild spans with yellow highlight; selection applies `REVERSED` modifier (word-level or whole-line). A collapsed-thinking prefix (`↑ 3/8 blocks hidden ↑`) prepends the first line when `total > 3`. Left gutter `indent_cols` comes from `RawMessageType`.
 
@@ -633,6 +635,7 @@ The TUI itself does not call notification APIs directly for streaming events.
 | **No live config reload** | Theme can cycle in UI; LLM/provider changes require restart |
 | **Single agent instance** | One in-flight `agent_loop` per session driver; no multiplexed tasks |
 | **Platform terminal assumptions** | crossterm/ratatui; no web or GUI fallback in this crate |
+| **Legacy `PlanGenerated` / loading spinner** | TUI handler and overlay remain; agent never emits — plan uses `StepAdded` / `StepStarted` |
 | **Legacy diff overlay path** | Some tool cards still use `DiffBlock` overlay logic alongside migrating `ToolCell` |
 
 ---

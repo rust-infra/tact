@@ -355,6 +355,7 @@ async fn run_interactive(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
+    let balance_polling = is_deepseek() || is_kimi();
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(
             agent_rx,
@@ -364,6 +365,7 @@ async fn run_interactive(
             session_id,
             history_save_tx,
             theme,
+            balance_polling,
         )
         .await
     }));

@@ -105,7 +105,7 @@ Top-level sections in `TactTomlConfig`:
 provider = "kimi"          # anthropic | openai | deepseek | kimi
 model = "kimi-for-coding"
 api_key = "sk-..."
-base_url = "https://api.kimi.com/coding/v1"
+base_url = "https://api.kimi.com/coding/v1"   # optional; default is https://api.moonshot.cn/v1
 max_tokens = 32000
 thinking_budget = 32000
 

@@ -77,7 +77,7 @@ sequenceDiagram
     participant Build as build_client
     participant Provider as LlmProvider
 
-    Init->>Resolve: merge files, env, and CLI
+    Init->>Resolve: merge TOML and CLI (no env layer)
     Resolve-->>Init: ResolvedConfig
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
@@ -267,6 +267,10 @@ Intent: per-session KV cache isolation on DeepSeek (and compatible proxies), red
 
 Both return `tact_protocol::BalanceInfo` and surface in the TUI as `AgentUpdate::Balance`.
 
+**Kimi Coding endpoint caveat:** `query_kimi_balance()` derives the balance URL from `api.moonshot.cn` when the configured base URL does not contain that host. Custom endpoints such as `api.kimi.com/coding/v1` fall back to the moonshot balance URL and may fail — use `/balance` only when the configured base matches moonshot, or query balance out of band.
+
+**TUI timer:** `run_tui` accepts `balance_polling_enabled` (set from `is_deepseek()` / `is_kimi()` in `tui.rs`). Periodic and startup balance queries run only for those providers.
+
 Only invoked when `is_deepseek()` or `is_kimi()` is true (`crates/tact/src/bin/tui.rs`).
 
 ```mermaid
@@ -324,7 +328,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **Four named providers only** | `build_client` rejects unknown provider strings; generic OpenAI proxies must use `provider = "openai"` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
 | **Anthropic SDK partial use** | Types from `anthropic-ai-sdk`; streaming is custom HTTP |
-| **Balance unsupported for Anthropic/OpenAI** | `QueryBalance` returns an error for non-DeepSeek/non-Kimi providers |
+| **Kimi Coding balance URL** | `query_kimi_balance()` may fall back to moonshot endpoint for non-moonshot base URLs |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |
 
 ---

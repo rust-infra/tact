@@ -24,7 +24,7 @@ fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result
         return Ok(p.clone());
     }
     anyhow::bail!(
-        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai"
+        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi"
     )
 }
 

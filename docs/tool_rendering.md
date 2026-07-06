@@ -98,7 +98,7 @@ pub(crate) struct ToolBlock {
 | `StepStarted` | `agent.rs` | `cancel_active_tool(tool_id)` if restart; `push_tool_placeholder_rows`; `active.push` |
 | `StepFinished` | `agent.rs` | `ToolWidget::from_step_result().build()` → `finalize_tool_block` |
 | `StepFailed` | `agent.rs` | Rebuild output as `ToolPhase::Failed` or fallback system message |
-| `PlanGenerated` | `agent.rs` | `cancel_all_active_tools()` |
+| `PlanGenerated` | `agent.rs` | **Legacy handler only** — agent does not emit; would call `cancel_all_active_tools()` |
 | Double-click tool row | `lib.rs` / `popups.rs` | Open `DiffPopup` from `detail_full` or file path |
 
 `finalize_tool_block()` either resizes existing placeholder rows (normal path) or inserts new ones (no matching active entry).

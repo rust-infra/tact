@@ -103,7 +103,9 @@ sequenceDiagram
             Agent->>Store: persist tool results
             Note over Agent: loop — rebuild system prompt next turn
         else stop_reason = end_turn
-            Agent->>TUI: TaskComplete / final text
+            Note over Agent: return Ok — loop finished
+            Note over TUI: tui.rs emits TaskComplete after loop returns
+            TUI->>User: show completion / enable follow-up input
             Note over User,LLM: prompt cycle complete
         end
     end

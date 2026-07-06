@@ -346,25 +346,24 @@ When a Server’s tool list changes, it can push without waiting for the Client 
 
 The Client should re-run `tools/list` and refresh the Agent’s tool table.
 
-**Tact implementation:**
+**Tact implementation (startup only today):**
 
-1. Custom `TactMcpClientHandler` implementing `ClientHandler::on_tool_list_changed`
-2. In the callback, call `context.peer.list_all_tools()` and update shared `McpToolCache`
-3. Set the `tools_changed` atomic flag
-4. At the start of each Agent loop iteration, call `refresh_mcp_tools_if_changed()` to rebuild `cached_tool_specs`
+1. At connect time, `McpClient::fetch_tools` calls `list_all_tools()` once and builds `tool_specs` (`mcp/mod.rs`)
+2. `Agent::new` merges native + MCP specs into `cached_tool_specs` — **fixed for the session**
+3. **Not implemented yet:** `notifications/tools/list_changed` handler, `TactMcpClientHandler`, or `refresh_mcp_tools_if_changed()` in `agent_loop`. Dynamic server-side tool changes after connect are not picked up until restart.
 
 ```rust
-// crates/tact/src/mcp/mod.rs
-impl ClientHandler for TactMcpClientHandler {
-    async fn on_tool_list_changed(&self, context: NotificationContext<RoleClient>) {
-        // list_all_tools → update cache → tools_changed.store(true)
-    }
-}
+// crates/tact/src/mcp/mod.rs — connect uses rmcp with () handler (no ClientHandler)
+().serve(transport).await?;
+// tools fetched once:
+service.peer().list_all_tools().await?;
 ```
 
 ```rust
-// crates/tact/src/lib.rs — inside agent_loop
-self.refresh_mcp_tools_if_changed();
+// crates/tact/src/agent/mod.rs — tool list is cached at Agent construction
+let cached_tool_specs = tools.native_specs()
+    .chain(mcp_router.all_tools())
+    .collect();
 ```
 
 ### Step 11: Close the connection
@@ -373,10 +372,9 @@ When the session ends, disconnect gracefully instead of letting the parent exit 
 
 **Tact implementation:**
 
-- `McpClient::shutdown` — `close_with_timeout(5s)` and wait for rmcp cleanup
+- `McpClient::shutdown` — `service.cancel().await`
 - `MCPToolRouter::disconnect_all` — drain all clients and shut down each one
-- `Agent::shutdown_mcp` — public wrapper
-- `tact-ui` calls `agent.shutdown_mcp().await` before exiting (headless and interactive modes)
+- **Gap:** `tact-ui` does not call `disconnect_all` on exit today; child MCP processes rely on process teardown
 
 ---
 
@@ -409,14 +407,11 @@ sequenceDiagram
     Host->>Host: write to context, continue LLM
     Host-->>User: final answer
 
-    Note over Host,Server: Optional: dynamic update
+    Note over Host,Server: Optional: dynamic update (not implemented in Tact yet)
     Server-->>Client: notifications/tools/list_changed
-    Client->>Server: tools/list
-    Host->>Host: refresh_mcp_tools_if_changed()
-
-    Note over Host,Server: Shutdown
-    Host->>Client: shutdown_mcp / disconnect_all
-    Client->>Server: close (graceful)
+    Note over Host: would re-list tools + refresh cached_tool_specs
+    Note over Host,Server: Shutdown (graceful disconnect not wired in tact-ui yet)
+    Host->>Client: disconnect_all (available on MCPToolRouter)
 ```
 
 ---
@@ -429,11 +424,11 @@ sequenceDiagram
 | Connect & handshake | `McpClient::connect` | stdio spawn + rmcp `serve()` |
 | Tool discovery | `McpClient::fetch_tools` | `tools/list` |
 | Tool execution | `McpClient::call_tool` | `tools/call` |
-| Dynamic updates | `TactMcpClientHandler` | `on_tool_list_changed` |
+| Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
-| Agent integration | `crates/tact/src/lib.rs` | Merge tool tables, `agent_loop`, refresh / shutdown |
+| Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
 | Parallel scheduling | `crates/tact/src/tool_schedule.rs` | Same Server serial; different Servers parallel |
-| Entry point | `crates/tact/src/bin/tui.rs` | `load_mcp_router()` + `shutdown_mcp()` on exit |
+| Entry point | `crates/tact/src/bin/tui.rs` | `load_mcp_router()` at startup |
 
 ### 6.1 Tool naming and routing
 
@@ -483,8 +478,8 @@ The handshake lives inside the **rmcp** SDK’s `serve()`. Application code only
 
 ### Q: When does the tool list change?
 
-- **Static** tools at Server startup → fetch once at Step 4
-- **Dynamic** tools at runtime → Step 10 Notification + refresh
+- **Static** tools at Server startup → fetch once at Step 4 (current Tact behavior)
+- **Dynamic** tools at runtime → Step 10 Notification + refresh (**not implemented** — restart required)
 
 ### Q: How do MCP tools differ from native tools?
 
@@ -516,7 +511,18 @@ stdio fits local plugins: zero config, low latency. Remote MCP services can use 
 
 ---
 
-## 10. Further Reading
+## 10. Current Gaps
+
+| Gap | Detail |
+|-----|--------|
+| **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
+| **No graceful MCP shutdown on exit** | `MCPToolRouter::disconnect_all` exists but `tact-ui` does not call it |
+| **Resources / prompts** | Protocol primitives exist; Tact only wires Tools today |
+| **HTTP transport** | stdio only via `TokioChildProcess` |
+
+---
+
+## 11. Further Reading
 
 - [MCP architecture overview](https://modelcontextprotocol.io/docs/learn/architecture)
 - [MCP specification — Lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
