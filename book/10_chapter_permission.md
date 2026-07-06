@@ -331,8 +331,8 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 
 | Entry point | Mode used |
 |-------------|-----------|
-| `tact-ui headless` | `permission_mode_for_headless()` — reads config; unknown values fall through to **Auto** |
-| `tact-ui` (interactive TUI) | Hardcoded `PermissionMode::Default` in `tact-ui/src/main.rs` — **does not** read `--permission-mode` or TOML yet |
+| `tact-ui headless` | `permission_mode_from_config()` — reads TOML / CLI; unknown values fall through to **Auto** |
+| `tact-ui` (interactive TUI) | Same as headless — `permission_mode_from_config()` |
 
 ---
 
@@ -358,7 +358,6 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 
 | Gap | Detail |
 |-----|--------|
-| Interactive TUI ignores config | `tact-ui` always starts with `PermissionMode::Default` regardless of TOML or CLI |
 | Allowlist not persisted | "Always allow this tool" lasts only for the current process |
 | No runtime mode switch API | User must restart with a different mode; stderr only suggests Plan after repeated denials |
 | Headless auto-denies all Ask | No non-interactive approval path except Auto/Plan/Default logic that avoids Ask |

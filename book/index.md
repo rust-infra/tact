@@ -186,7 +186,7 @@ No chapters are queued at this time. Future additions may cover testing strategy
 - Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
 - Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)
 - Tact task manager source: [crates/tact/src/task/mod.rs](../crates/tact/src/task/mod.rs)
-- Tact LSP source: [crates/tact/src/lsp.rs](../crates/tact/src/lsp.rs)
+- Tact LSP source: [crates/tact/src/lsp/](../crates/tact/src/lsp/)
 - Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
 - Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
 - Tact TUI source: [crates/tui/src/lib.rs](../crates/tui/src/lib.rs)

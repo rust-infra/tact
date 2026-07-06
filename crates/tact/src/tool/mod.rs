@@ -65,33 +65,39 @@ mod team;
 mod web;
 mod worktree;
 mod write_file;
+mod registry;
 #[cfg(test)]
 mod test_support;
-use apply_patch::ApplyPatchTool;
-use ask_user::AskUserTool;
+
+pub use registry::{subagent_toolset, toolset};
+
+#[cfg(test)]
 use background_run::{BackgroundRunTool, CheckBackgroundTool};
+#[cfg(test)]
 use bash::BashTool;
+#[cfg(test)]
 use batch_edit::BatchEditTool;
+#[cfg(test)]
 use batch_read::BatchReadTool;
-use compact::CompactTool;
+#[cfg(test)]
 use cron::{CronCreateTool, CronDeleteTool, CronListTool};
+#[cfg(test)]
 use edit_file::EditFileTool;
+#[cfg(test)]
 use load_skill::LoadSkillTool;
-use lsp_tool::QueryLspTool;
+#[cfg(test)]
 use memory::SaveMemoryTool;
+#[cfg(test)]
 use read_file::ReadFileTool;
+#[cfg(test)]
 use search_code::SearchCodeTool;
+#[cfg(test)]
 use sleep::SleepTool;
-use subagent::TaskTool;
+#[cfg(test)]
 use task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
-use team::{
-    BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
-    ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
-};
-use web::{WebFetchTool, WebSearchTool};
-use worktree::{
-    WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool, WorktreeStatusTool,
-};
+#[cfg(test)]
+use team::{ListTeammatesTool, ReadInboxTool, SendMessageTool, SpawnTeammateTool};
+#[cfg(test)]
 use write_file::WriteFileTool;
 
 /// Shared state available to every tool invocation.
@@ -110,62 +116,6 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
-}
-
-/// Assembles the full tool set for the main agent loop.
-pub fn toolset() -> ToolRouter {
-    ToolRouter::new()
-        .route(ApplyPatchTool)
-        .route(AskUserTool)
-        .route(BashTool)
-        .route(BatchEditTool)
-        .route(BatchReadTool)
-        .route(BackgroundRunTool)
-        .route(CheckBackgroundTool)
-        .route(CronCreateTool)
-        .route(CronDeleteTool)
-        .route(CronListTool)
-        .route(ReadFileTool)
-        .route(SearchCodeTool)
-        .route(SleepTool)
-        .route(WriteFileTool)
-        .route(EditFileTool)
-        .route(LoadSkillTool)
-        .route(QueryLspTool)
-        .route(SaveMemoryTool)
-        .route(CompactTool)
-        .route(TaskTool)
-        .route(TaskCreateTool)
-        .route(TaskGetTool)
-        .route(TaskListTool)
-        .route(TaskUpdateTool)
-        .route(SpawnTeammateTool)
-        .route(ListTeammatesTool)
-        .route(SendMessageTool)
-        .route(BroadcastTool)
-        .route(ReadInboxTool)
-        .route(PlanApprovalTool)
-        .route(ShutdownRequestTool)
-        .route(ShutdownResponseTool)
-        .route(WorktreeCreateTool)
-        .route(WorktreeListTool)
-        .route(WorktreeStatusTool)
-        .route(WorktreeRunTool)
-        .route(WorktreeEventsTool)
-        .route(WebFetchTool)
-        .route(WebSearchTool)
-}
-
-/// Assembles the restricted tool set for sub-agents.
-/// Sub-agents get only `bash`, `read_file`, `write_file`, and `edit_file`.
-pub fn subagent_toolset() -> ToolRouter {
-    ToolRouter::new()
-        .route(BashTool)
-        .route(ReadFileTool)
-        .route(SearchCodeTool)
-        .route(SleepTool)
-        .route(WriteFileTool)
-        .route(EditFileTool)
 }
 
 #[async_trait]

@@ -158,7 +158,7 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
     })
 }
 
-fn permission_mode_for_headless() -> PermissionMode {
+fn permission_mode_from_config() -> PermissionMode {
     match tact::config::settings().permission_mode.as_deref() {
         Some("plan") => PermissionMode::Plan,
         Some("default") => PermissionMode::Default,
@@ -211,7 +211,7 @@ async fn run_headless(
     }
 
     let client = get_llm_client()?;
-    let mode = permission_mode_for_headless();
+    let mode = permission_mode_from_config();
     let permission_manager = PermissionManager::try_new(mode)?;
     eprintln!("[permission: {mode}]");
 
@@ -297,7 +297,9 @@ async fn run_interactive(
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
-    let permission_manager = PermissionManager::try_new(PermissionMode::Default)?;
+    let mode = permission_mode_from_config();
+    let permission_manager = PermissionManager::try_new(mode)?;
+    eprintln!("[permission: {mode}]");
 
     let work_dir = tact_path.workdir().to_path_buf();
     let tui_work_dir = work_dir.clone();

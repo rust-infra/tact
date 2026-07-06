@@ -55,7 +55,7 @@ events, hooks, permissions) needs `&mut self` and/or interactive ordering, so it
 stays sequential; the actual tool I/O (`ToolRouter::call`, `&self`) is the slow
 part worth overlapping.
 
-## Conflict model & wave scheduling (`crates/tact/src/tool_schedule.rs`)
+## Conflict model & wave scheduling (`crates/tact/src/agent/tool_schedule.rs`)
 
 Each cleared tool is mapped to the workspace files it touches:
 
@@ -138,6 +138,6 @@ JSON shape and example queries.
 
 | File | Role |
 |------|------|
-| `crates/tact/src/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
+| `crates/tact/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
 | `crates/tact/src/agent/tool_dispatch.rs` | `Agent::execute_tool_call` (three phases), native/MCP dispatch, `persist_tool_schedule`. |
 | `crates/tact/src/store/session_store/` | `record_tool_schedule` — UPDATE the call's `token_usages` row. |

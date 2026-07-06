@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/protocol",
-    "crates/tools",
     "crates/tui",
     "crates/tact",
     "crates/tact-ui",

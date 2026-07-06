@@ -427,7 +427,7 @@ sequenceDiagram
 | Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
-| Parallel scheduling | `crates/tact/src/tool_schedule.rs` | Same Server serial; different Servers parallel |
+| Parallel scheduling | `crates/tact/src/agent/tool_schedule.rs` | Same Server serial; different Servers parallel |
 | Entry point | `crates/tact-ui/src/main.rs` | `load_mcp_router()` at startup |
 
 ### 6.1 Tool naming and routing

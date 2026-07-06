@@ -13,7 +13,6 @@ This project is a Cargo Workspace containing the following crates:
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
-| `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
 | `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
 | `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
@@ -31,7 +30,6 @@ flowchart TB
     tact --> tool_refactor_macros
     tact_llm --> tact_protocol
     tui --> tact_protocol
-    tact_protocol --> tools
 ```
 
 Binaries produced by `crates/tact-ui`:
@@ -94,14 +92,6 @@ flowchart TB
         STEP["PlanStep / StepResult"]
     end
 
-    subgraph tools_crate["tools crate — Sandbox"]
-        S["Sandbox"]
-        SR["read_file()"]
-        SW["write_file()"]
-        SC["run_command()"]
-        SSP["safe_path()<br/>workspace escape prevention"]
-    end
-
     subgraph tui_crate["tui crate — Terminal UI"]
         T["lib.rs<br/>event loop"]
         TH["handlers/<br/>mode-specific key handling"]
@@ -133,12 +123,6 @@ flowchart TB
     TOOL --> WT
     TOOL --> STORE
 
-    S --> SR
-    S --> SW
-    S --> SC
-    S --> SSP
-    TOOL -. "file I/O fallback" .-> S
-
     T --> TH
     T --> TR
     T --> TS
@@ -165,7 +149,7 @@ sequenceDiagram
     participant Perm as PermissionManager
     participant Hook as Hook Engine
     participant TR as ToolRouter / MCP Router
-    participant SB as Sandbox / Tools
+    participant PATH as tool/path.rs
 
     U ->> TUI: Enter task and press Enter
     TUI ->> Main: UserCommand::SubmitTask
@@ -194,8 +178,7 @@ sequenceDiagram
                         TUI -->> Agent: user choice
                     end
                     Agent ->> TR: call native or MCP tool
-                    TR ->> SB: execute
-                    SB -->> TR: output
+                    TR ->> PATH: resolve_safe_path (file tools)
                     TR -->> Agent: output
                     Agent ->> Hook: PostToolUse hook
                     Agent ->> TUI: StepFinished
@@ -573,7 +556,7 @@ flowchart LR
 
 ## 11. Sandbox Safe Path Resolution
 
-The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` (`crates/tact/src/tool/mod.rs`). The legacy `tools` crate has a similar `safe_path()` implementation used by the old `tact_protocol::Agent`.
+The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` in `crates/tact/src/tool/path.rs`.
 
 ```mermaid
 flowchart TD
@@ -640,7 +623,7 @@ Handlers can be either:
 If you are reading older branches or notes, the following major evolutions have happened:
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
-- Business tools moved from `crates/tools` into `crates/tact/src/tool/`; `crates/tools` now only provides the `Sandbox`.
+- Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.

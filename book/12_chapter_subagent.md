@@ -202,7 +202,7 @@ See [Team Coordination](./14_chapter_team.md).
 | `crates/tact/src/tool/mod.rs` | `TaskTool` registration in `toolset()`; `subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop`, `build_system_prompt`, `ensure_session` |
 | `crates/tact/src/permission/mod.rs` | `task` → `CapabilityRisk::High` |
-| `crates/tact/src/tool_schedule.rs` | `task` as scheduling barrier |
+| `crates/tact/src/agent/tool_schedule.rs` | `task` as scheduling barrier |
 | `ARCHITECTURE.md` | One-line summary in tools table |
 
 ---
