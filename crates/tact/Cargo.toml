@@ -4,28 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "tact-ui"
-path = "src/bin/tui.rs"
-
 [dependencies]
 tact_protocol = { path = "../protocol" }
 tact_llm = { path = "../tact_llm" }
-tui = { path = "../tui" }
 tool_refactor_macros = { path = "../tool_refactor_macros" }
 anthropic-ai-sdk = { workspace = true }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-console-subscriber = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
-regex = { workspace = true }
 reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
 rmcp = { workspace = true }

@@ -2,7 +2,7 @@
 
 This chapter explains Tact's **Language Server Protocol client**: spawning configured language servers, JSON-RPC over stdin/stdout, and the native `lsp` tool for hover, definition, references, symbols, and diagnostics.
 
-Implementation: `crates/tact/src/lsp.rs` (~1300 lines), tool wrapper `crates/tact/src/tool/lsp_tool.rs` (exported as **`lsp`**, not `query_lsp`).
+Implementation: `crates/tact/src/lsp/` module, tool wrapper `crates/tact/src/tool/lsp_tool.rs` (exported as **`lsp`**, not `query_lsp`).
 
 ---
 
@@ -99,7 +99,7 @@ Flow:
 | `symbols` | `textDocument/documentSymbol` | Outline list |
 | `diagnostics` | Cached from publish notifications | **200 ms sleep** before read; may be empty on cold start |
 
-Scheduling: **`independent`** in `tool_schedule.rs` — can run in parallel with other non-conflicting tools.
+Scheduling: **`independent`** in `crates/tact/src/agent/tool_schedule.rs` — can run in parallel with other non-conflicting tools.
 
 Permission: classified as a normal write-capable native tool under name `lsp` ([Ch 10](./10_chapter_permission.md)).
 
@@ -117,9 +117,13 @@ Permission: classified as a normal write-capable native tool under name `lsp` ([
 
 | File | Role |
 |------|------|
-| `crates/tact/src/lsp.rs` | Config types, `LspClient`, `LspManager`, global singleton |
+| `crates/tact/src/lsp/mod.rs` | Re-exports, global singleton |
+| `crates/tact/src/lsp/config.rs` | `LspServerConfig` |
+| `crates/tact/src/lsp/client.rs` | `LspClient` JSON-RPC loop |
+| `crates/tact/src/lsp/manager.rs` | `LspManager` multi-server routing |
+| `crates/tact/src/lsp/diagnostic.rs` | `LspDiagnostic`, formatting helpers |
 | `crates/tact/src/tool/lsp_tool.rs` | `lsp` tool handler |
-| `crates/tact/src/tool/mod.rs` | `QueryLspTool` in `toolset()` |
+| `crates/tact/src/tool/registry.rs` | `QueryLspTool` in `toolset()` |
 | `crates/tact/src/consts.rs` | `TactPath::home_tact_dir()` for config path |
 
 ---

@@ -196,7 +196,7 @@ impl Agent {
     /// 2. **Execution** (parallel by wave): tools touching disjoint resources
     ///    run concurrently; a read/write or write/write on the same file (and
     ///    any unscoped "barrier" tool such as `bash`/MCP) is serialised. See
-    ///    [`crate::tool_schedule`].
+    ///    [`super::tool_schedule`].
     /// 3. **Post-processing** (sequential): PostToolUse hooks, step-finished
     ///    events, and bookkeeping, replayed in the model's original tool order.
     pub async fn execute_tool_call(
@@ -232,14 +232,12 @@ impl Agent {
             } else {
                 format!("{name} ({arg_summary})")
             };
-            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep {
-                description: step_description,
-                tool: name.clone(),
-                tool_id: id.clone(),
-                args: tool_args_map(input),
-                need_approval: false,
-                output: None,
-            }));
+            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+                step_description,
+                name.clone(),
+                id.clone(),
+                tool_args_map(input),
+            )));
             self.emit_update(AgentUpdate::StepStarted(
                 step_idx,
                 id.clone(),
@@ -359,10 +357,10 @@ impl Agent {
             .filter(|(_, p)| matches!(p.state, PreparedState::Run))
             .map(|(i, _)| i)
             .collect();
-        let resources: Vec<crate::tool_schedule::ToolResources> = run_indices
+        let resources: Vec<super::tool_schedule::ToolResources> = run_indices
             .iter()
             .map(|&i| {
-                crate::tool_schedule::tool_resources(
+                super::tool_schedule::tool_resources(
                     &prepared[i].name,
                     &prepared[i].input,
                     &self.tool_context.work_dir,
@@ -377,7 +375,7 @@ impl Agent {
                 .iter()
                 .map(|&i| prepared[i].name.clone())
                 .collect();
-            self.persist_tool_schedule(&crate::tool_schedule::summarize(&names, &resources))
+            self.persist_tool_schedule(&super::tool_schedule::summarize(&names, &resources))
                 .await;
         }
 
@@ -388,7 +386,7 @@ impl Agent {
         let mut outputs: Vec<Option<String>> = (0..prepared.len()).map(|_| None).collect();
         let mut manual_compact = None;
 
-        for wave in crate::tool_schedule::waves_grouped(&resources) {
+        for wave in super::tool_schedule::waves_grouped(&resources) {
             if self
                 .runtime
                 .cancel_flag

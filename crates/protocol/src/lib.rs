@@ -83,7 +83,15 @@ pub struct TokenUsageInfo {
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
-    /// Plan generated, with list of steps
+    /// Pre-generated plan batch (legacy).
+    ///
+    /// The current agent runtime does not emit this variant. The plan panel is
+    /// driven by [`StepAdded`](Self::StepAdded) and [`StepStarted`](Self::StepStarted).
+    /// The TUI handler is retained for backward compatibility only.
+    #[deprecated(
+        since = "0.19.0",
+        note = "use StepAdded/StepStarted; agent no longer emits PlanGenerated"
+    )]
     PlanGenerated(Vec<PlanStep>),
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
@@ -93,7 +101,14 @@ pub enum AgentUpdate {
     StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message
     StepFailed(usize, String /* tool_id */, String),
-    /// Requires user approval: prompt text, step index, approval channel (true=accept, false=reject)
+    /// User approval prompt (legacy).
+    ///
+    /// The current agent runtime uses [`RequestSelect`](Self::RequestSelect) for
+    /// permission and choice prompts instead.
+    #[deprecated(
+        since = "0.19.0",
+        note = "use RequestSelect; agent no longer emits NeedApproval"
+    )]
     NeedApproval(String, usize, oneshot::Sender<bool>),
     /// The entire task is complete
     TaskComplete(String),
@@ -155,11 +170,38 @@ pub struct PlanStep {
     pub tool_id: String,
     /// Tool arguments (key-value pairs)
     pub args: HashMap<String, String>,
-    /// Whether user manual approval is required before execution
+    /// Whether user manual approval is required before execution (legacy).
+    ///
+    /// Permission flow is driven by `PermissionManager` at tool dispatch time;
+    /// the agent does not set this flag today.
+    #[deprecated(
+        since = "0.19.0",
+        note = "permission is enforced by PermissionManager, not PlanStep flags"
+    )]
     pub need_approval: bool,
     /// Output after execution (populated by TUI; defaults to None on JSON deserialization)
     #[serde(default)]
     pub output: Option<String>,
+}
+
+impl PlanStep {
+    /// Construct a plan step for the streaming agent loop.
+    pub fn new(
+        description: impl Into<String>,
+        tool: impl Into<String>,
+        tool_id: impl Into<String>,
+        args: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            description: description.into(),
+            tool: tool.into(),
+            tool_id: tool_id.into(),
+            args,
+            #[allow(deprecated)]
+            need_approval: false,
+            output: None,
+        }
+    }
 }
 
 /// A single currency entry in DeepSeek account balance info.

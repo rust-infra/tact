@@ -4,7 +4,7 @@
 
 Every LLM API call (streaming conversation or context compaction) records per-call token usage to the local SQLite database. This includes KV cache hit/miss counts from providers that support prompt caching (such as DeepSeek's Context Caching on Disk or Anthropic prompt caching), as well as reasoning tokens.
 
-The data lives in the `token_usages` table inside the session database at `<workdir>/.claude/tact.db` (one DB per project working directory).
+The data lives in the `token_usages` table inside the session database at `<workdir>/.tact/tact.db` (one DB per project working directory).
 
 ## Table: `token_usages`
 
@@ -205,10 +205,10 @@ The cache and reasoning lines are only shown when non-zero.
 | `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
 | `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
-| `crates/tact/src/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
+| `crates/tact/src/agent/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
 | `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches the schedule summary to the call's token-usage row. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
 | `crates/tact_llm/src/lib.rs` | `LlmRequestBody` type alias; OpenAI adapter serializes final request JSON after all injections. |
-| `crates/tact/src/bin/tui.rs` | Print session stats on TUI exit. |
+| `crates/tact-ui/src/interactive.rs`, `headless.rs` | Print `SessionStats` summary on session exit. |

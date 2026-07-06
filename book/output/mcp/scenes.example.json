@@ -66,11 +66,11 @@
         {
             "id": "06",
             "title": "Dynamic Updates and Shutdown Gaps",
-            "narration": "The MCP protocol supports notifications slash tools slash list changed when a server's tool set changes. Tact currently fetches tools once at startup; live tool-list refresh is not wired yet. MCPToolRouter has disconnect_all, but tact-ui does not call it on exit today, so graceful MCP shutdown is also a current gap.",
+            "narration": "The MCP protocol supports notifications slash tools slash list changed when a server's tool set changes. Tact currently fetches tools once at startup; live tool-list refresh is not wired yet. On exit, tact-ui calls Agent::shutdown_mcp to disconnect_all MCP child processes.",
             "bullets": [
                 "notifications/tools/list_changed",
                 "startup-only tool discovery",
-                "disconnect_all exists, not wired"
+                "shutdown_mcp on exit"
             ],
             "code": null,
             "duration_hint_sec": 45

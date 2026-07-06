@@ -31,9 +31,9 @@ Configure `.env`:
 Run:
 
 ```bash
-cargo run -p tact          # launches tact-ui (default TUI)
+cargo run -p tact-ui          # launches tact-ui (default TUI)
 # or
-cargo run -p tact -- headless "your prompt"
+cargo run -p tact-ui -- headless "your prompt"
 ```
 
 Choose a permission mode at startup:
@@ -64,45 +64,53 @@ exit()
 ## Code Layout
 
 ```text
-tact/
-├── src/
-│   ├── bin/tui.rs
-│   ├── lib.rs
-│   ├── store.rs
-│   ├── prompt.rs
-│   ├── system_prompt_template.md
-│   ├── permission.rs
-│   ├── hook.rs
-│   ├── compact.rs
-│   ├── recovery.rs
-│   ├── memory.rs
-│   ├── skill.rs
-│   ├── task.rs
-│   ├── background.rs
-│   ├── cron.rs
-│   ├── team.rs
-│   ├── worktree.rs
-│   ├── mcp.rs
-│   └── tool/
-└── tact.md
+crates/
+├── tact-ui/src/
+│   ├── main.rs           # CLI dispatch, config::init(), session store
+│   ├── interactive.rs    # TUI session loop
+│   ├── headless.rs       # Headless session loop
+│   ├── permission.rs     # permission_mode_from_config()
+│   ├── user_message.rs
+│   └── sessions.rs
+└── tact/src/
+    ├── lib.rs            # Module re-exports
+    ├── agent/            # Agent, tool_dispatch, tool_schedule
+    ├── lsp/              # LSP client stack
+    ├── tool/             # Tool trait + registry.rs + implementations
+    ├── store.rs
+    ├── prompt/
+    ├── permission/
+    ├── hook/
+    ├── compact.rs
+    ├── recovery.rs
+    ├── memory/
+    ├── skill/
+    ├── task/
+    ├── background.rs
+    ├── cron/
+    ├── team.rs
+    ├── worktree/
+    ├── mcp/
+    └── stats.rs
 ```
 
-Read [`src/bin/tui.rs`](./src/bin/tui.rs) first, then [`src/lib.rs`](./src/lib.rs), then the domain managers and tool modules.
+Read [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs), then [`interactive.rs`](./../tact-ui/src/interactive.rs) or [`headless.rs`](./../tact-ui/src/headless.rs), then [`src/agent/mod.rs`](./src/agent/mod.rs), then domain managers and tools.
 
 ## Startup Flow
 
 ```text
+config::init() + session store (main.rs)
+  -> dispatch interactive or headless
 create LLM client
-  -> choose PermissionMode
+  -> resolve PermissionMode (permission.rs / TUI)
   -> scan skills/
   -> create .claude StoreRoot
   -> initialize task/background/cron/team/worktree managers
   -> initialize memory manager
   -> scan .claude-plugin/plugin.json and connect MCP servers
-  -> build ToolContext
-  -> build ToolRouter
+  -> build ToolContext + toolset() ToolRouter
   -> create Agent
-  -> enter interactive loop
+  -> enter agent loop
 ```
 
 The root agent uses a dynamic system prompt. Subagents use static prompts and fresh context.

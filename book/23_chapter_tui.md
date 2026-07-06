@@ -41,7 +41,7 @@ Defined in `tact_protocol`.
 
 ### Interactive (`tact-ui`)
 
-`run_interactive` in `crates/tact/src/bin/tui.rs`:
+`run_interactive` in `crates/tact-ui/src/interactive.rs` (dispatched from `main.rs`):
 
 1. `tact::config::init()` — settings + LLM provider ([Ch 21](./21_chapter_config.md)).
 2. Open SQLite session store, resolve `session_id` (`--session`, `--resume-last`, or new UUID).
@@ -53,7 +53,7 @@ Theme comes from `config::settings().ui.theme` (default `"retro"`).
 
 ### Headless (`tact-ui headless "prompt"`)
 
-Runs a single `agent_loop` without TUI, prints final text to stdout, sends a desktop notification. Uses config-driven permission mode — unlike interactive mode.
+`run_headless` in `crates/tact-ui/src/headless.rs`. Runs a single `agent_loop` without TUI, prints final text to stdout, sends a desktop notification. Uses config-driven permission mode — same as interactive mode.
 
 ---
 
@@ -73,7 +73,7 @@ pub enum UserCommand {
 | **`Cancel`** | `/cancel`, Escape during run | Set `cancel_flag`; loop exits at next check ([Ch 18](./18_chapter_agent_loop.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | Calls `query_*_balance`, emits `AgentUpdate::Balance` or `Error` |
 
-`build_user_message` parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s before the loop starts.
+`build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s before the loop starts.
 
 ---
 
@@ -87,7 +87,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `ThinkingChunk` | Thinking card / preview |
 | `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | Tool timeline ([Ch 11](./11_chapter_task.md)) |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
-| `NeedApproval` | **Legacy** — agent does not emit; permission flow uses `RequestSelect` |
+| `NeedApproval` | **Deprecated** — use `RequestSelect`; TUI handler retained for compatibility |
 | `TokenUsage` | Status bar counters |
 | `ModelInfo` | Model name / limits display |
 | `Balance` | Balance widget |
@@ -95,7 +95,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `Error` | Error banner with `AgentErrorKind` |
 | `Info` | System message line |
 
-**Important:** `Agent::agent_loop` does **not** emit `TaskComplete`. The driver in `tui.rs` sends it after a successful loop return:
+**Important:** `Agent::agent_loop` does **not** emit `TaskComplete`. The driver in `interactive.rs` sends it after a successful loop return:
 
 ```rust
 if let Some(last) = agent.runtime.context.last() {
@@ -610,7 +610,12 @@ The TUI itself does not call notification APIs directly for streaming events.
 
 | File | Role |
 |------|------|
-| `crates/tact/src/bin/tui.rs` | Binary entry, channel wiring, `UserCommand` dispatch |
+| `crates/tact-ui/src/main.rs` | CLI dispatch (`init`, `--list-sessions`, headless vs interactive) |
+| `crates/tact-ui/src/interactive.rs` | TUI wiring, `UserCommand` dispatch, `TaskComplete` |
+| `crates/tact-ui/src/headless.rs` | Non-interactive single-shot agent run |
+| `crates/tact-ui/src/user_message.rs` | Multimodal `@file` / markdown image parsing |
+| `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
+| `crates/tact-ui/src/sessions.rs` | `--list-sessions` output |
 | `crates/tui/src/lib.rs` | `run_tui` main loop, dirty check, terminal lifecycle |
 | `crates/tui/src/handlers/` | Keyboard/mouse per input mode |
 | `crates/tui/src/render/layout.rs` | Main area layout modes, popup anchoring |
@@ -635,7 +640,7 @@ The TUI itself does not call notification APIs directly for streaming events.
 | **No live config reload** | Theme can cycle in UI; LLM/provider changes require restart |
 | **Single agent instance** | One in-flight `agent_loop` per session driver; no multiplexed tasks |
 | **Platform terminal assumptions** | crossterm/ratatui; no web or GUI fallback in this crate |
-| **Legacy `PlanGenerated` / loading spinner** | TUI handler and overlay remain; agent never emits — plan uses `StepAdded` / `StepStarted` |
+| **Deprecated `PlanGenerated` / loading spinner** | `#[deprecated(since = "0.19.0")]`; TUI handler retained — plan uses `StepAdded` / `StepStarted` |
 | **Legacy diff overlay path** | Some tool cards still use `DiffBlock` overlay logic alongside migrating `ToolCell` |
 
 ---

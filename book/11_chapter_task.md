@@ -56,7 +56,7 @@ This phase must stay sequential because permission prompts can be interactive an
 
 ### Phase 2 — Execution (parallel by wave)
 
-All tools that cleared pre-flight are handed to the scheduler in `crates/tact/src/tool_schedule.rs`:
+All tools that cleared pre-flight are handed to the scheduler in `crates/tact/src/agent/tool_schedule.rs`:
 
 - Independent reads run together.
 - Conflicting reads/writes or writes/writes are serialized.
@@ -166,7 +166,7 @@ This links scheduling strategy to token cost for later analysis.
 
 To make a new native tool parallel-safe:
 
-1. Add its resource pattern to `tool_resources()` in `crates/tact/src/tool_schedule.rs`.
+1. Add its resource pattern to `tool_resources()` in `crates/tact/src/agent/tool_schedule.rs`.
 2. Return the correct `ToolResourceMode` (`Read`, `Write`, or `Independent`).
 3. Avoid side effects outside the declared resources.
 
@@ -180,7 +180,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 |------|------|
 | `crates/tact/src/agent/mod.rs` | `Agent::agent_loop`, `stream_message`, session helpers |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, three-phase orchestration |
-| `crates/tact/src/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary` |
+| `crates/tact/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary` |
 | `crates/tact/src/permission/mod.rs` | Intent classification and permission decisions |
 | `crates/tact/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hooks |
 | `crates/tact/src/tool/mod.rs` | `ToolRouter`, tool registration, native tool dispatch |

@@ -331,8 +331,8 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 
 | Entry point | Mode used |
 |-------------|-----------|
-| `tact-ui headless` | `permission_mode_for_headless()` — reads config; unknown values fall through to **Auto** |
-| `tact-ui` (interactive TUI) | Hardcoded `PermissionMode::Default` in `tui.rs` — **does not** read `--permission-mode` or TOML yet |
+| `tact-ui headless` | `permission_mode_from_config()` — reads TOML / CLI; unknown values fall through to **Auto** |
+| `tact-ui` (interactive TUI) | Same as headless — `permission_mode_from_config()` |
 
 ---
 
@@ -347,7 +347,8 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | `crates/tact/src/tool/bash.rs` | Calls `validate_shell_command` before spawning shell |
 | `crates/tact/src/background.rs` | Same validation for background shell commands |
 | `crates/tact/src/tool/subagent.rs` | Sub-agent uses `Default` mode; inherits `ui_tx` |
-| `crates/tact/src/bin/tui.rs` | Constructs `PermissionManager` at session start |
+| `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Construct `PermissionManager` at session start |
 | `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | Handles `AgentUpdate::RequestSelect` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`, `StepResult.permission_label` |
@@ -358,11 +359,10 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 
 | Gap | Detail |
 |-----|--------|
-| Interactive TUI ignores config | `tact-ui` always starts with `PermissionMode::Default` regardless of TOML or CLI |
 | Allowlist not persisted | "Always allow this tool" lasts only for the current process |
 | No runtime mode switch API | User must restart with a different mode; stderr only suggests Plan after repeated denials |
 | Headless auto-denies all Ask | No non-interactive approval path except Auto/Plan/Default logic that avoids Ask |
-| `PlanStep.need_approval` unused | Permission flow does not set this flag; approval is driven entirely by `PermissionManager` |
+| `PlanStep.need_approval` deprecated | Field marked `#[deprecated(since = "0.19.0")]`; use `PlanStep::new()` — permission is driven by `PermissionManager` |
 | Permission vs hook overlap | Both can block tools; hooks run first and skip permission on `Block` |
 
 ---

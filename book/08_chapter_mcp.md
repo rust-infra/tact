@@ -374,7 +374,7 @@ When the session ends, disconnect gracefully instead of letting the parent exit 
 
 - `McpClient::shutdown` — `service.cancel().await`
 - `MCPToolRouter::disconnect_all` — drain all clients and shut down each one
-- **Gap:** `tact-ui` does not call `disconnect_all` on exit today; child MCP processes rely on process teardown
+- `Agent::shutdown_mcp` — called from `tact-ui` on exit (`run_headless` / `run_interactive`) to invoke `disconnect_all`
 
 ---
 
@@ -410,8 +410,8 @@ sequenceDiagram
     Note over Host,Server: Optional: dynamic update (not implemented in Tact yet)
     Server-->>Client: notifications/tools/list_changed
     Note over Host: would re-list tools + refresh cached_tool_specs
-    Note over Host,Server: Shutdown (graceful disconnect not wired in tact-ui yet)
-    Host->>Client: disconnect_all (available on MCPToolRouter)
+    Note over Host,Server: Shutdown
+    Host->>Client: Agent::shutdown_mcp → disconnect_all
 ```
 
 ---
@@ -427,8 +427,8 @@ sequenceDiagram
 | Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
-| Parallel scheduling | `crates/tact/src/tool_schedule.rs` | Same Server serial; different Servers parallel |
-| Entry point | `crates/tact/src/bin/tui.rs` | `load_mcp_router()` at startup |
+| Parallel scheduling | `crates/tact/src/agent/tool_schedule.rs` | Same Server serial; different Servers parallel |
+| Entry point | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `load_mcp_router()` at startup |
 
 ### 6.1 Tool naming and routing
 
@@ -449,7 +449,7 @@ MCP tools on the same Server share one stdio connection, so:
 - Multiple tools on the **same Server**: **serial** (avoid connection races)
 - Tools on **different Servers**: **may run in parallel**
 
-See `mcp_tool_resources` and related tests in `tool_schedule.rs`.
+See `mcp_tool_resources` and related tests in `crates/tact/src/agent/tool_schedule.rs`.
 
 ---
 
@@ -516,7 +516,6 @@ stdio fits local plugins: zero config, low latency. Remote MCP services can use 
 | Gap | Detail |
 |-----|--------|
 | **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
-| **No graceful MCP shutdown on exit** | `MCPToolRouter::disconnect_all` exists but `tact-ui` does not call it |
 | **Resources / prompts** | Protocol primitives exist; Tact only wires Tools today |
 | **HTTP transport** | stdio only via `TokioChildProcess` |
 

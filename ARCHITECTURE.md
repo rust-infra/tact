@@ -13,9 +13,9 @@ This project is a Cargo Workspace containing the following crates:
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
-| `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the CLI binary. |
+| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
+| `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
 | `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
 
@@ -23,20 +23,22 @@ Dependency graph:
 
 ```mermaid
 flowchart TB
+    tact_ui["tact-ui"] --> tact
+    tact_ui --> tui
     tact --> tact_protocol
-    tact --> tui
     tact --> tact_llm
     tact --> tool_refactor_macros
     tact_llm --> tact_protocol
     tui --> tact_protocol
-    tact_protocol --> tools
 ```
 
-Binaries produced by `crates/tact`:
+Binaries produced by `crates/tact-ui`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact-ui` | `crates/tact/src/bin/tui.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+
+`tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, `user_message.rs`, `permission.rs`, `sessions.rs`.
 
 ---
 
@@ -45,13 +47,15 @@ Binaries produced by `crates/tact`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact-ui<br/>src/bin/tui.rs"]
+        B1["tact-ui<br/>crates/tact-ui/"]
     end
 
     subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
         A["Agent struct"]
         AR["AgentRuntime"]
         AL["agent_loop()<br/>streaming conversation loop"]
+        TD["tool_dispatch.rs"]
+        TS["tool_schedule.rs"]
         ETC["execute_tool_call()<br/>dispatch + permission + hooks"]
         EX["execute()<br/>native tool or MCP tool"]
         SP["build_system_prompt()<br/>Tera template + skills/memory"]
@@ -59,6 +63,8 @@ flowchart TB
 
         A --> AR
         A --> AL
+        A --> TD
+        TD --> ETC
         AL --> ETC
         ETC --> EX
         A --> SP
@@ -66,10 +72,11 @@ flowchart TB
     end
 
     subgraph submods["tact/src/ — supporting modules"]
-        TOOL["tool/<br/>Tool trait, ToolRouter, 40+ tools"]
+        TOOL["tool/<br/>Tool trait, ToolRouter, registry.rs, 40+ tools"]
         PERM["permission/<br/>CapabilityRisk, PermissionManager"]
         HOOK["hook/<br/>Pre/Post/SessionStart hooks"]
         MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
+        LSP["lsp/<br/>LspClient, LspManager"]
         COMP["compact.rs<br/>micro_compact, transcript persistence"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
         LLM["tact_llm crate<br/>Anthropic / OpenAI / DeepSeek / Kimi adapters"]
@@ -90,14 +97,6 @@ flowchart TB
         UPD["AgentUpdate enum"]
         CMD["UserCommand enum"]
         STEP["PlanStep / StepResult"]
-    end
-
-    subgraph tools_crate["tools crate — Sandbox"]
-        S["Sandbox"]
-        SR["read_file()"]
-        SW["write_file()"]
-        SC["run_command()"]
-        SSP["safe_path()<br/>workspace escape prevention"]
     end
 
     subgraph tui_crate["tui crate — Terminal UI"]
@@ -131,12 +130,6 @@ flowchart TB
     TOOL --> WT
     TOOL --> STORE
 
-    S --> SR
-    S --> SW
-    S --> SC
-    S --> SSP
-    TOOL -. "file I/O fallback" .-> S
-
     T --> TH
     T --> TR
     T --> TS
@@ -163,7 +156,7 @@ sequenceDiagram
     participant Perm as PermissionManager
     participant Hook as Hook Engine
     participant TR as ToolRouter / MCP Router
-    participant SB as Sandbox / Tools
+    participant PATH as tool/path.rs
 
     U ->> TUI: Enter task and press Enter
     TUI ->> Main: UserCommand::SubmitTask
@@ -192,8 +185,7 @@ sequenceDiagram
                         TUI -->> Agent: user choice
                     end
                     Agent ->> TR: call native or MCP tool
-                    TR ->> SB: execute
-                    SB -->> TR: output
+                    TR ->> PATH: resolve_safe_path (file tools)
                     TR -->> Agent: output
                     Agent ->> Hook: PostToolUse hook
                     Agent ->> TUI: StepFinished
@@ -213,7 +205,8 @@ Key `AgentUpdate` variants used today:
 
 | Variant | Meaning |
 |---|---|
-| `PlanGenerated(Vec<PlanStep>)` | **Legacy.** TUI handler still exists; current agent code does **not** emit this. Plan panel is driven by `StepAdded` instead. |
+| `PlanGenerated(Vec<PlanStep>)` | **Deprecated (0.19.0).** TUI handler retained; agent emits `StepAdded` / `StepStarted` instead. |
+| `NeedApproval(...)` | **Deprecated (0.19.0).** TUI handler retained; agent uses `RequestSelect` instead. |
 | `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
@@ -571,7 +564,7 @@ flowchart LR
 
 ## 11. Sandbox Safe Path Resolution
 
-The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` (`crates/tact/src/tool/mod.rs`). The legacy `tools` crate has a similar `safe_path()` implementation used by the old `tact_protocol::Agent`.
+The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` in `crates/tact/src/tool/path.rs`.
 
 ```mermaid
 flowchart TD
@@ -638,14 +631,14 @@ Handlers can be either:
 If you are reading older branches or notes, the following major evolutions have happened:
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
-- Business tools moved from `crates/tools` into `crates/tact/src/tool/`; `crates/tools` now only provides the `Sandbox`.
+- Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`, truncated args in title with `arg_full` in popups, spacing gaps before tools/thinking.
-- **CLI** — single `tact-ui` binary (`src/bin/tui.rs`); default TUI, `headless` subcommand for non-interactive runs; legacy `tact` / `main.rs` entry removed.
+- **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
-- **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
+- **Session store** — SQLite at `<workdir>/.tact/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
 - **Bottom bar Cost timer** — retains last prompt duration until the next submission.
 

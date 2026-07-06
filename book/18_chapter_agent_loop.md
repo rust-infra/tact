@@ -146,7 +146,7 @@ Construction helpers: `Agent::new`, `with_ui_channel`, `with_session`. Hook regi
 
 ## 7. TUI Integration
 
-In `crates/tact/src/bin/tui.rs`:
+In `crates/tact-ui/src/interactive.rs` (`UserCommand::SubmitTask` handler):
 
 ```rust
 UserCommand::SubmitTask(task) => {
@@ -174,7 +174,7 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 |------|------|
 | `crates/tact/src/agent/mod.rs` | `agent_loop`, `stream_message`, `build_system_prompt`, session helpers |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, three-phase pipeline |
-| `crates/tact/src/bin/tui.rs` | Spawns loop on `SubmitTask`, sets `TaskComplete` |
+| `crates/tact-ui/src/interactive.rs` | Spawns loop on `SubmitTask`, sets `TaskComplete` |
 | `crates/tact/src/recovery.rs` | Error classification and continuation message |
 | `crates/tact/src/compact.rs` | Pre-turn compaction hooks |
 | `tact_protocol` | `AgentUpdate`, `UserCommand` wire types |
@@ -189,7 +189,7 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 | **`TaskComplete` heuristic** | TUI uses last message in context, not explicitly last assistant text |
 | **Headless path** | No `ui_tx`; no `TaskComplete` emit — single direct `notify_task_complete` after stdout ([Ch 17](./17_chapter_notify.md)) |
 | **No dedicated cancel API on Agent** | Only atomic flag; subagents have separate flags |
-| **`PlanGenerated` legacy** | TUI still handles `PlanGenerated` / loading spinner; agent never emits — plan panel driven by `StepAdded` |
+| **`PlanGenerated` deprecated** | `#[deprecated(since = "0.19.0")]`; TUI handler retained — plan panel driven by `StepAdded` |
 
 ---
 

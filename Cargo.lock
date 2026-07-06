@@ -4152,15 +4152,12 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
- "base64 0.22.1",
  "chrono",
  "clap",
- "console-subscriber",
  "dashmap",
  "derive_builder",
  "futures-util",
  "globset",
- "regex",
  "reqwest",
  "reqwest-eventsource",
  "rmcp",
@@ -4181,9 +4178,26 @@ dependencies = [
  "tool_refactor_macros",
  "tracing",
  "tracing-subscriber",
- "tui",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "tact-ui"
+version = "0.19.0"
+dependencies = [
+ "anthropic-ai-sdk",
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "console-subscriber",
+ "regex",
+ "tact",
+ "tact_llm",
+ "tact_protocol",
+ "tokio",
+ "tui",
+ "uuid",
 ]
 
 [[package]]
@@ -4624,14 +4638,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "tokio",
 ]
 
 [[package]]
