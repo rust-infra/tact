@@ -23,12 +23,14 @@ use tact_llm::{
 use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
 use crate::permission::permission_mode_from_config;
+use crate::session_lock::SessionLockRegistry;
 use crate::user_message::build_user_message;
 
 pub(crate) async fn run_interactive(
     args: CliArgs,
     tact_path: TactPath,
     session_store: DynSessionStore,
+    lock_registry: Arc<SessionLockRegistry>,
 ) -> anyhow::Result<()> {
     let session_id = if let Some(ref id) = args.session {
         id.clone()
@@ -44,6 +46,9 @@ pub(crate) async fn run_interactive(
     };
 
     session_store.create_session(&session_id).await?;
+    let session_lock =
+        crate::session_lock::SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
+    lock_registry.register(session_lock.clone()).await;
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
@@ -189,5 +194,6 @@ pub(crate) async fn run_interactive(
     eprintln!("{}", agent.runtime.stats.summary());
 
     agent.shutdown_mcp().await;
+    session_lock.release().await?;
     Ok(())
 }

@@ -139,6 +139,13 @@ impl SqliteSessionStore {
             .execute(&pool)
             .await;
 
+        // Migration: process lock — 0 = unlocked, non-zero = holder PID.
+        let _ = sqlx::query(
+            "ALTER TABLE sessions ADD COLUMN locked_by INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&pool)
+        .await;
+
         Ok(Self { pool })
     }
 
@@ -545,6 +552,100 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to append input history entry")?;
         Ok(())
     }
+
+    async fn try_lock_session(&self, session_id: &str, pid: u32) -> Result<()> {
+        let pid_i64 = i64::from(pid);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin session lock transaction")?;
+
+        let row = sqlx::query("SELECT locked_by FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("failed to read session lock")?;
+
+        let holder = match row {
+            Some(r) => r.try_get::<i64, _>("locked_by")?,
+            None => {
+                anyhow::bail!("session not found: {session_id}");
+            }
+        };
+
+        if holder != 0 && holder != pid_i64 && is_process_alive(holder as u32) {
+            anyhow::bail!(
+                "session {session_id} is locked by process {holder} (already open in another tact-ui instance)"
+            );
+        }
+
+        sqlx::query("UPDATE sessions SET locked_by = ? WHERE id = ?")
+            .bind(pid_i64)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to acquire session lock")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit session lock")?;
+        Ok(())
+    }
+
+    async fn release_session_lock(&self, session_id: &str, pid: u32) -> Result<()> {
+        let pid_i64 = i64::from(pid);
+        sqlx::query("UPDATE sessions SET locked_by = 0 WHERE id = ? AND locked_by = ?")
+            .bind(session_id)
+            .bind(pid_i64)
+            .execute(&self.pool)
+            .await
+            .context("failed to release session lock")?;
+        Ok(())
+    }
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        use std::ptr;
+
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() || handle == ptr::null_mut() {
+                return false;
+            }
+            CloseHandle(handle);
+            true
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Result<DateTime<Utc>> {
@@ -565,6 +666,7 @@ fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use anthropic_ai_sdk::types::message::{MessageContent, Role};
+    use sqlx::Row;
     use tempfile::TempDir;
 
     use super::super::SessionStore;
@@ -713,5 +815,57 @@ mod tests {
 
         let reloaded = store.load_input_history("session-1").await.unwrap();
         assert_eq!(reloaded, loaded);
+    }
+
+    #[tokio::test]
+    async fn test_session_lock_acquire_and_release() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("session-1").await.unwrap();
+
+        let pid = std::process::id();
+        store.try_lock_session("session-1", pid).await.unwrap();
+
+        let row = sqlx::query("SELECT locked_by FROM sessions WHERE id = 'session-1'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let locked_by: i64 = row.try_get("locked_by").unwrap();
+        assert_eq!(locked_by, i64::from(pid));
+
+        store.release_session_lock("session-1", pid).await.unwrap();
+
+        let row = sqlx::query("SELECT locked_by FROM sessions WHERE id = 'session-1'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let locked_by: i64 = row.try_get("locked_by").unwrap();
+        assert_eq!(locked_by, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_lock_rejects_second_holder() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("session-1").await.unwrap();
+
+        let pid = std::process::id();
+        store.try_lock_session("session-1", pid).await.unwrap();
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep helper");
+        let other_pid = child.id();
+        let err = store
+            .try_lock_session("session-1", other_pid)
+            .await
+            .unwrap_err();
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(err.to_string().contains("locked by process"));
     }
 }

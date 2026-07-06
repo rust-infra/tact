@@ -4,7 +4,7 @@
 
 Every LLM API call (streaming conversation or context compaction) records per-call token usage to the local SQLite database. This includes KV cache hit/miss counts from providers that support prompt caching (such as DeepSeek's Context Caching on Disk or Anthropic prompt caching), as well as reasoning tokens.
 
-The data lives in the `token_usages` table inside the session database at `<workdir>/.claude/tact.db` (one DB per project working directory).
+The data lives in the `token_usages` table inside the session database at `<workdir>/.tact/tact.db` (one DB per project working directory).
 
 ## Table: `token_usages`
 

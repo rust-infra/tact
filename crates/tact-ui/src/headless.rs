@@ -20,6 +20,7 @@ use tact::{
 use tact_llm::get_llm_client;
 
 use crate::permission::permission_mode_from_config;
+use crate::session_lock::SessionLockRegistry;
 use crate::user_message::build_user_message;
 
 pub(crate) async fn run_headless(
@@ -27,6 +28,7 @@ pub(crate) async fn run_headless(
     prompt: String,
     tact_path: TactPath,
     session_store: DynSessionStore,
+    lock_registry: Arc<SessionLockRegistry>,
 ) -> anyhow::Result<()> {
     if prompt.trim().is_empty() {
         eprintln!("Usage: tact-ui headless <PROMPT>");
@@ -87,9 +89,18 @@ pub(crate) async fn run_headless(
         permission_manager,
         AgentSystemPrompt::Dynamic,
     )
-    .with_session(session_id, session_store);
+    .with_session(session_id, session_store.clone());
 
     let _ = agent.ensure_session().await?;
+
+    let session_lock = if let Some(sid) = agent.runtime.session_id.as_deref() {
+        let lock =
+            crate::session_lock::SessionLockGuard::acquire(session_store, sid).await?;
+        lock_registry.register(lock.clone()).await;
+        Some(lock)
+    } else {
+        None
+    };
 
     let prompt_message = build_user_message(&prompt, &work_dir).await;
     agent.agent_loop(Some(prompt_message)).await?;
@@ -109,5 +120,8 @@ pub(crate) async fn run_headless(
     }
 
     agent.shutdown_mcp().await;
+    if let Some(lock) = session_lock {
+        lock.release().await?;
+    }
     Ok(())
 }

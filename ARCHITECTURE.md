@@ -638,7 +638,7 @@ If you are reading older branches or notes, the following major evolutions have 
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`, truncated args in title with `arg_full` in popups, spacing gaps before tools/thinking.
 - **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
-- **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
+- **Session store** — SQLite at `<workdir>/.tact/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
 - **Bottom bar Cost timer** — retains last prompt duration until the next submission.
 

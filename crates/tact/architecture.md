@@ -42,7 +42,7 @@ graph TB
     end
 
     %% ── Persistence ──
-    SessionStore["SessionStore (SQLite)<br/>.claude/tact.db<br/>messages + token_usages"]
+    SessionStore["SessionStore (SQLite)<br/>.tact/tact.db<br/>messages + token_usages"]
     Store["Store / CollectionStore<br/>JSON file persistence"]
 
     %% ── Prompt Builder ──

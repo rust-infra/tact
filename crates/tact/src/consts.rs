@@ -50,6 +50,11 @@ impl TactPath {
         self.workdir.join(TACT_DIR)
     }
 
+    /// `<workdir>/.tact/tact.db` — SQLite session store.
+    pub fn session_db_path(&self) -> PathBuf {
+        self.tact_dir().join("tact.db")
+    }
+
     /// `<workdir>/.claude`
     pub fn claude_dir(&self) -> PathBuf {
         self.workdir.join(CLAUDE_DIR)

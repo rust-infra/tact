@@ -19,5 +19,5 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 console-subscriber = { workspace = true }
 regex = { workspace = true }
-tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 uuid = { workspace = true }

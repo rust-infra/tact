@@ -11,6 +11,9 @@ pub mod sqlite;
 
 pub use sqlite::SqliteSessionStore;
 
+mod session_lock;
+pub use session_lock::SessionLock;
+
 /// Maximum input history entries retained per session.
 pub const MAX_INPUT_HISTORY: usize = 100;
 
@@ -86,6 +89,13 @@ pub trait SessionStore: Send + Sync {
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;
 
     async fn append_input_history(&self, session_id: &str, content: &str) -> Result<()>;
+
+    /// Acquire an exclusive process lock on a session. `locked_by` stores the
+    /// holder PID; `0` means unlocked. Fails if another live process holds the lock.
+    async fn try_lock_session(&self, session_id: &str, pid: u32) -> Result<()>;
+
+    /// Release the process lock when held by `pid`.
+    async fn release_session_lock(&self, session_id: &str, pid: u32) -> Result<()>;
 }
 
 pub type DynSessionStore = Arc<dyn SessionStore>;
