@@ -45,7 +45,9 @@ pub(crate) async fn run_interactive(
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store.create_session(&session_id).await?;
+    session_store
+        .create_session(&session_id, &tact_path.workdir().display().to_string())
+        .await?;
     let session_lock =
         crate::session_lock::SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
     lock_registry.register(session_lock.clone()).await;

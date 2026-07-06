@@ -10,11 +10,19 @@ pub(crate) async fn print_sessions(session_store: &DynSessionStore) -> anyhow::R
     if sessions.is_empty() {
         println!("No sessions found.");
     } else {
-        println!("{:<36}  {:>4}  {:<20}", "SESSION ID", "MSGS", "UPDATED");
-        println!("{}", "-".repeat(66));
+        println!("{:<36}  {:>4}  {:<32}  {:<20}", "SESSION ID", "MSGS", "ROOT", "UPDATED");
+        println!("{}", "-".repeat(98));
         for s in &sessions {
             let updated = format_timestamp(s.updated_at);
-            println!("{:<36}  {:>4}  {:<20}", s.id, s.message_count, updated);
+            let root = if s.root_dir.is_empty() {
+                "-".to_string()
+            } else {
+                s.root_dir.clone()
+            };
+            println!(
+                "{:<36}  {:>4}  {:<32}  {:<20}",
+                s.id, s.message_count, root, updated
+            );
         }
     }
     Ok(())

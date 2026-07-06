@@ -42,17 +42,19 @@ pub struct SessionLockGuard {
     store: DynSessionStore,
     session_id: String,
     pid: u32,
+    lock_epoch: String,
     released: AtomicBool,
 }
 
 impl SessionLockGuard {
     pub async fn acquire(store: DynSessionStore, session_id: &str) -> anyhow::Result<Arc<Self>> {
         let pid = std::process::id();
-        store.try_lock_session(session_id, pid).await?;
+        let lock_epoch = store.try_lock_session(session_id, pid).await?;
         Ok(Arc::new(Self {
             store,
             session_id: session_id.to_string(),
             pid,
+            lock_epoch,
             released: AtomicBool::new(false),
         }))
     }
@@ -62,7 +64,7 @@ impl SessionLockGuard {
             return Ok(());
         }
         self.store
-            .release_session_lock(&self.session_id, self.pid)
+            .release_session_lock(&self.session_id, self.pid, &self.lock_epoch)
             .await?;
         Ok(())
     }

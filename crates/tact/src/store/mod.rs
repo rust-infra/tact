@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
 pub mod session_store;
-pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store};
+pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store, resolve_session_db_path};
 
 /// Outcome of a successful write.
 #[derive(Debug, Clone, PartialEq, Eq)]

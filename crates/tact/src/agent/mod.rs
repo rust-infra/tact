@@ -192,7 +192,8 @@ impl Agent {
             }
         };
 
-        store.create_session(&session_id).await?;
+        let root_dir = self.tool_context.work_dir.display().to_string();
+        store.create_session(&session_id, &root_dir).await?;
 
         if self.runtime.context.is_empty() {
             let history = store.load_session(&session_id).await?;
