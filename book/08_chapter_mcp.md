@@ -428,7 +428,7 @@ sequenceDiagram
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
 | Parallel scheduling | `crates/tact/src/agent/tool_schedule.rs` | Same Server serial; different Servers parallel |
-| Entry point | `crates/tact-ui/src/main.rs` | `load_mcp_router()` at startup |
+| Entry point | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `load_mcp_router()` at startup |
 
 ### 6.1 Tool naming and routing
 
@@ -449,7 +449,7 @@ MCP tools on the same Server share one stdio connection, so:
 - Multiple tools on the **same Server**: **serial** (avoid connection races)
 - Tools on **different Servers**: **may run in parallel**
 
-See `mcp_tool_resources` and related tests in `tool_schedule.rs`.
+See `mcp_tool_resources` and related tests in `crates/tact/src/agent/tool_schedule.rs`.
 
 ---
 

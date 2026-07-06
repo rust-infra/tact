@@ -120,7 +120,7 @@ At the end of the LLM-generated summary, append the recently accessed file list 
 
 ```
 Recently accessed files (re-read if you need their contents):
-- ../tact-ui/src/main.rs
+- crates/tact-ui/src/interactive.rs
 - src/lib.rs
 ```
 

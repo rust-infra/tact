@@ -128,7 +128,7 @@ Example on-disk shape:
 
 ### Construction
 
-Both headless and interactive entry points in `crates/tact-ui/src/main.rs` build the scheduler once per process:
+Both `crates/tact-ui/src/headless.rs` and `interactive.rs` build the scheduler once per process:
 
 ```text
 store_root = StoreRoot::new(.claude/)
@@ -152,7 +152,7 @@ Lock poisoning surfaces as `"cron scheduler lock poisoned"`.
 
 ## 6. Agent Tools
 
-Implemented in `crates/tact/src/tool/cron.rs` and registered in `toolset()` (`crates/tact/src/tool/mod.rs`).
+Implemented in `crates/tact/src/tool/cron.rs` and registered in `toolset()` (`crates/tact/src/tool/registry.rs`).
 
 ### `cron_create`
 
@@ -237,8 +237,9 @@ When a runtime is added, likely touch points are: a tokio interval in `tui.rs` o
 |------|------|
 | `crates/tact/src/cron/mod.rs` | `ScheduledTaskRecord`, `CronScheduler`, `SharedCronScheduler` |
 | `crates/tact/src/tool/cron.rs` | `cron_create`, `cron_list`, `cron_delete` tool handlers |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.cron_scheduler`, `toolset()` registration |
-| `crates/tact-ui/src/main.rs` | Constructs scheduler and passes it into `Agent` |
+| `crates/tact/src/tool/mod.rs` | `ToolContext.cron_scheduler` |
+| `crates/tact/src/tool/registry.rs` | Cron tools in `toolset()` |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Construct scheduler and pass it into `Agent` |
 | `crates/tact/src/store/mod.rs` | `Store<T>` persistence layer |
 | `crates/tact/src/consts.rs` | `TactPath::cron_dir()` |
 | `crates/tact/src/tool/test_support.rs` | Test `ToolContext` with in-memory store root |

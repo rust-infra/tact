@@ -197,7 +197,7 @@ sequenceDiagram
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait, `DynSessionStore`, `open_sqlite_session_store` |
 | `crates/tact/src/store/session_store/sqlite.rs` | Schema, migrations, `SqliteSessionStore` impl |
 | `crates/tact/src/agent/mod.rs` | `ensure_session`, `persist_message`, `persist_llm_call` |
-| `crates/tact-ui/src/main.rs` | Opens both store layers at startup |
+| `crates/tact-ui/src/main.rs` | Opens SQLite session store; headless/interactive attach domain managers |
 | `crates/tact/src/task/mod.rs` | Example `CollectionStore` consumer |
 | `crates/tact/src/cron/mod.rs` | Example single-file `Store` consumer |
 

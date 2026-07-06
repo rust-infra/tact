@@ -347,7 +347,8 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | `crates/tact/src/tool/bash.rs` | Calls `validate_shell_command` before spawning shell |
 | `crates/tact/src/background.rs` | Same validation for background shell commands |
 | `crates/tact/src/tool/subagent.rs` | Sub-agent uses `Default` mode; inherits `ui_tx` |
-| `crates/tact-ui/src/main.rs` | Constructs `PermissionManager` at session start |
+| `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Construct `PermissionManager` at session start |
 | `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | Handles `AgentUpdate::RequestSelect` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`, `StepResult.permission_label` |

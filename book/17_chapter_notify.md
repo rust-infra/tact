@@ -140,7 +140,7 @@ There is no notification for session start, compaction, or MCP connection events
 |------|------|
 | `crates/tact/src/notifications/mod.rs` | `notify`, helpers, `is_enabled`, platform cfg |
 | `crates/tact/src/agent/mod.rs` | `emit_update` — TaskComplete and StepFailed hooks |
-| `crates/tact-ui/src/main.rs` | Headless completion notification after stdout |
+| `crates/tact-ui/src/headless.rs` | Headless completion notification after stdout |
 | `crates/tact/src/config/types.rs` | `AgentTomlConfig.notifications_enabled` |
 | `crates/tact/src/config/resolve.rs` | CLI `--no-notifications` override |
 

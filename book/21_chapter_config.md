@@ -175,7 +175,7 @@ Subcommand:
 tact-ui headless "Summarize this repo"
 ```
 
-Headless mode reads `permission_mode` from config; interactive TUI does **not** — see gaps.
+Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
 
 ---
 
@@ -205,6 +205,7 @@ Agent loop reads `context_limit_chars`, `max_tokens`, and `thinking_budget` from
 | `config/resolve.rs` | CLI + TOML merge, Kimi-aware defaults |
 | `config/types.rs` | `TactTomlConfig`, `ResolvedConfig`, section structs |
 | `crates/tact-ui/src/main.rs` | Calls `config::init()` in `main()` |
+| `crates/tact-ui/src/permission.rs` | Reads resolved `permission_mode` for both entry points |
 
 ---
 
@@ -212,7 +213,6 @@ Agent loop reads `context_limit_chars`, `max_tokens`, and `thinking_budget` from
 
 | Gap | Detail |
 |-----|--------|
-| **Interactive TUI ignores `permission_mode`** | `run_interactive` hardcodes `PermissionMode::Default`; headless uses `config::settings().permission_mode` ([Ch 10](./10_chapter_permission.md)) |
 | **No env-var layer** | Only CLI and TOML; no `TACT_*` or provider env fallbacks in `resolve.rs` |
 | **`anthropic` requires explicit `base_url`** | Unlike OpenAI-compatible providers, no default Anthropic URL in `default_base_url()` |
 | **Secrets in plain TOML** | `api_key` stored as text; no keychain integration |

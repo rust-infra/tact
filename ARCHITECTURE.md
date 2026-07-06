@@ -47,13 +47,15 @@ Binaries produced by `crates/tact-ui`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact-ui<br/>crates/tact-ui/src/main.rs"]
+        B1["tact-ui<br/>crates/tact-ui/"]
     end
 
     subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
         A["Agent struct"]
         AR["AgentRuntime"]
         AL["agent_loop()<br/>streaming conversation loop"]
+        TD["tool_dispatch.rs"]
+        TS["tool_schedule.rs"]
         ETC["execute_tool_call()<br/>dispatch + permission + hooks"]
         EX["execute()<br/>native tool or MCP tool"]
         SP["build_system_prompt()<br/>Tera template + skills/memory"]
@@ -61,6 +63,8 @@ flowchart TB
 
         A --> AR
         A --> AL
+        A --> TD
+        TD --> ETC
         AL --> ETC
         ETC --> EX
         A --> SP
@@ -68,10 +72,11 @@ flowchart TB
     end
 
     subgraph submods["tact/src/ — supporting modules"]
-        TOOL["tool/<br/>Tool trait, ToolRouter, 40+ tools"]
+        TOOL["tool/<br/>Tool trait, ToolRouter, registry.rs, 40+ tools"]
         PERM["permission/<br/>CapabilityRisk, PermissionManager"]
         HOOK["hook/<br/>Pre/Post/SessionStart hooks"]
         MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
+        LSP["lsp/<br/>LspClient, LspManager"]
         COMP["compact.rs<br/>micro_compact, transcript persistence"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
         LLM["tact_llm crate<br/>Anthropic / OpenAI / DeepSeek / Kimi adapters"]

@@ -405,11 +405,12 @@ brave_search_api_key = "bsk-..."
 
 ```
 crates/
-├── core/        # Shared types, protocols, message formats
-├── tact/        # Agent runtime: loop, tools, hooks, permissions, MCP
-├── tools/       # Tool implementations and the Tool trait
-├── tui/         # Terminal UI (ratatui-based, streaming output)
-└── tool_refactor_macros/   # Proc macros for tool definition
+├── protocol/    # Shared wire types (AgentUpdate, UserCommand, …)
+├── tact/        # Agent runtime library: loop, tools, hooks, permissions, MCP, LSP
+├── tact-ui/     # CLI binary (TUI + headless); wires tact + tui
+├── tact_llm/    # LLM provider adapters
+├── tui/         # Terminal UI (ratatui)
+└── tool_refactor_macros/   # #[tool] proc macro
 ```
 
 ---

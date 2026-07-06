@@ -99,7 +99,7 @@ Flow:
 | `symbols` | `textDocument/documentSymbol` | Outline list |
 | `diagnostics` | Cached from publish notifications | **200 ms sleep** before read; may be empty on cold start |
 
-Scheduling: **`independent`** in `agent/tool_schedule.rs` — can run in parallel with other non-conflicting tools.
+Scheduling: **`independent`** in `crates/tact/src/agent/tool_schedule.rs` — can run in parallel with other non-conflicting tools.
 
 Permission: classified as a normal write-capable native tool under name `lsp` ([Ch 10](./10_chapter_permission.md)).
 

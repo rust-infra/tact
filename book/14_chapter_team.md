@@ -149,8 +149,9 @@ The intended pattern is that a coordinating agent uses the roster as shared stat
 |------|------|
 | `crates/tact/src/team.rs` | `TeammateManager`, `SharedTeammateManager`, `TeamConfig`, `InboxMessage` |
 | `crates/tact/src/tool/team.rs` | The eight `#[tool]` wrappers |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager`; tools registered in `toolset()` |
-| `crates/tact-ui/src/main.rs` | Manager constructed from `StoreRoot` at startup |
+| `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager` |
+| `crates/tact/src/tool/registry.rs` | Team tools in `toolset()` |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `StoreRoot` at startup |
 | `crates/tact/src/store/mod.rs` | `Store` / `CollectionStore` primitives used underneath |
 
 ---

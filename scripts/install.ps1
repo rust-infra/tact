@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "rust-infra/tact" }
 $BinaryName = "tact-ui"
-$CratePackage = "tact"
+$CratePackage = "tact-ui"
 $DefaultVersion = "0.19.0"
 
 function Show-Help {

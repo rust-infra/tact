@@ -64,68 +64,71 @@ exit()
 ## Code Structure
 
 ```text
-tact/
-├── src/
-│   ├── crates/tact-ui/src/main.rs                # tact-ui binary (TUI + headless subcommand)
-│   ├── lib.rs                    # Agent runtime and main loop
-│   ├── store.rs                  # StoreRoot / Store / CollectionStore
-│   ├── prompt.rs                 # System prompt builder
-│   ├── system_prompt_template.md
-│   ├── permission.rs
-│   ├── hook.rs
-│   ├── compact.rs
-│   ├── recovery.rs
-│   ├── memory.rs
-│   ├── skill.rs
-│   ├── task.rs
-│   ├── background.rs
-│   ├── cron.rs
-│   ├── team.rs
-│   ├── worktree.rs
-│   ├── mcp.rs
-│   └── tool/
-│       ├── mod.rs                # Tool trait / ToolRouter / ToolContext
-│       ├── bash.rs
-│       ├── read_file.rs
-│       ├── write_file.rs
-│       ├── edit_file.rs
-│       ├── load_skill.rs
-│       ├── compact.rs
-│       ├── memory.rs
-│       ├── subagent.rs
-│       ├── task.rs
-│       ├── background.rs
-│       ├── cron.rs
-│       ├── team.rs
-│       └── worktree.rs
-└── tact.md
+crates/
+├── tact-ui/                      # Binary (TUI + headless)
+│   └── src/
+│       ├── main.rs               # CLI dispatch, config::init(), SQLite session store
+│       ├── interactive.rs        # TUI session: Agent, managers, MCP, run_tui
+│       ├── headless.rs           # Headless session + completion notify
+│       ├── permission.rs         # permission_mode_from_config()
+│       ├── user_message.rs       # build_user_message()
+│       └── sessions.rs           # --list-sessions
+└── tact/                         # Agent runtime library
+    └── src/
+        ├── lib.rs                # Module re-exports
+        ├── agent/
+        │   ├── mod.rs            # Agent, agent_loop
+        │   ├── tool_dispatch.rs  # execute_tool_call, MCP/native dispatch
+        │   └── tool_schedule.rs  # Parallel wave scheduler
+        ├── lsp/                  # LSP client (config, protocol, diagnostics, …)
+        ├── tool/
+        │   ├── mod.rs            # Tool trait, ToolRouter, ToolContext
+        │   ├── registry.rs       # toolset(), subagent_toolset()
+        │   └── …                 # bash, read_file, write_file, …
+        ├── store.rs              # StoreRoot / Store / CollectionStore
+        ├── prompt/               # System prompt builder
+        ├── permission/           # PermissionManager
+        ├── hook/                 # Pre/PostToolUse hooks
+        ├── compact.rs            # Context compaction
+        ├── recovery.rs           # Error recovery
+        ├── memory/               # MemoryManager
+        ├── skill/                # SkillRegistry
+        ├── task/                 # TaskManager
+        ├── background.rs
+        ├── cron/
+        ├── team.rs
+        ├── worktree/
+        ├── mcp/                  # MCP client + MCPToolRouter
+        └── stats.rs              # SessionStats
 ```
 
-Suggested reading order: start with [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs), then [`src/lib.rs`](./src/lib.rs), then read each domain manager and tool.
+Suggested reading order: [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs) → [`../tact-ui/src/interactive.rs`](./../tact-ui/src/interactive.rs) or [`headless.rs`](./../tact-ui/src/headless.rs) → [`src/agent/mod.rs`](./src/agent/mod.rs) → domain managers and tools.
 
 ## Startup Flow
 
-Entry point is [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs). Startup sequence:
+CLI entry is [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs); session setup lives in [`interactive.rs`](./../tact-ui/src/interactive.rs) / [`headless.rs`](./../tact-ui/src/headless.rs). Startup sequence:
 
 ```text
+config::init()
+  → open SQLite session store (main.rs)
+  → dispatch headless or interactive
 Create LLM client
-  → Select PermissionMode
+  → Resolve PermissionMode (permission.rs / TUI prompt)
   → Scan skills/
   → Create .claude StoreRoot
   → Initialize task/background/cron/team/worktree managers
   → Initialize memory manager
   → Scan .claude-plugin/plugin.json and connect MCP servers
-  → Construct ToolContext
-  → Construct ToolRouter
+  → Construct ToolContext + toolset() ToolRouter
   → Create Agent
-  → Enter interactive loop
+  → Enter agent loop (TUI or stdout)
 ```
 
 The main agent uses a dynamic system prompt. Subagents use a static prompt, allowing them to act as fresh-context coding subagents, complete their assigned task, and return a summary.
 
 ## Agent
 
-Core structure in [`src/lib.rs`](./src/lib.rs):
+Core structure in [`src/agent/mod.rs`](./src/agent/mod.rs):
 
 ```rust
 pub struct Agent {
@@ -503,8 +506,9 @@ In `sfull`, these capabilities are no longer scattered across independent crates
 
 ## Recommended Reading Order
 
-1. [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs) — understand the initialization sequence.
-2. [`src/lib.rs`](./src/lib.rs) — understand the complete agent loop.
+1. [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs) — CLI dispatch and session store.
+2. [`../tact-ui/src/interactive.rs`](./../tact-ui/src/interactive.rs) or [`headless.rs`](./../tact-ui/src/headless.rs) — session wiring.
+3. [`src/agent/mod.rs`](./src/agent/mod.rs) — agent loop, tool dispatch, and scheduling.
 3. [`src/tool/mod.rs`](./src/tool/mod.rs) — understand ToolRouter and ToolContext.
 4. [`src/store.rs`](./src/store.rs) — understand StoreRoot / Store / CollectionStore.
 5. [`src/permission.rs`](./src/permission.rs), [`src/compact.rs`](./src/compact.rs), [`src/recovery.rs`](./src/recovery.rs) — understand runtime controls.
