@@ -4,7 +4,8 @@
 // consume those ids directly, allowing a search -> fetch flow without forcing
 // the model to copy/paste raw URLs.
 
-use crate::tool::{http::encode_query, http::http_client, web_refs, ToolContext};
+use crate::tool::ToolContext;
+use super::{http, web_refs};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -114,10 +115,10 @@ pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<Stri
 
 /// Search using the Brave Search API.
 async fn search_brave(query: &str, num_results: usize, api_key: &str) -> Result<Vec<SearchResult>> {
-    let client = http_client();
+    let client = http::http_client();
     let url = format!(
         "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-        encode_query(query),
+        http::encode_query(query),
         num_results
     );
 
@@ -181,10 +182,10 @@ fn extract_brave_results(data: &Value, max: usize) -> Vec<SearchResult> {
 
 /// Fallback: DuckDuckGo Instant Answer API.
 async fn search_duckduckgo(query: &str, num_results: usize) -> Result<Vec<SearchResult>> {
-    let client = http_client();
+    let client = http::http_client();
     let url = format!(
         "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
-        encode_query(query)
+        http::encode_query(query)
     );
 
     let resp = client

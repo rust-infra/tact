@@ -2,7 +2,8 @@
 //!
 //! Within a single LLM turn the model may return several tool calls. Calls
 //! that touch disjoint resources can run concurrently; calls that touch the
-//! same file (where at least one writes) must stay ordered. Genuine data
+//! same file (where at least one writes) must stay ordered. MCP tools on the
+//! same server serialize; different MCP servers may run in parallel. Genuine data
 //! dependencies between tools only ever appear *across* turns — the agent loop
 //! feeds each turn's tool results back into the next request — so the only
 //! intra-turn ordering we must preserve is a read/write or write/write
@@ -118,9 +119,27 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
         // Side-effect-free tools that touch no workspace file: safe to run
         // concurrently with anything.
         "web_search" | "web_fetch" | "lsp" | "sleep" => ToolResources::independent(),
+        name if name.starts_with("mcp__") => mcp_tool_resources(name),
         // bash, apply_patch (multi-file diff), task/subagent, worktree_run,
-        // MCP tools, and all state mutations have effects we cannot scope.
+        // and all state mutations have effects we cannot scope.
         _ => ToolResources::barrier(),
+    }
+}
+
+/// MCP tools on the same server serialize; different servers may run in parallel.
+fn mcp_tool_resources(name: &str) -> ToolResources {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return ToolResources::barrier();
+    };
+    let Some((server, tool)) = rest.rsplit_once("__") else {
+        return ToolResources::barrier();
+    };
+    if server.is_empty() || tool.is_empty() {
+        return ToolResources::barrier();
+    }
+    ToolResources {
+        writes: vec![PathBuf::from(format!("__mcp__{server}"))],
+        ..Default::default()
     }
 }
 
@@ -292,6 +311,24 @@ mod tests {
             res(&[], &["/a"]),
         ];
         assert_eq!(schedule_waves(&r), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn mcp_tools_on_different_servers_run_in_parallel() {
+        let r = vec![
+            mcp_tool_resources("mcp__demo__postgres__query"),
+            mcp_tool_resources("mcp__demo__echo__ping"),
+        ];
+        assert_eq!(schedule_waves(&r), vec![0, 0]);
+    }
+
+    #[test]
+    fn mcp_tools_on_same_server_serialize() {
+        let r = vec![
+            mcp_tool_resources("mcp__demo__postgres__query"),
+            mcp_tool_resources("mcp__demo__postgres__migrate"),
+        ];
+        assert_eq!(schedule_waves(&r), vec![0, 1]);
     }
 
     #[test]

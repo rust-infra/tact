@@ -206,9 +206,9 @@ The cache and reasoning lines are only shown when non-zero.
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
 | `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
 | `crates/tact/src/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
-| `crates/tact/src/lib.rs` | `Agent::persist_tool_schedule()` — attaches the schedule summary to the call's token-usage row. |
+| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches the schedule summary to the call's token-usage row. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
-| `crates/tact/src/lib.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
+| `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
 | `crates/tact_llm/src/lib.rs` | `LlmRequestBody` type alias; OpenAI adapter serializes final request JSON after all injections. |
 | `crates/tact/src/bin/tui.rs` | Print session stats on TUI exit. |

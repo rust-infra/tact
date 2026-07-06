@@ -27,10 +27,12 @@ stateDiagram-v2
     [*] --> Idle: startup
 
     Idle --> Planning: user submits task (Enter in Insert mode)
-    Planning --> Executing: AgentUpdate:PlanGenerated or StepAdded
+    Planning --> Executing: AgentUpdate:StepAdded (first tool step)
+
+    Note right of Planning: PlanGenerated handler exists in TUI but agent never emits it today
 
     Executing --> Executing: AgentUpdate:StepStarted (current_step updated)
-    Executing --> WaitingForUser: AgentUpdate:NeedApproval / RequestSelect
+    Executing --> WaitingForUser: AgentUpdate:RequestSelect
     Executing --> Done: AgentUpdate:TaskComplete
     Executing --> Idle: AgentUpdate:StepFailed / Error(Other)
 
@@ -46,9 +48,9 @@ stateDiagram-v2
 | From | To | Trigger | Notes |
 |---|---|---|---|
 | `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; plan panel is cleared. |
-| `Planning` | `Executing` | `AgentUpdate::PlanGenerated` or `StepAdded`. | `total` is set to current plan length. |
+| `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `total` is set from plan length. Legacy `PlanGenerated` would also transition here but is not emitted by agent. |
 | `Executing` | `Executing` | `AgentUpdate::StepStarted(idx, tool_id, …)`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
-| `Executing` | `WaitingForUser` | `AgentUpdate::NeedApproval` or `AgentUpdate::RequestSelect`. | `input_mode` is forced to `Normal` or `Select`. |
+| `Executing` | `WaitingForUser` | `AgentUpdate::RequestSelect`. | `input_mode` is forced to `Select`. Legacy `NeedApproval` would force `Normal`, but agent does not emit it today. |
 | `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. |
 | `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
 | `WaitingForUser` | `Executing` | User presses `y` / `Enter` to approve. | `approval_tx.send(true)`. |
@@ -278,7 +280,7 @@ Transitions:
 | `StepStarted(_, tool_id, …)` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
 | `StepFinished(_, tool_id, result)` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
 | `StepFailed(_, tool_id, …)` | Same finalize path, or fallback system message if no active block |
-| `PlanGenerated` / new task | `cancel_all_active_tools()` |
+| New task (`SubmitTask`) / legacy `PlanGenerated` | `cancel_all_active_tools()` — `PlanGenerated` is not emitted by agent today |
 
 `StepResult` (from runtime) includes `permission_label` (e.g. `"Allow once"`, `"Always allow this tool"`) shown in the tool meta row.
 
@@ -330,7 +332,7 @@ Key transitions:
 
 ## 10. Agent Runtime Recovery State
 
-File: `crates/tact/src/lib.rs` (via `AgentRuntime.recovery_state`)
+File: `crates/tact/src/agent/mod.rs` (via `AgentRuntime.recovery_state`)
 
 The agent loop keeps counters for automatic recovery:
 

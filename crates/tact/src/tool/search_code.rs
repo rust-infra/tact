@@ -49,21 +49,16 @@ pub async fn search_code(ctx: ToolContext, input: SearchCodeInput) -> Result<Str
 
     debug!(query = %input.query, path = %search_path, has_rg, "Search code");
 
-    let output = if has_rg {
-        run_ripgrep(&input.query, &full_path, input.glob.as_deref(), max_results).await
+    let result = if has_rg {
+        run_ripgrep(&input.query, &full_path, input.glob.as_deref(), max_results).await?
     } else {
-        run_grep(&input.query, &full_path, max_results).await
+        run_grep(&input.query, &full_path, max_results).await?
     };
 
-    match output {
-        Ok(result) => {
-            if result.trim().is_empty() {
-                Ok("No matches found.".to_string())
-            } else {
-                Ok(result)
-            }
-        }
-        Err(e) => Err(e),
+    if result.trim().is_empty() {
+        Ok("No matches found.".to_string())
+    } else {
+        Ok(result)
     }
 }
 

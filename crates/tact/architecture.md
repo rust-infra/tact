@@ -200,7 +200,7 @@ messages following tool_calls message)"
 
 **Trigger condition**: LLM streaming response reaches `max_tokens` limit, and the assistant response was truncated while containing unexecuted tool calls.
 
-**Root cause** (`crates/tact/src/lib.rs` `agent_loop()`):
+**Root cause** (`crates/tact/src/agent/mod.rs` `agent_loop()`):
 
 The control flow before the fix had a defect — when `stream_message` returned `stop_reason=MaxTokens` and `content` contained `ToolUse` blocks:
 
@@ -221,10 +221,10 @@ The correct sequence should be: `Assistant(tool_calls=[id1]) → Tool(id1, resul
 
 | Layer | Location | Measure |
 |-------|----------|---------|
-| Layer 1 | `lib.rs` agent_loop MaxTokens path | Before pushing CONTINUATION_MESSAGE, check if content contains ToolUse; if so, execute_tool_call first, push result, then push continuation |
+| Layer 1 | `agent/mod.rs` agent_loop MaxTokens path | Before pushing CONTINUATION_MESSAGE, check if content contains ToolUse; if so, execute_tool_call first, push result, then push continuation |
 | Layer 2 (defense) | `convert.rs` | Added `sanitize_tool_call_sequence()`, scans for orphaned tool_calls after each conversion; if no matching ToolMessage found, strips tool_calls and replaces with stub text |
 
 **Scope**:
-- `crates/tact/src/lib.rs` — `agent_loop()` MaxTokens recovery path
+- `crates/tact/src/agent/mod.rs` — `agent_loop()` MaxTokens recovery path
 - `crates/tact_llm/src/convert.rs` — `anthropic_messages_to_openai()` end-of-function defensive validation
 - Only triggered on OpenAI backend (Anthropic native API has no such constraint)

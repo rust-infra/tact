@@ -72,30 +72,31 @@ pub fn validate_public_http_url(raw: &str) -> Result<Url> {
 pub async fn validate_public_http_url_resolved(raw: &str) -> Result<Url> {
     let url = validate_public_http_url(raw)?;
 
-    if let Some(host) = url.host_str() {
-        if host.parse::<IpAddr>().is_err() {
-            let port = url.port_or_known_default().unwrap_or(443);
-            validate_resolved_host(host, port).await?;
-        }
+    if let Some(host) = url.host_str()
+        && host.parse::<IpAddr>().is_err()
+    {
+        let port = url.port_or_known_default().unwrap_or(443);
+        validate_resolved_host(host, port).await?;
     }
 
     Ok(url)
 }
 
 async fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
-    let addrs: Vec<_> = tokio::net::lookup_host((host, port))
+    let mut resolved_any = false;
+    let mut addrs = tokio::net::lookup_host((host, port))
         .await
-        .with_context(|| format!("Failed to resolve host {host}"))?
-        .collect();
+        .with_context(|| format!("failed to resolve host {host}"))?;
 
-    if addrs.is_empty() {
-        anyhow::bail!("Host {host} did not resolve to any addresses");
-    }
-
-    for addr in addrs {
+    for addr in addrs.by_ref() {
+        resolved_any = true;
         if is_blocked_ip(addr.ip()) {
             anyhow::bail!("Blocked host: {host} resolves to private/internal address");
         }
+    }
+
+    if !resolved_any {
+        anyhow::bail!("host {host} did not resolve to any addresses");
     }
 
     Ok(())
@@ -133,14 +134,18 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 }
 
 pub fn encode_query(value: &str) -> String {
-    let mut encoded = String::new();
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len());
+    let mut buf = [0u8; 4];
     for ch in value.chars() {
         match ch {
             'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => encoded.push(ch),
             ' ' => encoded.push('+'),
             _ => {
-                for byte in ch.to_string().as_bytes() {
-                    encoded.push_str(&format!("%{:02X}", byte));
+                for &byte in ch.encode_utf8(&mut buf).as_bytes() {
+                    // Writing to a String is infallible.
+                    let _ = write!(encoded, "%{byte:02X}");
                 }
             }
         }
@@ -186,5 +191,13 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Blocked host"));
+    }
+
+    #[test]
+    fn encode_query_percent_encodes_reserved_and_unicode() {
+        assert_eq!(encode_query("a b"), "a+b");
+        assert_eq!(encode_query("a&b=c"), "a%26b%3Dc");
+        assert_eq!(encode_query("café"), "caf%C3%A9");
+        assert_eq!(encode_query("safe-._~"), "safe-._~");
     }
 }

@@ -56,8 +56,8 @@ impl App {
         if !matches!(update, AgentUpdate::ThinkingChunk(_)) {
             self.flush_and_close_thinking();
         }
-        // Remove the loading placeholder on any content-producing update
-        // (PlanGenerated is the one that inserts it, so skip that)
+        // Remove the loading placeholder on any content-producing update.
+        // PlanGenerated is a legacy path that inserts it, so skip that variant.
         // Metadata-only updates (TokenUsage, Balance, ModelInfo) should NOT
         // remove the placeholder since they don't produce visible content.
         match &update {
@@ -74,7 +74,8 @@ impl App {
             }
         }
         match update {
-            // PlanGenerated ignore temp
+            // Legacy PlanGenerated path. Current agent code drives the plan panel
+            // through StepAdded / StepStarted and does not emit this variant.
             AgentUpdate::PlanGenerated(plan) => {
                 // New task starts: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -127,10 +128,8 @@ impl App {
                     .insert(step.tool_id.clone(), step.clone());
                 self.plan.collapsed.push(false);
                 // Don't change current_step or total — the step hasn't started yet.
-                // total was set once by PlanGenerated and should not grow with each
-                // tool call dispatch from execute_tool_call().
-                // If we're not yet in Executing (e.g. no PlanGenerated), fall back
-                // to a safe default.
+                // Current agent runs may never send PlanGenerated, so ensure there
+                // is an Executing status before StepStarted arrives.
                 self.ensure_executing_status(idx);
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));

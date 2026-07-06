@@ -5,12 +5,11 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use crate::tool::{http::public_fetch_client, http::validate_public_http_url_resolved, web_refs, ToolContext};
+use crate::tool::ToolContext;
+use super::{http, web_refs};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::{fs, time::Duration};
 use tool_refactor_macros::tool;
@@ -32,11 +31,16 @@ pub struct WebFetchInput {
     pub prompt: Option<String>,
 }
 
-/// Compute a simple hash of the URL for cache purposes.
+/// Stable FNV-1a hash for cache filenames (`DefaultHasher` is not stable across runs).
 fn url_hash(url: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in url.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:x}")
 }
 
 /// Get the cache directory for web_fetch content.
@@ -237,13 +241,13 @@ fn truncate_content(text: &str, max_len: usize) -> String {
 pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String> {
     let request_url = resolve_requested_url(&input)?;
     debug!(url = %request_url, "Fetching web page");
-    let url = validate_public_http_url_resolved(&request_url).await?;
+    let url = http::validate_public_http_url_resolved(&request_url).await?;
 
     if let Some(cached) = load_cached_extraction(&request_url) {
         return Ok(cached);
     }
 
-    let client = public_fetch_client();
+    let client = http::public_fetch_client();
 
     let resp = client
         .get(url.clone())

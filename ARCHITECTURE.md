@@ -48,7 +48,7 @@ flowchart TB
         B1["tact-ui<br/>src/bin/tui.rs"]
     end
 
-    subgraph tact_lib["tact/src/lib.rs — Agent Runtime"]
+    subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
         A["Agent struct"]
         AR["AgentRuntime"]
         AL["agent_loop()<br/>streaming conversation loop"]
@@ -105,7 +105,7 @@ flowchart TB
         TH["handlers/<br/>mode-specific key handling"]
         TR["render/<br/>panel rendering"]
         TS["state/<br/>App state"]
-        TT["theme.rs<br/>9 color themes"]
+        TT["theme.rs<br/>11 color themes"]
         TI18N["i18n.rs<br/>EN / 中文"]
         TW["widgets/<br/>history, select popups"]
     end
@@ -188,7 +188,7 @@ sequenceDiagram
                     alt PermissionBehavior::Deny
                         Agent ->> TUI: StepFailed
                     else PermissionBehavior::Ask
-                        Agent ->> TUI: RequestSelect / NeedApproval
+                        Agent ->> TUI: RequestSelect
                         TUI -->> Agent: user choice
                     end
                     Agent ->> TR: call native or MCP tool
@@ -203,7 +203,9 @@ sequenceDiagram
         end
     end
 
-    Agent ->> TUI: TaskComplete(final text)
+    Agent ->> TUI: Step* / StreamChunk / … (during loop)
+    Note over Agent,TUI: TaskComplete is sent by tui.rs after agent_loop returns
+    TUI ->> Agent: (loop already finished)
     TUI ->> U: Show completion / statistics
 ```
 
@@ -211,7 +213,7 @@ Key `AgentUpdate` variants used today:
 
 | Variant | Meaning |
 |---|---|
-| `PlanGenerated(Vec<PlanStep>)` | Initial placeholder plan displayed in the TUI. |
+| `PlanGenerated(Vec<PlanStep>)` | **Legacy.** TUI handler still exists; current agent code does **not** emit this. Plan panel is driven by `StepAdded` instead. |
 | `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
