@@ -154,6 +154,11 @@ impl Agent {
         self
     }
 
+    /// Gracefully disconnect all MCP server child processes.
+    pub async fn shutdown_mcp(&mut self) {
+        self.mcp_router.disconnect_all().await;
+    }
+
     pub fn emit_update(&self, update: AgentUpdate) {
         // Desktop notifications for key lifecycle events
         match &update {

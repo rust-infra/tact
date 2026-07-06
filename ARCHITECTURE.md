@@ -15,7 +15,8 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
 | `crates/tools` | `tools` | `0.1.0` (local) | `Sandbox`: secure wrappers for file I/O and command execution. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction, and the CLI binary. |
+| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
+| `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
 | `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
 
@@ -23,8 +24,9 @@ Dependency graph:
 
 ```mermaid
 flowchart TB
+    tact_ui["tact-ui"] --> tact
+    tact_ui --> tui
     tact --> tact_protocol
-    tact --> tui
     tact --> tact_llm
     tact --> tool_refactor_macros
     tact_llm --> tact_protocol
@@ -32,11 +34,11 @@ flowchart TB
     tact_protocol --> tools
 ```
 
-Binaries produced by `crates/tact`:
+Binaries produced by `crates/tact-ui`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact-ui` | `crates/tact/src/bin/tui.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-ui` | `crates/tact-ui/src/main.rs` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
 
 ---
 
@@ -45,7 +47,7 @@ Binaries produced by `crates/tact`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact-ui<br/>src/bin/tui.rs"]
+        B1["tact-ui<br/>crates/tact-ui/src/main.rs"]
     end
 
     subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
@@ -643,7 +645,7 @@ If you are reading older branches or notes, the following major evolutions have 
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`, truncated args in title with `arg_full` in popups, spacing gaps before tools/thinking.
-- **CLI** — single `tact-ui` binary (`src/bin/tui.rs`); default TUI, `headless` subcommand for non-interactive runs; legacy `tact` / `main.rs` entry removed.
+- **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
 - **Session store** — SQLite at `<workdir>/.claude/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.

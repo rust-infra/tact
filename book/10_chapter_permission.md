@@ -332,7 +332,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | Entry point | Mode used |
 |-------------|-----------|
 | `tact-ui headless` | `permission_mode_for_headless()` — reads config; unknown values fall through to **Auto** |
-| `tact-ui` (interactive TUI) | Hardcoded `PermissionMode::Default` in `tui.rs` — **does not** read `--permission-mode` or TOML yet |
+| `tact-ui` (interactive TUI) | Hardcoded `PermissionMode::Default` in `tact-ui/src/main.rs` — **does not** read `--permission-mode` or TOML yet |
 
 ---
 
@@ -347,7 +347,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | `crates/tact/src/tool/bash.rs` | Calls `validate_shell_command` before spawning shell |
 | `crates/tact/src/background.rs` | Same validation for background shell commands |
 | `crates/tact/src/tool/subagent.rs` | Sub-agent uses `Default` mode; inherits `ui_tx` |
-| `crates/tact/src/bin/tui.rs` | Constructs `PermissionManager` at session start |
+| `crates/tact-ui/src/main.rs` | Constructs `PermissionManager` at session start |
 | `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | Handles `AgentUpdate::RequestSelect` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`, `StepResult.permission_label` |

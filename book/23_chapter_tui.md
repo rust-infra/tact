@@ -41,7 +41,7 @@ Defined in `tact_protocol`.
 
 ### Interactive (`tact-ui`)
 
-`run_interactive` in `crates/tact/src/bin/tui.rs`:
+`run_interactive` in `crates/tact-ui/src/main.rs`:
 
 1. `tact::config::init()` — settings + LLM provider ([Ch 21](./21_chapter_config.md)).
 2. Open SQLite session store, resolve `session_id` (`--session`, `--resume-last`, or new UUID).
@@ -610,7 +610,7 @@ The TUI itself does not call notification APIs directly for streaming events.
 
 | File | Role |
 |------|------|
-| `crates/tact/src/bin/tui.rs` | Binary entry, channel wiring, `UserCommand` dispatch |
+| `crates/tact-ui/src/main.rs` | Binary entry, channel wiring, `UserCommand` dispatch |
 | `crates/tui/src/lib.rs` | `run_tui` main loop, dirty check, terminal lifecycle |
 | `crates/tui/src/handlers/` | Keyboard/mouse per input mode |
 | `crates/tui/src/render/layout.rs` | Main area layout modes, popup anchoring |

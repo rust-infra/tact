@@ -229,7 +229,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `crates/tact/src/agent/tool_dispatch.rs` | `run_native_tool`, three-phase pipeline |
 | `crates/tact/src/agent/mod.rs` | `all_tool_specs`, agent construction |
 | `crates/tool_refactor_macros/` | `#[tool]` proc macro |
-| `crates/tact/src/bin/tui.rs` | Builds `ToolContext`, passes `toolset()` to `Agent::new` |
+| `crates/tact-ui/src/main.rs` | Builds `ToolContext`, passes `toolset()` to `Agent::new` |
 
 ---
 

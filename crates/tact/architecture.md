@@ -6,7 +6,7 @@
 ```mermaid
 graph TB
     %% ── Entry Layer ──
-    Main(["bin/tui.rs<br/>tact-ui"])
+    Main(["crates/tact-ui/src/main.rs<br/>tact-ui"])
 
     %% ── Core Structures ──
     subgraph Core["Agent Core"]
@@ -138,7 +138,7 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant User as User
-    participant Main as bin/tui.rs
+    participant Main as crates/tact-ui/src/main.rs
     participant Agent as Agent
     participant Router as ToolRouter
     participant Perm as PermissionManager

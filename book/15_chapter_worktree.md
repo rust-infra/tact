@@ -127,7 +127,7 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 | `crates/tact/src/worktree/mod.rs` | `WorktreeManager`, `SharedWorktreeManager`, index + events |
 | `crates/tact/src/tool/worktree.rs` | The five `#[tool]` wrappers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.worktree_manager`; registration in `toolset()` |
-| `crates/tact/src/bin/tui.rs` | Manager constructed with `StoreRoot` + workdir |
+| `crates/tact-ui/src/main.rs` | Manager constructed with `StoreRoot` + workdir |
 | `crates/tact/src/store/mod.rs` | `Store<WorktreeIndex>` primitive |
 
 ---

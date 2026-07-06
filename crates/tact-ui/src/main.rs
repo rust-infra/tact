@@ -263,15 +263,15 @@ async fn run_headless(
 
     eprintln!("{}", agent.runtime.stats.summary());
 
-    let Some(final_content) = agent.runtime.context.last() else {
-        return Ok(());
-    };
-    let text = extract_text(&final_content.content);
-    println!("{text}");
+    if let Some(final_content) = agent.runtime.context.last() {
+        let text = extract_text(&final_content.content);
+        println!("{text}");
 
-    let summary = text.chars().take(200).collect::<String>();
-    let _ = tact::notifications::notify_task_complete(&summary);
+        let summary = text.chars().take(200).collect::<String>();
+        let _ = tact::notifications::notify_task_complete(&summary);
+    }
 
+    agent.shutdown_mcp().await;
     Ok(())
 }
 
@@ -436,6 +436,7 @@ async fn run_interactive(
 
     eprintln!("{}", agent.runtime.stats.summary());
 
+    agent.shutdown_mcp().await;
     Ok(())
 }
 

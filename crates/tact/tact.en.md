@@ -31,9 +31,9 @@ Configure `.env`:
 Run:
 
 ```bash
-cargo run -p tact          # launches tact-ui (default TUI)
+cargo run -p tact-ui          # launches tact-ui (default TUI)
 # or
-cargo run -p tact -- headless "your prompt"
+cargo run -p tact-ui -- headless "your prompt"
 ```
 
 Choose a permission mode at startup:
@@ -66,7 +66,7 @@ exit()
 ```text
 tact/
 ├── src/
-│   ├── bin/tui.rs
+│   ├── crates/tact-ui/src/main.rs
 │   ├── lib.rs
 │   ├── store.rs
 │   ├── prompt.rs
@@ -87,7 +87,7 @@ tact/
 └── tact.md
 ```
 
-Read [`src/bin/tui.rs`](./src/bin/tui.rs) first, then [`src/lib.rs`](./src/lib.rs), then the domain managers and tool modules.
+Read [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs) first, then [`src/lib.rs`](./src/lib.rs), then the domain managers and tool modules.
 
 ## Startup Flow
 

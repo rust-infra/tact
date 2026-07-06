@@ -190,7 +190,7 @@ No chapters are queued at this time. Future additions may cover testing strategy
 - Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
 - Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
 - Tact TUI source: [crates/tui/src/lib.rs](../crates/tui/src/lib.rs)
-- Tact UI binary: [crates/tact/src/bin/tui.rs](../crates/tact/src/bin/tui.rs)
+- Tact UI binary: [crates/tact-ui/src/main.rs](../crates/tact-ui/src/main.rs)
 - TUI rendering deep dive: [docs/tui_rendering.md](../docs/tui_rendering.md)
 
 ---

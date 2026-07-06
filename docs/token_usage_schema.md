@@ -211,4 +211,4 @@ The cache and reasoning lines are only shown when non-zero.
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
 | `crates/tact_llm/src/lib.rs` | `LlmRequestBody` type alias; OpenAI adapter serializes final request JSON after all injections. |
-| `crates/tact/src/bin/tui.rs` | Print session stats on TUI exit. |
+| `crates/tact-ui/src/main.rs` | Print session stats on TUI exit. |

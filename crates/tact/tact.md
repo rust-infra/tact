@@ -31,9 +31,9 @@ Configure `.env` at the repository root:
 Run:
 
 ```bash
-cargo run -p tact          # launches tact-ui (default TUI)
+cargo run -p tact-ui          # launches tact-ui (default TUI)
 # or
-cargo run -p tact -- headless "your prompt"
+cargo run -p tact-ui -- headless "your prompt"
 ```
 
 At startup, choose a permission mode:
@@ -66,7 +66,7 @@ exit()
 ```text
 tact/
 ├── src/
-│   ├── bin/tui.rs                # tact-ui binary (TUI + headless subcommand)
+│   ├── crates/tact-ui/src/main.rs                # tact-ui binary (TUI + headless subcommand)
 │   ├── lib.rs                    # Agent runtime and main loop
 │   ├── store.rs                  # StoreRoot / Store / CollectionStore
 │   ├── prompt.rs                 # System prompt builder
@@ -101,11 +101,11 @@ tact/
 └── tact.md
 ```
 
-Suggested reading order: start with [`src/bin/tui.rs`](./src/bin/tui.rs), then [`src/lib.rs`](./src/lib.rs), then read each domain manager and tool.
+Suggested reading order: start with [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs), then [`src/lib.rs`](./src/lib.rs), then read each domain manager and tool.
 
 ## Startup Flow
 
-Entry point is [`src/bin/tui.rs`](./src/bin/tui.rs). Startup sequence:
+Entry point is [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs). Startup sequence:
 
 ```text
 Create LLM client
@@ -503,7 +503,7 @@ In `sfull`, these capabilities are no longer scattered across independent crates
 
 ## Recommended Reading Order
 
-1. [`src/bin/tui.rs`](./src/bin/tui.rs) — understand the initialization sequence.
+1. [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs) — understand the initialization sequence.
 2. [`src/lib.rs`](./src/lib.rs) — understand the complete agent loop.
 3. [`src/tool/mod.rs`](./src/tool/mod.rs) — understand ToolRouter and ToolContext.
 4. [`src/store.rs`](./src/store.rs) — understand StoreRoot / Store / CollectionStore.

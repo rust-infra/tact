@@ -196,7 +196,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 | `crates/tact/src/tool/load_skill.rs` | `load_skill` native tool |
 | `crates/tact/src/agent/mod.rs` | `describe_available()` in `build_system_prompt` |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry`, `LoadSkillTool` in `toolset()` |
-| `crates/tact/src/bin/tui.rs` | `get_skill_registry(tact_path.skills_dir())` |
+| `crates/tact-ui/src/main.rs` | `get_skill_registry(tact_path.skills_dir())` |
 | `crates/tact/src/consts.rs` | `TactPath::skills_dir()` → `<workdir>/skills` |
 
 ---

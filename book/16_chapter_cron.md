@@ -128,7 +128,7 @@ Example on-disk shape:
 
 ### Construction
 
-Both headless and interactive entry points in `crates/tact/src/bin/tui.rs` build the scheduler once per process:
+Both headless and interactive entry points in `crates/tact-ui/src/main.rs` build the scheduler once per process:
 
 ```text
 store_root = StoreRoot::new(.claude/)
@@ -238,7 +238,7 @@ When a runtime is added, likely touch points are: a tokio interval in `tui.rs` o
 | `crates/tact/src/cron/mod.rs` | `ScheduledTaskRecord`, `CronScheduler`, `SharedCronScheduler` |
 | `crates/tact/src/tool/cron.rs` | `cron_create`, `cron_list`, `cron_delete` tool handlers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.cron_scheduler`, `toolset()` registration |
-| `crates/tact/src/bin/tui.rs` | Constructs scheduler and passes it into `Agent` |
+| `crates/tact-ui/src/main.rs` | Constructs scheduler and passes it into `Agent` |
 | `crates/tact/src/store/mod.rs` | `Store<T>` persistence layer |
 | `crates/tact/src/consts.rs` | `TactPath::cron_dir()` |
 | `crates/tact/src/tool/test_support.rs` | Test `ToolContext` with in-memory store root |

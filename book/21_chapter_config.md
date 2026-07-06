@@ -204,7 +204,7 @@ Agent loop reads `context_limit_chars`, `max_tokens`, and `thinking_budget` from
 | `config/load.rs` | TOML discovery and parse |
 | `config/resolve.rs` | CLI + TOML merge, Kimi-aware defaults |
 | `config/types.rs` | `TactTomlConfig`, `ResolvedConfig`, section structs |
-| `crates/tact/src/bin/tui.rs` | Calls `config::init()` in `main()` |
+| `crates/tact-ui/src/main.rs` | Calls `config::init()` in `main()` |
 
 ---
 

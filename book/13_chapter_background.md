@@ -125,7 +125,7 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | `crates/tact/src/tool/background_run.rs` | `background_run` / `check_background` tools |
 | `crates/tact/src/shell.rs` | `validate_shell_command` blocklist shared with `bash` |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.background_manager`; registration in `toolset()` |
-| `crates/tact/src/bin/tui.rs` | Manager constructed from `StoreRoot` at startup |
+| `crates/tact-ui/src/main.rs` | Manager constructed from `StoreRoot` at startup |
 | `docs/state_machines.md` | Background job state diagram |
 
 ---

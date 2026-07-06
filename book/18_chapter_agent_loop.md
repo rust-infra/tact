@@ -146,7 +146,7 @@ Construction helpers: `Agent::new`, `with_ui_channel`, `with_session`. Hook regi
 
 ## 7. TUI Integration
 
-In `crates/tact/src/bin/tui.rs`:
+In `crates/tact-ui/src/main.rs`:
 
 ```rust
 UserCommand::SubmitTask(task) => {
@@ -174,7 +174,7 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 |------|------|
 | `crates/tact/src/agent/mod.rs` | `agent_loop`, `stream_message`, `build_system_prompt`, session helpers |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, three-phase pipeline |
-| `crates/tact/src/bin/tui.rs` | Spawns loop on `SubmitTask`, sets `TaskComplete` |
+| `crates/tact-ui/src/main.rs` | Spawns loop on `SubmitTask`, sets `TaskComplete` |
 | `crates/tact/src/recovery.rs` | Error classification and continuation message |
 | `crates/tact/src/compact.rs` | Pre-turn compaction hooks |
 | `tact_protocol` | `AgentUpdate`, `UserCommand` wire types |

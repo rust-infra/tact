@@ -12,7 +12,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: tact-ui
-  CRATE_PACKAGE: tact
+  CRATE_PACKAGE: tact-ui
 
 jobs:
   build:
