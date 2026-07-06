@@ -109,7 +109,7 @@ tasks: root.collection("tasks")?,           // tasks/{id}.json
 index: root.file("tasks/index.json")?,      // next_id counter
 ```
 
-TaskManager persistence is covered here; the **`task_*` tools and dependency model** are not yet a dedicated chapter (see [Planned Chapters](./index.md#planned-chapters)). [Ch 11](./11_chapter_task.md) covers **tool parallel scheduling**, not TaskManager.
+TaskManager persistence is covered here; the **`task_*` tools and dependency model** are covered in [Ch 19 Persistent Task Manager](./19_chapter_persistent_tasks.md). [Ch 11](./11_chapter_task.md) covers **tool parallel scheduling**, not TaskManager.
 
 ---
 

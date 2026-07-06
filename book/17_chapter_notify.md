@@ -96,18 +96,19 @@ match &update {
 
 ```mermaid
 sequenceDiagram
+    participant TUI as tact-ui driver
     participant Agent
     participant Notify as notifications::
-    participant TUI
+    participant UI as TUI
 
-    Agent->>Agent: emit_update(TaskComplete)
+    TUI->>Agent: emit_update(TaskComplete)<br/>(after agent_loop returns)
     Agent->>Notify: notify_task_complete (≤200 chars)
     Note over Notify: macOS only; errors ignored
-    Agent->>TUI: ui_tx.send(update)
+    Agent->>UI: ui_tx.send(update)
 
     Agent->>Agent: emit_update(StepFailed)
     Agent->>Notify: notify_step_failed (error ≤120 chars)
-    Agent->>TUI: ui_tx.send(update)
+    Agent->>UI: ui_tx.send(update)
 ```
 
 ### Headless path

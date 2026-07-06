@@ -48,7 +48,7 @@ flowchart TB
         B1["tact-ui<br/>src/bin/tui.rs"]
     end
 
-    subgraph tact_lib["tact/src/lib.rs — Agent Runtime"]
+    subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
         A["Agent struct"]
         AR["AgentRuntime"]
         AL["agent_loop()<br/>streaming conversation loop"]
@@ -105,7 +105,7 @@ flowchart TB
         TH["handlers/<br/>mode-specific key handling"]
         TR["render/<br/>panel rendering"]
         TS["state/<br/>App state"]
-        TT["theme.rs<br/>9 color themes"]
+        TT["theme.rs<br/>11 color themes"]
         TI18N["i18n.rs<br/>EN / 中文"]
         TW["widgets/<br/>history, select popups"]
     end
@@ -188,7 +188,7 @@ sequenceDiagram
                     alt PermissionBehavior::Deny
                         Agent ->> TUI: StepFailed
                     else PermissionBehavior::Ask
-                        Agent ->> TUI: RequestSelect / NeedApproval
+                        Agent ->> TUI: RequestSelect
                         TUI -->> Agent: user choice
                     end
                     Agent ->> TR: call native or MCP tool

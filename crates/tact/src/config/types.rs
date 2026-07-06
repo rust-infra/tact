@@ -24,7 +24,7 @@ pub struct TactTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LlmTomlConfig {
-    /// Provider name: "anthropic" or "openai"
+    /// Provider name: "anthropic", "openai", "deepseek", or "kimi"
     pub provider: Option<String>,
 
     /// Model name

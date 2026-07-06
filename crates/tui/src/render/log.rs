@@ -484,8 +484,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
 
-    // Loading spinner overlay: when a task starts (PlanGenerated) but no content
-    // has arrived yet, show an animated spinner line.
+    // Loading spinner overlay: legacy PlanGenerated path only. Current agent
+    // updates usually drive the plan/tool UI through StepAdded / StepStarted.
     render_loading_spinner(frame, area, app, visual_scroll, visible_height);
 
     // Scrollbar thumb follows visual lines, not logical offset:

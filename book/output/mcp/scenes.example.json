@@ -65,12 +65,12 @@
         },
         {
             "id": "06",
-            "title": "Dynamic Updates and Shutdown",
-            "narration": "Servers can push notifications slash tools slash list changed when their tool set changes. Tact's TactMcpClientHandler re-lists tools and sets a flag; the Agent refreshes cached tool specs each loop iteration. On exit, shutdown_mcp closes connections gracefully with a five-second timeout instead of killing child processes abruptly.",
+            "title": "Dynamic Updates and Shutdown Gaps",
+            "narration": "The MCP protocol supports notifications slash tools slash list changed when a server's tool set changes. Tact currently fetches tools once at startup; live tool-list refresh is not wired yet. MCPToolRouter has disconnect_all, but tact-ui does not call it on exit today, so graceful MCP shutdown is also a current gap.",
             "bullets": [
                 "notifications/tools/list_changed",
-                "refresh_mcp_tools_if_changed()",
-                "shutdown_mcp / disconnect_all"
+                "startup-only tool discovery",
+                "disconnect_all exists, not wired"
             ],
             "code": null,
             "duration_hint_sec": 45

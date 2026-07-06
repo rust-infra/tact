@@ -43,7 +43,7 @@ sequenceDiagram
     end
 ```
 
-### Runtime (`crates/tact/src/lib.rs`)
+### Runtime (`crates/tact/src/agent/tool_dispatch.rs`)
 
 | Step | What happens |
 |---|---|
@@ -136,7 +136,7 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
   └─ Card   (optional, Success + detail only)
             ╭─ Command output (24 lines) ─────────╮
             │ $ git status                         │
-            │  M crates/tact/src/lib.rs            │
+            │  M crates/tact/src/agent/mod.rs      │
             ╰─ double-click for full content ──────╯
 ```
 
@@ -277,7 +277,7 @@ No changes to `ToolCell` are needed unless the visual structure itself changes (
 
 | File | Responsibility |
 |---|---|
-| `crates/tact/src/lib.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
+| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate`, `StepResult` types |
 | `crates/tui/src/widgets/state/app/agent.rs` | `handle_agent_update` for tool events |
 | `crates/tui/src/widgets/state/app/visibility.rs` | Placeholders, finalize, cancel, phys index shifting |
