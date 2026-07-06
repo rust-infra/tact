@@ -124,7 +124,7 @@ pub task_manager: SharedTaskManager,
 
 Registered in main `toolset()` only — **not** in `subagent_toolset()`.
 
-Scheduling: treated as **independent** in `tool_schedule.rs` (safe to parallelize with other non-conflicting reads/writes).
+Scheduling: treated as **independent** in `crates/tact/src/agent/tool_schedule.rs` (safe to parallelize with other non-conflicting reads/writes).
 
 ---
 
@@ -145,7 +145,8 @@ Tools return these strings directly as tool results (JSON for create/get/update,
 |------|------|
 | `crates/tact/src/task/mod.rs` | `TaskManager`, `TaskRecord`, dependency logic, render helpers |
 | `crates/tact/src/tool/task.rs` | Four `#[tool]` handlers |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager`, `toolset()` registration |
+| `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
+| `crates/tact/src/tool/registry.rs` | Task tools in `toolset()` |
 | `crates/tact/src/store/` | `CollectionStore`, `Store` primitives |
 
 ---

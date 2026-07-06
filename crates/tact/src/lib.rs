@@ -40,7 +40,6 @@ pub mod store;
 pub mod task;
 pub mod team;
 pub mod tool;
-mod tool_schedule;
 pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};

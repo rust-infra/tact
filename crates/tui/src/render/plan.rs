@@ -41,10 +41,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             if is_selected {
                 style = style.add_modifier(Modifier::REVERSED);
             }
-            let mut desc = step.description.clone();
-            if step.need_approval {
-                desc.push_str(" [🔒]");
-            }
+            let desc = step.description.clone();
             let prefix = if app.plan.collapsed[i] {
                 "▶ "
             } else {

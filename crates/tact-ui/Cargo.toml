@@ -1,0 +1,23 @@
+[package]
+name = "tact-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tact-ui"
+path = "src/main.rs"
+
+[dependencies]
+tact = { path = "../tact" }
+tact_llm = { path = "../tact_llm" }
+tact_protocol = { path = "../protocol" }
+tui = { path = "../tui" }
+anthropic-ai-sdk = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+console-subscriber = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
+uuid = { workspace = true }

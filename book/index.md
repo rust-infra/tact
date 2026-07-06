@@ -131,7 +131,7 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 4 | [System Prompt](./04_chapter_prompt.md) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
 | 5 | [Context Compaction](./05_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
 | 6 | [Error Recovery](./06_chapter_recovery.md) | `RecoveryState`, transport back-off retries, prompt-too-long compaction, and output-limit continuation in `agent_loop` |
-| 7 | [Tool System](./07_chapter_tool.md) | `Tool` trait, `ToolRouter`, `ToolContext`, `toolset` / `subagent_toolset`, path safety, and `#[tool]` macro |
+| 7 | [Tool System](./07_chapter_tool.md) | `Tool` trait, `ToolRouter`, `tool/registry.rs`, `ToolContext`, path safety, and `#[tool]` macro |
 | 8 | [MCP Protocol and Agent Integration](./08_chapter_mcp.md) | Model Context Protocol fundamentals, step-by-step protocol flow, and MCP integration in Tact (configuration, handshake, tool calls, dynamic updates, graceful shutdown) |
 | 9 | [Agent Lifecycle Hooks](./09_chapter_hook.md) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 | 10 | [Permission Model](./10_chapter_permission.md) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
@@ -176,7 +176,7 @@ No chapters are queued at this time. Future additions may cover testing strategy
 - Tact notifications source: [crates/tact/src/notifications/mod.rs](../crates/tact/src/notifications/mod.rs)
 - Tact store source: [crates/tact/src/store/mod.rs](../crates/tact/src/store/mod.rs)
 - Tact session store source: [crates/tact/src/store/session_store/](../crates/tact/src/store/session_store/)
-- Tact tool source: [crates/tact/src/tool/mod.rs](../crates/tact/src/tool/mod.rs)
+- Tact tool source: [crates/tact/src/tool/](../crates/tact/src/tool/) (`mod.rs`, `registry.rs`, individual tools)
 - Tact skill source: [crates/tact/src/skill/mod.rs](../crates/tact/src/skill/mod.rs)
 - Tact recovery source: [crates/tact/src/recovery.rs](../crates/tact/src/recovery.rs)
 - Tact team source: [crates/tact/src/team.rs](../crates/tact/src/team.rs)
@@ -186,11 +186,11 @@ No chapters are queued at this time. Future additions may cover testing strategy
 - Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
 - Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)
 - Tact task manager source: [crates/tact/src/task/mod.rs](../crates/tact/src/task/mod.rs)
-- Tact LSP source: [crates/tact/src/lsp.rs](../crates/tact/src/lsp.rs)
+- Tact LSP source: [crates/tact/src/lsp/](../crates/tact/src/lsp/)
 - Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
 - Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
 - Tact TUI source: [crates/tui/src/lib.rs](../crates/tui/src/lib.rs)
-- Tact UI binary: [crates/tact/src/bin/tui.rs](../crates/tact/src/bin/tui.rs)
+- Tact UI binary: [crates/tact-ui/](../crates/tact-ui/) (`main.rs`, `interactive.rs`, `headless.rs`, …)
 - TUI rendering deep dive: [docs/tui_rendering.md](../docs/tui_rendering.md)
 
 ---

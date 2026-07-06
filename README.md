@@ -105,7 +105,7 @@ cargo build --release
 Via Cargo (coming soon to crates.io):
 
 ```bash
-cargo install tact   # installs the tact-ui binary
+cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the repo root
 ```
 
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
@@ -405,11 +405,12 @@ brave_search_api_key = "bsk-..."
 
 ```
 crates/
-├── core/        # Shared types, protocols, message formats
-├── tact/        # Agent runtime: loop, tools, hooks, permissions, MCP
-├── tools/       # Tool implementations and the Tool trait
-├── tui/         # Terminal UI (ratatui-based, streaming output)
-└── tool_refactor_macros/   # Proc macros for tool definition
+├── protocol/    # Shared wire types (AgentUpdate, UserCommand, …)
+├── tact/        # Agent runtime library: loop, tools, hooks, permissions, MCP, LSP
+├── tact-ui/     # CLI binary (TUI + headless); wires tact + tui
+├── tact_llm/    # LLM provider adapters
+├── tui/         # Terminal UI (ratatui)
+└── tool_refactor_macros/   # #[tool] proc macro
 ```
 
 ---

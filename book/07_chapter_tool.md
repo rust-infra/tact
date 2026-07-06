@@ -223,13 +223,14 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 
 | File | Role |
 |------|------|
-| `crates/tact/src/tool/mod.rs` | `Tool`, `ToolContext`, `ToolRouter`, `toolset`, `subagent_toolset`, `input_schema` |
+| `crates/tact/src/tool/mod.rs` | `Tool`, `ToolContext`, `ToolRouter`, `input_schema` |
+| `crates/tact/src/tool/registry.rs` | `toolset()`, `subagent_toolset()` |
 | `crates/tact/src/tool/path.rs` | Workspace path validation |
 | `crates/tact/src/tool/*.rs` | Individual tool implementations |
 | `crates/tact/src/agent/tool_dispatch.rs` | `run_native_tool`, three-phase pipeline |
 | `crates/tact/src/agent/mod.rs` | `all_tool_specs`, agent construction |
 | `crates/tool_refactor_macros/` | `#[tool]` proc macro |
-| `crates/tact/src/bin/tui.rs` | Builds `ToolContext`, passes `toolset()` to `Agent::new` |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Build `ToolContext`, pass `toolset()` to `Agent::new` |
 
 ---
 

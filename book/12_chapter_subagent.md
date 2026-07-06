@@ -2,7 +2,7 @@
 
 This chapter explains how Tact spawns **isolated worker agents** through the `task` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, MCP tools, or SQLite session persistence.
 
-Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/mod.rs`.
+Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/registry.rs`.
 
 Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_teammate` only writes roster/inbox records; `task` actually runs a nested `Agent::agent_loop`.
 
@@ -151,7 +151,7 @@ Permission prompts and stream updates from the subagent therefore appear in the 
 
 ## 7. Scheduling Interaction
 
-In `tool_schedule.rs`, `task` falls through to the default `_ => ToolResources::barrier()` branch. A `task` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
+In `crates/tact/src/agent/tool_schedule.rs`, `task` falls through to the default `_ => ToolResources::barrier()` branch. A `task` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
 
 ---
 
@@ -199,10 +199,11 @@ See [Team Coordination](./14_chapter_team.md).
 | File | Role |
 |------|------|
 | `crates/tact/src/tool/subagent.rs` | `task` tool handler — spawn, loop, summary extraction |
-| `crates/tact/src/tool/mod.rs` | `TaskTool` registration in `toolset()`; `subagent_toolset()` |
+| `crates/tact/src/tool/mod.rs` | `TaskTool` implementation |
+| `crates/tact/src/tool/registry.rs` | `TaskTool` in `toolset()`; `subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop`, `build_system_prompt`, `ensure_session` |
 | `crates/tact/src/permission/mod.rs` | `task` → `CapabilityRisk::High` |
-| `crates/tact/src/tool_schedule.rs` | `task` as scheduling barrier |
+| `crates/tact/src/agent/tool_schedule.rs` | `task` as scheduling barrier |
 | `ARCHITECTURE.md` | One-line summary in tools table |
 
 ---

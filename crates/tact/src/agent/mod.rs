@@ -1,6 +1,7 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 mod tool_dispatch;
+mod tool_schedule;
 
 use anthropic_ai_sdk::types::message::{
     ContentBlock, CreateMessageParams, Message, MessageContent, RequiredMessageParams, Role,
@@ -154,6 +155,11 @@ impl Agent {
         self
     }
 
+    /// Gracefully disconnect all MCP server child processes.
+    pub async fn shutdown_mcp(&mut self) {
+        self.mcp_router.disconnect_all().await;
+    }
+
     pub fn emit_update(&self, update: AgentUpdate) {
         // Desktop notifications for key lifecycle events
         match &update {
@@ -186,7 +192,8 @@ impl Agent {
             }
         };
 
-        store.create_session(&session_id).await?;
+        let root_dir = self.tool_context.work_dir.display().to_string();
+        store.create_session(&session_id, &root_dir).await?;
 
         if self.runtime.context.is_empty() {
             let history = store.load_session(&session_id).await?;
@@ -253,7 +260,7 @@ impl Agent {
     /// Persist the tool-schedule summary for the current turn, attaching it to
     /// the token-usage row of the LLM call that produced these tool calls
     /// (keyed by the assistant message id). Best-effort: failures are ignored.
-    async fn persist_tool_schedule(&self, summary: &crate::tool_schedule::ToolScheduleSummary) {
+    async fn persist_tool_schedule(&self, summary: &tool_schedule::ToolScheduleSummary) {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return;
         };

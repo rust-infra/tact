@@ -6,7 +6,8 @@
 ```mermaid
 graph TB
     %% ── Entry Layer ──
-    Main(["bin/tui.rs<br/>tact-ui"])
+    Main(["crates/tact-ui/src/main.rs<br/>CLI dispatch"])
+    Interactive(["interactive.rs / headless.rs<br/>session setup"])
 
     %% ── Core Structures ──
     subgraph Core["Agent Core"]
@@ -41,7 +42,7 @@ graph TB
     end
 
     %% ── Persistence ──
-    SessionStore["SessionStore (SQLite)<br/>.claude/tact.db<br/>messages + token_usages"]
+    SessionStore["SessionStore (SQLite)<br/>.tact/tact.db<br/>messages + token_usages"]
     Store["Store / CollectionStore<br/>JSON file persistence"]
 
     %% ── Prompt Builder ──
@@ -93,8 +94,9 @@ graph TB
     end
 
     %% ── Relationships ──
-    Main -->|creates| Agent
-    Main -->|creates| ToolContext
+    Main -->|dispatches| Interactive
+    Interactive -->|creates| Agent
+    Interactive -->|creates| ToolContext
 
     Agent -->|contains| Runtime
     Agent -->|holds| Router
@@ -138,7 +140,8 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant User as User
-    participant Main as bin/tui.rs
+    participant Main as tact-ui (main.rs)
+    participant Session as interactive.rs / headless.rs
     participant Agent as Agent
     participant Router as ToolRouter
     participant Perm as PermissionManager
@@ -147,8 +150,8 @@ sequenceDiagram
     participant Tool as Tool Impl
     participant Store as Store
 
-    User->>Main: Enter query
-    Main->>Agent: agent_loop()
+    User->>Session: Enter query
+    Session->>Agent: agent_loop()
     Note over Agent: micro_compact(context)
     Note over Agent: Check context size, compact if exceeded
 
@@ -156,8 +159,8 @@ sequenceDiagram
     LLM-->>Agent: response (text / tool_use)
 
     alt stop_reason != ToolUse
-        Agent-->>Main: Return
-        Main-->>User: Print final reply
+        Agent-->>Session: Return
+        Session-->>User: Print final reply
     else ToolUse
         Agent->>Hooks: invoke PreToolUse hooks
         Hooks-->>Agent: Continue / Block

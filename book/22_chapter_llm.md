@@ -271,7 +271,7 @@ Both return `tact_protocol::BalanceInfo` and surface in the TUI as `AgentUpdate:
 
 **TUI timer:** `run_tui` accepts `balance_polling_enabled` (set from `is_deepseek()` / `is_kimi()` in `tui.rs`). Periodic and startup balance queries run only for those providers.
 
-Only invoked when `is_deepseek()` or `is_kimi()` is true (`crates/tact/src/bin/tui.rs`).
+Only invoked when `is_deepseek()` or `is_kimi()` is true (`crates/tact-ui/src/interactive.rs`).
 
 ```mermaid
 sequenceDiagram
