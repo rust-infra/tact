@@ -2,7 +2,7 @@
 
 This Mermaid diagram document describes the complete data flow from the Agent main loop, through LLM streaming responses, to the actual execution of `batch_read` / `batch_edit`, and finally to the `AgentUpdate` messages sent to the TUI where they are consumed and rendered.
 
-> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/lib.rs`, `crates/tact_llm/src/`, `crates/tui/src/lib.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/tool_widget.rs`, `crates/tui/src/render/cells/tool.rs`  
+> Files involved: `crates/tact/src/tool/batch_read.rs`, `crates/tact/src/tool/batch_edit.rs`, `crates/tact/src/agent/mod.rs`, `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact_llm/src/`, `crates/tui/src/lib.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/tool_widget.rs`, `crates/tui/src/render/cells/tool.rs`  
 > Tool UI design: [`tool_rendering.md`](./tool_rendering.md)
 
 ---
@@ -243,9 +243,9 @@ flowchart LR
 
 | Flow Node | Code Location |
 |---|---|
-| Agent main loop | `crates/tact/src/lib.rs` `Tact::agent_loop()` |
-| Tool call dispatch | `crates/tact/src/lib.rs` `Tact::execute_tool_call()` |
-| Concrete tool execution | `crates/tact/src/lib.rs` `Tact::execute()` |
+| Agent main loop | `crates/tact/src/agent/mod.rs` `Agent::agent_loop()` |
+| Tool call dispatch | `crates/tact/src/agent/tool_dispatch.rs` `Agent::execute_tool_call()` |
+| Concrete tool execution | `crates/tact/src/agent/tool_dispatch.rs` native/MCP dispatch helpers |
 | Tool registration & routing | `crates/tact/src/tool/mod.rs` `ToolSet::call()` |
 | `batch_read` implementation | `crates/tact/src/tool/batch_read.rs` `BatchRead::run()` |
 | `batch_edit` implementation | `crates/tact/src/tool/batch_edit.rs` `BatchEdit::run()` |

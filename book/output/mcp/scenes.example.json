@@ -1,0 +1,79 @@
+{
+    "title": "MCP Protocol and Agent Integration",
+    "chapter": "mcp",
+    "source": "book/08_chapter_mcp.md",
+    "scenes": [
+        {
+            "id": "01",
+            "title": "What Problem Does MCP Solve?",
+            "narration": "Before MCP, every AI application had to write custom glue code for every external tool or data source. That's the M-by-N integration problem: M apps times N tools means M-times-N adapters. MCP replaces that with a single JSON-RPC protocol. Each external capability runs as an MCP Server. Each AI app speaks MCP as a Client. One protocol, many integrations.",
+            "bullets": [
+                "M×N adapters → M+N with one protocol",
+                "Server exposes capabilities",
+                "Client connects from the Host app"
+            ],
+            "code": null,
+            "duration_hint_sec": 45
+        },
+        {
+            "id": "02",
+            "title": "Three Roles: Host, Client, Server",
+            "narration": "MCP has three roles. The Host is the AI application—in Tact, that's the Agent plus tact-ui. The Client is one connection inside the Host; one Client per Server. The Server is a separate process that exposes tools, resources, and prompts. The pattern is one Host, N Clients, N Servers.",
+            "bullets": [
+                "Host — LLM, permissions, tool routing",
+                "Client — one dedicated Server connection",
+                "Server — tools / resources / prompts"
+            ],
+            "code": null,
+            "duration_hint_sec": 40
+        },
+        {
+            "id": "03",
+            "title": "Handshake: initialize",
+            "narration": "After spawning a Server over stdio, the Client must send initialize before any tool calls. Both sides exchange protocol version and capabilities—what features they support, like tools with list-changed notifications. The Client then sends notifications slash initialized. In Tact, rmcp handles this inside serve; you won't find raw JSON in application code.",
+            "bullets": [
+                "JSON-RPC 2.0 session",
+                "initialize → negotiate capabilities",
+                "notifications/initialized → session ready"
+            ],
+            "code": "method: initialize\nmethod: notifications/initialized",
+            "duration_hint_sec": 50
+        },
+        {
+            "id": "04",
+            "title": "Tool Discovery and Naming",
+            "narration": "Next, the Client calls tools slash list. Each tool has a name, description, and input schema. Tact prefixes MCP tools as mcp double-underscore plugin double-underscore server double-underscore tool—so multiple servers never collide. Native tools and MCP tools merge into one list the LLM sees every turn.",
+            "bullets": [
+                "tools/list — discover tools",
+                "Prefix: mcp__<plugin>__<server>__<tool>",
+                "Merged into Agent cached_tool_specs"
+            ],
+            "code": "mcp__demo__postgres__query",
+            "duration_hint_sec": 45
+        },
+        {
+            "id": "05",
+            "title": "Execution: tools/call",
+            "narration": "When the LLM picks a tool, the Agent routes names starting with mcp double-underscore to MCPToolRouter. The router parses the server and tool name, then sends tools slash call with the Server-internal tool name—not the prefixed Agent name. Results come back as a content array; Tact joins text parts and feeds them back into the conversation.",
+            "bullets": [
+                "LLM returns tool_use",
+                "MCPToolRouter → tools/call",
+                "Result written back to context"
+            ],
+            "code": "method: tools/call\nparams.name: query",
+            "duration_hint_sec": 50
+        },
+        {
+            "id": "06",
+            "title": "Dynamic Updates and Shutdown Gaps",
+            "narration": "The MCP protocol supports notifications slash tools slash list changed when a server's tool set changes. Tact currently fetches tools once at startup; live tool-list refresh is not wired yet. MCPToolRouter has disconnect_all, but tact-ui does not call it on exit today, so graceful MCP shutdown is also a current gap.",
+            "bullets": [
+                "notifications/tools/list_changed",
+                "startup-only tool discovery",
+                "disconnect_all exists, not wired"
+            ],
+            "code": null,
+            "duration_hint_sec": 45
+        }
+    ]
+}

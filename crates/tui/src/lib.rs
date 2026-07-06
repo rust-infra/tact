@@ -67,6 +67,7 @@ pub async fn run_tui(
     session_id: String,
     history_save_tx: UnboundedSender<(String, String)>,
     theme: String,
+    balance_polling_enabled: bool,
 ) -> Result<()> {
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -229,8 +230,8 @@ pub async fn run_tui(
             1000u64
         };
         tokio::select! {
-            _ = balance_timer.as_mut() => {
-                // Periodic DeepSeek balance query (random 5–15 second interval)
+            _ = balance_timer.as_mut(), if balance_polling_enabled => {
+                // Periodic DeepSeek/Kimi balance query (random 5–15 second interval)
                 let _ = user_cmd_tx.send(UserCommand::QueryBalance);
                 balance_timer = Box::pin(tokio::time::sleep(random_balance_duration()));
             }

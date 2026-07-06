@@ -26,8 +26,8 @@
 //! JSON schema from an async function signature.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use crate::ToolSpec;
 use crate::background::SharedBackgroundManager;
@@ -37,7 +37,7 @@ use crate::skill::SkillRegistry;
 use crate::task::SharedTaskManager;
 use crate::team::SharedTeammateManager;
 use crate::worktree::SharedWorktreeManager;
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
@@ -45,33 +45,31 @@ use tact_protocol::AgentUpdate;
 
 mod apply_patch;
 mod ask_user;
-mod background;
+mod background_run;
 mod bash;
 mod batch_edit;
 mod batch_read;
 mod compact;
 mod cron;
 mod edit_file;
-mod http;
 mod load_skill;
-mod lsp;
+mod lsp_tool;
 mod memory;
+mod path;
 mod read_file;
 mod search_code;
 mod sleep;
 mod subagent;
 mod task;
 mod team;
-mod web_fetch;
-mod web_refs;
-mod web_search;
+mod web;
 mod worktree;
 mod write_file;
 #[cfg(test)]
 mod test_support;
 use apply_patch::ApplyPatchTool;
 use ask_user::AskUserTool;
-use background::{BackgroundRunTool, CheckBackgroundTool};
+use background_run::{BackgroundRunTool, CheckBackgroundTool};
 use bash::BashTool;
 use batch_edit::BatchEditTool;
 use batch_read::BatchReadTool;
@@ -79,7 +77,7 @@ use compact::CompactTool;
 use cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use edit_file::EditFileTool;
 use load_skill::LoadSkillTool;
-use lsp::QueryLspTool;
+use lsp_tool::QueryLspTool;
 use memory::SaveMemoryTool;
 use read_file::ReadFileTool;
 use search_code::SearchCodeTool;
@@ -90,8 +88,7 @@ use team::{
     BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
     ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
 };
-use web_fetch::WebFetchTool;
-use web_search::WebSearchTool;
+use web::{WebFetchTool, WebSearchTool};
 use worktree::{
     WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool, WorktreeStatusTool,
 };
@@ -195,12 +192,14 @@ pub trait Tool: Send + Sync {
 /// [`ToolSpec`] values for inclusion in the LLM API request.
 pub struct ToolRouter {
     tools: HashMap<String, Box<dyn Tool>>,
+    cached_specs: OnceLock<Vec<ToolSpec>>,
 }
 
 impl ToolRouter {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            cached_specs: OnceLock::new(),
         }
     }
 
@@ -213,7 +212,11 @@ impl ToolRouter {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.tools.values().map(|tool| tool.tool_spec()).collect()
+        self.cached_specs
+            .get_or_init(|| self.tools.values().map(|tool| tool.tool_spec()).collect())
+            .iter()
+            .map(copy_tool_spec)
+            .collect()
     }
 
     pub async fn call(&self, context: &ToolContext, name: &str, input: Value) -> Result<String> {
@@ -239,41 +242,15 @@ where
     serde_json::to_value(schemars::schema_for!(T)).expect("schema generation should not fail")
 }
 
-fn safe_path(work_dir: &Path, path: &str) -> Result<PathBuf> {
-    resolve_safe_path(work_dir, path, false)
-}
-
-fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<PathBuf> {
-    resolve_safe_path(work_dir, path, true)
-}
-
-fn resolve_safe_path(work_dir: &Path, path: &str, allow_missing: bool) -> Result<PathBuf> {
-    let work_dir = work_dir.canonicalize()?;
-    let candidate = work_dir.join(path);
-
-    let full = if candidate.exists() || !allow_missing {
-        candidate.canonicalize()?
-    } else {
-        let parent = candidate
-            .parent()
-            .context("Path has no parent")?
-            .canonicalize()?;
-
-        if !parent.starts_with(&work_dir) {
-            return Err(anyhow::anyhow!("Path escapes workspace"));
-        }
-
-        let file_name = candidate.file_name().context("Path has no file name")?;
-
-        parent.join(file_name)
-    };
-
-    if !full.starts_with(&work_dir) {
-        return Err(anyhow::anyhow!("Path escapes workspace"));
+pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
+    ToolSpec {
+        name: spec.name.clone(),
+        description: spec.description.clone(),
+        input_schema: spec.input_schema.clone(),
     }
-
-    Ok(full)
 }
+
+pub(crate) use path::{safe_path, safe_path_allow_missing};
 
 #[cfg(test)]
 mod tests {
