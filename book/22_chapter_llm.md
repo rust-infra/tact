@@ -185,7 +185,8 @@ sequenceDiagram
     API-->>Adapter: complete assistant message
     Adapter-->>Client: summary content blocks + usage
     Client-->>Compact: normalized summary blocks
-    Compact->>Context: replace old history with compacted summary
+    Compact->>Context: replace in-memory context with compacted summary
+    Compact->>Store: replace_session_messages (SQLite matches summary)
 ```
 
 Compaction uses the same provider adapters without SSE; conceptually this is the Ch 5 summarization path running beside the streaming loop.
@@ -221,6 +222,10 @@ Notable behaviors:
 - **`set_user_id`** adds `"user_id"` to the JSON body for OpenAI-compatible cache isolation.
 
 `convert.rs` builds provider-specific request JSON from shared `CreateMessageParams` (Anthropic message shape used internally throughout Tact).
+
+**Kimi reasoning replay:** `anthropic_messages_to_openai` returns a `reasoning` vector aligned **one-to-one** with emitted OpenAI messages (not Anthropic source messages). When a user turn splits into multiple tool-result messages, each gets `None`; assistant thinking is attached only to the matching assistant row. `inject_reasoning_content` uses that parallel vector for Kimi/Moonshot.
+
+**Incomplete tool calls:** stream and non-stream parsers skip tool-call slots with empty `id` or `name` so truncated SSE does not insert phantom `ToolUse` blocks.
 
 ---
 

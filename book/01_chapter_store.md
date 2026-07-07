@@ -141,7 +141,7 @@ Defined in `crates/tact/src/store/session_store/`. The trait is async; the defau
 <workdir>/.tact/tact.db
 ```
 
-Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`. At session start, `SessionLockGuard` sets `locked_by` + `lock_epoch` (process start identity); `0`/empty means unlocked. `main` installs SIGINT/SIGTERM listeners that release the lock and exit on abnormal termination.
+Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`. At session start, `SessionLockGuard` (`crates/tact-ui/src/session_lock.rs`) retries `try_lock_session` on contention, sets `locked_by` + `lock_epoch` (process start identity); `0`/empty means unlocked. `main` installs SIGINT/SIGTERM listeners that release the lock and exit the process (`130`/`143`) on abnormal termination.
 
 ### Tables
 
@@ -156,10 +156,12 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 
 | Agent method | SessionStore call |
 |--------------|-------------------|
-| `ensure_session()` | `create_session`, `load_session` → restore `runtime.context` |
+| `ensure_session()` | `ensure_session_row`, `load_session` → restore `runtime.context` |
+| `tact-ui` session start | `ensure_session_row` → `try_lock_session` → `touch_session` (metadata only after lock held) |
 | `persist_message()` | `append_message` after each context push |
-| `persist_llm_call()` | `record_token_usage` |
-| `execute_tool_call` (post-schedule) | `record_tool_schedule` on latest token row |
+| `persist_llm_call()` | `record_token_usage` (snapshots `llm_call_last_message_id` = `last_message_db_id` **before** assistant row is written) |
+| `compact_history()` | `replace_session_messages` — rewrite SQLite `messages` to match post-compaction context |
+| `execute_tool_call` (post-schedule) | `record_tool_schedule` on the token row keyed by `llm_call_last_message_id` |
 
 If no session store is attached (`with_session` not called), persistence methods no-op — useful for tests.
 
@@ -185,9 +187,10 @@ sequenceDiagram
 
     loop agent_loop
         Agent->>SQL: append_message (user/assistant/tool)
-        Agent->>SQL: record_token_usage
+        Agent->>SQL: record_token_usage (last_message_id = pre-assistant window)
         Agent->>JSON: domain tools read/write (tasks, cron, …)
-        Agent->>SQL: record_tool_schedule
+        Agent->>SQL: record_tool_schedule (same last_message_id anchor)
+        Agent->>SQL: replace_session_messages (on compact_history)
     end
 ```
 
@@ -199,8 +202,9 @@ sequenceDiagram
 |------|------|
 | `crates/tact/src/store/mod.rs` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait, `DynSessionStore`, `open_sqlite_session_store` |
-| `crates/tact/src/store/session_store/sqlite.rs` | Schema, migrations, `SqliteSessionStore` impl |
-| `crates/tact/src/agent/mod.rs` | `ensure_session`, `persist_message`, `persist_llm_call` |
+| `crates/tact/src/store/session_store/sqlite.rs` | Greenfield schema (`CREATE TABLE IF NOT EXISTS`), `SqliteSessionStore` impl |
+| `crates/tact/src/agent/mod.rs` | `ensure_session`, `persist_message`, `persist_llm_call`, `replace_persisted_context` |
+| `crates/tact-ui/src/session_lock.rs` | `SessionLockGuard`, SIGINT/SIGTERM release + process exit |
 | `crates/tact/src/consts.rs` | `TactPath::session_db_path()` → `<workdir>/.tact/tact.db`; `TactPath::workdir()` stored as `sessions.root_dir` |
 | `crates/tact-ui/src/main.rs` | Opens SQLite session store; headless/interactive attach domain managers |
 | `crates/tact/src/task/mod.rs` | Example `CollectionStore` consumer |
@@ -212,9 +216,9 @@ sequenceDiagram
 
 | Gap | Detail |
 |-----|--------|
-| No cross-process locking | JSON files use read-modify-write without file locks |
+| No cross-process locking on JSON store | JSON files use read-modify-write without file locks (SQLite sessions use process lock) |
 | `CollectionStore::list()` order | Unsorted directory iteration — order is filesystem-dependent |
-| Schema migrations are best-effort | SQLite `ALTER TABLE` failures are ignored (`let _ = …`) |
+| Greenfield SQLite schema | No legacy DB path migration or `ALTER TABLE` upgrades — new installs only |
 | Session store optional | Tests and some callers may run without SQLite attached |
 | Session DB per workdir | SQLite lives at `<workdir>/.tact/tact.db` today; `sessions.root_dir` records the project path for a future shared `$HOME/.tact/tact.db` |
 | `index.json` special case | Skipped in `list()` — easy to forget when adding new index files |

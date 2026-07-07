@@ -52,6 +52,13 @@ pub trait SessionStore: Send + Sync {
         ordinal: i64,
     ) -> Result<i64>;
 
+    /// Replace all persisted messages for a session (used after compaction).
+    async fn replace_session_messages(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+    ) -> Result<(i64, i64)>;
+
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;
 
     async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>>;

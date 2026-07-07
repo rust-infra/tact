@@ -168,15 +168,27 @@ async fn run_interactive_locked(
         match cmd {
             UserCommand::SubmitTask(task) => {
                 agent.tool_use_counter = 0;
+                agent
+                    .runtime
+                    .cancel_flag
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
 
                 let task_message = build_user_message(&task, &image_work_dir).await;
-                if let Err(e) = agent.agent_loop(Some(task_message)).await {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                }
-
-                if let Some(last) = agent.runtime.context.last() {
-                    let text = extract_text(&last.content);
-                    agent.emit_update(AgentUpdate::TaskComplete(text));
+                match agent.agent_loop(Some(task_message)).await {
+                    Ok(()) if !agent
+                        .runtime
+                        .cancel_flag
+                        .load(std::sync::atomic::Ordering::Relaxed) =>
+                    {
+                        if let Some(last) = agent.runtime.context.last() {
+                            let text = extract_text(&last.content);
+                            agent.emit_update(AgentUpdate::TaskComplete(text));
+                        }
+                    }
+                    Ok(()) => {}
+                    Err(e) => {
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
+                    }
                 }
             }
             UserCommand::Cancel => {
