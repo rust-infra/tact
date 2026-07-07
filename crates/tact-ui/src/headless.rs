@@ -20,7 +20,7 @@ use tact::{
 use tact_llm::get_llm_client;
 
 use crate::permission::permission_mode_from_config;
-use crate::session_lock::SessionLockRegistry;
+use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
 use crate::user_message::build_user_message;
 
 pub(crate) async fn run_headless(
@@ -36,10 +36,11 @@ pub(crate) async fn run_headless(
         std::process::exit(1);
     }
 
+    let root_dir = tact_path.workdir().display().to_string();
     let session_id = if let Some(ref id) = args.session {
         Some(id.clone())
     } else if args.resume_last {
-        let sessions = session_store.list_sessions().await?;
+        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
         sessions.into_iter().next().map(|s| s.id)
     } else {
         None
@@ -91,37 +92,37 @@ pub(crate) async fn run_headless(
     )
     .with_session(session_id, session_store.clone());
 
-    let _ = agent.ensure_session().await?;
+    let sid = agent.ensure_session().await?;
 
-    let session_lock = if let Some(sid) = agent.runtime.session_id.as_deref() {
-        let lock =
-            crate::session_lock::SessionLockGuard::acquire(session_store, sid).await?;
+    let session_lock = {
+        let lock = SessionLockGuard::acquire(session_store.clone(), &sid).await?;
         lock_registry.register(lock.clone()).await;
+        session_store.touch_session(&sid, &root_dir).await?;
         Some(lock)
-    } else {
-        None
     };
 
-    let prompt_message = build_user_message(&prompt, &work_dir).await;
-    agent.agent_loop(Some(prompt_message)).await?;
+    let run_result = async {
+        let prompt_message = build_user_message(&prompt, &work_dir).await;
+        agent.agent_loop(Some(prompt_message)).await?;
 
-    if let Some(ref sid) = agent.runtime.session_id {
         eprintln!("[session id: {sid}]");
+        eprintln!("{}", agent.runtime.stats.summary());
+
+        if let Some(final_content) = agent.runtime.context.last() {
+            let text = extract_text(&final_content.content);
+            println!("{text}");
+
+            let summary = text.chars().take(200).collect::<String>();
+            let _ = tact::notifications::notify_task_complete(&summary);
+        }
+
+        agent.shutdown_mcp().await;
+        Ok::<(), anyhow::Error>(())
     }
+    .await;
 
-    eprintln!("{}", agent.runtime.stats.summary());
-
-    if let Some(final_content) = agent.runtime.context.last() {
-        let text = extract_text(&final_content.content);
-        println!("{text}");
-
-        let summary = text.chars().take(200).collect::<String>();
-        let _ = tact::notifications::notify_task_complete(&summary);
-    }
-
-    agent.shutdown_mcp().await;
     if let Some(lock) = session_lock {
         lock.release().await?;
     }
-    Ok(())
+    run_result
 }

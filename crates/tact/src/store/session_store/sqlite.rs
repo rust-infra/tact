@@ -40,7 +40,9 @@ impl SqliteSessionStore {
                 id TEXT PRIMARY KEY NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                root_dir TEXT NOT NULL DEFAULT ''
+                root_dir TEXT NOT NULL DEFAULT '',
+                locked_by INTEGER NOT NULL DEFAULT 0,
+                lock_epoch TEXT NOT NULL DEFAULT ''
             );
             "#,
         )
@@ -89,6 +91,7 @@ impl SqliteSessionStore {
                 reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                 first_message_id INTEGER NOT NULL DEFAULT 0,
                 last_message_id INTEGER NOT NULL DEFAULT 0,
+                tool_schedule TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             "#,
@@ -124,43 +127,6 @@ impl SqliteSessionStore {
         .execute(&pool)
         .await
         .context("failed to create input_history index")?;
-
-        // Migration: add request_body column for LLM call debugging.
-        let _ = sqlx::query("ALTER TABLE token_usages ADD COLUMN request_body BLOB")
-            .execute(&pool)
-            .await;
-
-        // Migration: add tool_schedule column (JSON summary of how the turn's
-        // tool calls were scheduled into parallel waves).
-        let _ = sqlx::query("ALTER TABLE token_usages ADD COLUMN tool_schedule TEXT")
-            .execute(&pool)
-            .await;
-
-        // Migration: drop deprecated title column from sessions.
-        let _ = sqlx::query("ALTER TABLE sessions DROP COLUMN title")
-            .execute(&pool)
-            .await;
-
-        // Migration: process lock — 0 = unlocked, non-zero = holder PID.
-        let _ = sqlx::query(
-            "ALTER TABLE sessions ADD COLUMN locked_by INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(&pool)
-        .await;
-
-        // Migration: project root directory for shared ~/.tact DB (multi-workspace).
-        let _ = sqlx::query(
-            "ALTER TABLE sessions ADD COLUMN root_dir TEXT NOT NULL DEFAULT ''",
-        )
-        .execute(&pool)
-        .await;
-
-        // Migration: process start identity — detects PID reuse (paired with locked_by).
-        let _ = sqlx::query(
-            "ALTER TABLE sessions ADD COLUMN lock_epoch TEXT NOT NULL DEFAULT ''",
-        )
-        .execute(&pool)
-        .await;
 
         Ok(Self { pool })
     }
@@ -242,6 +208,39 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(())
     }
 
+    async fn ensure_session_row(&self, id: &str, root_dir: &str) -> Result<()> {
+        let now = Self::now();
+        sqlx::query(
+            r#"
+            INSERT INTO sessions (id, created_at, updated_at, root_dir)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(id)
+        .bind(now)
+        .bind(now)
+        .bind(root_dir)
+        .execute(&self.pool)
+        .await
+        .context("failed to ensure session row")?;
+        Ok(())
+    }
+
+    async fn touch_session(&self, id: &str, root_dir: &str) -> Result<()> {
+        let now = Self::now();
+        sqlx::query(
+            "UPDATE sessions SET updated_at = ?, root_dir = ? WHERE id = ?",
+        )
+        .bind(now)
+        .bind(root_dir)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("failed to touch session")?;
+        Ok(())
+    }
+
     async fn append_message(
         &self,
         session_id: &str,
@@ -300,24 +299,46 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(messages)
     }
 
-    async fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                s.id,
-                s.root_dir,
-                s.created_at,
-                s.updated_at,
-                COUNT(m.id) as message_count
-            FROM sessions s
-            LEFT JOIN messages m ON m.session_id = s.id
-            GROUP BY s.id
-            ORDER BY s.updated_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to list sessions")?;
+    async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>> {
+        let rows = if let Some(root) = root_dir {
+            sqlx::query(
+                r#"
+                SELECT
+                    s.id,
+                    s.root_dir,
+                    s.created_at,
+                    s.updated_at,
+                    COUNT(m.id) as message_count
+                FROM sessions s
+                LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.root_dir = ?
+                GROUP BY s.id
+                ORDER BY s.updated_at DESC
+                "#,
+            )
+            .bind(root)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list sessions")?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT
+                    s.id,
+                    s.root_dir,
+                    s.created_at,
+                    s.updated_at,
+                    COUNT(m.id) as message_count
+                FROM sessions s
+                LEFT JOIN messages m ON m.session_id = s.id
+                GROUP BY s.id
+                ORDER BY s.updated_at DESC
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list sessions")?
+        };
 
         let mut sessions = Vec::with_capacity(rows.len());
         for row in rows {
@@ -659,7 +680,7 @@ impl super::SessionStore for SqliteSessionStore {
         lock_epoch: &str,
     ) -> Result<()> {
         let pid_i64 = i64::from(pid);
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE sessions SET locked_by = 0, lock_epoch = '' WHERE id = ? AND locked_by = ? AND lock_epoch = ?",
         )
         .bind(session_id)
@@ -668,6 +689,11 @@ impl super::SessionStore for SqliteSessionStore {
         .execute(&self.pool)
         .await
         .context("failed to release session lock")?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!(
+                "session {session_id} lock release had no effect (already released or epoch mismatch)"
+            );
+        }
         Ok(())
     }
 }
@@ -791,7 +817,7 @@ mod tests {
         let total = store.count_messages_total().await.unwrap();
         assert_eq!(total, 2);
 
-        let sessions = store.list_sessions().await.unwrap();
+        let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].message_count, 2);
 
@@ -905,7 +931,7 @@ mod tests {
             .await
             .unwrap();
 
-        let sessions = store.list_sessions().await.unwrap();
+        let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].root_dir, "/Users/me/project");
     }
