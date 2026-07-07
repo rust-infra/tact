@@ -38,6 +38,12 @@ pub struct MessageCountByPeriod {
 pub trait SessionStore: Send + Sync {
     async fn create_session(&self, id: &str, root_dir: &str) -> Result<()>;
 
+    /// Insert a session row if missing; does not update metadata for existing rows.
+    async fn ensure_session_row(&self, id: &str, root_dir: &str) -> Result<()>;
+
+    /// Refresh `updated_at` and `root_dir` after the process lock is held.
+    async fn touch_session(&self, id: &str, root_dir: &str) -> Result<()>;
+
     async fn append_message(
         &self,
         session_id: &str,
@@ -48,7 +54,7 @@ pub trait SessionStore: Send + Sync {
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;
 
-    async fn list_sessions(&self) -> Result<Vec<SessionSummary>>;
+    async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>>;
 
     async fn delete_session(&self, session_id: &str) -> Result<()>;
 

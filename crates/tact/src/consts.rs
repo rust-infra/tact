@@ -55,11 +55,6 @@ impl TactPath {
         self.tact_dir().join("tact.db")
     }
 
-    /// `<workdir>/.claude/tact.db` — legacy session store (pre-0.19).
-    pub fn legacy_session_db_path(&self) -> PathBuf {
-        self.claude_dir().join("tact.db")
-    }
-
     /// `<workdir>/.claude`
     pub fn claude_dir(&self) -> PathBuf {
         self.workdir.join(CLAUDE_DIR)

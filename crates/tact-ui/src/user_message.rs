@@ -3,6 +3,7 @@ use std::path::Path;
 use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role::User};
 use base64::Engine as _;
 use regex::Regex;
+use tact::tool::safe_path;
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
@@ -54,7 +55,16 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
 
         match r {
             Ref::Image { alt, path } => {
-                let resolved = work_dir.join(path);
+                let resolved = match safe_path(work_dir, path) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        blocks.push(ContentBlock::Text {
+                            text: task[content_start..end].to_string(),
+                        });
+                        last_end = end;
+                        continue;
+                    }
+                };
                 match load_image_block(&resolved).await {
                     Some(source) => {
                         if !alt.is_empty() {
@@ -72,7 +82,16 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
                 }
             }
             Ref::AtFile { path } => {
-                let resolved = work_dir.join(path);
+                let resolved = match safe_path(work_dir, path) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        blocks.push(ContentBlock::Text {
+                            text: task[content_start..end].to_string(),
+                        });
+                        last_end = end;
+                        continue;
+                    }
+                };
                 if let Some(source) = load_image_block(&resolved).await {
                     blocks.push(ContentBlock::Image { source });
                 } else if let Some(content) = load_text_file(&resolved).await {
@@ -173,6 +192,19 @@ mod tests {
             MessageContent::Blocks { content } => content.iter().collect(),
             _ => panic!("expected block content"),
         }
+    }
+
+    #[test]
+    fn test_at_path_outside_workspace_left_unchanged() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("local.txt"), "local").unwrap();
+
+        let msg = rt().block_on(async { build_user_message("read @../outside.txt", &dir).await });
+
+        let blocks = text_blocks(&msg);
+        assert_eq!(blocks.len(), 2);
+        assert_text_contains(blocks[0], "read ");
+        assert_text_contains(blocks[1], "@../outside.txt");
     }
 
     #[test]

@@ -141,7 +141,7 @@ Defined in `crates/tact/src/store/session_store/`. The trait is async; the defau
 <workdir>/.tact/tact.db
 ```
 
-Opened in `main.rs` via `resolve_session_db_path()` (migrates legacy `<workdir>/.claude/tact.db` → `<workdir>/.tact/tact.db`) and `open_sqlite_session_store`. At session start, `SessionLockGuard` sets `locked_by` + `lock_epoch` (process start identity); `0`/empty means unlocked. `main` installs SIGINT/SIGTERM listeners that release the lock on abnormal exit.
+Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`. At session start, `SessionLockGuard` sets `locked_by` + `lock_epoch` (process start identity); `0`/empty means unlocked. `main` installs SIGINT/SIGTERM listeners that release the lock and exit on abnormal termination.
 
 ### Tables
 
