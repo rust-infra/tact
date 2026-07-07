@@ -67,7 +67,7 @@ mod worktree;
 mod write_file;
 mod registry;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use registry::{subagent_toolset, toolset};
 

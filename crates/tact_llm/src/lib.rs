@@ -17,6 +17,8 @@ use anthropic_ai_sdk::types::message::{
 };
 use anyhow::Context;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -205,6 +207,8 @@ pub trait LlmClient: Send + Sync {
 pub enum LlmProvider {
     Anthropic(anthropic::AnthropicAdapter),
     OpenAi(openai::OpenAiAdapter),
+    /// Mock provider for integration tests. Returns predetermined responses.
+    Mock(MockClient),
 }
 
 #[async_trait::async_trait]
@@ -225,6 +229,7 @@ impl LlmClient for LlmProvider {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, ui_tx).await,
             LlmProvider::OpenAi(o) => o.stream_message(request, ui_tx).await,
+            LlmProvider::Mock(m) => m.stream_message(request, ui_tx).await,
         }
     }
 
@@ -243,6 +248,7 @@ impl LlmClient for LlmProvider {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request).await,
             LlmProvider::OpenAi(o) => o.create_message(request).await,
+            LlmProvider::Mock(m) => m.create_message(request).await,
         }
     }
 }
@@ -258,6 +264,7 @@ impl LlmProvider {
         match self {
             LlmProvider::OpenAi(o) => o.set_user_id(user_id.to_string()),
             LlmProvider::Anthropic(a) => a.set_user_id(user_id.to_string()),
+            LlmProvider::Mock(_) => {} // no-op for mock
         }
     }
 }
@@ -457,6 +464,82 @@ pub fn is_kimi_k2x() -> bool {
 /// Returns true specifically for kimi-k2.7-code.
 pub fn is_kimi_k27() -> bool {
     get_provider().is_kimi_k27()
+}
+
+// ── Mock client for integration testing ───────────────────────────
+
+/// Deterministic mock LLM client that returns a fixed sequence of responses.
+///
+/// Each call to `stream_message` or `create_message` consumes one response
+/// from the sequence, wrapping around when exhausted.
+#[derive(Clone)]
+pub struct MockClient {
+    responses: Arc<Vec<(Vec<ContentBlock>, Option<StopReason>)>>,
+    counter: Arc<AtomicUsize>,
+}
+
+impl MockClient {
+    /// Create a mock client that cycles through the given responses.
+    ///
+    /// Each tuple provides content blocks and a stop reason. Token usage and
+    /// the serialised request body are always `None`.
+    pub fn new(responses: Vec<(Vec<ContentBlock>, Option<StopReason>)>) -> Self {
+        Self {
+            responses: Arc::new(responses),
+            counter: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for MockClient {
+    async fn stream_message(
+        &self,
+        _request: &CreateMessageParams,
+        _ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.responses.len();
+        let (content, stop_reason) = &self.responses[idx];
+        // StopReason doesn't derive Clone, so we must deep-copy via serde.
+        let sr = stop_reason
+            .as_ref()
+            .map(|s| {
+                serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
+                    .expect("deserialize StopReason")
+            });
+        Ok((content.clone(), sr, None, None))
+    }
+
+    async fn create_message(
+        &self,
+        _request: &CreateMessageParams,
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.responses.len();
+        let (content, stop_reason) = &self.responses[idx];
+        let sr = stop_reason
+            .as_ref()
+            .map(|s| {
+                serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
+                    .expect("deserialize StopReason")
+            });
+        Ok((content.clone(), sr, None, None))
+    }
 }
 
 #[cfg(test)]

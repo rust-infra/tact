@@ -955,3 +955,162 @@ fn load_claude_md_prompt(workdir: &Path) -> String {
     }
     lines.join("\n").trim().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anthropic_ai_sdk::types::message::{ContentBlock, Message, Role, StopReason};
+    use std::sync::Once;
+    use tact_llm::{LlmProvider, MockClient};
+
+    use crate::tool::test_support::test_context;
+
+    static INIT_CONFIG: Once = Once::new();
+
+    fn ensure_config() {
+        INIT_CONFIG.call_once(|| {
+            let config = crate::config::ResolvedConfig {
+                llm: crate::config::LlmSettings {
+                    provider: "mock".to_string(),
+                    api_key: String::new(),
+                    base_url: String::new(),
+                    model: "mock-model".to_string(),
+                },
+                agent: crate::config::AgentSettings {
+                    context_limit_chars: 500_000,
+                    max_tokens: 8192,
+                    thinking_budget: 0,
+                    snapshot_max_items: 80,
+                    notifications_enabled: false,
+                    micro_compact_enabled: true,
+                },
+                ui: crate::config::UiSettings {
+                    theme: "retro".to_string(),
+                },
+                tools: crate::config::ToolSettings {
+                    brave_search_api_key: None,
+                },
+                permission_mode: None,
+                tokio_console: false,
+            };
+            crate::config::install(config);
+        });
+    }
+
+    fn make_text_block(content: &str) -> ContentBlock {
+        ContentBlock::Text {
+            text: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn agent_new_initializes_with_correct_tool_specs() {
+        let context = test_context("agent_new_test");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+
+        let specs = agent.all_tool_specs();
+        assert!(!specs.is_empty(), "tool specs should not be empty");
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_completes_with_end_turn_response() {
+        ensure_config();
+        let context = test_context("agent_loop_end_turn");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("Hello, I am a coding agent.")],
+            Some(StopReason::EndTurn),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "Say hello")))
+            .await;
+
+        assert!(result.is_ok(), "agent_loop should complete: {:?}", result.err());
+        assert!(
+            agent.runtime.context.len() >= 2,
+            "context should have at least user + assistant messages"
+        );
+    }
+
+    #[test]
+    fn next_step_idx_increments() {
+        let context = test_context("next_step_idx");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        assert_eq!(agent.next_step_idx(), 0);
+        assert_eq!(agent.next_step_idx(), 1);
+        assert_eq!(agent.next_step_idx(), 2);
+    }
+
+    #[test]
+    fn agent_new_preserves_work_dir_in_tool_context() {
+        let context = test_context("agent_work_dir");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let expected = context.work_dir.clone();
+
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        assert_eq!(agent.tool_context.work_dir, expected);
+    }
+}
