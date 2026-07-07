@@ -145,6 +145,26 @@ fn inject_reasoning_content(
     }
 }
 
+fn tool_use_block_from_parts(
+    id: Option<String>,
+    name: Option<String>,
+    args: String,
+) -> Option<ContentBlock> {
+    let id = id.filter(|id| !id.is_empty())?;
+    let name = name.filter(|name| !name.is_empty())?;
+    let input = serde_json::from_str(&args)
+        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+    Some(ContentBlock::ToolUse { id, name, input })
+}
+
+fn tool_use_block_from_response(id: &str, name: &str, args: &str) -> Option<ContentBlock> {
+    tool_use_block_from_parts(
+        Some(id.to_string()),
+        Some(name.to_string()),
+        args.to_string(),
+    )
+}
+
 // ── Config / Adapter ───────────────────────────────────────────────────
 
 /// Custom config that strips the `OpenAI-Beta` header.
@@ -410,11 +430,9 @@ impl LlmClient for OpenAiAdapter {
         }
         // use tool call buffers
         for (id, name, args) in tool_call_buffers {
-            let id = id.unwrap_or_default();
-            let name = name.unwrap_or_default();
-            let input = serde_json::from_str(&args)
-                .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-            response_blocks.push(ContentBlock::ToolUse { id, name, input });
+            if let Some(block) = tool_use_block_from_parts(id, name, args) {
+                response_blocks.push(block);
+            }
         }
 
         Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
@@ -512,12 +530,12 @@ impl LlmClient for OpenAiAdapter {
         // tool_calls
         if let Some(tool_calls) = message["tool_calls"].as_array() {
             for tc in tool_calls {
-                let id = tc["id"].as_str().unwrap_or("").to_string();
-                let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                let id = tc["id"].as_str().unwrap_or("");
+                let name = tc["function"]["name"].as_str().unwrap_or("");
                 let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                let input = serde_json::from_str(args)
-                    .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-                blocks.push(ContentBlock::ToolUse { id, name, input });
+                if let Some(block) = tool_use_block_from_response(id, name, args) {
+                    blocks.push(block);
+                }
             }
         }
 
@@ -685,5 +703,25 @@ mod tests {
         let reasoning = vec![None, Some("reasoning".to_string())];
         inject_reasoning_content(&mut body, &reasoning, false);
         assert!(body["messages"][1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn tool_use_block_from_parts_skips_empty_slots() {
+        assert!(tool_use_block_from_parts(None, Some("read_file".into()), "{}".into()).is_none());
+        assert!(tool_use_block_from_parts(Some("call_1".into()), None, "{}".into()).is_none());
+        assert!(tool_use_block_from_parts(
+            Some("".into()),
+            Some("read_file".into()),
+            "{}".into()
+        )
+        .is_none());
+
+        let block = tool_use_block_from_parts(
+            Some("call_1".into()),
+            Some("read_file".into()),
+            r#"{"path":"a.rs"}"#.into(),
+        )
+        .expect("valid tool call");
+        assert!(matches!(block, ContentBlock::ToolUse { .. }));
     }
 }

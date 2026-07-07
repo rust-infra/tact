@@ -82,7 +82,7 @@ flowchart TD
 | Model metadata | `ModelInfo` |
 | Token counts | `TokenUsage` |
 
-Stats (`SessionStats`) accumulate prompt/response/thinking sizes and LLM call durations. Token usage is also persisted via `persist_llm_call`.
+Stats (`SessionStats`) accumulate prompt/response/thinking sizes and LLM call durations. Before `persist_llm_call`, the agent snapshots `llm_call_last_message_id = last_message_db_id` (the last message **sent** to the model). Token usage and later `record_tool_schedule` both key off that id.
 
 ---
 
@@ -96,7 +96,7 @@ After a successful stream, the assistant message is appended to `runtime.context
 | **`EndTurn`** (or other non-ToolUse) | **`return Ok(())`** — task finished from the loop's perspective |
 | **`MaxTokens`** | Recovery: optionally run pending tool calls first, append `CONTINUATION_MESSAGE`, retry (up to 3) — [Ch 6](./06_chapter_recovery.md) |
 
-**Cancellation:** `cancel_flag` is checked at the top of each iteration and again before tool execution. When set, the loop returns `Ok(())` after emitting `AgentUpdate::Info("Cancelled by user")`.
+**Cancellation:** `cancel_flag` is checked at the top of each iteration and again before tool execution. When set, the loop returns `Ok(())` after emitting `AgentUpdate::Info("Cancelled by user")`. A new `SubmitTask` clears `cancel_flag` before calling `agent_loop` again.
 
 ---
 
@@ -136,7 +136,11 @@ pub struct AgentRuntime {
     pub cancel_flag: Arc<AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     pub session_id: Option<String>,
-    // … message DB window ids, cached_dir_snapshot
+    pub first_message_db_id: i64,
+    pub last_message_db_id: i64,
+    /// `last_message_db_id` captured when `persist_llm_call` runs (before assistant row).
+    pub llm_call_last_message_id: i64,
+    // … cached_dir_snapshot
 }
 ```
 
@@ -151,12 +155,16 @@ In `crates/tact-ui/src/interactive.rs` (`UserCommand::SubmitTask` handler):
 ```rust
 UserCommand::SubmitTask(task) => {
     agent.tool_use_counter = 0;
-    if let Err(e) = agent.agent_loop(Some(task_message)).await {
-        agent.emit_update(AgentUpdate::Error(...));
-    }
-    if let Some(last) = agent.runtime.context.last() {
-        let text = extract_text(&last.content);
-        agent.emit_update(AgentUpdate::TaskComplete(text));
+    agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+
+    match agent.agent_loop(Some(task_message)).await {
+        Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+            if let Some(last) = agent.runtime.context.last() {
+                agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
+            }
+        }
+        Ok(()) => {}  // cancelled — no TaskComplete
+        Err(e) => agent.emit_update(AgentUpdate::Error(...)),
     }
 }
 UserCommand::Cancel => {
@@ -164,7 +172,7 @@ UserCommand::Cancel => {
 }
 ```
 
-So **`TaskComplete` always fires after a successful loop return**, using text from the **last context message** (not necessarily the last assistant turn if tool results follow). Errors surface as `AgentUpdate::Error` instead.
+**`TaskComplete`** is emitted only when `agent_loop` returns `Ok(())` **and** the user did not cancel. The summary text comes from the **last context message** (often a tool result, not strictly the last assistant turn). Errors surface as `AgentUpdate::Error` instead.
 
 ---
 
@@ -186,7 +194,7 @@ So **`TaskComplete` always fires after a successful loop return**, using text fr
 | Gap | Detail |
 |-----|--------|
 | **`SessionStart` not invoked** | Hooks can be registered via `session_start()` but `agent_loop` never runs them ([Ch 9](./09_chapter_hook.md)) |
-| **`TaskComplete` heuristic** | TUI uses last message in context, not explicitly last assistant text |
+| **`TaskComplete` heuristic** | TUI uses last message in context when not cancelled; not explicitly last assistant text |
 | **Headless path** | No `ui_tx`; no `TaskComplete` emit — single direct `notify_task_complete` after stdout ([Ch 17](./17_chapter_notify.md)) |
 | **No dedicated cancel API on Agent** | Only atomic flag; subagents have separate flags |
 | **`PlanGenerated` deprecated** | `#[deprecated(since = "0.19.0")]`; TUI handler retained — plan panel driven by `StepAdded` |

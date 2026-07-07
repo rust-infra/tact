@@ -101,7 +101,7 @@ sequenceDiagram
     participant Notify as notifications::
     participant UI as TUI
 
-    TUI->>Agent: emit_update(TaskComplete)<br/>(after agent_loop returns)
+    TUI->>Agent: emit_update(TaskComplete)<br/>(after agent_loop Ok, not cancelled)
     Agent->>Notify: notify_task_complete (≤200 chars)
     Note over Notify: macOS only; errors ignored
     Agent->>UI: ui_tx.send(update)
@@ -115,7 +115,7 @@ sequenceDiagram
 
 Headless runs set `ui_tx: None`, so `agent_loop` never sends `AgentUpdate::TaskComplete` to a TUI. Completion is notified **once**: `run_headless` calls `notify_task_complete` directly after printing final text to stdout (`tui.rs`). There is no duplicate notification from `emit_update` during the loop.
 
-Interactive runs differ: `tui.rs` emits `TaskComplete` after `agent_loop` returns, and `emit_update` triggers `notify_task_complete` from that update.
+Interactive runs differ: `interactive.rs` emits `TaskComplete` after a successful, non-cancelled `agent_loop` return, and `emit_update` triggers `notify_task_complete` from that update.
 
 Errors from notification calls are discarded (`let _ = …`) everywhere — a failed `osascript` does not fail the agent.
 

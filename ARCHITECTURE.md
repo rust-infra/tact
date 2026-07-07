@@ -196,7 +196,7 @@ sequenceDiagram
     end
 
     Agent ->> TUI: Step* / StreamChunk / … (during loop)
-    Note over Agent,TUI: TaskComplete is sent by tui.rs after agent_loop returns
+    Note over Agent,TUI: TaskComplete is sent by interactive.rs after agent_loop Ok (not cancelled)
     TUI ->> Agent: (loop already finished)
     TUI ->> U: Show completion / statistics
 ```
@@ -343,7 +343,7 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 When the conversation approaches the context limit (`agent.context_limit_chars`, default 500_000 characters), the agent compacts history:
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
-2. If still over the limit, `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, and replaces the context with a single summary message.
+2. If still over the limit, `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, replaces in-memory context with a single summary message, and **`replace_session_messages`** syncs SQLite so resumed sessions match the compacted history.
 3. Large `bash` outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context.
 
 Recovery mechanisms inside `agent_loop()`:

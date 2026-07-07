@@ -275,6 +275,64 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(id)
     }
 
+    async fn replace_session_messages(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+    ) -> Result<(i64, i64)> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin replace session messages transaction")?;
+
+        sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete session messages for replace")?;
+
+        let now = Self::now();
+        let mut first_id = 0_i64;
+        let mut last_id = 0_i64;
+
+        for (idx, message) in messages.iter().enumerate() {
+            let ordinal = (idx + 1) as i64;
+            let content_json = serde_json::to_string(&message.content)
+                .context("failed to serialize message content")?;
+            let id = sqlx::query(
+                "INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(role_to_str(message.role))
+            .bind(content_json)
+            .bind(ordinal)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .context("failed to insert replaced session message")?
+            .last_insert_rowid();
+
+            if idx == 0 {
+                first_id = id;
+            }
+            last_id = id;
+        }
+
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update session timestamp after replace")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit replace session messages transaction")?;
+
+        Ok((first_id, last_id))
+    }
+
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>> {
         let rows = sqlx::query(
             "SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
@@ -934,6 +992,58 @@ mod tests {
         let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].root_dir, "/Users/me/project");
+    }
+
+    #[tokio::test]
+    async fn test_replace_session_messages_rewrites_history() {
+        use anthropic_ai_sdk::types::message::Message;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+
+        store
+            .append_message(
+                "session-1",
+                Role::User,
+                &MessageContent::Text {
+                    content: "old".to_string(),
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "session-1",
+                Role::Assistant,
+                &MessageContent::Text {
+                    content: "old reply".to_string(),
+                },
+                2,
+            )
+            .await
+            .unwrap();
+
+        let replacement = vec![Message::new_text(
+            Role::User,
+            "compacted summary".to_string(),
+        )];
+        store
+            .replace_session_messages("session-1", &replacement)
+            .await
+            .unwrap();
+
+        let loaded = store.load_session("session-1").await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(matches!(loaded[0].role, Role::User));
+
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 1);
     }
 
     #[tokio::test]

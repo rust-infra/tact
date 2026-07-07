@@ -129,7 +129,8 @@ waves, so that race cannot occur — at the cost of not (yet) parallelising
 After scheduling, `execute_tool_call` records a `ToolScheduleSummary` (tool
 count, wave count, max parallelism, per-wave tool names + barrier flag) into the
 **same `token_usages` row** as that LLM call's token usage, keyed by
-`last_message_id`. This links scheduling strategy to token cost for later
+`last_message_id` on that row (set at `persist_llm_call` from
+`llm_call_last_message_id`). This links scheduling strategy to token cost for later
 performance/troubleshooting analysis. See the
 [`tool_schedule` column](token_usage_schema.md#tool_schedule-column) for the
 JSON shape and example queries.

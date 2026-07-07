@@ -44,7 +44,7 @@ Defined in `tact_protocol`.
 `run_interactive` in `crates/tact-ui/src/interactive.rs` (dispatched from `main.rs`):
 
 1. `tact::config::init()` — settings + LLM provider ([Ch 21](./21_chapter_config.md)).
-2. Open SQLite session store, resolve `session_id` (`--session`, `--resume-last`, or new UUID).
+2. Open SQLite session store, resolve `session_id` (`--session`, `--resume-last`, or new UUID). `--resume-last` and `--list-sessions` filter sessions by the current workdir's `root_dir` so other projects' rows are ignored. `SessionLockGuard` retries `try_lock_session` on contention before failing.
 3. Build `Agent` with `toolset()`, MCP router, managers, and `with_ui_channel(agent_tx)`.
 4. Spawn `tui::run_tui(...)` on a separate tokio task.
 5. Loop on `user_cmd_rx` — dispatch `SubmitTask`, `Cancel`, `QueryBalance`.
@@ -69,11 +69,11 @@ pub enum UserCommand {
 
 | Command | Source | Handler in `tui.rs` |
 |---------|--------|---------------------|
-| **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, `build_user_message`, `agent_loop`, then emit `TaskComplete` |
-| **`Cancel`** | `/cancel`, Escape during run | Set `cancel_flag`; loop exits at next check ([Ch 18](./18_chapter_agent_loop.md)) |
+| **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
+| **`Cancel`** | `/cancel`, Escape during run | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | Calls `query_*_balance`, emits `AgentUpdate::Balance` or `Error` |
 
-`build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s before the loop starts.
+`build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 
 ---
 
@@ -95,12 +95,17 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `Error` | Error banner with `AgentErrorKind` |
 | `Info` | System message line |
 
-**Important:** `Agent::agent_loop` does **not** emit `TaskComplete`. The driver in `interactive.rs` sends it after a successful loop return:
+**Important:** `Agent::agent_loop` does **not** emit `TaskComplete`. `interactive.rs` sends it only after a successful, non-cancelled loop return:
 
 ```rust
-if let Some(last) = agent.runtime.context.last() {
-    let text = extract_text(&last.content);
-    agent.emit_update(AgentUpdate::TaskComplete(text));
+match agent.agent_loop(Some(task_message)).await {
+    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+        if let Some(last) = agent.runtime.context.last() {
+            agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
+        }
+    }
+    Ok(()) => {}
+    Err(e) => agent.emit_update(AgentUpdate::Error(...)),
 }
 ```
 
