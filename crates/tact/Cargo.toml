@@ -37,5 +37,8 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 walkdir = { workspace = true }
 
+[features]
+test-support = []
+
 [dev-dependencies]
 tempfile = { workspace = true }

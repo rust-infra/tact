@@ -4192,6 +4192,7 @@ dependencies = [
  "chrono",
  "console-subscriber",
  "regex",
+ "serde_json",
  "tact",
  "tact_llm",
  "tact_protocol",

@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "tact_ui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tact-ui"
 path = "src/main.rs"
 
 [dependencies]
-tact = { path = "../tact" }
+tact = { path = "../tact", features = ["test-support"] }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
 tui = { path = "../tui" }
@@ -21,3 +25,7 @@ console-subscriber = { workspace = true }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }

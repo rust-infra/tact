@@ -601,3 +601,77 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::widgets::state::{App, Status};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn make_app() -> App {
+        let (_agent_tx, agent_rx) = unbounded_channel();
+        let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        App::new(
+            agent_rx,
+            user_cmd_tx,
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+        )
+    }
+
+    #[test]
+    fn step_added_then_task_complete_reaches_done() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "main.rs".to_string())]),
+        )));
+        assert!(matches!(app.status, Status::Executing { .. }));
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        assert!(matches!(app.status, Status::Done));
+        assert!(app.task_done_time.is_some());
+    }
+
+    #[test]
+    fn step_finished_updates_plan_output() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "main.rs".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted(
+            0,
+            "tool_read_1".into(),
+            "read_file".into(),
+            "main.rs".into(),
+        ));
+        app.handle_agent_update(AgentUpdate::StepFinished(
+            0,
+            "tool_read_1".into(),
+            StepResult {
+                tool: "read_file".into(),
+                arg_summary: "main.rs".into(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("file body".into()),
+                duration_us: Some(1),
+                permission_label: None,
+            },
+        ));
+
+        assert_eq!(app.plan.steps[0].output.as_deref(), Some("ok"));
+    }
+}
