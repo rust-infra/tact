@@ -143,7 +143,7 @@ Each finished tool produces a `ToolResult` with JSON content. These are appended
 
 ## 6. Observability: Tool Schedule Summary
 
-After execution, `persist_tool_schedule` records a `ToolScheduleSummary` into the same `token_usages` row as the LLM call:
+After execution, `persist_tool_schedule` records a `ToolScheduleSummary` into the same `token_usages` row as the LLM call. The row is matched by `last_message_id` captured at **`persist_llm_call` time** (`llm_call_last_message_id` — the last message sent to the model, before the assistant response row is appended).
 
 ```json
 {

@@ -29,9 +29,15 @@ pub fn anthropic_tools_to_openai(tools: &[Tool]) -> Vec<ChatCompletionTool> {
 }
 
 /// Convert a list of Anthropic messages to OpenAI chat completion messages.
+///
+/// Returns a parallel vector of optional `reasoning_content` strings aligned with
+/// each emitted OpenAI message (for Kimi/Moonshot replay).
 #[allow(deprecated)]
-pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionRequestMessage> {
+pub fn anthropic_messages_to_openai(
+    messages: &[Message],
+) -> (Vec<ChatCompletionRequestMessage>, Vec<Option<String>>) {
     let mut result = Vec::new();
+    let mut reasoning = Vec::new();
     for msg in messages {
         match msg.role {
             Role::User => match &msg.content {
@@ -43,6 +49,7 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                             name: None,
                         },
                     ));
+                    reasoning.push(None);
                 }
                 MessageContent::Blocks { content } => {
                     let mut parts: Vec<ChatCompletionRequestMessageContentPart> = Vec::new();
@@ -96,8 +103,12 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                                 name: None,
                             },
                         ));
+                        reasoning.push(None);
                     }
-                    result.extend(tool_results);
+                    for tool_result in tool_results {
+                        result.push(tool_result);
+                        reasoning.push(None);
+                    }
                 }
             },
             Role::Assistant => match &msg.content {
@@ -111,8 +122,17 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                             function_call: None,
                         },
                     ));
+                    reasoning.push(None);
                 }
                 MessageContent::Blocks { content } => {
+                    let assistant_reasoning = content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
                     let mut text_parts = Vec::new();
                     let mut tool_calls = Vec::new();
                     for block in content {
@@ -152,13 +172,18 @@ pub fn anthropic_messages_to_openai(messages: &[Message]) -> Vec<ChatCompletionR
                             function_call: None,
                         },
                     ));
+                    reasoning.push(if assistant_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(assistant_reasoning)
+                    });
                 }
             },
         }
     }
     // Defensive: strip orphaned tool_calls that aren't followed by tool messages.
     sanitize_tool_call_sequence(&mut result);
-    result
+    (result, reasoning)
 }
 
 /// Defensive validation: OpenAI requires every assistant message with
@@ -264,32 +289,10 @@ pub fn build_openai_request(
         reasoning_per_message.push(None);
     }
 
-    messages.extend(anthropic_messages_to_openai(&request.messages));
-
-    // Collect reasoning content from historical assistant messages so callers can
-    // inject it back into the JSON body for providers that require it.
-    for msg in &request.messages {
-        if matches!(msg.role, Role::Assistant) {
-            let reasoning = match &msg.content {
-                MessageContent::Blocks { content } => content
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
-                _ => String::new(),
-            };
-            reasoning_per_message.push(if reasoning.is_empty() {
-                None
-            } else {
-                Some(reasoning)
-            });
-        } else {
-            reasoning_per_message.push(None);
-        }
-    }
+    let (converted_messages, converted_reasoning) =
+        anthropic_messages_to_openai(&request.messages);
+    messages.extend(converted_messages);
+    reasoning_per_message.extend(converted_reasoning);
 
     let mut openai_request = CreateChatCompletionRequest {
         model: request.model.clone(),
@@ -373,7 +376,7 @@ mod tests {
             ],
         );
 
-        let openai = anthropic_messages_to_openai(&[msg]);
+        let (openai, _) = anthropic_messages_to_openai(&[msg]);
         assert_eq!(openai.len(), 1);
         let ChatCompletionRequestMessage::User(user) = &openai[0] else {
             panic!("expected user message");
@@ -388,5 +391,66 @@ mod tests {
         assert!(
             matches!(&parts[1], ChatCompletionRequestMessageContentPart::Image(img) if img.image_url.url.starts_with("data:image/png;base64,"))
         );
+    }
+
+    #[test]
+    fn reasoning_aligns_when_user_tool_results_split_into_multiple_messages() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "plan both tools".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_a".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "a.rs"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_b".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "b.rs"}),
+                },
+            ],
+        );
+        let user = Message::new_blocks(
+            Role::User,
+            vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_a".to_string(),
+                    content: "a".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_b".to_string(),
+                    content: "b".to_string(),
+                },
+            ],
+        );
+
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "kimi-k2.5".to_string(),
+                messages: vec![assistant.clone(), user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, reasoning) = build_openai_request(&request);
+        assert_eq!(openai_request.messages.len(), reasoning.len());
+
+        let assistant_idx = openai_request
+            .messages
+            .iter()
+            .position(|msg| matches!(msg, ChatCompletionRequestMessage::Assistant(_)))
+            .expect("assistant message");
+        assert_eq!(reasoning[assistant_idx].as_deref(), Some("plan both tools"));
+
+        let tool_count = openai_request
+            .messages
+            .iter()
+            .filter(|msg| matches!(msg, ChatCompletionRequestMessage::Tool(_)))
+            .count();
+        assert_eq!(tool_count, 2);
     }
 }

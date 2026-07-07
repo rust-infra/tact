@@ -79,7 +79,7 @@ Recently accessed files (re-read if you need their contents):
 - …
 ```
 
-5. **Bookkeeping** — `CompactState.has_compacted` / `last_summary` are updated, `stats.compactions` increments, and the session-store message-id window is reset (post-compaction messages start a new range in SQLite).
+5. **Bookkeeping** — `CompactState.has_compacted` / `last_summary` are updated, `stats.compactions` increments, the session-store message-id window is reset, and **`replace_session_messages`** rewrites SQLite `messages` to match the new single-message context (so reopening the session does not resurrect pre-compaction history).
 
 ### CompactState and recent files
 

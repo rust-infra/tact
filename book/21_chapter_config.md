@@ -166,7 +166,7 @@ CLI-only overrides:
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
-| `--session`, `--resume-last`, `--list-sessions` | session store (not in TOML) |
+| `--session`, `--resume-last`, `--list-sessions` | session store (not in TOML). `--resume-last` and `--list-sessions` pass `list_sessions(Some(root_dir))` so only sessions for the current workdir appear. |
 | `--config` | explicit TOML path |
 
 Subcommand:

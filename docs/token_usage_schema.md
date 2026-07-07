@@ -43,14 +43,14 @@ CREATE INDEX idx_token_usages_session_id ON token_usages(session_id);
 | `prompt_cache_miss_tokens` | INTEGER | KV cache miss prompt tokens. 0 when the provider does not report cache misses. |
 | `reasoning_tokens` | INTEGER | Reasoning tokens consumed by the model (R1 / V3 thinking). |
 | `first_message_id` | INTEGER | Message-id link: earliest `messages.id` sent in this call. `0` means no message range (e.g., compaction sends a synthetic prompt). |
-| `last_message_id` | INTEGER | Message-id link: latest `messages.id` sent in this call. |
+| `last_message_id` | INTEGER | Message-id link: latest `messages.id` **sent** in this call (captured before the assistant response row is written). Used as the anchor for `tool_schedule` updates. |
 | `request_body` | BLOB | Optional. Serialized JSON body sent to the LLM API (stream or compact call). Used for debugging provider/context issues. |
-| `tool_schedule` | TEXT | Optional JSON. Summary of how this turn's tool calls were scheduled into parallel waves. Written by `execute_tool_call()` after the LLM call, keyed by `last_message_id`. See [Tool Schedule](#tool-schedule-column) and [parallel_tool_execution.md](parallel_tool_execution.md). |
+| `tool_schedule` | TEXT | Optional JSON. Summary of how this turn's tool calls were scheduled into parallel waves. Written by `execute_tool_call()` after the LLM call, keyed by the `last_message_id` stored on the token row (snapshot of the pre-assistant message window at `persist_llm_call`). See [Tool Schedule](#tool-schedule-column) and [parallel_tool_execution.md](parallel_tool_execution.md). |
 | `created_at` | TIMESTAMP | When this row was written. |
 
 ### `tool_schedule` Column
 
-After the LLM responds with tool calls, `execute_tool_call()` schedules them into conflict-free **waves** (see [parallel_tool_execution.md](parallel_tool_execution.md)) and records the resulting shape into the **same** `token_usages` row as the call's token usage, so a turn's cost and its parallelism can be analysed together. The JSON shape is:
+After the LLM responds with tool calls, `execute_tool_call()` schedules them into conflict-free **waves** (see [parallel_tool_execution.md](parallel_tool_execution.md)) and records the resulting shape into the **same** `token_usages` row as the call's token usage. The UPDATE matches `last_message_id` from when `persist_llm_call` ran (`AgentRuntime.llm_call_last_message_id`), not the assistant message row written afterward.
 
 ```json
 {
@@ -140,7 +140,9 @@ Every time a message is pushed to the conversation context, it is inserted into 
 
 1. The first persisted message sets `AgentRuntime.first_message_db_id`.
 2. Each subsequent message updates `AgentRuntime.last_message_db_id`.
-3. After the LLM call completes, `record_token_usage(...)` stores both IDs.
+3. After the LLM call completes, `persist_llm_call` snapshots `llm_call_last_message_id = last_message_db_id` **before** the assistant response row is appended, then `record_token_usage(...)` stores both IDs on the token row.
+
+The assistant message is persisted **after** the token row, so `last_message_id` on `token_usages` always refers to the last message **sent to** the model, not the assistant reply. `record_tool_schedule` UPDATEs the same row using that anchor.
 
 Because each LLM call sends the **full context** (all messages up to that point), `first_message_id` stays at the earliest message of the session, and `last_message_id` advances with each call. This means:
 
@@ -206,7 +208,7 @@ The cache and reasoning lines are only shown when non-zero.
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
 | `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
 | `crates/tact/src/agent/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
-| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches the schedule summary to the call's token-usage row. |
+| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches schedule to token row via `llm_call_last_message_id`. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |

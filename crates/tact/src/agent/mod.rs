@@ -73,6 +73,9 @@ pub struct AgentRuntime {
     pub first_message_db_id: i64,
     /// DB row id of the last message persisted for the current LLM-call window.
     pub last_message_db_id: i64,
+    /// `last_message_db_id` at the time the most recent LLM call was persisted
+    /// (before the assistant response row is written). Used to attach tool schedules.
+    pub llm_call_last_message_id: i64,
     /// Cached project-directory snapshot, computed once per session so the
     /// deterministic output doesn't churn the DeepSeek prefix KV-cache.
     pub cached_dir_snapshot: Option<String>,
@@ -130,6 +133,7 @@ impl Agent {
                 session_id: None,
                 first_message_db_id: 0,
                 last_message_db_id: 0,
+                llm_call_last_message_id: 0,
                 cached_dir_snapshot: None,
             },
             tool_context,
@@ -227,6 +231,22 @@ impl Agent {
         Ok(())
     }
 
+    async fn replace_persisted_context(&mut self) -> Result<()> {
+        let Some(store) = self.runtime.session_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_id) = self.runtime.session_id.as_ref() else {
+            return Ok(());
+        };
+
+        let (first_id, last_id) = store
+            .replace_session_messages(session_id, &self.runtime.context)
+            .await?;
+        self.runtime.first_message_db_id = first_id;
+        self.runtime.last_message_db_id = last_id;
+        Ok(())
+    }
+
     /// Persist token usage and/or request body for an LLM call.
     /// Links to the message range that was sent ([first_message_db_id .. last_message_db_id]).
     async fn persist_llm_call(
@@ -268,9 +288,12 @@ impl Agent {
             return;
         };
         if let Ok(json) = serde_json::to_string(summary) {
-            let _ = store
-                .record_tool_schedule(session_id, self.runtime.last_message_db_id, &json)
-                .await;
+            let anchor = self.runtime.llm_call_last_message_id;
+            if anchor > 0 {
+                let _ = store
+                    .record_tool_schedule(session_id, anchor, &json)
+                    .await;
+            }
         }
     }
 
@@ -414,6 +437,7 @@ impl Agent {
             if let Some(ref usage) = token_usage {
                 self.runtime.stats.record_token_usage(usage);
             }
+            self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
             let _ = self
                 .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
                 .await;
@@ -674,6 +698,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         // future messages start a new message-id window.
         self.runtime.first_message_db_id = 0;
         self.runtime.last_message_db_id = 0;
+        self.runtime.llm_call_last_message_id = 0;
         let summary = blocks
             .iter()
             .filter_map(|block| match block {
@@ -696,6 +721,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             }
         }
         self.runtime.context = compacted_context(full_summary);
+        self.replace_persisted_context().await?;
         self.runtime.stats.compactions += 1;
         Ok(())
     }

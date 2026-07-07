@@ -34,6 +34,7 @@ stateDiagram-v2
     Executing --> Executing: AgentUpdate:StepStarted (current_step updated)
     Executing --> WaitingForUser: AgentUpdate:RequestSelect
     Executing --> Done: AgentUpdate:TaskComplete
+    Executing --> Idle: user Cancel (no TaskComplete)
     Executing --> Idle: AgentUpdate:StepFailed / Error(Other)
 
     WaitingForUser --> Executing: user approves (y / Enter)
@@ -51,7 +52,8 @@ stateDiagram-v2
 | `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `total` is set from plan length. Legacy `PlanGenerated` would also transition here but is not emitted by agent. |
 | `Executing` | `Executing` | `AgentUpdate::StepStarted(idx, tool_id, …)`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
 | `Executing` | `WaitingForUser` | `AgentUpdate::RequestSelect`. | `input_mode` is forced to `Select`. Legacy `NeedApproval` would force `Normal`, but agent does not emit it today. |
-| `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. |
+| `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by `interactive.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false. |
+| `Executing` | `Idle` | User `/cancel` or Escape during run. | Loop returns `Ok(())` with `cancel_flag` set; **no** `TaskComplete` — UI stays in `Idle` without the 2s done highlight. |
 | `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
 | `WaitingForUser` | `Executing` | User presses `y` / `Enter` to approve. | `approval_tx.send(true)`. |
 | `WaitingForUser` | `Idle` | User presses `n` / `Esc` to deny. | `approval_tx.send(false)`. |
