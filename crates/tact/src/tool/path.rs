@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-pub(crate) fn safe_path(work_dir: &Path, path: &str) -> Result<PathBuf> {
+pub fn safe_path(work_dir: &Path, path: &str) -> Result<PathBuf> {
     resolve_safe_path(work_dir, path, false)
 }
 
-pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<PathBuf> {
+pub fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<PathBuf> {
     resolve_safe_path(work_dir, path, true)
 }
 

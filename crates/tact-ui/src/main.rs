@@ -7,7 +7,7 @@ mod user_message;
 
 use tact::config::{CliCommand, init};
 use tact::consts::TactPath;
-use tact::store::{open_sqlite_session_store, resolve_session_db_path};
+use tact::store::open_sqlite_session_store;
 
 use headless::run_headless;
 use interactive::run_interactive;
@@ -24,11 +24,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let tact_path = TactPath::from_cwd()?;
-    let db_path = resolve_session_db_path(&tact_path).await?;
+    let db_path = tact_path.session_db_path();
     let session_store = open_sqlite_session_store(&db_path).await?;
 
     if args.list_sessions {
-        print_sessions(&session_store).await?;
+        print_sessions(
+            &session_store,
+            &tact_path.workdir().display().to_string(),
+        )
+        .await?;
         return Ok(());
     }
 

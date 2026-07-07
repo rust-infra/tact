@@ -200,7 +200,7 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
     }
 }
 
-pub(crate) use path::{safe_path, safe_path_allow_missing};
+pub use path::{safe_path, safe_path_allow_missing};
 
 #[cfg(test)]
 mod tests {

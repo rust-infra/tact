@@ -5,8 +5,11 @@ fn format_timestamp(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-pub(crate) async fn print_sessions(session_store: &DynSessionStore) -> anyhow::Result<()> {
-    let sessions = session_store.list_sessions().await?;
+pub(crate) async fn print_sessions(
+    session_store: &DynSessionStore,
+    root_dir: &str,
+) -> anyhow::Result<()> {
+    let sessions = session_store.list_sessions(Some(root_dir)).await?;
     if sessions.is_empty() {
         println!("No sessions found.");
     } else {

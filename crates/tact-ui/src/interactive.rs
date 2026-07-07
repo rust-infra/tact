@@ -23,7 +23,7 @@ use tact_llm::{
 use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
 use crate::permission::permission_mode_from_config;
-use crate::session_lock::SessionLockRegistry;
+use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
 use crate::user_message::build_user_message;
 
 pub(crate) async fn run_interactive(
@@ -32,10 +32,11 @@ pub(crate) async fn run_interactive(
     session_store: DynSessionStore,
     lock_registry: Arc<SessionLockRegistry>,
 ) -> anyhow::Result<()> {
+    let root_dir = tact_path.workdir().display().to_string();
     let session_id = if let Some(ref id) = args.session {
         id.clone()
     } else if args.resume_last {
-        let sessions = session_store.list_sessions().await?;
+        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
         sessions
             .into_iter()
             .next()
@@ -45,12 +46,32 @@ pub(crate) async fn run_interactive(
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store
-        .create_session(&session_id, &tact_path.workdir().display().to_string())
-        .await?;
-    let session_lock =
-        crate::session_lock::SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
+    session_store.ensure_session_row(&session_id, &root_dir).await?;
+    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
     lock_registry.register(session_lock.clone()).await;
+    session_store.touch_session(&session_id, &root_dir).await?;
+
+    let run_result = run_interactive_locked(
+        args,
+        tact_path,
+        session_store,
+        session_id,
+        session_lock.clone(),
+    )
+    .await;
+
+    session_lock.release().await?;
+    run_result
+}
+
+async fn run_interactive_locked(
+    _args: CliArgs,
+    tact_path: TactPath,
+    session_store: DynSessionStore,
+    session_id: String,
+    session_lock: Arc<SessionLockGuard>,
+) -> anyhow::Result<()> {
+    let _keep_lock = session_lock;
     let input_history = session_store.load_input_history(&session_id).await?;
 
     let client = get_llm_client()?;
@@ -196,6 +217,5 @@ pub(crate) async fn run_interactive(
     eprintln!("{}", agent.runtime.stats.summary());
 
     agent.shutdown_mcp().await;
-    session_lock.release().await?;
     Ok(())
 }
