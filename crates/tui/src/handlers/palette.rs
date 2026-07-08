@@ -67,3 +67,62 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crate::widgets::state::PALETTE_COMMANDS;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn help_index() -> usize {
+        PALETTE_COMMANDS
+            .iter()
+            .position(|(cmd, _)| *cmd == "help")
+            .expect("help command")
+    }
+
+    #[test]
+    fn up_down_navigates_palette_selection() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = 0;
+
+        handle_palette_mode(&mut app, key(KeyCode::Down));
+        assert_eq!(app.palette_selected, 1);
+        handle_palette_mode(&mut app, key(KeyCode::Up));
+        assert_eq!(app.palette_selected, 0);
+    }
+
+    #[test]
+    fn enter_executes_highlighted_command() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = help_index();
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(app.show_help, "Enter should execute help command");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.cmd_line.is_empty());
+    }
+
+    #[test]
+    fn esc_exits_palette_without_executing() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.cmd_line = "qui".into();
+        app.palette_selected = 3;
+
+        handle_palette_mode(&mut app, key(KeyCode::Esc));
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.cmd_line.is_empty());
+        assert!(!app.show_help);
+        assert!(!app.should_quit);
+    }
+}

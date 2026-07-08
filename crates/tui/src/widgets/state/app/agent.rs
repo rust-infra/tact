@@ -619,7 +619,7 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use crate::widgets::state::{App, Status};
+    use crate::widgets::state::{App, InputMode, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, AgentErrorKind};
@@ -647,6 +647,25 @@ mod lifecycle_tests {
         app.task_done_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
         app.maybe_expire_done_status();
         assert!(matches!(app.status, Status::Idle));
+    }
+
+    #[test]
+    fn need_approval_enters_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.handle_agent_update(AgentUpdate::NeedApproval(
+            "Allow bash?".into(),
+            1,
+            tx,
+        ));
+        assert!(matches!(app.status, Status::WaitingForUser { .. }));
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("Allow bash")),
+            "NeedApproval should append system message"
+        );
     }
 
     #[test]

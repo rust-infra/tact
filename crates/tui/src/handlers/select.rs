@@ -40,3 +40,61 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn seed_select(app: &mut App) -> tokio::sync::oneshot::Receiver<Option<usize>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.input_mode = InputMode::Select;
+        app.select.set(
+            "Pick one".into(),
+            vec!["Allow once".into(), "Deny".into()],
+            tx,
+            true,
+        );
+        rx
+    }
+
+    #[test]
+    fn j_k_navigates_options() {
+        let mut app = make_app();
+        let _rx = seed_select(&mut app);
+
+        assert_eq!(app.select.selected, 0);
+        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.select.selected, 1);
+        handle_select_mode(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.select.selected, 0);
+    }
+
+    #[test]
+    fn enter_confirms_selection_and_returns_to_normal() {
+        let mut app = make_app();
+        let mut rx = seed_select(&mut app);
+
+        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(rx.try_recv(), Ok(Some(1)));
+    }
+
+    #[test]
+    fn esc_cancels_and_sends_none() {
+        let mut app = make_app();
+        let mut rx = seed_select(&mut app);
+
+        handle_select_mode(&mut app, key(KeyCode::Esc));
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(rx.try_recv(), Ok(None));
+    }
+}

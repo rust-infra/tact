@@ -435,3 +435,83 @@ fn status_bar_shows_idle_after_done_expires() {
         "expired done should repaint idle-ish status bar, got:\n{text}"
     );
 }
+
+// --- Handler-adjacent render: Planning, NeedApproval, edit_file ---
+
+#[test]
+fn full_frame_planning_status_renders_in_status_bar() {
+    let mut app = make_app();
+    app.status = Status::Planning;
+    app.input_mode = InputMode::Insert;
+
+    let text = render_app_text(&mut app, 100, 24);
+
+    assert!(
+        text.contains("Planning"),
+        "planning status should appear in status bar, got:\n{text}"
+    );
+}
+
+#[test]
+fn need_approval_update_sets_waiting_and_renders_banner() {
+    let mut app = make_app();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+
+    app.handle_agent_update(AgentUpdate::NeedApproval(
+        "Allow edit_file on lib.rs?".into(),
+        0,
+        tx,
+    ));
+
+    assert!(matches!(app.status, Status::WaitingForUser { .. }));
+    assert!(matches!(app.input_mode, InputMode::Normal));
+
+    let text = render_app_text(&mut app, 100, 28);
+    assert!(
+        text.contains("Allow edit_file") || text.contains("lib.rs"),
+        "NeedApproval should render approval prompt in full frame, got:\n{text}"
+    );
+}
+
+#[test]
+fn full_frame_edit_file_tool_shows_in_log() {
+    let mut app = make_app();
+    app.plan.visible = true;
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "patch lib",
+        "edit_file",
+        "edit1",
+        HashMap::from([
+            ("path".to_string(), "lib.rs".to_string()),
+            ("old_text".to_string(), "fn old()".to_string()),
+            ("new_text".to_string(), "fn new()".to_string()),
+        ]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted(
+        0,
+        "edit1".into(),
+        "edit_file".into(),
+        "lib.rs".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::StepFinished(
+        0,
+        "edit1".into(),
+        StepResult {
+            tool: "edit_file".into(),
+            arg_summary: "lib.rs".into(),
+            arg_full: Some("lib.rs".into()),
+            status: StepStatus::Success,
+            message: "patched".into(),
+            detail: Some("- fn old()\n+ fn new()".into()),
+            duration_us: Some(200),
+            permission_label: None,
+        },
+    ));
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        text.contains("edit_file") || text.contains("lib.rs") || text.contains("fn new"),
+        "edit_file tool card should render in log, got:\n{text}"
+    );
+}
