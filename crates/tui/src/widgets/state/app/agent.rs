@@ -12,10 +12,10 @@ const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
 
 fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
-    if !tool_id.is_empty() {
-        if let Some(found) = steps.iter().position(|s| s.tool_id == tool_id) {
-            return found;
-        }
+    if !tool_id.is_empty()
+        && let Some(found) = steps.iter().position(|s| s.tool_id == tool_id)
+    {
+        return found;
     }
     idx
 }
@@ -104,11 +104,11 @@ impl App {
                             .replacen("{}", &step.description, 1)
                     })
                     .collect();
-                self.add_system_message(format!(
-                    "{}",
+                self.add_system_message(
                     msgs.plan_generated_tmpl
                         .replace("{}", &plan_len.to_string())
-                ));
+                        .to_string(),
+                );
                 for msg in plan_messages {
                     self.add_system_message(msg);
                 }
@@ -214,21 +214,6 @@ impl App {
                 }
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
-            }
-            // Handle cases requiring user approval
-            AgentUpdate::NeedApproval(prompt, step_idx, tx) => {
-                // Close the active thinking block first, preventing approval messages
-                // from being captured inside a collapsed region.
-                self.flush_stream_pending();
-                let prompt_clone = prompt.clone();
-                self.status = Status::WaitingForUser {
-                    prompt,
-                    step_index: step_idx,
-                    approval_tx: tx,
-                };
-                self.input_mode = InputMode::Normal;
-                let msgs = self.msgs();
-                self.add_system_message(msgs.need_approval_tmpl.replace("{}", &prompt_clone));
             }
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
@@ -453,24 +438,19 @@ impl App {
                         self.stream.code_block_buffer.push(line.clone());
 
                         let prev_idx = self.messages.len().saturating_sub(1);
-                        if self.stream.code_block_line_count > 1 {
-                            if let Some(prev_raw) = self.raw_messages.get_mut(prev_idx) {
-                                if prev_raw.ends_with(STREAMING_INDICATOR) {
-                                    let clean =
-                                        prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
-                                    *prev_raw = clean.clone();
-                                    self.messages[prev_idx] = Line::from(vec![
-                                        Span::styled(
-                                            "│ ",
-                                            Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                                        ),
-                                        Span::styled(
-                                            clean,
-                                            Style::default().fg(CODE_FG).bg(CODE_BG),
-                                        ),
-                                    ]);
-                                }
-                            }
+                        if self.stream.code_block_line_count > 1
+                            && let Some(prev_raw) = self.raw_messages.get_mut(prev_idx)
+                            && prev_raw.ends_with(STREAMING_INDICATOR)
+                        {
+                            let clean = prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
+                            *prev_raw = clean.clone();
+                            self.messages[prev_idx] = Line::from(vec![
+                                Span::styled(
+                                    "│ ",
+                                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                                ),
+                                Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                            ]);
                         }
 
                         let display_line = format!("{}{}", line, STREAMING_INDICATOR);
@@ -629,7 +609,7 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use crate::widgets::state::{App, InputMode, Status};
+    use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
@@ -657,19 +637,6 @@ mod lifecycle_tests {
         app.task_done_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
         app.maybe_expire_done_status();
         assert!(matches!(app.status, Status::Idle));
-    }
-
-    #[test]
-    fn need_approval_enters_waiting_for_user() {
-        let mut app = make_app();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.handle_agent_update(AgentUpdate::NeedApproval("Allow bash?".into(), 1, tx));
-        assert!(matches!(app.status, Status::WaitingForUser { .. }));
-        assert!(matches!(app.input_mode, InputMode::Normal));
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("Allow bash")),
-            "NeedApproval should append system message"
-        );
     }
 
     #[test]

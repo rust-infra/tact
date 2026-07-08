@@ -106,15 +106,6 @@ pub enum AgentUpdate {
     StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message
     StepFailed(usize, String /* tool_id */, String),
-    /// User approval prompt (legacy).
-    ///
-    /// The current agent runtime uses [`RequestSelect`](Self::RequestSelect) for
-    /// permission and choice prompts instead.
-    #[deprecated(
-        since = "0.19.0",
-        note = "use RequestSelect; agent no longer emits NeedApproval"
-    )]
-    NeedApproval(String, usize, oneshot::Sender<bool>),
     /// The entire task is complete
     TaskComplete(String),
     /// Agent error, with classification for the TUI to decide display style

@@ -8,20 +8,11 @@ use ratatui::{
 use crate::theme::Theme;
 
 // Base popup widget, used to display a list of items with a title.
+#[derive(Default)]
 pub struct PopupWidget<'a> {
     list: Vec<ListItem<'a>>,
     title: Option<&'a str>,
     theme: Option<&'a Theme>,
-}
-
-impl<'a> Default for PopupWidget<'a> {
-    fn default() -> Self {
-        Self {
-            list: Vec::new(),
-            title: None,
-            theme: None,
-        }
-    }
 }
 
 impl<'a> PopupWidget<'a> {

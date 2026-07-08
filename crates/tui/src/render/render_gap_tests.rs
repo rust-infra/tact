@@ -73,7 +73,7 @@ fn open_last_tool_popup(app: &mut App) {
     app.open_diff_popup(phys_idx);
 }
 
-// --- P0: diff gutter, bash popup, inline cards, WaitingForUser ---
+// --- P0: diff gutter, bash popup, inline cards ---
 
 #[test]
 fn write_file_diff_popup_shows_gutter() {
@@ -148,25 +148,6 @@ fn log_renders_streamed_code_block_card() {
     assert!(
         text.contains("rust") || text.contains("code_card_test"),
         "inline code card should render in log, got:\n{text}"
-    );
-}
-
-#[test]
-fn full_frame_waiting_for_user_shows_approval_banner() {
-    let mut app = make_app();
-    let (tx, _rx) = tokio::sync::oneshot::channel();
-    app.input_mode = InputMode::Normal;
-    app.status = Status::WaitingForUser {
-        prompt: "Allow rm -rf /tmp/test?".into(),
-        step_index: 0,
-        approval_tx: tx,
-    };
-
-    let text = render_app_text(&mut app, 100, 28);
-
-    assert!(
-        text.contains("Allow rm -rf"),
-        "full frame should show approval banner in input area, got:\n{text}"
     );
 }
 
@@ -443,7 +424,7 @@ fn status_bar_shows_idle_after_done_expires() {
     );
 }
 
-// --- Handler-adjacent render: Planning, NeedApproval, edit_file ---
+// --- Handler-adjacent render: Planning, RequestSelect, edit_file ---
 
 #[test]
 fn full_frame_planning_status_renders_in_status_bar() {
@@ -460,23 +441,22 @@ fn full_frame_planning_status_renders_in_status_bar() {
 }
 
 #[test]
-fn need_approval_update_sets_waiting_and_renders_banner() {
+fn request_select_update_renders_select_popup() {
     let mut app = make_app();
     let (tx, _rx) = tokio::sync::oneshot::channel();
 
-    app.handle_agent_update(AgentUpdate::NeedApproval(
-        "Allow edit_file on lib.rs?".into(),
-        0,
-        tx,
-    ));
+    app.handle_agent_update(AgentUpdate::RequestSelect {
+        prompt: "Allow edit_file on lib.rs?".into(),
+        options: vec!["Allow once".into(), "Deny".into()],
+        respond: tx,
+    });
 
-    assert!(matches!(app.status, Status::WaitingForUser { .. }));
-    assert!(matches!(app.input_mode, InputMode::Normal));
+    assert!(matches!(app.input_mode, InputMode::Select));
 
     let text = render_app_text(&mut app, 100, 28);
     assert!(
         text.contains("Allow edit_file") || text.contains("lib.rs"),
-        "NeedApproval should render approval prompt in full frame, got:\n{text}"
+        "RequestSelect should render permission prompt in full frame, got:\n{text}"
     );
 }
 

@@ -35,7 +35,7 @@ impl Language {
 ///   `_tmpl` suffix = template strings with `{}` placeholders, filled via `format!()`.
 ///   Others are static text.
 ///   `_pl` suffix = strings involving plural forms (can generally be ignored in Chinese).
-#[allow(non_snake_case)]
+#[allow(non_snake_case, dead_code)]
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
@@ -88,7 +88,6 @@ pub struct Messages {
     pub status_planning: &'static str,
     pub status_executing_tmpl: &'static str,
     pub status_running_tmpl: &'static str,
-    pub status_waiting_user_tmpl: &'static str,
     pub status_done_tmpl: &'static str,
     pub status_party_tmpl: &'static str,
 
@@ -148,11 +147,6 @@ pub struct Messages {
     pub copied_internal_tmpl: &'static str,
 
     // ---- 用户操作反馈 ----
-    pub step_rejected: &'static str,
-    pub step_approved: &'static str,
-    pub approval_cancelled: &'static str,
-    pub approval_banner_tmpl: &'static str,
-    pub approval_banner_keys: &'static str,
     pub no_options: &'static str,
     pub selected_tmpl: &'static str,
     pub selection_cancelled: &'static str,
@@ -183,7 +177,6 @@ pub struct Messages {
     pub step_ms_tmpl: &'static str,
     pub step_sec_tmpl: &'static str,
     pub step_failed_tmpl: &'static str,
-    pub need_approval_tmpl: &'static str,
     pub error_tmpl: &'static str,
     pub thinking_title: &'static str,
     pub thinking_line_prefix: &'static str,
@@ -269,7 +262,6 @@ impl Messages {
             status_planning: "Planning...",
             status_executing_tmpl: "Executing step {}/{}",
             status_running_tmpl: "running {}",
-            status_waiting_user_tmpl: "{} {} | ⚠️ {} (Enter/Esc)",
             status_done_tmpl: "{} {} | ✅ Task completed",
             status_party_tmpl: "🎉 PARTY MODE 🎉 | {}",
 
@@ -309,7 +301,7 @@ impl Messages {
             help_type_task: "    Type task, Enter to submit, @ to attach file",
             help_ctrl_z: "    Ctrl+Z/Y    Undo/redo input",
             help_global_header: "  🌐 Global",
-            help_yn: "    Enter/Esc   Approve/reject step (y/n also work)",
+            help_yn: "    Enter/Esc   Confirm/cancel select popup",
             help_ctrl_h: "    Ctrl+H      Show history",
             help_ctrl_t: "    Ctrl+T      Toggle theme",
             help_ctrl_l: "    Ctrl+L      Toggle language",
@@ -324,11 +316,6 @@ impl Messages {
             copied_terminal_tmpl: "📋 Copied to terminal clipboard: {}",
             copied_internal_tmpl: "📋 Copied to internal buffer (clipboard unavailable): {}",
 
-            step_rejected: "✗ Step rejected",
-            step_approved: "✓ Step approved",
-            approval_cancelled: "⚠️  Previous approval cancelled by new task",
-            approval_banner_tmpl: " ⚠️  APPROVAL: {} ",
-            approval_banner_keys: " [Enter] Approve   [Esc] Reject   (y/n also work) ",
             no_options: "⚠ No options available",
             selected_tmpl: "✓ Selected: {}",
             selection_cancelled: "✗ Selection cancelled",
@@ -357,7 +344,6 @@ impl Messages {
             step_ms_tmpl: " [{}ms]",
             step_sec_tmpl: " [{}s]",
             step_failed_tmpl: "✗ Step {} failed: {}",
-            need_approval_tmpl: "⚠️  Need approval: {} (press Enter/Esc)",
             error_tmpl: "❌ Error: {}",
             thinking_title: "(╭ರ_•́) Thinking...",
             thinking_line_prefix: "│ {}",
@@ -442,7 +428,6 @@ impl Messages {
             status_planning: "规划中...",
             status_executing_tmpl: "正在执行步骤 {}/{}",
             status_running_tmpl: "并行中 {}",
-            status_waiting_user_tmpl: "{} {} | ⚠️ {} (Enter/Esc)",
             status_done_tmpl: "{} {} | ✅ 任务完成",
             status_party_tmpl: "🎉 派对模式 🎉 | {}",
 
@@ -482,7 +467,7 @@ impl Messages {
             help_type_task: "    输入任务，按 Enter 提交，@ 附加文件",
             help_ctrl_z: "    Ctrl+Z/Y    撤销/重做输入",
             help_global_header: "  🌐 全局",
-            help_yn: "    Enter/Esc   批准/拒绝步骤 (y/n 也可)",
+            help_yn: "    Enter/Esc   确认/取消选择弹窗",
             help_ctrl_h: "    Ctrl+H      显示历史",
             help_ctrl_t: "    Ctrl+T      切换主题",
             help_ctrl_l: "    Ctrl+L      切换语言",
@@ -497,11 +482,6 @@ impl Messages {
             copied_terminal_tmpl: "📋 已复制到终端剪贴板: {}",
             copied_internal_tmpl: "📋 已复制到内部缓冲区 (剪贴板不可用): {}",
 
-            step_rejected: "✗ 步骤已拒绝",
-            step_approved: "✓ 步骤已批准",
-            approval_cancelled: "⚠️  新任务已取消之前的审批",
-            approval_banner_tmpl: " ⚠️  需要审批: {} ",
-            approval_banner_keys: " [Enter] 批准   [Esc] 拒绝   (y/n 也可) ",
             no_options: "⚠ 无可用选项",
             selected_tmpl: "✓ 已选择: {}",
             selection_cancelled: "✗ 选择已取消",
@@ -530,7 +510,6 @@ impl Messages {
             step_ms_tmpl: " [{}毫秒]",
             step_sec_tmpl: " [{}秒]",
             step_failed_tmpl: "✗ 步骤 {} 失败: {}",
-            need_approval_tmpl: "⚠️  需要审批: {} (按 Enter/Esc)",
             error_tmpl: "❌ 错误: {}",
             thinking_title: "(╭ರ_•́) 思考中...",
             thinking_line_prefix: "│ {}",

@@ -65,6 +65,7 @@ fn random_balance_duration() -> Duration {
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     agent_rx: UnboundedReceiver<AgentUpdate>,
     user_cmd_tx: UnboundedSender<UserCommand>,
@@ -143,7 +144,7 @@ pub async fn run_tui(
             terminal.draw(|f| {
                 let size = f.area();
                 // Input box height auto-expands with content (1–3 lines of content + 2 for border)
-                let input_lines = app.input.lines().count().max(1).min(3) as u16;
+                let input_lines = app.input.lines().count().clamp(1, 3) as u16;
                 let input_height = input_lines + 2;
                 // Third row is balance info only; omit when unavailable to reclaim space.
                 let bottom_height = if app.balance_info.is_some() { 3 } else { 2 };
@@ -205,7 +206,7 @@ pub async fn run_tui(
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition
         // - Dirty flag set: 10ms, quickly trigger a rerender
-        // - Active (Planning/Executing/WaitingForUser): 150ms to animate spinner
+        // - Active (Planning/Executing): 150ms to animate spinner
         // - Fully idle: 1000ms, reduce CPU wake frequency
         let idle_ms = if matches!(app.status, Status::Done) || app.flash_msg.is_some() {
             200u64
@@ -445,7 +446,7 @@ pub async fn run_tui(
                                     let is_same_click = app.mouse.last_click_pos == Some(pos)
                                         && app.mouse
                                             .last_click_time
-                                            .map_or(false, |t| {
+                                            .is_some_and(|t| {
                                                 now.duration_since(t).as_millis() < 500
                                             });
                                     if is_same_click {
@@ -460,7 +461,7 @@ pub async fn run_tui(
                                         let card_hit = app.thinking.blocks.iter().position(|b| {
                                             app.phys_to_logical_fast(b.title_idx)
                                                 .zip(app.phys_to_logical_fast(b.end_idx + 1))
-                                                .map_or(false, |(tl, bl)| {
+                                                .is_some_and(|(tl, bl)| {
                                                     line_idx >= tl && line_idx < bl
                                                 })
                                         });
@@ -506,9 +507,9 @@ pub async fn run_tui(
                                                 .enumerate()
                                                 .find(|(_, b)| {
                                                     app.phys_to_logical_fast(b.start_idx)
-                                                        .map_or(false, |si| line_idx >= si)
+                                                        .is_some_and(|si| line_idx >= si)
                                                         && app.phys_to_logical_fast(b.end_idx)
-                                                            .map_or(false, |ei| line_idx < ei)
+                                                            .is_some_and(|ei| line_idx < ei)
                                                 });
                                             if let Some((code_idx, _block)) = code_hit {
                                                 if app.mouse.click_count == 1 {
@@ -590,20 +591,18 @@ pub async fn run_tui(
                                         + mouse.row.saturating_sub(app.mouse.log_area.y + 1)
                                             as usize;
                                     let line_idx = app.logical_from_visual(visual_row);
-                                    if line_idx < app.total_log_lines() {
-                                        if let Some((start, _)) = app.mouse.log_selection {
+                                    if line_idx < app.total_log_lines()
+                                        && let Some((start, _)) = app.mouse.log_selection {
                                             app.mouse.log_selection = Some((start, line_idx));
                                         }
-                                    }
                                 } else if app.mouse.dragging_plan && in_plan {
                                     let item_idx =
                                         (mouse.row.saturating_sub(app.mouse.plan_area.y + 1))
                                             as usize;
-                                    if item_idx < app.plan.steps.len() {
-                                        if let Some((start, _)) = app.mouse.plan_selection {
+                                    if item_idx < app.plan.steps.len()
+                                        && let Some((start, _)) = app.mouse.plan_selection {
                                             app.mouse.plan_selection = Some((start, item_idx));
                                         }
-                                    }
                                 }
                             }
                             MouseEventKind::Up(MouseButton::Left) => {

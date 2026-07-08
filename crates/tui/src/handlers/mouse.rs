@@ -71,12 +71,12 @@ pub(crate) fn end_panel_resize(app: &mut App) {
 /// Triple-click on a log line selects the line (or whole code block when enabled).
 pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_code_blocks: bool) {
     app.mouse.log_word_selection = None;
-    if expand_code_blocks {
-        if let Some((cb_start, cb_end)) = app.find_code_block_containing_logical(line_idx) {
-            app.mouse.log_selection = Some((cb_start, cb_end));
-            app.mouse.dragging_log = true;
-            return;
-        }
+    if expand_code_blocks
+        && let Some((cb_start, cb_end)) = app.find_code_block_containing_logical(line_idx)
+    {
+        app.mouse.log_selection = Some((cb_start, cb_end));
+        app.mouse.dragging_log = true;
+        return;
     }
     app.mouse.log_selection = Some((line_idx, line_idx));
     app.mouse.dragging_log = true;

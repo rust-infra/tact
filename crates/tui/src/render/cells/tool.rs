@@ -210,6 +210,7 @@ pub(crate) struct ToolCell {
 }
 
 impl ToolCell {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_output(
         output: ToolRenderOutput,
         started_at: Option<Instant>,

@@ -185,7 +185,7 @@ impl LlmClient for AnthropicAdapter {
 
         let json_body = serde_json::to_vec(&body).unwrap();
         let mut event_source = client
-            .post(&self.messages_url())
+            .post(self.messages_url())
             .headers(self.headers())
             .json(&body)
             .eventsource()
@@ -267,19 +267,19 @@ impl LlmClient for AnthropicAdapter {
                             match &start.content_block {
                                 ContentBlock::Text { text } => {
                                     tool_input_buffers[index].clear();
-                                    if !text.is_empty() {
-                                        if let Some(ref tx) = ui_tx {
-                                            let _ = tx.send(AgentUpdate::StreamChunk(text.clone()));
-                                        }
+                                    if !text.is_empty()
+                                        && let Some(ref tx) = ui_tx
+                                    {
+                                        let _ = tx.send(AgentUpdate::StreamChunk(text.clone()));
                                     }
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
-                                    if !thinking.is_empty() {
-                                        if let Some(ref tx) = ui_tx {
-                                            let _ = tx
-                                                .send(AgentUpdate::ThinkingChunk(thinking.clone()));
-                                        }
+                                    if !thinking.is_empty()
+                                        && let Some(ref tx) = ui_tx
+                                    {
+                                        let _ =
+                                            tx.send(AgentUpdate::ThinkingChunk(thinking.clone()));
                                     }
                                 }
                                 ContentBlock::ToolUse { .. } => {
@@ -345,14 +345,11 @@ impl LlmClient for AnthropicAdapter {
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
                             }) = response_blocks.get_mut(stop.index)
+                                && stop.index < tool_input_buffers.len()
+                                && let Ok(value) =
+                                    serde_json::from_str(&tool_input_buffers[stop.index])
                             {
-                                if stop.index < tool_input_buffers.len() {
-                                    if let Ok(value) =
-                                        serde_json::from_str(&tool_input_buffers[stop.index])
-                                    {
-                                        *existing = value;
-                                    }
-                                }
+                                *existing = value;
                             }
                         }
                         "message_delta" => {
@@ -459,7 +456,7 @@ impl LlmClient for AnthropicAdapter {
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
 
         let response = client
-            .post(&self.messages_url())
+            .post(self.messages_url())
             .headers(self.headers())
             .json(&body)
             .send()

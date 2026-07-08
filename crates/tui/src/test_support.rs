@@ -11,6 +11,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 /// Thin wrapper around [`App`] for integration tests outside the `tui` crate.
 pub struct TestApp(App);
 
+impl Default for TestApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestApp {
     pub fn new() -> Self {
         Self(make_app())

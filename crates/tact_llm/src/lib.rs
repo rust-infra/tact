@@ -477,21 +477,19 @@ struct MockTurn {
     usage: Option<TokenUsageInfo>,
 }
 
+type MockTurnResult = Result<
+    (
+        Vec<ContentBlock>,
+        Option<StopReason>,
+        Option<TokenUsageInfo>,
+    ),
+    LlmError,
+>;
+
 /// Backing behavior for [`MockClient`].
 trait MockClientInner: Send + Sync {
     /// Produce the next turn. `idx` is the 0-based call counter.
-    fn next_turn(
-        &self,
-        request: &CreateMessageParams,
-        idx: usize,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-        ),
-        LlmError,
-    >;
+    fn next_turn(&self, request: &CreateMessageParams, idx: usize) -> MockTurnResult;
 }
 
 struct CannedMockInner {
@@ -676,17 +674,7 @@ impl MockClient {
         }
     }
 
-    fn next_turn(
-        &self,
-        request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-        ),
-        LlmError,
-    > {
+    fn next_turn(&self, request: &CreateMessageParams) -> MockTurnResult {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed);
         self.inner.next_turn(request, idx)
     }

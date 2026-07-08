@@ -59,7 +59,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::render::test_harness::make_app;
 
     #[test]

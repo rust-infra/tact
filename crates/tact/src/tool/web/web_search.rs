@@ -93,7 +93,7 @@ fn format_results(query: &str, results: &[SearchResult], persist_refs: bool) -> 
                     DuckDuckGo instant answers only, which may omit most web pages."
 )]
 pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<String> {
-    let num_results = input.num_results.min(10).max(1);
+    let num_results = input.num_results.clamp(1, 10);
     debug!(query = %input.query, num_results, "Web search");
 
     if let Some(api_key) = crate::config::settings()
@@ -223,48 +223,48 @@ fn extract_ddg_results(data: &Value, max: usize) -> Vec<SearchResult> {
     let mut count = 0;
 
     // Abstract (main answer)
-    if let Some(abstract_text) = data.get("Abstract").and_then(|a| a.as_str()) {
-        if !abstract_text.is_empty() {
-            let source = data
-                .get("AbstractSource")
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
-            let url = data
-                .get("AbstractURL")
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
-            if !url.is_empty() {
-                results.push(SearchResult {
-                    id: web_refs::search_result_id(url),
-                    title: if source.is_empty() {
-                        "DuckDuckGo abstract".to_string()
-                    } else {
-                        source.to_string()
-                    },
-                    url: url.to_string(),
-                    snippet: abstract_text.to_string(),
-                });
-                count += 1;
-            }
+    if let Some(abstract_text) = data.get("Abstract").and_then(|a| a.as_str())
+        && !abstract_text.is_empty()
+    {
+        let source = data
+            .get("AbstractSource")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let url = data
+            .get("AbstractURL")
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        if !url.is_empty() {
+            results.push(SearchResult {
+                id: web_refs::search_result_id(url),
+                title: if source.is_empty() {
+                    "DuckDuckGo abstract".to_string()
+                } else {
+                    source.to_string()
+                },
+                url: url.to_string(),
+                snippet: abstract_text.to_string(),
+            });
+            count += 1;
         }
     }
 
     // Related topics
     if let Some(topics) = data.get("RelatedTopics").and_then(|t| t.as_array()) {
         for topic in topics.iter().take(max.saturating_sub(count)) {
-            if let Some(text) = topic.get("Text").and_then(|t| t.as_str()) {
-                if !text.is_empty() {
-                    let url = topic.get("FirstURL").and_then(|u| u.as_str()).unwrap_or("");
-                    if url.is_empty() {
-                        continue;
-                    }
-                    results.push(SearchResult {
-                        id: web_refs::search_result_id(url),
-                        title: text.to_string(),
-                        url: url.to_string(),
-                        snippet: String::new(),
-                    });
+            if let Some(text) = topic.get("Text").and_then(|t| t.as_str())
+                && !text.is_empty()
+            {
+                let url = topic.get("FirstURL").and_then(|u| u.as_str()).unwrap_or("");
+                if url.is_empty() {
+                    continue;
                 }
+                results.push(SearchResult {
+                    id: web_refs::search_result_id(url),
+                    title: text.to_string(),
+                    url: url.to_string(),
+                    snippet: String::new(),
+                });
             }
         }
     }

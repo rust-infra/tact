@@ -189,7 +189,7 @@ pub fn anthropic_messages_to_openai(
 /// every `tool_call_id`. If this invariant is violated (e.g., after a
 /// MaxTokens continuation that didn't execute tools), strip the orphaned
 /// `tool_calls` so the request doesn't get rejected by the API.
-fn sanitize_tool_call_sequence(messages: &mut Vec<ChatCompletionRequestMessage>) {
+fn sanitize_tool_call_sequence(messages: &mut [ChatCompletionRequestMessage]) {
     let mut i = 0;
     while i < messages.len() {
         // Collect tool_call_ids from an assistant message.

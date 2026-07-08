@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 use tact_protocol::{StepResult, StepStatus};
 
@@ -96,6 +96,7 @@ pub fn format_bytes(size: usize) -> String {
 }
 
 /// Build the plain-text meta line (title + meta rows).
+#[allow(clippy::too_many_arguments)]
 pub fn build_meta_text(
     phase: ToolPhase,
     permission_label: Option<&str>,
@@ -117,10 +118,10 @@ pub fn build_meta_text(
     };
 
     let mut parts = vec![phase_label];
-    if matches!(phase, ToolPhase::Failed) {
-        if let Some(err) = error_message.filter(|s| !s.is_empty()) {
-            parts.push(truncate_tool_error(err));
-        }
+    if matches!(phase, ToolPhase::Failed)
+        && let Some(err) = error_message.filter(|s| !s.is_empty())
+    {
+        parts.push(truncate_tool_error(err));
     }
     if let Some(size) = size_bytes.filter(|_| matches!(phase, ToolPhase::Success)) {
         parts.push(format_bytes(size));
@@ -147,6 +148,7 @@ fn truncate_tool_error(error: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_meta_line(
     phase: ToolPhase,
     permission_label: Option<&str>,
@@ -340,16 +342,19 @@ impl<'a> ToolWidget<'a> {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_permission_label(mut self, label: impl Into<String>) -> Self {
         self.permission_label = Some(label.into());
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_permission_label_opt(mut self, label: Option<String>) -> Self {
         self.permission_label = label;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.error_message = Some(message.into());
         self

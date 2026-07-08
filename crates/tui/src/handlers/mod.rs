@@ -29,12 +29,12 @@ fn copy_text(app: &mut App, text: &str) {
     let preview = text.chars().take(40).collect::<String>();
 
     // 1. Try native clipboard
-    if let Ok(mut clip) = Clipboard::new() {
-        if clip.set_text(text).is_ok() {
-            let msgs = app.msgs();
-            app.add_system_message(msgs.copied_tmpl.replace("{}", &preview));
-            return;
-        }
+    if let Ok(mut clip) = Clipboard::new()
+        && clip.set_text(text).is_ok()
+    {
+        let msgs = app.msgs();
+        app.add_system_message(msgs.copied_tmpl.replace("{}", &preview));
+        return;
     }
 
     // 2. Fallback: OSC 52 terminal clipboard (for SSH / tmux scenarios)

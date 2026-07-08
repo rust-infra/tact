@@ -69,7 +69,7 @@ impl App {
             input_mode: InputMode::Insert,
             palette_selected: 0,
             search: SearchState::new(),
-            command_history: Vec::new(),
+            _command_history: Vec::new(),
             input_history: InputHistory::new(input_history_entries),
             work_dir,
             session_id,

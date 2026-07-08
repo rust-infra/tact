@@ -1,6 +1,6 @@
 /// Slash command autocomplete popup state, triggered by '/' at the start of
 /// input or after whitespace in Insert mode.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SlashCommandState {
     /// Whether the slash command popup is currently active.
     pub(crate) active: bool,
@@ -8,16 +8,6 @@ pub(crate) struct SlashCommandState {
     pub(crate) start_pos: usize,
     /// Selected index in the filtered command list.
     pub(crate) selected: usize,
-}
-
-impl Default for SlashCommandState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            start_pos: 0,
-            selected: 0,
-        }
-    }
 }
 
 impl SlashCommandState {

@@ -1,5 +1,7 @@
 //! Shared TestBackend helpers for render-layer tests.
 
+#![allow(dead_code)]
+
 use super::{
     log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
     render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
@@ -86,7 +88,7 @@ pub fn buffer_first_char_x(buf: &ratatui::buffer::Buffer, ch: char) -> Option<u1
 
 /// Mirror the main TUI frame layout from `lib.rs` (status + main + input + bottom).
 pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
-    let input_lines = app.input.lines().count().max(1).min(3) as u16;
+    let input_lines = app.input.lines().count().clamp(1, 3) as u16;
     let input_height = input_lines + 2;
     let bottom_height = if app.balance_info.is_some() { 3 } else { 2 };
 

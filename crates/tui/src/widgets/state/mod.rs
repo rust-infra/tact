@@ -1,6 +1,5 @@
 use crate::i18n::Language;
 use crate::theme::Theme;
-use chrono;
 use ratatui::text::Line;
 use std::path::PathBuf;
 use tact_protocol::{AgentUpdate, UserCommand};
@@ -106,19 +105,12 @@ pub(crate) struct CodePopup {
 pub(crate) enum Status {
     Idle,
     Planning,
-    Executing {
-        current_step: usize,
-        total: usize,
-    },
-    WaitingForUser {
-        prompt: String,
-        step_index: usize,
-        approval_tx: tokio::sync::oneshot::Sender<bool>,
-    },
+    Executing { current_step: usize, total: usize },
     Done,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) enum RawMessageType {
     LLM,
     LLMThinking,
@@ -159,7 +151,7 @@ pub struct App {
     // Search
     pub(crate) search: SearchState,
     // Command history (brief)
-    pub(crate) command_history: Vec<String>,
+    pub(crate) _command_history: Vec<String>,
     /// User input history.
     pub(crate) input_history: InputHistory,
     /// Project root directory.

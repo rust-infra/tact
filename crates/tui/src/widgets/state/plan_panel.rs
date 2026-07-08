@@ -26,7 +26,7 @@ impl PlanPanel {
             visible: false,
         }
     }
-    pub(crate) fn reset(self: &mut Self) {
+    pub(crate) fn reset(&mut self) {
         self.steps_set.clear();
         self.steps.clear();
         self.collapsed.clear();
