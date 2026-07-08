@@ -16,7 +16,7 @@ path = "src/main.rs"
 tact = { path = "../tact", features = ["test-support"] }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
-tui = { path = "../tui" }
+tui = { path = "../tui", features = ["test-support"] }
 anthropic-ai-sdk = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }

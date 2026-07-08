@@ -12,6 +12,9 @@ mod theme_detection;
 
 mod widgets;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 use crate::handlers::{
     handle_file_picker_mode, handle_insert_mode, handle_normal_mode, handle_palette_mode,
     handle_search_mode, handle_select_mode,

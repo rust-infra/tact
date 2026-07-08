@@ -140,7 +140,7 @@ mod tests {
 
     use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
     use tact_llm::MockClient;
-    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -189,5 +189,20 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    #[tokio::test]
+    async fn query_balance_emits_balance_query_failed() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::QueryBalance, &work_dir).await;
+
+        let update = agent_rx.try_recv().expect("expected balance error");
+        assert!(matches!(
+            update,
+            AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
+        ));
     }
 }

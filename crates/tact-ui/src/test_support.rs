@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tact::{
     Agent, AgentSystemPrompt,
@@ -15,6 +16,12 @@ use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 static INIT_CONFIG: Once = Once::new();
+static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_workspace_name(prefix: &str) -> String {
+    let n = WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{n}")
+}
 
 /// Install minimal `tact::config` settings required by `agent_loop`.
 pub fn install_test_config() {
@@ -52,8 +59,17 @@ pub fn build_test_agent(
     mock: MockClient,
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
 ) -> (Agent, std::path::PathBuf) {
+    build_test_agent_with_mode(mock, ui_tx, PermissionMode::Auto)
+}
+
+/// Like [`build_test_agent`], but selects the permission mode (Plan / Auto / Default).
+pub fn build_test_agent_with_mode(
+    mock: MockClient,
+    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    permission_mode: PermissionMode,
+) -> (Agent, std::path::PathBuf) {
     install_test_config();
-    let context = test_context("tact-ui-integration");
+    let context = test_context(&unique_workspace_name("tact-ui-integration"));
     let work_dir = context.work_dir.clone();
 
     let mut tool_context = context;
@@ -64,7 +80,7 @@ pub fn build_test_agent(
         tool_context,
         toolset(),
         MCPToolRouter::new(),
-        PermissionManager::try_new(PermissionMode::Auto).expect("auto permission mode"),
+        PermissionManager::try_new(permission_mode).expect("permission mode"),
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
     );
     if let Some(tx) = ui_tx {
@@ -80,7 +96,7 @@ pub async fn build_test_agent_with_session(
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
 ) -> (Agent, PathBuf, DynSessionStore, String) {
     install_test_config();
-    let context = test_context("tact-ui-session");
+    let context = test_context(&unique_workspace_name("tact-ui-session"));
     let work_dir = context.work_dir.clone();
     let db_path = work_dir.join(".tact").join("tact.db");
     if let Some(parent) = db_path.parent() {

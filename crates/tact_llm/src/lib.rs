@@ -468,13 +468,20 @@ pub fn is_kimi_k27() -> bool {
 
 // ── Mock client for integration testing ───────────────────────────
 
+/// A single canned LLM turn for [`MockClient`].
+struct MockTurn {
+    blocks: Vec<ContentBlock>,
+    stop_reason: Option<StopReason>,
+    usage: Option<TokenUsageInfo>,
+}
+
 /// Deterministic mock LLM client that returns a fixed sequence of responses.
 ///
 /// Each call to `stream_message` or `create_message` consumes one response
 /// from the sequence, wrapping around when exhausted.
 #[derive(Clone)]
 pub struct MockClient {
-    responses: Arc<Vec<(Vec<ContentBlock>, Option<StopReason>)>>,
+    responses: Arc<Vec<MockTurn>>,
     counter: Arc<AtomicUsize>,
 }
 
@@ -485,8 +492,67 @@ impl MockClient {
     /// the serialised request body are always `None`.
     pub fn new(responses: Vec<(Vec<ContentBlock>, Option<StopReason>)>) -> Self {
         Self {
-            responses: Arc::new(responses),
+            responses: Arc::new(
+                responses
+                    .into_iter()
+                    .map(|(blocks, stop_reason)| MockTurn {
+                        blocks,
+                        stop_reason,
+                        usage: None,
+                    })
+                    .collect(),
+            ),
             counter: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Like [`Self::new`], but attaches token usage to each turn (and emits
+    /// [`AgentUpdate::TokenUsage`] on `stream_message` when `ui_tx` is set).
+    pub fn with_usage(
+        responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>,
+    ) -> Self {
+        Self {
+            responses: Arc::new(
+                responses
+                    .into_iter()
+                    .map(|(blocks, stop_reason, usage)| MockTurn {
+                        blocks,
+                        stop_reason,
+                        usage: Some(usage),
+                    })
+                    .collect(),
+            ),
+            counter: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn next_turn(&self) -> (Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>) {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.responses.len();
+        let turn = &self.responses[idx];
+        (
+            turn.blocks.clone(),
+            Self::clone_stop_reason(&turn.stop_reason),
+            turn.usage.clone(),
+        )
+    }
+
+    fn clone_stop_reason(stop_reason: &Option<StopReason>) -> Option<StopReason> {
+        stop_reason.as_ref().map(|s| {
+            serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
+                .expect("deserialize StopReason")
+        })
+    }
+
+    fn emit_token_usage(ui_tx: &Option<UnboundedSender<AgentUpdate>>, usage: &TokenUsageInfo) {
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::TokenUsage {
+                prompt: usage.prompt,
+                completion: usage.completion,
+                total: usage.total,
+                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+            });
         }
     }
 }
@@ -496,7 +562,7 @@ impl LlmClient for MockClient {
     async fn stream_message(
         &self,
         _request: &CreateMessageParams,
-        _ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<AgentUpdate>>,
     ) -> Result<
         (
             Vec<ContentBlock>,
@@ -506,16 +572,11 @@ impl LlmClient for MockClient {
         ),
         LlmError,
     > {
-        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.responses.len();
-        let (content, stop_reason) = &self.responses[idx];
-        // StopReason doesn't derive Clone, so we must deep-copy via serde.
-        let sr = stop_reason
-            .as_ref()
-            .map(|s| {
-                serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
-                    .expect("deserialize StopReason")
-            });
-        Ok((content.clone(), sr, None, None))
+        let (blocks, stop_reason, usage) = self.next_turn();
+        if let Some(ref u) = usage {
+            Self::emit_token_usage(&ui_tx, u);
+        }
+        Ok((blocks, stop_reason, usage, None))
     }
 
     async fn create_message(
@@ -530,15 +591,8 @@ impl LlmClient for MockClient {
         ),
         LlmError,
     > {
-        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.responses.len();
-        let (content, stop_reason) = &self.responses[idx];
-        let sr = stop_reason
-            .as_ref()
-            .map(|s| {
-                serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
-                    .expect("deserialize StopReason")
-            });
-        Ok((content.clone(), sr, None, None))
+        let (blocks, stop_reason, usage) = self.next_turn();
+        Ok((blocks, stop_reason, usage, None))
     }
 }
 
@@ -638,5 +692,51 @@ mod tests {
                 assert!(err.contains("google"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn mock_stream_emits_token_usage_when_configured() {
+        use anthropic_ai_sdk::types::message::ContentBlock;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let usage = TokenUsageInfo {
+            prompt: 10,
+            completion: 5,
+            total: 15,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 10,
+            reasoning_tokens: 1,
+        };
+        let client = MockClient::with_usage(vec![(
+            vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+            Some(StopReason::EndTurn),
+            usage.clone(),
+        )]);
+
+        let (tx, mut rx) = unbounded_channel();
+        let (blocks, _, returned, _) = client
+            .stream_message(
+                &CreateMessageParams::new(
+                    anthropic_ai_sdk::types::message::RequiredMessageParams {
+                        model: "mock".to_string(),
+                        messages: vec![],
+                        max_tokens: 100,
+                    },
+                ),
+                Some(tx),
+            )
+            .await
+            .expect("stream");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(returned.as_ref().map(|u| u.total), Some(15));
+
+        let update = rx.try_recv().expect("TokenUsage event");
+        assert!(matches!(
+            update,
+            AgentUpdate::TokenUsage { total, .. } if total == usage.total
+        ));
     }
 }

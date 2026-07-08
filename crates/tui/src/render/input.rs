@@ -149,3 +149,50 @@ fn render_approval_banner(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, area);
     frame.render_widget(para, area);
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::super::test_harness::{buffer_text, make_app};
+    use super::render_input_box;
+    use crate::widgets::state::Status;
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+    #[test]
+    fn input_box_renders_multiline_content() {
+        let mut app = make_app();
+        app.input = "line one\nline two".into();
+        app.input_cursor = app.input.len();
+
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 80, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("line one"), "multiline input visible: {text}");
+    }
+
+    #[test]
+    fn approval_banner_renders_when_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.status = Status::WaitingForUser {
+            prompt: "Allow destructive rm?".into(),
+            step_index: 0,
+            approval_tx: tx,
+        };
+
+        let backend = TestBackend::new(80, 4);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 80, 4), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Allow destructive rm"),
+            "approval banner should show prompt: {text}"
+        );
+    }
+}

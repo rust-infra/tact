@@ -1113,4 +1113,274 @@ mod tests {
 
         assert_eq!(agent.tool_context.work_dir, expected);
     }
+
+    #[tokio::test]
+    async fn agent_loop_runs_parallel_read_tools() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::{test_context, write_workspace_file};
+
+        let context = test_context("agent_parallel_reads");
+        let work_dir = context.work_dir.clone();
+        write_workspace_file(&work_dir, "a.txt", "aaa");
+        write_workspace_file(&work_dir, "b.txt", "bbb");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "r1".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "a.txt" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "r2".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "b.txt" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("reads done")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read both")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        let finished: Vec<_> = updates
+            .iter()
+            .filter_map(|u| match u {
+                AgentUpdate::StepFinished(_, id, r) if r.tool == "read_file" => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 2);
+        assert!(finished.contains(&"r1"));
+        assert!(finished.contains(&"r2"));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_plan_mode_denies_write() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::test_context;
+
+        let context = test_context("agent_plan_deny");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "w1".to_string(),
+                    name: "write_file".to_string(),
+                    input: serde_json::json!({ "path": "x.txt", "content": "data" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("continued")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Plan,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "write")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        assert!(
+            updates.iter().any(|u| {
+                matches!(
+                    u,
+                    AgentUpdate::StepFailed(_, id, msg)
+                        if id == "w1" && msg.contains("Plan mode")
+                )
+            }),
+            "Plan mode should StepFailed on write, got: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_emits_token_usage_from_mock() {
+        ensure_config();
+        use tact_protocol::{AgentUpdate, TokenUsageInfo};
+        use crate::tool::test_support::test_context;
+
+        let context = test_context("agent_token_usage");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let usage = TokenUsageInfo {
+            prompt: 50,
+            completion: 10,
+            total: 60,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 50,
+            reasoning_tokens: 0,
+        };
+
+        let mock = MockClient::with_usage(vec![(
+            vec![make_text_block("ok")],
+            Some(StopReason::EndTurn),
+            usage.clone(),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        assert!(
+            updates.iter().any(|u| {
+                matches!(
+                    u,
+                    AgentUpdate::TokenUsage { total, .. } if *total == usage.total
+                )
+            }),
+            "expected TokenUsage from mock, got: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_serializes_read_before_write_on_same_file() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::{test_context, write_workspace_file};
+
+        let context = test_context("agent_read_write_serial");
+        let work_dir = context.work_dir.clone();
+        write_workspace_file(&work_dir, "shared.txt", "seed");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "r1".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "shared.txt" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "w1".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "shared.txt", "content": "next" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "rw")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        let read_done = updates.iter().position(|u| {
+            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1")
+        });
+        let write_done = updates.iter().position(|u| {
+            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1")
+        });
+        assert!(
+            read_done.is_some()
+                && write_done.is_some()
+                && read_done < write_done,
+            "read must finish before write on same file, got: {updates:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("shared.txt")).unwrap(),
+            "next"
+        );
+    }
 }

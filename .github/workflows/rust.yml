@@ -62,5 +62,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
-      - name: Run tests
+      - name: Run integration tests (tact-ui, tui, tact, tact_llm)
+        run: cargo test -p tact-ui -p tui -p tact -p tact_llm --verbose
+      - name: Run full workspace tests
         run: cargo test --verbose
