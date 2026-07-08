@@ -39,3 +39,57 @@ pub(crate) fn handle_search_mode(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[test]
+    fn enter_sets_search_term_and_returns_to_normal() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Search;
+        app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+            "searchable needle text".into(),
+        ));
+        app.cmd_line = "needle".into();
+
+        handle_search_mode(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.search.term, "needle");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            !app.search.matches.is_empty(),
+            "search should find matches in log"
+        );
+    }
+
+    #[test]
+    fn esc_clears_search_input_without_applying() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Search;
+        app.cmd_line = "aborted".into();
+
+        handle_search_mode(&mut app, key(KeyCode::Esc));
+
+        assert!(app.cmd_line.is_empty());
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.search.term.is_empty());
+    }
+
+    #[test]
+    fn typing_updates_cmd_line() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Search;
+
+        handle_search_mode(&mut app, key(KeyCode::Char('x')));
+        handle_search_mode(&mut app, key(KeyCode::Char('y')));
+
+        assert_eq!(app.cmd_line, "xy");
+    }
+}

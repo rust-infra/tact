@@ -17,6 +17,7 @@ pub struct SubagentInput {
     #[schemars(description = "Prompt for the subagent.")]
     pub prompt: String,
     #[schemars(description = "Short description of the task.")]
+    #[allow(dead_code)]
     pub description: Option<String>,
 }
 
@@ -61,4 +62,44 @@ pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String> {
         .unwrap_or_else(|| "(no summary)".to_string());
 
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_toolset_has_six_tools() {
+        let router = subagent_toolset();
+        let specs = router.tool_specs();
+        assert_eq!(specs.len(), 6, "subagent should have exactly 6 tools");
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"search_code"));
+        assert!(names.contains(&"sleep"));
+    }
+
+    #[test]
+    fn subagent_input_deserialization() {
+        let json = serde_json::json!({
+            "prompt": "Fix the bug in main.rs",
+            "description": "rust bugfix"
+        });
+        let input: SubagentInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.prompt, "Fix the bug in main.rs");
+        assert_eq!(input.description, Some("rust bugfix".to_string()));
+    }
+
+    #[test]
+    fn subagent_input_without_description() {
+        let json = serde_json::json!({
+            "prompt": "Just do it"
+        });
+        let input: SubagentInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.prompt, "Just do it");
+        assert_eq!(input.description, None);
+    }
 }

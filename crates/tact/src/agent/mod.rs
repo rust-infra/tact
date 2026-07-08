@@ -15,6 +15,7 @@ use crate::ToolSpec;
 use crate::compact::{
     CompactState, compacted_context, estimate_context_size, micro_compact, write_transcript,
 };
+use crate::config::AgentSettings;
 use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
 use crate::mcp::MCPToolRouter;
 use crate::memory::MEMORY_GUIDANCE;
@@ -29,30 +30,6 @@ use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_llm::{LlmClient, LlmProvider};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
-
-/// Soft context limit in characters. When the serialized context exceeds
-/// this threshold the agent will attempt micro-compaction.
-fn context_limit() -> usize {
-    crate::config::settings().agent.context_limit_chars
-}
-
-/// Maximum tokens to generate per LLM call.
-fn max_tokens() -> u32 {
-    crate::config::settings().agent.max_tokens
-}
-
-/// Budget tokens for extended thinking.
-fn thinking_budget() -> usize {
-    crate::config::settings().agent.thinking_budget
-}
-
-/// Returns the thinking configuration to use.
-fn thinking_config() -> Thinking {
-    Thinking {
-        budget_tokens: thinking_budget(),
-        type_: ThinkingType::Enabled,
-    }
-}
 
 /// Shared state for a running agent session.
 ///
@@ -102,6 +79,8 @@ pub struct Agent {
     pub hooks: Vec<Hook>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
+    /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
+    agent_settings: AgentSettings,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
@@ -142,7 +121,33 @@ impl Agent {
             hooks: Vec::new(),
             system_prompt,
             tool_use_counter: 0,
+            agent_settings: crate::config::settings().agent.clone(),
             cached_tool_specs,
+        }
+    }
+
+    /// Override agent-loop settings (used by integration tests with custom config).
+    pub fn with_agent_settings(mut self, settings: AgentSettings) -> Self {
+        self.agent_settings = settings;
+        self
+    }
+
+    fn context_limit(&self) -> usize {
+        self.agent_settings.context_limit_chars
+    }
+
+    fn max_tokens(&self) -> u32 {
+        self.agent_settings.max_tokens
+    }
+
+    fn thinking_budget(&self) -> usize {
+        self.agent_settings.thinking_budget
+    }
+
+    fn thinking_config(&self) -> Thinking {
+        Thinking {
+            budget_tokens: self.thinking_budget(),
+            type_: ThinkingType::Enabled,
         }
     }
 
@@ -337,8 +342,11 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
-            micro_compact(&mut self.runtime.context);
-            if estimate_context_size(&self.runtime.context) > context_limit() {
+            micro_compact(
+                &mut self.runtime.context,
+                self.agent_settings.micro_compact_enabled,
+            );
+            if estimate_context_size(&self.runtime.context) > self.context_limit() {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
@@ -351,12 +359,12 @@ impl Agent {
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: self.runtime.context.clone(),
-                max_tokens: max_tokens(),
+                max_tokens: self.max_tokens(),
             })
             .with_system(&system)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
-            .with_thinking(thinking_config());
+            .with_thinking(self.thinking_config());
 
             self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
                 model: model_name,
@@ -770,7 +778,11 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             .skills_available(self.tool_context.skill_registry.describe_available())
             .memory(self.load_memory_prompt()?)
             .claude_md(load_claude_md_prompt(workdir))
-            .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
+            .dynamic_context(load_dynamic_context(
+                workdir,
+                &mut self.runtime.cached_dir_snapshot,
+                self.agent_settings.snapshot_max_items,
+            ))
             .memory_guidance(MEMORY_GUIDANCE.trim())
             .build()?;
 
@@ -794,9 +806,11 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
 /// The directory snapshot is expensive to compute and its output must be
 /// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
 /// can hit.  We compute it once per session and reuse the cached string.
-fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) -> String {
-    let snapshot_limit = crate::config::settings().agent.snapshot_max_items;
-
+fn load_dynamic_context(
+    workdir: &Path,
+    cached_snapshot: &mut Option<String>,
+    snapshot_limit: usize,
+) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
         None => {
@@ -954,4 +968,474 @@ fn load_claude_md_prompt(workdir: &Path) -> String {
         lines.push(String::new());
     }
     lines.join("\n").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anthropic_ai_sdk::types::message::{ContentBlock, Message, Role, StopReason};
+    use std::sync::Once;
+    use tact_llm::{LlmProvider, MockClient};
+
+    use crate::tool::test_support::test_context;
+
+    static INIT_CONFIG: Once = Once::new();
+
+    fn ensure_config() {
+        INIT_CONFIG.call_once(|| {
+            let config = crate::config::ResolvedConfig {
+                llm: crate::config::LlmSettings {
+                    provider: "mock".to_string(),
+                    api_key: String::new(),
+                    base_url: String::new(),
+                    model: "mock-model".to_string(),
+                },
+                agent: crate::config::AgentSettings {
+                    context_limit_chars: 500_000,
+                    max_tokens: 8192,
+                    thinking_budget: 0,
+                    snapshot_max_items: 80,
+                    notifications_enabled: false,
+                    micro_compact_enabled: true,
+                },
+                ui: crate::config::UiSettings {
+                    theme: "retro".to_string(),
+                },
+                tools: crate::config::ToolSettings {
+                    brave_search_api_key: None,
+                },
+                permission_mode: None,
+                tokio_console: false,
+            };
+            crate::config::install(config);
+        });
+    }
+
+    fn make_text_block(content: &str) -> ContentBlock {
+        ContentBlock::Text {
+            text: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn agent_settings_snapshot_survives_global_config_override() {
+        ensure_config();
+        let context = test_context("agent_settings_snapshot");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let tiny = crate::config::AgentSettings {
+            context_limit_chars: 500,
+            max_tokens: 1024,
+            thinking_budget: 0,
+            snapshot_max_items: 10,
+            notifications_enabled: false,
+            micro_compact_enabled: true,
+        };
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_agent_settings(tiny.clone());
+
+        #[cfg(feature = "test-support")]
+        {
+            let mut big = crate::config::settings();
+            big.agent.context_limit_chars = 900_000;
+            crate::config::install_or_override(big);
+        }
+
+        assert_eq!(agent.context_limit(), 500);
+        assert_eq!(agent.max_tokens(), 1024);
+        assert_eq!(agent.agent_settings.context_limit_chars, tiny.context_limit_chars);
+    }
+
+    #[test]
+    fn agent_new_initializes_with_correct_tool_specs() {
+        let context = test_context("agent_new_test");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+
+        let specs = agent.all_tool_specs();
+        assert!(!specs.is_empty(), "tool specs should not be empty");
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_completes_with_end_turn_response() {
+        ensure_config();
+        let context = test_context("agent_loop_end_turn");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("Hello, I am a coding agent.")],
+            Some(StopReason::EndTurn),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "Say hello")))
+            .await;
+
+        assert!(result.is_ok(), "agent_loop should complete: {:?}", result.err());
+        assert!(
+            agent.runtime.context.len() >= 2,
+            "context should have at least user + assistant messages"
+        );
+    }
+
+    #[test]
+    fn next_step_idx_increments() {
+        let context = test_context("next_step_idx");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        assert_eq!(agent.next_step_idx(), 0);
+        assert_eq!(agent.next_step_idx(), 1);
+        assert_eq!(agent.next_step_idx(), 2);
+    }
+
+    #[test]
+    fn agent_new_preserves_work_dir_in_tool_context() {
+        let context = test_context("agent_work_dir");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let expected = context.work_dir.clone();
+
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        assert_eq!(agent.tool_context.work_dir, expected);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_runs_parallel_read_tools() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::{test_context, write_workspace_file};
+
+        let context = test_context("agent_parallel_reads");
+        let work_dir = context.work_dir.clone();
+        write_workspace_file(&work_dir, "a.txt", "aaa");
+        write_workspace_file(&work_dir, "b.txt", "bbb");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "r1".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "a.txt" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "r2".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "b.txt" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("reads done")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read both")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        let finished: Vec<_> = updates
+            .iter()
+            .filter_map(|u| match u {
+                AgentUpdate::StepFinished(_, id, r) if r.tool == "read_file" => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 2);
+        assert!(finished.contains(&"r1"));
+        assert!(finished.contains(&"r2"));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_plan_mode_denies_write() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::test_context;
+
+        let context = test_context("agent_plan_deny");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "w1".to_string(),
+                    name: "write_file".to_string(),
+                    input: serde_json::json!({ "path": "x.txt", "content": "data" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("continued")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Plan,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "write")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        assert!(
+            updates.iter().any(|u| {
+                matches!(
+                    u,
+                    AgentUpdate::StepFailed(_, id, msg)
+                        if id == "w1" && msg.contains("Plan mode")
+                )
+            }),
+            "Plan mode should StepFailed on write, got: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_emits_token_usage_from_mock() {
+        ensure_config();
+        use tact_protocol::{AgentUpdate, TokenUsageInfo};
+        use crate::tool::test_support::test_context;
+
+        let context = test_context("agent_token_usage");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let usage = TokenUsageInfo {
+            prompt: 50,
+            completion: 10,
+            total: 60,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 50,
+            reasoning_tokens: 0,
+        };
+
+        let mock = MockClient::with_usage(vec![(
+            vec![make_text_block("ok")],
+            Some(StopReason::EndTurn),
+            usage.clone(),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        assert!(
+            updates.iter().any(|u| {
+                matches!(
+                    u,
+                    AgentUpdate::TokenUsage { total, .. } if *total == usage.total
+                )
+            }),
+            "expected TokenUsage from mock, got: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_serializes_read_before_write_on_same_file() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+        use crate::tool::test_support::{test_context, write_workspace_file};
+
+        let context = test_context("agent_read_write_serial");
+        let work_dir = context.work_dir.clone();
+        write_workspace_file(&work_dir, "shared.txt", "seed");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![
+            (
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "r1".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({ "path": "shared.txt" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "w1".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "shared.txt", "content": "next" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Auto,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "rw")))
+            .await
+            .expect("agent_loop");
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+
+        let read_done = updates.iter().position(|u| {
+            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1")
+        });
+        let write_done = updates.iter().position(|u| {
+            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1")
+        });
+        assert!(
+            read_done.is_some()
+                && write_done.is_some()
+                && read_done < write_done,
+            "read must finish before write on same file, got: {updates:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("shared.txt")).unwrap(),
+            "next"
+        );
+    }
 }

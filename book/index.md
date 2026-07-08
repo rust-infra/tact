@@ -148,19 +148,20 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 21 | [Configuration](./21_chapter_config.md) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
 | 22 | [LLM Providers](./22_chapter_llm.md) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
 | 23 | [Terminal UI](./23_chapter_tui.md) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
+| 24 | [Testing Strategy](./24_chapter_testing.md) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 24** documents the integration test harness.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
 
 ## Planned Chapters
 
-No chapters are queued at this time. Future additions may cover testing strategy, deployment, or plugin APIs.
+Future additions may cover deployment or plugin APIs.
 
 ---
 

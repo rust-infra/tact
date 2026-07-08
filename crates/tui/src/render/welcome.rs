@@ -57,3 +57,33 @@ impl Widget for LogoWidget {
         Paragraph::new(logo_lines).centered().render(chunks[1], buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logo_widget_renders_agent_label() {
+        let area = Rect::new(0, 0, 40, 20);
+        let mut buf = Buffer::empty(area);
+        LogoWidget::default().render(area, &mut buf);
+
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(
+            text.contains("Agent TUI"),
+            "logo should render the Agent TUI label"
+        );
+    }
+
+    #[test]
+    fn logo_widget_does_not_panic_on_tiny_area() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        LogoWidget::default().render(area, &mut buf);
+    }
+}

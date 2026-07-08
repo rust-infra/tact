@@ -6,7 +6,6 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
-    extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::PermissionManager,
@@ -20,13 +19,13 @@ use tact::{
 use tact_llm::{
     get_llm_client, is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance,
 };
-use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::AgentUpdate;
 
+use crate::driver::run_command_loop;
 use crate::permission::permission_mode_from_config;
 use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
-use crate::user_message::build_user_message;
 
-pub(crate) async fn run_interactive(
+pub async fn run_interactive(
     args: CliArgs,
     tact_path: TactPath,
     session_store: DynSessionStore,
@@ -96,7 +95,7 @@ async fn run_interactive_locked(
     let mcp_router = load_mcp_router().await?;
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (user_cmd_tx, mut user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let agent_tx2 = agent_tx.clone();
 
     let tools = toolset();
@@ -113,7 +112,7 @@ async fn run_interactive_locked(
     };
 
     let history_store = session_store.clone();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         client.clone(),
         tool_context,
         tools,
@@ -164,63 +163,10 @@ async fn run_interactive_locked(
         });
     }
 
-    while let Some(cmd) = user_cmd_rx.recv().await {
-        match cmd {
-            UserCommand::SubmitTask(task) => {
-                agent.tool_use_counter = 0;
-                agent
-                    .runtime
-                    .cancel_flag
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-
-                let task_message = build_user_message(&task, &image_work_dir).await;
-                match agent.agent_loop(Some(task_message)).await {
-                    Ok(()) if !agent
-                        .runtime
-                        .cancel_flag
-                        .load(std::sync::atomic::Ordering::Relaxed) =>
-                    {
-                        if let Some(last) = agent.runtime.context.last() {
-                            let text = extract_text(&last.content);
-                            agent.emit_update(AgentUpdate::TaskComplete(text));
-                        }
-                    }
-                    Ok(()) => {}
-                    Err(e) => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                    }
-                }
-            }
-            UserCommand::Cancel => {
-                agent
-                    .runtime
-                    .cancel_flag
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
-            }
-            UserCommand::QueryBalance => {
-                let result = if is_deepseek() {
-                    query_deepseek_balance().await
-                } else if is_kimi() {
-                    query_kimi_balance().await
-                } else {
-                    Err(anyhow::anyhow!("balance query not supported for current provider"))
-                };
-                match result {
-                    Ok(balance) => {
-                        agent.emit_update(AgentUpdate::Balance(balance));
-                    }
-                    Err(e) => {
-                        agent.emit_update(AgentUpdate::Error(
-                            AgentErrorKind::BalanceQueryFailed(e.to_string()),
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, image_work_dir));
 
     tui_handle.await??;
+    let agent = driver.await.expect("command driver task panicked");
 
     if let Some(ref sid) = agent.runtime.session_id {
         eprintln!("[session id: {sid}]");
@@ -228,6 +174,5 @@ async fn run_interactive_locked(
 
     eprintln!("{}", agent.runtime.stats.summary());
 
-    agent.shutdown_mcp().await;
     Ok(())
 }

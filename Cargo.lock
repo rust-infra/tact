@@ -2572,6 +2572,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3305,8 +3311,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "pastey",
  "pin-project-lite",
  "process-wrap",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3489,6 +3497,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
@@ -4192,6 +4201,8 @@ dependencies = [
  "chrono",
  "console-subscriber",
  "regex",
+ "rmcp",
+ "serde_json",
  "tact",
  "tact_llm",
  "tact_protocol",

@@ -66,8 +66,8 @@ mod web;
 mod worktree;
 mod write_file;
 mod registry;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use registry::{subagent_toolset, toolset};
 

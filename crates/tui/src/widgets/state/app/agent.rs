@@ -600,4 +600,349 @@ impl App {
             self.update_search_matches();
         }
     }
+
+    /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
+    pub(crate) fn maybe_expire_done_status(&mut self) {
+        if let Status::Done = self.status
+            && let Some(done_time) = self.task_done_time
+            && chrono::Local::now()
+                .signed_duration_since(done_time)
+                .num_seconds()
+                >= 2
+        {
+            self.status = Status::Idle;
+            self.task_done_time = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Clear `flash_msg` after 3s (shared with `run_tui` main loop).
+    pub(crate) fn maybe_clear_flash_msg(&mut self) {
+        if self
+            .flash_msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed().as_secs() >= 3)
+        {
+            self.flash_msg = None;
+            self.dirty = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use crate::widgets::state::{App, InputMode, Status};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, AgentErrorKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn make_app() -> App {
+        let (_agent_tx, agent_rx) = unbounded_channel();
+        let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        App::new(
+            agent_rx,
+            user_cmd_tx,
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+        )
+    }
+
+    #[test]
+    fn maybe_expire_done_status_clears_stale_done() {
+        let mut app = make_app();
+        app.status = Status::Done;
+        app.task_done_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
+        app.maybe_expire_done_status();
+        assert!(matches!(app.status, Status::Idle));
+    }
+
+    #[test]
+    fn need_approval_enters_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.handle_agent_update(AgentUpdate::NeedApproval(
+            "Allow bash?".into(),
+            1,
+            tx,
+        ));
+        assert!(matches!(app.status, Status::WaitingForUser { .. }));
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("Allow bash")),
+            "NeedApproval should append system message"
+        );
+    }
+
+    #[test]
+    fn balance_update_sets_balance_info() {
+        use tact_protocol::{BalanceEntry, BalanceInfo};
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+            is_available: true,
+            balance_infos: vec![BalanceEntry {
+                currency: "CNY".into(),
+                total_balance: "99.00".into(),
+                granted_balance: "99.00".into(),
+                topped_up_balance: "0.00".into(),
+            }],
+        }));
+
+        assert!(app.balance_info.is_some());
+        assert!(
+            app.balance_info
+                .as_ref()
+                .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
+        );
+    }
+
+    #[test]
+    fn step_added_then_task_complete_reaches_done() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "main.rs".to_string())]),
+        )));
+        assert!(matches!(app.status, Status::Executing { .. }));
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        assert!(matches!(app.status, Status::Done));
+        assert!(app.task_done_time.is_some());
+    }
+
+    #[test]
+    fn step_finished_updates_plan_output() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "main.rs".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted(
+            0,
+            "tool_read_1".into(),
+            "read_file".into(),
+            "main.rs".into(),
+        ));
+        app.handle_agent_update(AgentUpdate::StepFinished(
+            0,
+            "tool_read_1".into(),
+            StepResult {
+                tool: "read_file".into(),
+                arg_summary: "main.rs".into(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("file body".into()),
+                duration_us: Some(1),
+                permission_label: None,
+            },
+        ));
+
+        assert_eq!(app.plan.steps[0].output.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn step_failed_sets_idle() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "missing.txt".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepFailed(
+            0,
+            "tool_read_1".into(),
+            "file not found".into(),
+        ));
+        assert!(matches!(app.status, Status::Idle));
+    }
+
+    #[test]
+    fn error_other_sets_idle_and_adds_message() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
+            "LLM unavailable".into(),
+        )));
+        assert!(matches!(app.status, Status::Idle));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("LLM unavailable")),
+            "error message should appear in log: {:?}",
+            app.raw_messages
+        );
+    }
+
+    #[test]
+    fn info_update_appends_system_message() {
+        let mut app = make_app();
+        let before = app.raw_messages.len();
+        app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
+        assert!(app.raw_messages.len() > before);
+        assert!(
+            app.raw_messages.last().is_some_and(|m| m.contains("Cancelling"))
+        );
+    }
+
+    #[test]
+    fn stream_chunk_then_task_complete_reaches_done() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StreamChunk("Streaming answer.".into()));
+        app.handle_agent_update(AgentUpdate::TaskComplete("Streaming answer.".into()));
+        assert!(matches!(app.status, Status::Done));
+    }
+
+    #[test]
+    fn token_usage_updates_status_bar() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TokenUsage {
+            prompt: 100,
+            completion: 50,
+            total: 150,
+            prompt_cache_hit_tokens: 10,
+            prompt_cache_miss_tokens: 90,
+            reasoning_tokens: 5,
+        });
+        assert_eq!(app.status_bar.token_prompt, 100);
+        assert_eq!(app.status_bar.token_completion, 50);
+        assert_eq!(app.status_bar.token_total, 150);
+        assert_eq!(app.status_bar.token_reasoning, 5);
+    }
+
+    #[test]
+    fn request_select_enters_select_mode() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.handle_agent_update(AgentUpdate::RequestSelect {
+            prompt: "Allow bash?".into(),
+            options: vec!["Yes".into(), "No".into()],
+            respond: tx,
+        });
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert!(app.select.prompt.contains("Allow bash"));
+    }
+
+    #[test]
+    fn thinking_chunk_flushes_on_stream() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk("reasoning line".into()));
+        assert!(!app.thinking.buffer.is_empty());
+        app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
+        assert!(app.thinking.buffer.is_empty());
+    }
+
+    #[test]
+    fn model_info_updates_status_bar() {
+        use tact_protocol::ModelCallParams;
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
+            model: "mock-model".into(),
+            max_tokens: 4096,
+            thinking_budget: Some(0),
+            reasoning_effort: None,
+            extra_body: None,
+        }));
+        assert_eq!(app.status_bar.model_name, "mock-model");
+        assert_eq!(app.status_bar.model_max_tokens, 4096);
+    }
+
+    #[test]
+    fn multiple_step_added_grows_plan() {
+        let mut app = make_app();
+        for (i, path) in ["a.rs", "b.rs"].into_iter().enumerate() {
+            app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+                format!("read {path}"),
+                "read_file",
+                format!("tool_{i}"),
+                HashMap::from([("path".to_string(), path.to_string())]),
+            )));
+        }
+        assert_eq!(app.plan.steps.len(), 2);
+    }
+
+    #[test]
+    fn balance_query_failed_sets_flash_message() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(
+            "network down".into(),
+        )));
+        assert!(
+            app.flash_msg
+                .as_ref()
+                .is_some_and(|(msg, _)| msg.contains("network down"))
+        );
+    }
+
+    #[test]
+    fn step_started_then_finished_stays_executing_until_task_complete() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read",
+            "read_file",
+            "t1",
+            HashMap::from([("path".to_string(), "a.rs".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted(
+            0,
+            "t1".into(),
+            "read_file".into(),
+            "a.rs".into(),
+        ));
+        assert!(matches!(app.status, Status::Executing { .. }));
+        app.handle_agent_update(AgentUpdate::StepFinished(
+            0,
+            "t1".into(),
+            StepResult {
+                tool: "read_file".into(),
+                arg_summary: "a.rs".into(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: Some(1),
+                permission_label: None,
+            },
+        ));
+        assert!(
+            !matches!(app.status, Status::Done),
+            "single step finish should not mark task done"
+        );
+    }
+
+    #[test]
+    fn balance_not_supported_clears_balance_info() {
+        let mut app = make_app();
+        app.balance_info = Some(tact_protocol::BalanceInfo {
+            is_available: true,
+            balance_infos: vec![],
+        });
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::BalanceNotSupported));
+        assert!(app.balance_info.is_none());
+    }
+
+    #[test]
+    fn thinking_chunks_accumulate_before_non_thinking_update() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk("part1 ".into()));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk("part2".into()));
+        assert!(app.thinking.buffer.contains("part1"));
+        assert!(app.thinking.buffer.contains("part2"));
+        app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
+        assert!(app.thinking.buffer.is_empty());
+    }
 }

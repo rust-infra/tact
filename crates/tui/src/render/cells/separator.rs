@@ -57,13 +57,16 @@ impl Renderable for TaskEndSeparator {
 /// A blank line separator drawn between message groups of different
 /// categories (user ↔ system ↔ assistant).
 pub(crate) struct MessageSeparator {
-    label: String,
-    fg: Color,
+    _label: String,
+    _fg: Color,
 }
 
 impl MessageSeparator {
     pub(crate) fn new(label: String, fg: Color) -> Self {
-        Self { label, fg }
+        Self {
+            _label: label,
+            _fg: fg,
+        }
     }
 }
 
@@ -84,5 +87,41 @@ impl Renderable for MessageSeparator {
 
     fn height(&self, _width: u16) -> u16 {
         1
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    #[test]
+    fn task_end_separator_renders_dashed_line() {
+        let sep = TaskEndSeparator::new(Color::Gray);
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        sep.render(area, &mut buf);
+        let text: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            text.contains('─'),
+            "task end separator should draw dashes, got: {text}"
+        );
+    }
+
+    #[test]
+    fn message_separator_renders_blank_gap_line() {
+        let sep = MessageSeparator::new("💬 user".into(), Color::Cyan);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        sep.render(area, &mut buf);
+        assert_eq!(sep.height(10), 1);
+        let rendered: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            rendered.trim().is_empty(),
+            "message separator row should stay visually blank"
+        );
     }
 }

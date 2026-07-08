@@ -3,6 +3,9 @@ name = "tui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+test-support = []
+
 [dependencies]
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }

@@ -215,3 +215,65 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
 
     (styled_lines, raw_lines)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+
+    fn theme() -> Theme {
+        Theme::by_name_str("retro")
+    }
+
+    #[test]
+    fn render_markdown_heading_and_list() {
+        let md = "# Title\n\n- item one\n- item two";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let joined = raw.join("\n");
+        assert!(joined.contains("Title"), "heading: {joined}");
+        assert!(joined.contains("item one"), "list: {joined}");
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn render_markdown_fenced_code_block() {
+        let md = "```rust\nfn md_test() {}\n```";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let joined = raw.join("\n");
+        assert!(
+            joined.contains("md_test") || joined.contains("fn"),
+            "code block content: {joined}"
+        );
+        assert!(lines.iter().any(|l| !l.spans.is_empty()));
+    }
+
+    #[test]
+    fn render_markdown_blockquote() {
+        let md = "> quoted wisdom";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let joined = raw.join("\n");
+        assert!(
+            joined.contains("quoted wisdom"),
+            "blockquote text: {joined}"
+        );
+    }
+
+    #[test]
+    fn is_horizontal_rule_detects_dashes() {
+        assert!(is_horizontal_rule("---"));
+        assert!(is_horizontal_rule("  ***  "));
+        assert!(!is_horizontal_rule("not a rule"));
+    }
+
+    #[test]
+    fn format_table_aligns_columns() {
+        let rows = vec![
+            "| Name | Val |".to_string(),
+            "| --- | --- |".to_string(),
+            "| foo | 1 |".to_string(),
+        ];
+        let (styled, raw) = format_table(&rows, &theme());
+        assert!(!styled.is_empty());
+        assert!(raw.iter().any(|r| r.contains("foo")));
+    }
+}

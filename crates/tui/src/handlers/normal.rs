@@ -273,3 +273,138 @@ pub(crate) fn handle_normal_mode(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[test]
+    fn tab_toggles_focus_between_log_and_plan() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        assert!(matches!(app.focused_panel, FocusedPanel::Log));
+
+        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
+        assert!(matches!(app.focused_panel, FocusedPanel::Plan));
+
+        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
+        assert!(matches!(app.focused_panel, FocusedPanel::Log));
+    }
+
+    #[test]
+    fn slash_enters_search_mode() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('/')), &tx);
+
+        assert!(matches!(app.input_mode, InputMode::Search));
+        assert!(app.cmd_line.is_empty());
+    }
+
+    #[test]
+    fn colon_enters_palette_mode() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char(':')), &tx);
+
+        assert!(matches!(app.input_mode, InputMode::Palette));
+        assert_eq!(app.palette_selected, 0);
+    }
+
+    #[test]
+    fn e_toggles_plan_panel_visibility() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.plan.visible = true;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
+        assert!(!app.plan.visible);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
+        assert!(app.plan.visible);
+    }
+
+    #[test]
+    fn enter_approves_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
+        app.status = Status::WaitingForUser {
+            prompt: "Allow?".into(),
+            step_index: 0,
+            approval_tx,
+        };
+
+        handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
+
+        assert!(matches!(app.status, Status::Idle));
+        assert_eq!(approval_rx.try_recv(), Ok(true));
+    }
+
+    #[test]
+    fn q_sets_should_quit() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('q')), &tx);
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn j_and_k_scroll_log_when_log_focused() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.focused_panel = FocusedPanel::Log;
+        app.log_scroll.offset = 5;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.log_scroll.offset, 6);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.log_scroll.offset, 5);
+    }
+
+    #[test]
+    fn n_and_shift_n_jump_search_matches() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.add_system_message("needle first".into());
+        app.add_system_message("needle second".into());
+        app.search.term = "needle".into();
+        app.update_search_matches();
+        assert!(app.search.matches.len() >= 2);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('n')), &tx);
+        assert_eq!(app.search.current_match, 1);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('N')), &tx);
+        assert_eq!(app.search.current_match, 0);
+    }
+
+    #[test]
+    fn esc_rejects_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
+        app.status = Status::WaitingForUser {
+            prompt: "Allow?".into(),
+            step_index: 0,
+            approval_tx,
+        };
+
+        handle_normal_mode(&mut app, key(KeyCode::Esc), &tx);
+
+        assert!(matches!(app.status, Status::Idle));
+        assert_eq!(approval_rx.try_recv(), Ok(false));
+    }
+}

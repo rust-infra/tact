@@ -57,3 +57,91 @@ impl Widget for LogColumnRenderer<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    /// Minimal Renderable emitting `id` repeated across `rows` lines.
+    struct StubCell {
+        id: char,
+        rows: usize,
+    }
+
+    impl Renderable for StubCell {
+        fn render(&self, area: Rect, buf: &mut Buffer) {
+            self.render_partial(area, buf, 0);
+        }
+
+        fn height(&self, _width: u16) -> u16 {
+            self.rows as u16
+        }
+
+        fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+            for i in skip_lines..self.rows {
+                let y = area.y + (i - skip_lines) as u16;
+                if y >= area.y + area.height {
+                    break;
+                }
+                buf.set_string(area.x, y, self.id.to_string(), Style::default());
+            }
+        }
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn renders_visible_cells_at_correct_offset() {
+        let mut r = LogColumnRenderer::new().with_viewport(0, 5);
+        r.push(0, StubCell { id: 'A', rows: 2 });
+        r.push(2, StubCell { id: 'B', rows: 2 });
+
+        let area = Rect::new(0, 0, 3, 5);
+        let mut buf = Buffer::empty(area);
+        r.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(text.contains('A'), "cell A should render: {text}");
+        assert!(text.contains('B'), "cell B should render: {text}");
+    }
+
+    #[test]
+    fn skips_cells_above_viewport() {
+        let mut r = LogColumnRenderer::new().with_viewport(10, 5);
+        r.push(0, StubCell { id: 'X', rows: 3 });
+
+        let area = Rect::new(0, 0, 3, 5);
+        let mut buf = Buffer::empty(area);
+        r.render(area, &mut buf);
+
+        assert!(
+            !buffer_text(&buf).contains('X'),
+            "cell entirely above viewport must not render"
+        );
+    }
+
+    #[test]
+    fn partially_visible_cell_is_clipped() {
+        // Cell spans visual rows 0..4 but viewport starts at row 2.
+        let mut r = LogColumnRenderer::new().with_viewport(2, 5);
+        r.push(0, StubCell { id: 'C', rows: 4 });
+
+        let area = Rect::new(0, 0, 3, 5);
+        let mut buf = Buffer::empty(area);
+        r.render(area, &mut buf);
+
+        // Two rows (indices 2,3) remain visible → 'C' appears on first two buffer rows.
+        let text = buffer_text(&buf);
+        assert!(text.starts_with("C"), "clipped cell should draw from top: {text}");
+    }
+}

@@ -12,6 +12,12 @@ mod theme_detection;
 
 mod widgets;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
+#[cfg(feature = "test-support")]
+mod headless_loop;
+
 use crate::handlers::{
     handle_file_picker_mode, handle_insert_mode, handle_normal_mode, handle_palette_mode,
     handle_search_mode, handle_select_mode,
@@ -192,28 +198,9 @@ pub async fn run_tui(
 
         // Done state highlight: auto-revert to Idle after 2s so shortcut hints aren't
         // permanently hidden
-        if let Status::Done = app.status
-            && let Some(done_time) = app.task_done_time
-            && chrono::Local::now()
-                .signed_duration_since(done_time)
-                .num_seconds()
-                >= 2
-        {
-            app.status = Status::Idle;
-            app.task_done_time = None;
-            app.dirty = true; // status bar needs repaint to show Idle
-        }
+        app.maybe_expire_done_status();
 
-        // flash_msg auto-clears after 3s
-        if app
-            .flash_msg
-            .as_ref()
-            .map(|(_, t)| t.elapsed().as_secs() >= 3)
-            .unwrap_or(false)
-        {
-            app.flash_msg = None;
-            app.dirty = true;
-        }
+        app.maybe_clear_flash_msg();
 
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition
@@ -393,37 +380,16 @@ pub async fn run_tui(
                             && mouse.column < app.mouse.divider_area.x + app.mouse.divider_area.width
                             && mouse.row >= app.mouse.divider_area.y
                             && mouse.row < app.mouse.divider_area.y + app.mouse.divider_area.height;
+                        let hit = crate::handlers::MousePanelHit {
+                            in_log,
+                            in_plan,
+                        };
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
-                                if app.thinking.popup.is_some() {
-                                    app.thinking_popup_scroll_up();
-                                } else if app.tools.popup.is_some() {
-                                    app.diff_popup_scroll_up();
-                                } else if app.code_popup.is_some() {
-                                    app.code_popup_scroll_up();
-                                } else if in_log && app.log_scroll.offset > 0 {
-                                    app.log_scroll.offset -= 1;
-                                } else if in_plan && app.plan.selected > 0 {
-                                    app.plan.selected -= 1;
-                                    app.plan.list_state.select(Some(app.plan.selected));
-                                }
+                                crate::handlers::handle_mouse_scroll_up(&mut app, hit);
                             }
                             MouseEventKind::ScrollDown => {
-                                if app.thinking.popup.is_some() {
-                                    app.thinking_popup_scroll_down();
-                                } else if app.tools.popup.is_some() {
-                                    app.diff_popup_scroll_down();
-                                } else if app.code_popup.is_some() {
-                                    app.code_popup_scroll_down();
-                                } else if in_log {
-                                    app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
-                                } else if in_plan
-                                    && !app.plan.steps.is_empty()
-                                    && app.plan.selected + 1 < app.plan.steps.len()
-                                {
-                                    app.plan.selected += 1;
-                                    app.plan.list_state.select(Some(app.plan.selected));
-                                }
+                                crate::handlers::handle_mouse_scroll_down(&mut app, hit);
                             }
                             MouseEventKind::Down(MouseButton::Left) => {
                                 if app.thinking.popup.is_some() {
@@ -454,8 +420,7 @@ pub async fn run_tui(
                                         app.close_code_popup();
                                     }
                                 } else if in_divider {
-                                    // Start panel drag resize
-                                    app.mouse.is_resizing_panel = true;
+                                    crate::handlers::begin_panel_resize(&mut app);
                                 } else if in_log {
                                     app.focused_panel = FocusedPanel::Log;
                                     // Mouse row → visual line → logical line, accounting for wrapping
@@ -513,10 +478,9 @@ pub async fn run_tui(
                                                 let block = &app.thinking.blocks[card_idx];
                                                 app.open_thinking_popup(block.title_idx);
                                             } else if app.mouse.click_count >= 3 {
-                                                // Triple click: select entire line
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = Some((line_idx, line_idx));
-                                                app.mouse.dragging_log = true;
+                                                crate::handlers::handle_log_triple_click(
+                                                    &mut app, line_idx, false,
+                                                );
                                             }
                                         } else {
                                             app.mouse.last_click_card = None;
@@ -525,19 +489,13 @@ pub async fn run_tui(
                                         if let Some((tool_idx, phys_idx, _, _)) =
                                             app.find_tool_at_logical(line_idx)
                                         {
-                                            if app.mouse.click_count == 1 {
-                                                app.mouse.last_click_tool = Some(tool_idx);
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = None;
-                                                app.mouse.dragging_log = false;
-                                            } else if app.mouse.click_count == 2
-                                                && app.mouse.last_click_tool == Some(tool_idx)
-                                            {
-                                                app.open_diff_popup(phys_idx);
-                                            } else if app.mouse.click_count >= 3 {
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = Some((line_idx, line_idx));
-                                                app.mouse.dragging_log = true;
+                                            crate::handlers::handle_tool_block_click(
+                                                &mut app, tool_idx, phys_idx,
+                                            );
+                                            if app.mouse.click_count >= 3 {
+                                                crate::handlers::handle_log_triple_click(
+                                                    &mut app, line_idx, false,
+                                                );
                                             }
                                         } else {
                                             app.mouse.last_click_tool = None;
@@ -563,9 +521,9 @@ pub async fn run_tui(
                                                 {
                                                     app.open_code_popup(code_idx);
                                                 } else if app.mouse.click_count >= 3 {
-                                                    app.mouse.log_word_selection = None;
-                                                    app.mouse.log_selection = Some((line_idx, line_idx));
-                                                    app.mouse.dragging_log = true;
+                                                    crate::handlers::handle_log_triple_click(
+                                                        &mut app, line_idx, false,
+                                                    );
                                                 }
                                             } else {
                                                 app.mouse.last_click_code = None;
@@ -584,16 +542,9 @@ pub async fn run_tui(
                                                         app.find_word_bounds(line_idx, col);
                                                     app.mouse.dragging_log = true;
                                                 } else if app.mouse.click_count >= 3 {
-                                                    // Triple click: select entire line; inside a code block, select the whole block
-                                                    app.mouse.log_word_selection = None;
-                                                    if let Some((cb_start, cb_end)) =
-                                                        app.find_code_block_containing_logical(line_idx)
-                                                    {
-                                                        app.mouse.log_selection = Some((cb_start, cb_end));
-                                                    } else {
-                                                        app.mouse.log_selection = Some((line_idx, line_idx));
-                                                    }
-                                                    app.mouse.dragging_log = true;
+                                                    crate::handlers::handle_log_triple_click(
+                                                        &mut app, line_idx, true,
+                                                    );
                                                 } else {
                                                     // Single click: start selection for natural press-drag-copy behaviour
                                                     app.mouse.log_word_selection = None;
@@ -618,15 +569,16 @@ pub async fn run_tui(
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
                                 if app.mouse.is_resizing_panel {
-                                    // Panel drag resize — convert mouse column to ratio
                                     let total_width = app.mouse.plan_area.width
                                         + app.mouse.divider_area.width
                                         + app.mouse.log_area.width;
-                                    if total_width > 0 {
-                                        let mouse_x = mouse.column.saturating_sub(app.mouse.plan_area.x);
-                                        let new_ratio = mouse_x as f64 / total_width as f64;
-                                        app.panel_split_ratio = new_ratio.clamp(0.10, 0.70);
-                                    }
+                                    let plan_area_x = app.mouse.plan_area.x;
+                                    crate::handlers::update_panel_resize(
+                                        &mut app,
+                                        mouse.column,
+                                        plan_area_x,
+                                        total_width,
+                                    );
                                 } else if app.mouse.dragging_log && in_log {
                                     let visual_base = app
                                         .log_scroll
@@ -657,7 +609,7 @@ pub async fn run_tui(
                             MouseEventKind::Up(MouseButton::Left) => {
                                 app.mouse.dragging_log = false;
                                 app.mouse.dragging_plan = false;
-                                app.mouse.is_resizing_panel = false;
+                                crate::handlers::end_panel_resize(&mut app);
                             }
                             _ => {}
                         }
