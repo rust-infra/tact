@@ -87,7 +87,7 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         .style(
             Style::default()
                 .fg(if placeholder_mode {
-                    Color::Rgb(100, 100, 120)  // dim for placeholder
+                    Color::Rgb(100, 100, 120) // dim for placeholder
                 } else {
                     app.theme.input_box_fg
                 })
@@ -130,9 +130,7 @@ fn render_approval_banner(frame: &mut Frame, area: Rect, app: &App) {
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD);
 
-    let keys_style = Style::default()
-        .bg(app.theme.warning)
-        .fg(Color::Black);
+    let keys_style = Style::default().bg(app.theme.warning).fg(Color::Black);
 
     let block = Block::default()
         .borders(Borders::ALL)

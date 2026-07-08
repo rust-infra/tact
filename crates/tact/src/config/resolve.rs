@@ -64,7 +64,10 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     })
 }
 
-pub(super) fn resolve_non_llm_settings(args: &CliArgs, toml_cfg: &TactTomlConfig) -> ResolvedConfig {
+pub(super) fn resolve_non_llm_settings(
+    args: &CliArgs,
+    toml_cfg: &TactTomlConfig,
+) -> ResolvedConfig {
     let notifications_enabled = if args.no_notifications {
         false
     } else {
@@ -125,7 +128,10 @@ pub(super) fn resolve_non_llm_settings(args: &CliArgs, toml_cfg: &TactTomlConfig
     }
 }
 
-pub(super) fn resolve_config(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ResolvedConfig> {
+pub(super) fn resolve_config(
+    args: &CliArgs,
+    toml_cfg: &TactTomlConfig,
+) -> anyhow::Result<ResolvedConfig> {
     let llm = resolve_llm(args, toml_cfg)?;
     let provider_info = llm.provider_info();
 

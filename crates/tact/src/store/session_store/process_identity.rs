@@ -88,7 +88,10 @@ fn macos_starttime(pid: u32) -> Option<String> {
         return None;
     }
 
-    Some(format!("{}.{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
+    Some(format!(
+        "{}.{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
 }
 
 // ── Fallback (non-Linux, non-macOS): ps command ─────────────────
@@ -104,11 +107,7 @@ fn ps_lstart(pid: u32) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 #[cfg(test)]

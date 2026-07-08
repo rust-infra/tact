@@ -257,7 +257,11 @@ fn plan_panel_lists_failed_step_description() {
         "read_file".into(),
         "nope.txt".into(),
     ));
-    app.handle_agent_update(AgentUpdate::StepFailed(0, "fail1".into(), "file not found".into()));
+    app.handle_agent_update(AgentUpdate::StepFailed(
+        0,
+        "fail1".into(),
+        "file not found".into(),
+    ));
 
     let text = render_app_text(&mut app, 120, 30);
     assert!(
@@ -269,7 +273,10 @@ fn plan_panel_lists_failed_step_description() {
 #[test]
 fn diff_popup_scroll_skips_leading_lines() {
     let mut app = make_app();
-    let lines: String = (1..=20).map(|n| format!("line-{n}")).collect::<Vec<_>>().join("\n");
+    let lines: String = (1..=20)
+        .map(|n| format!("line-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     seed_write_file_finished(&mut app, "scroll.rs", &lines);
     open_last_tool_popup(&mut app);
     if let Some(popup) = app.tools.popup.as_mut() {
@@ -297,11 +304,11 @@ fn code_popup_scroll_skips_leading_lines() {
     use ratatui::text::Line;
 
     let mut app = make_app();
-    let content: String = (1..=15).map(|n| format!("row {n}")).collect::<Vec<_>>().join("\n");
-    let styled: Vec<Line<'static>> = content
-        .lines()
-        .map(|l| Line::from(l.to_string()))
-        .collect();
+    let content: String = (1..=15)
+        .map(|n| format!("row {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let styled: Vec<Line<'static>> = content.lines().map(|l| Line::from(l.to_string())).collect();
     app.code_blocks.push(CodeBlock {
         start_idx: 0,
         end_idx: styled.len(),

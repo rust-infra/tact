@@ -1,10 +1,10 @@
 use crate::widgets::state::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 /// Map language names to plain labels for code card titles.
@@ -62,8 +62,7 @@ pub(crate) fn render_code_cards(
             continue;
         }
         let y_top = (vis_top.saturating_sub(visual_scroll)) as u16;
-        let y_bot =
-            (vis_bot.saturating_sub(visual_scroll)).min(visible_height) as u16;
+        let y_bot = (vis_bot.saturating_sub(visual_scroll)).min(visible_height) as u16;
         if y_bot <= y_top {
             continue;
         }
@@ -90,7 +89,11 @@ pub(crate) fn render_code_cards(
             ))
             .title_bottom(if total_styled > shown {
                 Line::from(Span::styled(
-                    format!(" +{} lines | {}", total_styled - shown, msgs.code_card_bottom),
+                    format!(
+                        " +{} lines | {}",
+                        total_styled - shown,
+                        msgs.code_card_bottom
+                    ),
                     Style::default().fg(app.theme.muted_fg()),
                 ))
             } else {
@@ -129,8 +132,7 @@ pub(crate) fn render_code_cards(
                 })
                 .collect();
             frame.render_widget(
-                Paragraph::new(lines)
-                    .style(Style::default().bg(app.theme.code_card_bg())),
+                Paragraph::new(lines).style(Style::default().bg(app.theme.code_card_bg())),
                 inner,
             );
         }

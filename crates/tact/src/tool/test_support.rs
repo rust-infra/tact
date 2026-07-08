@@ -20,7 +20,10 @@ pub async fn run_tool<T: Tool + 'static>(
     name: &'static str,
     input: serde_json::Value,
 ) -> anyhow::Result<String> {
-    ToolRouter::new().route(tool).call(context, name, input).await
+    ToolRouter::new()
+        .route(tool)
+        .call(context, name, input)
+        .await
 }
 
 pub fn test_context(name: &str) -> ToolContext {

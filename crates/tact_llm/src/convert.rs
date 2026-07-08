@@ -8,9 +8,9 @@ use async_openai::types::{
     ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart,
     ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionTool, ChatCompletionToolType, CreateChatCompletionRequest, FinishReason,
-    FunctionObject, ImageUrl, ImageUrlDetail, Role as OpenAiRole,
+    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent, ChatCompletionTool,
+    ChatCompletionToolType, CreateChatCompletionRequest, FinishReason, FunctionObject, ImageUrl,
+    ImageUrlDetail, Role as OpenAiRole,
 };
 
 /// Convert Anthropic tool definitions to OpenAI tool definitions.
@@ -65,10 +65,8 @@ pub fn anthropic_messages_to_openai(
                                 ));
                             }
                             ContentBlock::Image { source } => {
-                                let data_url = format!(
-                                    "data:{};base64,{}",
-                                    source.media_type, source.data
-                                );
+                                let data_url =
+                                    format!("data:{};base64,{}", source.media_type, source.data);
                                 parts.push(ChatCompletionRequestMessageContentPart::Image(
                                     ChatCompletionRequestMessageContentPartImage {
                                         r#type: "image_url".to_string(),
@@ -289,8 +287,7 @@ pub fn build_openai_request(
         reasoning_per_message.push(None);
     }
 
-    let (converted_messages, converted_reasoning) =
-        anthropic_messages_to_openai(&request.messages);
+    let (converted_messages, converted_reasoning) = anthropic_messages_to_openai(&request.messages);
     messages.extend(converted_messages);
     reasoning_per_message.extend(converted_reasoning);
 

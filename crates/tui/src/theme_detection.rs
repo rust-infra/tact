@@ -12,9 +12,7 @@ pub(crate) fn resolve_theme(configured: &str) -> ThemeName {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         return detect_terminal_theme();
     }
-    trimmed
-        .parse::<ThemeName>()
-        .unwrap_or(ThemeName::Retro)
+    trimmed.parse::<ThemeName>().unwrap_or(ThemeName::Retro)
 }
 
 /// Detect terminal background brightness and return a matching ThemeName.
@@ -103,27 +101,41 @@ mod tests {
     #[test]
     fn test_detect_terminal_theme_env_vars() {
         // 1. COLORFGBG dark (bg=0 ≤ 6)
-        unsafe { std::env::set_var("COLORFGBG", "15;0"); }
+        unsafe {
+            std::env::set_var("COLORFGBG", "15;0");
+        }
         assert_eq!(detect_terminal_theme(), ThemeName::Dark);
 
         // 2. COLORFGBG light (bg=15 ≥ 7)
-        unsafe { std::env::set_var("COLORFGBG", "0;15"); }
+        unsafe {
+            std::env::set_var("COLORFGBG", "0;15");
+        }
         assert_eq!(detect_terminal_theme(), ThemeName::Light);
 
         // 3. auto resolves via terminal detection
-        unsafe { std::env::set_var("COLORFGBG", "15;0"); }
+        unsafe {
+            std::env::set_var("COLORFGBG", "15;0");
+        }
         assert_eq!(resolve_theme("auto"), ThemeName::Dark);
 
         // 4. COLORTERM light hint (only verifiable on non-macOS or if macOS returns None)
-        unsafe { std::env::remove_var("COLORFGBG"); }
-        unsafe { std::env::set_var("COLORTERM", "light"); }
+        unsafe {
+            std::env::remove_var("COLORFGBG");
+        }
+        unsafe {
+            std::env::set_var("COLORTERM", "light");
+        }
         let colorterm_result = detect_terminal_theme();
         // On macOS, system appearance may override COLORTERM; accept either
         assert!(colorterm_result == ThemeName::Light || cfg!(target_os = "macos"));
 
         // 5. Fallback with no relevant env vars
-        unsafe { std::env::remove_var("COLORFGBG"); }
-        unsafe { std::env::remove_var("COLORTERM"); }
+        unsafe {
+            std::env::remove_var("COLORFGBG");
+        }
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
         // On macOS this may detect system appearance; just ensure it's valid
         let theme = detect_terminal_theme();
         match theme {

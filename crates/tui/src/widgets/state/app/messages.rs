@@ -132,10 +132,7 @@ impl App {
             for line in content.split('\n') {
                 let ty = classify_system_message(line);
                 self.append_msg(
-                    Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(color),
-                    )),
+                    Line::from(Span::styled(line.to_string(), Style::default().fg(color))),
                     line.to_string(),
                     ty,
                 );

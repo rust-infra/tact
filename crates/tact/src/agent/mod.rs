@@ -295,9 +295,7 @@ impl Agent {
         if let Ok(json) = serde_json::to_string(summary) {
             let anchor = self.runtime.llm_call_last_message_id;
             if anchor > 0 {
-                let _ = store
-                    .record_tool_schedule(session_id, anchor, &json)
-                    .await;
+                let _ = store.record_tool_schedule(session_id, anchor, &json).await;
             }
         }
     }
@@ -838,9 +836,29 @@ fn load_dynamic_context(
 /// Directory-only workspace snapshot for the system prompt.
 fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     const IGNORE_DIRS: &[&str] = &[
-        ".git", ".hg", ".svn", "target", "build", "node_modules", "vendor", "dist",
-        ".next", ".nuxt", ".turbo", ".cache", "coverage", ".venv", "venv", "__pycache__",
-        ".gradle", "bin", "obj", "_build", "deps", ".idea", ".DS_Store",
+        ".git",
+        ".hg",
+        ".svn",
+        "target",
+        "build",
+        "node_modules",
+        "vendor",
+        "dist",
+        ".next",
+        ".nuxt",
+        ".turbo",
+        ".cache",
+        "coverage",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".gradle",
+        "bin",
+        "obj",
+        "_build",
+        "deps",
+        ".idea",
+        ".DS_Store",
     ];
 
     use std::cmp::Ordering;
@@ -902,9 +920,7 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| ".".to_string());
         let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        dirs.entry(parent)
-            .or_default()
-            .push(format!("{name}/"));
+        dirs.entry(parent).or_default().push(format!("{name}/"));
     }
 
     let mut out = vec!["## Project structure".to_string(), String::new()];
@@ -1055,7 +1071,10 @@ mod tests {
 
         assert_eq!(agent.context_limit(), 500);
         assert_eq!(agent.max_tokens(), 1024);
-        assert_eq!(agent.agent_settings.context_limit_chars, tiny.context_limit_chars);
+        assert_eq!(
+            agent.agent_settings.context_limit_chars,
+            tiny.context_limit_chars
+        );
     }
 
     #[test]
@@ -1114,7 +1133,11 @@ mod tests {
             .agent_loop(Some(Message::new_text(Role::User, "Say hello")))
             .await;
 
-        assert!(result.is_ok(), "agent_loop should complete: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "agent_loop should complete: {:?}",
+            result.err()
+        );
         assert!(
             agent.runtime.context.len() >= 2,
             "context should have at least user + assistant messages"
@@ -1172,8 +1195,8 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_runs_parallel_read_tools() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
         use crate::tool::test_support::{test_context, write_workspace_file};
+        use tact_protocol::AgentUpdate;
 
         let context = test_context("agent_parallel_reads");
         let work_dir = context.work_dir.clone();
@@ -1211,10 +1234,8 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(
-                crate::permission::PermissionMode::Auto,
-            )
-            .unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
@@ -1244,8 +1265,8 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_plan_mode_denies_write() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
         use crate::tool::test_support::test_context;
+        use tact_protocol::AgentUpdate;
 
         let context = test_context("agent_plan_deny");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1272,10 +1293,8 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(
-                crate::permission::PermissionMode::Plan,
-            )
-            .unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Plan)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
@@ -1305,8 +1324,8 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_emits_token_usage_from_mock() {
         ensure_config();
-        use tact_protocol::{AgentUpdate, TokenUsageInfo};
         use crate::tool::test_support::test_context;
+        use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
         let context = test_context("agent_token_usage");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1333,10 +1352,8 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(
-                crate::permission::PermissionMode::Auto,
-            )
-            .unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
@@ -1365,8 +1382,8 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_serializes_read_before_write_on_same_file() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
         use crate::tool::test_support::{test_context, write_workspace_file};
+        use tact_protocol::AgentUpdate;
 
         let context = test_context("agent_read_write_serial");
         let work_dir = context.work_dir.clone();
@@ -1392,10 +1409,7 @@ mod tests {
                 ],
                 Some(StopReason::ToolUse),
             ),
-            (
-                vec![make_text_block("done")],
-                Some(StopReason::EndTurn),
-            ),
+            (vec![make_text_block("done")], Some(StopReason::EndTurn)),
         ]);
 
         let mut agent = Agent::new(
@@ -1403,10 +1417,8 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(
-                crate::permission::PermissionMode::Auto,
-            )
-            .unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
@@ -1421,16 +1433,14 @@ mod tests {
             updates.push(u);
         }
 
-        let read_done = updates.iter().position(|u| {
-            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1")
-        });
-        let write_done = updates.iter().position(|u| {
-            matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1")
-        });
+        let read_done = updates
+            .iter()
+            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1"));
+        let write_done = updates
+            .iter()
+            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1"));
         assert!(
-            read_done.is_some()
-                && write_done.is_some()
-                && read_done < write_done,
+            read_done.is_some() && write_done.is_some() && read_done < write_done,
             "read must finish before write on same file, got: {updates:?}"
         );
         assert_eq!(

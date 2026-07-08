@@ -123,14 +123,19 @@ mod wrap_tests {
             Span::styled("### ", Style::default()),
             Span::styled("Heading", Style::default()),
         ])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
         let wrapped = wrap_line(&line, 80);
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].spans[0].style.fg, Some(Color::Cyan));
-        assert!(wrapped[0]
-            .spans[0]
-            .style
-            .add_modifier
-            .contains(Modifier::BOLD));
+        assert!(
+            wrapped[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 }

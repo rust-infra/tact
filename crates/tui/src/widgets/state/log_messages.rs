@@ -2,12 +2,13 @@ use crate::render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT};
 use crate::widgets::state::RawMessageType;
 
 fn is_plan_step_line(raw: &str) -> bool {
-    raw.strip_prefix("  ").and_then(|rest| {
-        let (num, after) = rest.split_once(". ")?;
-        (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty())
-            .then_some(())
-    })
-    .is_some()
+    raw.strip_prefix("  ")
+        .and_then(|rest| {
+            let (num, after) = rest.split_once(". ")?;
+            (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty())
+                .then_some(())
+        })
+        .is_some()
 }
 
 /// Classify plain-text system / info rows for indent and styling.
@@ -17,8 +18,7 @@ pub(crate) fn classify_system_message(raw: &str) -> RawMessageType {
     if raw.starts_with('▶')
         || raw.starts_with("Executing ")
         || raw.starts_with("Error invoking tool ")
-        || (raw.starts_with('⚠')
-            && (raw.contains("Need approval:") || raw.contains("需要审批:")))
+        || (raw.starts_with('⚠') && (raw.contains("Need approval:") || raw.contains("需要审批:")))
         || (raw.starts_with("Generated ") && raw.contains(" steps:"))
         || (raw.starts_with("生成了 ") && raw.contains("个步骤"))
         || is_plan_step_line(raw)

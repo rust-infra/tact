@@ -190,12 +190,7 @@ impl App {
             AgentUpdate::StepFailed(idx, tool_id, error) => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
-                if let Some(active) = self
-                    .tools
-                    .active
-                    .iter()
-                    .find(|a| a.tool_id == tool_id)
-                {
+                if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
                     let elapsed_us = active.started_at.elapsed().as_micros() as u64;
                     let tool_name = active.output.tool_name.clone();
                     let arg_summary = active.output.arg_summary.clone();
@@ -337,10 +332,7 @@ impl App {
                     let separator_idx = self.messages.len() - 1;
 
                     self.append_msg(
-                        Line::from(Span::styled(
-                            msgs.thinking_title.to_string(),
-                            title_style,
-                        )),
+                        Line::from(Span::styled(msgs.thinking_title.to_string(), title_style)),
                         msgs.thinking_title.to_string(),
                         RawMessageType::LLMThinking,
                     );
@@ -484,8 +476,14 @@ impl App {
                         let display_line = format!("{}{}", line, STREAMING_INDICATOR);
                         self.append_msg(
                             Line::from(vec![
-                                Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                                Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                                Span::styled(
+                                    "│ ",
+                                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                                ),
+                                Span::styled(
+                                    display_line,
+                                    Style::default().fg(CODE_FG).bg(CODE_BG),
+                                ),
                             ]),
                             line,
                             RawMessageType::LLM,
@@ -634,7 +632,7 @@ mod lifecycle_tests {
     use crate::widgets::state::{App, InputMode, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, AgentErrorKind};
+    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_app() -> App {
@@ -665,17 +663,11 @@ mod lifecycle_tests {
     fn need_approval_enters_waiting_for_user() {
         let mut app = make_app();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.handle_agent_update(AgentUpdate::NeedApproval(
-            "Allow bash?".into(),
-            1,
-            tx,
-        ));
+        app.handle_agent_update(AgentUpdate::NeedApproval("Allow bash?".into(), 1, tx));
         assert!(matches!(app.status, Status::WaitingForUser { .. }));
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("Allow bash")),
+            app.raw_messages.iter().any(|m| m.contains("Allow bash")),
             "NeedApproval should append system message"
         );
     }
@@ -792,7 +784,9 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
         assert!(app.raw_messages.len() > before);
         assert!(
-            app.raw_messages.last().is_some_and(|m| m.contains("Cancelling"))
+            app.raw_messages
+                .last()
+                .is_some_and(|m| m.contains("Cancelling"))
         );
     }
 

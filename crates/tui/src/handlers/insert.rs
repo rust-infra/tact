@@ -1,9 +1,13 @@
-use crate::widgets::state::{InputMode, Status};
+use super::{
+    cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
+    line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
+    start_of_line,
+};
 use crate::widgets::state::App;
+use crate::widgets::state::{InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
-use super::{cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor, line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary, start_of_line};
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.slash_command.matched_commands(
@@ -24,19 +28,13 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
     false
 }
 
-fn handle_enter_submit(
-    app: &mut App,
-    key: &KeyEvent,
-    user_cmd_tx: &UnboundedSender<UserCommand>,
-) {
+fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSender<UserCommand>) {
     // Deactivate slash command on submit.
     app.slash_command.active = false;
     if key
         .modifiers
         .contains(crossterm::event::KeyModifiers::SHIFT)
-        || key
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::ALT)
+        || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
     {
         // insert blank charater for writing next line
         app.save_undo();
@@ -94,22 +92,28 @@ pub(crate) fn handle_insert_mode(
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
-            let n = app.slash_command.matched_commands(
-                &app.input,
-                app.input_cursor,
-                crate::widgets::state::PALETTE_COMMANDS,
-            ).len();
+            let n = app
+                .slash_command
+                .matched_commands(
+                    &app.input,
+                    app.input_cursor,
+                    crate::widgets::state::PALETTE_COMMANDS,
+                )
+                .len();
             if n > 0 {
                 app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
             }
             return;
         }
         KeyCode::Down if app.slash_command.active => {
-            let n = app.slash_command.matched_commands(
-                &app.input,
-                app.input_cursor,
-                crate::widgets::state::PALETTE_COMMANDS,
-            ).len();
+            let n = app
+                .slash_command
+                .matched_commands(
+                    &app.input,
+                    app.input_cursor,
+                    crate::widgets::state::PALETTE_COMMANDS,
+                )
+                .len();
             if n > 0 {
                 let max = n.saturating_sub(1);
                 app.slash_command.selected = (app.slash_command.selected + 1).min(max);
@@ -156,8 +160,7 @@ pub(crate) fn handle_insert_mode(
             }
             return;
         }
-                // --- End slash command shortcuts ---
-
+        // --- End slash command shortcuts ---
         KeyCode::Enter => {
             handle_enter_submit(app, &key, user_cmd_tx);
         }
@@ -331,8 +334,7 @@ pub(crate) fn handle_insert_mode(
                 .contains(crossterm::event::KeyModifiers::CONTROL) =>
         {
             if let Some((prev_input, prev_cursor)) = app.undo_stack.pop() {
-                app.redo_stack
-                    .push((app.input.clone(), app.input_cursor));
+                app.redo_stack.push((app.input.clone(), app.input_cursor));
                 app.input = prev_input;
                 app.input_cursor = prev_cursor;
             }
@@ -344,8 +346,7 @@ pub(crate) fn handle_insert_mode(
                 .contains(crossterm::event::KeyModifiers::CONTROL) =>
         {
             if let Some((next_input, next_cursor)) = app.redo_stack.pop() {
-                app.undo_stack
-                    .push((app.input.clone(), app.input_cursor));
+                app.undo_stack.push((app.input.clone(), app.input_cursor));
                 app.input = next_input;
                 app.input_cursor = next_cursor;
             }

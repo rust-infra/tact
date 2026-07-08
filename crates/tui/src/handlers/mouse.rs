@@ -109,7 +109,13 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 3;
 
-        handle_mouse_scroll_up(&mut app, MousePanelHit { in_log: true, in_plan: false });
+        handle_mouse_scroll_up(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_plan: false,
+            },
+        );
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -119,7 +125,13 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 1;
 
-        handle_mouse_scroll_down(&mut app, MousePanelHit { in_log: true, in_plan: false });
+        handle_mouse_scroll_down(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_plan: false,
+            },
+        );
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -243,7 +255,10 @@ mod tests {
         handle_log_triple_click(&mut app, inside_line, true);
 
         assert_eq!(app.mouse.log_selection, Some(expected));
-        assert!(expected.1 > expected.0, "expected multi-line block selection");
+        assert!(
+            expected.1 > expected.0,
+            "expected multi-line block selection"
+        );
         assert!(app.mouse.dragging_log);
     }
 }

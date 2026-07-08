@@ -329,9 +329,7 @@ mod tests {
     fn create_assigns_incrementing_ids() {
         let (mut manager, _dir) = test_manager("create_assigns_incrementing_ids");
 
-        let first = manager
-            .create("First".to_string(), None)
-            .unwrap();
+        let first = manager.create("First".to_string(), None).unwrap();
         let second = manager
             .create("Second".to_string(), Some("details".to_string()))
             .unwrap();

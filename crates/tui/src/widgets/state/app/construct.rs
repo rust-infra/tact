@@ -4,9 +4,9 @@
 use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
-    App, FilePicker, FocusedPanel, InputHistory,
-    InputMode, LogScroll, MouseState, PlanPanel, SearchState, SelectPopup, SlashCommandState, Status, StatusBarState,
-    StreamState, ThinkingState, ToolState,
+    App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState, PlanPanel,
+    SearchState, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
+    ThinkingState, ToolState,
 };
 use std::path::{Path, PathBuf};
 use tact_protocol::{AgentUpdate, UserCommand};

@@ -5,7 +5,7 @@
 // `~/.tact/lsp_servers.json`.
 
 use crate::lsp::{self, LspManager};
-use crate::tool::{safe_path, ToolContext};
+use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;

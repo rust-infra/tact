@@ -5,8 +5,8 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use crate::tool::ToolContext;
 use super::{http, web_refs};
+use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -50,10 +50,7 @@ fn get_cache_dir() -> PathBuf {
 }
 
 fn resolve_requested_url(input: &WebFetchInput) -> Result<String> {
-    web_refs::resolve_fetch_target(
-        input.url.as_deref(),
-        input.result_id.as_deref(),
-    )
+    web_refs::resolve_fetch_target(input.url.as_deref(), input.result_id.as_deref())
 }
 
 /// Attempt to load cached extracted content for a URL.
@@ -225,9 +222,7 @@ fn truncate_content(text: &str, max_len: usize) -> String {
     }
 
     let truncated: String = text.chars().take(max_len).collect();
-    format!(
-        "{truncated}\n\n... (truncated, {total_chars} total characters)"
-    )
+    format!("{truncated}\n\n... (truncated, {total_chars} total characters)")
 }
 
 #[tool(

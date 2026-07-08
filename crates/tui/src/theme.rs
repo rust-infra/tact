@@ -238,8 +238,8 @@ impl Theme {
                 name,
                 bg: Color::Rgb(255, 255, 255),
                 fg: Color::Rgb(20, 20, 20),
-                accent: Color::Rgb(255, 221, 87),       // active tab yellow
-                warning: Color::Rgb(255, 190, 60),    // running / emphasis
+                accent: Color::Rgb(255, 221, 87), // active tab yellow
+                warning: Color::Rgb(255, 190, 60), // running / emphasis
                 error: Color::Rgb(255, 70, 70),
                 success: Color::Rgb(170, 240, 150),   // tag green
                 highlight: Color::Rgb(160, 210, 255), // reply blue
@@ -269,7 +269,10 @@ impl Theme {
             Color::Black => false,
             _ => matches!(
                 self.name,
-                ThemeName::Light | ThemeName::SolarizedLight | ThemeName::Kawaii | ThemeName::Brutal
+                ThemeName::Light
+                    | ThemeName::SolarizedLight
+                    | ThemeName::Kawaii
+                    | ThemeName::Brutal
             ),
         }
     }

@@ -73,10 +73,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(
-            error.to_string().contains("No such file")
-                || error.to_string().contains("Error:")
-        );
+        assert!(error.to_string().contains("No such file") || error.to_string().contains("Error:"));
     }
 
     #[tokio::test]

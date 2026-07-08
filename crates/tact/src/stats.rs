@@ -107,7 +107,11 @@ impl SessionStats {
             fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0))
         );
 
-        let _ = writeln!(out, "  Prompt chars sent:     {:>8}", self.total_prompt_chars);
+        let _ = writeln!(
+            out,
+            "  Prompt chars sent:     {:>8}",
+            self.total_prompt_chars
+        );
         let _ = writeln!(
             out,
             "  Response chars rcvd:  {:>8}",
@@ -150,11 +154,7 @@ impl SessionStats {
             } else {
                 0.0
             };
-            let _ = writeln!(
-                out,
-                "  Cache hit tokens:      {:>8}",
-                self.cache_hit_tokens
-            );
+            let _ = writeln!(out, "  Cache hit tokens:      {:>8}", self.cache_hit_tokens);
             let _ = writeln!(
                 out,
                 "  Cache miss tokens:     {:>8}",
@@ -164,11 +164,7 @@ impl SessionStats {
         }
 
         if self.reasoning_tokens > 0 {
-            let _ = writeln!(
-                out,
-                "  Reasoning tokens:      {:>8}",
-                self.reasoning_tokens
-            );
+            let _ = writeln!(out, "  Reasoning tokens:      {:>8}", self.reasoning_tokens);
         }
 
         let _ = writeln!(out, "─────────────────────────────────────────────");

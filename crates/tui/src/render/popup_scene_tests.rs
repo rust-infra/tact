@@ -2,8 +2,7 @@
 
 use super::test_harness::{make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, RawMessageType, ThinkingBlock,
-    ThinkingPopup,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, RawMessageType, ThinkingBlock, ThinkingPopup,
 };
 use ratatui::text::Line;
 use std::time::Duration;
@@ -176,12 +175,8 @@ fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    app.select.set(
-        "Pick one".into(),
-        vec!["A".into(), "B".into()],
-        tx,
-        false,
-    );
+    app.select
+        .set("Pick one".into(), vec!["A".into(), "B".into()], tx, false);
 
     let text = render_app_text(&mut app, 100, 24);
 
@@ -303,12 +298,7 @@ fn open_diff_popup_after_read_file_step_finish() {
         },
     ));
 
-    let phys_idx = app
-        .tools
-        .blocks
-        .last()
-        .expect("tool block")
-        .phys_idx;
+    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);

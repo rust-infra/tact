@@ -1,7 +1,7 @@
+use super::renderable::Renderable;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
-use super::renderable::Renderable;
 
 /// Log column layout renderer: arranges and draws Renderable units by visual offset.
 pub(crate) struct LogColumnRenderer<'a> {
@@ -142,6 +142,9 @@ mod tests {
 
         // Two rows (indices 2,3) remain visible → 'C' appears on first two buffer rows.
         let text = buffer_text(&buf);
-        assert!(text.starts_with("C"), "clipped cell should draw from top: {text}");
+        assert!(
+            text.starts_with("C"),
+            "clipped cell should draw from top: {text}"
+        );
     }
 }

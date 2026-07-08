@@ -2,9 +2,9 @@
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
+use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::fs;
 
 use tracing::warn;
 

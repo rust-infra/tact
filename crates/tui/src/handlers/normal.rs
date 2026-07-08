@@ -1,8 +1,8 @@
+use super::copy_text;
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
-use super::copy_text;
 
 pub(crate) fn handle_normal_mode(
     app: &mut App,
@@ -140,15 +140,11 @@ pub(crate) fn handle_normal_mode(
                             let start = s.min(e);
                             let end = s.max(e);
                             // If there's a word selection (double-click), copy word instead of entire line
-                            if let Some((word_start, word_end)) =
-                                app.mouse.log_word_selection
-                            {
-                                if let Some(phys_idx) =
-                                    app.visible_message_index(start)
-                                {
+                            if let Some((word_start, word_end)) = app.mouse.log_word_selection {
+                                if let Some(phys_idx) = app.visible_message_index(start) {
                                     let text = &app.raw_messages[phys_idx];
-                                    let word = &text[word_start.min(text.len())
-                                        ..word_end.min(text.len())];
+                                    let word =
+                                        &text[word_start.min(text.len())..word_end.min(text.len())];
                                     Some(word.to_string())
                                 } else {
                                     None
@@ -156,12 +152,8 @@ pub(crate) fn handle_normal_mode(
                             } else {
                                 let mut selected = Vec::new();
                                 for logical_i in start..=end {
-                                    if let Some(phys_idx) =
-                                        app.visible_message_index(logical_i)
-                                    {
-                                        selected.push(
-                                            app.raw_messages[phys_idx].as_str(),
-                                        );
+                                    if let Some(phys_idx) = app.visible_message_index(logical_i) {
+                                        selected.push(app.raw_messages[phys_idx].as_str());
                                     }
                                 }
                                 if selected.is_empty() {

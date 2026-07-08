@@ -1,6 +1,6 @@
+use super::prev_word_boundary;
 use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
-use super::prev_word_boundary;
 
 /// Search mode key handling: enter search keywords, Enter to confirm and highlight matches.
 pub(crate) fn handle_search_mode(app: &mut App, key: KeyEvent) {

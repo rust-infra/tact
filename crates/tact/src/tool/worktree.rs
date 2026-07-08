@@ -82,9 +82,14 @@ mod tests {
     async fn worktree_list_empty_by_default() {
         let context = test_context("worktree_list_empty_by_default");
 
-        let output = run_tool(&context, WorktreeListTool, "worktree_list", serde_json::json!({}))
-            .await
-            .unwrap();
+        let output = run_tool(
+            &context,
+            WorktreeListTool,
+            "worktree_list",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output, "No worktrees.");
     }

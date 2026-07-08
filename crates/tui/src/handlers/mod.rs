@@ -10,8 +10,8 @@ mod select;
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
 pub(crate) use mouse::{
-    begin_panel_resize, end_panel_resize, handle_log_triple_click, handle_mouse_scroll_down,
-    handle_mouse_scroll_up, handle_tool_block_click, update_panel_resize, MousePanelHit,
+    MousePanelHit, begin_panel_resize, end_panel_resize, handle_log_triple_click,
+    handle_mouse_scroll_down, handle_mouse_scroll_up, handle_tool_block_click, update_panel_resize,
 };
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use palette::handle_palette_mode;
@@ -20,8 +20,8 @@ pub(crate) use select::handle_select_mode;
 
 use crate::widgets::state::{App, InputMode, Status};
 use arboard::Clipboard;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Local;
 use tact_protocol::UserCommand;
 
@@ -353,7 +353,7 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
 #[cfg(test)]
 mod tests {
     use super::execute_palette_command;
-    use crate::widgets::state::{App, Status, PALETTE_COMMANDS};
+    use crate::widgets::state::{App, PALETTE_COMMANDS, Status};
     use std::path::PathBuf;
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;

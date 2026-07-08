@@ -53,6 +53,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(output, "Compacting conversation... Focus to preserve: open tasks");
+        assert_eq!(
+            output,
+            "Compacting conversation... Focus to preserve: open tasks"
+        );
     }
 }

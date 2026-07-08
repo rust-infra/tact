@@ -292,7 +292,11 @@ mod tests {
     #[test]
     fn barrier_forces_its_own_wave() {
         // read A, bash(barrier), read B  →  0,1,2
-        let r = vec![res(&["/a"], &[]), ToolResources::barrier(), res(&["/b"], &[])];
+        let r = vec![
+            res(&["/a"], &[]),
+            ToolResources::barrier(),
+            res(&["/b"], &[]),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 1, 2]);
     }
 
@@ -350,20 +354,32 @@ mod tests {
 
     #[test]
     fn resources_read_file_path_is_normalized() {
-        let r = tool_resources("read_file", &serde_json::json!({"path": "src/a.rs"}), Path::new("/work"));
+        let r = tool_resources(
+            "read_file",
+            &serde_json::json!({"path": "src/a.rs"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/work/src/a.rs")]);
         assert!(r.writes.is_empty() && !r.barrier);
     }
 
     #[test]
     fn resources_absolute_path_kept() {
-        let r = tool_resources("read_file", &serde_json::json!({"path": "/abs/a.rs"}), Path::new("/work"));
+        let r = tool_resources(
+            "read_file",
+            &serde_json::json!({"path": "/abs/a.rs"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/abs/a.rs")]);
     }
 
     #[test]
     fn resources_bash_is_barrier() {
-        let r = tool_resources("bash", &serde_json::json!({"command": "ls"}), Path::new("/work"));
+        let r = tool_resources(
+            "bash",
+            &serde_json::json!({"command": "ls"}),
+            Path::new("/work"),
+        );
         assert!(r.barrier);
     }
 
@@ -400,7 +416,11 @@ mod tests {
 
     #[test]
     fn resources_search_defaults_to_workspace_scope() {
-        let r = tool_resources("search_code", &serde_json::json!({"query": "foo"}), Path::new("/work"));
+        let r = tool_resources(
+            "search_code",
+            &serde_json::json!({"query": "foo"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/work")]);
     }
 
