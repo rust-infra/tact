@@ -200,16 +200,7 @@ pub async fn run_tui(
         // permanently hidden
         app.maybe_expire_done_status();
 
-        // flash_msg auto-clears after 3s
-        if app
-            .flash_msg
-            .as_ref()
-            .map(|(_, t)| t.elapsed().as_secs() >= 3)
-            .unwrap_or(false)
-        {
-            app.flash_msg = None;
-            app.dirty = true;
-        }
+        app.maybe_clear_flash_msg();
 
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition

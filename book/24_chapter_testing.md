@@ -82,9 +82,9 @@ CI runs the integration packages explicitly, then the full workspace (`cargo tes
 
 **Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + selected row), diff/code/thinking popups (scroll + write_file gutter + bash output), `open_diff_popup` after real `StepFinished`, Normal mode, WaitingForUser full frame, plan multi-step, markdown/code cards in log, narrow terminal.
 
-**Handler tests:** `crates/tui/src/handlers/file_picker.rs` (j/k navigation, Enter, Esc).
+**Handler tests:** `file_picker.rs`, `select.rs`, `palette.rs`, `search.rs`, `normal.rs` (keyboard navigation, mode switches, approval).
 
-**Gap tests:** `crates/tui/src/render/render_gap_tests.rs` (P0/P1/P2 render paths).
+**Gap tests:** `render_gap_tests.rs` (P0/P1/P2 + Balance/flash_msg).
 
 **Unit tests:** `log_column.rs` (viewport clip), `welcome.rs` (LogoWidget), `popups/mod.rs` (centered geometry), `render_md.rs` (markdown).
 

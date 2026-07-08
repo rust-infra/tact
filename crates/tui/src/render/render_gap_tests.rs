@@ -515,3 +515,63 @@ fn full_frame_edit_file_tool_shows_in_log() {
         "edit_file tool card should render in log, got:\n{text}"
     );
 }
+
+#[test]
+fn balance_update_renders_in_bottom_bar() {
+    use tact_protocol::{BalanceEntry, BalanceInfo};
+
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+        is_available: true,
+        balance_infos: vec![BalanceEntry {
+            currency: "USD".into(),
+            total_balance: "42.00".into(),
+            granted_balance: "40.00".into(),
+            topped_up_balance: "2.00".into(),
+        }],
+    }));
+
+    let text = render_app_text(&mut app, 120, 30);
+    assert!(
+        text.contains("USD") || text.contains("42.00"),
+        "Balance update should render in bottom bar, got:\n{text}"
+    );
+}
+
+#[test]
+fn flash_msg_renders_warning_in_status_bar() {
+    let mut app = make_app();
+    app.flash_msg = Some((
+        "Balance query failed: timeout".into(),
+        std::time::Instant::now(),
+    ));
+
+    let text = render_app_text(&mut app, 100, 24);
+    assert!(
+        text.contains("Balance query failed") || text.contains('⚠'),
+        "flash_msg should override status bar, got:\n{text}"
+    );
+}
+
+#[test]
+fn flash_msg_clears_after_three_seconds() {
+    let mut app = make_app();
+    app.flash_msg = Some((
+        "stale warning".into(),
+        std::time::Instant::now() - std::time::Duration::from_secs(4),
+    ));
+
+    app.maybe_clear_flash_msg();
+
+    assert!(app.flash_msg.is_none());
+}
+
+#[test]
+fn flash_msg_persists_within_three_seconds() {
+    let mut app = make_app();
+    app.flash_msg = Some(("fresh warning".into(), std::time::Instant::now()));
+
+    app.maybe_clear_flash_msg();
+
+    assert!(app.flash_msg.is_some());
+}

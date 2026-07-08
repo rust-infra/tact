@@ -615,6 +615,18 @@ impl App {
             self.dirty = true;
         }
     }
+
+    /// Clear `flash_msg` after 3s (shared with `run_tui` main loop).
+    pub(crate) fn maybe_clear_flash_msg(&mut self) {
+        if self
+            .flash_msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed().as_secs() >= 3)
+        {
+            self.flash_msg = None;
+            self.dirty = true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -665,6 +677,29 @@ mod lifecycle_tests {
                 .iter()
                 .any(|m| m.contains("Allow bash")),
             "NeedApproval should append system message"
+        );
+    }
+
+    #[test]
+    fn balance_update_sets_balance_info() {
+        use tact_protocol::{BalanceEntry, BalanceInfo};
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+            is_available: true,
+            balance_infos: vec![BalanceEntry {
+                currency: "CNY".into(),
+                total_balance: "99.00".into(),
+                granted_balance: "99.00".into(),
+                topped_up_balance: "0.00".into(),
+            }],
+        }));
+
+        assert!(app.balance_info.is_some());
+        assert!(
+            app.balance_info
+                .as_ref()
+                .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
         );
     }
 

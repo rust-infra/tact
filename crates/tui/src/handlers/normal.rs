@@ -273,3 +273,80 @@ pub(crate) fn handle_normal_mode(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[test]
+    fn tab_toggles_focus_between_log_and_plan() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        assert!(matches!(app.focused_panel, FocusedPanel::Log));
+
+        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
+        assert!(matches!(app.focused_panel, FocusedPanel::Plan));
+
+        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
+        assert!(matches!(app.focused_panel, FocusedPanel::Log));
+    }
+
+    #[test]
+    fn slash_enters_search_mode() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('/')), &tx);
+
+        assert!(matches!(app.input_mode, InputMode::Search));
+        assert!(app.cmd_line.is_empty());
+    }
+
+    #[test]
+    fn colon_enters_palette_mode() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char(':')), &tx);
+
+        assert!(matches!(app.input_mode, InputMode::Palette));
+        assert_eq!(app.palette_selected, 0);
+    }
+
+    #[test]
+    fn e_toggles_plan_panel_visibility() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.plan.visible = true;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
+        assert!(!app.plan.visible);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
+        assert!(app.plan.visible);
+    }
+
+    #[test]
+    fn enter_approves_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
+        app.status = Status::WaitingForUser {
+            prompt: "Allow?".into(),
+            step_index: 0,
+            approval_tx,
+        };
+
+        handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
+
+        assert!(matches!(app.status, Status::Idle));
+        assert_eq!(approval_rx.try_recv(), Ok(true));
+    }
+}
