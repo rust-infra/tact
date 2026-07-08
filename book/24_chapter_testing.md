@@ -49,6 +49,23 @@ cargo test -p tact-ui --test permission_integration
 
 CI runs the integration packages explicitly, then the full workspace (`cargo test --verbose`).
 
+### Before committing
+
+Run the same checks as CI locally:
+
+```bash
+cargo fmt --all          # format first
+./scripts/check-rust.sh  # fmt check + clippy -D warnings
+```
+
+Install the git pre-commit hook (once per clone):
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The hook runs `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` before each commit.
+
 ---
 
 ## tact-ui harness (no terminal)
