@@ -64,12 +64,88 @@ impl TestApp {
     pub fn has_diff_popup(&self) -> bool {
         self.0.tools.popup.is_some()
     }
+
+    pub fn diff_popup_content(&self) -> Option<String> {
+        self.0.tools.popup.as_ref().and_then(|p| {
+            p.cached_content
+                .clone()
+                .or_else(|| {
+                    p.file_path
+                        .as_ref()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                })
+                .or_else(|| p.inline_content.clone())
+        })
+    }
+
+    pub fn close_diff_popup(&mut self) {
+        self.0.close_diff_popup();
+    }
+
+    pub fn tool_block_count(&self) -> usize {
+        self.0.tools.blocks.len()
+    }
+
+    pub fn is_help_visible(&self) -> bool {
+        self.0.show_help
+    }
+
+    pub fn is_history_visible(&self) -> bool {
+        self.0.show_history
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.0.show_help = !self.0.show_help;
+    }
+
+    pub fn toggle_history(&mut self) {
+        self.0.show_history = !self.0.show_history;
+    }
+
+    pub fn is_select_mode(&self) -> bool {
+        matches!(self.0.input_mode, InputMode::Select)
+    }
+
+    pub fn select_popup_options(&self) -> Vec<String> {
+        self.0.select.options.clone()
+    }
+
+    pub fn open_code_popup(&mut self, idx: usize) -> bool {
+        if idx < self.0.code_blocks.len() {
+            self.0.open_code_popup(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_code_popup_open(&self) -> bool {
+        self.0.code_popup.is_some()
+    }
+
+    pub fn close_code_popup(&mut self) {
+        self.0.close_code_popup();
+    }
+
+    pub fn open_thinking_popup(&mut self, title_idx: usize) -> bool {
+        self.0.open_thinking_popup(title_idx);
+        self.0.thinking.popup.is_some()
+    }
+
+    pub fn is_thinking_popup_open(&self) -> bool {
+        self.0.thinking.popup.is_some()
+    }
+
+    pub fn close_thinking_popup(&mut self) {
+        self.0.close_thinking_popup();
+    }
 }
 
 /// Headless App wired to a live agent channel (mirrors `run_tui` update drain).
 pub struct HeadlessApp {
     inner: App,
     auto_select: Option<usize>,
+    capture_frames: bool,
 }
 
 impl HeadlessApp {
@@ -77,11 +153,18 @@ impl HeadlessApp {
         Self {
             inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,
+            capture_frames: false,
         }
     }
 
     pub fn with_auto_select(mut self, choice: Option<usize>) -> Self {
         self.auto_select = choice;
+        self
+    }
+
+    /// Capture every rendered frame while `run_while` is active.
+    pub fn with_frame_capture(mut self) -> Self {
+        self.capture_frames = true;
         self
     }
 
@@ -115,16 +198,28 @@ impl HeadlessApp {
         matches!(self.inner.input_mode, InputMode::Select)
     }
 
+    pub fn is_help_visible(&self) -> bool {
+        self.inner.show_help
+    }
+
+    pub fn is_history_visible(&self) -> bool {
+        self.inner.show_history
+    }
+
+    pub fn tool_block_count(&self) -> usize {
+        self.inner.tools.blocks.len()
+    }
+
+    pub fn has_diff_popup(&self) -> bool {
+        self.inner.tools.popup.is_some()
+    }
+
     pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::UserCommand> {
         self.inner.user_cmd_tx.clone()
     }
 
     /// Poll while `is_running` returns true or until `timeout`.
-    pub async fn run_while<F>(
-        &mut self,
-        mut is_running: F,
-        timeout: Duration,
-    ) -> HeadlessSnapshots
+    pub async fn run_while<F>(&mut self, mut is_running: F, timeout: Duration) -> HeadlessSnapshots
     where
         F: FnMut() -> bool,
     {
@@ -143,11 +238,24 @@ impl HeadlessApp {
                 }
             }
             self.poll();
+            if self.capture_frames {
+                snapshots.frames.push(self.render(120, 30));
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         self.poll();
         snapshots.final_render = Some(self.render(120, 30));
+
+        if self.capture_frames {
+            if let Some(ref frame) = snapshots.executing {
+                snapshots.frames.push(frame.clone());
+            }
+            if let Some(ref frame) = snapshots.select {
+                snapshots.frames.push(frame.clone());
+            }
+        }
+
         snapshots
     }
 }
@@ -157,4 +265,6 @@ pub struct HeadlessSnapshots {
     pub executing: Option<String>,
     pub select: Option<String>,
     pub final_render: Option<String>,
+    /// Every frame rendered during `run_while` when frame capture is enabled.
+    pub frames: Vec<String>,
 }

@@ -18,32 +18,55 @@ pub use types::{
     ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
 };
 
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use clap::Parser;
 
-static SETTINGS: OnceLock<types::ResolvedConfig> = OnceLock::new();
+static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
 
 /// Install resolved settings for the process. Must be called once at startup.
 pub fn install(config: types::ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
-    SETTINGS
-        .set(config)
-        .expect("tact config must be installed exactly once");
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    assert!(
+        guard.is_none(),
+        "tact config must be installed exactly once"
+    );
+    *guard = Some(config);
 }
 
 /// Install non-LLM settings for commands that never call the model (e.g. `--list-sessions`).
 pub fn install_without_llm(config: types::ResolvedConfig) {
-    SETTINGS
-        .set(config)
-        .expect("tact config must be installed exactly once");
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    assert!(
+        guard.is_none(),
+        "tact config must be installed exactly once"
+    );
+    *guard = Some(config);
 }
 
 /// Access the installed runtime settings.
-pub fn settings() -> &'static types::ResolvedConfig {
+pub fn settings() -> types::ResolvedConfig {
     SETTINGS
-        .get()
+        .read()
+        .expect("tact config lock poisoned")
+        .as_ref()
         .expect("tact config not installed; call tact::config::init() first")
+        .clone()
+}
+
+/// Install or replace the runtime settings.
+///
+/// This is only available under the `test-support` feature. It allows tests to
+/// use different configurations within the same process. The provider is only
+/// initialized the first time settings are installed.
+#[cfg(feature = "test-support")]
+pub fn install_or_override(config: types::ResolvedConfig) {
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    if guard.is_none() {
+        tact_llm::init_provider(config.llm.provider_info());
+    }
+    *guard = Some(config);
 }
 
 /// Parse CLI args, load TOML config, merge with priority CLI > TOML, and install

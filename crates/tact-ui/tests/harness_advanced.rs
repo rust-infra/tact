@@ -270,8 +270,6 @@ async fn run_single_task_with_permission_choice_and_choices(
     std::path::PathBuf,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
     use tact_ui::test_support::{
         build_test_agent_with_mode, collect_updates_after, install_test_config,
         user_command_channels,

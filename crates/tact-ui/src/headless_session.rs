@@ -10,9 +10,7 @@ use tokio::task::JoinHandle;
 use tui::test_support::{HeadlessApp, HeadlessSnapshots};
 
 use crate::driver::run_command_loop;
-use crate::test_support::{
-    build_test_agent_with_mode, install_test_config, user_command_channels,
-};
+use crate::test_support::{build_test_agent_with_mode, install_test_config, user_command_channels};
 use tact_protocol::UserCommand;
 
 /// Result of a headless driver + App session.
@@ -34,14 +32,39 @@ pub async fn run_headless_session<F>(
 where
     F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
 {
+    run_headless_session_with_options(
+        mock,
+        permission_mode,
+        permission_choice,
+        false,
+        setup,
+        drive,
+    )
+    .await
+}
+
+/// Like [`run_headless_session`], but allows enabling per-frame capture.
+pub async fn run_headless_session_with_options<F>(
+    mock: MockClient,
+    permission_mode: PermissionMode,
+    permission_choice: Option<usize>,
+    capture_frames: bool,
+    setup: impl FnOnce(&Path),
+    drive: F,
+) -> HeadlessSessionResult
+where
+    F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
+{
     install_test_config();
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (agent, work_dir) =
-        build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
+    let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
     setup(&work_dir);
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let mut app = HeadlessApp::new(agent_rx, work_dir.clone()).with_auto_select(permission_choice);
+    if capture_frames {
+        app = app.with_frame_capture();
+    }
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
     let cmd_handle = drive(user_cmd_tx);

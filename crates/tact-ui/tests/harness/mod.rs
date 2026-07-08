@@ -1,4 +1,5 @@
 //! Shared helpers for tact-ui integration tests.
+#![allow(dead_code, unused_imports)]
 
 use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use std::sync::Arc;
@@ -8,7 +9,8 @@ use tact_llm::MockClient;
 use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
 use tact_ui::driver::run_command_loop;
 use tact_ui::test_support::{
-    build_test_agent_with_mode, collect_updates_after, install_test_config, user_command_channels,
+    build_test_agent_with_config, build_test_agent_with_mode, collect_updates_after,
+    install_test_config, install_test_config_with, user_command_channels,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
@@ -119,6 +121,33 @@ pub async fn run_single_task_with_permission_choice(
     let (agent_tx, agent_rx) = unbounded_channel();
     let collect_rx = wire_permission_responder(agent_rx, permission_choice);
     let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
+    setup(&work_dir);
+    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
+
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
+
+    user_cmd_tx
+        .send(UserCommand::SubmitTask(task.into()))
+        .unwrap();
+    drop(user_cmd_tx);
+
+    driver.await.unwrap();
+    let updates = collect_updates_after(collect_rx).await;
+    (updates, work_dir)
+}
+
+/// Like [`run_single_task_with_setup`], but installs a custom `tact::config`.
+pub async fn run_single_task_with_config(
+    mock: MockClient,
+    task: &str,
+    permission_mode: PermissionMode,
+    config: tact::config::ResolvedConfig,
+    setup: impl FnOnce(&std::path::Path),
+) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+    install_test_config_with(config);
+    let (agent_tx, agent_rx) = unbounded_channel();
+    let collect_rx = wire_permission_responder(agent_rx, None);
+    let (agent, work_dir) = build_test_agent_with_config(mock, Some(agent_tx), permission_mode);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
@@ -348,6 +377,7 @@ pub fn save_memory_tool_use(
     id: &str,
     name: &str,
     memory_type: &str,
+    description: &str,
     content: &str,
 ) -> ContentBlock {
     ContentBlock::ToolUse {
@@ -355,7 +385,8 @@ pub fn save_memory_tool_use(
         name: "save_memory".to_string(),
         input: serde_json::json!({
             "name": name,
-            "memory_type": memory_type,
+            "type": memory_type,
+            "description": description,
             "content": content,
         }),
     }
@@ -402,6 +433,22 @@ pub fn cron_create_tool_use(id: &str, cron: &str, prompt: &str) -> ContentBlock 
         id: id.to_string(),
         name: "cron_create".to_string(),
         input: serde_json::json!({ "cron": cron, "prompt": prompt }),
+    }
+}
+
+pub fn cron_list_tool_use(id: &str) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.to_string(),
+        name: "cron_list".to_string(),
+        input: serde_json::json!({}),
+    }
+}
+
+pub fn cron_delete_tool_use(id: &str, cron_id: &str) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.to_string(),
+        name: "cron_delete".to_string(),
+        input: serde_json::json!({ "id": cron_id }),
     }
 }
 

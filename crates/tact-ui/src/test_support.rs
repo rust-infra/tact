@@ -1,7 +1,6 @@
 //! Helpers for tact-ui integration tests (mock LLM + channel harness).
 
 use std::path::PathBuf;
-use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tact::{
@@ -15,7 +14,6 @@ use tact_llm::{LlmProvider, MockClient};
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-static INIT_CONFIG: Once = Once::new();
 static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_workspace_name(prefix: &str) -> String {
@@ -23,35 +21,47 @@ fn unique_workspace_name(prefix: &str) -> String {
     format!("{prefix}-{n}")
 }
 
+fn default_test_config() -> tact::config::ResolvedConfig {
+    tact::config::ResolvedConfig {
+        llm: tact::config::LlmSettings {
+            provider: "mock".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "mock-model".to_string(),
+        },
+        agent: tact::config::AgentSettings {
+            context_limit_chars: 500_000,
+            max_tokens: 8192,
+            thinking_budget: 0,
+            snapshot_max_items: 80,
+            notifications_enabled: false,
+            micro_compact_enabled: true,
+        },
+        ui: tact::config::UiSettings {
+            theme: "retro".to_string(),
+        },
+        tools: tact::config::ToolSettings {
+            brave_search_api_key: None,
+        },
+        permission_mode: None,
+        tokio_console: false,
+    }
+}
+
 /// Install minimal `tact::config` settings required by `agent_loop`.
+///
+/// Safe to call multiple times in the same process; later calls override the
+/// previous configuration.
 pub fn install_test_config() {
-    INIT_CONFIG.call_once(|| {
-        let config = tact::config::ResolvedConfig {
-            llm: tact::config::LlmSettings {
-                provider: "mock".to_string(),
-                api_key: String::new(),
-                base_url: String::new(),
-                model: "mock-model".to_string(),
-            },
-            agent: tact::config::AgentSettings {
-                context_limit_chars: 500_000,
-                max_tokens: 8192,
-                thinking_budget: 0,
-                snapshot_max_items: 80,
-                notifications_enabled: false,
-                micro_compact_enabled: true,
-            },
-            ui: tact::config::UiSettings {
-                theme: "retro".to_string(),
-            },
-            tools: tact::config::ToolSettings {
-                brave_search_api_key: None,
-            },
-            permission_mode: None,
-            tokio_console: false,
-        };
-        tact::config::install(config);
-    });
+    tact::config::install_or_override(default_test_config());
+}
+
+/// Install a custom test configuration.
+///
+/// Use this when a test needs non-default values (e.g. a tiny context limit to
+/// force compaction).
+pub fn install_test_config_with(config: tact::config::ResolvedConfig) {
+    tact::config::install_or_override(config);
 }
 
 /// Build an agent wired to a mock LLM and optional UI update channel.
@@ -69,6 +79,18 @@ pub fn build_test_agent_with_mode(
     permission_mode: PermissionMode,
 ) -> (Agent, std::path::PathBuf) {
     install_test_config();
+    build_test_agent_with_config(mock, ui_tx, permission_mode)
+}
+
+/// Build an agent with an explicit configuration already installed.
+///
+/// This does **not** call [`install_test_config`]; callers should call
+/// [`install_test_config`] or [`install_test_config_with`] first.
+pub fn build_test_agent_with_config(
+    mock: MockClient,
+    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    permission_mode: PermissionMode,
+) -> (Agent, std::path::PathBuf) {
     let context = test_context(&unique_workspace_name("tact-ui-integration"));
     let work_dir = context.work_dir.clone();
 
@@ -140,9 +162,7 @@ pub fn user_command_channels() -> (
 }
 
 /// Drain all pending updates from the agent channel (non-blocking after idle).
-pub async fn collect_updates(
-    rx: &mut UnboundedReceiver<AgentUpdate>,
-) -> Vec<AgentUpdate> {
+pub async fn collect_updates(rx: &mut UnboundedReceiver<AgentUpdate>) -> Vec<AgentUpdate> {
     let mut updates = Vec::new();
     while let Ok(update) = rx.try_recv() {
         updates.push(update);
