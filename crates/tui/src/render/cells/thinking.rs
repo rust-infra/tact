@@ -165,7 +165,7 @@ mod overlay_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("reason") || text.contains("Thinking") || text.contains('│'),
+            text.contains("reason 4") || text.contains("Thinking"),
             "thinking overlay should render card preview, got:\n{text}"
         );
     }

@@ -1,11 +1,10 @@
 //! Log panel render coverage: P0 interaction, P1 content shapes, P2 chrome/edge cases.
 
 use super::test_harness::{
-    buffer_first_char_x, buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal,
-    render_log_panel_text,
+    buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
-    use crate::widgets::state::{App, RawMessageType, Status};
-    use ratatui::style::Modifier;
+use crate::widgets::state::{App, RawMessageType, Status};
+use ratatui::style::Modifier;
 use std::collections::HashMap;
 use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
 
@@ -47,6 +46,14 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
             permission_label: None,
         },
     ));
+}
+
+fn line_column_of(rendered: &str, needle: &str) -> Option<usize> {
+    rendered.lines().find_map(|line| line.find(needle))
+}
+
+fn line_index_of(rendered: &str, needle: &str) -> Option<usize> {
+    rendered.lines().position(|line| line.contains(needle))
 }
 
 // ── P0: search, selection, scroll ───────────────────────────────────────────
@@ -163,6 +170,12 @@ fn log_mixed_categories_render_user_and_assistant() {
         text.contains("user task") && text.contains("assistant reply"),
         "log should render both user and assistant content after category gap, got:\n{text}"
     );
+    let user_line = line_index_of(&text, "user task").expect("user line");
+    let assistant_line = line_index_of(&text, "assistant reply").expect("assistant line");
+    assert!(
+        assistant_line > user_line,
+        "assistant message should render after user message (user={user_line}, assistant={assistant_line})"
+    );
 }
 
 #[test]
@@ -207,10 +220,9 @@ fn log_sys_tool_message_uses_extra_indent() {
         RawMessageType::SysTool,
     );
 
-    let terminal = render_log_panel_terminal(&mut app, 80, 12);
-    let buf = terminal.backend().buffer();
-    let plain_x = buffer_first_char_x(buf, 'p').expect("plain line");
-    let nested_x = buffer_first_char_x(buf, 'n').expect("nested line");
+    let text = render_log_panel_text(&mut app, 80, 12);
+    let plain_x = line_column_of(&text, "plain assistant").expect("plain line");
+    let nested_x = line_column_of(&text, "nested tool line").expect("nested line");
 
     assert!(
         nested_x > plain_x,
@@ -304,19 +316,38 @@ fn log_visual_cache_rebuilds_on_theme_change() {
 fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     let mut app = make_app();
     seed_tall_bash_tool(&mut app, 25);
+    let _ = render_log_panel_text(&mut app, 100, 14);
+    let block = app.tools.blocks.last().expect("tool block");
+    let summary_logical = app
+        .log_scroll
+        .phys_to_logical_cache
+        .get(block.phys_idx)
+        .and_then(|v| *v)
+        .expect("summary row should map to logical index");
+    let placeholder_phys = block.phys_idx + 1;
+    let placeholder_logical = app
+        .log_scroll
+        .phys_to_logical_cache
+        .get(placeholder_phys)
+        .and_then(|v| *v)
+        .expect("placeholder row should map to logical index");
+    assert!(
+        placeholder_logical > summary_logical,
+        "placeholder row should be below summary row"
+    );
 
-    app.log_scroll.offset = 5;
+    app.log_scroll.offset = placeholder_logical as u16;
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("bash") || mid.contains("bash-out"),
-        "scrolling into tool placeholder rows should still render tool card, got:\n{mid}"
+        mid.contains("bash") && mid.contains("Command output (25 lines)"),
+        "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
     app.log_scroll.offset = u16::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("bash-out") || bottom.contains("1/25") || bottom.contains("25 lines"),
-        "bottom scroll should show tall tool card tail or line counter, got:\n{bottom}"
+        bottom.contains("Command output (25 lines)") && bottom.contains("1/25"),
+        "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
 }
 

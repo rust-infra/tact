@@ -57,13 +57,16 @@ impl Renderable for TaskEndSeparator {
 /// A blank line separator drawn between message groups of different
 /// categories (user ↔ system ↔ assistant).
 pub(crate) struct MessageSeparator {
-    label: String,
-    fg: Color,
+    _label: String,
+    _fg: Color,
 }
 
 impl MessageSeparator {
     pub(crate) fn new(label: String, fg: Color) -> Self {
-        Self { label, fg }
+        Self {
+            _label: label,
+            _fg: fg,
+        }
     }
 }
 
@@ -90,7 +93,6 @@ impl Renderable for MessageSeparator {
 #[cfg(test)]
 mod render_tests {
     use super::*;
-    use ratatui::widgets::Paragraph;
 
     #[test]
     fn task_end_separator_renders_dashed_line() {
@@ -114,7 +116,12 @@ mod render_tests {
         let mut buf = Buffer::empty(area);
         sep.render(area, &mut buf);
         assert_eq!(sep.height(10), 1);
-        // Renders without panic; content is intentionally blank spacing.
-        Paragraph::new("").render(area, &mut buf);
+        let rendered: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            rendered.trim().is_empty(),
+            "message separator row should stay visually blank"
+        );
     }
 }

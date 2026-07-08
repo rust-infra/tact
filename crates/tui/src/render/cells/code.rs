@@ -165,8 +165,8 @@ mod overlay_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("overlay_test") || text.contains("rust"),
-            "code overlay should render card body or language label, got:\n{text}"
+            text.contains("overlay_test"),
+            "code overlay should render code body text, got:\n{text}"
         );
     }
 }
