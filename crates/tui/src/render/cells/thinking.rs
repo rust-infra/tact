@@ -134,3 +134,39 @@ fn format_elapsed(d: std::time::Duration) -> String {
         format!("{:.1}min", m)
     }
 }
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::render::test_harness::{buffer_text, make_app};
+    use ratatui::{Terminal, backend::TestBackend};
+    use tact_protocol::AgentUpdate;
+
+    #[test]
+    fn thinking_card_overlay_renders_collapsed_preview() {
+        let mut app = make_app();
+        for i in 1..=4 {
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(format!("reason {i}\n")));
+        }
+        app.handle_agent_update(AgentUpdate::StreamChunk("answer".into()));
+        assert!(!app.thinking.blocks.is_empty());
+
+        // Build visual_start_cache via log panel before isolated overlay draw.
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 20);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_thinking_cards(frame, area, &app, 0, area.height as usize);
+            })
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("reason 4") || text.contains("Thinking"),
+            "thinking overlay should render card preview, got:\n{text}"
+        );
+    }
+}

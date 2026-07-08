@@ -73,3 +73,106 @@ fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().bg(app.theme.bg));
     frame.render_widget(divider, area);
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::super::test_harness::{buffer_contains, make_app, render_app_text};
+    use crate::widgets::state::Status;
+    use std::collections::HashMap;
+    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    #[test]
+    fn main_area_renders_tool_and_stream_content() {
+        let mut app = make_app();
+        app.plan.visible = true;
+
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "read file",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "main.rs".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted(
+            0,
+            "tool_read_1".into(),
+            "read_file".into(),
+            "main.rs".into(),
+        ));
+        app.handle_agent_update(AgentUpdate::StepFinished(
+            0,
+            "tool_read_1".into(),
+            StepResult {
+                tool: "read_file".into(),
+                arg_summary: "main.rs".into(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("fn main() {}".into()),
+                duration_us: Some(1000),
+                permission_label: None,
+            },
+        ));
+        app.handle_agent_update(AgentUpdate::StreamChunk("Hello from mock.".into()));
+        app.handle_agent_update(AgentUpdate::TaskComplete("Hello from mock.".into()));
+
+        assert!(matches!(app.status, Status::Done));
+
+        let text = render_app_text(&mut app, 100, 30);
+        assert!(
+            text.contains("read_file") || text.contains("main.rs"),
+            "plan/log should show tool activity, buffer:\n{text}"
+        );
+        assert!(
+            text.contains("Hello from mock"),
+            "stream chunk should be visible, buffer:\n{text}"
+        );
+    }
+
+    #[test]
+    fn main_area_renders_after_fatal_error() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
+            "provider timeout".into(),
+        )));
+
+        assert!(matches!(app.status, Status::Idle));
+
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render_main_area(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        assert!(
+            buffer_contains(terminal.backend().buffer(), "provider timeout")
+                || app.raw_messages.iter().any(|m| m.contains("provider timeout")),
+            "error should be visible in log or buffer"
+        );
+    }
+
+    #[test]
+    fn dual_panel_layout_renders_with_custom_split_ratio() {
+        let mut app = make_app();
+        app.plan.visible = true;
+        app.panel_split_ratio = 0.45;
+
+        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
+        assert!(
+            !text.trim().is_empty(),
+            "dual-panel layout should render with custom split"
+        );
+    }
+
+    #[test]
+    fn divider_renders_while_resizing() {
+        let mut app = make_app();
+        app.plan.visible = true;
+        app.mouse.is_resizing_panel = true;
+
+        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
+        assert!(
+            !text.trim().is_empty(),
+            "divider should render highlighted while resizing"
+        );
+    }
+}

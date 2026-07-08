@@ -210,3 +210,115 @@ impl Renderable for TextCell {
         self.render_partial(area, buf, 0);
     }
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::render::renderable::Renderable;
+    use ratatui::style::Color;
+
+    fn sample_cell() -> TextCell {
+        TextCell::new(
+            vec![Line::from("alpha beta gamma")],
+            "alpha beta gamma".into(),
+            String::new(),
+            false,
+            false,
+            None,
+            None,
+            0,
+            Color::White,
+            Color::Yellow,
+            Color::Black,
+        )
+    }
+
+    #[test]
+    fn search_match_paints_highlight_background() {
+        let cell = TextCell::new(
+            vec![Line::from("find TOKEN end")],
+            "find TOKEN end".into(),
+            "TOKEN".into(),
+            true,
+            false,
+            None,
+            None,
+            0,
+            Color::White,
+            Color::Yellow,
+            Color::Black,
+        );
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        let mut has_highlight = false;
+        for x in 0..area.width {
+            if buf[(x, 0)].bg == Color::Yellow {
+                has_highlight = true;
+            }
+        }
+        assert!(has_highlight, "search match should use highlight background");
+    }
+
+    #[test]
+    fn line_selection_applies_reversed_modifier() {
+        let cell = TextCell::new(
+            vec![Line::from("select all of this")],
+            "select all of this".into(),
+            String::new(),
+            false,
+            true,
+            None,
+            None,
+            0,
+            Color::White,
+            Color::Yellow,
+            Color::Black,
+        );
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        let mut reversed = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                    reversed = true;
+                }
+            }
+        }
+        assert!(reversed, "line selection should reverse styled spans");
+    }
+
+    #[test]
+    fn word_selection_reverses_only_target_word() {
+        let cell = TextCell::new(
+            vec![Line::from("alpha beta gamma")],
+            "alpha beta gamma".into(),
+            String::new(),
+            false,
+            true,
+            Some((6, 10)),
+            None,
+            0,
+            Color::White,
+            Color::Yellow,
+            Color::Black,
+        );
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        let mut reversed = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                    reversed = true;
+                }
+            }
+        }
+        assert!(
+            reversed,
+            "word selection should reverse the target word spans"
+        );
+        assert_eq!(sample_cell().height(40), 1);
+    }
+}

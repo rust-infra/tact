@@ -5,7 +5,7 @@ fn format_timestamp(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-pub(crate) async fn print_sessions(
+pub async fn print_sessions(
     session_store: &DynSessionStore,
     root_dir: &str,
 ) -> anyhow::Result<()> {

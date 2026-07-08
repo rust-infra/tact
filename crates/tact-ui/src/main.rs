@@ -1,18 +1,11 @@
-mod headless;
-mod interactive;
-mod permission;
-mod session_lock;
-mod sessions;
-mod user_message;
-
 use tact::config::{CliCommand, init};
 use tact::consts::TactPath;
 use tact::store::open_sqlite_session_store;
 
-use headless::run_headless;
-use interactive::run_interactive;
-use session_lock::SessionLockRegistry;
-use sessions::print_sessions;
+use tact_ui::run_headless;
+use tact_ui::run_interactive;
+use tact_ui::session_lock::SessionLockRegistry;
+use tact_ui::sessions::print_sessions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

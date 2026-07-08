@@ -23,7 +23,7 @@ use crate::permission::permission_mode_from_config;
 use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
 use crate::user_message::build_user_message;
 
-pub(crate) async fn run_headless(
+pub async fn run_headless(
     args: CliArgs,
     prompt: String,
     tact_path: TactPath,

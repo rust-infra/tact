@@ -37,5 +37,9 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 walkdir = { workspace = true }
 
+[features]
+test-support = []
+
 [dev-dependencies]
+rmcp = { workspace = true, features = ["server"] }
 tempfile = { workspace = true }

@@ -348,3 +348,54 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let status_bar = Paragraph::new(display_text).style(display_style);
     frame.render_widget(status_bar, area);
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::super::test_harness::{buffer_text, make_app, render_app_text};
+    use super::render_bottom_bar;
+    use tact_protocol::{BalanceEntry, BalanceInfo};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+    #[test]
+    fn bottom_bar_shows_balance_row_when_available() {
+        let mut app = make_app();
+        app.balance_info = Some(BalanceInfo {
+            is_available: true,
+            balance_infos: vec![BalanceEntry {
+                currency: "USD".into(),
+                total_balance: "12.50".into(),
+                granted_balance: "10.00".into(),
+                topped_up_balance: "2.50".into(),
+            }],
+        });
+
+        let text = render_app_text(&mut app, 120, 30);
+        assert!(
+            text.contains("USD") || text.contains("12.50"),
+            "balance row should render when balance_info set: {text}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_renders_without_panic_when_idle() {
+        let app = make_app();
+        let backend = TestBackend::new(100, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
+            .expect("draw");
+        assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
+    }
+
+    #[test]
+    fn bottom_bar_shows_party_mode_banner() {
+        let mut app = make_app();
+        app.party_mode = true;
+
+        let text = render_app_text(&mut app, 120, 30);
+        assert!(
+            text.contains("PARTY") || text.contains("🎉"),
+            "party mode status bar should render banner, got:\n{text}"
+        );
+    }
+}
