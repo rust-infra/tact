@@ -58,8 +58,10 @@ pub fn settings() -> types::ResolvedConfig {
 /// Install or replace the runtime settings.
 ///
 /// This is only available under the `test-support` feature. It allows tests to
-/// use different configurations within the same process. The provider is only
-/// initialized the first time settings are installed.
+/// use different configurations within the same process for code paths that still
+/// read global settings (UI, permissions, tools). Agent-loop settings are snapshotted
+/// on each [`crate::Agent`] via [`crate::Agent::with_agent_settings`]; parallel tests
+/// must pass per-agent settings rather than relying on this alone.
 #[cfg(feature = "test-support")]
 pub fn install_or_override(config: types::ResolvedConfig) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");

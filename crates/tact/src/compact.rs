@@ -44,8 +44,8 @@ pub struct CompactState {
 /// Truncates old tool-result blocks in-place, preserving the most recent
 /// [`KEEP_RECENT_TOOL_RESULTS`] entries.  Any older result longer than 120
 /// characters is replaced with a stub message.
-pub fn micro_compact(messages: &mut [Message]) {
-    if !crate::config::settings().agent.micro_compact_enabled {
+pub fn micro_compact(messages: &mut [Message], enabled: bool) {
+    if !enabled {
         return;
     }
     let tool_result_positions = collect_tool_result_positions(messages);

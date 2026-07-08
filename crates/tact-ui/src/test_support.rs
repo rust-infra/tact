@@ -48,10 +48,11 @@ fn default_test_config() -> tact::config::ResolvedConfig {
     }
 }
 
-/// Install minimal `tact::config` settings required by `agent_loop`.
+/// Install minimal `tact::config` settings required by non-agent code paths.
 ///
 /// Safe to call multiple times in the same process; later calls override the
-/// previous configuration.
+/// previous configuration. Agent-loop settings should be passed via
+/// [`build_test_agent_with_config`] / [`Agent::with_agent_settings`].
 pub fn install_test_config() {
     tact::config::install_or_override(default_test_config());
 }
@@ -78,19 +79,22 @@ pub fn build_test_agent_with_mode(
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
     permission_mode: PermissionMode,
 ) -> (Agent, std::path::PathBuf) {
-    install_test_config();
-    build_test_agent_with_config(mock, ui_tx, permission_mode)
+    let config = default_test_config();
+    build_test_agent_with_config(mock, ui_tx, permission_mode, &config)
 }
 
-/// Build an agent with an explicit configuration already installed.
+/// Build an agent with an explicit configuration snapshot for the agent loop.
 ///
-/// This does **not** call [`install_test_config`]; callers should call
-/// [`install_test_config`] or [`install_test_config_with`] first.
+/// Installs `config` for global readers (UI/permissions) and attaches
+/// `config.agent` to the returned agent so parallel tests do not race.
 pub fn build_test_agent_with_config(
     mock: MockClient,
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
     permission_mode: PermissionMode,
+    config: &tact::config::ResolvedConfig,
 ) -> (Agent, std::path::PathBuf) {
+    tact::config::install_or_override(config.clone());
+    let agent_settings = config.agent.clone();
     let context = test_context(&unique_workspace_name("tact-ui-integration"));
     let work_dir = context.work_dir.clone();
 
@@ -104,7 +108,8 @@ pub fn build_test_agent_with_config(
         MCPToolRouter::new(),
         PermissionManager::try_new(permission_mode).expect("permission mode"),
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
-    );
+    )
+    .with_agent_settings(agent_settings);
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }
@@ -122,7 +127,9 @@ pub fn build_test_agent_with_mcp(
     permission_mode: PermissionMode,
     mcp_router: MCPToolRouter,
 ) -> (Agent, std::path::PathBuf) {
-    install_test_config();
+    let config = default_test_config();
+    tact::config::install_or_override(config.clone());
+    let agent_settings = config.agent.clone();
     let context = test_context(&unique_workspace_name("tact-ui-mcp"));
     let work_dir = context.work_dir.clone();
 
@@ -136,7 +143,8 @@ pub fn build_test_agent_with_mcp(
         mcp_router,
         PermissionManager::try_new(permission_mode).expect("permission mode"),
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
-    );
+    )
+    .with_agent_settings(agent_settings);
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }
@@ -149,7 +157,9 @@ pub async fn build_test_agent_with_session(
     mock: MockClient,
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
 ) -> (Agent, PathBuf, DynSessionStore, String) {
-    install_test_config();
+    let config = default_test_config();
+    tact::config::install_or_override(config.clone());
+    let agent_settings = config.agent.clone();
     let context = test_context(&unique_workspace_name("tact-ui-session"));
     let work_dir = context.work_dir.clone();
     let db_path = work_dir.join(".tact").join("tact.db");
@@ -177,6 +187,7 @@ pub async fn build_test_agent_with_session(
         PermissionManager::try_new(PermissionMode::Auto).expect("auto permission mode"),
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
     )
+    .with_agent_settings(agent_settings)
     .with_session(Some(session_id.clone()), session_store.clone());
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);

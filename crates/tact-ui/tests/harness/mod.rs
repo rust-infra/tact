@@ -171,10 +171,10 @@ pub async fn run_single_task_with_config(
     config: tact::config::ResolvedConfig,
     setup: impl FnOnce(&std::path::Path),
 ) -> (Vec<AgentUpdate>, std::path::PathBuf) {
-    install_test_config_with(config);
     let (agent_tx, agent_rx) = unbounded_channel();
     let collect_rx = wire_permission_responder(agent_rx, None);
-    let (agent, work_dir) = build_test_agent_with_config(mock, Some(agent_tx), permission_mode);
+    let (agent, work_dir) =
+        build_test_agent_with_config(mock, Some(agent_tx), permission_mode, &config);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 

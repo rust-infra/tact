@@ -15,6 +15,7 @@ use crate::ToolSpec;
 use crate::compact::{
     CompactState, compacted_context, estimate_context_size, micro_compact, write_transcript,
 };
+use crate::config::AgentSettings;
 use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
 use crate::mcp::MCPToolRouter;
 use crate::memory::MEMORY_GUIDANCE;
@@ -29,30 +30,6 @@ use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_llm::{LlmClient, LlmProvider};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
-
-/// Soft context limit in characters. When the serialized context exceeds
-/// this threshold the agent will attempt micro-compaction.
-fn context_limit() -> usize {
-    crate::config::settings().agent.context_limit_chars
-}
-
-/// Maximum tokens to generate per LLM call.
-fn max_tokens() -> u32 {
-    crate::config::settings().agent.max_tokens
-}
-
-/// Budget tokens for extended thinking.
-fn thinking_budget() -> usize {
-    crate::config::settings().agent.thinking_budget
-}
-
-/// Returns the thinking configuration to use.
-fn thinking_config() -> Thinking {
-    Thinking {
-        budget_tokens: thinking_budget(),
-        type_: ThinkingType::Enabled,
-    }
-}
 
 /// Shared state for a running agent session.
 ///
@@ -102,6 +79,8 @@ pub struct Agent {
     pub hooks: Vec<Hook>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
+    /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
+    agent_settings: AgentSettings,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
@@ -142,7 +121,33 @@ impl Agent {
             hooks: Vec::new(),
             system_prompt,
             tool_use_counter: 0,
+            agent_settings: crate::config::settings().agent.clone(),
             cached_tool_specs,
+        }
+    }
+
+    /// Override agent-loop settings (used by integration tests with custom config).
+    pub fn with_agent_settings(mut self, settings: AgentSettings) -> Self {
+        self.agent_settings = settings;
+        self
+    }
+
+    fn context_limit(&self) -> usize {
+        self.agent_settings.context_limit_chars
+    }
+
+    fn max_tokens(&self) -> u32 {
+        self.agent_settings.max_tokens
+    }
+
+    fn thinking_budget(&self) -> usize {
+        self.agent_settings.thinking_budget
+    }
+
+    fn thinking_config(&self) -> Thinking {
+        Thinking {
+            budget_tokens: self.thinking_budget(),
+            type_: ThinkingType::Enabled,
         }
     }
 
@@ -337,8 +342,11 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
-            micro_compact(&mut self.runtime.context);
-            if estimate_context_size(&self.runtime.context) > context_limit() {
+            micro_compact(
+                &mut self.runtime.context,
+                self.agent_settings.micro_compact_enabled,
+            );
+            if estimate_context_size(&self.runtime.context) > self.context_limit() {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
@@ -351,12 +359,12 @@ impl Agent {
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: self.runtime.context.clone(),
-                max_tokens: max_tokens(),
+                max_tokens: self.max_tokens(),
             })
             .with_system(&system)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
-            .with_thinking(thinking_config());
+            .with_thinking(self.thinking_config());
 
             self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
                 model: model_name,
@@ -770,7 +778,11 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             .skills_available(self.tool_context.skill_registry.describe_available())
             .memory(self.load_memory_prompt()?)
             .claude_md(load_claude_md_prompt(workdir))
-            .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
+            .dynamic_context(load_dynamic_context(
+                workdir,
+                &mut self.runtime.cached_dir_snapshot,
+                self.agent_settings.snapshot_max_items,
+            ))
             .memory_guidance(MEMORY_GUIDANCE.trim())
             .build()?;
 
@@ -794,9 +806,11 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
 /// The directory snapshot is expensive to compute and its output must be
 /// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
 /// can hit.  We compute it once per session and reuse the cached string.
-fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>) -> String {
-    let snapshot_limit = crate::config::settings().agent.snapshot_max_items;
-
+fn load_dynamic_context(
+    workdir: &Path,
+    cached_snapshot: &mut Option<String>,
+    snapshot_limit: usize,
+) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
         None => {
@@ -1001,6 +1015,47 @@ mod tests {
         ContentBlock::Text {
             text: content.to_string(),
         }
+    }
+
+    #[test]
+    fn agent_settings_snapshot_survives_global_config_override() {
+        ensure_config();
+        let context = test_context("agent_settings_snapshot");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+
+        let tiny = crate::config::AgentSettings {
+            context_limit_chars: 500,
+            max_tokens: 1024,
+            thinking_budget: 0,
+            snapshot_max_items: 10,
+            notifications_enabled: false,
+            micro_compact_enabled: true,
+        };
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_agent_settings(tiny.clone());
+
+        #[cfg(feature = "test-support")]
+        {
+            let mut big = crate::config::settings();
+            big.agent.context_limit_chars = 900_000;
+            crate::config::install_or_override(big);
+        }
+
+        assert_eq!(agent.context_limit(), 500);
+        assert_eq!(agent.max_tokens(), 1024);
+        assert_eq!(agent.agent_settings.context_limit_chars, tiny.context_limit_chars);
     }
 
     #[test]
