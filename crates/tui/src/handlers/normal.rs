@@ -349,4 +349,62 @@ mod tests {
         assert!(matches!(app.status, Status::Idle));
         assert_eq!(approval_rx.try_recv(), Ok(true));
     }
+
+    #[test]
+    fn q_sets_should_quit() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('q')), &tx);
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn j_and_k_scroll_log_when_log_focused() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.focused_panel = FocusedPanel::Log;
+        app.log_scroll.offset = 5;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.log_scroll.offset, 6);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.log_scroll.offset, 5);
+    }
+
+    #[test]
+    fn n_and_shift_n_jump_search_matches() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.add_system_message("needle first".into());
+        app.add_system_message("needle second".into());
+        app.search.term = "needle".into();
+        app.update_search_matches();
+        assert!(app.search.matches.len() >= 2);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('n')), &tx);
+        assert_eq!(app.search.current_match, 1);
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('N')), &tx);
+        assert_eq!(app.search.current_match, 0);
+    }
+
+    #[test]
+    fn esc_rejects_waiting_for_user() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
+        app.status = Status::WaitingForUser {
+            prompt: "Allow?".into(),
+            step_index: 0,
+            approval_tx,
+        };
+
+        handle_normal_mode(&mut app, key(KeyCode::Esc), &tx);
+
+        assert!(matches!(app.status, Status::Idle));
+        assert_eq!(approval_rx.try_recv(), Ok(false));
+    }
 }

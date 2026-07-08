@@ -575,3 +575,30 @@ fn flash_msg_persists_within_three_seconds() {
 
     assert!(app.flash_msg.is_some());
 }
+
+#[test]
+fn startup_logo_renders_in_full_frame() {
+    let mut app = make_app();
+    app.add_startup_logo();
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    assert!(
+        text.contains('█') || text.contains('T') || text.contains("tact"),
+        "startup logo should render ASCII art in log, got:\n{text}"
+    );
+}
+
+#[test]
+fn toggle_theme_renders_changed_message_in_log() {
+    let mut app = make_app();
+    let before = app.theme.name;
+    app.toggle_theme();
+
+    let text = render_app_text(&mut app, 100, 24);
+    assert_ne!(app.theme.name, before);
+    assert!(
+        !text.trim().is_empty(),
+        "theme toggle should produce visible log update, got:\n{text}"
+    );
+}

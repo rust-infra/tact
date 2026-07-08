@@ -380,37 +380,16 @@ pub async fn run_tui(
                             && mouse.column < app.mouse.divider_area.x + app.mouse.divider_area.width
                             && mouse.row >= app.mouse.divider_area.y
                             && mouse.row < app.mouse.divider_area.y + app.mouse.divider_area.height;
+                        let hit = crate::handlers::MousePanelHit {
+                            in_log,
+                            in_plan,
+                        };
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
-                                if app.thinking.popup.is_some() {
-                                    app.thinking_popup_scroll_up();
-                                } else if app.tools.popup.is_some() {
-                                    app.diff_popup_scroll_up();
-                                } else if app.code_popup.is_some() {
-                                    app.code_popup_scroll_up();
-                                } else if in_log && app.log_scroll.offset > 0 {
-                                    app.log_scroll.offset -= 1;
-                                } else if in_plan && app.plan.selected > 0 {
-                                    app.plan.selected -= 1;
-                                    app.plan.list_state.select(Some(app.plan.selected));
-                                }
+                                crate::handlers::handle_mouse_scroll_up(&mut app, hit);
                             }
                             MouseEventKind::ScrollDown => {
-                                if app.thinking.popup.is_some() {
-                                    app.thinking_popup_scroll_down();
-                                } else if app.tools.popup.is_some() {
-                                    app.diff_popup_scroll_down();
-                                } else if app.code_popup.is_some() {
-                                    app.code_popup_scroll_down();
-                                } else if in_log {
-                                    app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
-                                } else if in_plan
-                                    && !app.plan.steps.is_empty()
-                                    && app.plan.selected + 1 < app.plan.steps.len()
-                                {
-                                    app.plan.selected += 1;
-                                    app.plan.list_state.select(Some(app.plan.selected));
-                                }
+                                crate::handlers::handle_mouse_scroll_down(&mut app, hit);
                             }
                             MouseEventKind::Down(MouseButton::Left) => {
                                 if app.thinking.popup.is_some() {
@@ -512,16 +491,10 @@ pub async fn run_tui(
                                         if let Some((tool_idx, phys_idx, _, _)) =
                                             app.find_tool_at_logical(line_idx)
                                         {
-                                            if app.mouse.click_count == 1 {
-                                                app.mouse.last_click_tool = Some(tool_idx);
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = None;
-                                                app.mouse.dragging_log = false;
-                                            } else if app.mouse.click_count == 2
-                                                && app.mouse.last_click_tool == Some(tool_idx)
-                                            {
-                                                app.open_diff_popup(phys_idx);
-                                            } else if app.mouse.click_count >= 3 {
+                                            crate::handlers::handle_tool_block_click(
+                                                &mut app, tool_idx, phys_idx,
+                                            );
+                                            if app.mouse.click_count >= 3 {
                                                 app.mouse.log_word_selection = None;
                                                 app.mouse.log_selection = Some((line_idx, line_idx));
                                                 app.mouse.dragging_log = true;

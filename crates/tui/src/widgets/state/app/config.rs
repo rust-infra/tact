@@ -114,3 +114,33 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use crate::theme::ThemeName;
+
+    #[test]
+    fn toggle_theme_cycles_from_retro() {
+        let mut app = make_app();
+        assert_eq!(app.theme.name, ThemeName::Retro);
+
+        app.toggle_theme();
+        assert_ne!(app.theme.name, ThemeName::Retro);
+        assert!(
+            app.raw_messages.iter().any(|m| m.contains("theme") || m.contains("Theme")),
+            "toggle should append theme changed message"
+        );
+    }
+
+    #[test]
+    fn toggle_language_switches_en_and_zh() {
+        let mut app = make_app();
+        let before = app.language;
+
+        app.toggle_language();
+
+        assert_ne!(app.language, before);
+    }
+}
