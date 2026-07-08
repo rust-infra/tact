@@ -88,9 +88,6 @@ mod tests {
         app.update_search_matches();
 
         app.jump_to_prev_match();
-        assert_eq!(
-            app.search.current_match,
-            app.search.matches.len() - 1
-        );
+        assert_eq!(app.search.current_match, app.search.matches.len() - 1);
     }
 }

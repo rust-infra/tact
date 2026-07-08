@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use tact::tool::test_support::write_workspace_file;
+use tact_llm::MockClient;
+use tact_protocol::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
 use tact_ui::driver::run_command_loop;
 use tact_ui::test_support::{
     build_test_agent, build_test_agent_with_session, collect_updates_after, install_test_config,
     user_command_channels,
 };
-use tact_llm::MockClient;
-use tact_protocol::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
 
 fn text_block(content: &str) -> ContentBlock {
     ContentBlock::Text {
@@ -128,11 +128,7 @@ async fn submit_task_runs_read_file_tool() {
     write_workspace_file(&work_dir, "hello.txt", "integration file contents");
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
-    let driver = tokio::spawn(run_command_loop(
-        agent,
-        user_cmd_rx,
-        work_dir.clone(),
-    ));
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
         .send(UserCommand::SubmitTask("Read hello.txt".into()))
@@ -165,10 +161,7 @@ async fn cancel_during_task_does_not_emit_task_complete() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (
-            vec![bash_tool_use("sleep 2")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![bash_tool_use("sleep 2")], Some(StopReason::ToolUse)),
         (
             vec![text_block("Should not complete.")],
             Some(StopReason::EndTurn),
@@ -261,12 +254,9 @@ async fn query_balance_emits_error_for_mock_provider() {
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| {
-            matches!(
-                u,
-                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
-            )
-        }),
+        updates
+            .iter()
+            .any(|u| { matches!(u, AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))) }),
         "mock provider should reject balance query, got: {updates:?}"
     );
 }
@@ -310,7 +300,11 @@ async fn sequential_submit_tasks_both_complete() {
             _ => None,
         })
         .collect();
-    assert_eq!(completes.len(), 2, "expected two TaskComplete, got: {updates:?}");
+    assert_eq!(
+        completes.len(),
+        2,
+        "expected two TaskComplete, got: {updates:?}"
+    );
     assert!(completes[0].contains("First"));
     assert!(completes[1].contains("Second"));
 }
@@ -334,11 +328,7 @@ async fn submit_task_runs_write_file_tool() {
     let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
-    let driver = tokio::spawn(run_command_loop(
-        agent,
-        user_cmd_rx,
-        work_dir.clone(),
-    ));
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
         .send(UserCommand::SubmitTask("write out.txt".into()))
@@ -438,12 +428,9 @@ async fn query_balance_then_submit_task_both_handled() {
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| {
-            matches!(
-                u,
-                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
-            )
-        }),
+        updates
+            .iter()
+            .any(|u| { matches!(u, AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))) }),
         "expected balance error, got: {updates:?}"
     );
     assert!(
@@ -459,10 +446,7 @@ async fn cancel_emits_cancelled_by_user_info() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (
-            vec![bash_tool_use("sleep 3")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![bash_tool_use("sleep 3")], Some(StopReason::ToolUse)),
         (
             vec![text_block("Should not finish.")],
             Some(StopReason::EndTurn),

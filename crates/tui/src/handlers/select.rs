@@ -14,12 +14,14 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 if log_confirm {
                     let msgs = app.msgs();
                     app.add_system_message(
-                        msgs.selected_tmpl
-                            .replace("{}", &app.select
+                        msgs.selected_tmpl.replace(
+                            "{}",
+                            &app.select
                                 .options
                                 .get(idx)
                                 .cloned()
-                                .unwrap_or_else(|| "?".to_string()))
+                                .unwrap_or_else(|| "?".to_string()),
+                        ),
                     );
                 }
             }

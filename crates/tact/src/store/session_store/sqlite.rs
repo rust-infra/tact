@@ -6,8 +6,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
 use tact_protocol::TokenUsageInfo;
 
-use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
 use super::process_identity::process_identity;
+use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
 
 pub struct SqliteSessionStore {
     pool: SqlitePool,
@@ -229,15 +229,13 @@ impl super::SessionStore for SqliteSessionStore {
 
     async fn touch_session(&self, id: &str, root_dir: &str) -> Result<()> {
         let now = Self::now();
-        sqlx::query(
-            "UPDATE sessions SET updated_at = ?, root_dir = ? WHERE id = ?",
-        )
-        .bind(now)
-        .bind(root_dir)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .context("failed to touch session")?;
+        sqlx::query("UPDATE sessions SET updated_at = ?, root_dir = ? WHERE id = ?")
+            .bind(now)
+            .bind(root_dir)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("failed to touch session")?;
         Ok(())
     }
 
@@ -700,9 +698,7 @@ impl super::SessionStore for SqliteSessionStore {
             None => anyhow::bail!("session not found: {session_id}"),
         };
 
-        if holder != 0
-            && is_active_lock_holder(holder as u32, &holder_epoch)
-        {
+        if holder != 0 && is_active_lock_holder(holder as u32, &holder_epoch) {
             anyhow::bail!(
                 "session {session_id} is locked by process {holder} (already open in another tact-ui instance)"
             );
@@ -839,7 +835,10 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         store
             .append_message(
@@ -894,7 +893,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         // A token-usage row for an LLM call whose last message id is 7.
         store
@@ -923,7 +925,10 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         let entries = vec!["first", "second"];
         for entry in &entries {
@@ -943,7 +948,10 @@ mod tests {
         let loaded = store.load_input_history("session-1").await.unwrap();
         assert_eq!(loaded, vec!["first", "second", "third"]);
 
-        store.create_session("session-2", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-2", "/tmp/tact-test")
+            .await
+            .unwrap();
         assert!(
             store
                 .load_input_history("session-2")
@@ -959,7 +967,10 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         let entries: Vec<String> = (0..120).map(|i| format!("entry-{i}")).collect();
         for entry in &entries {
@@ -1001,7 +1012,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         store
             .append_message(
@@ -1039,10 +1053,11 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(matches!(loaded[0].role, Role::User));
 
-        let row = sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+        let row =
+            sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 1);
     }
 
@@ -1051,7 +1066,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         let pid = std::process::id();
         let lock_epoch = store.try_lock_session("session-1", pid).await.unwrap();
@@ -1085,7 +1103,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
         let pid = std::process::id();
         store.try_lock_session("session-1", pid).await.unwrap();
@@ -1110,16 +1131,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test")
+            .await
+            .unwrap();
 
-        sqlx::query(
-            "UPDATE sessions SET locked_by = ?, lock_epoch = ? WHERE id = 'session-1'",
-        )
-        .bind(999_999_i64)
-        .bind("stale-epoch")
-        .execute(&store.pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE sessions SET locked_by = ?, lock_epoch = ? WHERE id = 'session-1'")
+            .bind(999_999_i64)
+            .bind("stale-epoch")
+            .execute(&store.pool)
+            .await
+            .unwrap();
 
         let pid = std::process::id();
         store.try_lock_session("session-1", pid).await.unwrap();

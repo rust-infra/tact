@@ -1,8 +1,8 @@
 use crate::widgets::state::*;
 use crate::widgets::tool_widget::ToolPhase;
 use arboard::Clipboard;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use ratatui::text::Line;
 use tact_protocol::UserCommand;
 

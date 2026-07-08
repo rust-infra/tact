@@ -121,7 +121,9 @@ pub(crate) fn fuzzy_score(target: &str, query: &str) -> i32 {
             // Word boundary bonus (after '_' or uppercase→lowercase transition)
             if t_idx == 0 || {
                 let prev_c = target_chars[t_idx - 1];
-                prev_c == '_' || prev_c == '-' || prev_c == ' '
+                prev_c == '_'
+                    || prev_c == '-'
+                    || prev_c == ' '
                     || (prev_c.is_lowercase() && tc.is_uppercase())
             } {
                 score += 3;
@@ -131,9 +133,5 @@ pub(crate) fn fuzzy_score(target: &str, query: &str) -> i32 {
     }
 
     // Must match all query chars
-    if q_idx < query_chars.len() {
-        0
-    } else {
-        score
-    }
+    if q_idx < query_chars.len() { 0 } else { score }
 }

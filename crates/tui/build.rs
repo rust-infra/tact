@@ -10,8 +10,14 @@ fn main() {
     )
     .expect("failed to read workspace Cargo.toml");
 
-    let toml: toml::Value = toml::from_str(&manifest).expect("failed to parse workspace Cargo.toml");
-    if let Some(ver) = toml.get("workspace").and_then(|w| w.get("package")).and_then(|p| p.get("version")).and_then(|v| v.as_str()) {
+    let toml: toml::Value =
+        toml::from_str(&manifest).expect("failed to parse workspace Cargo.toml");
+    if let Some(ver) = toml
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+    {
         println!("cargo:rustc-env=TACT_VERSION={}", ver);
     }
 }

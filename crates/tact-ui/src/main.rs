@@ -21,11 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let session_store = open_sqlite_session_store(&db_path).await?;
 
     if args.list_sessions {
-        print_sessions(
-            &session_store,
-            &tact_path.workdir().display().to_string(),
-        )
-        .await?;
+        print_sessions(&session_store, &tact_path.workdir().display().to_string()).await?;
         return Ok(());
     }
 

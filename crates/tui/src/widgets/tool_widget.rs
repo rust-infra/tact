@@ -355,11 +355,7 @@ impl<'a> ToolWidget<'a> {
         self
     }
 
-    pub fn from_step_result(
-        result: &StepResult,
-        theme: &'a Theme,
-        msgs: &'a Messages,
-    ) -> Self {
+    pub fn from_step_result(result: &StepResult, theme: &'a Theme, msgs: &'a Messages) -> Self {
         let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
         let detail = result.detail.clone().or_else(|| {
             if failed && !result.message.is_empty() {
@@ -426,11 +422,9 @@ impl<'a> ToolWidget<'a> {
 
     pub fn size_bytes(&self) -> Option<usize> {
         match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead => self
-                .detail
-                .as_ref()
-                .map(|d| d.len())
-                .filter(|len| *len > 0),
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead => {
+                self.detail.as_ref().map(|d| d.len()).filter(|len| *len > 0)
+            }
             _ => None,
         }
     }
@@ -552,7 +546,9 @@ impl<'a> ToolWidget<'a> {
                 .diff_card_title
                 .replacen("{}", &total_lines.to_string(), 1)
                 .replacen("{}", &self.arg_summary, 1),
-            ToolDisplayKind::FileRead => format!("Read {} ({} lines)", self.arg_summary, total_lines),
+            ToolDisplayKind::FileRead => {
+                format!("Read {} ({} lines)", self.arg_summary, total_lines)
+            }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
             ToolDisplayKind::Generic => format!("{} output", self.tool_name),
         }
@@ -628,7 +624,10 @@ mod tests {
     use crate::i18n::Language;
 
     fn fixture() -> (Theme, Messages) {
-        (Theme::by_name_str("retro"), Messages::by_language(Language::English))
+        (
+            Theme::by_name_str("retro"),
+            Messages::by_language(Language::English),
+        )
     }
 
     #[test]
@@ -699,7 +698,10 @@ mod tests {
         );
         assert!(output.layout.has_detail_card);
         assert_eq!(output.layout.preview_lines, 1);
-        assert_eq!(output.detail_preview, vec!["hook blocked execution".to_string()]);
+        assert_eq!(
+            output.detail_preview,
+            vec!["hook blocked execution".to_string()]
+        );
     }
 
     #[test]

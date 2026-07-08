@@ -1,14 +1,13 @@
 //! Shared TestBackend helpers for render-layer tests.
 
 use super::{
-    log::render_log_panel,
-    render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
-    render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
+    log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
+    render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
+    render_status_bar,
 };
 use crate::widgets::state::{App, InputMode};
 use ratatui::{
-    Frame,
-    Terminal,
+    Frame, Terminal,
     backend::TestBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier},

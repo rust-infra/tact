@@ -147,7 +147,11 @@ fn full_frame_fatal_error_message() {
 
     let text = render_app_text(&mut app, 100, 24);
     assert!(
-        text.contains("provider timeout") || app.raw_messages.iter().any(|m| m.contains("provider timeout")),
+        text.contains("provider timeout")
+            || app
+                .raw_messages
+                .iter()
+                .any(|m| m.contains("provider timeout")),
         "fatal error should appear in frame, got:\n{text}"
     );
 }

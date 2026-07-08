@@ -131,7 +131,10 @@ async fn always_allow_skips_second_permission_prompt() {
             vec![edit_file_tool_use("e2", "a.rs", "v2", "v3")],
             StopReason::ToolUse,
         ),
-        mock_turn(vec![harness::text_block("Both edits.")], StopReason::EndTurn),
+        mock_turn(
+            vec![harness::text_block("Both edits.")],
+            StopReason::EndTurn,
+        ),
     ]);
 
     let (updates, work_dir) = run_single_task_with_permission_choice(
@@ -157,5 +160,8 @@ async fn always_allow_skips_second_permission_prompt() {
         request_selects, 1,
         "always-allow label should appear once, got: {updates:?}"
     );
-    assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "v3");
+    assert_eq!(
+        std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+        "v3"
+    );
 }

@@ -104,9 +104,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     {
         let row_count = area.height.max(1) as usize;
-        let constraints: Vec<Constraint> = (0..row_count)
-            .map(|_| Constraint::Length(1))
-            .collect();
+        let constraints: Vec<Constraint> = (0..row_count).map(|_| Constraint::Length(1)).collect();
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -353,8 +351,8 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 mod render_tests {
     use super::super::test_harness::{buffer_text, make_app, render_app_text};
     use super::render_bottom_bar;
-    use tact_protocol::{BalanceEntry, BalanceInfo};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use tact_protocol::{BalanceEntry, BalanceInfo};
 
     #[test]
     fn bottom_bar_shows_balance_row_when_available() {

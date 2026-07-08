@@ -14,7 +14,7 @@ mod uri;
 
 pub use client::LspClient;
 pub use config::LspServerConfig;
-pub use diagnostic::{format_diagnostics, DiagnosticSeverity, LspDiagnostic};
+pub use diagnostic::{DiagnosticSeverity, LspDiagnostic, format_diagnostics};
 pub use manager::LspManager;
 
 use std::sync::{Arc, LazyLock};
@@ -35,7 +35,7 @@ mod tests {
     use super::diagnostic::parse_diagnostic;
     use super::uri::{path_to_uri, uri_to_path};
     use super::{
-        global_lsp_manager, DiagnosticSeverity, LspDiagnostic, LspManager, LspServerConfig,
+        DiagnosticSeverity, LspDiagnostic, LspManager, LspServerConfig, global_lsp_manager,
     };
 
     fn make_config(name: &str) -> LspServerConfig {

@@ -1,5 +1,5 @@
 use crate::widgets::state::{App, Status};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 use std::collections::HashSet;
 
 /// Render the Execution Plan panel, showing step list, execution status, and selection highlight.

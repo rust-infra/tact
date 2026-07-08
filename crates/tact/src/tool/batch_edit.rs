@@ -81,10 +81,7 @@ pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<Strin
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) => {
-                pre_check_errors.push(format!(
-                    "Edit {}: cannot read {}: {}",
-                    i, path.display(), e
-                ));
+                pre_check_errors.push(format!("Edit {}: cannot read {}: {}", i, path.display(), e));
                 continue;
             }
         };
@@ -234,14 +231,14 @@ pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::{test_support::{test_context, write_workspace_file}, ToolRouter};
+    use crate::tool::{
+        ToolRouter,
+        test_support::{test_context, write_workspace_file},
+    };
 
     use super::*;
 
-    async fn run_batch_edit(
-        context: &ToolContext,
-        edits: serde_json::Value,
-    ) -> Result<String> {
+    async fn run_batch_edit(context: &ToolContext, edits: serde_json::Value) -> Result<String> {
         ToolRouter::new()
             .route(BatchEditTool)
             .call(context, "batch_edit", serde_json::json!({ "edits": edits }))

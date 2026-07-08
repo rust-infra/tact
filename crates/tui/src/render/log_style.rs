@@ -205,8 +205,14 @@ mod tests {
             RawMessageType::LLM,
             false,
         );
-        assert_eq!(line.spans.first().unwrap().style.bg, Some(theme.code_block_bg()));
-        assert_eq!(line.spans.first().unwrap().style.fg, Some(theme.code_block_fg()));
+        assert_eq!(
+            line.spans.first().unwrap().style.bg,
+            Some(theme.code_block_bg())
+        );
+        assert_eq!(
+            line.spans.first().unwrap().style.fg,
+            Some(theme.code_block_fg())
+        );
     }
 
     #[test]
@@ -237,10 +243,7 @@ mod tests {
 
     #[test]
     fn unrelated_continuation_is_not_user_line() {
-        let raw_messages = vec![
-            "🤖 assistant".to_string(),
-            "  still assistant".to_string(),
-        ];
+        let raw_messages = vec!["🤖 assistant".to_string(), "  still assistant".to_string()];
         assert!(!is_user_message_line(&raw_messages, 1));
     }
 

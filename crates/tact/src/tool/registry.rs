@@ -1,5 +1,6 @@
 //! Built-in tool registration for the main agent and sub-agents.
 
+use super::ToolRouter;
 use super::apply_patch::ApplyPatchTool;
 use super::ask_user::AskUserTool;
 use super::background_run::{BackgroundRunTool, CheckBackgroundTool};
@@ -26,7 +27,6 @@ use super::worktree::{
     WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool, WorktreeStatusTool,
 };
 use super::write_file::WriteFileTool;
-use super::ToolRouter;
 
 /// Assembles the full tool set for the main agent loop.
 pub fn toolset() -> ToolRouter {

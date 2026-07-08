@@ -1,5 +1,11 @@
 use crate::widgets::state::{App, PALETTE_COMMANDS};
-use ratatui::{layout::Rect, style::{Color, Style}, text::{Line, Span}, widgets::{Block, Borders, Clear, List, ListItem}, Frame};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem},
+};
 
 /// Map command name to emoji icon for palette display.
 fn cmd_emoji(cmd: &str) -> &'static str {
@@ -42,7 +48,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
 
     let count = filtered.len().max(1) as u16;
     let popup_width = 48u16;
-    let popup_height = count + 4 + 3;  // extra space for category headers
+    let popup_height = count + 4 + 3; // extra space for category headers
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);

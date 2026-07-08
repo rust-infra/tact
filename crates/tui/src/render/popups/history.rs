@@ -1,13 +1,13 @@
 use crate::render::util::truncate_chars_with_ellipsis;
-use crate::widgets::state::App;
 use crate::widgets::popup_widget::PopupWidget;
+use crate::widgets::state::App;
 use ratatui::{
+    Frame,
+    layout::Rect,
     style::{Color, Style},
     text::Span,
     widgets::ListItem,
-    Frame, layout::Rect,
 };
-
 
 pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
     let count = app.task_history.len();
