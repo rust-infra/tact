@@ -42,10 +42,7 @@ impl Renderable for TaskEndSeparator {
             return;
         }
         let style = Style::default().fg(self.fg).add_modifier(Modifier::DIM);
-        let line = Line::from(Span::styled(
-            Self::dashed_line(area.width),
-            style,
-        ));
+        let line = Line::from(Span::styled(Self::dashed_line(area.width), style));
         Paragraph::new(line).render(area, buf);
     }
 

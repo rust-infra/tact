@@ -1,3 +1,4 @@
+use crate::widgets::state::{App, PALETTE_COMMANDS};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -5,7 +6,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem},
 };
-use crate::widgets::state::{App, PALETTE_COMMANDS};
 
 pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &App) {
     let slash = &app.slash_command;
@@ -96,8 +96,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent));
 
-    let list = List::new(items)
-        .block(block);
+    let list = List::new(items).block(block);
 
     frame.render_widget(Clear, popup_area);
     frame.render_widget(list, popup_area);

@@ -1,10 +1,10 @@
+use crate::render::renderable::Renderable;
+use crate::render::util::wrap_line;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use unicode_width::UnicodeWidthChar;
 use ratatui::text::{Line, Span};
-use crate::render::renderable::Renderable;
-use crate::render::util::wrap_line;
+use unicode_width::UnicodeWidthChar;
 
 /// Writes a single-line span into the buffer.
 fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
@@ -120,7 +120,9 @@ impl TextCell {
             }
             spans.push(Span::styled(
                 self.raw_text[match_idx..end_idx].to_string(),
-                Style::default().bg(self.search_match_bg).fg(self.search_match_fg),
+                Style::default()
+                    .bg(self.search_match_bg)
+                    .fg(self.search_match_fg),
             ));
             last_idx = end_idx;
         }
@@ -141,7 +143,12 @@ impl TextCell {
         wrap_line(&line, wrap_width as usize)
     }
 
-    fn build_word_selected_lines(&self, wrap_width: u16, ws: usize, we: usize) -> Vec<Line<'static>> {
+    fn build_word_selected_lines(
+        &self,
+        wrap_width: u16,
+        ws: usize,
+        we: usize,
+    ) -> Vec<Line<'static>> {
         let raw = &self.raw_text;
         let w_start = raw.floor_char_boundary(ws.min(raw.len()));
         let w_end = raw.floor_char_boundary(we.min(raw.len()));
@@ -155,7 +162,10 @@ impl TextCell {
         let after = &raw[w_end..];
         let styled_line = Line::from(vec![
             Span::raw(before.to_string()),
-            Span::styled(word.to_string(), Style::default().add_modifier(Modifier::REVERSED)),
+            Span::styled(
+                word.to_string(),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
             Span::raw(after.to_string()),
         ]);
         wrap_line(&styled_line, wrap_width as usize)
@@ -257,7 +267,10 @@ mod render_tests {
                 has_highlight = true;
             }
         }
-        assert!(has_highlight, "search match should use highlight background");
+        assert!(
+            has_highlight,
+            "search match should use highlight background"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::client::LspClient;
 use super::config::LspServerConfig;
-use super::diagnostic::{format_diagnostics as format_diagnostic_lines, LspDiagnostic};
+use super::diagnostic::{LspDiagnostic, format_diagnostics as format_diagnostic_lines};
 use super::uri::path_to_uri;
 
 /// Manages a collection of [`LspClient`] instances, routing file operations
@@ -290,7 +290,6 @@ impl Default for LspManager {
         Self::new()
     }
 }
-
 
 impl LspManager {
     /// Format a slice of diagnostics into a human-readable multi-line string.

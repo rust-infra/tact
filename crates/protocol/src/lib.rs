@@ -96,7 +96,12 @@ pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
     /// Step `idx` has started execution
-    StepStarted(usize, String /* tool_id */, String /* tool_name */, String /* arg_summary */),
+    StepStarted(
+        usize,
+        String, /* tool_id */
+        String, /* tool_name */
+        String, /* arg_summary */
+    ),
     /// Step `idx` succeeded, with structured result
     StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message

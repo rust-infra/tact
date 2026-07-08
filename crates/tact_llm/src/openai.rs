@@ -709,12 +709,10 @@ mod tests {
     fn tool_use_block_from_parts_skips_empty_slots() {
         assert!(tool_use_block_from_parts(None, Some("read_file".into()), "{}".into()).is_none());
         assert!(tool_use_block_from_parts(Some("call_1".into()), None, "{}".into()).is_none());
-        assert!(tool_use_block_from_parts(
-            Some("".into()),
-            Some("read_file".into()),
-            "{}".into()
-        )
-        .is_none());
+        assert!(
+            tool_use_block_from_parts(Some("".into()), Some("read_file".into()), "{}".into())
+                .is_none()
+        );
 
         let block = tool_use_block_from_parts(
             Some("call_1".into()),

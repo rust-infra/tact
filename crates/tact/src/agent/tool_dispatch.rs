@@ -4,7 +4,7 @@ use super::Agent;
 
 use anthropic_ai_sdk::types::message::ContentBlock;
 use anyhow::Result;
-use futures_util::{stream::FuturesUnordered, StreamExt};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use crate::compact::persist_large_output;
 use crate::hook::{HookControl, ToolResult, ToolUse};
@@ -455,7 +455,8 @@ impl Agent {
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
-                let detail = step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
+                let detail =
+                    step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
                 self.emit_update(AgentUpdate::StepFinished(
                     prep_step_idx,
                     prep_id,
@@ -557,7 +558,12 @@ mod tests {
         let out = step_result_detail("write_file", &write, "wrote", &StepStatus::Success);
         assert_eq!(out.as_deref(), Some("fn main(){}"));
 
-        let out = step_result_detail("grep", &serde_json::json!({}), "matches", &StepStatus::Success);
+        let out = step_result_detail(
+            "grep",
+            &serde_json::json!({}),
+            "matches",
+            &StepStatus::Success,
+        );
         assert!(out.is_none());
     }
 

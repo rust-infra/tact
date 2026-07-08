@@ -1,10 +1,10 @@
 use crate::widgets::state::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Style},
     text::Span,
     widgets::{Block, Borders, Clear, List, ListItem},
-    Frame,
 };
 
 /// Render a centered file-picker popup listing files under the project root.
@@ -88,10 +88,7 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(fg)
                 };
 
-                ListItem::new(Span::styled(
-                    format!("{}{}", prefix, path_display),
-                    style,
-                ))
+                ListItem::new(Span::styled(format!("{}{}", prefix, path_display), style))
             })
             .collect()
     };

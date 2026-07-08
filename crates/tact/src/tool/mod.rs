@@ -57,17 +57,17 @@ mod lsp_tool;
 mod memory;
 mod path;
 mod read_file;
+mod registry;
 mod search_code;
 mod sleep;
 mod subagent;
 mod task;
 mod team;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod web;
 mod worktree;
 mod write_file;
-mod registry;
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
 
 pub use registry::{subagent_toolset, toolset};
 
@@ -282,7 +282,14 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
 
-        for tool in ["bash", "read_file", "write_file", "edit_file", "search_code", "sleep"] {
+        for tool in [
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "search_code",
+            "sleep",
+        ] {
             assert!(names.contains(&tool.to_string()), "missing {tool}");
         }
     }
@@ -369,7 +376,11 @@ mod tests {
     async fn read_file_returns_content_with_offset_and_limit() {
         let router = ToolRouter::new().route(ReadFileTool);
         let context = test_context("read_file_returns_content_with_offset_and_limit");
-        write_workspace_file(&context.work_dir, "sample.txt", "line1\nline2\nline3\nline4\n");
+        write_workspace_file(
+            &context.work_dir,
+            "sample.txt",
+            "line1\nline2\nline3\nline4\n",
+        );
 
         let output = router
             .call(
@@ -680,11 +691,7 @@ mod tests {
         assert!(listed.contains("Daily standup"));
 
         let deleted = router
-            .call(
-                &context,
-                "cron_delete",
-                serde_json::json!({ "id": id }),
-            )
+            .call(&context, "cron_delete", serde_json::json!({ "id": id }))
             .await
             .unwrap();
         assert!(deleted.contains("Deleted scheduled task"));

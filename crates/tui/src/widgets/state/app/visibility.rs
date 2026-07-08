@@ -523,12 +523,7 @@ impl App {
 
     /// Drop a running tool block and remove its placeholder rows from the log.
     pub(crate) fn cancel_active_tool(&mut self, tool_id: &str) {
-        let Some(pos) = self
-            .tools
-            .active
-            .iter()
-            .position(|a| a.tool_id == tool_id)
-        else {
+        let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) else {
             return;
         };
         let active = self.tools.active.remove(pos);
@@ -563,20 +558,12 @@ impl App {
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
         } else if new_rows < old_rows {
             self.drain_msgs(phys_idx + new_rows..phys_idx + old_rows);
-            self.shift_phys_indices_from(
-                phys_idx + new_rows,
-                -((old_rows - new_rows) as isize),
-            );
+            self.shift_phys_indices_from(phys_idx + new_rows, -((old_rows - new_rows) as isize));
         }
     }
 
     pub(crate) fn finalize_tool_block(&mut self, tool_id: &str, output: ToolRenderOutput) {
-        if let Some(pos) = self
-            .tools
-            .active
-            .iter()
-            .position(|a| a.tool_id == tool_id)
-        {
+        if let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) {
             let active = self.tools.active.remove(pos);
             let old_rows = active.output.visual_rows(false);
             let new_rows = output.visual_rows(false);

@@ -2,11 +2,11 @@ use crate::render::cells::tool::ToolCell;
 use crate::render::util::wrap_line;
 use crate::widgets::state::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
-    Frame,
 };
 
 /// Render the Log panel: wrapping, scrolling, search highlighting, and mouse selection.

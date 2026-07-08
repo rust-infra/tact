@@ -305,8 +305,7 @@ fn log_visual_cache_rebuilds_on_theme_change() {
     render_log_panel_text(&mut app, 80, 16);
 
     assert_ne!(
-        before,
-        app.log_scroll.visual_cache_theme,
+        before, app.log_scroll.visual_cache_theme,
         "theme toggle should invalidate visual cache theme tag"
     );
     assert_eq!(app.log_scroll.visual_cache_theme, app.theme.name);

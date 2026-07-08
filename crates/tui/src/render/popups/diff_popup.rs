@@ -1,10 +1,10 @@
 use crate::widgets::state::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
-    Frame,
 };
 
 /// Dark background shared with code blocks / markdown rendering.
@@ -172,21 +172,12 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )
     };
 
-    let (
-        cached_content,
-        popup_title,
-        file_path,
-        lang,
-        use_diff_gutter,
-        scroll,
-        highlighted_lines,
-    ) = snapshot;
+    let (cached_content, popup_title, file_path, lang, use_diff_gutter, scroll, highlighted_lines) =
+        snapshot;
 
     let Some(content) = cached_content.as_ref() else {
         let err = if let Some(path) = &file_path {
-            app.msgs()
-                .tool_popup_read_error
-                .replace("{}", path)
+            app.msgs().tool_popup_read_error.replace("{}", path)
         } else {
             app.msgs().tool_popup_empty.to_string()
         };

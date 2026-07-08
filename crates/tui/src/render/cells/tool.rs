@@ -172,8 +172,8 @@ use crate::{
     i18n::Messages,
     render::renderable::Renderable,
     widgets::tool_widget::{
-        ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us, tool_card_inner_rows,
-        tool_visual_rows, TOOL_HEADER_ROWS,
+        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us,
+        tool_card_inner_rows, tool_visual_rows,
     },
 };
 
@@ -268,9 +268,9 @@ impl ToolCell {
             self.permission_label.as_deref(),
             self.size_bytes,
             duration_us,
-            self.error_message.as_deref().filter(|_| {
-                !(self.has_detail_card && self.phase == ToolPhase::Failed)
-            }),
+            self.error_message
+                .as_deref()
+                .filter(|_| !(self.has_detail_card && self.phase == ToolPhase::Failed)),
             self.spinner_char,
             self.tool_phase_running,
             self.tool_phase_success,
@@ -417,10 +417,8 @@ impl Renderable for ToolCell {
     /// | 1..1+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
-        let area = crate::render::util::indent_rect(
-            area,
-            crate::render::util::LOG_TOOL_BLOCK_INDENT,
-        );
+        let area =
+            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -586,7 +584,7 @@ impl Renderable for ToolCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, tool_visual_rows, TOOL_HEADER_ROWS};
+    use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, ToolLayout, ToolPhase, tool_visual_rows};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///

@@ -7,8 +7,8 @@ use std::time::Duration;
 use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     bash_tool_use, first_index, mock_turn, mock_turn_with_usage, read_file_tool_use, run_commands,
-    run_single_task, run_single_task_with_setup, sample_token_usage, step_finished_ids,
-    text_block, write_file_tool_use,
+    run_single_task, run_single_task_with_setup, sample_token_usage, step_finished_ids, text_block,
+    write_file_tool_use,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
@@ -28,16 +28,12 @@ async fn parallel_read_files_both_succeed() {
         mock_turn(vec![text_block("Both files read.")], StopReason::EndTurn),
     ]);
 
-    let (updates, _work_dir) = run_single_task_with_setup(
-        mock,
-        "read both",
-        PermissionMode::Auto,
-        |work_dir| {
+    let (updates, _work_dir) =
+        run_single_task_with_setup(mock, "read both", PermissionMode::Auto, |work_dir| {
             write_workspace_file(work_dir, "a.txt", "content-a");
             write_workspace_file(work_dir, "b.txt", "content-b");
-        },
-    )
-    .await;
+        })
+        .await;
 
     let ids = step_finished_ids(&updates);
     assert_eq!(ids.len(), 2, "expected two StepFinished, got: {updates:?}");
@@ -65,8 +61,7 @@ async fn plan_mode_blocks_write_file() {
         mock_turn(vec![text_block("Write blocked.")], StopReason::EndTurn),
     ]);
 
-    let (updates, work_dir) =
-        run_single_task(mock, "write file", PermissionMode::Plan).await;
+    let (updates, work_dir) = run_single_task(mock, "write file", PermissionMode::Plan).await;
 
     assert!(
         updates.iter().any(|u| {
@@ -124,13 +119,11 @@ async fn read_then_write_chain() {
         mock_turn(vec![text_block("Chain done.")], StopReason::EndTurn),
     ]);
 
-    let (updates, work_dir) = run_single_task_with_setup(
-        mock,
-        "copy file",
-        PermissionMode::Auto,
-        |dir| write_workspace_file(dir, "source.txt", "original"),
-    )
-    .await;
+    let (updates, work_dir) =
+        run_single_task_with_setup(mock, "copy file", PermissionMode::Auto, |dir| {
+            write_workspace_file(dir, "source.txt", "original")
+        })
+        .await;
 
     let ids = step_finished_ids(&updates);
     assert!(
@@ -150,7 +143,10 @@ async fn cancel_then_submit_completes_fresh_task() {
             vec![bash_tool_use("bash_sleep", "sleep 2")],
             StopReason::ToolUse,
         ),
-        mock_turn(vec![text_block("Recovered after cancel.")], StopReason::EndTurn),
+        mock_turn(
+            vec![text_block("Recovered after cancel.")],
+            StopReason::EndTurn,
+        ),
     ]);
 
     let (updates, _work_dir) = run_commands(mock, PermissionMode::Auto, |user_cmd_tx| {

@@ -97,7 +97,7 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::{test_support::test_context, ToolRouter};
+    use crate::tool::{ToolRouter, test_support::test_context};
 
     use super::*;
 
@@ -156,8 +156,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("Invalid status. Use pending, in_progress, completed, or deleted"));
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid status. Use pending, in_progress, completed, or deleted")
+        );
     }
 }

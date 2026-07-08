@@ -14,7 +14,7 @@ pub struct PopupWidget<'a> {
     theme: Option<&'a Theme>,
 }
 
-impl <'a> Default for PopupWidget<'a> {
+impl<'a> Default for PopupWidget<'a> {
     fn default() -> Self {
         Self {
             list: Vec::new(),

@@ -1,6 +1,6 @@
 use crate::i18n::Messages;
-use crate::widgets::state::*;
 use crate::theme::{Theme, ThemeName};
+use crate::widgets::state::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 impl App {
@@ -129,7 +129,9 @@ mod tests {
         app.toggle_theme();
         assert_ne!(app.theme.name, ThemeName::Retro);
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("theme") || m.contains("Theme")),
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("theme") || m.contains("Theme")),
             "toggle should append theme changed message"
         );
     }

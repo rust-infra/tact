@@ -50,7 +50,6 @@ impl DiagnosticSeverity {
     }
 }
 
-
 pub(crate) fn handle_diagnostics(
     diagnostics: Arc<DashMap<String, Vec<LspDiagnostic>>>,
     params: Option<&serde_json::Value>,
@@ -129,7 +128,6 @@ pub(crate) fn parse_diagnostic(
         code,
     })
 }
-
 
 /// Format diagnostics into a human-readable multi-line string.
 pub fn format_diagnostics(diagnostics: &[LspDiagnostic]) -> String {

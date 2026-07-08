@@ -12,8 +12,8 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
-use tact_ui::headless_session::run_headless_session;
 use tact_protocol::UserCommand;
+use tact_ui::headless_session::run_headless_session;
 
 #[tokio::test]
 async fn headless_session_simple_task_reaches_done() {
@@ -36,7 +36,10 @@ async fn headless_session_simple_task_reaches_done() {
     )
     .await;
 
-    assert!(result.is_done, "simple task should reach Done in headless App");
+    assert!(
+        result.is_done,
+        "simple task should reach Done in headless App"
+    );
     let final_text = result.snapshots.final_render.unwrap_or_default();
     assert!(
         final_text.contains("Task completed") || final_text.contains("Done"),
@@ -51,10 +54,7 @@ async fn headless_session_read_file_shows_executing_snapshot() {
             vec![read_file_tool_use("r1", "data.txt")],
             Some(StopReason::ToolUse),
         ),
-        (
-            vec![text_block("Read ok.")],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![text_block("Read ok.")], Some(StopReason::EndTurn)),
     ]);
 
     let result = run_headless_session(
@@ -66,7 +66,8 @@ async fn headless_session_read_file_shows_executing_snapshot() {
         },
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("read data".into())).unwrap();
+                tx.send(UserCommand::SubmitTask("read data".into()))
+                    .unwrap();
                 drop(tx);
             })
         },
@@ -98,17 +99,20 @@ async fn headless_session_default_permission_shows_select_popup() {
         |dir| write_workspace_file(dir, "main.rs", "old code"),
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("edit main".into())).unwrap();
+                tx.send(UserCommand::SubmitTask("edit main".into()))
+                    .unwrap();
                 drop(tx);
             })
         },
     )
     .await;
 
-    let select_text = result
-        .snapshots
-        .select
-        .unwrap_or_else(|| panic!("expected select popup snapshot, final:\n{}", result.snapshots.final_render.unwrap_or_default()));
+    let select_text = result.snapshots.select.unwrap_or_else(|| {
+        panic!(
+            "expected select popup snapshot, final:\n{}",
+            result.snapshots.final_render.unwrap_or_default()
+        )
+    });
     assert!(
         select_text.contains("SELECT") || select_text.contains("Allow"),
         "permission prompt should render select overlay:\n{select_text}"
@@ -162,14 +166,8 @@ async fn headless_session_cancel_mid_task_no_done() {
 #[tokio::test]
 async fn headless_session_sequential_tasks_both_complete() {
     let mock = MockClient::new(vec![
-        (
-            vec![text_block("First.")],
-            Some(StopReason::EndTurn),
-        ),
-        (
-            vec![text_block("Second.")],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![text_block("First.")], Some(StopReason::EndTurn)),
+        (vec![text_block("Second.")], Some(StopReason::EndTurn)),
     ]);
 
     let result = run_headless_session(
@@ -201,10 +199,7 @@ async fn headless_session_write_read_chain_renders_tools() {
             vec![read_file_tool_use("r1", "chain.rs")],
             Some(StopReason::ToolUse),
         ),
-        (
-            vec![text_block("Chain done.")],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![text_block("Chain done.")], Some(StopReason::EndTurn)),
     ]);
 
     let result = run_headless_session(
@@ -225,7 +220,9 @@ async fn headless_session_write_read_chain_renders_tools() {
     assert!(result.is_done);
     let final_text = result.snapshots.final_render.unwrap_or_default();
     assert!(
-        final_text.contains("chain.rs") || final_text.contains("Write") || final_text.contains("Read"),
+        final_text.contains("chain.rs")
+            || final_text.contains("Write")
+            || final_text.contains("Read"),
         "write→read chain should render tool cards:\n{final_text}"
     );
     assert!(result.work_dir.join("chain.rs").exists());

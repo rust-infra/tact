@@ -145,7 +145,10 @@ mod render_tests {
 
         assert!(
             buffer_contains(terminal.backend().buffer(), "provider timeout")
-                || app.raw_messages.iter().any(|m| m.contains("provider timeout")),
+                || app
+                    .raw_messages
+                    .iter()
+                    .any(|m| m.contains("provider timeout")),
             "error should be visible in log or buffer"
         );
     }

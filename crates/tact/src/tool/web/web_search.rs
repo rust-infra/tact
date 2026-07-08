@@ -4,8 +4,8 @@
 // consume those ids directly, allowing a search -> fetch flow without forcing
 // the model to copy/paste raw URLs.
 
-use crate::tool::ToolContext;
 use super::{http, web_refs};
+use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -62,7 +62,13 @@ fn format_results(query: &str, results: &[SearchResult], persist_refs: bool) -> 
             web_refs::save_search_reference(&result.id, &result.url);
         }
 
-        let _ = writeln!(&mut output, "{}. [{}] **{}**", index + 1, result.id, result.title);
+        let _ = writeln!(
+            &mut output,
+            "{}. [{}] **{}**",
+            index + 1,
+            result.id,
+            result.title
+        );
         let _ = writeln!(&mut output, "   URL: {}", result.url);
         if !result.snippet.is_empty() {
             let _ = writeln!(&mut output, "   {}", result.snippet);
@@ -109,7 +115,11 @@ pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<Stri
         }
     }
 
-    let fallback = format_results(&input.query, &search_duckduckgo(&input.query, num_results).await?, true);
+    let fallback = format_results(
+        &input.query,
+        &search_duckduckgo(&input.query, num_results).await?,
+        true,
+    );
     Ok(format!("{DDG_LIMITED_NOTICE}{fallback}"))
 }
 

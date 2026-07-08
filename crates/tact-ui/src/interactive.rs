@@ -16,9 +16,7 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_llm::{
-    get_llm_client, is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance,
-};
+use tact_llm::{get_llm_client, is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance};
 use tact_protocol::AgentUpdate;
 
 use crate::driver::run_command_loop;
@@ -45,7 +43,9 @@ pub async fn run_interactive(
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store.ensure_session_row(&session_id, &root_dir).await?;
+    session_store
+        .ensure_session_row(&session_id, &root_dir)
+        .await?;
     let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
     lock_registry.register(session_lock.clone()).await;
     session_store.touch_session(&session_id, &root_dir).await?;

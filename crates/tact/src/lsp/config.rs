@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 /// Configuration for a single LSP server process.
 #[derive(Debug, Clone, Serialize, Deserialize)]

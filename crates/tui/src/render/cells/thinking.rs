@@ -1,11 +1,11 @@
 use crate::render::util::LOG_THINKING_INDENT;
 use crate::widgets::state::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 /// Spinner frames for in-progress thinking animation (see `render_loading_spinner` in log.rs).
@@ -64,23 +64,21 @@ pub(crate) fn render_thinking_cards(
             .border_type(app.theme.block_border_type())
             .border_style(card_style)
             .style(Style::default().bg(app.theme.bg))
-            .title(
-                format!(
-                    " {} {}",
-                    spinner_char,
-                    msgs.thinking_card_title
-                        .replacen("{}", &total_lines.to_string(), 1)
-                        .replacen(
-                            "{}",
-                            if total_lines == 1 {
-                                ""
-                            } else {
-                                msgs.thinking_card_title_pl
-                            },
-                            1,
-                        ),
-                ),
-            )
+            .title(format!(
+                " {} {}",
+                spinner_char,
+                msgs.thinking_card_title
+                    .replacen("{}", &total_lines.to_string(), 1)
+                    .replacen(
+                        "{}",
+                        if total_lines == 1 {
+                            ""
+                        } else {
+                            msgs.thinking_card_title_pl
+                        },
+                        1,
+                    ),
+            ))
             .title_bottom(progress_bar);
 
         let card_area = Rect::new(
@@ -108,8 +106,7 @@ pub(crate) fn render_thinking_cards(
                 .take(3)
                 .map(|s| {
                     let display = if s.len() > inner.width as usize {
-                        let max_bytes =
-                            (inner.width as usize).saturating_sub(1).min(s.len());
+                        let max_bytes = (inner.width as usize).saturating_sub(1).min(s.len());
                         let safe_end = s.floor_char_boundary(max_bytes);
                         format!("{}…", &s[..safe_end])
                     } else {

@@ -1,17 +1,14 @@
 pub(crate) mod code_popup;
 pub(crate) mod command_palette;
 pub(crate) mod diff_popup;
-pub(crate) mod slash_command;
 pub(crate) mod file_picker;
 pub(crate) mod help;
 pub(crate) mod history;
 pub(crate) mod select;
+pub(crate) mod slash_command;
 pub(crate) mod thinking_popup;
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-};
+use ratatui::{Frame, layout::Rect};
 
 /// Centered popup geometry (80% of parent, minimum 40×10).
 pub(crate) fn centered_popup_area(area: Rect) -> Rect {
@@ -24,8 +21,7 @@ pub(crate) fn centered_popup_area(area: Rect) -> Rect {
 
 /// Popup shadow rendering is intentionally disabled to avoid visible right/bottom
 /// dark bands in terminal themes with low contrast.
-pub(crate) fn render_popup_shadow(_frame: &mut Frame, _popup_area: Rect) {
-}
+pub(crate) fn render_popup_shadow(_frame: &mut Frame, _popup_area: Rect) {}
 
 #[cfg(test)]
 mod tests {

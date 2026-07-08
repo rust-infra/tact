@@ -44,12 +44,8 @@ pub async fn run_command_loop(
                 let work_dir = image_work_dir.clone();
                 let mut task_agent = agent.take().expect("agent available for submit");
                 active = Some(tokio::spawn(async move {
-                    handle_user_command(
-                        &mut task_agent,
-                        UserCommand::SubmitTask(task),
-                        &work_dir,
-                    )
-                    .await;
+                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
+                        .await;
                     task_agent
                 }));
             }
@@ -78,11 +74,7 @@ async fn reap_finished_task(agent: &mut Option<Agent>, active: &mut Option<JoinH
     if let Some(handle) = active.as_mut()
         && handle.is_finished()
     {
-        *agent = Some(
-            handle
-                .await
-                .expect("finished task join panicked"),
-        );
+        *agent = Some(handle.await.expect("finished task join panicked"));
         *active = None;
     }
 }
@@ -118,16 +110,18 @@ pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work
             } else if is_kimi() {
                 query_kimi_balance().await
             } else {
-                Err(anyhow::anyhow!("balance query not supported for current provider"))
+                Err(anyhow::anyhow!(
+                    "balance query not supported for current provider"
+                ))
             };
             match result {
                 Ok(balance) => {
                     agent.emit_update(AgentUpdate::Balance(balance));
                 }
                 Err(e) => {
-                    agent.emit_update(AgentUpdate::Error(
-                        AgentErrorKind::BalanceQueryFailed(e.to_string()),
-                    ));
+                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(
+                        e.to_string(),
+                    )));
                 }
             }
         }
@@ -166,20 +160,13 @@ mod tests {
     #[tokio::test]
     async fn submit_clears_cancel_flag_on_new_task() {
         install_test_config();
-        let mock = MockClient::new(vec![(
-            vec![text_block("done")],
-            Some(StopReason::EndTurn),
-        )]);
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
 
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-        super::handle_user_command(
-            &mut agent,
-            UserCommand::SubmitTask("go".into()),
-            &work_dir,
-        )
-        .await;
+        super::handle_user_command(&mut agent, UserCommand::SubmitTask("go".into()), &work_dir)
+            .await;
 
         assert!(!agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let mut saw_complete = false;
