@@ -43,6 +43,45 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     }
 }
 
+/// Begin dragging the Plan/Log divider to resize panels.
+pub(crate) fn begin_panel_resize(app: &mut App) {
+    app.mouse.is_resizing_panel = true;
+}
+
+/// Update `panel_split_ratio` while the divider is being dragged.
+pub(crate) fn update_panel_resize(
+    app: &mut App,
+    mouse_column: u16,
+    plan_area_x: u16,
+    total_width: u16,
+) {
+    if !app.mouse.is_resizing_panel || total_width == 0 {
+        return;
+    }
+    let mouse_x = mouse_column.saturating_sub(plan_area_x);
+    let new_ratio = mouse_x as f64 / total_width as f64;
+    app.panel_split_ratio = new_ratio.clamp(0.10, 0.70);
+}
+
+/// End panel divider drag resize.
+pub(crate) fn end_panel_resize(app: &mut App) {
+    app.mouse.is_resizing_panel = false;
+}
+
+/// Triple-click on a log line selects the line (or whole code block when enabled).
+pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_code_blocks: bool) {
+    app.mouse.log_word_selection = None;
+    if expand_code_blocks {
+        if let Some((cb_start, cb_end)) = app.find_code_block_containing_logical(line_idx) {
+            app.mouse.log_selection = Some((cb_start, cb_end));
+            app.mouse.dragging_log = true;
+            return;
+        }
+    }
+    app.mouse.log_selection = Some((line_idx, line_idx));
+    app.mouse.dragging_log = true;
+}
+
 /// Double-click on a tool block opens its detail popup.
 pub(crate) fn handle_tool_block_click(app: &mut App, tool_idx: usize, phys_idx: usize) {
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
@@ -144,5 +183,67 @@ mod tests {
         app.mouse.last_click_tool = Some(0);
         handle_tool_block_click(&mut app, 0, phys_idx);
         assert!(app.tools.popup.is_some());
+    }
+
+    #[test]
+    fn divider_drag_updates_panel_split_ratio() {
+        let mut app = make_app();
+        app.panel_split_ratio = 0.20;
+
+        begin_panel_resize(&mut app);
+        assert!(app.mouse.is_resizing_panel);
+
+        update_panel_resize(&mut app, 60, 0, 120);
+        assert!(
+            (app.panel_split_ratio - 0.50).abs() < 0.01,
+            "expected ~0.50, got {}",
+            app.panel_split_ratio
+        );
+
+        end_panel_resize(&mut app);
+        assert!(!app.mouse.is_resizing_panel);
+    }
+
+    #[test]
+    fn divider_drag_clamps_split_ratio() {
+        let mut app = make_app();
+        begin_panel_resize(&mut app);
+
+        update_panel_resize(&mut app, 5, 0, 100);
+        assert_eq!(app.panel_split_ratio, 0.10);
+
+        update_panel_resize(&mut app, 95, 0, 100);
+        assert_eq!(app.panel_split_ratio, 0.70);
+    }
+
+    #[test]
+    fn triple_click_selects_single_line() {
+        let mut app = make_app();
+        app.add_system_message("pick this line".into());
+
+        handle_log_triple_click(&mut app, 0, false);
+
+        assert_eq!(app.mouse.log_selection, Some((0, 0)));
+        assert!(app.mouse.dragging_log);
+        assert!(app.mouse.log_word_selection.is_none());
+    }
+
+    #[test]
+    fn triple_click_inside_code_fence_selects_whole_block() {
+        let mut app = make_app();
+        app.add_system_message("```rust\nfn main() {}\n```".into());
+
+        let inside_line = (0..20)
+            .find(|&logical| app.find_code_block_containing_logical(logical).is_some())
+            .expect("logical line inside fenced code block");
+        let expected = app
+            .find_code_block_containing_logical(inside_line)
+            .expect("code block range");
+
+        handle_log_triple_click(&mut app, inside_line, true);
+
+        assert_eq!(app.mouse.log_selection, Some(expected));
+        assert!(expected.1 > expected.0, "expected multi-line block selection");
+        assert!(app.mouse.dragging_log);
     }
 }

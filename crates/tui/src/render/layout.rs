@@ -149,4 +149,30 @@ mod render_tests {
             "error should be visible in log or buffer"
         );
     }
+
+    #[test]
+    fn dual_panel_layout_renders_with_custom_split_ratio() {
+        let mut app = make_app();
+        app.plan.visible = true;
+        app.panel_split_ratio = 0.45;
+
+        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
+        assert!(
+            !text.trim().is_empty(),
+            "dual-panel layout should render with custom split"
+        );
+    }
+
+    #[test]
+    fn divider_renders_while_resizing() {
+        let mut app = make_app();
+        app.plan.visible = true;
+        app.mouse.is_resizing_panel = true;
+
+        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
+        assert!(
+            !text.trim().is_empty(),
+            "divider should render highlighted while resizing"
+        );
+    }
 }

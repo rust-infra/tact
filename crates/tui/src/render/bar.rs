@@ -386,4 +386,16 @@ mod render_tests {
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
     }
+
+    #[test]
+    fn bottom_bar_shows_party_mode_banner() {
+        let mut app = make_app();
+        app.party_mode = true;
+
+        let text = render_app_text(&mut app, 120, 30);
+        assert!(
+            text.contains("PARTY") || text.contains("🎉"),
+            "party mode status bar should render banner, got:\n{text}"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 //! Shared TestBackend helpers for render-layer tests.
 
 use super::{
+    log::render_log_panel,
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
     render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
@@ -10,6 +11,7 @@ use ratatui::{
     Terminal,
     backend::TestBackend,
     layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier},
     widgets::ScrollbarState,
 };
 use std::path::PathBuf;
@@ -45,6 +47,42 @@ pub fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
 
 pub fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
     buffer_text(buf).contains(needle)
+}
+
+/// True if any cell in the buffer carries `modifier`.
+pub fn buffer_has_modifier(buf: &ratatui::buffer::Buffer, modifier: Modifier) -> bool {
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if buf[(x, y)].modifier.contains(modifier) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if any cell uses the given background color.
+pub fn buffer_has_bg(buf: &ratatui::buffer::Buffer, bg: Color) -> bool {
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if buf[(x, y)].bg == bg {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Column of the first cell whose symbol equals `ch` (useful for indent assertions).
+pub fn buffer_first_char_x(buf: &ratatui::buffer::Buffer, ch: char) -> Option<u16> {
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if buf[(x, y)].symbol() == ch.to_string() {
+                return Some(x);
+            }
+        }
+    }
+    None
 }
 
 /// Mirror the main TUI frame layout from `lib.rs` (status + main + input + bottom).
@@ -83,6 +121,22 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
     if app.slash_command.active {
         render_slash_command_popup(frame, size, app);
     }
+}
+
+/// Render the Log panel into a terminal for buffer-level assertions.
+pub fn render_log_panel_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), app))
+        .expect("draw");
+    terminal
+}
+
+/// Draw only the Log panel and return flattened text.
+pub fn render_log_panel_text(app: &mut App, width: u16, height: u16) -> String {
+    let terminal = render_log_panel_terminal(app, width, height);
+    buffer_text(terminal.backend().buffer())
 }
 
 /// Draw only the main content area (plan/log + overlay popups).

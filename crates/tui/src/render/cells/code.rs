@@ -136,3 +136,37 @@ pub(crate) fn render_code_cards(
         }
     }
 }
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::render::test_harness::{buffer_text, make_app};
+    use ratatui::{Terminal, backend::TestBackend};
+    use tact_protocol::AgentUpdate;
+
+    #[test]
+    fn code_card_overlay_renders_language_and_body() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StreamChunk(
+            "```rust\nfn overlay_test() {}\n```\n".into(),
+        ));
+        assert!(!app.code_blocks.is_empty());
+
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
+
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_code_cards(frame, area, &app, 0, area.height as usize);
+            })
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("overlay_test") || text.contains("rust"),
+            "code overlay should render card body or language label, got:\n{text}"
+        );
+    }
+}

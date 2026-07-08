@@ -9,7 +9,10 @@ mod select;
 
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
-pub(crate) use mouse::{handle_mouse_scroll_down, handle_mouse_scroll_up, handle_tool_block_click, MousePanelHit};
+pub(crate) use mouse::{
+    begin_panel_resize, end_panel_resize, handle_log_triple_click, handle_mouse_scroll_down,
+    handle_mouse_scroll_up, handle_tool_block_click, update_panel_resize, MousePanelHit,
+};
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use search::handle_search_mode;

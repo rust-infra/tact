@@ -420,8 +420,7 @@ pub async fn run_tui(
                                         app.close_code_popup();
                                     }
                                 } else if in_divider {
-                                    // Start panel drag resize
-                                    app.mouse.is_resizing_panel = true;
+                                    crate::handlers::begin_panel_resize(&mut app);
                                 } else if in_log {
                                     app.focused_panel = FocusedPanel::Log;
                                     // Mouse row → visual line → logical line, accounting for wrapping
@@ -479,10 +478,9 @@ pub async fn run_tui(
                                                 let block = &app.thinking.blocks[card_idx];
                                                 app.open_thinking_popup(block.title_idx);
                                             } else if app.mouse.click_count >= 3 {
-                                                // Triple click: select entire line
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = Some((line_idx, line_idx));
-                                                app.mouse.dragging_log = true;
+                                                crate::handlers::handle_log_triple_click(
+                                                    &mut app, line_idx, false,
+                                                );
                                             }
                                         } else {
                                             app.mouse.last_click_card = None;
@@ -495,9 +493,9 @@ pub async fn run_tui(
                                                 &mut app, tool_idx, phys_idx,
                                             );
                                             if app.mouse.click_count >= 3 {
-                                                app.mouse.log_word_selection = None;
-                                                app.mouse.log_selection = Some((line_idx, line_idx));
-                                                app.mouse.dragging_log = true;
+                                                crate::handlers::handle_log_triple_click(
+                                                    &mut app, line_idx, false,
+                                                );
                                             }
                                         } else {
                                             app.mouse.last_click_tool = None;
@@ -523,9 +521,9 @@ pub async fn run_tui(
                                                 {
                                                     app.open_code_popup(code_idx);
                                                 } else if app.mouse.click_count >= 3 {
-                                                    app.mouse.log_word_selection = None;
-                                                    app.mouse.log_selection = Some((line_idx, line_idx));
-                                                    app.mouse.dragging_log = true;
+                                                    crate::handlers::handle_log_triple_click(
+                                                        &mut app, line_idx, false,
+                                                    );
                                                 }
                                             } else {
                                                 app.mouse.last_click_code = None;
@@ -544,16 +542,9 @@ pub async fn run_tui(
                                                         app.find_word_bounds(line_idx, col);
                                                     app.mouse.dragging_log = true;
                                                 } else if app.mouse.click_count >= 3 {
-                                                    // Triple click: select entire line; inside a code block, select the whole block
-                                                    app.mouse.log_word_selection = None;
-                                                    if let Some((cb_start, cb_end)) =
-                                                        app.find_code_block_containing_logical(line_idx)
-                                                    {
-                                                        app.mouse.log_selection = Some((cb_start, cb_end));
-                                                    } else {
-                                                        app.mouse.log_selection = Some((line_idx, line_idx));
-                                                    }
-                                                    app.mouse.dragging_log = true;
+                                                    crate::handlers::handle_log_triple_click(
+                                                        &mut app, line_idx, true,
+                                                    );
                                                 } else {
                                                     // Single click: start selection for natural press-drag-copy behaviour
                                                     app.mouse.log_word_selection = None;
@@ -578,15 +569,16 @@ pub async fn run_tui(
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
                                 if app.mouse.is_resizing_panel {
-                                    // Panel drag resize — convert mouse column to ratio
                                     let total_width = app.mouse.plan_area.width
                                         + app.mouse.divider_area.width
                                         + app.mouse.log_area.width;
-                                    if total_width > 0 {
-                                        let mouse_x = mouse.column.saturating_sub(app.mouse.plan_area.x);
-                                        let new_ratio = mouse_x as f64 / total_width as f64;
-                                        app.panel_split_ratio = new_ratio.clamp(0.10, 0.70);
-                                    }
+                                    let plan_area_x = app.mouse.plan_area.x;
+                                    crate::handlers::update_panel_resize(
+                                        &mut app,
+                                        mouse.column,
+                                        plan_area_x,
+                                        total_width,
+                                    );
                                 } else if app.mouse.dragging_log && in_log {
                                     let visual_base = app
                                         .log_scroll
@@ -617,7 +609,7 @@ pub async fn run_tui(
                             MouseEventKind::Up(MouseButton::Left) => {
                                 app.mouse.dragging_log = false;
                                 app.mouse.dragging_plan = false;
-                                app.mouse.is_resizing_panel = false;
+                                crate::handlers::end_panel_resize(&mut app);
                             }
                             _ => {}
                         }
