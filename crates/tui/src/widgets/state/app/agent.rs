@@ -600,6 +600,21 @@ impl App {
             self.update_search_matches();
         }
     }
+
+    /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
+    pub(crate) fn maybe_expire_done_status(&mut self) {
+        if let Status::Done = self.status
+            && let Some(done_time) = self.task_done_time
+            && chrono::Local::now()
+                .signed_duration_since(done_time)
+                .num_seconds()
+                >= 2
+        {
+            self.status = Status::Idle;
+            self.task_done_time = None;
+            self.dirty = true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -623,6 +638,15 @@ mod lifecycle_tests {
             history_tx,
             "retro".to_string(),
         )
+    }
+
+    #[test]
+    fn maybe_expire_done_status_clears_stale_done() {
+        let mut app = make_app();
+        app.status = Status::Done;
+        app.task_done_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
+        app.maybe_expire_done_status();
+        assert!(matches!(app.status, Status::Idle));
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub(super) use popups::select::render_select_popup;
 mod scene_tests;
 #[cfg(test)]
 mod popup_scene_tests;
+#[cfg(test)]
+mod render_gap_tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_harness;

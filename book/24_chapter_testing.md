@@ -80,9 +80,13 @@ CI runs the integration packages explicitly, then the full workspace (`cargo tes
 - `draw_full_ui` — mirrors `lib.rs` layout (status, main, input, bottom, palette/select/file-picker/slash overlays)
 - `render_app_text` / `render_main_area_text` — flatten buffer to plain text for assertions
 
-**Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + listed), diff/code/thinking popups, `open_diff_popup` after real `StepFinished`.
+**Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + selected row), diff/code/thinking popups (scroll + write_file gutter + bash output), `open_diff_popup` after real `StepFinished`, Normal mode, WaitingForUser full frame, plan multi-step, markdown/code cards in log, narrow terminal.
 
 **Handler tests:** `crates/tui/src/handlers/file_picker.rs` (j/k navigation, Enter, Esc).
+
+**Gap tests:** `crates/tui/src/render/render_gap_tests.rs` (P0/P1/P2 render paths).
+
+**Unit tests:** `log_column.rs` (viewport clip), `welcome.rs` (LogoWidget), `popups/mod.rs` (centered geometry), `render_md.rs` (markdown).
 
 ---
 
