@@ -1,6 +1,7 @@
 //! Library surface for `tact-ui` (binary + integration tests).
 
 pub mod driver;
+pub mod headless_session;
 pub mod session_lock;
 pub mod sessions;
 pub mod test_support;

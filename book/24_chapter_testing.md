@@ -29,6 +29,7 @@ flowchart LR
 | TUI state | `tui` | `handle_agent_update` lifecycle |
 | TUI render | `tui` | Full-frame `TestBackend` snapshots (text assertions) |
 | Bridge | `tact-ui` + `tui` | Driver updates → App → rendered output |
+| Headless session | `tact-ui` | Driver + live App poll loop (mirrors `interactive.rs`) |
 
 ---
 
@@ -67,6 +68,7 @@ CI runs the integration packages explicitly, then the full workspace (`cargo tes
 | `tests/tool_integration.rs` | Parallel read, Plan deny, bash, read→write chain, token usage |
 | `tests/permission_integration.rs` | Default Allow/Deny, shell guard, always_allow |
 | `tests/app_bridge_integration.rs` | Driver → `tui::test_support::TestApp` → render |
+| `tests/headless_session_integration.rs` | Live driver + `HeadlessApp::run_while` snapshots |
 
 ---
 
@@ -84,7 +86,38 @@ CI runs the integration packages explicitly, then the full workspace (`cargo tes
 
 ---
 
-## Cross-crate bridge (`test-support` feature)
+## Headless interactive session
+
+**Location:** `crates/tact-ui/src/headless_session.rs`, `crates/tui/src/headless_loop.rs`
+
+Mirrors `interactive.rs` (driver task + App update drain) without crossterm:
+
+```rust
+use tact_ui::headless_session::run_headless_session;
+
+let result = run_headless_session(
+    mock,
+    PermissionMode::Default,
+    Some(0), // auto-confirm permission select
+    |work_dir| { /* seed files */ },
+    |user_cmd_tx| {
+        tokio::spawn(async move {
+            user_cmd_tx.send(UserCommand::SubmitTask("…".into())).unwrap();
+            drop(user_cmd_tx);
+        })
+    },
+).await;
+
+// Milestone renders captured during execution
+result.snapshots.executing  // while tools running
+result.snapshots.select      // permission popup visible
+result.snapshots.final_render
+result.is_done
+```
+
+`HeadlessApp::run_while` polls `agent_rx` every 10ms, captures renders at executing/select milestones, and auto-confirms permission prompts when configured.
+
+---
 
 Enable on `tui` when testing from `tact-ui`:
 
