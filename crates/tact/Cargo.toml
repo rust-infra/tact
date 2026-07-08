@@ -41,4 +41,5 @@ walkdir = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["server"] }
 tempfile = { workspace = true }

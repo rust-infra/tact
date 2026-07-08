@@ -112,6 +112,38 @@ pub fn build_test_agent_with_config(
     (agent, work_dir)
 }
 
+/// Build an agent with a custom MCP router.
+///
+/// This is useful when integration tests need to exercise `mcp__` prefixed tools
+/// without spawning real MCP server child processes.
+pub fn build_test_agent_with_mcp(
+    mock: MockClient,
+    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    permission_mode: PermissionMode,
+    mcp_router: MCPToolRouter,
+) -> (Agent, std::path::PathBuf) {
+    install_test_config();
+    let context = test_context(&unique_workspace_name("tact-ui-mcp"));
+    let work_dir = context.work_dir.clone();
+
+    let mut tool_context = context;
+    tool_context.ui_tx = ui_tx.clone();
+
+    let mut agent = Agent::new(
+        LlmProvider::Mock(mock),
+        tool_context,
+        toolset(),
+        mcp_router,
+        PermissionManager::try_new(permission_mode).expect("permission mode"),
+        AgentSystemPrompt::Static("You are a test agent.".to_string()),
+    );
+    if let Some(tx) = ui_tx {
+        agent = agent.with_ui_channel(tx);
+    }
+
+    (agent, work_dir)
+}
+
 /// Like [`build_test_agent`], but attaches an in-memory SQLite session store.
 pub async fn build_test_agent_with_session(
     mock: MockClient,
