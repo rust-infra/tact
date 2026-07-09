@@ -872,10 +872,10 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return true;
         };
-        !(IGNORE_DIRS.contains(&name)
-            || (name.starts_with('.')
-                && !name.eq_ignore_ascii_case(".gitignore")
-                && !name.eq_ignore_ascii_case(".env.example")))
+        (name.eq_ignore_ascii_case(".env.example")
+            || name.eq_ignore_ascii_case(".gitignore")
+            || !name.starts_with('.'))
+            && !IGNORE_DIRS.contains(&name)
     };
 
     for entry in walkdir::WalkDir::new(root)
