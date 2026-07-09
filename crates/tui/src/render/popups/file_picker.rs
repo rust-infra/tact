@@ -10,17 +10,36 @@ use ratatui::{
 /// Render a centered file-picker popup listing files under the project root.
 pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     let count = app.file_picker.options.len().max(1) as u16;
+    // Reserve one extra row for the query/filter display.
     let popup_width = 50u16.min(area.width.saturating_sub(4));
-    let popup_height = (count + 4).min(area.height.saturating_sub(4));
+    let popup_height = (count + 5).min(area.height.saturating_sub(4));
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
     frame.render_widget(Clear, popup_area);
+
+    let rel_dir = app
+        .file_picker
+        .current_dir
+        .strip_prefix(&app.file_picker.base_dir)
+        .unwrap_or(app.file_picker.current_dir.as_path())
+        .to_string_lossy()
+        .to_string();
+    let title = if app.file_picker.query.is_empty() {
+        format!("{}: {}", app.msgs().file_picker_title, rel_dir)
+    } else {
+        format!(
+            "{}: {} /{}",
+            app.msgs().file_picker_title,
+            rel_dir,
+            app.file_picker.query
+        )
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(app.theme.block_border_type())
-        .title(app.msgs().file_picker_title)
+        .title(title)
         .style(Style::default().bg(app.theme.bottom_bar_bg));
     frame.render_widget(block.clone(), popup_area);
 

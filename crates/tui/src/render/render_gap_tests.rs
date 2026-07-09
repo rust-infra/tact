@@ -315,8 +315,9 @@ fn code_popup_scroll_skips_leading_lines() {
 fn file_picker_highlights_selected_row() {
     let mut app = make_app();
     app.input_mode = InputMode::FilePicker;
-    app.file_picker
-        .set(vec!["src/a.rs".into(), "src/b.rs".into()]);
+    app.file_picker.options = vec!["src/a.rs".into(), "src/b.rs".into()];
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
     app.file_picker.selected = 1;
 
     let text = render_app_text(&mut app, 80, 24);

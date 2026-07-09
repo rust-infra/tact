@@ -106,8 +106,9 @@ fn full_frame_slash_command_no_match_shows_hint() {
 fn full_frame_file_picker_lists_options() {
     let mut app = make_app();
     app.input_mode = InputMode::FilePicker;
-    app.file_picker
-        .set(vec!["src/main.rs".into(), "Cargo.toml".into()]);
+    app.file_picker.options = vec!["src/main.rs".into(), "Cargo.toml".into()];
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
 
     let text = render_app_text(&mut app, 100, 30);
 
