@@ -378,20 +378,14 @@ fn diff_popup_renders_unified_diff_markers() {
     // All unified diff marker lines present
     assert!(text.contains("--- a/src/lib.rs"), "missing --- header");
     assert!(text.contains("+++ b/src/lib.rs"), "missing +++ header");
-    assert!(
-        text.contains("@@ -1,5 +1,7 @@"),
-        "missing hunk header @@"
-    );
+    assert!(text.contains("@@ -1,5 +1,7 @@"), "missing hunk header @@");
 
     // Deletion line shown with leading -
     assert!(text.contains("-fn removed()"), "missing deletion line");
     // Addition lines shown with leading +
     assert!(text.contains("+fn added()"), "missing addition line");
     assert!(text.contains("+fn another_new()"), "missing addition line");
-    assert!(
-        text.contains("+fn yet_another()"),
-        "missing addition line"
-    );
+    assert!(text.contains("+fn yet_another()"), "missing addition line");
     // Context lines included
     assert!(text.contains("fn existing()"), "missing context line");
     assert!(text.contains("fn unchanged()"), "missing context line");

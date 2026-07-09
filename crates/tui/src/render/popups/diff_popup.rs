@@ -36,7 +36,12 @@ fn lang_from_path(path: &str) -> String {
 }
 
 /// Run tui-markdown (syntect) syntax highlighting on raw code text.
-fn syntax_highlight(code: &str, lang: &str, code_fg: ratatui::style::Color, code_bg: ratatui::style::Color) -> Vec<Line<'static>> {
+fn syntax_highlight(
+    code: &str,
+    lang: &str,
+    code_fg: ratatui::style::Color,
+    code_bg: ratatui::style::Color,
+) -> Vec<Line<'static>> {
     if lang.is_empty() {
         return code
             .lines()
@@ -253,11 +258,11 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if is_diff {
         // ── native git diff rendering ────────────────────────────────────
-        let diff_hunk = app.theme.accent;       // @@ hunk headers (cyan in dark theme)
-        let diff_add = app.theme.success;     // + lines
-        let diff_del = app.theme.error;       // - lines
+        let diff_hunk = app.theme.accent; // @@ hunk headers (cyan in dark theme)
+        let diff_add = app.theme.success; // + lines
+        let diff_del = app.theme.error; // - lines
         let diff_header = app.theme.muted_fg(); // ---/+++ file headers
-        let diff_context = code_fg;            // context lines (starting with space)
+        let diff_context = code_fg; // context lines (starting with space)
 
         for i in scroll..visible_end {
             let raw = content.lines().nth(i).unwrap_or("");
@@ -273,10 +278,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
             let span = Span::styled(
                 raw.to_string(),
-                Style::default()
-                    .fg(fg)
-                    .bg(code_bg)
-                    .add_modifier(line_style),
+                Style::default().fg(fg).bg(code_bg).add_modifier(line_style),
             );
             text.push_line(Line::from(span));
         }
@@ -318,10 +320,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
                     .chars()
                     .take(code_width)
                     .collect();
-                Line::from(Span::styled(
-                    raw,
-                    Style::default().fg(code_fg).bg(code_bg),
-                ))
+                Line::from(Span::styled(raw, Style::default().fg(code_fg).bg(code_bg)))
             };
 
             let mut spans = vec![Span::styled(format!(" {} ", num), num_style)];
