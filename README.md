@@ -436,7 +436,7 @@ tact is early stage and welcomes contributions! Some good places to start:
 - 💡 **Feature requests** — open a discussion
 - 🔧 **PRs** — pick up a `good-first-issue`
 
-Before opening a PR, run `./scripts/check-rust.sh` (or install hooks with `./scripts/install-git-hooks.sh`). Commits should pass `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.
+Before opening a PR, run `./scripts/check-rust.sh` (or install hooks with `./scripts/install-git-hooks.sh` to run it on push).
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for an overview of the codebase.
 

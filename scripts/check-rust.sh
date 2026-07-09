@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit / CI-style Rust checks: formatting + clippy with warnings denied.
+# CI-style Rust checks: formatting + clippy with warnings denied (+ integration tests).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

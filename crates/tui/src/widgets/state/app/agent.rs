@@ -59,16 +59,17 @@ impl App {
         }
         // Remove the loading placeholder on any content-producing update.
         // PlanGenerated is a legacy path that inserts it, so skip that variant.
-        // Metadata-only updates (TokenUsage, Balance, ModelInfo) should NOT
-        // remove the placeholder since they don't produce visible content.
+        // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
+        // should NOT remove the placeholder since they don't produce visible content.
         match &update {
             AgentUpdate::PlanGenerated(_)
             | AgentUpdate::TokenUsage { .. }
             | AgentUpdate::Balance(_)
+            | AgentUpdate::UsageQuota(_)
             | AgentUpdate::ModelInfo(_) => {
                 // These don't remove the loading placeholder:
                 // - PlanGenerated: we just inserted it
-                // - TokenUsage / Balance / ModelInfo: metadata only, no content
+                // - TokenUsage / Balance / UsageQuota / ModelInfo: metadata only, no content
             }
             _ => {
                 self.remove_loading_placeholder();

@@ -131,9 +131,12 @@ impl ProviderInfo {
         self.model.contains("k2.7") || self.model.contains("k2-7")
     }
 
-    /// Returns true for the Kimi Code platform (`api.kimi.com/coding`), which has no balance API.
+    /// Returns true for the Kimi Code platform, which has no balance API.
+    ///
+    /// Matches the official endpoint (`api.kimi.com/coding`) as well as the
+    /// stable `kimi-for-coding` model ID served through a custom proxy.
     pub fn is_kimi_coding(&self) -> bool {
-        self.base_url.contains("kimi.com/coding")
+        self.base_url.contains("kimi.com/coding") || self.model == "kimi-for-coding"
     }
 
     /// Returns true when Kimi balance queries are supported for the configured endpoint.
@@ -506,18 +509,22 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
     parse_kimi_balance_response(&body, currency)
 }
 
-/// Derive Kimi Code usage API URL from the configured base URL.
-fn kimi_usage_url_from_base_url(base_url: &str) -> Option<String> {
-    if !base_url.contains("kimi.com/coding") {
-        return None;
-    }
+/// Derive the Kimi Code usage API URL from the configured base URL.
+///
+/// Works for the official endpoint and for custom proxies serving the
+/// `kimi-for-coding` model. Falls back to the official endpoint when the
+/// base URL is empty.
+fn kimi_usage_url_from_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "https://api.kimi.com/coding/v1/usages".to_string();
+    }
     let api_base = if trimmed.ends_with("/v1") {
         trimmed.to_string()
     } else {
         format!("{trimmed}/v1")
     };
-    Some(format!("{api_base}/usages"))
+    format!("{api_base}/usages")
 }
 
 fn parse_quota_remaining(remaining: &str) -> bool {
@@ -603,9 +610,10 @@ pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuota
     let api_key = provider.api_key.clone();
     let base_url = provider.base_url.clone();
 
-    let usage_url = kimi_usage_url_from_base_url(&base_url).ok_or_else(|| {
-        anyhow::anyhow!("usage quota API is only available on Kimi Code (api.kimi.com/coding)")
-    })?;
+    if !provider.is_kimi_coding() {
+        anyhow::bail!("usage quota API is only available on Kimi Code (api.kimi.com/coding)");
+    }
+    let usage_url = kimi_usage_url_from_base_url(&base_url);
 
     let client = reqwest::Client::new();
     let resp = client
@@ -1066,6 +1074,18 @@ mod tests {
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
 
+        // kimi-for-coding behind a custom proxy is still Kimi Code:
+        // no balance API, usage quota supported.
+        let proxy = provider_info(
+            "openai",
+            "",
+            "https://proxy.example.com/v1",
+            "kimi-for-coding",
+        );
+        assert!(proxy.is_kimi_coding());
+        assert!(!proxy.is_kimi_balance_supported());
+        assert!(proxy.is_kimi_usage_supported());
+
         assert!(coding.is_account_query_supported());
         assert!(cn.is_account_query_supported());
 
@@ -1082,15 +1102,21 @@ mod tests {
     fn kimi_usage_url_derivation() {
         assert_eq!(
             kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1"),
-            Some("https://api.kimi.com/coding/v1/usages".to_string())
+            "https://api.kimi.com/coding/v1/usages"
         );
         assert_eq!(
             kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1/"),
-            Some("https://api.kimi.com/coding/v1/usages".to_string())
+            "https://api.kimi.com/coding/v1/usages"
         );
+        // Custom proxy serving kimi-for-coding: derive from the proxy base.
         assert_eq!(
-            kimi_usage_url_from_base_url("https://api.moonshot.cn/v1"),
-            None
+            kimi_usage_url_from_base_url("https://proxy.example.com"),
+            "https://proxy.example.com/v1/usages"
+        );
+        // Empty base URL falls back to the official endpoint.
+        assert_eq!(
+            kimi_usage_url_from_base_url(""),
+            "https://api.kimi.com/coding/v1/usages"
         );
     }
 
