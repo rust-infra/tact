@@ -10,11 +10,10 @@ use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
-    let cmds = app.slash_command.matched_commands(
-        &app.input,
-        app.input_cursor,
-        crate::widgets::state::PALETTE_COMMANDS,
-    );
+    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app
+        .slash_command
+        .matched_commands(&app.input, app.input_cursor, &commands);
     let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
     if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
         let start = app.slash_command.start_pos;
@@ -86,26 +85,20 @@ pub(crate) fn handle_insert_mode(
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
+            let commands: Vec<_> = app.palette_commands().copied().collect();
             let n = app
                 .slash_command
-                .matched_commands(
-                    &app.input,
-                    app.input_cursor,
-                    crate::widgets::state::PALETTE_COMMANDS,
-                )
+                .matched_commands(&app.input, app.input_cursor, &commands)
                 .len();
             if n > 0 {
                 app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
             }
         }
         KeyCode::Down if app.slash_command.active => {
+            let commands: Vec<_> = app.palette_commands().copied().collect();
             let n = app
                 .slash_command
-                .matched_commands(
-                    &app.input,
-                    app.input_cursor,
-                    crate::widgets::state::PALETTE_COMMANDS,
-                )
+                .matched_commands(&app.input, app.input_cursor, &commands)
                 .len();
             if n > 0 {
                 let max = n.saturating_sub(1);
@@ -534,6 +527,7 @@ mod tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            false,
         );
         (app, user_cmd_rx)
     }

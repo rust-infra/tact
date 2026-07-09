@@ -104,6 +104,7 @@ pub struct Messages {
     pub bottom_balance_ok: &'static str,
     pub bottom_balance_err: &'static str,
     pub bottom_balance_tmpl: &'static str,
+    pub bottom_usage_tmpl: &'static str,
 
     // ---- 弹窗通用 ----
     pub popup_copy_hint: &'static str,
@@ -277,6 +278,7 @@ impl Messages {
             bottom_balance_ok: "✅",
             bottom_balance_err: "❌",
             bottom_balance_tmpl: "💰 Balance:{} {}",
+            bottom_usage_tmpl: "📊 Quota:{} {}",
 
             popup_copy_hint: " [y] Copy ",
             popup_close_hint: " [Esc] Close ",
@@ -443,6 +445,7 @@ impl Messages {
             bottom_balance_ok: "✅",
             bottom_balance_err: "❌",
             bottom_balance_tmpl: "💰 余额:{} {}",
+            bottom_usage_tmpl: "📊 配额:{} {}",
 
             popup_copy_hint: " [y] 复制 ",
             popup_close_hint: " [Esc] 关闭 ",

@@ -239,6 +239,7 @@ impl App {
                 match kind {
                     AgentErrorKind::BalanceNotSupported => {
                         self.balance_info = None;
+                        self.usage_quota = None;
                         // self.flash_msg = Some((
                         //     "Balance query not supported for this model".to_string(),
                         //     std::time::Instant::now(),
@@ -247,6 +248,7 @@ impl App {
                     }
                     AgentErrorKind::BalanceQueryFailed(err) => {
                         self.balance_info = None;
+                        self.usage_quota = None;
                         self.flash_msg = Some((
                             format!("Balance query failed: {}", err),
                             std::time::Instant::now(),
@@ -282,6 +284,12 @@ impl App {
             // Update balance info
             AgentUpdate::Balance(info) => {
                 self.balance_info = Some(info.clone());
+                self.usage_quota = None;
+                self.dirty = true;
+            }
+            AgentUpdate::UsageQuota(info) => {
+                self.usage_quota = Some(info.clone());
+                self.balance_info = None;
                 self.dirty = true;
             }
             // Update model info
@@ -628,6 +636,7 @@ mod lifecycle_tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            false,
         )
     }
 
@@ -641,10 +650,43 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn usage_quota_update_sets_usage_and_repaints() {
+        use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
+
+        let mut app = make_app();
+        app.account_query_supported = true;
+        app.dirty = false;
+        app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+            is_available: true,
+            windows: vec![
+                UsageQuotaWindow {
+                    label: "week".into(),
+                    limit: "100".into(),
+                    remaining: "74".into(),
+                    reset_time: None,
+                },
+                UsageQuotaWindow {
+                    label: "5h".into(),
+                    limit: "100".into(),
+                    remaining: "85".into(),
+                    reset_time: None,
+                },
+            ],
+            membership_level: None,
+        }));
+
+        assert!(app.usage_quota.is_some());
+        assert!(app.balance_info.is_none());
+        assert!(app.dirty);
+        assert!(crate::should_repaint(&app));
+    }
+
+    #[test]
     fn balance_update_sets_balance_info() {
         use tact_protocol::{BalanceEntry, BalanceInfo};
 
         let mut app = make_app();
+        app.account_query_supported = true;
         app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
@@ -673,6 +715,7 @@ mod lifecycle_tests {
         use tact_protocol::{BalanceEntry, BalanceInfo};
 
         let mut app = make_app();
+        app.account_query_supported = true;
         app.dirty = false;
         app.status = Status::Idle;
         app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {

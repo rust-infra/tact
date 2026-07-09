@@ -140,6 +140,20 @@ impl ProviderInfo {
     pub fn is_kimi_balance_supported(&self) -> bool {
         self.is_kimi() && !self.is_kimi_coding()
     }
+
+    /// Returns true when Kimi Code usage quota queries are supported.
+    pub fn is_kimi_usage_supported(&self) -> bool {
+        self.is_kimi_coding()
+    }
+
+    /// Returns true when account balance or usage quota queries are supported.
+    pub fn is_account_query_supported(&self) -> bool {
+        self.provider == "deepseek"
+            || self.base_url.contains("deepseek")
+            || self.model.contains("deepseek")
+            || self.is_kimi_balance_supported()
+            || self.is_kimi_usage_supported()
+    }
 }
 
 /// Unified error type for LLM operations.
@@ -492,6 +506,136 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
     parse_kimi_balance_response(&body, currency)
 }
 
+/// Derive Kimi Code usage API URL from the configured base URL.
+fn kimi_usage_url_from_base_url(base_url: &str) -> Option<String> {
+    if !base_url.contains("kimi.com/coding") {
+        return None;
+    }
+    let trimmed = base_url.trim_end_matches('/');
+    let api_base = if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    };
+    Some(format!("{api_base}/usages"))
+}
+
+fn parse_quota_remaining(remaining: &str) -> bool {
+    remaining.parse::<f64>().map(|v| v > 0.0).unwrap_or(true)
+}
+
+fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+    #[derive(serde::Deserialize)]
+    struct RawUsageDetail {
+        limit: String,
+        remaining: String,
+        #[serde(rename = "resetTime")]
+        reset_time: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawWindow {
+        duration: u64,
+        #[serde(rename = "timeUnit")]
+        time_unit: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawLimitEntry {
+        window: RawWindow,
+        detail: RawUsageDetail,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawMembership {
+        level: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawUser {
+        membership: Option<RawMembership>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawKimiUsageResponse {
+        usage: RawUsageDetail,
+        #[serde(default)]
+        limits: Vec<RawLimitEntry>,
+        user: Option<RawUser>,
+    }
+
+    let raw: RawKimiUsageResponse =
+        serde_json::from_str(body).context("Failed to parse Kimi usage response")?;
+
+    let mut windows = vec![tact_protocol::UsageQuotaWindow {
+        label: "week".to_string(),
+        limit: raw.usage.limit.clone(),
+        remaining: raw.usage.remaining.clone(),
+        reset_time: raw.usage.reset_time.clone(),
+    }];
+
+    for entry in &raw.limits {
+        let label = if entry.window.time_unit.contains("MINUTE") && entry.window.duration == 300 {
+            "5h".to_string()
+        } else {
+            format!("{}m", entry.window.duration)
+        };
+        windows.push(tact_protocol::UsageQuotaWindow {
+            label,
+            limit: entry.detail.limit.clone(),
+            remaining: entry.detail.remaining.clone(),
+            reset_time: entry.detail.reset_time.clone(),
+        });
+    }
+
+    let is_available = windows.iter().all(|w| parse_quota_remaining(&w.remaining));
+
+    Ok(tact_protocol::UsageQuotaInfo {
+        is_available,
+        windows,
+        membership_level: raw.user.and_then(|u| u.membership).map(|m| m.level),
+    })
+}
+
+/// Query Kimi Code subscription quota (`GET .../v1/usages`).
+pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+    let provider = get_provider();
+    let api_key = provider.api_key.clone();
+    let base_url = provider.base_url.clone();
+
+    let usage_url = kimi_usage_url_from_base_url(&base_url).ok_or_else(|| {
+        anyhow::anyhow!("usage quota API is only available on Kimi Code (api.kimi.com/coding)")
+    })?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&usage_url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Accept", "application/json")
+        .header("User-Agent", "Claude Code")
+        .timeout(Duration::from_millis(5000))
+        .send()
+        .await
+        .with_context(|| format!("Failed to query Kimi usage at {usage_url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let error_body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "Kimi usage query returned HTTP {}: {}",
+            status,
+            error_body.trim()
+        );
+    }
+
+    let body = resp
+        .text()
+        .await
+        .context("Failed to read Kimi usage response")?;
+
+    parse_kimi_usage_response(&body)
+}
+
 /// Returns the provider information installed at startup.
 pub fn get_provider() -> &'static ProviderInfo {
     PROVIDER
@@ -522,6 +666,16 @@ pub fn is_kimi_coding() -> bool {
 /// Returns true when Kimi balance queries are supported for the configured endpoint.
 pub fn is_kimi_balance_supported() -> bool {
     get_provider().is_kimi_balance_supported()
+}
+
+/// Returns true when Kimi Code usage quota queries are supported.
+pub fn is_kimi_usage_supported() -> bool {
+    get_provider().is_kimi_usage_supported()
+}
+
+/// Returns true when account balance or usage quota queries are supported.
+pub fn is_account_query_supported() -> bool {
+    get_provider().is_account_query_supported()
 }
 
 // ── Mock client for integration testing ───────────────────────────
@@ -905,10 +1059,69 @@ mod tests {
         );
         assert!(coding.is_kimi_coding());
         assert!(!coding.is_kimi_balance_supported());
+        assert!(coding.is_kimi_usage_supported());
 
         let cn = provider_info("kimi", "", "https://api.moonshot.cn/v1", "kimi-k2.5");
         assert!(!cn.is_kimi_coding());
         assert!(cn.is_kimi_balance_supported());
+        assert!(!cn.is_kimi_usage_supported());
+
+        assert!(coding.is_account_query_supported());
+        assert!(cn.is_account_query_supported());
+
+        let anthropic = provider_info(
+            "anthropic",
+            "",
+            "https://api.anthropic.com",
+            "claude-sonnet-4",
+        );
+        assert!(!anthropic.is_account_query_supported());
+    }
+
+    #[test]
+    fn kimi_usage_url_derivation() {
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1"),
+            Some("https://api.kimi.com/coding/v1/usages".to_string())
+        );
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1/"),
+            Some("https://api.kimi.com/coding/v1/usages".to_string())
+        );
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.moonshot.cn/v1"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_kimi_usage_response_maps_official_schema() {
+        let body = r#"{
+            "usage": {"limit": "100", "remaining": "74", "resetTime": "2026-02-11T17:32:50Z"},
+            "limits": [{
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {"limit": "100", "remaining": "85", "resetTime": "2026-02-07T12:32:50Z"}
+            }],
+            "user": {"membership": {"level": "LEVEL_INTERMEDIATE"}}
+        }"#;
+        let info = parse_kimi_usage_response(body).unwrap();
+        assert!(info.is_available);
+        assert_eq!(info.windows.len(), 2);
+        assert_eq!(info.windows[0].label, "week");
+        assert_eq!(info.windows[0].remaining, "74");
+        assert_eq!(info.windows[1].label, "5h");
+        assert_eq!(info.windows[1].remaining, "85");
+        assert_eq!(info.membership_level.as_deref(), Some("LEVEL_INTERMEDIATE"));
+    }
+
+    #[test]
+    fn parse_kimi_usage_response_unavailable_when_remaining_zero() {
+        let body = r#"{
+            "usage": {"limit": "100", "remaining": "0", "resetTime": "2026-02-11T17:32:50Z"},
+            "limits": []
+        }"#;
+        let info = parse_kimi_usage_response(body).unwrap();
+        assert!(!info.is_available);
     }
 
     #[test]

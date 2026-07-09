@@ -323,6 +323,12 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "balance" => {
+            if !app.account_query_supported {
+                return CommandExecOutcome {
+                    handled: true,
+                    clear_input: true,
+                };
+            }
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
             CommandExecOutcome {
                 handled: true,
@@ -353,7 +359,7 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
 #[cfg(test)]
 mod tests {
     use super::execute_palette_command;
-    use crate::widgets::state::{App, PALETTE_COMMANDS, Status};
+    use crate::widgets::state::{App, Status};
     use std::path::PathBuf;
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
@@ -371,6 +377,7 @@ mod tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            false,
         );
         (app, user_cmd_rx)
     }
@@ -378,8 +385,10 @@ mod tests {
     #[test]
     fn palette_commands_are_all_handled() {
         let (mut app, _user_cmd_rx) = make_app();
+        app.account_query_supported = true;
+        let commands: Vec<_> = app.palette_commands().copied().collect();
 
-        for (cmd, _desc) in PALETTE_COMMANDS {
+        for (cmd, _desc) in &commands {
             if *cmd == "cancel" {
                 app.status = Status::Planning;
             }

@@ -504,11 +504,12 @@ fn full_frame_edit_file_tool_shows_in_log() {
 }
 
 #[test]
-fn balance_update_renders_in_bottom_bar() {
-    use tact_protocol::{BalanceEntry, BalanceInfo};
+    fn balance_update_renders_in_bottom_bar() {
+        use tact_protocol::{BalanceEntry, BalanceInfo};
 
-    let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+        let mut app = make_app();
+        app.account_query_supported = true;
+        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
         is_available: true,
         balance_infos: vec![BalanceEntry {
             currency: "USD".into(),
@@ -523,6 +524,31 @@ fn balance_update_renders_in_bottom_bar() {
     assert!(
         bottom_row.contains("42.00") || bottom_row.contains("USD"),
         "Balance amount should render on bottom bar last row, got: {bottom_row:?}\nfull:\n{text}"
+    );
+}
+
+#[test]
+    fn usage_quota_update_renders_in_bottom_bar() {
+        use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
+
+        let mut app = make_app();
+        app.account_query_supported = true;
+        app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+        is_available: true,
+        windows: vec![UsageQuotaWindow {
+            label: "week".into(),
+            limit: "100".into(),
+            remaining: "42".into(),
+            reset_time: None,
+        }],
+        membership_level: None,
+    }));
+
+    let text = render_app_text(&mut app, 120, 12);
+    let bottom_row = text.lines().last().unwrap_or("");
+    assert!(
+        bottom_row.contains("42") || bottom_row.contains("week"),
+        "usage quota should render on bottom bar last row, got: {bottom_row:?}\nfull:\n{text}"
     );
 }
 

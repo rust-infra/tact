@@ -195,8 +195,12 @@ pub struct App {
     pub(crate) stream: StreamState,
     // Thinking state
     pub(crate) thinking: ThinkingState,
-    /// DeepSeek account balance info (queried once on load and cached).
+    /// DeepSeek / Moonshot account balance info (queried on load and cached).
     pub(crate) balance_info: Option<tact_protocol::BalanceInfo>,
+    /// Kimi Code subscription quota (weekly + rolling window).
+    pub(crate) usage_quota: Option<tact_protocol::UsageQuotaInfo>,
+    /// Whether the active LLM provider supports balance or usage quota queries.
+    pub(crate) account_query_supported: bool,
     /// Party mode: easter egg triggered by Konami Code.
     pub(crate) party_mode: bool,
     /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).

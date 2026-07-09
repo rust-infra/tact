@@ -237,7 +237,7 @@ async fn submit_task_persists_messages_to_session_store() {
 }
 
 #[tokio::test]
-async fn query_balance_emits_error_for_mock_provider() {
+async fn query_balance_is_noop_for_unsupported_provider() {
     install_test_config();
 
     let mock = MockClient::new(vec![]);
@@ -254,10 +254,15 @@ async fn query_balance_emits_error_for_mock_provider() {
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates
-            .iter()
-            .any(|u| { matches!(u, AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))) }),
-        "mock provider should reject balance query, got: {updates:?}"
+        !updates.iter().any(|u| {
+            matches!(
+                u,
+                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
+                    | AgentUpdate::Balance(_)
+                    | AgentUpdate::UsageQuota(_)
+            )
+        }),
+        "unsupported provider should ignore balance query, got: {updates:?}"
     );
 }
 
@@ -428,10 +433,15 @@ async fn query_balance_then_submit_task_both_handled() {
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates
-            .iter()
-            .any(|u| { matches!(u, AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))) }),
-        "expected balance error, got: {updates:?}"
+        !updates.iter().any(|u| {
+            matches!(
+                u,
+                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
+                    | AgentUpdate::Balance(_)
+                    | AgentUpdate::UsageQuota(_)
+            )
+        }),
+        "unsupported provider should ignore balance query, got: {updates:?}"
     );
     assert!(
         updates

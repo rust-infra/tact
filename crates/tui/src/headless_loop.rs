@@ -57,5 +57,6 @@ pub fn make_headless_app(
         "headless-session".into(),
         history_tx,
         "retro".into(),
+        false,
     )
 }

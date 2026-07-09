@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {
     /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         agent_rx: UnboundedReceiver<AgentUpdate>,
         user_cmd_tx: UnboundedSender<UserCommand>,
@@ -22,6 +23,7 @@ impl App {
         session_id: String,
         history_save_tx: UnboundedSender<(String, String)>,
         theme: String,
+        account_query_supported: bool,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -92,6 +94,8 @@ impl App {
             stream: StreamState::new(),
             thinking: ThinkingState::new(),
             balance_info: None,
+            usage_quota: None,
+            account_query_supported,
             party_mode: false,
             konami_progress: 0,
             spinner_frame: 0,

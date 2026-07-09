@@ -5,13 +5,19 @@ use std::sync::atomic::Ordering;
 
 use tact::{Agent, extract_text};
 use tact_llm::{
-    is_deepseek, is_kimi, is_kimi_balance_supported, query_deepseek_balance, query_kimi_balance,
+    is_account_query_supported, is_deepseek, is_kimi_balance_supported, is_kimi_usage_supported,
+    query_deepseek_balance, query_kimi_balance, query_kimi_code_usage,
 };
 use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 
 use crate::user_message::build_user_message;
+
+enum AccountQueryResult {
+    Balance(tact_protocol::BalanceInfo),
+    UsageQuota(tact_protocol::UsageQuotaInfo),
+}
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
@@ -107,22 +113,28 @@ pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work
             agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
         }
         UserCommand::QueryBalance => {
+            if !is_account_query_supported() {
+                return;
+            }
             let result = if is_deepseek() {
-                query_deepseek_balance().await
+                query_deepseek_balance()
+                    .await
+                    .map(AccountQueryResult::Balance)
             } else if is_kimi_balance_supported() {
-                query_kimi_balance().await
-            } else if is_kimi() {
-                Err(anyhow::anyhow!(
-                    "balance query not supported for Kimi Code endpoint (api.kimi.com/coding)"
-                ))
+                query_kimi_balance().await.map(AccountQueryResult::Balance)
+            } else if is_kimi_usage_supported() {
+                query_kimi_code_usage()
+                    .await
+                    .map(AccountQueryResult::UsageQuota)
             } else {
-                Err(anyhow::anyhow!(
-                    "balance query not supported for current provider"
-                ))
+                return;
             };
             match result {
-                Ok(balance) => {
+                Ok(AccountQueryResult::Balance(balance)) => {
                     agent.emit_update(AgentUpdate::Balance(balance));
+                }
+                Ok(AccountQueryResult::UsageQuota(quota)) => {
+                    agent.emit_update(AgentUpdate::UsageQuota(quota));
                 }
                 Err(e) => {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(
@@ -140,7 +152,7 @@ mod tests {
 
     use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
     use tact_llm::MockClient;
-    use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
+    use tact_protocol::{AgentUpdate, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -185,17 +197,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_balance_emits_balance_query_failed() {
+    async fn query_balance_is_noop_when_unsupported() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
         super::handle_user_command(&mut agent, UserCommand::QueryBalance, &work_dir).await;
 
-        let update = agent_rx.try_recv().expect("expected balance error");
-        assert!(matches!(
-            update,
-            AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
-        ));
+        assert!(agent_rx.try_recv().is_err(), "unsupported provider should not emit updates");
     }
 }

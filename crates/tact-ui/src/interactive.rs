@@ -17,8 +17,8 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::{
-    get_llm_client, is_deepseek, is_kimi_balance_supported, query_deepseek_balance,
-    query_kimi_balance,
+    get_llm_client, is_account_query_supported, query_deepseek_balance, query_kimi_balance,
+    query_kimi_code_usage,
 };
 use tact_protocol::AgentUpdate;
 
@@ -137,7 +137,7 @@ async fn run_interactive_locked(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
-    let balance_polling = is_deepseek() || is_kimi_balance_supported();
+    let account_query_supported = is_account_query_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(
             agent_rx,
@@ -147,21 +147,24 @@ async fn run_interactive_locked(
             session_id,
             history_save_tx,
             theme,
-            balance_polling,
+            account_query_supported,
         )
         .await
     }));
 
-    if is_deepseek() || is_kimi_balance_supported() {
+    if account_query_supported {
         let balance_tx = agent_tx2;
         tokio::spawn(async move {
-            let result = if is_deepseek() {
-                query_deepseek_balance().await
-            } else {
-                query_kimi_balance().await
-            };
-            if let Ok(balance) = result {
-                let _ = balance_tx.send(AgentUpdate::Balance(balance));
+            if tact_llm::is_deepseek() {
+                if let Ok(balance) = query_deepseek_balance().await {
+                    let _ = balance_tx.send(AgentUpdate::Balance(balance));
+                }
+            } else if tact_llm::is_kimi_balance_supported() {
+                if let Ok(balance) = query_kimi_balance().await {
+                    let _ = balance_tx.send(AgentUpdate::Balance(balance));
+                }
+            } else if let Ok(quota) = query_kimi_code_usage().await {
+                let _ = balance_tx.send(AgentUpdate::UsageQuota(quota));
             }
         });
     }
