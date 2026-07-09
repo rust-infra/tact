@@ -357,10 +357,11 @@ mod render_tests {
             }],
         });
 
-        let text = render_app_text(&mut app, 120, 30);
+        let text = render_app_text(&mut app, 120, 12);
+        let bottom_row = text.lines().last().unwrap_or("");
         assert!(
-            text.contains("USD") || text.contains("12.50"),
-            "balance row should render when balance_info set: {text}"
+            bottom_row.contains("12.50") || bottom_row.contains("USD"),
+            "balance row should render on bottom bar last row: {bottom_row:?}"
         );
     }
 

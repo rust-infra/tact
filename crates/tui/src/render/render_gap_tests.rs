@@ -518,10 +518,11 @@ fn balance_update_renders_in_bottom_bar() {
         }],
     }));
 
-    let text = render_app_text(&mut app, 120, 30);
+    let text = render_app_text(&mut app, 120, 12);
+    let bottom_row = text.lines().last().unwrap_or("");
     assert!(
-        text.contains("USD") || text.contains("42.00"),
-        "Balance update should render in bottom bar, got:\n{text}"
+        bottom_row.contains("42.00") || bottom_row.contains("USD"),
+        "Balance amount should render on bottom bar last row, got: {bottom_row:?}\nfull:\n{text}"
     );
 }
 

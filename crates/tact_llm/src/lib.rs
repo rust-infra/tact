@@ -130,6 +130,16 @@ impl ProviderInfo {
         }
         self.model.contains("k2.7") || self.model.contains("k2-7")
     }
+
+    /// Returns true for the Kimi Code platform (`api.kimi.com/coding`), which has no balance API.
+    pub fn is_kimi_coding(&self) -> bool {
+        self.base_url.contains("kimi.com/coding")
+    }
+
+    /// Returns true when Kimi balance queries are supported for the configured endpoint.
+    pub fn is_kimi_balance_supported(&self) -> bool {
+        self.is_kimi() && !self.is_kimi_coding()
+    }
 }
 
 /// Unified error type for LLM operations.
@@ -375,24 +385,85 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
     })
 }
 
+/// Derive Kimi balance API URL from the configured OpenAI-compatible base URL.
+///
+/// Returns `None` for Kimi Code (`api.kimi.com/coding`), which has no balance REST endpoint.
+fn kimi_balance_url_from_base_url(base_url: &str) -> Option<String> {
+    if base_url.contains("kimi.com/coding") {
+        return None;
+    }
+
+    let trimmed = base_url.trim_end_matches('/');
+
+    if base_url.contains("api.moonshot.cn") || base_url.contains("api.moonshot.ai") {
+        let api_base = if trimmed.ends_with("/v1") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}/v1")
+        };
+        return Some(format!("{api_base}/users/me/balance"));
+    }
+
+    Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+}
+
+fn kimi_balance_currency(base_url: &str) -> &'static str {
+    if base_url.contains("api.moonshot.ai") {
+        "USD"
+    } else {
+        "CNY"
+    }
+}
+
+fn balance_amount_str(amount: f64) -> String {
+    amount.to_string()
+}
+
+fn parse_kimi_balance_response(
+    body: &str,
+    currency: &str,
+) -> anyhow::Result<tact_protocol::BalanceInfo> {
+    #[derive(serde::Deserialize)]
+    struct RawKimiBalanceData {
+        available_balance: f64,
+        voucher_balance: f64,
+        cash_balance: f64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawKimiBalanceResponse {
+        code: i32,
+        status: bool,
+        data: RawKimiBalanceData,
+    }
+
+    let raw: RawKimiBalanceResponse =
+        serde_json::from_str(body).context("Failed to parse Kimi balance response")?;
+
+    Ok(tact_protocol::BalanceInfo {
+        is_available: raw.status && raw.code == 0,
+        balance_infos: vec![tact_protocol::BalanceEntry {
+            currency: currency.to_string(),
+            total_balance: balance_amount_str(raw.data.available_balance),
+            granted_balance: balance_amount_str(raw.data.voucher_balance),
+            topped_up_balance: balance_amount_str(raw.data.cash_balance),
+        }],
+    })
+}
+
 /// Query Kimi/Moonshot account balance.
 ///
-/// Calls `GET https://api.moonshot.cn/v1/users/me/balance` with the configured API key.
+/// Calls `GET .../v1/users/me/balance` on `api.moonshot.cn` or `api.moonshot.ai`.
 /// Returns `BalanceInfo` on success.
 pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
     let provider = get_provider();
     let api_key = provider.api_key.clone();
+    let base_url = provider.base_url.clone();
 
-    let balance_url = if provider.base_url.contains("api.moonshot.cn") {
-        let origin = provider
-            .base_url
-            .trim_end_matches('/')
-            .trim_end_matches("/v1")
-            .trim_end_matches("/v1/");
-        format!("{origin}/users/me/balance")
-    } else {
-        "https://api.moonshot.cn/v1/users/me/balance".to_string()
-    };
+    let balance_url = kimi_balance_url_from_base_url(&base_url).ok_or_else(|| {
+        anyhow::anyhow!("Kimi Code endpoint (api.kimi.com/coding) does not expose a balance API")
+    })?;
+    let currency = kimi_balance_currency(&base_url);
 
     let client = reqwest::Client::new();
     let resp = client
@@ -418,32 +489,7 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
         .await
         .context("Failed to read Kimi balance response")?;
 
-    #[derive(serde::Deserialize)]
-    struct RawKimiBalanceData {
-        total_balance: String,
-        granted_balance: String,
-        topped_up_balance: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RawKimiBalanceResponse {
-        data: RawKimiBalanceData,
-        #[serde(default)]
-        succeed: bool,
-    }
-
-    let raw: RawKimiBalanceResponse =
-        serde_json::from_str(&body).context("Failed to parse Kimi balance response")?;
-
-    Ok(tact_protocol::BalanceInfo {
-        is_available: raw.succeed,
-        balance_infos: vec![tact_protocol::BalanceEntry {
-            currency: "CNY".to_string(),
-            total_balance: raw.data.total_balance,
-            granted_balance: raw.data.granted_balance,
-            topped_up_balance: raw.data.topped_up_balance,
-        }],
-    })
+    parse_kimi_balance_response(&body, currency)
 }
 
 /// Returns the provider information installed at startup.
@@ -466,6 +512,16 @@ pub fn is_kimi_k2x() -> bool {
 /// Returns true specifically for kimi-k2.7-code.
 pub fn is_kimi_k27() -> bool {
     get_provider().is_kimi_k27()
+}
+
+/// Returns true for the Kimi Code platform (`api.kimi.com/coding`).
+pub fn is_kimi_coding() -> bool {
+    get_provider().is_kimi_coding()
+}
+
+/// Returns true when Kimi balance queries are supported for the configured endpoint.
+pub fn is_kimi_balance_supported() -> bool {
+    get_provider().is_kimi_balance_supported()
 }
 
 // ── Mock client for integration testing ───────────────────────────
@@ -837,6 +893,71 @@ mod tests {
         );
         assert!(coding.is_kimi_k2x());
         assert!(coding.is_kimi_k27());
+    }
+
+    #[test]
+    fn is_kimi_coding_and_balance_supported() {
+        let coding = provider_info(
+            "openai",
+            "",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
+        assert!(coding.is_kimi_coding());
+        assert!(!coding.is_kimi_balance_supported());
+
+        let cn = provider_info("kimi", "", "https://api.moonshot.cn/v1", "kimi-k2.5");
+        assert!(!cn.is_kimi_coding());
+        assert!(cn.is_kimi_balance_supported());
+    }
+
+    #[test]
+    fn kimi_balance_url_derivation() {
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.cn/v1"),
+            Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.cn/v1/"),
+            Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.ai/v1"),
+            Some("https://api.moonshot.ai/v1/users/me/balance".to_string())
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.cn"),
+            Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.kimi.com/coding/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url(""),
+            Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_kimi_balance_response_maps_official_schema() {
+        let body = r#"{"code":0,"status":true,"scode":"0x0","data":{"available_balance":49.58,"voucher_balance":46.58,"cash_balance":3.0}}"#;
+        let info = parse_kimi_balance_response(body, "CNY").unwrap();
+        assert!(info.is_available);
+        assert_eq!(info.balance_infos.len(), 1);
+        let entry = &info.balance_infos[0];
+        assert_eq!(entry.currency, "CNY");
+        assert_eq!(entry.total_balance, "49.58");
+        assert_eq!(entry.granted_balance, "46.58");
+        assert_eq!(entry.topped_up_balance, "3");
+    }
+
+    #[test]
+    fn parse_kimi_balance_response_unavailable_when_code_nonzero() {
+        let body = r#"{"code":1,"status":false,"data":{"available_balance":0.0,"voucher_balance":0.0,"cash_balance":0.0}}"#;
+        let info = parse_kimi_balance_response(body, "USD").unwrap();
+        assert!(!info.is_available);
+        assert_eq!(info.balance_infos[0].currency, "USD");
     }
 
     #[test]

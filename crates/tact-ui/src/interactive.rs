@@ -16,7 +16,10 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_llm::{get_llm_client, is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance};
+use tact_llm::{
+    get_llm_client, is_deepseek, is_kimi_balance_supported, query_deepseek_balance,
+    query_kimi_balance,
+};
 use tact_protocol::AgentUpdate;
 
 use crate::driver::run_command_loop;
@@ -134,7 +137,7 @@ async fn run_interactive_locked(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
-    let balance_polling = is_deepseek() || is_kimi();
+    let balance_polling = is_deepseek() || is_kimi_balance_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
         tui::run_tui(
             agent_rx,
@@ -149,7 +152,7 @@ async fn run_interactive_locked(
         .await
     }));
 
-    if is_deepseek() || is_kimi() {
+    if is_deepseek() || is_kimi_balance_supported() {
         let balance_tx = agent_tx2;
         tokio::spawn(async move {
             let result = if is_deepseek() {

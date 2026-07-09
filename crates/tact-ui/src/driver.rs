@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use tact::{Agent, extract_text};
-use tact_llm::{is_deepseek, is_kimi, query_deepseek_balance, query_kimi_balance};
+use tact_llm::{
+    is_deepseek, is_kimi, is_kimi_balance_supported, query_deepseek_balance, query_kimi_balance,
+};
 use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
@@ -107,8 +109,12 @@ pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work
         UserCommand::QueryBalance => {
             let result = if is_deepseek() {
                 query_deepseek_balance().await
-            } else if is_kimi() {
+            } else if is_kimi_balance_supported() {
                 query_kimi_balance().await
+            } else if is_kimi() {
+                Err(anyhow::anyhow!(
+                    "balance query not supported for Kimi Code endpoint (api.kimi.com/coding)"
+                ))
             } else {
                 Err(anyhow::anyhow!(
                     "balance query not supported for current provider"

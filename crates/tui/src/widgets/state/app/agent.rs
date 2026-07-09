@@ -282,6 +282,7 @@ impl App {
             // Update balance info
             AgentUpdate::Balance(info) => {
                 self.balance_info = Some(info.clone());
+                self.dirty = true;
             }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
@@ -659,6 +660,38 @@ mod lifecycle_tests {
             app.balance_info
                 .as_ref()
                 .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
+        );
+        assert!(app.dirty, "balance update should trigger repaint");
+        assert!(
+            crate::should_repaint(&app),
+            "idle balance update must pass repaint gate so bottom row is drawn"
+        );
+    }
+
+    #[test]
+    fn balance_update_on_idle_repaints_bottom_amount_row() {
+        use tact_protocol::{BalanceEntry, BalanceInfo};
+
+        let mut app = make_app();
+        app.dirty = false;
+        app.status = Status::Idle;
+        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+            is_available: true,
+            balance_infos: vec![BalanceEntry {
+                currency: "CNY".into(),
+                total_balance: "88.50".into(),
+                granted_balance: "80.00".into(),
+                topped_up_balance: "8.50".into(),
+            }],
+        }));
+
+        assert!(crate::should_repaint(&app));
+
+        let text = crate::render::test_harness::render_app_text(&mut app, 120, 12);
+        let bottom_row = text.lines().last().unwrap_or("");
+        assert!(
+            bottom_row.contains("88.50") || bottom_row.contains("CNY"),
+            "balance amount should render on bottom bar last row, got last line: {bottom_row:?}\nfull:\n{text}"
         );
     }
 

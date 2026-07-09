@@ -55,6 +55,11 @@ use tokio_stream::StreamExt;
 
 // ========== Main Loop ==========
 
+/// Whether the main loop should repaint this frame (mirrors `run_tui` gate).
+pub(crate) fn should_repaint(app: &App) -> bool {
+    app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
+}
+
 /// Returns a random interval between 5–15 seconds to avoid rate-limiting on balance queries.
 fn random_balance_duration() -> Duration {
     let nanos = SystemTime::now()
@@ -136,7 +141,7 @@ pub async fn run_tui(
         // high-frequency refreshes while idle.
         // Done state transitions to Idle after 2s timeout; must keep rendering to check
         // the clock.
-        if app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty() {
+        if should_repaint(&app) {
             // Advance spinner frame when in an active state
             if !matches!(app.status, Status::Idle | Status::Done) {
                 app.spinner_frame = (app.spinner_frame + 1) % 10;
