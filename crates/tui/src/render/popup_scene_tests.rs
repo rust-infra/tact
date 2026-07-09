@@ -11,6 +11,8 @@ fn seed_diff_popup(app: &mut App) {
     app.tools.popup = Some(DiffPopup {
         title: "read_file".into(),
         file_path: None,
+        git_diff_path: None,
+        workspace_dir: None,
         inline_content: Some("fn render_test() {\n    assert!(true);\n}".into()),
         lang: "rust".into(),
         use_diff_gutter: false,
@@ -245,6 +247,80 @@ fn main_area_loading_spinner_when_executing() {
     assert!(
         !text.trim().is_empty(),
         "executing log with loading placeholder should render, got:\n{text}"
+    );
+}
+
+#[test]
+fn open_diff_popup_after_edit_file_step_uses_git_diff() {
+    use std::collections::HashMap;
+    use std::process::Command;
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let file = tmp.join("lib.rs");
+    std::fs::write(&file, "fn old() {}").unwrap();
+
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&tmp)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .args(args);
+        cmd.output().unwrap()
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "init"]);
+
+    std::fs::write(&file, "fn new() {}").unwrap();
+
+    let mut app = make_app();
+    app.workspace_dir = tmp.to_string_lossy().to_string();
+
+    let path = file.to_string_lossy().into_owned();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "edit",
+        "edit_file",
+        "edit_popup",
+        HashMap::from([
+            ("path".to_string(), path.clone()),
+            ("old_text".to_string(), "fn old() {}".into()),
+            ("new_text".to_string(), "fn new() {}".into()),
+        ]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted(
+        0,
+        "edit_popup".into(),
+        "edit_file".into(),
+        path.clone(),
+    ));
+    app.handle_agent_update(AgentUpdate::StepFinished(
+        0,
+        "edit_popup".into(),
+        StepResult {
+            tool: "edit_file".into(),
+            arg_summary: path.clone(),
+            arg_full: Some(path.clone()),
+            status: StepStatus::Success,
+            message: "wrote".into(),
+            detail: Some("fn new() {}".into()),
+            duration_us: Some(100),
+            permission_label: None,
+        },
+    ));
+
+    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    app.open_diff_popup(phys_idx);
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        text.contains("fn new()") || text.contains("@@") || text.contains('+'),
+        "edit_file popup should render git diff, got:\n{text}"
     );
 }
 
