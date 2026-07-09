@@ -46,12 +46,11 @@ fn collect_entries(dir: &std::path::Path, base: &std::path::Path) -> Vec<String>
             .then_with(|| a.file_name().cmp(&b.file_name()))
     });
 
-    if dir != base {
-        if let Some(parent) = dir.parent() {
-            if parent.starts_with(base) || parent == base {
-                options.push("../".to_string());
-            }
-        }
+    if dir != base
+        && let Some(parent) = dir.parent()
+        && (parent.starts_with(base) || parent == base)
+    {
+        options.push("../".to_string());
     }
 
     for entry in entries {
@@ -126,10 +125,11 @@ impl FilePicker {
     /// Remove the last character from the query; if the query is empty,
     /// navigate up to the parent directory (stopping at base_dir).
     pub(crate) fn backspace(&mut self) {
-        if self.query.pop().is_none() && self.current_dir != self.base_dir {
-            if let Some(parent) = self.current_dir.parent() {
-                self.current_dir = parent.to_path_buf();
-            }
+        if self.query.pop().is_none()
+            && self.current_dir != self.base_dir
+            && let Some(parent) = self.current_dir.parent()
+        {
+            self.current_dir = parent.to_path_buf();
         }
         self.refresh();
     }
@@ -145,10 +145,10 @@ impl FilePicker {
     pub(crate) fn enter_selected_dir(&mut self, name: &str) {
         let name = name.trim_end_matches('/');
         if name.is_empty() || name == ".." {
-            if self.current_dir != self.base_dir {
-                if let Some(parent) = self.current_dir.parent() {
-                    self.current_dir = parent.to_path_buf();
-                }
+            if self.current_dir != self.base_dir
+                && let Some(parent) = self.current_dir.parent()
+            {
+                self.current_dir = parent.to_path_buf();
             }
         } else {
             self.current_dir = self.current_dir.join(name);
