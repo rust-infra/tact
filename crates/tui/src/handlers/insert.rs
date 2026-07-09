@@ -521,13 +521,13 @@ mod tests {
         drop(agent_tx);
         let app = App::new(
             agent_rx,
+            None,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
-            false,
         );
         (app, user_cmd_rx)
     }

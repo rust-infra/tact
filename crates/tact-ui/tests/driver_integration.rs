@@ -5,7 +5,7 @@ use std::time::Duration;
 use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
-use tact_protocol::{AgentErrorKind, AgentUpdate, StepStatus, UserCommand};
+use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
 use tact_ui::driver::run_command_loop;
 use tact_ui::test_support::{
     build_test_agent, build_test_agent_with_session, collect_updates_after, install_test_config,
@@ -237,36 +237,6 @@ async fn submit_task_persists_messages_to_session_store() {
 }
 
 #[tokio::test]
-async fn query_balance_is_noop_for_unsupported_provider() {
-    install_test_config();
-
-    let mock = MockClient::new(vec![]);
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
-    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
-
-    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
-
-    user_cmd_tx.send(UserCommand::QueryBalance).unwrap();
-    drop(user_cmd_tx);
-
-    driver.await.unwrap();
-
-    let updates = collect_updates_after(agent_rx).await;
-    assert!(
-        !updates.iter().any(|u| {
-            matches!(
-                u,
-                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
-                    | AgentUpdate::Balance(_)
-                    | AgentUpdate::UsageQuota(_)
-            )
-        }),
-        "unsupported provider should ignore balance query, got: {updates:?}"
-    );
-}
-
-#[tokio::test]
 async fn sequential_submit_tasks_both_complete() {
     install_test_config();
 
@@ -405,49 +375,6 @@ async fn read_missing_file_emits_failed_step() {
             .iter()
             .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "agent should continue after tool failure, got: {updates:?}"
-    );
-}
-
-#[tokio::test]
-async fn query_balance_then_submit_task_both_handled() {
-    install_test_config();
-
-    let mock = MockClient::new(vec![(
-        vec![text_block("After balance query.")],
-        Some(StopReason::EndTurn),
-    )]);
-
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
-    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
-
-    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
-
-    user_cmd_tx.send(UserCommand::QueryBalance).unwrap();
-    user_cmd_tx
-        .send(UserCommand::SubmitTask("after balance".into()))
-        .unwrap();
-    drop(user_cmd_tx);
-
-    driver.await.unwrap();
-
-    let updates = collect_updates_after(agent_rx).await;
-    assert!(
-        !updates.iter().any(|u| {
-            matches!(
-                u,
-                AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(_))
-                    | AgentUpdate::Balance(_)
-                    | AgentUpdate::UsageQuota(_)
-            )
-        }),
-        "unsupported provider should ignore balance query, got: {updates:?}"
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
-        "submit after balance should still complete, got: {updates:?}"
     );
 }
 

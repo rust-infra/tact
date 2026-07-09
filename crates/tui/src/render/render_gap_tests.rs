@@ -6,7 +6,7 @@ use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use std::collections::HashMap;
 use std::time::Duration;
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus};
 
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
     app.plan.visible = true;
@@ -508,9 +508,10 @@ fn full_frame_edit_file_tool_shows_in_log() {
 fn balance_update_renders_in_bottom_bar() {
     use tact_protocol::{BalanceEntry, BalanceInfo};
 
+    let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = make_app();
-    app.account_query_supported = true;
-    app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+    app.account_rx = Some(account_rx);
+    app.handle_account_update(AccountUpdate::Balance(BalanceInfo {
         is_available: true,
         balance_infos: vec![BalanceEntry {
             currency: "USD".into(),
@@ -532,9 +533,10 @@ fn balance_update_renders_in_bottom_bar() {
 fn usage_quota_update_renders_in_bottom_bar() {
     use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
 
+    let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = make_app();
-    app.account_query_supported = true;
-    app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+    app.account_rx = Some(account_rx);
+    app.handle_account_update(AccountUpdate::UsageQuota(UsageQuotaInfo {
         is_available: true,
         windows: vec![UsageQuotaWindow {
             label: "week".into(),

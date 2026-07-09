@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::biz::{BalanceInfo, UsageQuotaInfo};
-
 /// Execution status of a step.
 #[derive(Debug, Clone)]
 pub enum StepStatus {
@@ -49,10 +47,6 @@ pub struct ModelCallParams {
 /// from non-fatal situations (shown as Info).
 #[derive(Debug, Clone)]
 pub enum AgentErrorKind {
-    /// Balance query failed (network or API error)
-    BalanceQueryFailed(String),
-    /// Balance query is only supported for DeepSeek provider
-    BalanceNotSupported,
     /// Generic error (catch-all)
     Other(String),
 }
@@ -61,10 +55,6 @@ impl AgentErrorKind {
     /// Returns a human-readable error description.
     pub fn display(&self) -> &str {
         match self {
-            AgentErrorKind::BalanceQueryFailed(e) => e,
-            AgentErrorKind::BalanceNotSupported => {
-                "Balance query is only available for DeepSeek provider"
-            }
             AgentErrorKind::Other(msg) => msg,
         }
     }
@@ -128,10 +118,6 @@ pub enum AgentUpdate {
         /// `completion_tokens_details.reasoning_tokens` field.
         reasoning_tokens: u32,
     },
-    /// Account balance info (DeepSeek / Moonshot Open Platform)
-    Balance(BalanceInfo),
-    /// Kimi Code subscription quota (weekly + rolling window).
-    UsageQuota(UsageQuotaInfo),
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)

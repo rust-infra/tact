@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListState, ScrollbarState};
 use std::time::Instant;
-use tact_protocol::{AgentErrorKind, AgentUpdate};
+use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -64,12 +64,10 @@ impl App {
         match &update {
             AgentUpdate::PlanGenerated(_)
             | AgentUpdate::TokenUsage { .. }
-            | AgentUpdate::Balance(_)
-            | AgentUpdate::UsageQuota(_)
             | AgentUpdate::ModelInfo(_) => {
                 // These don't remove the loading placeholder:
                 // - PlanGenerated: we just inserted it
-                // - TokenUsage / Balance / UsageQuota / ModelInfo: metadata only, no content
+                // - TokenUsage / ModelInfo: metadata only, no content
             }
             _ => {
                 self.remove_loading_placeholder();
@@ -236,35 +234,13 @@ impl App {
                 // TODO Add task stats block
             }
             // Error handling
-            AgentUpdate::Error(kind) => {
-                match kind {
-                    AgentErrorKind::BalanceNotSupported => {
-                        self.balance_info = None;
-                        self.usage_quota = None;
-                        // self.flash_msg = Some((
-                        //     "Balance query not supported for this model".to_string(),
-                        //     std::time::Instant::now(),
-                        // ));
-                        self.dirty = true;
-                    }
-                    AgentErrorKind::BalanceQueryFailed(err) => {
-                        self.balance_info = None;
-                        self.usage_quota = None;
-                        self.flash_msg = Some((
-                            format!("Balance query failed: {}", err),
-                            std::time::Instant::now(),
-                        ));
-                        self.dirty = true;
-                    }
-                    AgentErrorKind::Other(msg) => {
-                        // Fatal error: flush leftover streaming lines
-                        self.flush_stream_pending();
-                        let msgs = self.msgs();
-                        self.add_system_message(msgs.error_tmpl.replace("{}", &msg));
-                        self.status = Status::Idle;
-                        self.freeze_last_prompt_cost();
-                    }
-                }
+            AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
+                // Fatal error: flush leftover streaming lines
+                self.flush_stream_pending();
+                let msgs = self.msgs();
+                self.add_system_message(msgs.error_tmpl.replace("{}", &msg));
+                self.status = Status::Idle;
+                self.freeze_last_prompt_cost();
             }
             // Update token usage info
             AgentUpdate::TokenUsage {
@@ -281,17 +257,6 @@ impl App {
                 self.status_bar.token_cache_hit = prompt_cache_hit_tokens;
                 self.status_bar.token_cache_miss = prompt_cache_miss_tokens;
                 self.status_bar.token_reasoning = reasoning_tokens;
-            }
-            // Update balance info
-            AgentUpdate::Balance(info) => {
-                self.balance_info = Some(info.clone());
-                self.usage_quota = None;
-                self.dirty = true;
-            }
-            AgentUpdate::UsageQuota(info) => {
-                self.usage_quota = Some(info.clone());
-                self.balance_info = None;
-                self.dirty = true;
             }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
@@ -589,6 +554,22 @@ impl App {
         }
     }
 
+    /// Apply an account-service update (balance / usage quota).
+    ///
+    /// These updates live on a separate channel from the agent runtime so that
+    /// provider-specific account state does not leak into the agent protocol.
+    pub(crate) fn handle_account_update(&mut self, update: AccountUpdate) {
+        self.dirty = true;
+        match update {
+            AccountUpdate::Balance(info) => self.account.set_balance(info),
+            AccountUpdate::UsageQuota(info) => self.account.set_quota(info),
+            AccountUpdate::Error(err) => {
+                self.account.clear();
+                self.flash_msg = Some((err.display(), std::time::Instant::now()));
+            }
+        }
+    }
+
     /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
     pub(crate) fn maybe_expire_done_status(&mut self) {
         if let Status::Done = self.status
@@ -622,7 +603,9 @@ mod lifecycle_tests {
     use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{
+        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
+    };
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_app() -> App {
@@ -631,13 +614,13 @@ mod lifecycle_tests {
         let (history_tx, _history_rx) = unbounded_channel();
         App::new(
             agent_rx,
+            None,
             user_cmd_tx,
             PathBuf::from("."),
             Vec::new(),
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
-            false,
         )
     }
 
@@ -654,10 +637,11 @@ mod lifecycle_tests {
     fn usage_quota_update_sets_usage_and_repaints() {
         use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
 
+        let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
-        app.account_query_supported = true;
+        app.account_rx = Some(account_rx);
         app.dirty = false;
-        app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+        app.handle_account_update(AccountUpdate::UsageQuota(UsageQuotaInfo {
             is_available: true,
             windows: vec![
                 UsageQuotaWindow {
@@ -676,8 +660,8 @@ mod lifecycle_tests {
             membership_level: None,
         }));
 
-        assert!(app.usage_quota.is_some());
-        assert!(app.balance_info.is_none());
+        assert!(app.account.quota.is_some());
+        assert!(app.account.balance.is_none());
         assert!(app.dirty);
         assert!(crate::should_repaint(&app));
     }
@@ -686,9 +670,10 @@ mod lifecycle_tests {
     fn balance_update_sets_balance_info() {
         use tact_protocol::{BalanceEntry, BalanceInfo};
 
+        let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
-        app.account_query_supported = true;
-        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+        app.account_rx = Some(account_rx);
+        app.handle_account_update(AccountUpdate::Balance(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "CNY".into(),
@@ -698,9 +683,10 @@ mod lifecycle_tests {
             }],
         }));
 
-        assert!(app.balance_info.is_some());
+        assert!(app.account.balance.is_some());
         assert!(
-            app.balance_info
+            app.account
+                .balance
                 .as_ref()
                 .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
         );
@@ -715,11 +701,12 @@ mod lifecycle_tests {
     fn balance_update_on_idle_repaints_bottom_amount_row() {
         use tact_protocol::{BalanceEntry, BalanceInfo};
 
+        let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
-        app.account_query_supported = true;
+        app.account_rx = Some(account_rx);
         app.dirty = false;
         app.status = Status::Idle;
-        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+        app.handle_account_update(AccountUpdate::Balance(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "CNY".into(),
@@ -915,8 +902,10 @@ mod lifecycle_tests {
 
     #[test]
     fn balance_query_failed_sets_flash_message() {
+        let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(
+        app.account_rx = Some(account_rx);
+        app.handle_account_update(AccountUpdate::Error(AccountError::QueryFailed(
             "network down".into(),
         )));
         assert!(
@@ -964,13 +953,15 @@ mod lifecycle_tests {
 
     #[test]
     fn balance_not_supported_clears_balance_info() {
+        let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
-        app.balance_info = Some(tact_protocol::BalanceInfo {
+        app.account_rx = Some(account_rx);
+        app.account.balance = Some(tact_protocol::BalanceInfo {
             is_available: true,
             balance_infos: vec![],
         });
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::BalanceNotSupported));
-        assert!(app.balance_info.is_none());
+        app.handle_account_update(AccountUpdate::Error(AccountError::NotSupported));
+        assert!(app.account.balance.is_none());
     }
 
     #[test]

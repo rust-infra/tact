@@ -323,7 +323,7 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "balance" => {
-            if !app.account_query_supported {
+            if app.account_rx.is_none() {
                 return CommandExecOutcome {
                     handled: true,
                     clear_input: true,
@@ -371,13 +371,13 @@ mod tests {
         drop(agent_tx);
         let app = App::new(
             agent_rx,
+            None,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
-            false,
         );
         (app, user_cmd_rx)
     }
@@ -385,7 +385,8 @@ mod tests {
     #[test]
     fn palette_commands_are_all_handled() {
         let (mut app, _user_cmd_rx) = make_app();
-        app.account_query_supported = true;
+        let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.account_rx = Some(account_rx);
         let commands: Vec<_> = app.palette_commands().copied().collect();
 
         for (cmd, _desc) in &commands {

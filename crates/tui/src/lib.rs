@@ -44,12 +44,8 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
 };
 use std::path::PathBuf;
-use std::{
-    io,
-    time::Duration,
-    time::{SystemTime, UNIX_EPOCH},
-};
-use tact_protocol::{AgentUpdate, UserCommand};
+use std::{io, time::Duration};
+use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -60,26 +56,17 @@ pub(crate) fn should_repaint(app: &App) -> bool {
     app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
 }
 
-/// Returns a random interval between 5–15 seconds to avoid rate-limiting on balance queries.
-fn random_balance_duration() -> Duration {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    Duration::from_secs(5 + (nanos % 11) as u64)
-}
-
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     agent_rx: UnboundedReceiver<AgentUpdate>,
+    account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     user_cmd_tx: UnboundedSender<UserCommand>,
     work_dir: PathBuf,
     input_history_entries: Vec<String>,
     session_id: String,
     history_save_tx: UnboundedSender<(String, String)>,
     theme: String,
-    balance_polling_enabled: bool,
 ) -> Result<()> {
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -97,13 +84,13 @@ pub async fn run_tui(
     // Initialize application state
     let mut app = App::new(
         agent_rx,
+        account_rx,
         user_cmd_tx.clone(),
         work_dir,
         input_history_entries,
         session_id,
         history_save_tx,
         theme,
-        balance_polling_enabled,
     );
     app.add_startup_logo();
     let msgs = app.msgs();
@@ -125,8 +112,6 @@ pub async fn run_tui(
         }
     });
 
-    let mut balance_timer: std::pin::Pin<Box<tokio::time::Sleep>> =
-        Box::pin(tokio::time::sleep(random_balance_duration()));
     loop {
         // Process all Agent status updates first, ensuring rendering and event handling
         // use consistent state.
@@ -136,6 +121,14 @@ pub async fn run_tui(
         // actual message array, causing mouse clicks to map to wrong lines.
         while let Ok(update) = app.agent_rx.try_recv() {
             app.handle_agent_update(update);
+        }
+        let account_updates: Vec<AccountUpdate> = app
+            .account_rx
+            .as_mut()
+            .map(|rx| std::iter::from_fn(|| rx.try_recv().ok()).collect())
+            .unwrap_or_default();
+        for update in account_updates {
+            app.handle_account_update(update);
         }
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
@@ -224,11 +217,6 @@ pub async fn run_tui(
             1000u64
         };
         tokio::select! {
-            _ = balance_timer.as_mut(), if balance_polling_enabled => {
-                // Periodic DeepSeek/Kimi balance query (random 5–15 second interval)
-                let _ = user_cmd_tx.send(UserCommand::QueryBalance);
-                balance_timer = Box::pin(tokio::time::sleep(random_balance_duration()));
-            }
             event = event_rx.recv() => {
                 match event {
                     Some(event) => {

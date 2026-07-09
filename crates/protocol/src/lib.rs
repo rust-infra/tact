@@ -10,7 +10,9 @@ pub use agent::{
     AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, TokenUsageInfo,
     UserCommand,
 };
-pub use biz::{BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow};
+pub use biz::{
+    AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
+};
 
 // Format a byte count using human-readable units: Byte, K, M, G.
 //

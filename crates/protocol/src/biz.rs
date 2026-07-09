@@ -61,3 +61,37 @@ pub struct UsageQuotaInfo {
     pub windows: Vec<UsageQuotaWindow>,
     pub membership_level: Option<String>,
 }
+
+/// Account-query error, separate from [`AgentErrorKind`](crate::agent::AgentErrorKind)
+/// so that balance failures do not have to flow through the agent runtime.
+#[derive(Debug, Clone)]
+pub enum AccountError {
+    /// The active provider does not support balance / usage queries.
+    NotSupported,
+    /// Network or API error while fetching account information.
+    QueryFailed(String),
+}
+
+impl AccountError {
+    /// Human-readable description suitable for a flash message.
+    pub fn display(&self) -> String {
+        match self {
+            AccountError::NotSupported => "Account query not supported for this provider".into(),
+            AccountError::QueryFailed(err) => format!("Account query failed: {err}"),
+        }
+    }
+}
+
+/// Update messages produced by the account service (balance / usage quota).
+///
+/// These travel on their own channel and are handled by the TUI independently
+/// of the agent runtime.
+#[derive(Debug, Clone)]
+pub enum AccountUpdate {
+    /// DeepSeek / Moonshot account balance info.
+    Balance(BalanceInfo),
+    /// Kimi Code subscription quota.
+    UsageQuota(UsageQuotaInfo),
+    /// Account query failed.
+    Error(AccountError),
+}

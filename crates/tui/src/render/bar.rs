@@ -181,9 +181,9 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(bar2, mid_area);
 
         if let Some(bottom_area) = bottom_area
-            && app.account_query_supported
+            && app.account_rx.is_some()
         {
-            if let Some(bi) = &app.balance_info {
+            if let Some(bi) = &app.account.balance {
                 let status = if bi.is_available {
                     msgs.bottom_balance_ok
                 } else {
@@ -206,7 +206,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .replacen("{}", &entries, 1);
                 let bar3 = Paragraph::new(balance_text).style(style);
                 frame.render_widget(bar3, bottom_area);
-            } else if let Some(quota) = &app.usage_quota {
+            } else if let Some(quota) = &app.account.quota {
                 let status = if quota.is_available {
                     msgs.bottom_balance_ok
                 } else {
@@ -407,9 +407,10 @@ mod render_tests {
 
     #[test]
     fn bottom_bar_shows_balance_row_when_available() {
+        let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = make_app();
-        app.account_query_supported = true;
-        app.balance_info = Some(BalanceInfo {
+        app.account_rx = Some(account_rx);
+        app.account.balance = Some(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "USD".into(),
