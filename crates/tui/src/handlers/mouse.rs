@@ -142,6 +142,8 @@ mod tests {
         app.tools.popup = Some(DiffPopup {
             title: "t".into(),
             file_path: None,
+            git_diff_path: None,
+            workspace_dir: None,
             inline_content: Some("line\n".into()),
             lang: String::new(),
             use_diff_gutter: false,

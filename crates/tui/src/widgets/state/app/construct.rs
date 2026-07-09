@@ -8,7 +8,7 @@ use crate::widgets::state::{
     SearchState, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
     ThinkingState, ToolState,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tact_protocol::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -108,45 +108,12 @@ impl App {
         }
     }
 
-    /// Open the `@` file picker: scan the project root for files (skipping
-    /// hidden directories and common build/output folders), populate the picker
-    /// options, and switch to `FilePicker` mode.
+    /// Open the `@` file picker starting at the project root. The picker lists
+    /// entries in the current directory only; directories can be entered to
+    /// browse their contents.
     pub(crate) fn open_file_picker(&mut self) {
-        let mut options = Vec::new();
-        collect_files(&self.work_dir, &self.work_dir, &mut options, 200);
-        options.sort();
-        self.file_picker.set(options);
+        self.file_picker
+            .set_dir(self.work_dir.clone(), self.work_dir.clone());
         self.input_mode = InputMode::FilePicker;
-    }
-}
-
-const FILE_PICKER_EXCLUDES: &[&str] = &[".git", "target", "node_modules", ".tact"];
-
-fn collect_files(dir: &Path, base: &Path, options: &mut Vec<String>, max: usize) {
-    if options.len() >= max {
-        return;
-    }
-    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
-        Ok(it) => it.flatten().collect(),
-        Err(_) => return,
-    };
-    entries.sort_by_key(|e| e.path());
-    for entry in entries {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with('.') || FILE_PICKER_EXCLUDES.contains(&name) {
-            continue;
-        }
-        if path.is_dir() {
-            collect_files(&path, base, options, max);
-            if options.len() >= max {
-                break;
-            }
-        } else if let Ok(rel) = path.strip_prefix(base) {
-            options.push(rel.to_string_lossy().to_string());
-            if options.len() >= max {
-                break;
-            }
-        }
     }
 }

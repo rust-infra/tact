@@ -4783,6 +4783,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tact_protocol",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "toml",

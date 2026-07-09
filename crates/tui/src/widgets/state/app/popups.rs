@@ -261,6 +261,7 @@ impl App {
     }
 
     fn popup_from_tool_output(
+        &self,
         output: &crate::widgets::tool_widget::ToolRenderOutput,
     ) -> Option<DiffPopup> {
         if !output.layout.has_detail_card {
@@ -274,6 +275,8 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| output.tool_name.clone()),
                 file_path: None,
+                git_diff_path: None,
+                workspace_dir: None,
                 inline_content: Some(content),
                 lang: String::new(),
                 use_diff_gutter: false,
@@ -294,6 +297,8 @@ impl App {
                 } else {
                     output.arg_full.clone()
                 }),
+                git_diff_path: None,
+                workspace_dir: None,
                 inline_content: output.detail_full.clone(),
                 lang: crate::render::popups::diff_popup::popup_lang_for_path(
                     if output.arg_full.is_empty() {
@@ -307,6 +312,25 @@ impl App {
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             }),
+            "edit_file" => {
+                let path = if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                };
+                Some(DiffPopup {
+                    title: path.clone(),
+                    file_path: None,
+                    git_diff_path: Some(path.clone()),
+                    workspace_dir: Some(self.workspace_dir.clone()),
+                    inline_content: output.detail_full.clone(),
+                    lang: crate::render::popups::diff_popup::popup_lang_for_path(&path),
+                    use_diff_gutter: false,
+                    scroll: 0,
+                    cached_content: None,
+                    highlighted_lines: Vec::new(),
+                })
+            }
             "bash" | "shell" | "run_command" => {
                 let content = output.detail_full.clone()?;
                 let full_arg = if output.arg_full.is_empty() {
@@ -324,6 +348,8 @@ impl App {
                         format!("bash ({full_arg})")
                     },
                     file_path: None,
+                    git_diff_path: None,
+                    workspace_dir: None,
                     inline_content: Some(if full_arg.is_empty() {
                         content
                     } else {
@@ -344,6 +370,8 @@ impl App {
                         .clone()
                         .unwrap_or_else(|| output.tool_name.clone()),
                     file_path: None,
+                    git_diff_path: None,
+                    workspace_dir: None,
                     inline_content: Some(content),
                     lang: String::new(),
                     use_diff_gutter: false,
@@ -360,7 +388,7 @@ impl App {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
-        if let Some(popup) = Self::popup_from_tool_output(output) {
+        if let Some(popup) = self.popup_from_tool_output(output) {
             self.tools.popup = Some(popup);
         }
     }

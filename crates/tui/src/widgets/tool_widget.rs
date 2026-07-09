@@ -41,6 +41,7 @@ impl ToolPhase {
 pub enum ToolDisplayKind {
     FileWrite,
     FileRead,
+    FileEdit,
     Command,
     Generic,
 }
@@ -49,6 +50,7 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
     match tool {
         "write_file" => ToolDisplayKind::FileWrite,
         "read_file" => ToolDisplayKind::FileRead,
+        "edit_file" => ToolDisplayKind::FileEdit,
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
         _ => ToolDisplayKind::Generic,
     }
@@ -427,7 +429,7 @@ impl<'a> ToolWidget<'a> {
 
     pub fn size_bytes(&self) -> Option<usize> {
         match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead => {
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead | ToolDisplayKind::FileEdit => {
                 self.detail.as_ref().map(|d| d.len()).filter(|len| *len > 0)
             }
             _ => None,
@@ -466,7 +468,10 @@ impl<'a> ToolWidget<'a> {
 
     pub fn build(&self) -> ToolRenderOutput {
         let layout = self.layout();
-        let use_diff_gutter = matches!(display_kind(&self.tool_name), ToolDisplayKind::FileWrite);
+        let use_diff_gutter = matches!(
+            display_kind(&self.tool_name),
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit
+        );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
             let lines: Vec<String> = detail
@@ -537,7 +542,10 @@ impl<'a> ToolWidget<'a> {
         }
         matches!(
             display_kind(&self.tool_name),
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead | ToolDisplayKind::Command
+            ToolDisplayKind::FileWrite
+                | ToolDisplayKind::FileRead
+                | ToolDisplayKind::FileEdit
+                | ToolDisplayKind::Command
         ) && matches!(self.phase, ToolPhase::Success)
     }
 
@@ -546,7 +554,7 @@ impl<'a> ToolWidget<'a> {
             return self.msgs.tool_error_card_title.to_string();
         }
         match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite => self
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit => self
                 .msgs
                 .diff_card_title
                 .replacen("{}", &total_lines.to_string(), 1)
@@ -802,6 +810,29 @@ mod tests {
             Some("Always allow this tool")
         );
         assert!(output.layout.has_detail_card);
+    }
+
+    #[test]
+    fn edit_file_builds_detail_card_with_diff_gutter() {
+        let (theme, msgs) = fixture();
+        let detail = "new line one\nnew line two".to_string();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("edit_file")
+            .with_arg_summary("src/lib.rs")
+            .with_phase(ToolPhase::Success)
+            .with_detail(detail);
+
+        let output = widget.build();
+        assert!(output.layout.has_detail_card);
+        assert!(output.use_diff_gutter);
+        assert!(
+            output
+                .detail_title
+                .as_deref()
+                .unwrap()
+                .contains("src/lib.rs")
+        );
+        assert_eq!(output.detail_preview, vec!["new line one".to_string()]);
     }
 
     #[test]
