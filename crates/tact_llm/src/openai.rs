@@ -313,6 +313,11 @@ impl LlmClient for OpenAiAdapter {
 
         while let Some(event) = event_source.next().await {
             match event {
+                // REVIEW: reqwest-eventsource only surfaces the HTTP status code for
+                // non-2xx responses, not the response body. A common 400 cause after
+                // MaxTokens is an empty assistant message (see sanitize_assistant_messages
+                // in convert.rs). Log the request body so the exact invalid payload can
+                // be audited without reproducing the failure live.
                 Err(e) => {
                     tracing::debug!(
                         error = %e,

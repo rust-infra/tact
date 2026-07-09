@@ -149,6 +149,11 @@ pub fn anthropic_messages_to_openai(
                                 });
                             }
                             // Drop thinking blocks when sending to OpenAI.
+                            // REVIEW: For non-Kimi providers this can leave the
+                            // assistant message with no content and no tool_calls,
+                            // which violates OpenAI's message schema. We currently
+                            // rely on sanitize_assistant_messages to stub such
+                            // messages; reconsider if the upstream format changes.
                             _ => {}
                         }
                     }
@@ -194,6 +199,11 @@ pub fn anthropic_messages_to_openai(
 /// 2. Assistant messages cannot have empty `content` and no `tool_calls`. If a
 ///    message ends up empty (e.g. thinking block was dropped, or truncation
 ///    happened before any tokens), insert a short stub.
+///
+/// REVIEW: This is a workaround for 400 Bad Request errors observed after
+/// MaxTokens recovery. The real fix may be to avoid producing empty assistant
+/// messages in the agent runtime / conversion pipeline rather than patching
+/// them after the fact.
 fn sanitize_assistant_messages(messages: &mut [ChatCompletionRequestMessage]) {
     let mut i = 0;
     while i < messages.len() {

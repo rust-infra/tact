@@ -448,6 +448,12 @@ impl Agent {
                 .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
                 .await;
 
+            // REVIEW: Persisting a truncated assistant message can leave an empty
+            // OpenAI assistant message on the next turn (e.g. only a thinking block
+            // that convert.rs drops, or an orphaned tool-call that gets stripped).
+            // sanitize_assistant_messages in tact_llm::convert currently patches this,
+            // but a cleaner fix might be to avoid adding a purely-empty assistant
+            // message to the context here in the first place.
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::Assistant, content.clone()));
