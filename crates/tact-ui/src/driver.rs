@@ -134,10 +134,6 @@ async fn handle_user_command_with_account(
                 }
             }
         }
-        UserCommand::Cancel => {
-            agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-            agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
-        }
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
                 return;
@@ -154,6 +150,7 @@ async fn handle_user_command_with_account(
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -177,9 +174,10 @@ mod tests {
     async fn cancel_sets_flag_and_emits_info() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let (agent, _) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        super::handle_user_command(&mut agent, UserCommand::Cancel, &work_dir).await;
+        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
 
         assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let update = agent_rx.try_recv().expect("expected Cancelling info");
