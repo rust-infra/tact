@@ -153,11 +153,7 @@ pub async fn run_tui(
                 let input_lines = app.input.lines().count().clamp(1, 3) as u16;
                 let input_height = input_lines + 2;
                 // Third row is balance info only; omit when unavailable to reclaim space.
-                let bottom_height = if app.shows_account_bar_row() {
-                    3
-                } else {
-                    2
-                };
+                let bottom_height = if app.shows_account_bar_row() { 3 } else { 2 };
                 let log_area = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([

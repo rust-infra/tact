@@ -204,6 +204,9 @@ mod tests {
 
         super::handle_user_command(&mut agent, UserCommand::QueryBalance, &work_dir).await;
 
-        assert!(agent_rx.try_recv().is_err(), "unsupported provider should not emit updates");
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "unsupported provider should not emit updates"
+        );
     }
 }

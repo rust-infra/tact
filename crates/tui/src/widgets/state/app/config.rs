@@ -6,15 +6,14 @@ use ratatui::text::{Line, Span};
 impl App {
     /// Palette commands visible for the current provider configuration.
     pub(crate) fn palette_commands(&self) -> impl Iterator<Item = &(&'static str, &'static str)> {
-        PALETTE_COMMANDS.iter().filter(move |(cmd, _)| {
-            self.account_query_supported || *cmd != "balance"
-        })
+        PALETTE_COMMANDS
+            .iter()
+            .filter(move |(cmd, _)| self.account_query_supported || *cmd != "balance")
     }
 
     /// Whether the bottom bar should reserve a third row for balance or usage quota.
     pub(crate) fn shows_account_bar_row(&self) -> bool {
-        self.account_query_supported
-            && (self.balance_info.is_some() || self.usage_quota.is_some())
+        self.account_query_supported && (self.balance_info.is_some() || self.usage_quota.is_some())
     }
 
     pub(crate) fn save_history(&self, entry: &str) {

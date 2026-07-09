@@ -504,12 +504,12 @@ fn full_frame_edit_file_tool_shows_in_log() {
 }
 
 #[test]
-    fn balance_update_renders_in_bottom_bar() {
-        use tact_protocol::{BalanceEntry, BalanceInfo};
+fn balance_update_renders_in_bottom_bar() {
+    use tact_protocol::{BalanceEntry, BalanceInfo};
 
-        let mut app = make_app();
-        app.account_query_supported = true;
-        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+    let mut app = make_app();
+    app.account_query_supported = true;
+    app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
         is_available: true,
         balance_infos: vec![BalanceEntry {
             currency: "USD".into(),
@@ -528,12 +528,12 @@ fn full_frame_edit_file_tool_shows_in_log() {
 }
 
 #[test]
-    fn usage_quota_update_renders_in_bottom_bar() {
-        use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
+fn usage_quota_update_renders_in_bottom_bar() {
+    use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
 
-        let mut app = make_app();
-        app.account_query_supported = true;
-        app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+    let mut app = make_app();
+    app.account_query_supported = true;
+    app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
         is_available: true,
         windows: vec![UsageQuotaWindow {
             label: "week".into(),
