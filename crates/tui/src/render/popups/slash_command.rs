@@ -1,4 +1,4 @@
-use crate::widgets::state::{App, PALETTE_COMMANDS};
+use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,7 +13,8 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         return;
     }
 
-    let filtered = slash.matched_commands(&app.input, app.input_cursor, PALETTE_COMMANDS);
+    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands);
     let n = filtered.len();
     if n == 0 {
         let hint_area = centered_rect(30, 5, area);

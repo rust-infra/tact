@@ -59,16 +59,7 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('n') => {
-            if matches!(&app.status, Status::WaitingForUser { .. }) {
-                let old_status = std::mem::replace(&mut app.status, Status::Idle);
-                if let Status::WaitingForUser { approval_tx, .. } = old_status {
-                    let _ = approval_tx.send(false);
-                    let msgs = app.msgs();
-                    app.add_system_message(msgs.step_rejected.to_string());
-                }
-            } else {
-                app.jump_to_next_match();
-            }
+            app.jump_to_next_match();
         }
         KeyCode::Char('N') => {
             app.jump_to_prev_match();
@@ -83,115 +74,87 @@ pub(crate) fn handle_normal_mode(
             app.palette_selected = 0;
         }
         KeyCode::Enter => {
-            if matches!(&app.status, Status::WaitingForUser { .. }) {
-                let old_status = std::mem::replace(&mut app.status, Status::Idle);
-                if let Status::WaitingForUser { approval_tx, .. } = old_status {
-                    let _ = approval_tx.send(true);
-                    let msgs = app.msgs();
-                    app.add_system_message(msgs.step_approved.to_string());
-                    app.add_new_line();
-                }
-            } else {
-                app.input_mode = InputMode::Insert;
-            }
+            app.input_mode = InputMode::Insert;
         }
         KeyCode::Char('i') => {
             app.input_mode = InputMode::Insert;
         }
         KeyCode::Char('y') => {
-            let old_status = std::mem::replace(&mut app.status, Status::Idle);
-            if let Status::WaitingForUser {
-                prompt: _,
-                step_index: _,
-                approval_tx,
-            } = old_status
-            {
-                let _ = approval_tx.send(true);
-                let msgs = app.msgs();
-                app.add_system_message(msgs.step_approved.to_string());
-                app.add_new_line();
-            } else {
-                // Copy to clipboard based on focused panel
-                let text = match app.focused_panel {
-                    FocusedPanel::Plan => {
-                        if let Some((s, e)) = app.mouse.plan_selection {
-                            let start = s.min(e);
-                            let end = s.max(e);
-                            if start < app.plan.steps.len() {
-                                let selected: Vec<String> = app.plan.steps
-                                    [start..=end.min(app.plan.steps.len().saturating_sub(1))]
-                                    .iter()
-                                    .map(|step| step.description.clone())
-                                    .collect();
+            let text = match app.focused_panel {
+                FocusedPanel::Plan => {
+                    if let Some((s, e)) = app.mouse.plan_selection {
+                        let start = s.min(e);
+                        let end = s.max(e);
+                        if start < app.plan.steps.len() {
+                            let selected: Vec<String> = app.plan.steps
+                                [start..=end.min(app.plan.steps.len().saturating_sub(1))]
+                                .iter()
+                                .map(|step| step.description.clone())
+                                .collect();
+                            Some(selected.join("\n"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        app.plan
+                            .steps
+                            .get(app.plan.selected)
+                            .map(|s| s.description.clone())
+                    }
+                }
+                FocusedPanel::Log => {
+                    // Prefer mouse selection over last message
+                    if let Some((s, e)) = app.mouse.log_selection {
+                        let start = s.min(e);
+                        let end = s.max(e);
+                        // If there's a word selection (double-click), copy word instead of entire line
+                        if let Some((word_start, word_end)) = app.mouse.log_word_selection {
+                            if let Some(phys_idx) = app.visible_message_index(start) {
+                                let text = &app.raw_messages[phys_idx];
+                                let word =
+                                    &text[word_start.min(text.len())..word_end.min(text.len())];
+                                Some(word.to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            let mut selected = Vec::new();
+                            for logical_i in start..=end {
+                                if let Some(phys_idx) = app.visible_message_index(logical_i) {
+                                    selected.push(app.raw_messages[phys_idx].as_str());
+                                }
+                            }
+                            if selected.is_empty() {
+                                None
+                            } else {
                                 Some(selected.join("\n"))
-                            } else {
-                                None
-                            }
-                        } else {
-                            app.plan
-                                .steps
-                                .get(app.plan.selected)
-                                .map(|s| s.description.clone())
-                        }
-                    }
-                    FocusedPanel::Log => {
-                        // Prefer mouse selection over last message
-                        if let Some((s, e)) = app.mouse.log_selection {
-                            let start = s.min(e);
-                            let end = s.max(e);
-                            // If there's a word selection (double-click), copy word instead of entire line
-                            if let Some((word_start, word_end)) = app.mouse.log_word_selection {
-                                if let Some(phys_idx) = app.visible_message_index(start) {
-                                    let text = &app.raw_messages[phys_idx];
-                                    let word =
-                                        &text[word_start.min(text.len())..word_end.min(text.len())];
-                                    Some(word.to_string())
-                                } else {
-                                    None
-                                }
-                            } else {
-                                let mut selected = Vec::new();
-                                for logical_i in start..=end {
-                                    if let Some(phys_idx) = app.visible_message_index(logical_i) {
-                                        selected.push(app.raw_messages[phys_idx].as_str());
-                                    }
-                                }
-                                if selected.is_empty() {
-                                    None
-                                } else {
-                                    Some(selected.join("\n"))
-                                }
-                            }
-                        } else {
-                            // Last visible message
-                            let total = app.total_log_lines();
-                            if total > 0 && app.stream.buffer.is_empty() {
-                                app.visible_message_index(total - 1)
-                                    .and_then(|idx| app.raw_messages.get(idx).cloned())
-                            } else if !app.stream.buffer.is_empty() {
-                                Some(app.stream.buffer.clone())
-                            } else {
-                                None
                             }
                         }
+                    } else {
+                        // Last visible message
+                        let total = app.total_log_lines();
+                        if total > 0 && app.stream.buffer.is_empty() {
+                            app.visible_message_index(total - 1)
+                                .and_then(|idx| app.raw_messages.get(idx).cloned())
+                        } else if !app.stream.buffer.is_empty() {
+                            Some(app.stream.buffer.clone())
+                        } else {
+                            None
+                        }
                     }
-                };
-                if let Some(t) = text {
-                    copy_text(app, &t);
-                    app.add_new_line();
                 }
-                // Restore previous status. WaitingForUser is already handled above in the y/n branch; no need to restore again here.
-                if !matches!(old_status, Status::WaitingForUser { .. }) {
-                    app.status = old_status;
-                }
+            };
+            if let Some(t) = text {
+                copy_text(app, &t);
+                app.add_new_line();
             }
         }
         KeyCode::Char('Y') => {
-            if app.focused_panel == FocusedPanel::Log {
-                if let Some(code) = app.extract_last_code_block() {
-                    copy_text(app, &code);
-                    app.add_new_line();
-                }
+            if app.focused_panel == FocusedPanel::Log
+                && let Some(code) = app.extract_last_code_block()
+            {
+                copy_text(app, &code);
+                app.add_new_line();
             }
         }
         KeyCode::Char('V') => {
@@ -205,13 +168,12 @@ pub(crate) fn handle_normal_mode(
                     .code_blocks
                     .iter()
                     .enumerate()
-                    .filter(|(_, block)| {
+                    .rfind(|(_, block)| {
                         app.phys_to_logical_fast(block.start_idx)
                             .map(|l| l <= logical_offset)
                             .unwrap_or(false)
                     })
-                    .last()
-                    .or_else(|| app.code_blocks.iter().enumerate().last());
+                    .or_else(|| app.code_blocks.iter().enumerate().next_back());
                 if let Some((idx, _)) = best {
                     app.open_code_popup(idx);
                 }
@@ -233,12 +195,11 @@ pub(crate) fn handle_normal_mode(
                     .thinking
                     .blocks
                     .iter()
-                    .filter(|b| {
+                    .rfind(|b| {
                         app.phys_to_logical_fast(b.title_idx)
                             .map(|l| l <= logical_offset)
                             .unwrap_or(false)
                     })
-                    .last()
                     .or_else(|| app.thinking.blocks.last());
                 if let Some(block) = best {
                     let title_idx = block.title_idx;
@@ -250,17 +211,8 @@ pub(crate) fn handle_normal_mode(
             app.should_quit = true;
         }
         KeyCode::Esc => {
-            if matches!(&app.status, Status::WaitingForUser { .. }) {
-                let old_status = std::mem::replace(&mut app.status, Status::Idle);
-                if let Status::WaitingForUser { approval_tx, .. } = old_status {
-                    let _ = approval_tx.send(false);
-                    let msgs = app.msgs();
-                    app.add_system_message(msgs.step_rejected.to_string());
-                }
-            } else {
-                app.mouse.log_selection = None;
-                app.mouse.plan_selection = None;
-            }
+            app.mouse.log_selection = None;
+            app.mouse.plan_selection = None;
         }
         _ => {}
     }
@@ -326,20 +278,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_approves_waiting_for_user() {
+    fn enter_enters_insert_mode() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
-        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
-        app.status = Status::WaitingForUser {
-            prompt: "Allow?".into(),
-            step_index: 0,
-            approval_tx,
-        };
+        app.input_mode = InputMode::Normal;
 
         handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
 
-        assert!(matches!(app.status, Status::Idle));
-        assert_eq!(approval_rx.try_recv(), Ok(true));
+        assert!(matches!(app.input_mode, InputMode::Insert));
     }
 
     #[test]
@@ -381,22 +327,5 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('N')), &tx);
         assert_eq!(app.search.current_match, 0);
-    }
-
-    #[test]
-    fn esc_rejects_waiting_for_user() {
-        let mut app = make_app();
-        let (tx, _rx) = unbounded_channel();
-        let (approval_tx, mut approval_rx) = tokio::sync::oneshot::channel();
-        app.status = Status::WaitingForUser {
-            prompt: "Allow?".into(),
-            step_index: 0,
-            approval_tx,
-        };
-
-        handle_normal_mode(&mut app, key(KeyCode::Esc), &tx);
-
-        assert!(matches!(app.status, Status::Idle));
-        assert_eq!(approval_rx.try_recv(), Ok(false));
     }
 }

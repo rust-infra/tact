@@ -22,12 +22,12 @@ impl SqliteSessionStore {
         }
         // sqlx may fail to open a non-existent database file in some environments;
         // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                tokio::fs::File::create(path)
-                    .await
-                    .context("failed to create database file")?;
-            }
+        if let Err(e) = tokio::fs::metadata(path).await
+            && e.kind() == std::io::ErrorKind::NotFound
+        {
+            tokio::fs::File::create(path)
+                .await
+                .context("failed to create database file")?;
         }
         let url = format!("sqlite:{}", path.display());
         let pool = SqlitePool::connect(&url)
@@ -135,7 +135,7 @@ impl SqliteSessionStore {
         Utc::now()
     }
 
-    async fn trim_input_history(self: &Self, session_id: &str, keep: usize) -> Result<()> {
+    async fn trim_input_history(&self, session_id: &str, keep: usize) -> Result<()> {
         let pool = self.pool.clone();
         let row = sqlx::query("SELECT COUNT(*) as cnt FROM input_history WHERE session_id = ?")
             .bind(session_id)

@@ -116,9 +116,9 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
         for logical_i in 0..total_logical {
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
-                    Line::default()
-                } else if app.messages[phys_idx].spans.is_empty() {
+                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx])
+                    || app.messages[phys_idx].spans.is_empty()
+                {
                     Line::default()
                 } else {
                     super::log_style::restyle_log_line(
@@ -278,24 +278,24 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             };
 
             // Insert separator if category changed (and not first line)
-            if let Some(prev) = prev_category {
-                if prev != category {
-                    let separator_fg = match category {
-                        "user" => app.theme.accent,
-                        "system" => app.theme.warning,
-                        _ => app.theme.border,
-                    };
-                    let separator_label = match category {
-                        "user" => "💬 user",
-                        "system" => "⚙️ system",
-                        _ => "🤖 assistant",
-                    };
-                    let separator = super::cells::separator::MessageSeparator::new(
-                        separator_label.to_string(),
-                        separator_fg,
-                    );
-                    renderer.push(vs_cache[logical_i], separator);
-                }
+            if let Some(prev) = prev_category
+                && prev != category
+            {
+                let separator_fg = match category {
+                    "user" => app.theme.accent,
+                    "system" => app.theme.warning,
+                    _ => app.theme.border,
+                };
+                let separator_label = match category {
+                    "user" => "💬 user",
+                    "system" => "⚙️ system",
+                    _ => "🤖 assistant",
+                };
+                let separator = super::cells::separator::MessageSeparator::new(
+                    separator_label.to_string(),
+                    separator_fg,
+                );
+                renderer.push(vs_cache[logical_i], separator);
             }
             prev_category = Some(category);
         }
@@ -367,13 +367,13 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         // Task-end rule: full-width dashed line, width resolved at render time.
-        if let Some(phys) = phys_idx {
-            if super::cells::separator::is_task_end_separator(&app.raw_messages[phys]) {
-                let sep = super::cells::separator::TaskEndSeparator::new(app.theme.border);
-                renderer.push(vs_cache[logical_i], sep);
-                logical_i += 1;
-                continue;
-            }
+        if let Some(phys) = phys_idx
+            && super::cells::separator::is_task_end_separator(&app.raw_messages[phys])
+        {
+            let sep = super::cells::separator::TaskEndSeparator::new(app.theme.border);
+            renderer.push(vs_cache[logical_i], sep);
+            logical_i += 1;
+            continue;
         }
 
         // Normal row: build TextCell

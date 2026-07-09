@@ -58,17 +58,16 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
     for line in patch.lines() {
         if line.starts_with("--- ") {
             // Start of a new file section; finalise previous hunk/file.
-            if let Some(h) = current_hunk.take() {
-                if let Some(ref mut f) = current_file {
-                    f.hunks.push(h);
-                }
+            if let Some(h) = current_hunk.take()
+                && let Some(ref mut f) = current_file
+            {
+                f.hunks.push(h);
             }
             if let Some(f) = current_file.take() {
                 file_patches.push(f);
             }
-        } else if line.starts_with("+++ ") {
+        } else if let Some(raw) = line.strip_prefix("+++ ") {
             // Extract target path, stripping the "b/" prefix if present.
-            let raw = &line[4..];
             let path = raw.trim_start_matches("b/").trim().to_string();
             current_file = Some(FilePatch {
                 path,
@@ -76,10 +75,10 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
             });
         } else if line.starts_with("@@ ") {
             // Finalise the previous hunk.
-            if let Some(h) = current_hunk.take() {
-                if let Some(ref mut f) = current_file {
-                    f.hunks.push(h);
-                }
+            if let Some(h) = current_hunk.take()
+                && let Some(ref mut f) = current_file
+            {
+                f.hunks.push(h);
             }
             let orig_start = parse_hunk_header(line)?;
             current_hunk = Some(Hunk {
@@ -87,12 +86,12 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
                 lines: Vec::new(),
             });
         } else if let Some(ref mut hunk) = current_hunk {
-            if line.starts_with('+') {
-                hunk.lines.push(('+', line[1..].to_string()));
-            } else if line.starts_with('-') {
-                hunk.lines.push(('-', line[1..].to_string()));
-            } else if line.starts_with(' ') {
-                hunk.lines.push((' ', line[1..].to_string()));
+            if let Some(stripped) = line.strip_prefix('+') {
+                hunk.lines.push(('+', stripped.to_string()));
+            } else if let Some(stripped) = line.strip_prefix('-') {
+                hunk.lines.push(('-', stripped.to_string()));
+            } else if let Some(stripped) = line.strip_prefix(' ') {
+                hunk.lines.push((' ', stripped.to_string()));
             } else if line.starts_with('\\') {
                 // "\ No newline at end of file" — ignore.
             }
@@ -100,10 +99,10 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
     }
 
     // Flush remaining hunk / file.
-    if let Some(h) = current_hunk.take() {
-        if let Some(ref mut f) = current_file {
-            f.hunks.push(h);
-        }
+    if let Some(h) = current_hunk.take()
+        && let Some(ref mut f) = current_file
+    {
+        f.hunks.push(h);
     }
     if let Some(f) = current_file.take() {
         file_patches.push(f);

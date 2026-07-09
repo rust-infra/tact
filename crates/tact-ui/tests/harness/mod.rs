@@ -583,10 +583,9 @@ pub fn step_succeeded(updates: &[AgentUpdate], id: &str) -> bool {
 }
 
 pub fn step_failed(updates: &[AgentUpdate], id: &str) -> bool {
-    updates.iter().any(|u| match u {
-        AgentUpdate::StepFailed(_, tool_id, _) if tool_id == id => true,
-        _ => false,
-    })
+    updates
+        .iter()
+        .any(|u| matches!(u, AgentUpdate::StepFailed(_, tool_id, _) if tool_id == id))
 }
 
 pub fn task_completed_with(updates: &[AgentUpdate], substring: &str) -> bool {

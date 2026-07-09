@@ -1,10 +1,9 @@
-use crate::widgets::state::{App, InputMode, Status};
+use crate::widgets::state::{App, InputMode};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    style::{Color, Style},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -36,11 +35,6 @@ pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
 pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.input_mode == InputMode::Search || app.input_mode == InputMode::Palette {
         render_command_line(frame, area, app);
-        return;
-    }
-
-    if matches!(app.status, Status::WaitingForUser { .. }) {
-        render_approval_banner(frame, area, app);
         return;
     }
 
@@ -115,44 +109,10 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
-fn render_approval_banner(frame: &mut Frame, area: Rect, app: &App) {
-    let prompt = match &app.status {
-        Status::WaitingForUser { prompt, .. } => prompt.as_str(),
-        _ => "",
-    };
-
-    let msgs = app.msgs();
-    let banner_text = msgs.approval_banner_tmpl.replace("{}", prompt);
-    let keys_text = msgs.approval_banner_keys;
-
-    let banner_style = Style::default()
-        .bg(app.theme.warning)
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD);
-
-    let keys_style = Style::default().bg(app.theme.warning).fg(Color::Black);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(app.theme.warning))
-        .style(Style::default().bg(app.theme.warning));
-
-    let text = ratatui::text::Text::from(vec![
-        Line::from(Span::styled(banner_text, banner_style)),
-        Line::from(Span::styled(keys_text, keys_style)),
-    ]);
-
-    let para = Paragraph::new(text).block(block);
-    frame.render_widget(Clear, area);
-    frame.render_widget(para, area);
-}
-
 #[cfg(test)]
 mod render_tests {
     use super::super::test_harness::{buffer_text, make_app};
     use super::render_input_box;
-    use crate::widgets::state::Status;
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
     #[test]
@@ -169,28 +129,5 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("line one"), "multiline input visible: {text}");
-    }
-
-    #[test]
-    fn approval_banner_renders_when_waiting_for_user() {
-        let mut app = make_app();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.status = Status::WaitingForUser {
-            prompt: "Allow destructive rm?".into(),
-            step_index: 0,
-            approval_tx: tx,
-        };
-
-        let backend = TestBackend::new(80, 4);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 80, 4), &mut app))
-            .expect("draw");
-
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(
-            text.contains("Allow destructive rm"),
-            "approval banner should show prompt: {text}"
-        );
     }
 }

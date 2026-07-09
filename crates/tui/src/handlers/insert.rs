@@ -10,11 +10,10 @@ use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
-    let cmds = app.slash_command.matched_commands(
-        &app.input,
-        app.input_cursor,
-        crate::widgets::state::PALETTE_COMMANDS,
-    );
+    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app
+        .slash_command
+        .matched_commands(&app.input, app.input_cursor, &commands);
     let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
     if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
         let start = app.slash_command.start_pos;
@@ -67,14 +66,8 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSen
         app.input_history.saved.clear();
         let task = std::mem::take(&mut app.input);
         app.input_cursor = 0;
-        // If waiting for approval, reject it before starting new task
-        let old_status = std::mem::replace(&mut app.status, Status::Planning);
-        if let Status::WaitingForUser { approval_tx, .. } = old_status {
-            let _ = approval_tx.send(false);
-            let msgs = app.msgs();
-            app.add_system_message(msgs.approval_cancelled.to_string());
-        }
-        let blank_task = format!("{}", task.clone());
+        app.status = Status::Planning;
+        let blank_task = task.clone().to_string();
         app.add_user_message(blank_task);
         app.plan.reset();
         app.last_prompt_elapsed_secs = None;
@@ -92,37 +85,28 @@ pub(crate) fn handle_insert_mode(
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
+            let commands: Vec<_> = app.palette_commands().copied().collect();
             let n = app
                 .slash_command
-                .matched_commands(
-                    &app.input,
-                    app.input_cursor,
-                    crate::widgets::state::PALETTE_COMMANDS,
-                )
+                .matched_commands(&app.input, app.input_cursor, &commands)
                 .len();
             if n > 0 {
                 app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
             }
-            return;
         }
         KeyCode::Down if app.slash_command.active => {
+            let commands: Vec<_> = app.palette_commands().copied().collect();
             let n = app
                 .slash_command
-                .matched_commands(
-                    &app.input,
-                    app.input_cursor,
-                    crate::widgets::state::PALETTE_COMMANDS,
-                )
+                .matched_commands(&app.input, app.input_cursor, &commands)
                 .len();
             if n > 0 {
                 let max = n.saturating_sub(1);
                 app.slash_command.selected = (app.slash_command.selected + 1).min(max);
             }
-            return;
         }
         KeyCode::Tab if app.slash_command.active => {
             apply_selected_slash_command(app);
-            return;
         }
         KeyCode::Enter if app.slash_command.active => {
             // Enter accepts the selected slash command from popup, same as Tab.
@@ -131,11 +115,9 @@ pub(crate) fn handle_insert_mode(
             }
             // If no command matches, fallback to the normal Enter behavior.
             handle_enter_submit(app, &key, user_cmd_tx);
-            return;
         }
         KeyCode::Esc if app.slash_command.active => {
             app.slash_command.active = false;
-            return;
         }
         KeyCode::Char(' ') if app.slash_command.active => {
             app.slash_command.active = false;
@@ -144,7 +126,6 @@ pub(crate) fn handle_insert_mode(
             app.save_undo();
             app.input.insert(app.input_cursor, ' ');
             app.input_cursor += 1;
-            return;
         }
         KeyCode::Backspace if app.slash_command.active && key.modifiers.is_empty() => {
             app.input_history.index = None;
@@ -158,7 +139,6 @@ pub(crate) fn handle_insert_mode(
                     app.slash_command.active = false;
                 }
             }
-            return;
         }
         // --- End slash command shortcuts ---
         KeyCode::Enter => {
@@ -298,10 +278,10 @@ pub(crate) fn handle_insert_mode(
                 if app.input_history.index.is_none() {
                     app.input_history.saved = app.input.clone();
                     app.input_history.index = Some(app.input_history.entries.len() - 1);
-                } else if let Some(idx) = app.input_history.index {
-                    if idx > 0 {
-                        app.input_history.index = Some(idx - 1);
-                    }
+                } else if let Some(idx) = app.input_history.index
+                    && idx > 0
+                {
+                    app.input_history.index = Some(idx - 1);
                 }
                 if let Some(idx) = app.input_history.index {
                     app.input = app.input_history.entries[idx].clone();
@@ -360,7 +340,7 @@ pub(crate) fn handle_insert_mode(
                     || app.input[..cursor]
                         .chars()
                         .next_back()
-                        .map_or(true, |c| c.is_whitespace())
+                        .is_none_or(|c| c.is_whitespace())
             } =>
         {
             // Activate slash command popup when '/' is typed at input start or after whitespace.
@@ -391,7 +371,7 @@ pub(crate) fn handle_insert_mode(
                     || app.input[..cursor]
                         .chars()
                         .next_back()
-                        .map_or(true, |c| c.is_whitespace())
+                        .is_none_or(|c| c.is_whitespace())
             } =>
         {
             // Open the file picker when '@' is typed at the start of the input
@@ -478,10 +458,10 @@ pub(crate) fn handle_insert_mode(
                     // Enter history mode: save current input and start from the end
                     app.input_history.saved = app.input.clone();
                     app.input_history.index = Some(app.input_history.entries.len() - 1);
-                } else if let Some(idx) = app.input_history.index {
-                    if idx > 0 {
-                        app.input_history.index = Some(idx - 1);
-                    }
+                } else if let Some(idx) = app.input_history.index
+                    && idx > 0
+                {
+                    app.input_history.index = Some(idx - 1);
                 }
                 if let Some(idx) = app.input_history.index {
                     app.input = app.input_history.entries[idx].clone();
@@ -547,6 +527,7 @@ mod tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            false,
         );
         (app, user_cmd_rx)
     }

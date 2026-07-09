@@ -1,4 +1,4 @@
-use crate::widgets::state::{App, PALETTE_COMMANDS};
+use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -36,7 +36,8 @@ fn cmd_category(cmd: &str) -> &'static str {
 
 pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
     let filter = app.cmd_line.to_lowercase();
-    let filtered: Vec<(usize, &(&str, &str))> = PALETTE_COMMANDS
+    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let filtered: Vec<(usize, &(&str, &str))> = commands
         .iter()
         .enumerate()
         .filter(|(_, (cmd, desc))| {

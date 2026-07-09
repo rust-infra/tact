@@ -182,7 +182,7 @@ impl App {
                 let title_idx = blank_idx + 1;
                 let end_idx = end; // Not affected by insert since insert happens after end
                 let total = end_idx.saturating_sub(title_idx);
-                let scroll_offset = if total > 3 { total - 3 } else { 0 };
+                let scroll_offset = total.saturating_sub(3);
 
                 // Pre-render Markdown and cache preview text, avoiding per-frame re-rendering for popups/cards
                 let mut preview_lines = Vec::with_capacity(total);
@@ -416,20 +416,20 @@ impl App {
                         block.end_idx -= 1;
                     }
                 }
-                if let Some(ref mut start) = self.thinking.active_start {
-                    if *start > idx {
-                        *start -= 1;
-                    }
+                if let Some(ref mut start) = self.thinking.active_start
+                    && *start > idx
+                {
+                    *start -= 1;
                 }
-                if let Some(ref mut end) = self.thinking.active_end {
-                    if *end > idx {
-                        *end -= 1;
-                    }
+                if let Some(ref mut end) = self.thinking.active_end
+                    && *end > idx
+                {
+                    *end -= 1;
                 }
-                if let Some(ref mut start) = self.stream.code_block_start_idx {
-                    if *start > idx {
-                        *start -= 1;
-                    }
+                if let Some(ref mut start) = self.stream.code_block_start_idx
+                    && *start > idx
+                {
+                    *start -= 1;
                 }
             }
             true
@@ -487,25 +487,25 @@ impl App {
                 block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
             }
         }
-        if let Some(ref mut start) = self.thinking.active_start {
-            if *start >= at {
-                *start = (*start as isize + delta).max(0) as usize;
-            }
+        if let Some(ref mut start) = self.thinking.active_start
+            && *start >= at
+        {
+            *start = (*start as isize + delta).max(0) as usize;
         }
-        if let Some(ref mut end) = self.thinking.active_end {
-            if *end >= at {
-                *end = (*end as isize + delta).max(0) as usize;
-            }
+        if let Some(ref mut end) = self.thinking.active_end
+            && *end >= at
+        {
+            *end = (*end as isize + delta).max(0) as usize;
         }
-        if let Some(ref mut idx) = self.loading_idx {
-            if *idx >= at {
-                *idx = (*idx as isize + delta).max(0) as usize;
-            }
+        if let Some(ref mut idx) = self.loading_idx
+            && *idx >= at
+        {
+            *idx = (*idx as isize + delta).max(0) as usize;
         }
-        if let Some(ref mut start) = self.stream.code_block_start_idx {
-            if *start >= at {
-                *start = (*start as isize + delta).max(0) as usize;
-            }
+        if let Some(ref mut start) = self.stream.code_block_start_idx
+            && *start >= at
+        {
+            *start = (*start as isize + delta).max(0) as usize;
         }
     }
 

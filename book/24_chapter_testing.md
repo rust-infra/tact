@@ -55,16 +55,16 @@ Run the same checks as CI locally:
 
 ```bash
 cargo fmt --all          # format first
-./scripts/check-rust.sh  # fmt check + clippy -D warnings
+./scripts/check-rust.sh  # fmt check + clippy + tests
 ```
 
-Install the git pre-commit hook (once per clone):
+Install the git pre-push hook (once per clone):
 
 ```bash
 ./scripts/install-git-hooks.sh
 ```
 
-The hook runs `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` before each commit.
+Pre-push runs `./scripts/check-rust.sh` (fmt check, clippy, and integration tests).
 
 ---
 

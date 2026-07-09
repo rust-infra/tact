@@ -354,6 +354,7 @@ impl Theme {
     }
 
     /// Parse a theme name string and return the matching theme, falling back to Retro.
+    #[allow(dead_code)]
     pub(super) fn by_name_str(name: &str) -> Self {
         name.parse()
             .map(Self::by_name)

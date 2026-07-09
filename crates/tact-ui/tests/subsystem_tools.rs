@@ -5,10 +5,10 @@ mod harness;
 use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     apply_patch_tool_use, ask_user_tool_use, background_run_tool_use, check_background_tool_use,
-    cron_create_tool_use, cron_delete_tool_use, cron_list_tool_use, load_skill_tool_use,
-    read_inbox_tool_use, run_single_task_with_setup, save_memory_tool_use, search_code_tool_use,
-    send_message_tool_use, spawn_teammate_tool_use, task_completed_with, text_block,
-    worktree_create_tool_use, worktree_list_tool_use, worktree_status_tool_use,
+    cron_create_tool_use, cron_list_tool_use, load_skill_tool_use, read_inbox_tool_use,
+    run_single_task_with_setup, save_memory_tool_use, search_code_tool_use, send_message_tool_use,
+    spawn_teammate_tool_use, task_completed_with, text_block, worktree_create_tool_use,
+    worktree_list_tool_use, worktree_status_tool_use,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;

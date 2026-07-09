@@ -197,22 +197,20 @@ impl Renderable for TextCell {
             return;
         }
         let lines = self.build_lines(width);
-        let mut y = area.y;
-        for (i, line) in lines.iter().enumerate().skip(skip_lines) {
+        for (y, (i, line)) in (area.y..).zip(lines.iter().enumerate().skip(skip_lines)) {
             if y >= area.y + area.height {
                 break;
             }
             let mut line = line.clone();
             // Only add prefix on the first line of the cell (i == 0)
-            if i == 0 {
-                if let Some(ref prefix) = self.prefix {
-                    if let Some(first) = line.spans.first_mut() {
-                        first.content = format!("{}{}", prefix, first.content).into();
-                    }
-                }
+            if i == 0
+                && let Some(ref prefix) = self.prefix
+                && let Some(first) = line.spans.first_mut()
+            {
+                first.content = format!("{}{}", prefix, first.content).into();
             }
             render_line(&line, x, y, width, buf);
-            y += 1;
+            // y advances via zip
         }
     }
 

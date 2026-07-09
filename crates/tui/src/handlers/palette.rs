@@ -1,5 +1,5 @@
 use super::{execute_palette_command, prev_word_boundary};
-use crate::widgets::state::{App, InputMode, PALETTE_COMMANDS};
+use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Palette mode key handling: filter the command list and navigate with arrow keys; Enter to execute.
@@ -7,7 +7,8 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter => {
             let filter = app.cmd_line.to_lowercase();
-            let filtered: Vec<usize> = PALETTE_COMMANDS
+            let commands: Vec<_> = app.palette_commands().copied().collect();
+            let filtered: Vec<usize> = commands
                 .iter()
                 .enumerate()
                 .filter(|(_, (cmd, desc))| {
@@ -19,7 +20,7 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 .collect();
             if !filtered.is_empty() {
                 let idx = app.palette_selected.min(filtered.len() - 1);
-                let cmd = PALETTE_COMMANDS[filtered[idx]].0;
+                let cmd = commands[filtered[idx]].0;
                 app.cmd_line.clear();
                 app.input_mode = InputMode::Normal;
                 let _ = execute_palette_command(app, cmd);
@@ -72,16 +73,15 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
-    use crate::widgets::state::PALETTE_COMMANDS;
+    use crate::widgets::state::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
-    fn help_index() -> usize {
-        PALETTE_COMMANDS
-            .iter()
+    fn help_index(app: &App) -> usize {
+        app.palette_commands()
             .position(|(cmd, _)| *cmd == "help")
             .expect("help command")
     }
@@ -102,7 +102,7 @@ mod tests {
     fn enter_executes_highlighted_command() {
         let mut app = make_app();
         app.input_mode = InputMode::Palette;
-        app.palette_selected = help_index();
+        app.palette_selected = help_index(&app);
 
         handle_palette_mode(&mut app, key(KeyCode::Enter));
 

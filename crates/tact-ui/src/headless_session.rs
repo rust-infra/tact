@@ -82,8 +82,10 @@ where
     app.poll();
     let is_done = app.is_done();
     if snapshots.final_render.is_none() {
-        let mut final_snap = HeadlessSnapshots::default();
-        final_snap.final_render = Some(app.render(120, 30));
+        let final_snap = HeadlessSnapshots {
+            final_render: Some(app.render(120, 30)),
+            ..Default::default()
+        };
         return HeadlessSessionResult {
             work_dir,
             snapshots: final_snap,
