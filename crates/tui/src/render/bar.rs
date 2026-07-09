@@ -17,6 +17,24 @@ fn format_mm_ss(total_secs: i64) -> String {
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
+const USAGE_BAR_WIDTH: u16 = 10;
+
+/// Render a text-based usage progress bar like `[█████░░░░░]`.
+fn render_usage_bar(pct: f64) -> String {
+    let inner_width = USAGE_BAR_WIDTH.saturating_sub(2) as usize;
+    let fill_chars = ((pct / 100.0) * inner_width as f64).round() as usize;
+    let mut bar = String::from("[");
+    for i in 0..inner_width {
+        if i < fill_chars {
+            bar.push('█');
+        } else {
+            bar.push('░');
+        }
+    }
+    bar.push(']');
+    bar
+}
+
 /// Render a text-based progress bar like `[█████░░░░░] 50%`
 /// Uses a smooth formula: (current + 0.5) / total, so the current step
 /// is treated as half-done. This avoids showing 0% on the first step
@@ -197,7 +215,20 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                 let entries: String = quota
                     .windows
                     .iter()
-                    .map(|w| format!(" {}:{}/{}", w.label, w.remaining, w.limit))
+                    .map(|w| {
+                        if let Some(pct) = w.usage_pct() {
+                            format!(
+                                " {}:{:.0}% {} {}/{}",
+                                w.label,
+                                pct,
+                                render_usage_bar(pct),
+                                w.remaining,
+                                w.limit
+                            )
+                        } else {
+                            format!(" {}:{}/{}", w.label, w.remaining, w.limit)
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(" |");
                 let usage_text = msgs
@@ -363,8 +394,16 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 mod render_tests {
     use super::super::test_harness::{buffer_text, make_app, render_app_text};
     use super::render_bottom_bar;
+    use super::render_usage_bar;
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tact_protocol::{BalanceEntry, BalanceInfo};
+
+    #[test]
+    fn render_usage_bar_scales_to_width() {
+        assert_eq!(render_usage_bar(0.0), "[░░░░░░░░]");
+        assert_eq!(render_usage_bar(50.0), "[████░░░░]");
+        assert_eq!(render_usage_bar(100.0), "[████████]");
+    }
 
     #[test]
     fn bottom_bar_shows_balance_row_when_available() {
