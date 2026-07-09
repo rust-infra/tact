@@ -45,11 +45,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Set up macOS cross-compilation env
+        if: matrix.target == 'x86_64-apple-darwin'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+          echo "CC_x86_64_apple_darwin=clang -arch x86_64" >> "${GITHUB_ENV}"
+          echo "AR_x86_64_apple_darwin=ar" >> "${GITHUB_ENV}"
 
       - name: Build release binary
         run: cargo build --release -p "${CRATE_PACKAGE}" --target "${{ matrix.target }}"
@@ -74,7 +74,7 @@ jobs:
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
             bin_path="${bin_path}.exe"
             cp "${bin_path}" "${BINARY_NAME}.exe"
-            tar -a -cf "${asset}" "${BINARY_NAME}.exe"
+            7z a -tzip "${asset}" "${BINARY_NAME}.exe"
           else
             cp "${bin_path}" "${BINARY_NAME}"
             if command -v strip >/dev/null 2>&1; then
