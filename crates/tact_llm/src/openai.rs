@@ -313,7 +313,14 @@ impl LlmClient for OpenAiAdapter {
 
         while let Some(event) = event_source.next().await {
             match event {
-                Err(e) => return Err(LlmError::Other(format!("SSE error: {e}"))),
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        request_body = %String::from_utf8_lossy(&json_body),
+                        "SSE stream failed; logging request body for diagnostics"
+                    );
+                    return Err(LlmError::Other(format!("SSE error: {e}")));
+                }
                 Ok(Event::Open) => continue,
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
