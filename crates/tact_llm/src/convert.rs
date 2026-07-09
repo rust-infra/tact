@@ -478,6 +478,152 @@ mod tests {
     }
 
     #[test]
+    fn thinking_only_assistant_gets_stubbed() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::Thinking {
+                thinking: "partial reasoning".to_string(),
+                signature: String::new(),
+            }],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(
+            assistant_msg
+                .content
+                .as_deref()
+                .is_some_and(|c| !c.is_empty()),
+            "thinking-only assistant should be stubbed after thinking is dropped"
+        );
+        assert!(assistant_msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn assistant_with_text_and_thinking_keeps_text() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "reasoning".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::Text {
+                    text: "actual answer".to_string(),
+                },
+            ],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(assistant_msg.content.as_deref(), Some("actual answer"));
+        assert!(assistant_msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn orphaned_tool_call_with_existing_text_keeps_text_and_drops_tool_calls() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Text {
+                    text: "let me check".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "orphan".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "x.rs"}),
+                },
+            ],
+        );
+        let user = Message::new_text(Role::User, "keep going".to_string());
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_none());
+        assert_eq!(assistant_msg.content.as_deref(), Some("let me check"));
+    }
+
+    #[test]
+    fn valid_tool_call_sequence_is_preserved() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "x.rs"}),
+            }],
+        );
+        let user = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "file content".to_string(),
+            }],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_some());
+        assert_eq!(assistant_msg.tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
     fn reasoning_aligns_when_user_tool_results_split_into_multiple_messages() {
         let assistant = Message::new_blocks(
             Role::Assistant,
