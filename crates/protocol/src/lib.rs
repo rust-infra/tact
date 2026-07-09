@@ -234,7 +234,21 @@ pub struct UsageQuotaWindow {
     pub reset_time: Option<String>,
 }
 
-/// Kimi Code subscription quota (`GET /v1/usages`).
+impl UsageQuotaWindow {
+    /// Returns the percentage of quota already used.
+    ///
+    /// If the limit or remaining strings cannot be parsed, or if the limit is
+    /// zero, this returns `None` so callers can fall back to raw text.
+    pub fn usage_pct(&self) -> Option<f64> {
+        let limit = self.limit.trim().parse::<f64>().ok()?;
+        let remaining = self.remaining.trim().parse::<f64>().ok()?;
+        if limit <= 0.0 {
+            return None;
+        }
+        let used = (limit - remaining).max(0.0);
+        Some((used / limit * 100.0).min(100.0))
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageQuotaInfo {
     pub is_available: bool,
@@ -275,7 +289,7 @@ pub fn format_bytes(bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
+    use super::{UsageQuotaWindow, format_bytes};
 
     #[test]
     fn format_bytes_units() {
@@ -286,5 +300,49 @@ mod tests {
         assert_eq!(format_bytes(1024 * 1024), "1 M");
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1 G");
         assert_eq!(format_bytes(1024 * 1024 * 1024 * 3), "3 G");
+    }
+
+    #[test]
+    fn usage_pct_basic() {
+        let w = UsageQuotaWindow {
+            label: "week".to_string(),
+            limit: "100".to_string(),
+            remaining: "42".to_string(),
+            reset_time: None,
+        };
+        assert!((w.usage_pct().unwrap() - 58.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usage_pct_zero_limit() {
+        let w = UsageQuotaWindow {
+            label: "week".to_string(),
+            limit: "0".to_string(),
+            remaining: "0".to_string(),
+            reset_time: None,
+        };
+        assert_eq!(w.usage_pct(), None);
+    }
+
+    #[test]
+    fn usage_pct_unparseable() {
+        let w = UsageQuotaWindow {
+            label: "week".to_string(),
+            limit: "unlimited".to_string(),
+            remaining: "42".to_string(),
+            reset_time: None,
+        };
+        assert_eq!(w.usage_pct(), None);
+    }
+
+    #[test]
+    fn usage_pct_caps_at_100() {
+        let w = UsageQuotaWindow {
+            label: "week".to_string(),
+            limit: "100".to_string(),
+            remaining: "-10".to_string(),
+            reset_time: None,
+        };
+        assert!((w.usage_pct().unwrap() - 100.0).abs() < f64::EPSILON);
     }
 }

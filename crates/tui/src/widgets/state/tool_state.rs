@@ -36,6 +36,10 @@ pub(crate) struct DiffPopup {
     pub title: String,
     /// Read content from disk when set.
     pub file_path: Option<String>,
+    /// Run `git diff -- <path>` when set (lazy-loaded into cached_content).
+    pub git_diff_path: Option<String>,
+    /// Working directory in which to run `git diff`.
+    pub workspace_dir: Option<String>,
     /// Use in-memory content directly (command output, fallback for files).
     pub inline_content: Option<String>,
     pub lang: String,

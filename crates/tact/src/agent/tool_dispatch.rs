@@ -169,6 +169,10 @@ fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str)
             .get("content")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        "edit_file" => input
+            .get("new_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -532,6 +536,17 @@ impl Agent {
 mod tests {
     use super::{step_result_detail, tool_arg_summary};
     use tact_protocol::StepStatus;
+
+    #[test]
+    fn tool_detail_content_edit_file_returns_new_text() {
+        let input = serde_json::json!({
+            "path": "src/lib.rs",
+            "old_text": "fn old() {}",
+            "new_text": "fn new() {}",
+        });
+        let out = super::tool_detail_content("edit_file", &input, "wrote");
+        assert_eq!(out.as_deref(), Some("fn new() {}"));
+    }
 
     #[test]
     fn step_result_detail_on_failure_returns_full_output() {

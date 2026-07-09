@@ -89,11 +89,30 @@ fn syntax_highlight(code: &str, lang: &str) -> Vec<Line<'static>> {
     result
 }
 
+fn run_git_diff(workspace_dir: Option<&str>, path: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("diff").arg("--").arg(path);
+    if let Some(cwd) = workspace_dir {
+        cmd.current_dir(cwd);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    if text.is_empty() {
+        return None;
+    }
+    Some(text)
+}
+
 fn load_popup_content(popup: &mut crate::widgets::state::DiffPopup) {
     if popup.cached_content.is_some() {
         return;
     }
-    let content = if let Some(path) = &popup.file_path {
+    let content = if let Some(path) = &popup.git_diff_path {
+        run_git_diff(popup.workspace_dir.as_deref(), path).or_else(|| popup.inline_content.clone())
+    } else if let Some(path) = &popup.file_path {
         std::fs::read_to_string(path)
             .ok()
             .or_else(|| popup.inline_content.clone())
@@ -165,6 +184,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
             popup.cached_content.clone(),
             popup.title.clone(),
             popup.file_path.clone(),
+            popup.git_diff_path.clone(),
             popup.lang.clone(),
             popup.use_diff_gutter,
             popup.scroll,
@@ -172,12 +192,22 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )
     };
 
-    let (cached_content, popup_title, file_path, lang, use_diff_gutter, scroll, highlighted_lines) =
-        snapshot;
+    let (
+        cached_content,
+        popup_title,
+        file_path,
+        git_diff_path,
+        lang,
+        use_diff_gutter,
+        scroll,
+        highlighted_lines,
+    ) = snapshot;
 
     let Some(content) = cached_content.as_ref() else {
         let err = if let Some(path) = &file_path {
             app.msgs().tool_popup_read_error.replace("{}", path)
+        } else if let Some(path) = &git_diff_path {
+            format!("git diff failed for {}", path)
         } else {
             app.msgs().tool_popup_empty.to_string()
         };

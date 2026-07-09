@@ -32,13 +32,15 @@ crates/tui/src/render/
 │   ├── diff.rs
 │   └── code.rs
 └── popups/             # popups
+    ├── code_popup.rs
     ├── command_palette.rs
-    ├── select.rs
+    ├── diff_popup.rs
+    ├── file_picker.rs   # @-file attachment directory browser
     ├── help.rs
     ├── history.rs
-    ├── thinking_popup.rs
-    ├── diff_popup.rs
-    └── code_popup.rs
+    ├── select.rs
+    ├── slash_command.rs # /-slash command menu
+    └── thinking_popup.rs
 ```
 
 ---
@@ -254,7 +256,9 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Popup | File | Description |
 |---|---|---|
 | Command palette | `command_palette.rs` | Triggered by `:`, fuzzy-filtered commands |
+| File picker | `file_picker.rs` | Triggered by `@`, directory-browsable file selector with query filtering |
 | Select popup | `select.rs` | Agent asks the user to choose |
+| Slash commands | `slash_command.rs` | Triggered by `/` while typing, shortcut menu |
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
 | Thinking detail | `thinking_popup.rs` | View full thinking content |

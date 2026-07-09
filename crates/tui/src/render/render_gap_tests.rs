@@ -315,8 +315,9 @@ fn code_popup_scroll_skips_leading_lines() {
 fn file_picker_highlights_selected_row() {
     let mut app = make_app();
     app.input_mode = InputMode::FilePicker;
-    app.file_picker
-        .set(vec!["src/a.rs".into(), "src/b.rs".into()]);
+    app.file_picker.options = vec!["src/a.rs".into(), "src/b.rs".into()];
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
     app.file_picker.selected = 1;
 
     let text = render_app_text(&mut app, 80, 24);
@@ -547,8 +548,12 @@ fn usage_quota_update_renders_in_bottom_bar() {
     let text = render_app_text(&mut app, 120, 12);
     let bottom_row = text.lines().last().unwrap_or("");
     assert!(
-        bottom_row.contains("42") || bottom_row.contains("week"),
-        "usage quota should render on bottom bar last row, got: {bottom_row:?}\nfull:\n{text}"
+        bottom_row.contains("week") && bottom_row.contains("58%"),
+        "usage quota should render label and percentage on bottom bar, got: {bottom_row:?}\nfull:\n{text}"
+    );
+    assert!(
+        bottom_row.contains('█') || bottom_row.contains('░'),
+        "usage quota should render an ASCII progress bar, got: {bottom_row:?}\nfull:\n{text}"
     );
 }
 
