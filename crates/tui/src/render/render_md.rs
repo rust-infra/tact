@@ -82,7 +82,7 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
     (styled_lines, raw_lines)
 }
 
-fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String], theme: &Theme) {
+fn apply_code_background(lines: &mut [Line<'static>], raw: &[String], theme: &Theme) {
     let code_bg = theme.code_block_bg();
     let code_fg = theme.code_block_fg();
 
@@ -101,9 +101,9 @@ fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String], theme: 
             }
 
             if let Some(end) = end_marker {
-                for line_idx in (i + 1)..end {
+                for line in lines.iter_mut().take(end).skip(i + 1) {
                     let mut spans: Vec<Span<'static>> = Vec::new();
-                    for span in &lines[line_idx].spans {
+                    for span in &line.spans {
                         let mut style = span.style;
                         if style.fg.is_none() {
                             style = style.fg(code_fg);
@@ -112,7 +112,7 @@ fn apply_code_background(lines: &mut Vec<Line<'static>>, raw: &[String], theme: 
                         spans.push(Span::styled(span.content.clone(), style));
                     }
                     if !spans.is_empty() {
-                        lines[line_idx] = Line::from(spans);
+                        *line = Line::from(spans);
                     }
                 }
                 i = end + 1;

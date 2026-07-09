@@ -106,15 +106,6 @@ pub enum AgentUpdate {
     StepFinished(usize, String /* tool_id */, StepResult),
     /// Step `idx` failed, with error message
     StepFailed(usize, String /* tool_id */, String),
-    /// User approval prompt (legacy).
-    ///
-    /// The current agent runtime uses [`RequestSelect`](Self::RequestSelect) for
-    /// permission and choice prompts instead.
-    #[deprecated(
-        since = "0.19.0",
-        note = "use RequestSelect; agent no longer emits NeedApproval"
-    )]
-    NeedApproval(String, usize, oneshot::Sender<bool>),
     /// The entire task is complete
     TaskComplete(String),
     /// Agent error, with classification for the TUI to decide display style
@@ -133,8 +124,10 @@ pub enum AgentUpdate {
         /// `completion_tokens_details.reasoning_tokens` field.
         reasoning_tokens: u32,
     },
-    /// Account balance info (DeepSeek only)
+    /// Account balance info (DeepSeek / Moonshot Open Platform)
     Balance(BalanceInfo),
+    /// Kimi Code subscription quota (weekly + rolling window).
+    UsageQuota(UsageQuotaInfo),
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)
@@ -222,13 +215,31 @@ pub struct BalanceEntry {
     pub topped_up_balance: String,
 }
 
-/// DeepSeek account balance query result.
+/// DeepSeek / Moonshot account balance query result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceInfo {
     /// Whether the account has available balance
     pub is_available: bool,
     /// Per-currency balance details
     pub balance_infos: Vec<BalanceEntry>,
+}
+
+/// A single quota window from Kimi Code `GET /usages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageQuotaWindow {
+    /// Short label, e.g. `week` or `5h`.
+    pub label: String,
+    pub limit: String,
+    pub remaining: String,
+    pub reset_time: Option<String>,
+}
+
+/// Kimi Code subscription quota (`GET /v1/usages`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageQuotaInfo {
+    pub is_available: bool,
+    pub windows: Vec<UsageQuotaWindow>,
+    pub membership_level: Option<String>,
 }
 
 // Format a byte count using human-readable units: Byte, K, M, G.

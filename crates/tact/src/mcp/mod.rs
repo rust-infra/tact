@@ -285,10 +285,12 @@ impl McpClient {
 ///
 /// Configure it with a tool list and a handler closure; calls are forwarded to
 /// the closure so tests can assert inputs and return canned responses.
+type McpToolHandler =
+    Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
+
 pub struct MockMcpService {
     tools: Vec<McpTool>,
-    handler:
-        Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>,
+    handler: McpToolHandler,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
 }
 

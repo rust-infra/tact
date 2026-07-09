@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use tact_protocol::UserCommand;
 
 impl App {
+    #[allow(dead_code)]
     pub(crate) fn retry_task(&mut self, task: String) {
         self.add_user_message(task.clone());
         self.plan.reset();

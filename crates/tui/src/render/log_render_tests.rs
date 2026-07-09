@@ -299,7 +299,7 @@ fn log_visual_cache_rebuilds_on_theme_change() {
     let mut app = make_app();
     app.add_system_message("theme cache probe".into());
     render_log_panel_text(&mut app, 80, 16);
-    let before = app.log_scroll.visual_cache_theme.clone();
+    let before = app.log_scroll.visual_cache_theme;
 
     app.toggle_theme();
     render_log_panel_text(&mut app, 80, 16);

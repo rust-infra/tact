@@ -12,10 +12,10 @@ const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
 
 fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
-    if !tool_id.is_empty() {
-        if let Some(found) = steps.iter().position(|s| s.tool_id == tool_id) {
-            return found;
-        }
+    if !tool_id.is_empty()
+        && let Some(found) = steps.iter().position(|s| s.tool_id == tool_id)
+    {
+        return found;
     }
     idx
 }
@@ -59,16 +59,17 @@ impl App {
         }
         // Remove the loading placeholder on any content-producing update.
         // PlanGenerated is a legacy path that inserts it, so skip that variant.
-        // Metadata-only updates (TokenUsage, Balance, ModelInfo) should NOT
-        // remove the placeholder since they don't produce visible content.
+        // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
+        // should NOT remove the placeholder since they don't produce visible content.
         match &update {
             AgentUpdate::PlanGenerated(_)
             | AgentUpdate::TokenUsage { .. }
             | AgentUpdate::Balance(_)
+            | AgentUpdate::UsageQuota(_)
             | AgentUpdate::ModelInfo(_) => {
                 // These don't remove the loading placeholder:
                 // - PlanGenerated: we just inserted it
-                // - TokenUsage / Balance / ModelInfo: metadata only, no content
+                // - TokenUsage / Balance / UsageQuota / ModelInfo: metadata only, no content
             }
             _ => {
                 self.remove_loading_placeholder();
@@ -104,11 +105,11 @@ impl App {
                             .replacen("{}", &step.description, 1)
                     })
                     .collect();
-                self.add_system_message(format!(
-                    "{}",
+                self.add_system_message(
                     msgs.plan_generated_tmpl
                         .replace("{}", &plan_len.to_string())
-                ));
+                        .to_string(),
+                );
                 for msg in plan_messages {
                     self.add_system_message(msg);
                 }
@@ -215,21 +216,6 @@ impl App {
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
             }
-            // Handle cases requiring user approval
-            AgentUpdate::NeedApproval(prompt, step_idx, tx) => {
-                // Close the active thinking block first, preventing approval messages
-                // from being captured inside a collapsed region.
-                self.flush_stream_pending();
-                let prompt_clone = prompt.clone();
-                self.status = Status::WaitingForUser {
-                    prompt,
-                    step_index: step_idx,
-                    approval_tx: tx,
-                };
-                self.input_mode = InputMode::Normal;
-                let msgs = self.msgs();
-                self.add_system_message(msgs.need_approval_tmpl.replace("{}", &prompt_clone));
-            }
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -254,6 +240,7 @@ impl App {
                 match kind {
                     AgentErrorKind::BalanceNotSupported => {
                         self.balance_info = None;
+                        self.usage_quota = None;
                         // self.flash_msg = Some((
                         //     "Balance query not supported for this model".to_string(),
                         //     std::time::Instant::now(),
@@ -262,6 +249,7 @@ impl App {
                     }
                     AgentErrorKind::BalanceQueryFailed(err) => {
                         self.balance_info = None;
+                        self.usage_quota = None;
                         self.flash_msg = Some((
                             format!("Balance query failed: {}", err),
                             std::time::Instant::now(),
@@ -297,6 +285,13 @@ impl App {
             // Update balance info
             AgentUpdate::Balance(info) => {
                 self.balance_info = Some(info.clone());
+                self.usage_quota = None;
+                self.dirty = true;
+            }
+            AgentUpdate::UsageQuota(info) => {
+                self.usage_quota = Some(info.clone());
+                self.balance_info = None;
+                self.dirty = true;
             }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
@@ -453,24 +448,19 @@ impl App {
                         self.stream.code_block_buffer.push(line.clone());
 
                         let prev_idx = self.messages.len().saturating_sub(1);
-                        if self.stream.code_block_line_count > 1 {
-                            if let Some(prev_raw) = self.raw_messages.get_mut(prev_idx) {
-                                if prev_raw.ends_with(STREAMING_INDICATOR) {
-                                    let clean =
-                                        prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
-                                    *prev_raw = clean.clone();
-                                    self.messages[prev_idx] = Line::from(vec![
-                                        Span::styled(
-                                            "│ ",
-                                            Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                                        ),
-                                        Span::styled(
-                                            clean,
-                                            Style::default().fg(CODE_FG).bg(CODE_BG),
-                                        ),
-                                    ]);
-                                }
-                            }
+                        if self.stream.code_block_line_count > 1
+                            && let Some(prev_raw) = self.raw_messages.get_mut(prev_idx)
+                            && prev_raw.ends_with(STREAMING_INDICATOR)
+                        {
+                            let clean = prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
+                            *prev_raw = clean.clone();
+                            self.messages[prev_idx] = Line::from(vec![
+                                Span::styled(
+                                    "│ ",
+                                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                                ),
+                                Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                            ]);
                         }
 
                         let display_line = format!("{}{}", line, STREAMING_INDICATOR);
@@ -629,7 +619,7 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use crate::widgets::state::{App, InputMode, Status};
+    use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
@@ -647,6 +637,7 @@ mod lifecycle_tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            false,
         )
     }
 
@@ -660,16 +651,35 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn need_approval_enters_waiting_for_user() {
+    fn usage_quota_update_sets_usage_and_repaints() {
+        use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
+
         let mut app = make_app();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.handle_agent_update(AgentUpdate::NeedApproval("Allow bash?".into(), 1, tx));
-        assert!(matches!(app.status, Status::WaitingForUser { .. }));
-        assert!(matches!(app.input_mode, InputMode::Normal));
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("Allow bash")),
-            "NeedApproval should append system message"
-        );
+        app.account_query_supported = true;
+        app.dirty = false;
+        app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+            is_available: true,
+            windows: vec![
+                UsageQuotaWindow {
+                    label: "week".into(),
+                    limit: "100".into(),
+                    remaining: "74".into(),
+                    reset_time: None,
+                },
+                UsageQuotaWindow {
+                    label: "5h".into(),
+                    limit: "100".into(),
+                    remaining: "85".into(),
+                    reset_time: None,
+                },
+            ],
+            membership_level: None,
+        }));
+
+        assert!(app.usage_quota.is_some());
+        assert!(app.balance_info.is_none());
+        assert!(app.dirty);
+        assert!(crate::should_repaint(&app));
     }
 
     #[test]
@@ -677,6 +687,7 @@ mod lifecycle_tests {
         use tact_protocol::{BalanceEntry, BalanceInfo};
 
         let mut app = make_app();
+        app.account_query_supported = true;
         app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
@@ -692,6 +703,39 @@ mod lifecycle_tests {
             app.balance_info
                 .as_ref()
                 .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
+        );
+        assert!(app.dirty, "balance update should trigger repaint");
+        assert!(
+            crate::should_repaint(&app),
+            "idle balance update must pass repaint gate so bottom row is drawn"
+        );
+    }
+
+    #[test]
+    fn balance_update_on_idle_repaints_bottom_amount_row() {
+        use tact_protocol::{BalanceEntry, BalanceInfo};
+
+        let mut app = make_app();
+        app.account_query_supported = true;
+        app.dirty = false;
+        app.status = Status::Idle;
+        app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+            is_available: true,
+            balance_infos: vec![BalanceEntry {
+                currency: "CNY".into(),
+                total_balance: "88.50".into(),
+                granted_balance: "80.00".into(),
+                topped_up_balance: "8.50".into(),
+            }],
+        }));
+
+        assert!(crate::should_repaint(&app));
+
+        let text = crate::render::test_harness::render_app_text(&mut app, 120, 12);
+        let bottom_row = text.lines().last().unwrap_or("");
+        assert!(
+            bottom_row.contains("88.50") || bottom_row.contains("CNY"),
+            "balance amount should render on bottom bar last row, got last line: {bottom_row:?}\nfull:\n{text}"
         );
     }
 

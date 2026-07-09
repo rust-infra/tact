@@ -124,16 +124,18 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             || app.status_bar.token_reasoning > 0
         {
             let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
-            let hit_pct = if cache_total > 0 {
-                app.status_bar.token_cache_hit * 100 / cache_total
-            } else {
-                0
-            };
-            let miss_pct = if cache_total > 0 {
-                app.status_bar.token_cache_miss * 100 / cache_total
-            } else {
-                0
-            };
+            let hit_pct = app
+                .status_bar
+                .token_cache_hit
+                .saturating_mul(100)
+                .checked_div(cache_total)
+                .unwrap_or(0);
+            let miss_pct = app
+                .status_bar
+                .token_cache_miss
+                .saturating_mul(100)
+                .checked_div(cache_total)
+                .unwrap_or(0);
             msgs.bottom_cache_tmpl
                 .replacen("{}", &app.status_bar.token_cache_hit.to_string(), 1)
                 .replacen("{}", &hit_pct.to_string(), 1)
@@ -160,29 +162,51 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(bar1, top_area);
         frame.render_widget(bar2, mid_area);
 
-        if let (Some(bi), Some(bottom_area)) = (&app.balance_info, bottom_area) {
-            let status = if bi.is_available {
-                msgs.bottom_balance_ok
-            } else {
-                msgs.bottom_balance_err
-            };
-            let entries: String = bi
-                .balance_infos
-                .iter()
-                .map(|e| {
-                    format!(
-                        " {}:total={} grant={} topup={}",
-                        e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" |");
-            let balance_text = msgs
-                .bottom_balance_tmpl
-                .replacen("{}", status, 1)
-                .replacen("{}", &entries, 1);
-            let bar3 = Paragraph::new(balance_text).style(style);
-            frame.render_widget(bar3, bottom_area);
+        if let Some(bottom_area) = bottom_area
+            && app.account_query_supported
+        {
+            if let Some(bi) = &app.balance_info {
+                let status = if bi.is_available {
+                    msgs.bottom_balance_ok
+                } else {
+                    msgs.bottom_balance_err
+                };
+                let entries: String = bi
+                    .balance_infos
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            " {}:total={} grant={} topup={}",
+                            e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" |");
+                let balance_text = msgs
+                    .bottom_balance_tmpl
+                    .replacen("{}", status, 1)
+                    .replacen("{}", &entries, 1);
+                let bar3 = Paragraph::new(balance_text).style(style);
+                frame.render_widget(bar3, bottom_area);
+            } else if let Some(quota) = &app.usage_quota {
+                let status = if quota.is_available {
+                    msgs.bottom_balance_ok
+                } else {
+                    msgs.bottom_balance_err
+                };
+                let entries: String = quota
+                    .windows
+                    .iter()
+                    .map(|w| format!(" {}:{}/{}", w.label, w.remaining, w.limit))
+                    .collect::<Vec<_>>()
+                    .join(" |");
+                let usage_text = msgs
+                    .bottom_usage_tmpl
+                    .replacen("{}", status, 1)
+                    .replacen("{}", &entries, 1);
+                let bar3 = Paragraph::new(usage_text).style(style);
+                frame.render_widget(bar3, bottom_area);
+            }
         }
     }
 }
@@ -299,18 +323,6 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(app.theme.warning),
             )
         }
-        Status::WaitingForUser { prompt, .. } => {
-            let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
-            (
-                msgs.status_waiting_user_tmpl
-                    .replacen("{}", &format!("{} {}", mode_str, spinner), 1)
-                    .replacen("{}", focus_str, 1)
-                    .replacen("{}", prompt, 1),
-                Style::default()
-                    .bg(app.theme.status_bar_bg)
-                    .fg(app.theme.warning),
-            )
-        }
         Status::Done => (
             format!(
                 "{} {} │ ✅ {}",
@@ -357,6 +369,7 @@ mod render_tests {
     #[test]
     fn bottom_bar_shows_balance_row_when_available() {
         let mut app = make_app();
+        app.account_query_supported = true;
         app.balance_info = Some(BalanceInfo {
             is_available: true,
             balance_infos: vec![BalanceEntry {
@@ -367,10 +380,11 @@ mod render_tests {
             }],
         });
 
-        let text = render_app_text(&mut app, 120, 30);
+        let text = render_app_text(&mut app, 120, 12);
+        let bottom_row = text.lines().last().unwrap_or("");
         assert!(
-            text.contains("USD") || text.contains("12.50"),
-            "balance row should render when balance_info set: {text}"
+            bottom_row.contains("12.50") || bottom_row.contains("USD"),
+            "balance row should render on bottom bar last row: {bottom_row:?}"
         );
     }
 

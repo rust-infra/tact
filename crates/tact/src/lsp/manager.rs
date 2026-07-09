@@ -271,10 +271,10 @@ impl LspManager {
     pub async fn shutdown_all(&mut self) {
         let names: Vec<String> = self.clients.keys().cloned().collect();
         for name in names {
-            if let Some(mut client) = self.clients.remove(&name) {
-                if let Err(e) = client.shutdown().await {
-                    tracing::warn!("Error shutting down LSP server '{}': {}", name, e);
-                }
+            if let Some(mut client) = self.clients.remove(&name)
+                && let Err(e) = client.shutdown().await
+            {
+                tracing::warn!("Error shutting down LSP server '{}': {}", name, e);
             }
         }
         self.opened_files.clear();

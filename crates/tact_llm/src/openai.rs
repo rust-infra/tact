@@ -136,10 +136,10 @@ fn inject_reasoning_content(
     }
     if let Some(messages) = body["messages"].as_array_mut() {
         for (i, msg) in messages.iter_mut().enumerate() {
-            if let Some(Some(r)) = reasoning.get(i) {
-                if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                    msg["reasoning_content"] = serde_json::Value::String(r.clone());
-                }
+            if let Some(Some(r)) = reasoning.get(i)
+                && msg.get("role").and_then(|v| v.as_str()) == Some("assistant")
+            {
+                msg["reasoning_content"] = serde_json::Value::String(r.clone());
             }
         }
     }

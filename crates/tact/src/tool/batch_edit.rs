@@ -62,7 +62,9 @@ pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<Strin
     // old_string, new_string) tuples.  Byte offsets are used only for stable
     // ordering in Phase 2 — applying edits from end to start so that earlier
     // targets are not displaced.
-    let mut files: BTreeMap<String, (String, Vec<(usize, String, String)>)> = BTreeMap::new();
+    type FileEdit = (usize, String, String);
+    type FileEdits = Vec<FileEdit>;
+    let mut files: BTreeMap<String, (String, FileEdits)> = BTreeMap::new();
     let mut pre_check_errors: Vec<String> = Vec::new();
 
     for (i, edit) in input.edits.iter().enumerate() {
@@ -136,7 +138,7 @@ pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<Strin
     for (path_str, (original, mut edits)) in files {
         // Sort descending by position: apply later-position edits first so
         // that earlier targets are not shifted.
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        edits.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         let mut content = original.clone();
         for (_pos, old, new) in &edits {

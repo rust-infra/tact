@@ -9,10 +9,10 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
     while let Ok(update) = app.agent_rx.try_recv() {
         app.handle_agent_update(update);
-        if matches!(app.input_mode, InputMode::Select) {
-            if let Some(choice) = auto_select {
-                auto_confirm_select(app, choice);
-            }
+        if matches!(app.input_mode, InputMode::Select)
+            && let Some(choice) = auto_select
+        {
+            auto_confirm_select(app, choice);
         }
     }
 }
@@ -28,6 +28,7 @@ pub fn auto_confirm_select(app: &mut App, choice: usize) {
 }
 
 /// Poll until `should_continue` returns false, draining updates each tick.
+#[allow(dead_code)]
 pub async fn run_until<F>(mut app: App, mut should_continue: F, auto_select: Option<usize>) -> App
 where
     F: FnMut(&App) -> bool,
@@ -56,5 +57,6 @@ pub fn make_headless_app(
         "headless-session".into(),
         history_tx,
         "retro".into(),
+        false,
     )
 }

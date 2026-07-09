@@ -26,18 +26,17 @@ pub(crate) fn classify_system_message(raw: &str) -> RawMessageType {
         return RawMessageType::SysTool;
     }
 
-    if raw.starts_with('✓') || raw.starts_with('✗') || raw.starts_with('✔') {
-        if raw.contains("Step ")
+    if (raw.starts_with('✓') || raw.starts_with('✗') || raw.starts_with('✔'))
+        && (raw.contains("Step ")
             || raw.contains("步骤 ")
             || raw.contains("Selected:")
             || raw.contains("已选择:")
             || raw.contains("Step approved")
             || raw.contains("步骤已批准")
             || raw.contains("Step rejected")
-            || raw.contains("步骤已拒绝")
-        {
-            return RawMessageType::SysTool;
-        }
+            || raw.contains("步骤已拒绝"))
+    {
+        return RawMessageType::SysTool;
     }
 
     RawMessageType::LLM

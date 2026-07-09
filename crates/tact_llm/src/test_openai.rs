@@ -17,6 +17,7 @@ use async_openai::types::{
 };
 
 fn build_test_request(model: String) -> CreateChatCompletionRequest {
+    #[allow(deprecated)]
     CreateChatCompletionRequest {
         model,
         messages: vec![ChatCompletionRequestMessage::User(
@@ -159,10 +160,10 @@ async fn test_openai_async_openai_stream() {
                 match result {
                     Ok(chunk) => {
                         chunks += 1;
-                        if let Some(choice) = chunk.choices.first() {
-                            if let Some(ref content) = choice.delta.content {
-                                print!("{}", content);
-                            }
+                        if let Some(choice) = chunk.choices.first()
+                            && let Some(ref content) = choice.delta.content
+                        {
+                            print!("{}", content);
                         }
                     }
                     Err(e) => {

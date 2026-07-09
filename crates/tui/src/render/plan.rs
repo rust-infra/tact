@@ -65,7 +65,7 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 .style(Style::default().bg(app.theme.bg)),
         )
         .highlight_style(Style::default().bg(app.theme.highlight));
-    let mut state = app.plan.list_state.clone();
+    let mut state = app.plan.list_state;
     frame.render_stateful_widget(list, area, &mut state);
     app.plan.list_state = state;
 }

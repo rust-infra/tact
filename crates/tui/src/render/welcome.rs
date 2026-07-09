@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct LogoWidget {}
 
 impl Widget for LogoWidget {

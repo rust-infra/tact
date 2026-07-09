@@ -28,14 +28,14 @@ pub(crate) fn detect_terminal_theme() -> ThemeName {
     // Set by many terminals (xterm, gnome-terminal, etc.)
     if let Ok(val) = std::env::var("COLORFGBG") {
         let parts: Vec<&str> = val.split(';').collect();
-        if parts.len() >= 2 {
-            if let Ok(bg) = parts[1].parse::<u8>() {
-                // Background color 7=light gray, 15=white → light theme
-                if bg >= 7 && bg <= 15 {
-                    return ThemeName::Light;
-                } else {
-                    return ThemeName::Dark;
-                }
+        if parts.len() >= 2
+            && let Ok(bg) = parts[1].parse::<u8>()
+        {
+            // Background color 7=light gray, 15=white → light theme
+            if (7..=15).contains(&bg) {
+                return ThemeName::Light;
+            } else {
+                return ThemeName::Dark;
             }
         }
     }

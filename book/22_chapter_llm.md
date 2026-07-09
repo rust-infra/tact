@@ -268,15 +268,16 @@ Intent: per-session KV cache isolation on DeepSeek (and compatible proxies), red
 | Function | Endpoint | When used |
 |----------|----------|-----------|
 | `query_deepseek_balance()` | `GET .../user/balance` | TUI startup + periodic timer + `/balance` command |
-| `query_kimi_balance()` | `GET .../users/me/balance` | Same |
+| `query_kimi_balance()` | `GET .../v1/users/me/balance` on `api.moonshot.cn` or `api.moonshot.ai` | Same |
+| `query_kimi_code_usage()` | `GET .../v1/usages` on `api.kimi.com/coding` | Kimi Code subscription quota |
 
-Both return `tact_protocol::BalanceInfo` and surface in the TUI as `AgentUpdate::Balance`.
+`query_*_balance()` returns `tact_protocol::BalanceInfo` as `AgentUpdate::Balance`. Kimi Code usage returns `UsageQuotaInfo` as `AgentUpdate::UsageQuota`.
 
-**Kimi Coding endpoint caveat:** `query_kimi_balance()` derives the balance URL from `api.moonshot.cn` when the configured base URL does not contain that host. Custom endpoints such as `api.kimi.com/coding/v1` fall back to the moonshot balance URL and may fail — use `/balance` only when the configured base matches moonshot, or query balance out of band.
+**Kimi Code endpoint:** `api.kimi.com/coding` has no balance REST API. Use `query_kimi_code_usage()` instead; surfaced as `AgentUpdate::UsageQuota` on the bottom bar (`week` + `5h` windows).
 
-**TUI timer:** `run_tui` accepts `balance_polling_enabled` (set from `is_deepseek()` / `is_kimi()` in `tui.rs`). Periodic and startup balance queries run only for those providers.
+**TUI timer:** `run_tui` accepts `balance_polling_enabled` (set from `is_deepseek()` / `is_kimi_balance_supported()` / `is_kimi_usage_supported()` in `interactive.rs`).
 
-Only invoked when `is_deepseek()` or `is_kimi()` is true (`crates/tact-ui/src/interactive.rs`).
+Only invoked when one of those helpers is true (`crates/tact-ui/src/interactive.rs`).
 
 ```mermaid
 sequenceDiagram
@@ -333,7 +334,6 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **Four named providers only** | `build_client` rejects unknown provider strings; generic OpenAI proxies must use `provider = "openai"` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
 | **Anthropic SDK partial use** | Types from `anthropic-ai-sdk`; streaming is custom HTTP |
-| **Kimi Coding balance URL** | `query_kimi_balance()` may fall back to moonshot endpoint for non-moonshot base URLs |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |
 
 ---
