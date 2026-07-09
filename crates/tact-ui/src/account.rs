@@ -112,7 +112,7 @@ pub fn spawn_poller(account_tx: UnboundedSender<AccountUpdate>) {
 /// deterministic within the same wall-clock tick).
 fn jitter_interval() -> Duration {
     let n = POLL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Duration::from_secs(5 + (n % 11) as u64)
+    Duration::from_secs(5 + (n % 11))
 }
 
 #[cfg(test)]

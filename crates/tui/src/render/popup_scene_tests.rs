@@ -280,7 +280,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     std::fs::write(&file, "fn new() {}").unwrap();
 
     let mut app = make_app();
-    app.workspace_dir = tmp.to_string_lossy().to_string();
+    app.work_dir = tmp.clone();
 
     let path = file.to_string_lossy().into_owned();
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
@@ -467,7 +467,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 {\n    a - b\n}").unwrap();
 
     let mut app = make_app();
-    app.workspace_dir = tmp.to_string_lossy().to_string();
+    app.work_dir = tmp.clone();
     let path = file.to_string_lossy().into_owned();
 
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
