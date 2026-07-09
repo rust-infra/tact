@@ -166,4 +166,146 @@ mod tests {
         assert!(matches!(app.input_mode, InputMode::Insert));
         assert_eq!(app.input, "@");
     }
+
+    #[test]
+    fn backspace_removes_query_char() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.query = "x".into();
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Backspace));
+
+        assert!(app.file_picker.query.is_empty());
+    }
+
+    #[test]
+    fn backspace_with_empty_query_at_base_dir_stays() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.current_dir = PathBuf::from("/project");
+        app.file_picker.base_dir = PathBuf::from("/project");
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Backspace));
+
+        assert_eq!(app.file_picker.current_dir, PathBuf::from("/project"));
+    }
+
+    #[test]
+    fn backspace_at_subdir_navigates_up() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.current_dir = PathBuf::from("/project/src");
+        app.file_picker.base_dir = PathBuf::from("/project");
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Backspace));
+
+        assert_eq!(app.file_picker.current_dir, PathBuf::from("/project"));
+    }
+
+    #[test]
+    fn char_key_adds_to_query() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('a')));
+
+        assert_eq!(app.file_picker.query, "a");
+    }
+
+    #[test]
+    fn multiple_char_keys_build_query() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('s')));
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('r')));
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('c')));
+
+        assert_eq!(app.file_picker.query, "src");
+    }
+
+    #[test]
+    fn enter_on_empty_picker_returns_to_insert_mode() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(app.input_mode, InputMode::Insert));
+    }
+
+    #[test]
+    fn file_with_spaces_uses_quoted_path() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.base_dir = PathBuf::from("/project");
+        app.file_picker.current_dir = PathBuf::from("/project");
+        set_picker(&mut app, &["my file.rs"]);
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(app.input_mode, InputMode::Insert));
+        assert_eq!(app.input, "@\"my file.rs\" ");
+    }
+
+    #[test]
+    fn render_shows_query_in_title() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.current_dir = PathBuf::from("/project");
+        app.file_picker.base_dir = PathBuf::from("/project");
+        set_picker(&mut app, &["src/", "Cargo.toml", "README.md"]);
+        app.file_picker.query = "car".into();
+
+        let text = render_app_text(&mut app, 80, 24);
+
+        assert!(
+            text.contains("car"),
+            "title should show query, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn move_up_from_zero_stays_zero() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        set_picker(&mut app, &["a.rs", "b.rs"]);
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Up));
+        assert_eq!(app.file_picker.selected, 0);
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.file_picker.selected, 0);
+    }
+
+    #[test]
+    fn move_down_from_last_stays_last() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        set_picker(&mut app, &["a.rs", "b.rs"]);
+        app.file_picker.selected = 1;
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Down));
+        assert_eq!(app.file_picker.selected, 1);
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.file_picker.selected, 1);
+    }
+
+    #[test]
+    fn enter_on_dir_clears_query() {
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.base_dir = PathBuf::from("/project");
+        app.file_picker.current_dir = PathBuf::from("/project");
+        set_picker(&mut app, &["src/", "Cargo.toml"]);
+        app.file_picker.query = "qr".into();
+
+        handle_file_picker_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(
+            app.file_picker.query.is_empty(),
+            "query should be cleared after entering a directory"
+        );
+    }
 }
