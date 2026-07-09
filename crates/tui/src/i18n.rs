@@ -223,7 +223,7 @@ impl Messages {
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
             thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
-            diff_card_title: "+{}",
+            diff_card_title: "+{} {}",
             diff_card_bottom: " Double-click for full code ",
             tool_error_card_title: " Error ",
             tool_error_card_bottom: " Double-click for full error ",
@@ -393,7 +393,7 @@ impl Messages {
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
             thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
-            diff_card_title: "+{}",
+            diff_card_title: "+{} {}",
             diff_card_bottom: " 双击查看完整代码 ",
             tool_error_card_title: " 错误 ",
             tool_error_card_bottom: " 双击查看完整错误 ",

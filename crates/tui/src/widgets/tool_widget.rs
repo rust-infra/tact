@@ -587,9 +587,15 @@ impl Widget for ToolWidget<'_> {
         );
 
         if !output.layout.has_detail_card {
+            let inner = Rect::new(
+                area.x + 2,
+                area.y,
+                area.width.saturating_sub(2),
+                area.height,
+            );
             Paragraph::new(vec![output.title_line, meta])
                 .style(Style::default().fg(self.theme.fg).bg(self.theme.bg))
-                .render(area, buf);
+                .render(inner, buf);
             return;
         }
 
@@ -608,19 +614,25 @@ impl Widget for ToolWidget<'_> {
             )));
 
         if area.height <= TOOL_HEADER_ROWS as u16 {
-            Paragraph::new(vec![output.title_line, meta]).render(area, buf);
+            let inner = Rect::new(
+                area.x + 2,
+                area.y,
+                area.width.saturating_sub(2),
+                area.height,
+            );
+            Paragraph::new(vec![output.title_line, meta]).render(inner, buf);
             return;
         }
 
-        let title_area = Rect::new(area.x, area.y, area.width, 1);
+        let title_area = Rect::new(area.x + 2, area.y, area.width.saturating_sub(2), 1);
         output.title_line.render(title_area, buf);
-        let meta_area = Rect::new(area.x, area.y + 1, area.width, 1);
+        let meta_area = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(2), 1);
         meta.render(meta_area, buf);
 
         let card_area = Rect::new(
-            area.x,
+            area.x + 2,
             area.y + TOOL_HEADER_ROWS as u16,
-            area.width,
+            area.width.saturating_sub(2),
             area.height.saturating_sub(TOOL_HEADER_ROWS as u16),
         );
         if card_area.height < 3 {

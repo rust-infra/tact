@@ -65,13 +65,13 @@ pub(crate) fn handle_normal_mode(
             app.jump_to_prev_match();
         }
         KeyCode::Char('/') => {
-            app.input_mode = InputMode::Search;
-            app.cmd_line.clear();
-        }
-        KeyCode::Char(':') => {
             app.input_mode = InputMode::Palette;
             app.cmd_line.clear();
             app.palette_selected = 0;
+        }
+        KeyCode::Char(':') => {
+            app.input_mode = InputMode::Search;
+            app.cmd_line.clear();
         }
         KeyCode::Enter => {
             app.input_mode = InputMode::Insert;
@@ -243,25 +243,25 @@ mod tests {
     }
 
     #[test]
-    fn slash_enters_search_mode() {
+    fn slash_enters_palette_mode() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
 
         handle_normal_mode(&mut app, key(KeyCode::Char('/')), &tx);
 
-        assert!(matches!(app.input_mode, InputMode::Search));
-        assert!(app.cmd_line.is_empty());
+        assert!(matches!(app.input_mode, InputMode::Palette));
+        assert_eq!(app.palette_selected, 0);
     }
 
     #[test]
-    fn colon_enters_palette_mode() {
+    fn colon_enters_search_mode() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
 
         handle_normal_mode(&mut app, key(KeyCode::Char(':')), &tx);
 
-        assert!(matches!(app.input_mode, InputMode::Palette));
-        assert_eq!(app.palette_selected, 0);
+        assert!(matches!(app.input_mode, InputMode::Search));
+        assert!(app.cmd_line.is_empty());
     }
 
     #[test]

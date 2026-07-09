@@ -129,6 +129,8 @@ pub struct App {
     pub(crate) input_cursor: usize,
     pub(crate) input_scroll: u16,
     pub(crate) cmd_line: String,
+    /// Maximum allowed input length (from agent config `context_limit_chars`).
+    pub(crate) context_limit_chars: usize,
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) raw_message_types: Vec<RawMessageType>,

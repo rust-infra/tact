@@ -4220,6 +4220,7 @@ dependencies = [
  "async-openai",
  "async-trait",
  "dotenvy",
+ "eventsource-stream",
  "futures-util",
  "reqwest",
  "reqwest-eventsource",

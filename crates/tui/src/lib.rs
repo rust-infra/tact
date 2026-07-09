@@ -67,6 +67,7 @@ pub async fn run_tui(
     session_id: String,
     history_save_tx: UnboundedSender<(String, String)>,
     theme: String,
+    context_limit_chars: usize,
 ) -> Result<()> {
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -92,6 +93,7 @@ pub async fn run_tui(
         history_save_tx,
         theme,
     );
+    app.context_limit_chars = context_limit_chars;
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());

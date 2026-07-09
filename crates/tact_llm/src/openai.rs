@@ -5,15 +5,15 @@
 //! `reasoning_content` field, which `async-openai` does not expose in its
 //! Chat Completions types (as of 0.40.2).
 //!
-//! SSE (Server-Sent Events) parsing uses `reqwest-eventsource` instead of
+//! SSE (Server-Sent Events) parsing uses `eventsource-stream` instead of
 //! hand-rolled byte-level parsing, for correct handling of `\n\n` / `\r\n\r\n`
 //! delimiters and connection lifecycle.
 
 use anthropic_ai_sdk::types::message::{ContentBlock, CreateMessageParams, StopReason};
 use async_openai::config::Config;
+use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, HeaderMap};
-use reqwest_eventsource::{Event, RequestBuilderExt};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use std::time::Duration;
@@ -257,7 +257,7 @@ impl LlmClient for OpenAiAdapter {
     /// Stream a chat completion via SSE, capturing `reasoning_content`
     /// not present in `async-openai`'s response types.
     ///
-    /// Uses `reqwest-eventsource` for robust SSE parsing (handles both
+    /// Uses `eventsource-stream` for robust SSE parsing (handles both
     /// `\n\n` and `\r\n\r\n` delimiters) and injects `stream_options`
     /// to receive usage data in the final chunk.
     async fn stream_message(
@@ -289,19 +289,29 @@ impl LlmClient for OpenAiAdapter {
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
 
-        let mut event_source = reqwest::Client::builder()
+        let response = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| LlmError::Other(e.to_string()))?
             .post(&url)
             .headers(headers)
             .json(&body)
-            .eventsource()
+            .send()
+            .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
 
-        // Disable automatic retry — re-sending the request to an LLM
-        // endpoint would produce a duplicate response.
-        event_source.set_retry_policy(Box::new(reqwest_eventsource::retry::Never));
+        // Read the full response body on non-2xx so the actual API error
+        // message is surfaced, not just the HTTP status code.
+        if !response.status().is_success() {
+            let status = response.status();
+            let resp_body = response.text().await.unwrap_or_default();
+            return Err(LlmError::Other(format!(
+                "HTTP {status}: {resp_body}\n\n(request body: {})",
+                String::from_utf8_lossy(&json_body),
+            )));
+        }
+
+        let mut event_stream = response.bytes_stream().eventsource();
 
         let mut text_buffer = String::new();
         let mut reasoning_buffer = String::new();
@@ -311,13 +321,8 @@ impl LlmClient for OpenAiAdapter {
         let mut stop_reason: Option<StopReason> = None;
         let mut token_usage: Option<TokenUsageInfo> = None;
 
-        while let Some(event) = event_source.next().await {
+        while let Some(event) = event_stream.next().await {
             match event {
-                // REVIEW: reqwest-eventsource only surfaces the HTTP status code for
-                // non-2xx responses, not the response body. A common 400 cause after
-                // MaxTokens is an empty assistant message (see sanitize_assistant_messages
-                // in convert.rs). Log the request body so the exact invalid payload can
-                // be audited without reproducing the failure live.
                 Err(e) => {
                     tracing::debug!(
                         error = %e,
@@ -326,8 +331,7 @@ impl LlmClient for OpenAiAdapter {
                     );
                     return Err(LlmError::Other(format!("SSE error: {e}")));
                 }
-                Ok(Event::Open) => continue,
-                Ok(Event::Message(msg)) => {
+                Ok(msg) => {
                     if msg.data == "[DONE]" {
                         break;
                     }
