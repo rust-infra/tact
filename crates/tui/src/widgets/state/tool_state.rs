@@ -44,6 +44,8 @@ pub(crate) struct DiffPopup {
     pub inline_content: Option<String>,
     pub lang: String,
     pub use_diff_gutter: bool,
+    /// Content is a unified diff (git diff output); render -/+ lines natively.
+    pub is_diff: bool,
     pub scroll: u16,
     pub cached_content: Option<String>,
     pub highlighted_lines: Vec<Line<'static>>,

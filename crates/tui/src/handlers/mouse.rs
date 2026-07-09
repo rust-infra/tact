@@ -147,6 +147,7 @@ mod tests {
             inline_content: Some("line\n".into()),
             lang: String::new(),
             use_diff_gutter: false,
+            is_diff: false,
             scroll: 0,
             cached_content: None,
             highlighted_lines: Vec::new(),
