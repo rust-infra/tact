@@ -30,6 +30,17 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
 fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSender<UserCommand>) {
     // Deactivate slash command on submit.
     app.slash_command.active = false;
+
+    // Check input length limit before processing.
+    if app.input.len() > app.context_limit_chars {
+        let msg = app
+            .msgs()
+            .input_too_long_tmpl
+            .replace("{}", &app.context_limit_chars.to_string());
+        app.add_system_message(msg);
+        return;
+    }
+
     if key
         .modifiers
         .contains(crossterm::event::KeyModifiers::SHIFT)
@@ -56,6 +67,15 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSen
                 return;
             }
         }
+        // Check if a previous prompt is still being processed.
+        if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+            app.flash_msg = Some((
+                app.msgs().input_busy_msg.to_string(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+
         // Save to history (skip consecutive duplicates)
         let task_text = app.input.clone();
         if app.input_history.entries.last() != Some(&task_text) {

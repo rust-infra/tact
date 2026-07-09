@@ -186,6 +186,10 @@ pub struct Messages {
     pub theme_changed_tmpl: &'static str,
     pub lang_changed_tmpl: &'static str,
 
+    // ---- 输入限制 ----
+    pub input_too_long_tmpl: &'static str,
+    pub input_busy_msg: &'static str,
+
     // ---- 启动/退出 ----
     pub startup_welcome: &'static str,
     pub startup_mode_hint: &'static str,
@@ -219,7 +223,7 @@ impl Messages {
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
             thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
-            diff_card_title: " +{} {} ",
+            diff_card_title: "+{}",
             diff_card_bottom: " Double-click for full code ",
             tool_error_card_title: " Error ",
             tool_error_card_bottom: " Double-click for full error ",
@@ -296,9 +300,9 @@ impl Messages {
             help_G: "    G           Go to bottom of log",
             help_y: "    y           Copy selected to clipboard",
             help_t: "    t           Open/close thinking card popup",
-            help_slash: "    /           Search in log (/<term> Enter, n/N navigate)",
+            help_slash: "    :           Search in log (:<term> Enter, n/N navigate)",
             help_nN: "    n/N         Next/previous search match",
-            help_colon: "    :           Command palette (fuzzy filter & execute)",
+            help_colon: "    /           Command palette (fuzzy filter & execute)",
             help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
             help_type_task: "    Type task, Enter to submit, @ to attach file",
             help_ctrl_z: "    Ctrl+Z/Y    Undo/redo input",
@@ -354,7 +358,10 @@ impl Messages {
             theme_changed_tmpl: "🎨 Theme: {}",
             lang_changed_tmpl: "🌐 Language: {}",
 
-            startup_welcome: "Agent TUI started. Press 'i' for insert mode, ':' for commands, '/' for search.",
+            input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
+            input_busy_msg: "⏳ Still processing previous prompt, please wait...",
+
+            startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands, ':' for search.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
             startup_quotes: &[
                 "  thoughtful communication",
@@ -386,7 +393,7 @@ impl Messages {
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
             thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
-            diff_card_title: " +{} {} ",
+            diff_card_title: "+{}",
             diff_card_bottom: " 双击查看完整代码 ",
             tool_error_card_title: " 错误 ",
             tool_error_card_bottom: " 双击查看完整错误 ",
@@ -463,9 +470,9 @@ impl Messages {
             help_G: "    G           跳到日志底部",
             help_y: "    y           复制选中内容到剪贴板",
             help_t: "    t           打开/关闭思考卡片弹窗",
-            help_slash: "    /           搜索日志 (/关键词 Enter, n/N 导航)",
+            help_slash: "    :           搜索日志 (:关键词 Enter, n/N 导航)",
             help_nN: "    n/N         下一个/上一个搜索结果",
-            help_colon: "    :           命令面板 (模糊过滤并执行)",
+            help_colon: "    /           命令面板 (模糊过滤并执行)",
             help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",
             help_type_task: "    输入任务，按 Enter 提交，@ 附加文件",
             help_ctrl_z: "    Ctrl+Z/Y    撤销/重做输入",
@@ -521,7 +528,10 @@ impl Messages {
             theme_changed_tmpl: "🎨 主题: {}",
             lang_changed_tmpl: "🌐 语言: {}",
 
-            startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, ':' 打开命令面板, '/' 搜索。",
+            input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
+            input_busy_msg: "⏳ 上一个 prompt 还在处理中，请等待...",
+
+            startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板, ':' 搜索。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",
             startup_quotes: &[
                 "  thoughtful communication",
