@@ -529,7 +529,7 @@ impl Messages {
             lang_changed_tmpl: "🌐 语言: {}",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
-            input_busy_msg: "⏳ 上一个 prompt 还在处理中，请等待...",
+            input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板, ':' 搜索。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

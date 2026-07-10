@@ -32,7 +32,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSen
     app.slash_command.active = false;
 
     // Check input length limit before processing.
-    if app.input.len() > app.context_limit_chars {
+    if app.input.chars().count() > app.context_limit_chars {
         let msg = app
             .msgs()
             .input_too_long_tmpl
@@ -689,6 +689,54 @@ mod tests {
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "expected /party not to submit task"
+        );
+    }
+
+    #[test]
+    fn submit_rejected_when_input_exceeds_char_limit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.context_limit_chars = 5;
+        app.input = "hello world".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected long input not to submit task"
+        );
+        assert!(
+            !app.messages.is_empty(),
+            "expected a system message about input length"
+        );
+    }
+
+    #[test]
+    fn submit_rejected_while_agent_busy() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Planning;
+        app.input = "do something".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected busy input not to submit task"
+        );
+        assert!(
+            app.flash_msg.is_some(),
+            "expected a flash message while busy"
         );
     }
 }

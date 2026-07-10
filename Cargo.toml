@@ -28,6 +28,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 dashmap = "6"
 derive_builder = "0.20"
 dotenvy = "0.15"
+eventsource-stream = "0.2"
 futures-util = "0.3"
 globset = "0.4"
 proc-macro2 = "1.0"

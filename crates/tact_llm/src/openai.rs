@@ -304,11 +304,17 @@ impl LlmClient for OpenAiAdapter {
         // message is surfaced, not just the HTTP status code.
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response.text().await.unwrap_or_default();
-            return Err(LlmError::Other(format!(
-                "HTTP {status}: {resp_body}\n\n(request body: {})",
-                String::from_utf8_lossy(&json_body),
-            )));
+            let resp_body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+            tracing::debug!(
+                status = %status,
+                response_body = %resp_body,
+                request_body = %String::from_utf8_lossy(&json_body),
+                "LLM HTTP request failed"
+            );
+            return Err(LlmError::Other(format!("http {status}: {resp_body}")));
         }
 
         let mut event_stream = response.bytes_stream().eventsource();
@@ -456,7 +462,7 @@ impl LlmClient for OpenAiAdapter {
 
     /*
     ── Legacy stream_message (hand-written SSE parsing) ───────────────────────
-    Kept for reference. Using reqwest-eventsource fixed the following issues:
+    Kept for reference. Using eventsource-stream fixed the following issues:
     - Only supported \n\n delimiter, not \r\n\r\n
     - data: [DONE] break only exited inner loop; outer loop would still continue
     - stream_options not set; usage stats were dead code

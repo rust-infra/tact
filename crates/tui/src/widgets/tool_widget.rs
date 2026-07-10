@@ -568,6 +568,15 @@ impl<'a> ToolWidget<'a> {
     }
 }
 
+fn inset_content_rect(area: Rect) -> Rect {
+    Rect::new(
+        area.x + 2,
+        area.y,
+        area.width.saturating_sub(2),
+        area.height,
+    )
+}
+
 impl Widget for ToolWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -587,12 +596,7 @@ impl Widget for ToolWidget<'_> {
         );
 
         if !output.layout.has_detail_card {
-            let inner = Rect::new(
-                area.x + 2,
-                area.y,
-                area.width.saturating_sub(2),
-                area.height,
-            );
+            let inner = inset_content_rect(area);
             Paragraph::new(vec![output.title_line, meta])
                 .style(Style::default().fg(self.theme.fg).bg(self.theme.bg))
                 .render(inner, buf);
@@ -614,12 +618,7 @@ impl Widget for ToolWidget<'_> {
             )));
 
         if area.height <= TOOL_HEADER_ROWS as u16 {
-            let inner = Rect::new(
-                area.x + 2,
-                area.y,
-                area.width.saturating_sub(2),
-                area.height,
-            );
+            let inner = inset_content_rect(area);
             Paragraph::new(vec![output.title_line, meta]).render(inner, buf);
             return;
         }
