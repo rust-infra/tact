@@ -20,6 +20,20 @@ fn format_mm_ss(total_secs: i64) -> String {
 const USAGE_BAR_WIDTH: u16 = 10;
 
 /// Render a text-based usage progress bar like `[█████░░░░░]`.
+/// Format a quota number for display; `None` (no numeric cap) renders as `∞`.
+fn format_quota_value(value: Option<f64>) -> String {
+    match value {
+        Some(v) => {
+            if v.fract() == 0.0 {
+                format!("{v:.0}")
+            } else {
+                format!("{v}")
+            }
+        }
+        None => "∞".to_string(),
+    }
+}
+
 fn render_usage_bar(pct: f64) -> String {
     let inner_width = USAGE_BAR_WIDTH.saturating_sub(2) as usize;
     let fill_chars = ((pct / 100.0) * inner_width as f64).round() as usize;
@@ -194,7 +208,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .iter()
                     .map(|e| {
                         format!(
-                            " {}:total={} grant={} topup={}",
+                            " {}:total={:.2} grant={:.2} topup={:.2}",
                             e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
                         )
                     })
@@ -216,17 +230,19 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .windows
                     .iter()
                     .map(|w| {
+                        let remaining = format_quota_value(w.remaining);
+                        let limit = format_quota_value(w.limit);
                         if let Some(pct) = w.usage_pct() {
                             format!(
                                 " {}:{:.0}% {} {}/{}",
                                 w.label,
                                 pct,
                                 render_usage_bar(pct),
-                                w.remaining,
-                                w.limit
+                                remaining,
+                                limit
                             )
                         } else {
-                            format!(" {}:{}/{}", w.label, w.remaining, w.limit)
+                            format!(" {}:{}/{}", w.label, remaining, limit)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -414,9 +430,9 @@ mod render_tests {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "USD".into(),
-                total_balance: "12.50".into(),
-                granted_balance: "10.00".into(),
-                topped_up_balance: "2.50".into(),
+                total_balance: 12.50,
+                granted_balance: 10.00,
+                topped_up_balance: 2.50,
             }],
         });
 

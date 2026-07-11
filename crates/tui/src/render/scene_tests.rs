@@ -16,12 +16,13 @@ fn seed_executing_read_step(app: &mut App) {
         "tool_read_1",
         HashMap::from([("path".to_string(), "config.toml".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "tool_read_1".into(),
-        "read_file".into(),
-        "config.toml".into(),
-    ));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "tool_read_1".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "config.toml".into(),
+        arg_full: "config.toml".into(),
+    });
 }
 
 #[test]
@@ -80,16 +81,17 @@ fn full_frame_failed_tool_shows_in_log() {
         "tool_fail",
         HashMap::from([("path".to_string(), "missing.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "tool_fail".into(),
-        "read_file".into(),
-        "missing.txt".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "tool_fail".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "tool_fail".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "missing.txt".into(),
+        arg_full: "missing.txt".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "tool_fail".into(),
+        result: StepResult {
             tool: "read_file".into(),
             arg_summary: "missing.txt".into(),
             arg_full: None,
@@ -99,7 +101,7 @@ fn full_frame_failed_tool_shows_in_log() {
             duration_us: Some(500),
             permission_label: None,
         },
-    ));
+    });
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -171,14 +173,14 @@ fn full_frame_info_cancel_message() {
 #[test]
 fn full_frame_token_usage_in_bottom_bar() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::TokenUsage {
+    app.handle_agent_update(AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
         prompt: 100,
         completion: 50,
         total: 150,
         prompt_cache_hit_tokens: 10,
         prompt_cache_miss_tokens: 90,
         reasoning_tokens: 5,
-    });
+    }));
     app.handle_agent_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
         model: "mock-model".into(),
         max_tokens: 8192,

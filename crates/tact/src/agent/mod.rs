@@ -176,8 +176,8 @@ impl Agent {
                 let summary = text.chars().take(200).collect::<String>();
                 let _ = crate::notifications::notify_task_complete(&summary);
             }
-            AgentUpdate::StepFailed(idx, _, msg) => {
-                let _ = crate::notifications::notify_step_failed(*idx, msg);
+            AgentUpdate::StepFailed { idx, error, .. } => {
+                let _ = crate::notifications::notify_step_failed(*idx, error);
             }
             _ => {}
         }
@@ -1259,7 +1259,9 @@ mod tests {
         let finished: Vec<_> = updates
             .iter()
             .filter_map(|u| match u {
-                AgentUpdate::StepFinished(_, id, r) if r.tool == "read_file" => Some(id.as_str()),
+                AgentUpdate::StepFinished {
+                    tool_id, result, ..
+                } if result.tool == "read_file" => Some(tool_id.as_str()),
                 _ => None,
             })
             .collect();
@@ -1319,8 +1321,8 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::StepFailed(_, id, msg)
-                        if id == "w1" && msg.contains("Plan mode")
+                    AgentUpdate::StepFailed { tool_id, error, .. }
+                        if tool_id == "w1" && error.contains("Plan mode")
                 )
             }),
             "Plan mode should StepFailed on write, got: {updates:?}"
@@ -1378,7 +1380,7 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::TokenUsage { total, .. } if *total == usage.total
+                    AgentUpdate::TokenUsage(u) if u.total == usage.total
                 )
             }),
             "expected TokenUsage from mock, got: {updates:?}"
@@ -1441,10 +1443,10 @@ mod tests {
 
         let read_done = updates
             .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1"));
+            .position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"));
         let write_done = updates
             .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1"));
+            .position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"));
         assert!(
             read_done.is_some() && write_done.is_some() && read_done < write_done,
             "read must finish before write on same file, got: {updates:?}"

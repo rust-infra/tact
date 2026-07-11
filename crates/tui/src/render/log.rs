@@ -484,8 +484,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
 
-    // Loading spinner overlay: legacy PlanGenerated path only. Current agent
-    // updates usually drive the plan/tool UI through StepAdded / StepStarted.
+    // Loading spinner overlay on the loading placeholder row (if present).
     render_loading_spinner(frame, area, app, visual_scroll, visible_height);
 
     // Scrollbar thumb follows visual lines, not logical offset:

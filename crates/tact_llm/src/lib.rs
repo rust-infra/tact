@@ -387,18 +387,27 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
     let raw: RawBalanceResponse =
         serde_json::from_str(&body).context("Failed to parse DeepSeek balance response")?;
 
+    fn parse_amount(field: &str, value: &str) -> anyhow::Result<f64> {
+        value
+            .trim()
+            .parse::<f64>()
+            .with_context(|| format!("DeepSeek balance field {field} is not numeric: {value:?}"))
+    }
+
     Ok(tact_protocol::BalanceInfo {
         is_available: raw.is_available,
         balance_infos: raw
             .balance_infos
             .into_iter()
-            .map(|e| tact_protocol::BalanceEntry {
-                currency: e.currency,
-                total_balance: e.total_balance,
-                granted_balance: e.granted_balance,
-                topped_up_balance: e.topped_up_balance,
+            .map(|e| {
+                Ok(tact_protocol::BalanceEntry {
+                    currency: e.currency,
+                    total_balance: parse_amount("total_balance", &e.total_balance)?,
+                    granted_balance: parse_amount("granted_balance", &e.granted_balance)?,
+                    topped_up_balance: parse_amount("topped_up_balance", &e.topped_up_balance)?,
+                })
             })
-            .collect(),
+            .collect::<anyhow::Result<Vec<_>>>()?,
     })
 }
 
@@ -432,10 +441,6 @@ fn kimi_balance_currency(base_url: &str) -> &'static str {
     }
 }
 
-fn balance_amount_str(amount: f64) -> String {
-    amount.to_string()
-}
-
 fn parse_kimi_balance_response(
     body: &str,
     currency: &str,
@@ -461,9 +466,9 @@ fn parse_kimi_balance_response(
         is_available: raw.status && raw.code == 0,
         balance_infos: vec![tact_protocol::BalanceEntry {
             currency: currency.to_string(),
-            total_balance: balance_amount_str(raw.data.available_balance),
-            granted_balance: balance_amount_str(raw.data.voucher_balance),
-            topped_up_balance: balance_amount_str(raw.data.cash_balance),
+            total_balance: raw.data.available_balance,
+            granted_balance: raw.data.voucher_balance,
+            topped_up_balance: raw.data.cash_balance,
         }],
     })
 }
@@ -527,8 +532,12 @@ fn kimi_usage_url_from_base_url(base_url: &str) -> String {
     format!("{api_base}/usages")
 }
 
-fn parse_quota_remaining(remaining: &str) -> bool {
-    remaining.parse::<f64>().map(|v| v > 0.0).unwrap_or(true)
+/// Parse a quota number reported as a JSON string.
+///
+/// Kimi reports quota values as strings; non-numeric values (e.g. unlimited
+/// markers) map to `None`.
+fn parse_quota_value(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok()
 }
 
 fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
@@ -576,8 +585,8 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 
     let mut windows = vec![tact_protocol::UsageQuotaWindow {
         label: "week".to_string(),
-        limit: raw.usage.limit.clone(),
-        remaining: raw.usage.remaining.clone(),
+        limit: parse_quota_value(&raw.usage.limit),
+        remaining: parse_quota_value(&raw.usage.remaining),
         reset_time: raw.usage.reset_time.clone(),
     }];
 
@@ -589,13 +598,13 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
         };
         windows.push(tact_protocol::UsageQuotaWindow {
             label,
-            limit: entry.detail.limit.clone(),
-            remaining: entry.detail.remaining.clone(),
+            limit: parse_quota_value(&entry.detail.limit),
+            remaining: parse_quota_value(&entry.detail.remaining),
             reset_time: entry.detail.reset_time.clone(),
         });
     }
 
-    let is_available = windows.iter().all(|w| parse_quota_remaining(&w.remaining));
+    let is_available = windows.iter().all(|w| w.has_remaining());
 
     Ok(tact_protocol::UsageQuotaInfo {
         is_available,
@@ -899,14 +908,7 @@ impl MockClient {
 
     fn emit_token_usage(ui_tx: &Option<UnboundedSender<AgentUpdate>>, usage: &TokenUsageInfo) {
         if let Some(tx) = ui_tx {
-            let _ = tx.send(AgentUpdate::TokenUsage {
-                prompt: usage.prompt,
-                completion: usage.completion,
-                total: usage.total,
-                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-                prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-                reasoning_tokens: usage.reasoning_tokens,
-            });
+            let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
         }
     }
 
@@ -1134,9 +1136,9 @@ mod tests {
         assert!(info.is_available);
         assert_eq!(info.windows.len(), 2);
         assert_eq!(info.windows[0].label, "week");
-        assert_eq!(info.windows[0].remaining, "74");
+        assert_eq!(info.windows[0].remaining, Some(74.0));
         assert_eq!(info.windows[1].label, "5h");
-        assert_eq!(info.windows[1].remaining, "85");
+        assert_eq!(info.windows[1].remaining, Some(85.0));
         assert_eq!(info.membership_level.as_deref(), Some("LEVEL_INTERMEDIATE"));
     }
 
@@ -1186,9 +1188,9 @@ mod tests {
         assert_eq!(info.balance_infos.len(), 1);
         let entry = &info.balance_infos[0];
         assert_eq!(entry.currency, "CNY");
-        assert_eq!(entry.total_balance, "49.58");
-        assert_eq!(entry.granted_balance, "46.58");
-        assert_eq!(entry.topped_up_balance, "3");
+        assert_eq!(entry.total_balance, 49.58);
+        assert_eq!(entry.granted_balance, 46.58);
+        assert_eq!(entry.topped_up_balance, 3.0);
     }
 
     #[test]
@@ -1254,7 +1256,7 @@ mod tests {
         let update = rx.try_recv().expect("TokenUsage event");
         assert!(matches!(
             update,
-            AgentUpdate::TokenUsage { total, .. } if total == usage.total
+            AgentUpdate::TokenUsage(u) if u.total == usage.total
         ));
     }
 }

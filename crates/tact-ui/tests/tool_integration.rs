@@ -41,7 +41,7 @@ async fn parallel_read_files_both_succeed() {
     assert!(ids.contains(&"read_b".to_string()));
     assert!(
         updates.iter().all(|u| {
-            if let AgentUpdate::StepFinished(_, _, result) = u {
+            if let AgentUpdate::StepFinished { result, .. } = u {
                 matches!(result.status, StepStatus::Success)
             } else {
                 true
@@ -67,7 +67,7 @@ async fn plan_mode_blocks_write_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFailed(_, id, msg)
+                AgentUpdate::StepFailed { tool_id: id, error: msg, .. }
                     if id == "w1" && msg.contains("Plan mode")
             )
         }),
@@ -95,7 +95,7 @@ async fn bash_echo_returns_success() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "bash1"
                         && result.tool == "bash"
                         && matches!(result.status, StepStatus::Success)
@@ -267,11 +267,11 @@ async fn read_write_same_file_serializes() {
 
     let read_done = first_index(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "read_shared"),
+        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "read_shared"),
     );
     let write_done = first_index(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "write_shared"),
+        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "write_shared"),
     );
     assert!(
         read_done.is_some() && write_done.is_some() && read_done < write_done,
@@ -298,14 +298,10 @@ async fn submit_task_emits_token_usage() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::TokenUsage {
-                    prompt,
-                    completion,
-                    total,
-                    ..
-                } if *prompt == usage.prompt
-                    && *completion == usage.completion
-                    && *total == usage.total
+                AgentUpdate::TokenUsage(info)
+                    if info.prompt == usage.prompt
+                        && info.completion == usage.completion
+                        && info.total == usage.total
             )
         }),
         "mock with usage should emit TokenUsage, got: {updates:?}"

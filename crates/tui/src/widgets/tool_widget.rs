@@ -87,15 +87,7 @@ pub fn format_duration_us(us: u64) -> String {
     }
 }
 
-pub fn format_bytes(size: usize) -> String {
-    if size < 1024 {
-        format!("{size} B")
-    } else if size < 1024 * 1024 {
-        format!("{:.1} KB", size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-    }
-}
+pub use tact_protocol::format_bytes;
 
 /// Build the plain-text meta line (title + meta rows).
 #[allow(clippy::too_many_arguments)]

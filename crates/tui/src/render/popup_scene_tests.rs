@@ -235,12 +235,13 @@ fn main_area_loading_spinner_when_executing() {
         "bash1",
         HashMap::from([("command".to_string(), "sleep 1".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "bash1".into(),
-        "bash".into(),
-        "sleep 1".into(),
-    ));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash1".into(),
+        tool_name: "bash".into(),
+        arg_summary: "sleep 1".into(),
+        arg_full: "sleep 1".into(),
+    });
     app.append_blank(RawMessageType::SysTool);
     app.loading_idx = Some(app.messages.len().saturating_sub(1));
 
@@ -293,16 +294,17 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
             ("new_text".to_string(), "fn new() {}".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "edit_popup".into(),
-        "edit_file".into(),
-        path.clone(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "edit_popup".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "edit_popup".into(),
+        tool_name: "edit_file".into(),
+        arg_summary: path.clone(),
+        arg_full: path.clone(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "edit_popup".into(),
+        result: StepResult {
             tool: "edit_file".into(),
             arg_summary: path.clone(),
             arg_full: Some(path.clone()),
@@ -312,7 +314,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 
     let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -480,16 +482,17 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
             ("new_text".to_string(), "a - b".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "edit_calc".into(),
-        "edit_file".into(),
-        path.clone(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "edit_calc".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "edit_calc".into(),
+        tool_name: "edit_file".into(),
+        arg_summary: path.clone(),
+        arg_full: path.clone(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "edit_calc".into(),
+        result: StepResult {
             tool: "edit_file".into(),
             arg_summary: path.clone(),
             arg_full: Some(path.clone()),
@@ -499,7 +502,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 
     let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -543,16 +546,17 @@ fn open_diff_popup_after_read_file_step_finish() {
         "read_popup",
         HashMap::from([("path".to_string(), path.clone())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "read_popup".into(),
-        "read_file".into(),
-        path.clone(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "read_popup".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "read_popup".into(),
+        tool_name: "read_file".into(),
+        arg_summary: path.clone(),
+        arg_full: path.clone(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "read_popup".into(),
+        result: StepResult {
             tool: "read_file".into(),
             arg_summary: path.clone(),
             arg_full: Some(path.clone()),
@@ -562,7 +566,7 @@ fn open_diff_popup_after_read_file_step_finish() {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 
     let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);

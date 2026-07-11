@@ -94,7 +94,7 @@ async fn agent_routes_mcp_tool_through_mock_server() {
 
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished(_, _, result)
+        AgentUpdate::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Success) && result.message.contains("echo: hi")
     )));
 }
@@ -139,7 +139,7 @@ async fn mcp_tool_error_is_reported_as_step_failure() {
     // but the returned message contains the error reported by the server.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished(_, _, result)
+        AgentUpdate::StepFinished { result, .. }
             if result.message.contains("server exploded")
     )));
 }
@@ -191,7 +191,7 @@ async fn mcp_tool_prompts_in_default_mode() {
     // observable evidence in the collected updates is the permission_label.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished(_, _, result)
+        AgentUpdate::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Success)
                 && result.permission_label.as_deref() == Some("Allow once")
                 && result.message.contains("echo: hi")
@@ -237,7 +237,7 @@ async fn agent_recovers_when_mcp_tool_returns_error() {
     // The failed MCP tool should be recorded as a failed step.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished(_, _, result)
+        AgentUpdate::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Failed)
                 && result.message.contains("Error invoking MCP tool mcp__demo__echo")
     )));

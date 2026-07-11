@@ -1,7 +1,8 @@
-// Agent core module
-// Receives user tasks, calls the OpenAI API to generate execution plans,
-// and executes them step by step inside a sandbox.
-// Communicates with the TUI module over channels, reporting execution status in real time.
+//! Shared protocol types between the agent runtime and the TUI.
+//!
+//! [`agent`] defines the runtime messages ([`AgentUpdate`] / [`UserCommand`])
+//! exchanged over channels; [`biz`] defines account / quota structures carried
+//! inside those messages.
 
 pub mod agent;
 pub mod biz;
@@ -14,16 +15,16 @@ pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
 };
 
-// Format a byte count using human-readable units: Byte, K, M, G.
-//
-// Uses 1024 as the unit base. Values below 1024 are shown as
-// `"<n> Byte"`; larger values are scaled to the largest fitting unit
-// with one decimal place and trailing ".0" removed.
+/// Format a byte count using human-readable units: B, KB, MB, GB.
+///
+/// Uses 1024 as the unit base. Values below 1024 are shown as
+/// `"<n> B"`; larger values are scaled to the largest fitting unit
+/// with one decimal place and trailing ".0" removed.
 pub fn format_bytes(bytes: usize) -> String {
-    const UNITS: &[&str] = &["Byte", "K", "M", "G"];
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
 
     if bytes < 1024 {
-        return format!("{} Byte", bytes);
+        return format!("{} B", bytes);
     }
 
     let mut size = bytes as f64;
@@ -51,21 +52,21 @@ mod tests {
 
     #[test]
     fn format_bytes_units() {
-        assert_eq!(format_bytes(0), "0 Byte");
-        assert_eq!(format_bytes(1023), "1023 Byte");
-        assert_eq!(format_bytes(1024), "1 K");
-        assert_eq!(format_bytes(1536), "1.5 K");
-        assert_eq!(format_bytes(1024 * 1024), "1 M");
-        assert_eq!(format_bytes(1024 * 1024 * 1024), "1 G");
-        assert_eq!(format_bytes(1024 * 1024 * 1024 * 3), "3 G");
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1 GB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 * 3), "3 GB");
     }
 
     #[test]
     fn usage_pct_basic() {
         let w = UsageQuotaWindow {
             label: "week".to_string(),
-            limit: "100".to_string(),
-            remaining: "42".to_string(),
+            limit: Some(100.0),
+            remaining: Some(42.0),
             reset_time: None,
         };
         assert!((w.usage_pct().unwrap() - 58.0).abs() < 1e-9);
@@ -75,32 +76,34 @@ mod tests {
     fn usage_pct_zero_limit() {
         let w = UsageQuotaWindow {
             label: "week".to_string(),
-            limit: "0".to_string(),
-            remaining: "0".to_string(),
+            limit: Some(0.0),
+            remaining: Some(0.0),
             reset_time: None,
         };
         assert_eq!(w.usage_pct(), None);
     }
 
     #[test]
-    fn usage_pct_unparseable() {
+    fn usage_pct_unlimited_window() {
         let w = UsageQuotaWindow {
             label: "week".to_string(),
-            limit: "unlimited".to_string(),
-            remaining: "42".to_string(),
+            limit: None,
+            remaining: Some(42.0),
             reset_time: None,
         };
         assert_eq!(w.usage_pct(), None);
+        assert!(w.has_remaining());
     }
 
     #[test]
     fn usage_pct_caps_at_100() {
         let w = UsageQuotaWindow {
             label: "week".to_string(),
-            limit: "100".to_string(),
-            remaining: "-10".to_string(),
+            limit: Some(100.0),
+            remaining: Some(-10.0),
             reset_time: None,
         };
         assert!((w.usage_pct().unwrap() - 100.0).abs() < f64::EPSILON);
+        assert!(!w.has_remaining());
     }
 }

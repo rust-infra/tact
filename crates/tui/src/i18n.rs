@@ -167,8 +167,6 @@ pub struct Messages {
     pub cmd_party: &'static str,
 
     // ---- 系统消息 ----
-    pub plan_generated_tmpl: &'static str,
-    pub plan_step_tmpl: &'static str,
     pub step_started_tmpl: &'static str,
     pub step_success_prefix: &'static str,
     pub step_fail_prefix: &'static str,
@@ -339,8 +337,6 @@ impl Messages {
             cmd_lang: "Toggle language (EN/中文)",
             cmd_party: "Toggle party mode",
 
-            plan_generated_tmpl: "Generated {} steps:",
-            plan_step_tmpl: "  {}. {}",
             step_started_tmpl: "▶ Executing: {}",
             step_success_prefix: "✓",
             step_fail_prefix: "✗",
@@ -509,8 +505,6 @@ impl Messages {
             cmd_lang: "切换语言 (EN/中文)",
             cmd_party: "切换派对模式",
 
-            plan_generated_tmpl: "生成了 {} 个步骤:",
-            plan_step_tmpl: "  {}. {}",
             step_started_tmpl: "▶ 正在执行: {}",
             step_success_prefix: "✓",
             step_fail_prefix: "✗",

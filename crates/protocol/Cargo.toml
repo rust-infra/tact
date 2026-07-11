@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 serde = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }

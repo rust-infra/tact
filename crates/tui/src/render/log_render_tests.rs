@@ -26,16 +26,17 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
         "bash-tall",
         HashMap::from([("command".to_string(), "seq".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "bash-tall".into(),
-        "bash".into(),
-        "seq".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "bash-tall".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash-tall".into(),
+        tool_name: "bash".into(),
+        arg_summary: "seq".into(),
+        arg_full: "seq".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash-tall".into(),
+        result: StepResult {
             tool: "bash".into(),
             arg_summary: "seq".into(),
             arg_full: Some("seq".into()),
@@ -45,7 +46,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 }
 
 fn line_column_of(rendered: &str, needle: &str) -> Option<usize> {

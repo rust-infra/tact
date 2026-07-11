@@ -142,7 +142,7 @@ async fn submit_task_runs_read_file_tool() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "tool_read_1" && result.tool == "read_file"
             )
         }),
@@ -317,7 +317,7 @@ async fn submit_task_runs_write_file_tool() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "tool_write_1"
                         && result.tool == "write_file"
                         && matches!(result.status, StepStatus::Success)
@@ -363,7 +363,7 @@ async fn read_missing_file_emits_failed_step() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "tool_read_1"
                         && matches!(result.status, StepStatus::Failed)
             )

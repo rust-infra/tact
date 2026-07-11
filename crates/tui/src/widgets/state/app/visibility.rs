@@ -530,15 +530,6 @@ impl App {
         self.remove_active_tool_rows(active);
     }
 
-    /// Drop all running tool blocks (e.g. when a new plan starts).
-    pub(crate) fn cancel_all_active_tools(&mut self) {
-        let mut actives = std::mem::take(&mut self.tools.active);
-        actives.sort_by_key(|a| std::cmp::Reverse(a.phys_idx));
-        for active in actives {
-            self.remove_active_tool_rows(active);
-        }
-    }
-
     pub(crate) fn resize_tool_placeholder_rows(
         &mut self,
         phys_idx: usize,

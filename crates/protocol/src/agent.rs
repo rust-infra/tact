@@ -4,13 +4,13 @@
 //! execution status updates, user commands, step results, token usage, errors,
 //! and streaming output.
 
-use std::collections::HashMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 /// Execution status of a step.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepStatus {
     Success,
     Failed,
@@ -51,14 +51,15 @@ pub enum AgentErrorKind {
     Other(String),
 }
 
-impl AgentErrorKind {
-    /// Returns a human-readable error description.
-    pub fn display(&self) -> &str {
+impl fmt::Display for AgentErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AgentErrorKind::Other(msg) => msg,
+            AgentErrorKind::Other(msg) => f.write_str(msg),
         }
     }
 }
+
+impl std::error::Error for AgentErrorKind {}
 
 /// Token usage info returned from an LLM API call.
 #[derive(Debug, Clone, Default)]
@@ -71,53 +72,43 @@ pub struct TokenUsageInfo {
     /// DeepSeek KV cache miss prompt tokens
     pub prompt_cache_miss_tokens: u32,
     /// Reasoning tokens consumed by the model (R1 / V3 thinking).
+    /// This is a subset of `completion` exposed by the usage object's
+    /// `completion_tokens_details.reasoning_tokens` field.
     pub reasoning_tokens: u32,
 }
 
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
-    /// Pre-generated plan batch (legacy).
-    ///
-    /// The current agent runtime does not emit this variant. The plan panel is
-    /// driven by [`StepAdded`](Self::StepAdded) and [`StepStarted`](Self::StepStarted).
-    /// The TUI handler is retained for backward compatibility only.
-    #[deprecated(
-        since = "0.19.0",
-        note = "use StepAdded/StepStarted; agent no longer emits PlanGenerated"
-    )]
-    PlanGenerated(Vec<PlanStep>),
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
-    /// Step `idx` has started execution
-    StepStarted(
-        usize,
-        String, /* tool_id */
-        String, /* tool_name */
-        String, /* arg_summary */
-    ),
-    /// Step `idx` succeeded, with structured result
-    StepFinished(usize, String /* tool_id */, StepResult),
-    /// Step `idx` failed, with error message
-    StepFailed(usize, String /* tool_id */, String),
+    /// A step has started execution.
+    StepStarted {
+        idx: usize,
+        tool_id: String,
+        tool_name: String,
+        arg_summary: String,
+        /// Full tool argument summary (untruncated), used by detailed UI views.
+        arg_full: String,
+    },
+    /// A step succeeded, with structured result.
+    StepFinished {
+        idx: usize,
+        tool_id: String,
+        result: StepResult,
+    },
+    /// A step failed, with error message.
+    StepFailed {
+        idx: usize,
+        tool_id: String,
+        error: String,
+    },
     /// The entire task is complete
     TaskComplete(String),
     /// Agent error, with classification for the TUI to decide display style
     Error(AgentErrorKind),
     /// Token usage stats
-    TokenUsage {
-        prompt: u32,
-        completion: u32,
-        total: u32,
-        /// DeepSeek KV cache hit prompt tokens (0 for non-DeepSeek providers)
-        prompt_cache_hit_tokens: u32,
-        /// DeepSeek KV cache miss prompt tokens
-        prompt_cache_miss_tokens: u32,
-        /// Reasoning tokens consumed by the model (R1 / V3 thinking).
-        /// This is a subset of `completion` exposed by the usage object's
-        /// `completion_tokens_details.reasoning_tokens` field.
-        reasoning_tokens: u32,
-    },
+    TokenUsage(TokenUsageInfo),
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)
@@ -151,22 +142,14 @@ pub enum UserCommand {
 pub struct PlanStep {
     /// Human-readable step description
     pub description: String,
-    /// Tool name: read_file / write_file / run_command
+    /// Tool name, e.g. `read_file` / `write_file` / `run_command`
     pub tool: String,
     /// LLM-assigned tool-use id from the assistant message.
     #[serde(default)]
     pub tool_id: String,
-    /// Tool arguments (key-value pairs)
-    pub args: HashMap<String, String>,
-    /// Whether user manual approval is required before execution (legacy).
-    ///
-    /// Permission flow is driven by `PermissionManager` at tool dispatch time;
-    /// the agent does not set this flag today.
-    #[deprecated(
-        since = "0.19.0",
-        note = "permission is enforced by PermissionManager, not PlanStep flags"
-    )]
-    pub need_approval: bool,
+    /// Tool arguments as sent by the model (order-preserving, lossless JSON).
+    #[serde(default)]
+    pub args: serde_json::Map<String, serde_json::Value>,
     /// Output after execution (populated by TUI; defaults to None on JSON deserialization)
     #[serde(default)]
     pub output: Option<String>,
@@ -174,19 +157,25 @@ pub struct PlanStep {
 
 impl PlanStep {
     /// Construct a plan step for the streaming agent loop.
-    pub fn new(
+    pub fn new<I, K, V>(
         description: impl Into<String>,
         tool: impl Into<String>,
         tool_id: impl Into<String>,
-        args: HashMap<String, String>,
-    ) -> Self {
+        args: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+    {
         Self {
             description: description.into(),
             tool: tool.into(),
             tool_id: tool_id.into(),
-            args,
-            #[allow(deprecated)]
-            need_approval: false,
+            args: args
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
             output: None,
         }
     }

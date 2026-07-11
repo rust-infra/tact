@@ -208,10 +208,7 @@ pub struct App {
     pub(crate) konami_progress: u8,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
-    /// Loading placeholder index in messages.
-    ///
-    /// Legacy `PlanGenerated` inserts this row; current agent updates usually
-    /// drive the plan panel through `StepAdded` / `StepStarted` instead.
+    /// Loading placeholder index in messages (spinner row while waiting for output).
     pub(crate) loading_idx: Option<usize>,
     /// Panel split ratio (0.0–1.0) for the Plan panel width. 0.20 = 20% plan, 80% log.
     pub(crate) panel_split_ratio: f64,

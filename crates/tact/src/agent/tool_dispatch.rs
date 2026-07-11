@@ -148,20 +148,6 @@ fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
-fn tool_args_map(input: &serde_json::Value) -> std::collections::HashMap<String, String> {
-    input
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| {
-                    let val = v.as_str().map_or_else(|| v.to_string(), |s| s.to_string());
-                    (k.clone(), val)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str) -> Option<String> {
     match name {
         "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
@@ -230,7 +216,8 @@ impl Agent {
             }
 
             let step_idx = self.next_step_idx();
-            let arg_summary = tool_arg_summary(name, input);
+            let arg_full = tool_arg_full(name, input);
+            let arg_summary = truncate_tool_arg_summary(&arg_full);
             let step_description = if arg_summary.is_empty() {
                 name.clone()
             } else {
@@ -240,14 +227,15 @@ impl Agent {
                 step_description,
                 name.clone(),
                 id.clone(),
-                tool_args_map(input),
+                input.as_object().cloned().unwrap_or_default(),
             )));
-            self.emit_update(AgentUpdate::StepStarted(
-                step_idx,
-                id.clone(),
-                name.clone(),
+            self.emit_update(AgentUpdate::StepStarted {
+                idx: step_idx,
+                tool_id: id.clone(),
+                tool_name: name.clone(),
                 arg_summary,
-            ));
+                arg_full,
+            });
 
             let mut tool_use = ToolUse {
                 id: id.clone(),
@@ -265,11 +253,11 @@ impl Agent {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
                             let msg = format!("Permission denied: {}", decision.reason);
-                            self.emit_update(AgentUpdate::StepFailed(
-                                step_idx,
-                                id.clone(),
-                                msg.clone(),
-                            ));
+                            self.emit_update(AgentUpdate::StepFailed {
+                                idx: step_idx,
+                                tool_id: id.clone(),
+                                error: msg.clone(),
+                            });
                             PreparedState::Resolved(msg)
                         }
                         PermissionBehavior::Ask => {
@@ -321,11 +309,11 @@ impl Agent {
                                 _ => {
                                     let msg =
                                         format!("Permission denied by user for {}", tool_use.name);
-                                    self.emit_update(AgentUpdate::StepFailed(
-                                        step_idx,
-                                        id.clone(),
-                                        msg.clone(),
-                                    ));
+                                    self.emit_update(AgentUpdate::StepFailed {
+                                        idx: step_idx,
+                                        tool_id: id.clone(),
+                                        error: msg.clone(),
+                                    });
                                     PreparedState::Resolved(msg)
                                 }
                             }
@@ -334,12 +322,20 @@ impl Agent {
                 }
                 Ok(HookControl::Block(reason)) => {
                     let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                    self.emit_update(AgentUpdate::StepFailed {
+                        idx: step_idx,
+                        tool_id: id.clone(),
+                        error: msg.clone(),
+                    });
                     PreparedState::Resolved(msg)
                 }
                 Err(error) => {
                     let msg = format!("PreToolUse hook failed: {error}");
-                    self.emit_update(AgentUpdate::StepFailed(step_idx, id.clone(), msg.clone()));
+                    self.emit_update(AgentUpdate::StepFailed {
+                        idx: step_idx,
+                        tool_id: id.clone(),
+                        error: msg.clone(),
+                    });
                     PreparedState::Resolved(msg)
                 }
             };
@@ -461,10 +457,10 @@ impl Agent {
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
                 let detail =
                     step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
-                self.emit_update(AgentUpdate::StepFinished(
-                    prep_step_idx,
-                    prep_id,
-                    StepResult {
+                self.emit_update(AgentUpdate::StepFinished {
+                    idx: prep_step_idx,
+                    tool_id: prep_id,
+                    result: StepResult {
                         tool: prep_name.clone(),
                         arg_summary,
                         arg_full: Some(arg_full),
@@ -474,7 +470,7 @@ impl Agent {
                         duration_us: Some(duration_us),
                         permission_label: prep_permission_label,
                     },
-                ));
+                });
                 if prep_name == "read_file"
                     && let Some(path) = prep_input.get("path").and_then(|value| value.as_str())
                 {
@@ -515,11 +511,11 @@ impl Agent {
                 continue;
             };
             let step_idx = self.next_step_idx();
-            self.emit_update(AgentUpdate::StepFailed(
-                step_idx,
-                id.clone(),
-                TOOL_CANCELLED_MSG.to_string(),
-            ));
+            self.emit_update(AgentUpdate::StepFailed {
+                idx: step_idx,
+                tool_id: id.clone(),
+                error: TOOL_CANCELLED_MSG.to_string(),
+            });
             prepared.push(PreparedTool {
                 id: id.clone(),
                 name: name.clone(),

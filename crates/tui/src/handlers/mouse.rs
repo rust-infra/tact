@@ -168,16 +168,17 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted(
-            0,
-            "b1".into(),
-            "bash".into(),
-            "echo hi".into(),
-        ));
-        app.handle_agent_update(AgentUpdate::StepFinished(
-            0,
-            "b1".into(),
-            StepResult {
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
                 tool: "bash".into(),
                 arg_summary: "echo hi".into(),
                 arg_full: Some("echo hi".into()),
@@ -187,7 +188,7 @@ mod tests {
                 duration_us: Some(1),
                 permission_label: None,
             },
-        ));
+        });
 
         let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
         app.mouse.click_count = 1;

@@ -380,24 +380,18 @@ impl LlmClient for AnthropicAdapter {
                                     .and_then(|v| v.as_u64())
                                     .map(|n| n as u32)
                                     .unwrap_or(0);
-                                token_usage = Some(TokenUsageInfo {
+                                let info = TokenUsageInfo {
                                     prompt: usage.input_tokens,
                                     completion: usage.output_tokens,
                                     total: usage.input_tokens + usage.output_tokens,
                                     prompt_cache_hit_tokens: cache_hit,
                                     prompt_cache_miss_tokens: cache_miss,
                                     reasoning_tokens: reasoning,
-                                });
+                                };
                                 if let Some(ref tx) = ui_tx {
-                                    let _ = tx.send(AgentUpdate::TokenUsage {
-                                        prompt: usage.input_tokens,
-                                        completion: usage.output_tokens,
-                                        total: usage.input_tokens + usage.output_tokens,
-                                        prompt_cache_hit_tokens: cache_hit,
-                                        prompt_cache_miss_tokens: cache_miss,
-                                        reasoning_tokens: reasoning,
-                                    });
+                                    let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
                                 }
+                                token_usage = Some(info);
                             }
                         }
                         "message_stop" => break,

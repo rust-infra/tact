@@ -3,7 +3,7 @@ use crate::widgets::state::*;
 use crate::widgets::tool_widget::{ToolPhase, ToolWidget};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListState, ScrollbarState};
+use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
 
@@ -20,20 +20,6 @@ fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     idx
 }
 
-fn plan_step_arg_full(step: &PlanStep) -> String {
-    match step.tool.as_str() {
-        "read_file" | "write_file" => step.args.get("path").cloned().unwrap_or_default(),
-        "run_command" | "bash" | "shell" => step.args.get("command").cloned().unwrap_or_default(),
-        _ => {
-            if step.args.is_empty() {
-                String::new()
-            } else {
-                serde_json::to_string(&step.args).unwrap_or_default()
-            }
-        }
-    }
-}
-
 fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
     chrono::Local::now()
         .signed_duration_since(start)
@@ -48,7 +34,6 @@ impl App {
         }
     }
 
-    #[allow(deprecated)]
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
         // Close the previous thinking block: when any non-ThinkingChunk update arrives,
@@ -58,65 +43,17 @@ impl App {
             self.flush_and_close_thinking();
         }
         // Remove the loading placeholder on any content-producing update.
-        // PlanGenerated is a legacy path that inserts it, so skip that variant.
         // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
         // should NOT remove the placeholder since they don't produce visible content.
         match &update {
-            AgentUpdate::PlanGenerated(_)
-            | AgentUpdate::TokenUsage { .. }
-            | AgentUpdate::ModelInfo(_) => {
-                // These don't remove the loading placeholder:
-                // - PlanGenerated: we just inserted it
-                // - TokenUsage / ModelInfo: metadata only, no content
+            AgentUpdate::TokenUsage(_) | AgentUpdate::ModelInfo(_) => {
+                // Metadata only, no content: keep the loading placeholder.
             }
             _ => {
                 self.remove_loading_placeholder();
             }
         }
         match update {
-            // Legacy PlanGenerated path. Current agent code drives the plan panel
-            // through StepAdded / StepStarted and does not emit this variant.
-            AgentUpdate::PlanGenerated(plan) => {
-                // New task starts: flush leftover streaming lines
-                self.flush_stream_pending();
-                self.cancel_all_active_tools();
-
-                let plan_len = plan.len();
-                self.plan.steps = plan;
-                self.plan.collapsed = vec![false; plan_len];
-                self.plan.selected = 0;
-                self.plan.list_state =
-                    ListState::default().with_selected(if plan_len > 0 { Some(0) } else { None });
-                self.status = Status::Executing {
-                    current_step: 0,
-                    total: plan_len,
-                };
-                let msgs = self.msgs();
-                let plan_messages: Vec<String> = self
-                    .plan
-                    .steps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, step)| {
-                        msgs.plan_step_tmpl
-                            .replacen("{}", &(i + 1).to_string(), 1)
-                            .replacen("{}", &step.description, 1)
-                    })
-                    .collect();
-                self.add_system_message(
-                    msgs.plan_generated_tmpl
-                        .replace("{}", &plan_len.to_string())
-                        .to_string(),
-                );
-                for msg in plan_messages {
-                    self.add_system_message(msg);
-                }
-                self.plan.scroll_state = ScrollbarState::new(plan_len.saturating_sub(1));
-
-                // Insert a loading placeholder line for the spinner animation
-                self.append_blank(RawMessageType::SysTool);
-                self.loading_idx = Some(self.messages.len() - 1);
-            }
             AgentUpdate::StepAdded(step) => {
                 // Flush leftover streaming text, preventing LLM output from appearing
                 // between StepAdded and StepStarted.
@@ -128,13 +65,18 @@ impl App {
                     .insert(step.tool_id.clone(), step.clone());
                 self.plan.collapsed.push(false);
                 // Don't change current_step or total — the step hasn't started yet.
-                // Current agent runs may never send PlanGenerated, so ensure there
-                // is an Executing status before StepStarted arrives.
+                // Ensure there is an Executing status before StepStarted arrives.
                 self.ensure_executing_status(idx);
                 self.plan.scroll_state =
                     ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
             }
-            AgentUpdate::StepStarted(idx, tool_id, tool_name, arg_summary) => {
+            AgentUpdate::StepStarted {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                arg_full,
+            } => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 // Same tool_id restarting without a finish: drop stale placeholder rows.
@@ -150,16 +92,10 @@ impl App {
                     }
                 }
                 let msgs = self.msgs();
-                let full_arg = self
-                    .plan
-                    .steps
-                    .get(idx)
-                    .map(plan_step_arg_full)
-                    .unwrap_or_default();
                 let output = ToolWidget::new(&self.theme, &msgs)
                     .with_tool(tool_name)
                     .with_arg_summary(arg_summary)
-                    .with_arg_full(full_arg)
+                    .with_arg_full(arg_full)
                     .with_step_index(idx)
                     .with_phase(ToolPhase::Running)
                     .with_duration_us(0)
@@ -173,7 +109,11 @@ impl App {
                 });
                 self.refresh_tool_log_scroll();
             }
-            AgentUpdate::StepFinished(idx, tool_id, result) => {
+            AgentUpdate::StepFinished {
+                idx,
+                tool_id,
+                result,
+            } => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 let msgs = self.msgs();
@@ -186,7 +126,11 @@ impl App {
                     step.output = Some(result.message);
                 }
             }
-            AgentUpdate::StepFailed(idx, tool_id, error) => {
+            AgentUpdate::StepFailed {
+                idx,
+                tool_id,
+                error,
+            } => {
                 let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
                 self.flush_stream_pending();
                 if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
@@ -243,20 +187,13 @@ impl App {
                 self.freeze_last_prompt_cost();
             }
             // Update token usage info
-            AgentUpdate::TokenUsage {
-                prompt,
-                completion,
-                total,
-                prompt_cache_hit_tokens,
-                prompt_cache_miss_tokens,
-                reasoning_tokens,
-            } => {
-                self.status_bar.token_prompt = prompt;
-                self.status_bar.token_completion = completion;
-                self.status_bar.token_total = total;
-                self.status_bar.token_cache_hit = prompt_cache_hit_tokens;
-                self.status_bar.token_cache_miss = prompt_cache_miss_tokens;
-                self.status_bar.token_reasoning = reasoning_tokens;
+            AgentUpdate::TokenUsage(usage) => {
+                self.status_bar.token_prompt = usage.prompt;
+                self.status_bar.token_completion = usage.completion;
+                self.status_bar.token_total = usage.total;
+                self.status_bar.token_cache_hit = usage.prompt_cache_hit_tokens;
+                self.status_bar.token_cache_miss = usage.prompt_cache_miss_tokens;
+                self.status_bar.token_reasoning = usage.reasoning_tokens;
             }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
@@ -565,7 +502,7 @@ impl App {
             AccountUpdate::UsageQuota(info) => self.account.set_quota(info),
             AccountUpdate::Error(err) => {
                 self.account.clear();
-                self.flash_msg = Some((err.display(), std::time::Instant::now()));
+                self.flash_msg = Some((err.to_string(), std::time::Instant::now()));
             }
         }
     }
@@ -646,14 +583,14 @@ mod lifecycle_tests {
             windows: vec![
                 UsageQuotaWindow {
                     label: "week".into(),
-                    limit: "100".into(),
-                    remaining: "74".into(),
+                    limit: Some(100.0),
+                    remaining: Some(74.0),
                     reset_time: None,
                 },
                 UsageQuotaWindow {
                     label: "5h".into(),
-                    limit: "100".into(),
-                    remaining: "85".into(),
+                    limit: Some(100.0),
+                    remaining: Some(85.0),
                     reset_time: None,
                 },
             ],
@@ -677,9 +614,9 @@ mod lifecycle_tests {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "CNY".into(),
-                total_balance: "99.00".into(),
-                granted_balance: "99.00".into(),
-                topped_up_balance: "0.00".into(),
+                total_balance: 99.00,
+                granted_balance: 99.00,
+                topped_up_balance: 0.00,
             }],
         }));
 
@@ -710,9 +647,9 @@ mod lifecycle_tests {
             is_available: true,
             balance_infos: vec![BalanceEntry {
                 currency: "CNY".into(),
-                total_balance: "88.50".into(),
-                granted_balance: "80.00".into(),
-                topped_up_balance: "8.50".into(),
+                total_balance: 88.50,
+                granted_balance: 80.00,
+                topped_up_balance: 8.50,
             }],
         }));
 
@@ -751,16 +688,17 @@ mod lifecycle_tests {
             "tool_read_1",
             HashMap::from([("path".to_string(), "main.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted(
-            0,
-            "tool_read_1".into(),
-            "read_file".into(),
-            "main.rs".into(),
-        ));
-        app.handle_agent_update(AgentUpdate::StepFinished(
-            0,
-            "tool_read_1".into(),
-            StepResult {
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "tool_read_1".into(),
+            tool_name: "read_file".into(),
+            arg_summary: "main.rs".into(),
+            arg_full: "main.rs".into(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "tool_read_1".into(),
+            result: StepResult {
                 tool: "read_file".into(),
                 arg_summary: "main.rs".into(),
                 arg_full: None,
@@ -770,7 +708,7 @@ mod lifecycle_tests {
                 duration_us: Some(1),
                 permission_label: None,
             },
-        ));
+        });
 
         assert_eq!(app.plan.steps[0].output.as_deref(), Some("ok"));
     }
@@ -784,11 +722,11 @@ mod lifecycle_tests {
             "tool_read_1",
             HashMap::from([("path".to_string(), "missing.txt".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepFailed(
-            0,
-            "tool_read_1".into(),
-            "file not found".into(),
-        ));
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            tool_id: "tool_read_1".into(),
+            error: "file not found".into(),
+        });
         assert!(matches!(app.status, Status::Idle));
     }
 
@@ -832,14 +770,14 @@ mod lifecycle_tests {
     #[test]
     fn token_usage_updates_status_bar() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::TokenUsage {
+        app.handle_agent_update(AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
             prompt: 100,
             completion: 50,
             total: 150,
             prompt_cache_hit_tokens: 10,
             prompt_cache_miss_tokens: 90,
             reasoning_tokens: 5,
-        });
+        }));
         assert_eq!(app.status_bar.token_prompt, 100);
         assert_eq!(app.status_bar.token_completion, 50);
         assert_eq!(app.status_bar.token_total, 150);
@@ -924,17 +862,18 @@ mod lifecycle_tests {
             "t1",
             HashMap::from([("path".to_string(), "a.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted(
-            0,
-            "t1".into(),
-            "read_file".into(),
-            "a.rs".into(),
-        ));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "t1".into(),
+            tool_name: "read_file".into(),
+            arg_summary: "a.rs".into(),
+            arg_full: "a.rs".into(),
+        });
         assert!(matches!(app.status, Status::Executing { .. }));
-        app.handle_agent_update(AgentUpdate::StepFinished(
-            0,
-            "t1".into(),
-            StepResult {
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "t1".into(),
+            result: StepResult {
                 tool: "read_file".into(),
                 arg_summary: "a.rs".into(),
                 arg_full: None,
@@ -944,7 +883,7 @@ mod lifecycle_tests {
                 duration_us: Some(1),
                 permission_label: None,
             },
-        ));
+        });
         assert!(
             !matches!(app.status, Status::Done),
             "single step finish should not mark task done"

@@ -231,7 +231,7 @@ pub fn step_finished_ids(updates: &[AgentUpdate]) -> Vec<String> {
     updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::StepFinished(_, id, _) => Some(id.clone()),
+            AgentUpdate::StepFinished { tool_id: id, .. } => Some(id.clone()),
             _ => None,
         })
         .collect()
@@ -571,7 +571,7 @@ pub fn step_result<'a>(
     id: &str,
 ) -> Option<&'a tact_protocol::StepResult> {
     updates.iter().find_map(|u| match u {
-        AgentUpdate::StepFinished(_, tool_id, result) if tool_id == id => Some(result),
+        AgentUpdate::StepFinished { tool_id, result, .. } if tool_id == id => Some(result),
         _ => None,
     })
 }
@@ -585,7 +585,7 @@ pub fn step_succeeded(updates: &[AgentUpdate], id: &str) -> bool {
 pub fn step_failed(updates: &[AgentUpdate], id: &str) -> bool {
     updates
         .iter()
-        .any(|u| matches!(u, AgentUpdate::StepFailed(_, tool_id, _) if tool_id == id))
+        .any(|u| matches!(u, AgentUpdate::StepFailed { tool_id, .. } if tool_id == id))
 }
 
 pub fn task_completed_with(updates: &[AgentUpdate], substring: &str) -> bool {
@@ -612,21 +612,13 @@ pub fn token_usage_total(updates: &[AgentUpdate]) -> tact_protocol::TokenUsageIn
         reasoning_tokens: 0,
     };
     for u in updates {
-        if let AgentUpdate::TokenUsage {
-            prompt,
-            completion,
-            total: t,
-            prompt_cache_hit_tokens,
-            prompt_cache_miss_tokens,
-            reasoning_tokens,
-        } = u
-        {
-            total.prompt += prompt;
-            total.completion += completion;
-            total.total += t;
-            total.prompt_cache_hit_tokens += prompt_cache_hit_tokens;
-            total.prompt_cache_miss_tokens += prompt_cache_miss_tokens;
-            total.reasoning_tokens += reasoning_tokens;
+        if let AgentUpdate::TokenUsage(usage) = u {
+            total.prompt += usage.prompt;
+            total.completion += usage.completion;
+            total.total += usage.total;
+            total.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
+            total.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
+            total.reasoning_tokens += usage.reasoning_tokens;
         }
     }
     total

@@ -411,7 +411,7 @@ impl LlmClient for OpenAiAdapter {
                                 .as_ref()
                                 .and_then(|d| d.reasoning_tokens)
                                 .unwrap_or(0);
-                            token_usage = Some(TokenUsageInfo {
+                            let info = TokenUsageInfo {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
                                 total: usage
@@ -420,19 +420,11 @@ impl LlmClient for OpenAiAdapter {
                                 prompt_cache_hit_tokens: cache_hit,
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
-                            });
+                            };
                             if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::TokenUsage {
-                                    prompt: usage.prompt_tokens,
-                                    completion: usage.completion_tokens,
-                                    total: usage
-                                        .total_tokens
-                                        .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
-                                    prompt_cache_hit_tokens: cache_hit,
-                                    prompt_cache_miss_tokens: cache_miss,
-                                    reasoning_tokens: reasoning,
-                                });
+                                let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
                             }
+                            token_usage = Some(info);
                         }
                     }
                 }
