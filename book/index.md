@@ -119,7 +119,25 @@ sequenceDiagram
 
 ---
 
+## Mind Map
+
+Right-hand tree of all 25 chapters. [Open full page](./mindmap.html) · [Mermaid source](./mindmap.md) · [PNG](./mindmap.png)
+
+<!-- Embedded interactive mind map (renders in HTML/CHM export and VS Code preview; GitHub strips iframes) -->
+<iframe
+  src="./mindmap.html?embed"
+  title="Tact Book Mind Map"
+  width="100%"
+  height="880"
+  style="border:1px solid #2a2a3e;border-radius:10px;background:#1a1a2e;display:block;max-width:100%;"
+  loading="lazy"
+></iframe>
+
+---
+
 ## Table of Contents
+
+**Windows CHM:** run `./book/scripts/build-chm.sh` then `powershell -File book/scripts/build-chm.ps1` on Windows — see [scripts/README.md](./scripts/README.md#chm-windows-compiled-html-help).
 
 Chapters follow **`Agent::agent_loop` execution order**: session → prompt inputs → compaction → LLM recovery → tool pipeline → domain tools → side systems.
 

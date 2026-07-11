@@ -117,7 +117,7 @@ async fn driver_token_usage_reaches_app_render() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TokenUsage { .. })),
+            .any(|u| matches!(u, AgentUpdate::TokenUsage(_))),
         "driver should emit TokenUsage"
     );
 
