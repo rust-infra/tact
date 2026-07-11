@@ -1441,12 +1441,12 @@ mod tests {
             updates.push(u);
         }
 
-        let read_done = updates
-            .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"));
-        let write_done = updates
-            .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"));
+        let read_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"),
+        );
+        let write_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"),
+        );
         assert!(
             read_done.is_some() && write_done.is_some() && read_done < write_done,
             "read must finish before write on same file, got: {updates:?}"

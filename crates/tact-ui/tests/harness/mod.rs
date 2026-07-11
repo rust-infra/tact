@@ -571,7 +571,9 @@ pub fn step_result<'a>(
     id: &str,
 ) -> Option<&'a tact_protocol::StepResult> {
     updates.iter().find_map(|u| match u {
-        AgentUpdate::StepFinished { tool_id, result, .. } if tool_id == id => Some(result),
+        AgentUpdate::StepFinished {
+            tool_id, result, ..
+        } if tool_id == id => Some(result),
         _ => None,
     })
 }
