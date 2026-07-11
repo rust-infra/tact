@@ -120,6 +120,9 @@ micro_compact_enabled = true
 
 [ui]
 theme = "retro"
+# vision_image.compress = true
+# vision_image.max_edge = 1280
+# vision_image.jpeg_quality = 80
 
 [tools]
 brave_search_api_key = "bsk-..."
@@ -142,6 +145,9 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
 | `ui.theme` | `"retro"` | — |
+| `ui.vision_image.compress` | `true` | — |
+| `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
+| `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 

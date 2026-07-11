@@ -1022,6 +1022,11 @@ mod tests {
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
+                    vision_image: crate::config::VisionImageSettings {
+                        compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
+                        max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,
+                        jpeg_quality: crate::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+                    },
                 },
                 tools: crate::config::ToolSettings {
                     brave_search_api_key: None,

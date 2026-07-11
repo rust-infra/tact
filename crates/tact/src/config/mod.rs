@@ -16,6 +16,7 @@ pub use cli::{CliArgs, CliCommand};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
     ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
+    VisionImageSettings, VisionImageTomlConfig,
 };
 
 use std::sync::RwLock;

@@ -60,3 +60,4 @@ unicode-segmentation = "1"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }

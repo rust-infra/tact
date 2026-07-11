@@ -29,6 +29,11 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),
+            vision_image: tact::config::VisionImageSettings {
+                compress: tact::config::VisionImageSettings::DEFAULT_COMPRESS,
+                max_edge: tact::config::VisionImageSettings::DEFAULT_MAX_EDGE,
+                jpeg_quality: tact::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+            },
         },
         tools: tact::config::ToolSettings {
             brave_search_api_key: None,
