@@ -3,6 +3,8 @@
 //! These messages flow between the agent runtime and the terminal UI:
 //! execution status updates, user commands, step results, token usage, errors,
 //! and streaming output.
+//!
+//! State machine transitions: see [book/25_chapter_protocol.md](../../book/25_chapter_protocol.md).
 
 use std::fmt;
 

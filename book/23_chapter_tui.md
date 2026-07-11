@@ -26,14 +26,15 @@ sequenceDiagram
     Cmd->>TUI: AgentUpdate::TaskComplete
 ```
 
-Two unbounded MPSC channels bridge the agent task and the TUI task:
+Three unbounded MPSC channels bridge the agent task, account service, and the TUI task:
 
 | Channel | Type | Direction |
 |---------|------|-----------|
 | `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI |
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → agent driver (`tui.rs`) |
+| `account_tx` / `account_rx` | `AccountUpdate` | Account service → TUI |
 
-Defined in `tact_protocol`.
+Defined in `tact_protocol`. See [Ch 25](./25_chapter_protocol.md) for message semantics.
 
 ---
 
@@ -71,13 +72,15 @@ pub enum UserCommand {
 |---------|--------|---------------------|
 | **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
 | **`Cancel`** | `/cancel`, Escape during run | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
-| **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | Calls `query_*_balance`, emits `AgentUpdate::Balance` or `Error` |
+| **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 
 ---
 
 ## 4. `AgentUpdate` Handling
+
+Protocol types, step lifecycle, and task-level transitions: [Ch 25](./25_chapter_protocol.md).
 
 The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update`.
 
@@ -87,13 +90,13 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `ThinkingChunk` | Thinking card / preview |
 | `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | Tool timeline ([Ch 11](./11_chapter_task.md)) |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
-| `NeedApproval` | **Deprecated** — use `RequestSelect`; TUI handler retained for compatibility |
 | `TokenUsage` | Status bar counters |
 | `ModelInfo` | Model name / limits display |
-| `Balance` | Balance widget |
 | `TaskComplete` | Mark task done, enable follow-up input |
 | `Error` | Error banner with `AgentErrorKind` |
 | `Info` | System message line |
+
+Balance and quota use the separate `AccountUpdate` channel (`crates/tact-ui/src/account.rs`), not `AgentUpdate`.
 
 **Important:** `Agent::agent_loop` does **not** emit `TaskComplete`. `interactive.rs` sends it only after a successful, non-cancelled loop return:
 
@@ -383,7 +386,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 `handle_agent_update` (`widgets/state/app/agent.rs`) is the sole writer of log rows from agent events. Every update sets `dirty = true`. Two global gates run before the match arm:
 
 1. **Thinking gate** — any update *except* `ThinkingChunk` calls `flush_and_close_thinking()`, closing the active thinking region so later output cannot leak inside it.
-2. **Loading gate** — most updates call `remove_loading_placeholder()`. Metadata-only updates (`TokenUsage`, `Balance`, `ModelInfo`) skip removal. **`PlanGenerated`** also skips removal in code, but the agent never emits it — the loading row path is legacy.
+2. **Loading gate** — most updates call `remove_loading_placeholder()`. Metadata-only updates (`TokenUsage`, `ModelInfo`) skip removal. Legacy `PlanGenerated` handler also skips removal, but the agent never emits it — the loading row path is inactive.
 
 **Active agent path:** `StepAdded` updates the plan panel only (no log row). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
 
@@ -396,12 +399,11 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
 | **`StepFinished`** | Resize placeholders → `ToolBlock` | Flushes stream; plan step output updated |
 | **`StepFailed`** | Finalize tool card *or* system error line | Status → `Idle` |
-| **`NeedApproval`** | *(legacy handler)* System approval prompt | Agent **does not emit**; use `RequestSelect` instead |
 | **`RequestSelect`** | *(none)* | Opens select popup |
 | **`Info`** | System message line(s) | Markdown if no system prefix |
-| **`Error`** | System error line (fatal) or flash only (balance) | Flushes stream on fatal |
+| **`Error`** | System error line (fatal) | Flushes stream on fatal |
 | **`TaskComplete`** | Task-end separator only | Does **not** re-append summary text (already streamed); scroll to bottom |
-| **`TokenUsage` / `Balance` / `ModelInfo`** | *(none)* | Status bar / balance widget only |
+| **`TokenUsage` / `ModelInfo`** | *(none)* | Status bar only |
 
 **StreamChunk parsing** deserves extra detail because one token batch can produce heterogeneous rows:
 
@@ -572,7 +574,7 @@ sequenceDiagram
     R->>R: persist visual_start for mouse
 ```
 
-Cross-reference: [§4 AgentUpdate Handling](#4-agentupdate-handling) for protocol-level effects; [docs/tui_rendering.md §6](../docs/tui_rendering.md) for extension recipes.
+Cross-reference: [Ch 25 Agent–TUI Protocol](./25_chapter_protocol.md) for message types and state transitions; [§4 AgentUpdate Handling](#4-agentupdate-handling) for TUI-specific effects; [docs/tui_rendering.md §6](../docs/tui_rendering.md) for extension recipes.
 
 ---
 
@@ -599,7 +601,7 @@ Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `
 
 Input history is appended asynchronously via `history_save_tx` → `append_input_history`.
 
-On DeepSeek/Kimi startup, a background task queries balance once and sends `AgentUpdate::Balance`.
+On DeepSeek/Kimi startup, a background task queries balance once and sends `AccountUpdate::Balance` on the account channel.
 
 ---
 
@@ -630,7 +632,7 @@ The TUI itself does not call notification APIs directly for streaming events.
 | `crates/tui/src/render/popups/` | Overlays (palette, select, detail views) |
 | `crates/tui/src/widgets/state/app/agent.rs` | `AgentUpdate` → UI state |
 | `crates/tui/src/theme.rs` | Color schemes |
-| `tact_protocol` | `AgentUpdate`, `UserCommand`, `BalanceInfo` |
+| `tact_protocol` | `AgentUpdate`, `UserCommand`, `AccountUpdate`, `BalanceInfo` ([Ch 25](./25_chapter_protocol.md)) |
 | `docs/tui_rendering.md` | Extended rendering reference and extension guide |
 | `docs/tool_rendering.md` | Tool block data flow and migration notes |
 

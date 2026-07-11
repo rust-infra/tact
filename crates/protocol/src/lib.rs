@@ -3,6 +3,8 @@
 //! [`agent`] defines the runtime messages ([`AgentUpdate`] / [`UserCommand`])
 //! exchanged over channels; [`biz`] defines account / quota structures carried
 //! inside those messages.
+//!
+//! State machine transitions: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md).
 
 pub mod agent;
 pub mod biz;
