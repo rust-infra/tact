@@ -450,6 +450,66 @@ max_tokens = 32000
     }
 
     #[test]
+    fn per_provider_thinking_budget_overrides_global() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+thinking_budget = 32000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+thinking_budget = 64000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        assert_eq!(resolved.agent.thinking_budget, 64000);
+    }
+
+    #[test]
+    fn missing_api_key_on_active_entry_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("api_key"));
+    }
+
+    #[test]
+    fn invalid_provider_map_key_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[llm.providers.moonshot]
+api_key = "mk-test"
+model = "kimi-k2.5"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown provider"));
+    }
+
+    #[test]
     fn missing_provider_entry_errors() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
