@@ -65,10 +65,10 @@ impl ProviderInfo {
     /// Build an Anthropic Messages API client.
     fn build_anthropic(&self) -> anyhow::Result<LlmProvider> {
         if self.api_key.is_empty() {
-            anyhow::bail!("api_key not configured for provider 'anthropic'");
+            anyhow::bail!("api_key not configured for provider '{}'", self.provider);
         }
         if self.base_url.is_empty() {
-            anyhow::bail!("base_url not configured for provider 'anthropic'");
+            anyhow::bail!("base_url not configured for provider '{}'", self.provider);
         }
         Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
             self.api_key.clone(),
@@ -997,6 +997,17 @@ mod tests {
     fn build_client_requires_api_key() {
         let p = provider_info(ProviderKind::DeepSeek, "", "", "deepseek-chat");
         assert!(p.build_client().is_err());
+    }
+
+    #[test]
+    fn openai_builds_openai_adapter_with_default_base_url() {
+        let p = provider_info(ProviderKind::OpenAi, "sk-test", "", "gpt-4o");
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAi(adapter) = result.unwrap() else {
+            panic!("expected OpenAi adapter for openai");
+        };
+        assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
     }
 
     #[test]
