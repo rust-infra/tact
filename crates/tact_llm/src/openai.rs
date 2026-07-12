@@ -594,7 +594,7 @@ impl LlmClient for OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProviderInfo;
+    use crate::{ProviderInfo, ProviderKind};
     use anthropic_ai_sdk::types::message::{RequiredMessageParams, Thinking, ThinkingType};
 
     fn sample_request_with_thinking() -> CreateMessageParams {
@@ -614,7 +614,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
@@ -631,7 +631,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.7-code".to_string(),
@@ -645,7 +645,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: "https://api.kimi.com/coding/v1".to_string(),
             model: "kimi-for-coding".to_string(),
@@ -659,7 +659,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.6".to_string(),

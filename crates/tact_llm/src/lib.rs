@@ -32,24 +32,32 @@ use tact_protocol::AgentUpdate;
 use tact_protocol::TokenUsageInfo;
 
 /// Holds private LLM configuration information.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-    pub provider: String,
+    pub provider: ProviderKind,
+}
+
+impl Default for ProviderInfo {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            provider: ProviderKind::OpenAi,
+        }
+    }
 }
 
 impl ProviderInfo {
     /// Build an LLM client for this provider configuration.
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
-        match self.provider.as_str() {
-            "anthropic" => self.build_anthropic(),
-            "openai" | "deepseek" | "kimi" => self.build_openai_compatible(),
-            other => {
-                anyhow::bail!(
-                    "Unknown provider: {other}. Use 'anthropic', 'openai', 'deepseek', or 'kimi'."
-                )
+        match self.provider {
+            ProviderKind::Anthropic => self.build_anthropic(),
+            ProviderKind::OpenAi | ProviderKind::DeepSeek | ProviderKind::Kimi => {
+                self.build_openai_compatible()
             }
         }
     }
@@ -74,13 +82,12 @@ impl ProviderInfo {
             anyhow::bail!("api_key not configured for provider '{}'", self.provider);
         }
         let base_url = if self.base_url.is_empty() {
-            match self.provider.as_str() {
-                "openai" => "https://api.openai.com/v1",
-                "deepseek" => "https://api.deepseek.com",
-                "kimi" => "https://api.moonshot.cn/v1",
-                other => anyhow::bail!("no default base_url for provider '{other}'"),
-            }
-            .to_string()
+            self.provider
+                .default_base_url()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
+                })?
         } else {
             self.base_url.clone()
         };
@@ -90,7 +97,7 @@ impl ProviderInfo {
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.
     pub fn is_kimi(&self) -> bool {
-        self.provider == "kimi"
+        self.provider == ProviderKind::Kimi
             || self.base_url.contains("moonshot")
             || self.base_url.contains("kimi")
             || self.model.contains("kimi")
@@ -145,7 +152,7 @@ impl ProviderInfo {
 
     /// Returns true when account balance or usage quota queries are supported.
     pub fn is_account_query_supported(&self) -> bool {
-        self.provider == "deepseek"
+        self.provider == ProviderKind::DeepSeek
             || self.base_url.contains("deepseek")
             || self.model.contains("deepseek")
             || self.is_kimi_balance_supported()
@@ -314,7 +321,7 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
 /// (e.g. `provider = "openai"` with a `deepseek.com` base URL).
 pub fn is_deepseek() -> bool {
     let provider = get_provider();
-    provider.provider == "deepseek"
+    provider.provider == ProviderKind::DeepSeek
         || provider.base_url.contains("deepseek")
         || provider.model.contains("deepseek")
 }
@@ -972,9 +979,14 @@ impl LlmClient for MockClient {
 mod tests {
     use super::*;
 
-    fn provider_info(provider: &str, api_key: &str, base_url: &str, model: &str) -> ProviderInfo {
+    fn provider_info(
+        provider: ProviderKind,
+        api_key: &str,
+        base_url: &str,
+        model: &str,
+    ) -> ProviderInfo {
         ProviderInfo {
-            provider: provider.to_string(),
+            provider,
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),
@@ -983,13 +995,13 @@ mod tests {
 
     #[test]
     fn build_client_requires_api_key() {
-        let p = provider_info("deepseek", "", "", "deepseek-chat");
+        let p = provider_info(ProviderKind::DeepSeek, "", "", "deepseek-chat");
         assert!(p.build_client().is_err());
     }
 
     #[test]
     fn deepseek_builds_openai_adapter_with_default_base_url() {
-        let p = provider_info("deepseek", "sk-test", "", "deepseek-chat");
+        let p = provider_info(ProviderKind::DeepSeek, "sk-test", "", "deepseek-chat");
         let result = p.build_client();
         assert!(result.is_ok());
         let LlmProvider::OpenAi(adapter) = result.unwrap() else {
@@ -1000,7 +1012,7 @@ mod tests {
 
     #[test]
     fn kimi_builds_openai_adapter_with_default_base_url() {
-        let p = provider_info("kimi", "sk-test", "", "kimi-k2.5");
+        let p = provider_info(ProviderKind::Kimi, "sk-test", "", "kimi-k2.5");
         let result = p.build_client();
         assert!(result.is_ok());
         let LlmProvider::OpenAi(adapter) = result.unwrap() else {
@@ -1012,7 +1024,7 @@ mod tests {
     #[test]
     fn custom_base_url_is_preserved() {
         let p = provider_info(
-            "kimi",
+            ProviderKind::Kimi,
             "sk-test",
             "https://api.kimi.com/coding/v1",
             "kimi-for-coding",
@@ -1026,25 +1038,25 @@ mod tests {
 
     #[test]
     fn is_kimi_detection() {
-        assert!(provider_info("kimi", "", "", "kimi-k2.5").is_kimi());
-        assert!(provider_info("openai", "", "https://api.moonshot.cn/v1", "").is_kimi());
-        assert!(provider_info("openai", "", "https://api.kimi.com/coding/v1", "").is_kimi());
-        assert!(provider_info("openai", "", "", "kimi-k2.5").is_kimi());
-        assert!(!provider_info("anthropic", "", "", "claude-sonnet-4").is_kimi());
+        assert!(provider_info(ProviderKind::Kimi, "", "", "kimi-k2.5").is_kimi());
+        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.moonshot.cn/v1", "").is_kimi());
+        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.kimi.com/coding/v1", "").is_kimi());
+        assert!(provider_info(ProviderKind::OpenAi, "", "", "kimi-k2.5").is_kimi());
+        assert!(!provider_info(ProviderKind::Anthropic, "", "", "claude-sonnet-4").is_kimi());
     }
 
     #[test]
     fn is_kimi_k2x_and_k27() {
-        let k25 = provider_info("kimi", "", "", "kimi-k2.5");
+        let k25 = provider_info(ProviderKind::Kimi, "", "", "kimi-k2.5");
         assert!(k25.is_kimi_k2x());
         assert!(!k25.is_kimi_k27());
 
-        let k27 = provider_info("kimi", "", "", "kimi-k2.7");
+        let k27 = provider_info(ProviderKind::Kimi, "", "", "kimi-k2.7");
         assert!(k27.is_kimi_k2x());
         assert!(k27.is_kimi_k27());
 
         let coding = provider_info(
-            "openai",
+            ProviderKind::OpenAi,
             "",
             "https://api.kimi.com/coding/v1",
             "kimi-for-coding",
@@ -1056,7 +1068,7 @@ mod tests {
     #[test]
     fn is_kimi_coding_and_balance_supported() {
         let coding = provider_info(
-            "openai",
+            ProviderKind::OpenAi,
             "",
             "https://api.kimi.com/coding/v1",
             "kimi-for-coding",
@@ -1065,7 +1077,7 @@ mod tests {
         assert!(!coding.is_kimi_balance_supported());
         assert!(coding.is_kimi_usage_supported());
 
-        let cn = provider_info("kimi", "", "https://api.moonshot.cn/v1", "kimi-k2.5");
+        let cn = provider_info(ProviderKind::Kimi, "", "https://api.moonshot.cn/v1", "kimi-k2.5");
         assert!(!cn.is_kimi_coding());
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
@@ -1073,7 +1085,7 @@ mod tests {
         // kimi-for-coding behind a custom proxy is still Kimi Code:
         // no balance API, usage quota supported.
         let proxy = provider_info(
-            "openai",
+            ProviderKind::OpenAi,
             "",
             "https://proxy.example.com/v1",
             "kimi-for-coding",
@@ -1086,7 +1098,7 @@ mod tests {
         assert!(cn.is_account_query_supported());
 
         let anthropic = provider_info(
-            "anthropic",
+            ProviderKind::Anthropic,
             "",
             "https://api.anthropic.com",
             "claude-sonnet-4",
@@ -1196,16 +1208,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_provider_errors() {
-        let p = provider_info("google", "sk-test", "", "gemini");
-        match p.build_client() {
-            Ok(_) => panic!("expected error for unknown provider"),
-            Err(e) => {
-                let err = e.to_string();
-                assert!(err.contains("Unknown provider"));
-                assert!(err.contains("google"));
-            }
-        }
+    fn anthropic_build_client_requires_base_url() {
+        let p = provider_info(ProviderKind::Anthropic, "sk-test", "", "claude-sonnet-4");
+        assert!(p.build_client().is_err());
     }
 
     #[tokio::test]
