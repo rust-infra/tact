@@ -34,7 +34,7 @@ fn default_base_url(provider: &str) -> Option<String> {
         "openai" => Some("https://api.openai.com/v1".to_string()),
         "deepseek" => Some("https://api.deepseek.com".to_string()),
         "kimi" => Some("https://api.moonshot.cn/v1".to_string()),
-        "xai" => Some("https://api.x.ai/v1".to_string()),
+        "xai" => Some(tact_llm::xai::DEFAULT_BASE_URL.to_string()),
         _ => None,
     }
 }
