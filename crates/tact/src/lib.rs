@@ -43,10 +43,9 @@ pub mod tool;
 pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
-pub use anthropic_ai_sdk::types::message::Tool as ToolSpec;
+pub use tact_llm::Tool as ToolSpec;
 
-use anthropic_ai_sdk::types::message::{ContentBlock, MessageContent};
-use tact_llm::LlmProvider;
+use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
 /// Returns the model name from the active provider's environment variable.
 /// Parsed once on first call and cached for the lifetime of the process.

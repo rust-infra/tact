@@ -450,6 +450,62 @@ max_tokens = 32000
     }
 
     #[test]
+    fn cli_max_tokens_overrides_entry_and_global() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+max_tokens = 32000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.max_tokens = Some(1000);
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 1000);
+    }
+
+    #[test]
+    fn anthropic_without_base_url_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "anthropic"
+
+[llm.providers.anthropic]
+api_key = "sk-ant-test"
+model = "claude-sonnet-4-20250514"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("base_url"));
+    }
+
+    #[test]
+    fn missing_llm_provider_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("LLM provider not configured"));
+    }
+
+    #[test]
     fn per_provider_thinking_budget_overrides_global() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"

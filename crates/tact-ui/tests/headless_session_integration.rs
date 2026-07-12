@@ -4,7 +4,6 @@ mod harness;
 
 use std::time::Duration;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     bash_tool_use, edit_file_tool_use, mock_turn, read_file_tool_use, text_block,
     write_file_tool_use,
@@ -12,6 +11,7 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::StopReason;
 use tact_protocol::UserCommand;
 use tact_ui::headless_session::run_headless_session;
 

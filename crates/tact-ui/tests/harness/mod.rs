@@ -1,11 +1,11 @@
 //! Shared helpers for tact-ui integration tests.
 #![allow(dead_code, unused_imports)]
 
-use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tact::permission::PermissionMode;
 use tact_llm::MockClient;
+use tact_llm::{ContentBlock, StopReason};
 use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
 use tact_ui::driver::run_command_loop;
 use tact_ui::test_support::{
@@ -645,7 +645,7 @@ pub fn assert_update_before(
 pub async fn load_session_messages(
     store: &tact::store::DynSessionStore,
     session_id: &str,
-) -> Vec<anthropic_ai_sdk::types::message::Message> {
+) -> Vec<tact_llm::Message> {
     store
         .load_session(session_id)
         .await
