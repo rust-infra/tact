@@ -8,13 +8,19 @@
 pub mod anthropic;
 pub mod convert;
 pub mod openai;
+pub mod provider_kind;
+pub use provider_kind::ProviderKind;
+
+/// Re-export the Anthropic Messages types used as Tact's internal request/response
+/// shape. Callers should prefer these over depending on `anthropic_ai_sdk` directly.
+pub use anthropic_ai_sdk::types::message::{
+    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, MessageError,
+    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType, Tool, ToolChoice,
+};
 
 #[cfg(test)]
 mod test_openai;
 
-use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, MessageError, StopReason,
-};
 use anyhow::Context;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1204,7 +1210,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_stream_emits_token_usage_when_configured() {
-        use anthropic_ai_sdk::types::message::ContentBlock;
+        use crate::ContentBlock;
         use tokio::sync::mpsc::unbounded_channel;
 
         let usage = TokenUsageInfo {
@@ -1226,13 +1232,11 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let (blocks, _, returned, _) = client
             .stream_message(
-                &CreateMessageParams::new(
-                    anthropic_ai_sdk::types::message::RequiredMessageParams {
-                        model: "mock".to_string(),
-                        messages: vec![],
-                        max_tokens: 100,
-                    },
-                ),
+                &CreateMessageParams::new(RequiredMessageParams {
+                    model: "mock".to_string(),
+                    messages: vec![],
+                    max_tokens: 100,
+                }),
                 Some(tx),
             )
             .await
