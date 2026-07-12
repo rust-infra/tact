@@ -49,6 +49,7 @@ model = "deepseek-chat"
 [llm.providers.kimi]
 api_key = "sk-..."
 model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]
 # base_url defaults to https://api.moonshot.cn/v1
 # max_tokens = 32000           # optional per-provider override
 # thinking_budget = 64000

@@ -353,7 +353,7 @@ impl Agent {
             // Stable sections are placed before DYNAMIC_BOUNDARY to keep prefix cache-friendly.
             let system = self.build_system_prompt()?;
 
-            let model_name = crate::get_model().to_string();
+            let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: self.runtime.context.clone(),
@@ -651,7 +651,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             prompt.push_str(&format!("\n\nRecent files to reopen if needed:\n{recent}"));
         }
 
-        let model_name = crate::get_model().to_string();
+        let model_name = crate::get_model();
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
@@ -1011,6 +1011,7 @@ mod tests {
                     api_key: String::new(),
                     base_url: String::new(),
                     model: "mock-model".to_string(),
+                    models: Vec::new(),
                 },
                 agent: crate::config::AgentSettings {
                     context_limit_chars: 500_000,
@@ -1033,6 +1034,7 @@ mod tests {
                 },
                 permission_mode: None,
                 tokio_console: false,
+                config_path: None,
             };
             crate::config::install(config);
         });

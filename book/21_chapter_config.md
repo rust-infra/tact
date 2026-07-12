@@ -107,6 +107,7 @@ thinking_budget = 32000
 [llm.providers.kimi]
 api_key = "sk-..."
 model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]   # optional; used by TUI /model picker
 # base_url defaults to https://api.moonshot.cn/v1
 # max_tokens = 64000       # optional per-provider override
 
@@ -133,6 +134,11 @@ theme = "retro"
 [tools]
 brave_search_api_key = "bsk-..."
 ```
+
+Optional `models` is the candidate list for the TUI `/model` slash command (same
+provider only). Empty/absent → `/model` prints a hint instead of opening the
+picker. Choosing a model applies immediately; you can optionally write it back
+to this provider’s `model` field in the loaded config file.
 
 Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, … }`
 for the hot path. See `types.rs` for serde structs and unit tests.

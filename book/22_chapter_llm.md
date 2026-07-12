@@ -12,7 +12,7 @@ Implementation: `crates/tact_llm/src/` (`lib.rs`, `anthropic.rs`, `openai.rs`, `
 
 ```mermaid
 flowchart TB
-    Config[config::install → init_provider] --> PI[ProviderInfo OnceLock]
+    Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
     PI --> Build[get_llm_client → build_client]
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
@@ -57,7 +57,10 @@ pub struct ProviderInfo {
 `build_client` (exhaustive match). TOML names are lowercase:
 `anthropic` | `openai` | `deepseek` | `kimi`.
 
-Installed once at startup:
+Installed at startup (and re-init under test overrides). The active provider is
+kept in an `RwLock` so the TUI `/model` command can change only the `model`
+string mid-session via `tact_llm::set_model` (in-flight streams keep the old id;
+`max_tokens` / thinking heuristics from process start are not recomputed).
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -96,13 +99,14 @@ sequenceDiagram
     Install->>LlmInit: provider_info()
     LlmInit->>Once: set ProviderInfo
     Install->>Once: set ResolvedConfig
-    Note over Once: install-once semantics, later set attempts fail
-    Get->>Once: read ProviderInfo
+    Note over Once: RwLock; `/model` may update model only
+    Get->>Once: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: Anthropic or OpenAi adapter
 ```
 
-Provider initialization flows from Ch 21's resolved configuration into `tact_llm`, where `OnceLock` makes both app settings and provider metadata immutable after startup.
+Provider initialization flows from Ch 21's resolved configuration into `tact_llm`.
+The active `ProviderInfo` is mutable for mid-session model switches (`set_model`).
 
 ---
 

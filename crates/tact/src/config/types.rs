@@ -47,6 +47,8 @@ pub struct ProviderEntryToml {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub thinking_budget: Option<usize>,
+    /// Candidate models for the `/model` picker (optional).
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +122,8 @@ pub struct LlmSettings {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Candidate models for the `/model` TUI picker.
+    pub models: Vec<String>,
 }
 
 impl LlmSettings {
@@ -175,6 +179,8 @@ pub struct ResolvedConfig {
     pub tools: ToolSettings,
     pub permission_mode: Option<String>,
     pub tokio_console: bool,
+    /// Path of the TOML file loaded at startup (for optional `/model` persist).
+    pub config_path: Option<std::path::PathBuf>,
 }
 #[cfg(test)]
 mod tests {
@@ -230,6 +236,7 @@ brave_search_api_key = "bsk-test"
         assert_eq!(openai.model.as_deref(), Some("gpt-4o"));
         assert_eq!(openai.api_key.as_deref(), Some("sk-test"));
         assert!(openai.base_url.is_some());
+        assert!(openai.models.is_empty());
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
         assert_eq!(cfg.agent.context_limit_chars, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
@@ -239,5 +246,24 @@ brave_search_api_key = "bsk-test"
         assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));
         assert_eq!(cfg.ui.vision_image.jpeg_quality, Some(75));
         assert_eq!(cfg.tools.brave_search_api_key.as_deref(), Some("bsk-test"));
+    }
+
+    #[test]
+    fn parse_provider_models_list() {
+        let toml_str = r#"
+[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "sk-test"
+model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        let kimi = cfg.llm.providers.get("kimi").unwrap();
+        assert_eq!(
+            kimi.models,
+            vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
+        );
     }
 }

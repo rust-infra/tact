@@ -5,8 +5,8 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
     AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState,
-    PlanPanel, SearchState, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
-    ThinkingState, ToolState,
+    PlanPanel, SearchState, SelectKind, SelectPopup, SlashCommandState, Status, StatusBarState,
+    StreamState, ThinkingState, ToolState,
 };
 use std::path::PathBuf;
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
@@ -88,6 +88,7 @@ impl App {
             process_start_time: chrono::Local::now(),
             workspace_dir,
             select: SelectPopup::new(),
+            select_kind: SelectKind::Agent,
             file_picker: FilePicker::new(),
             slash_command: SlashCommandState::default(),
             tools: ToolState::new(),

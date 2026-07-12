@@ -210,6 +210,7 @@ impl App {
                 options,
                 respond,
             } => {
+                self.select_kind = SelectKind::Agent;
                 self.select.set(prompt, options, respond, false);
                 self.input_mode = InputMode::Select;
             }

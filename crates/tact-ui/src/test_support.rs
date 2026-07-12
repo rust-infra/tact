@@ -28,6 +28,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             api_key: String::new(),
             base_url: String::new(),
             model: "mock-model".to_string(),
+            models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
             context_limit_chars: 500_000,
@@ -50,6 +51,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
         },
         permission_mode: None,
         tokio_console: false,
+        config_path: None,
     }
 }
 

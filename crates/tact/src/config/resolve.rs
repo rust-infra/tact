@@ -100,12 +100,14 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         api_key,
         base_url,
         model,
+        models: entry.models.clone(),
     })
 }
 
 pub(super) fn resolve_non_llm_settings(
     args: &CliArgs,
     toml_cfg: &TactTomlConfig,
+    config_path: Option<std::path::PathBuf>,
 ) -> ResolvedConfig {
     let notifications_enabled = if args.no_notifications {
         false
@@ -151,6 +153,7 @@ pub(super) fn resolve_non_llm_settings(
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
+            models: Vec::new(),
         },
         agent: AgentSettings {
             max_tokens: 8_000,
@@ -169,12 +172,14 @@ pub(super) fn resolve_non_llm_settings(
         },
         permission_mode,
         tokio_console: args.tokio_console,
+        config_path,
     }
 }
 
 pub(super) fn resolve_config(
     args: &CliArgs,
     toml_cfg: &TactTomlConfig,
+    config_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<ResolvedConfig> {
     let llm = resolve_llm(args, toml_cfg)?;
     let provider_info = llm.provider_info();
@@ -266,6 +271,7 @@ pub(super) fn resolve_config(
         },
         permission_mode,
         tokio_console: args.tokio_console,
+        config_path,
     })
 }
 
@@ -313,7 +319,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
@@ -345,7 +351,7 @@ jpeg_quality = 70
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
         assert!(!resolved.ui.vision_image.compress);
         assert_eq!(resolved.ui.vision_image.max_edge, 1024);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 70);
@@ -361,7 +367,7 @@ jpeg_quality = 0
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
     }
@@ -379,7 +385,7 @@ model = "deepseek-chat"
 "#,
         )
         .unwrap();
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::DeepSeek);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.model, "deepseek-chat");
@@ -400,12 +406,33 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::Kimi);
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
+    }
+
+    #[test]
+    fn resolve_copies_provider_models_list() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "mk-test"
+model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.models,
+            vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
+        );
     }
 
     #[test]
@@ -427,7 +454,7 @@ model = "gpt-4o"
         .unwrap();
         let mut args = empty_cli_args();
         args.provider = Some("openai".to_string());
-        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.model, "gpt-4o");
@@ -448,7 +475,7 @@ max_tokens = 32000
 "#,
         )
         .unwrap();
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.max_tokens, 32000);
     }
 
@@ -469,7 +496,7 @@ max_tokens = 32000
         .unwrap();
         let mut args = empty_cli_args();
         args.max_tokens = Some(1000);
-        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.max_tokens, 1000);
     }
 
@@ -486,7 +513,7 @@ model = "claude-sonnet-4-20250514"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("base_url"));
@@ -502,7 +529,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("LLM provider not configured"));
@@ -523,7 +550,7 @@ thinking_budget = 64000
 "#,
         )
         .unwrap();
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.thinking_budget, 64000);
     }
 
@@ -539,7 +566,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("api_key"));
@@ -562,7 +589,7 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown provider"));
@@ -581,7 +608,7 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("not found in llm.providers"));
@@ -600,7 +627,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown provider"));
@@ -618,7 +645,7 @@ api_key = "sk-test"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("model not configured"));
@@ -629,7 +656,7 @@ api_key = "sk-test"
         let mut args = empty_cli_args();
         args.list_sessions = true;
         args.theme = Some("nord".to_string());
-        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default());
+        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None);
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
     }

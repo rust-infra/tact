@@ -23,7 +23,7 @@ mod test_openai;
 
 use anyhow::Context;
 use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
@@ -32,7 +32,7 @@ use tact_protocol::AgentUpdate;
 use tact_protocol::TokenUsageInfo;
 
 /// Holds private LLM configuration information.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
@@ -299,14 +299,39 @@ impl LlmProvider {
     }
 }
 
-/// The active LLM provider configuration.
-static PROVIDER: OnceLock<ProviderInfo> = OnceLock::new();
+/// The active LLM provider configuration (mutable so `/model` can switch models).
+static PROVIDER: RwLock<Option<ProviderInfo>> = RwLock::new(None);
 
-/// Install the active LLM provider configuration. Must be called once at startup.
+/// Install the active LLM provider configuration.
+///
+/// Safe to call again under `test-support` overrides; production `install` still
+/// runs once per process.
 pub fn init_provider(info: ProviderInfo) {
+    let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
+    *guard = Some(info);
+}
+
+/// Returns a snapshot of the active LLM provider configuration.
+pub fn get_provider() -> ProviderInfo {
     PROVIDER
-        .set(info)
-        .expect("LLM provider must be initialized exactly once");
+        .read()
+        .expect("LLM provider lock poisoned")
+        .clone()
+        .expect("LLM provider not initialized; call tact_llm::init_provider first")
+}
+
+/// Update only the active model id (used by the TUI `/model` command).
+pub fn set_model(model: impl Into<String>) -> Result<(), String> {
+    let model = model.into();
+    if model.trim().is_empty() {
+        return Err("model must not be empty".to_string());
+    }
+    let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
+    let info = guard.as_mut().ok_or_else(|| {
+        "LLM provider not initialized; call tact_llm::init_provider first".to_string()
+    })?;
+    info.model = model;
+    Ok(())
 }
 
 /// Returns the active LLM client from the installed provider configuration.
@@ -652,13 +677,6 @@ pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuota
         .context("Failed to read Kimi usage response")?;
 
     parse_kimi_usage_response(&body)
-}
-
-/// Returns the provider information installed at startup.
-pub fn get_provider() -> &'static ProviderInfo {
-    PROVIDER
-        .get()
-        .expect("LLM provider not initialized; call tact_llm::init_provider first")
 }
 
 /// Returns true if the active provider/target is Kimi/Moonshot.
@@ -1281,5 +1299,21 @@ mod tests {
             update,
             AgentUpdate::TokenUsage(u) if u.total == usage.total
         ));
+    }
+
+    #[test]
+    fn set_model_updates_and_rejects_empty() {
+        init_provider(provider_info(
+            ProviderKind::Kimi,
+            "sk-test",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        ));
+        set_model("kimi-for-coding").unwrap();
+        assert_eq!(get_provider().model, "kimi-for-coding");
+
+        assert!(set_model("").is_err());
+        assert!(set_model("   ").is_err());
+        assert_eq!(get_provider().model, "kimi-for-coding");
     }
 }
