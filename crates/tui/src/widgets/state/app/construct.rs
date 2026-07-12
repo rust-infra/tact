@@ -94,7 +94,7 @@ impl App {
             tools: ToolState::new(),
             code_blocks: Vec::new(),
             code_popup: None,
-            stream: StreamState::new(),
+            stream: StreamState::default(),
             thinking: ThinkingState::new(),
             account: AccountState::default(),
             party_mode: false,

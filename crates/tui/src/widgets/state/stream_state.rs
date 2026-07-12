@@ -10,8 +10,8 @@ pub(crate) struct StreamState {
     pub(crate) code_block_line_count: usize,
 }
 
-impl StreamState {
-    pub(crate) fn new() -> Self {
+impl Default for StreamState {
+    fn default() -> Self {
         Self {
             buffer: String::new(),
             table_buffer: Vec::new(),
