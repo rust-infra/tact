@@ -111,6 +111,61 @@ Trigger on `book/**/*.md` changes:
 # TTS + video only on release or manual approval (cost)
 ```
 
+## CHM (Windows Compiled HTML Help)
+
+Package all 25 chapters as a single `.chm` for offline reading in Windows Help Viewer.
+
+### Prerequisites
+
+| Tool | Platform | Install |
+|------|----------|---------|
+| **pandoc** | Any | `brew install pandoc` / [pandoc.org](https://pandoc.org/installing.html) |
+| **HTML Help Workshop** | Windows only | [Microsoft download](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/htmlhelp/microsoft-html-help-downloads) — provides `hhc.exe` |
+
+> CHM **compilation** requires Windows (`hhc.exe`). On macOS/Linux you can still generate HTML + project files; copy `book/output/chm/` to a Windows machine to compile.
+
+### Viewing on macOS
+
+macOS has **no built-in CHM viewer**. Options:
+
+| Approach | How | Recommended |
+|----------|-----|-------------|
+| **Browser (best on Mac)** | After `./book/scripts/build-chm.sh`, open `book/output/chm/html/index.html` in Safari/Chrome — full TOC via sidebar links, no Windows needed | Yes |
+| **Auto-open** | `./book/scripts/build-chm.sh --open` | Yes |
+| **Third-party CHM app** | e.g. iChm, CHM Reader (App Store) — legacy apps; Apple Silicon support varies | Optional |
+| **Compile .chm on Windows** | Copy `book/output/chm/` to Windows, run `build-chm.ps1`, transfer `tact-book.chm` back | Only if you need `.chm` specifically |
+
+Mermaid blocks appear as code in HTML too (same as CHM). For a single portable file on Mac, use `pandoc` to PDF instead.
+
+### Build
+
+```bash
+# Step 1 — any OS: Markdown → HTML + .hhp / .hhc
+./book/scripts/build-chm.sh
+
+# Step 2 — Windows: compile .chm
+powershell -File book/scripts/build-chm.ps1
+```
+
+One-liner on Windows (Git Bash + PowerShell):
+
+```powershell
+bash book/scripts/build-chm.sh
+powershell -File book/scripts/build-chm.ps1
+```
+
+Output: `book/output/chm/tact-book.chm`
+
+### TOC structure
+
+Matches the mind map groups: Runtime order → Tool families → Off-path → Capstone → Deep topics → Bootstrap & UI.
+
+### Limitations
+
+- Mermaid diagrams render as code blocks (no JS in CHM)
+- Interactive `mindmap.html` works; chapter links inside it point to `.html` siblings
+- CHM is a legacy Windows format; for cross-platform docs consider PDF (`pandoc` → PDF) instead
+
 ## Limitations (v1)
 
 - Slide-based video only — no auto IDE screencast

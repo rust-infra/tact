@@ -5,15 +5,15 @@
 //! `reasoning_content` field, which `async-openai` does not expose in its
 //! Chat Completions types (as of 0.40.2).
 //!
-//! SSE (Server-Sent Events) parsing uses `reqwest-eventsource` instead of
+//! SSE (Server-Sent Events) parsing uses `eventsource-stream` instead of
 //! hand-rolled byte-level parsing, for correct handling of `\n\n` / `\r\n\r\n`
 //! delimiters and connection lifecycle.
 
 use anthropic_ai_sdk::types::message::{ContentBlock, CreateMessageParams, StopReason};
 use async_openai::config::Config;
+use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, HeaderMap};
-use reqwest_eventsource::{Event, RequestBuilderExt};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use std::time::Duration;
@@ -257,7 +257,7 @@ impl LlmClient for OpenAiAdapter {
     /// Stream a chat completion via SSE, capturing `reasoning_content`
     /// not present in `async-openai`'s response types.
     ///
-    /// Uses `reqwest-eventsource` for robust SSE parsing (handles both
+    /// Uses `eventsource-stream` for robust SSE parsing (handles both
     /// `\n\n` and `\r\n\r\n` delimiters) and injects `stream_options`
     /// to receive usage data in the final chunk.
     async fn stream_message(
@@ -289,19 +289,35 @@ impl LlmClient for OpenAiAdapter {
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
 
-        let mut event_source = reqwest::Client::builder()
+        let response = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| LlmError::Other(e.to_string()))?
             .post(&url)
             .headers(headers)
             .json(&body)
-            .eventsource()
+            .send()
+            .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
 
-        // Disable automatic retry — re-sending the request to an LLM
-        // endpoint would produce a duplicate response.
-        event_source.set_retry_policy(Box::new(reqwest_eventsource::retry::Never));
+        // Read the full response body on non-2xx so the actual API error
+        // message is surfaced, not just the HTTP status code.
+        if !response.status().is_success() {
+            let status = response.status();
+            let resp_body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+            tracing::debug!(
+                status = %status,
+                response_body = %resp_body,
+                request_body = %String::from_utf8_lossy(&json_body),
+                "LLM HTTP request failed"
+            );
+            return Err(LlmError::Other(format!("http {status}: {resp_body}")));
+        }
+
+        let mut event_stream = response.bytes_stream().eventsource();
 
         let mut text_buffer = String::new();
         let mut reasoning_buffer = String::new();
@@ -311,11 +327,17 @@ impl LlmClient for OpenAiAdapter {
         let mut stop_reason: Option<StopReason> = None;
         let mut token_usage: Option<TokenUsageInfo> = None;
 
-        while let Some(event) = event_source.next().await {
+        while let Some(event) = event_stream.next().await {
             match event {
-                Err(e) => return Err(LlmError::Other(format!("SSE error: {e}"))),
-                Ok(Event::Open) => continue,
-                Ok(Event::Message(msg)) => {
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        request_body = %String::from_utf8_lossy(&json_body),
+                        "SSE stream failed; logging request body for diagnostics"
+                    );
+                    return Err(LlmError::Other(format!("SSE error: {e}")));
+                }
+                Ok(msg) => {
                     if msg.data == "[DONE]" {
                         break;
                     }
@@ -389,7 +411,7 @@ impl LlmClient for OpenAiAdapter {
                                 .as_ref()
                                 .and_then(|d| d.reasoning_tokens)
                                 .unwrap_or(0);
-                            token_usage = Some(TokenUsageInfo {
+                            let info = TokenUsageInfo {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
                                 total: usage
@@ -398,19 +420,11 @@ impl LlmClient for OpenAiAdapter {
                                 prompt_cache_hit_tokens: cache_hit,
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
-                            });
+                            };
                             if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::TokenUsage {
-                                    prompt: usage.prompt_tokens,
-                                    completion: usage.completion_tokens,
-                                    total: usage
-                                        .total_tokens
-                                        .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
-                                    prompt_cache_hit_tokens: cache_hit,
-                                    prompt_cache_miss_tokens: cache_miss,
-                                    reasoning_tokens: reasoning,
-                                });
+                                let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
                             }
+                            token_usage = Some(info);
                         }
                     }
                 }
@@ -440,7 +454,7 @@ impl LlmClient for OpenAiAdapter {
 
     /*
     ── Legacy stream_message (hand-written SSE parsing) ───────────────────────
-    Kept for reference. Using reqwest-eventsource fixed the following issues:
+    Kept for reference. Using eventsource-stream fixed the following issues:
     - Only supported \n\n delimiter, not \r\n\r\n
     - data: [DONE] break only exited inner loop; outer loop would still continue
     - stream_options not set; usage stats were dead code

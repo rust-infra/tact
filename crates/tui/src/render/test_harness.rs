@@ -25,13 +25,13 @@ pub fn make_app() -> App {
     let (history_tx, _history_rx) = unbounded_channel();
     App::new(
         agent_rx,
+        None,
         user_cmd_tx,
         PathBuf::from("."),
         Vec::new(),
         "render-test".to_string(),
         history_tx,
         "retro".to_string(),
-        false,
     )
 }
 

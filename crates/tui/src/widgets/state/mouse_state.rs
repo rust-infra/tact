@@ -1,5 +1,79 @@
 use ratatui::layout::Rect;
 
+/// A position within a specific physical log message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextPosition {
+    pub phys_idx: usize,
+    pub byte_offset: usize,
+}
+
+impl TextPosition {
+    pub(crate) fn new(phys_idx: usize, byte_offset: usize) -> Self {
+        Self {
+            phys_idx,
+            byte_offset,
+        }
+    }
+}
+
+/// A character-level selection in the Log panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LogSelection {
+    pub start: TextPosition,
+    pub end: TextPosition,
+}
+
+impl LogSelection {
+    pub(crate) fn new(start: TextPosition, end: TextPosition) -> Self {
+        Self { start, end }
+    }
+
+    /// Select an entire physical message (`[0, len)`).
+    pub(crate) fn full_message(phys_idx: usize, len: usize) -> Self {
+        Self::new(
+            TextPosition::new(phys_idx, 0),
+            TextPosition::new(phys_idx, len),
+        )
+    }
+
+    /// Select a byte span within a single physical message.
+    pub(crate) fn span(phys_idx: usize, start: usize, end: usize) -> Self {
+        Self::new(
+            TextPosition::new(phys_idx, start),
+            TextPosition::new(phys_idx, end),
+        )
+    }
+
+    /// Normalize so that start <= end (by physical index, then byte offset).
+    pub(crate) fn normalized(&self) -> (TextPosition, TextPosition) {
+        if self.start.phys_idx < self.end.phys_idx
+            || (self.start.phys_idx == self.end.phys_idx
+                && self.start.byte_offset <= self.end.byte_offset)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+
+    /// Byte range of this selection within one physical message, if any.
+    pub(crate) fn byte_range_for(&self, phys: usize, msg_len: usize) -> Option<(usize, usize)> {
+        let (start, end) = self.normalized();
+        if phys < start.phys_idx || phys > end.phys_idx {
+            return None;
+        }
+        if start.phys_idx == end.phys_idx {
+            Some((start.byte_offset, end.byte_offset))
+        } else if phys == start.phys_idx {
+            Some((start.byte_offset, msg_len))
+        } else if phys == end.phys_idx {
+            Some((0, end.byte_offset))
+        } else {
+            Some((0, msg_len))
+        }
+    }
+}
+
 /// Mouse interaction state: manages panel areas, selection ranges, and drag flags.
 #[derive(Default)]
 pub(crate) struct MouseState {
@@ -7,7 +81,7 @@ pub(crate) struct MouseState {
     pub(crate) log_area: Rect,
     pub(crate) plan_selection: Option<(usize, usize)>,
     pub(crate) dragging_plan: bool,
-    pub(crate) log_selection: Option<(usize, usize)>,
+    pub(crate) log_selection: Option<LogSelection>,
     pub(crate) dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).
     pub(crate) thinking_popup_area: Rect,
@@ -20,8 +94,6 @@ pub(crate) struct MouseState {
     pub(crate) last_click_pos: Option<(u16, u16)>,
     /// Consecutive click count (1=single, 2=double, 3=triple).
     pub(crate) click_count: u8,
-    /// Double-click word selection: records (word_start_byte, word_end_byte), used alongside log_selection's line.
-    pub(crate) log_word_selection: Option<(usize, usize)>,
     /// Index of the thinking block hit by the last click (used for double-click popup open).
     pub(crate) last_click_card: Option<usize>,
     /// Index of the diff block hit by the last click (used for double-click popup open).

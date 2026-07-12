@@ -149,6 +149,11 @@ pub fn anthropic_messages_to_openai(
                                 });
                             }
                             // Drop thinking blocks when sending to OpenAI.
+                            // REVIEW: For non-Kimi providers this can leave the
+                            // assistant message with no content and no tool_calls,
+                            // which violates OpenAI's message schema. We currently
+                            // rely on sanitize_assistant_messages to stub such
+                            // messages; reconsider if the upstream format changes.
                             _ => {}
                         }
                     }
@@ -179,82 +184,108 @@ pub fn anthropic_messages_to_openai(
             },
         }
     }
-    // Defensive: strip orphaned tool_calls that aren't followed by tool messages.
-    sanitize_tool_call_sequence(&mut result);
+    // Defensive: strip orphaned tool_calls that aren't followed by tool messages
+    // and ensure no assistant message is completely empty (OpenAI rejects empty
+    // assistant messages, which can happen after MaxTokens when thinking blocks
+    // are dropped or a tool-call was truncated before any text was emitted).
+    sanitize_assistant_messages(&mut result, &mut reasoning);
     (result, reasoning)
 }
 
-/// Defensive validation: OpenAI requires every assistant message with
-/// `tool_calls` to be immediately followed by `ToolMessage` entries for
-/// every `tool_call_id`. If this invariant is violated (e.g., after a
-/// MaxTokens continuation that didn't execute tools), strip the orphaned
-/// `tool_calls` so the request doesn't get rejected by the API.
-fn sanitize_tool_call_sequence(messages: &mut [ChatCompletionRequestMessage]) {
+/// Defensive validation of assistant messages for OpenAI-compatible APIs.
+///
+/// 1. Every assistant message with `tool_calls` must be immediately followed by
+///    matching `ToolMessage` entries. If not, strip the orphaned `tool_calls`
+///    **and** remove the consecutive following `ToolMessage`s (leaving them
+///    would produce orphan tool results that OpenAI rejects with 400).
+/// 2. Assistant messages cannot have empty `content` and no `tool_calls`. If a
+///    message ends up empty (e.g. thinking block was dropped, or truncation
+///    happened before any tokens), insert a short stub.
+///
+/// REVIEW: This is a workaround for 400 Bad Request errors observed after
+/// MaxTokens recovery. The real fix may be to avoid producing empty assistant
+/// messages in the agent runtime / conversion pipeline rather than patching
+/// them after the fact.
+fn sanitize_assistant_messages(
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    reasoning: &mut Vec<Option<String>>,
+) {
+    debug_assert_eq!(messages.len(), reasoning.len());
     let mut i = 0;
     while i < messages.len() {
-        // Collect tool_call_ids from an assistant message.
-        let tool_call_ids: Vec<String> = match &messages[i] {
-            ChatCompletionRequestMessage::Assistant(assistant)
-                if assistant.tool_calls.is_some() =>
-            {
-                assistant
-                    .tool_calls
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|tc| tc.id.clone())
-                    .filter(|id| !id.is_empty())
-                    .collect()
-            }
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
-
-        if tool_call_ids.is_empty() {
+        let ChatCompletionRequestMessage::Assistant(assistant) = &messages[i] else {
             i += 1;
             continue;
-        }
+        };
 
-        // Count how many of these IDs find a matching tool message
-        // in the immediately following positions.
-        let mut matched = 0;
-        let mut j = i + 1;
-        while j < messages.len() {
-            match &messages[j] {
-                ChatCompletionRequestMessage::Tool(tm) => {
-                    if tool_call_ids.contains(&tm.tool_call_id) {
-                        matched += 1;
+        let has_tool_calls = assistant
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tcs| !tcs.is_empty());
+
+        if has_tool_calls {
+            // Count how many of the assistant's tool_call_ids find a matching
+            // tool message in the immediately following positions.
+            let tool_call_ids: Vec<String> = assistant
+                .tool_calls
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|tc| tc.id.clone())
+                .filter(|id| !id.is_empty())
+                .collect();
+
+            let mut matched = 0;
+            let mut j = i + 1;
+            while j < messages.len() {
+                match &messages[j] {
+                    ChatCompletionRequestMessage::Tool(tm) => {
+                        if tool_call_ids.contains(&tm.tool_call_id) {
+                            matched += 1;
+                        }
+                        j += 1;
                     }
-                    j += 1;
+                    // Stop scanning when we hit a non-tool message.
+                    _ => break,
                 }
-                // Stop scanning when we hit a non-tool message.
-                _ => break,
+            }
+
+            if matched < tool_call_ids.len() {
+                // Incomplete tool results. Drop *all* tool_calls from this
+                // assistant and remove the consecutive ToolMessages that would
+                // otherwise become orphans without a parent tool_calls list.
+                if let ChatCompletionRequestMessage::Assistant(ref mut assistant) = messages[i] {
+                    tracing::warn!(
+                        orphaned_tool_calls = ?tool_call_ids,
+                        matched_tool_messages = matched,
+                        "Stripping orphaned tool_calls and following tool messages \
+                         (context may have been compacted or continued past MaxTokens)."
+                    );
+                    assistant.tool_calls = None;
+                }
+                let remove_end = j;
+                let remove_start = i + 1;
+                if remove_start < remove_end {
+                    messages.drain(remove_start..remove_end);
+                    reasoning.drain(remove_start..remove_end);
+                }
             }
         }
 
-        if matched < tool_call_ids.len() {
-            // Some tool calls are orphaned. Drop *all* tool_calls from this
-            // assistant message to keep the API happy. The model will have
-            // another chance to request the tools in the next turn.
-            if let ChatCompletionRequestMessage::Assistant(ref mut assistant) = messages[i] {
+        // Ensure the assistant message is not empty. This can happen when the
+        // only content was a thinking block that gets dropped for non-Kimi
+        // providers, or when the response was truncated before emitting text.
+        if let ChatCompletionRequestMessage::Assistant(ref mut assistant) = messages[i] {
+            let has_tool_calls_now = assistant
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tcs| !tcs.is_empty());
+            if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() {
                 tracing::warn!(
-                    orphaned_tool_calls = ?tool_call_ids,
-                    matched_tool_messages = matched,
-                    "Stripping orphaned tool_calls from assistant message \
-                     (context may have been compacted or continued past MaxTokens)."
+                    "Replacing empty assistant message with stub to keep OpenAI request valid"
                 );
-                assistant.tool_calls = None;
-                // If there was no text content either, replace the assistant
-                // message with a short stub so the message isn't empty.
-                if assistant.content.as_deref().unwrap_or("").is_empty() {
-                    assistant.content = Some(
-                        "[Tool calls were pending but context was truncated before \
-                         their results arrived. Please re-issue if needed.]"
-                            .to_string(),
-                    );
-                }
+                assistant.content =
+                    Some("[Assistant response was empty or truncated. Continuing...]".to_string());
             }
         }
 
@@ -387,6 +418,297 @@ mod tests {
         );
         assert!(
             matches!(&parts[1], ChatCompletionRequestMessageContentPart::Image(img) if img.image_url.url.starts_with("data:image/png;base64,"))
+        );
+    }
+
+    #[test]
+    fn empty_assistant_message_gets_stubbed() {
+        let assistant = Message::new_blocks(Role::Assistant, vec![]);
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(
+            assistant_msg
+                .content
+                .as_deref()
+                .is_some_and(|c| !c.is_empty()),
+            "empty assistant message should be replaced with a stub"
+        );
+        assert!(assistant_msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn orphaned_tool_calls_are_stripped() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "orphan".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "x.rs"}),
+            }],
+        );
+        let user = Message::new_text(Role::User, "keep going".to_string());
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_none());
+        assert!(
+            assistant_msg
+                .content
+                .as_deref()
+                .is_some_and(|c| !c.is_empty()),
+            "orphaned tool_calls should be stripped and content stubbed"
+        );
+    }
+
+    #[test]
+    fn thinking_only_assistant_gets_stubbed() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::Thinking {
+                thinking: "partial reasoning".to_string(),
+                signature: String::new(),
+            }],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(
+            assistant_msg
+                .content
+                .as_deref()
+                .is_some_and(|c| !c.is_empty()),
+            "thinking-only assistant should be stubbed after thinking is dropped"
+        );
+        assert!(assistant_msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn assistant_with_text_and_thinking_keeps_text() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "reasoning".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::Text {
+                    text: "actual answer".to_string(),
+                },
+            ],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(assistant_msg.content.as_deref(), Some("actual answer"));
+        assert!(assistant_msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn orphaned_tool_call_with_existing_text_keeps_text_and_drops_tool_calls() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Text {
+                    text: "let me check".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "orphan".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "x.rs"}),
+                },
+            ],
+        );
+        let user = Message::new_text(Role::User, "keep going".to_string());
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_none());
+        assert_eq!(assistant_msg.content.as_deref(), Some("let me check"));
+    }
+
+    #[test]
+    fn valid_tool_call_sequence_is_preserved() {
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "x.rs"}),
+            }],
+        );
+        let user = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "file content".to_string(),
+            }],
+        );
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, _) = build_openai_request(&request);
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_some());
+        assert_eq!(assistant_msg.tool_calls.as_ref().unwrap().len(), 1);
+        assert!(
+            openai_request
+                .messages
+                .iter()
+                .any(|m| matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            "matching tool result should be kept"
+        );
+    }
+
+    #[test]
+    fn partial_tool_results_strip_tool_calls_and_orphan_tool_messages() {
+        // Assistant requested two tools, but only one result is present (e.g. after
+        // compaction). Stripping tool_calls alone would leave an orphan ToolMessage.
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "a.rs"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_2".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "b.rs"}),
+                },
+            ],
+        );
+        let user = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "partial".to_string(),
+            }],
+        );
+        let follow_up = Message::new_text(Role::User, "continue".to_string());
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user, follow_up],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, reasoning) = build_openai_request(&request);
+        assert_eq!(
+            openai_request.messages.len(),
+            reasoning.len(),
+            "reasoning must stay aligned after sanitize removals"
+        );
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_none());
+        assert!(
+            openai_request
+                .messages
+                .iter()
+                .all(|m| !matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            "orphan tool messages must be removed with stripped tool_calls"
+        );
+        assert!(
+            openai_request.messages.iter().any(|m| matches!(
+                m,
+                ChatCompletionRequestMessage::User(u)
+                    if matches!(
+                        &u.content,
+                        ChatCompletionRequestUserMessageContent::Text(t) if t == "continue"
+                    )
+            )),
+            "subsequent user messages must be preserved"
         );
     }
 

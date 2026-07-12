@@ -4,12 +4,12 @@
 use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
-    App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState, PlanPanel,
-    SearchState, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
+    AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState,
+    PlanPanel, SearchState, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
     ThinkingState, ToolState,
 };
 use std::path::PathBuf;
-use tact_protocol::{AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 impl App {
@@ -17,13 +17,13 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         agent_rx: UnboundedReceiver<AgentUpdate>,
+        account_rx: Option<UnboundedReceiver<AccountUpdate>>,
         user_cmd_tx: UnboundedSender<UserCommand>,
         work_dir: PathBuf,
         input_history_entries: Vec<String>,
         session_id: String,
         history_save_tx: UnboundedSender<(String, String)>,
         theme: String,
-        account_query_supported: bool,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -54,12 +54,14 @@ impl App {
             input_cursor: 0,
             input_scroll: 0,
             cmd_line: String::new(),
+            context_limit_chars: 500_000,
             messages: Vec::new(),
             raw_messages: Vec::new(),
             raw_message_types: Vec::new(),
             plan: PlanPanel::new(),
             status: Status::Idle,
             agent_rx,
+            account_rx,
             user_cmd_tx,
             task_history: Vec::new(),
             theme: Theme::by_name(theme_name),
@@ -93,9 +95,7 @@ impl App {
             code_popup: None,
             stream: StreamState::new(),
             thinking: ThinkingState::new(),
-            balance_info: None,
-            usage_quota: None,
-            account_query_supported,
+            account: AccountState::default(),
             party_mode: false,
             konami_progress: 0,
             spinner_frame: 0,

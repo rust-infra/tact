@@ -280,6 +280,7 @@ impl App {
                 inline_content: Some(content),
                 lang: String::new(),
                 use_diff_gutter: false,
+                is_diff: false,
                 scroll: 0,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
@@ -308,6 +309,7 @@ impl App {
                     },
                 ),
                 use_diff_gutter: output.use_diff_gutter,
+                is_diff: false,
                 scroll: 0,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
@@ -322,10 +324,11 @@ impl App {
                     title: path.clone(),
                     file_path: None,
                     git_diff_path: Some(path.clone()),
-                    workspace_dir: Some(self.workspace_dir.clone()),
+                    workspace_dir: Some(self.work_dir.to_string_lossy().to_string()),
                     inline_content: output.detail_full.clone(),
                     lang: crate::render::popups::diff_popup::popup_lang_for_path(&path),
                     use_diff_gutter: false,
+                    is_diff: true,
                     scroll: 0,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
@@ -357,6 +360,7 @@ impl App {
                     }),
                     lang: "bash".to_string(),
                     use_diff_gutter: false,
+                    is_diff: false,
                     scroll: 0,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
@@ -375,6 +379,7 @@ impl App {
                     inline_content: Some(content),
                     lang: String::new(),
                     use_diff_gutter: false,
+                    is_diff: false,
                     scroll: 0,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
@@ -391,6 +396,23 @@ impl App {
         if let Some(popup) = self.popup_from_tool_output(output) {
             self.tools.popup = Some(popup);
         }
+    }
+
+    /// Open a tool detail popup only if the click was inside the detail card area.
+    pub(crate) fn open_diff_popup_at_row(&mut self, phys_idx: usize, relative_row: usize) {
+        let Some(output) = self.tool_output_at(phys_idx) else {
+            return;
+        };
+        if !output.layout.has_detail_card {
+            return;
+        }
+        let card_height = output.visual_rows(true);
+        let total_height = output.visual_rows(false);
+        let detail_card_start = total_height - card_height;
+        if relative_row < detail_card_start || relative_row >= total_height {
+            return;
+        }
+        self.open_diff_popup(phys_idx);
     }
 
     /// Close the file content popup.

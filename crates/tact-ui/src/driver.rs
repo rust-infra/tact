@@ -4,29 +4,37 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use tact::{Agent, extract_text};
-use tact_llm::{
-    is_account_query_supported, is_deepseek, is_kimi_balance_supported, is_kimi_usage_supported,
-    query_deepseek_balance, query_kimi_balance, query_kimi_code_usage,
-};
-use tact_protocol::{AgentErrorKind, AgentUpdate, UserCommand};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
+use crate::account;
 use crate::user_message::build_user_message;
-
-enum AccountQueryResult {
-    Balance(tact_protocol::BalanceInfo),
-    UsageQuota(tact_protocol::UsageQuotaInfo),
-}
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
 /// `SubmitTask` runs in a background task so `Cancel` can set `cancel_flag`
 /// while `agent_loop` is in progress. Integration tests drive this with a fake TUI.
+///
+/// This convenience wrapper does **not** wire an account-update channel; balance
+/// queries initiated through it are dropped. Use
+/// [`run_command_loop_with_account`] when the caller wants to receive
+/// [`AccountUpdate`] messages.
 pub async fn run_command_loop(
+    agent: Agent,
+    user_cmd_rx: UnboundedReceiver<UserCommand>,
+    image_work_dir: impl AsRef<Path>,
+) -> Agent {
+    run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
+}
+
+/// Like [`run_command_loop`], but forwards balance / usage quota results to the
+/// provided account-update channel instead of mixing them into agent updates.
+pub async fn run_command_loop_with_account(
     agent: Agent,
     mut user_cmd_rx: UnboundedReceiver<UserCommand>,
     image_work_dir: impl AsRef<Path>,
+    account_tx: Option<UnboundedSender<AccountUpdate>>,
 ) -> Agent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
@@ -62,7 +70,13 @@ pub async fn run_command_loop(
                     agent = Some(handle.await.expect("command join panicked"));
                 }
                 if let Some(mut a) = agent.take() {
-                    handle_user_command(&mut a, other, &image_work_dir).await;
+                    handle_user_command_with_account(
+                        &mut a,
+                        other,
+                        &image_work_dir,
+                        account_tx.as_ref(),
+                    )
+                    .await;
                     agent = Some(a);
                 }
             }
@@ -88,7 +102,19 @@ async fn reap_finished_task(agent: &mut Option<Agent>, active: &mut Option<JoinH
 }
 
 /// Handle a single user command (shared by the loop and tests).
+///
+/// This wrapper discards any account-related updates; tests that need to
+/// observe them should use [`run_command_loop_with_account`].
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
+    handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
+}
+
+async fn handle_user_command_with_account(
+    agent: &mut Agent,
+    cmd: UserCommand,
+    image_work_dir: &Path,
+    account_tx: Option<&UnboundedSender<AccountUpdate>>,
+) {
     match cmd {
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
@@ -108,41 +134,23 @@ pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work
                 }
             }
         }
-        UserCommand::Cancel => {
-            agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-            agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
-        }
         UserCommand::QueryBalance => {
-            if !is_account_query_supported() {
-                return;
-            }
-            let result = if is_deepseek() {
-                query_deepseek_balance()
-                    .await
-                    .map(AccountQueryResult::Balance)
-            } else if is_kimi_balance_supported() {
-                query_kimi_balance().await.map(AccountQueryResult::Balance)
-            } else if is_kimi_usage_supported() {
-                query_kimi_code_usage()
-                    .await
-                    .map(AccountQueryResult::UsageQuota)
-            } else {
+            let Some(account_tx) = account_tx else {
                 return;
             };
-            match result {
-                Ok(AccountQueryResult::Balance(balance)) => {
-                    agent.emit_update(AgentUpdate::Balance(balance));
+            if !account::is_supported() {
+                return;
+            }
+            match account::query_once().await {
+                Ok(result) => {
+                    let _ = account_tx.send(account::into_update(result));
                 }
-                Ok(AccountQueryResult::UsageQuota(quota)) => {
-                    agent.emit_update(AgentUpdate::UsageQuota(quota));
-                }
-                Err(e) => {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::BalanceQueryFailed(
-                        e.to_string(),
-                    )));
+                Err(err) => {
+                    let _ = account_tx.send(AccountUpdate::Error(err));
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -152,9 +160,9 @@ mod tests {
 
     use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
     use tact_llm::MockClient;
-    use tact_protocol::{AgentUpdate, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
+    use tact_protocol::{AgentUpdate, UserCommand};
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
@@ -166,9 +174,10 @@ mod tests {
     async fn cancel_sets_flag_and_emits_info() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let (agent, _) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        super::handle_user_command(&mut agent, UserCommand::Cancel, &work_dir).await;
+        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
 
         assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let update = agent_rx.try_recv().expect("expected Cancelling info");
@@ -194,19 +203,5 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
-    }
-
-    #[tokio::test]
-    async fn query_balance_is_noop_when_unsupported() {
-        install_test_config();
-        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
-
-        super::handle_user_command(&mut agent, UserCommand::QueryBalance, &work_dir).await;
-
-        assert!(
-            agent_rx.try_recv().is_err(),
-            "unsupported provider should not emit updates"
-        );
     }
 }

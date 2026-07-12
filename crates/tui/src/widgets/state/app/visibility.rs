@@ -1,9 +1,11 @@
 use crate::render::render_md::{format_table, render_markdown_tui};
+use crate::render::util::visual_pos_to_byte_offset;
 use crate::widgets::state::*;
 use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
+use unicode_width::UnicodeWidthStr;
 
 impl App {
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
@@ -40,6 +42,10 @@ impl App {
     /// Returns None if the logical line number exceeds the fixed message range
     /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
+        // Prefer the per-frame cache built by render_log_panel (O(1)).
+        if self.log_scroll.visible_indices_ver == self.messages.len() {
+            return self.log_scroll.visible_indices.get(logical_idx).copied();
+        }
         let mut visible_count = 0;
         for idx in 0..self.messages.len() {
             if self.is_message_visible(idx) {
@@ -52,29 +58,22 @@ impl App {
         None
     }
 
-    /// Find the word boundary at the given mouse column in the raw text of a
+    /// Find the word boundary at the given byte offset in the raw text of a
     /// specific logical line. Returns (word_start_byte, word_end_byte).
     /// Words consist of letters, digits, underscores, and hyphens; other
     /// characters are separators.
     pub(crate) fn find_word_bounds(
         &self,
         logical_idx: usize,
-        col: usize,
+        byte_offset: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
         let text = self.raw_messages.get(phys_idx)?;
         let bytes = text.as_bytes();
-        let mut byte_pos = 0;
-        let mut char_count = 0;
-        // Convert column position to byte offset
-        while byte_pos < bytes.len() && char_count < col {
-            let c = text[byte_pos..].chars().next()?;
-            byte_pos += c.len_utf8();
-            char_count += 1;
-        }
-        if byte_pos >= bytes.len() || bytes.is_empty() {
+        if bytes.is_empty() {
             return None;
         }
+        let byte_pos = text.floor_char_boundary(byte_offset.min(bytes.len()));
         // Expand from click position to find word boundaries
         let classify = |b: u8| -> bool { b.is_ascii_alphanumeric() || b == b'_' || b == b'-' };
         let mut start = byte_pos;
@@ -100,6 +99,50 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Collapse indicator shown on thinking titles with more than 3 hidden lines.
+    pub(crate) fn thinking_collapse_prefix(&self, phys_idx: usize) -> Option<String> {
+        let block = self
+            .thinking
+            .blocks
+            .iter()
+            .find(|block| block.title_idx == phys_idx)?;
+        let total = block.end_idx.saturating_sub(block.title_idx);
+        if total <= 3 {
+            return None;
+        }
+        Some(
+            self.msgs()
+                .scroll_indicator_tmpl
+                .replacen("{}", &total.min(3).to_string(), 1)
+                .replacen("{}", &total.to_string(), 1),
+        )
+    }
+
+    /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
+    /// Returns (phys_idx, byte_offset) or None if the position is not inside a physical message.
+    pub(crate) fn byte_offset_from_log_position(
+        &self,
+        logical_idx: usize,
+        visual_row: usize,
+        col: usize,
+    ) -> Option<(usize, usize)> {
+        let phys_idx = self.visible_message_index(logical_idx)?;
+        let raw_text = self.raw_messages.get(phys_idx)?;
+        let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
+        let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
+        let visual_line_in_row = visual_row.saturating_sub(vis_start);
+        let indent = self.nested_log_indent(phys_idx) as usize;
+        let prefix_width = self
+            .thinking_collapse_prefix(phys_idx)
+            .as_deref()
+            .map(UnicodeWidthStr::width)
+            .unwrap_or(0);
+        let text_col = col.saturating_sub(indent).saturating_sub(prefix_width);
+        let byte_offset =
+            visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
+        Some((phys_idx, byte_offset))
     }
 
     /// O(1) version: uses the cache mapping built by render_log_panel.
@@ -155,10 +198,48 @@ impl App {
 
     /// Total logical line count of the current Log area (fixed messages + incomplete streaming lines).
     pub(crate) fn total_log_lines(&self) -> usize {
-        let visible_count = (0..self.messages.len())
-            .filter(|&idx| self.is_message_visible(idx))
-            .count();
+        let visible_count = if self.log_scroll.visible_indices_ver == self.messages.len() {
+            self.log_scroll.visible_indices.len()
+        } else {
+            (0..self.messages.len())
+                .filter(|&idx| self.is_message_visible(idx))
+                .count()
+        };
         visible_count + if self.stream.buffer.is_empty() { 0 } else { 1 }
+    }
+
+    /// Extract the raw text covered by a character-level selection.
+    /// Skips collapsed/hidden physical rows so yank matches what the user sees.
+    pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
+        if start.phys_idx == end.phys_idx {
+            if let Some(text) = self.raw_messages.get(start.phys_idx) {
+                return text[start.byte_offset.min(text.len())..end.byte_offset.min(text.len())]
+                    .to_string();
+            }
+            return String::new();
+        }
+        if start.phys_idx >= end.phys_idx {
+            return String::new();
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        if self.is_message_visible(start.phys_idx)
+            && let Some(text) = self.raw_messages.get(start.phys_idx)
+        {
+            parts.push(&text[start.byte_offset.min(text.len())..]);
+        }
+        for phys in (start.phys_idx + 1)..end.phys_idx {
+            if self.is_message_visible(phys)
+                && let Some(text) = self.raw_messages.get(phys)
+            {
+                parts.push(text);
+            }
+        }
+        if self.is_message_visible(end.phys_idx)
+            && let Some(text) = self.raw_messages.get(end.phys_idx)
+        {
+            parts.push(&text[..end.byte_offset.min(text.len())]);
+        }
+        parts.join("\n")
     }
 
     /// Close the currently active thinking block, adding it to thinking_blocks
@@ -528,15 +609,6 @@ impl App {
         };
         let active = self.tools.active.remove(pos);
         self.remove_active_tool_rows(active);
-    }
-
-    /// Drop all running tool blocks (e.g. when a new plan starts).
-    pub(crate) fn cancel_all_active_tools(&mut self) {
-        let mut actives = std::mem::take(&mut self.tools.active);
-        actives.sort_by_key(|a| std::cmp::Reverse(a.phys_idx));
-        for active in actives {
-            self.remove_active_tool_rows(active);
-        }
     }
 
     pub(crate) fn resize_tool_placeholder_rows(

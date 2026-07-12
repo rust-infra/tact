@@ -87,15 +87,7 @@ pub fn format_duration_us(us: u64) -> String {
     }
 }
 
-pub fn format_bytes(size: usize) -> String {
-    if size < 1024 {
-        format!("{size} B")
-    } else if size < 1024 * 1024 {
-        format!("{:.1} KB", size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-    }
-}
+pub use tact_protocol::format_bytes;
 
 /// Build the plain-text meta line (title + meta rows).
 #[allow(clippy::too_many_arguments)]
@@ -568,6 +560,15 @@ impl<'a> ToolWidget<'a> {
     }
 }
 
+fn inset_content_rect(area: Rect) -> Rect {
+    Rect::new(
+        area.x + 2,
+        area.y,
+        area.width.saturating_sub(2),
+        area.height,
+    )
+}
+
 impl Widget for ToolWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -587,9 +588,10 @@ impl Widget for ToolWidget<'_> {
         );
 
         if !output.layout.has_detail_card {
+            let inner = inset_content_rect(area);
             Paragraph::new(vec![output.title_line, meta])
                 .style(Style::default().fg(self.theme.fg).bg(self.theme.bg))
-                .render(area, buf);
+                .render(inner, buf);
             return;
         }
 
@@ -608,19 +610,20 @@ impl Widget for ToolWidget<'_> {
             )));
 
         if area.height <= TOOL_HEADER_ROWS as u16 {
-            Paragraph::new(vec![output.title_line, meta]).render(area, buf);
+            let inner = inset_content_rect(area);
+            Paragraph::new(vec![output.title_line, meta]).render(inner, buf);
             return;
         }
 
-        let title_area = Rect::new(area.x, area.y, area.width, 1);
+        let title_area = Rect::new(area.x + 2, area.y, area.width.saturating_sub(2), 1);
         output.title_line.render(title_area, buf);
-        let meta_area = Rect::new(area.x, area.y + 1, area.width, 1);
+        let meta_area = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(2), 1);
         meta.render(meta_area, buf);
 
         let card_area = Rect::new(
-            area.x,
+            area.x + 2,
             area.y + TOOL_HEADER_ROWS as u16,
-            area.width,
+            area.width.saturating_sub(2),
             area.height.saturating_sub(TOOL_HEADER_ROWS as u16),
         );
         if card_area.height < 3 {

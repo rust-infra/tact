@@ -176,8 +176,8 @@ impl Agent {
                 let summary = text.chars().take(200).collect::<String>();
                 let _ = crate::notifications::notify_task_complete(&summary);
             }
-            AgentUpdate::StepFailed(idx, _, msg) => {
-                let _ = crate::notifications::notify_step_failed(*idx, msg);
+            AgentUpdate::StepFailed { idx, error, .. } => {
+                let _ = crate::notifications::notify_step_failed(*idx, error);
             }
             _ => {}
         }
@@ -448,6 +448,12 @@ impl Agent {
                 .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
                 .await;
 
+            // REVIEW: Persisting a truncated assistant message can leave an empty
+            // OpenAI assistant message on the next turn (e.g. only a thinking block
+            // that convert.rs drops, or an orphaned tool-call that gets stripped).
+            // sanitize_assistant_messages in tact_llm::convert currently patches this,
+            // but a cleaner fix might be to avoid adding a purely-empty assistant
+            // message to the context here in the first place.
             self.runtime
                 .context
                 .push(Message::new_blocks(Role::Assistant, content.clone()));
@@ -1016,6 +1022,11 @@ mod tests {
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
+                    vision_image: crate::config::VisionImageSettings {
+                        compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
+                        max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,
+                        jpeg_quality: crate::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+                    },
                 },
                 tools: crate::config::ToolSettings {
                     brave_search_api_key: None,
@@ -1253,7 +1264,9 @@ mod tests {
         let finished: Vec<_> = updates
             .iter()
             .filter_map(|u| match u {
-                AgentUpdate::StepFinished(_, id, r) if r.tool == "read_file" => Some(id.as_str()),
+                AgentUpdate::StepFinished {
+                    tool_id, result, ..
+                } if result.tool == "read_file" => Some(tool_id.as_str()),
                 _ => None,
             })
             .collect();
@@ -1313,8 +1326,8 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::StepFailed(_, id, msg)
-                        if id == "w1" && msg.contains("Plan mode")
+                    AgentUpdate::StepFailed { tool_id, error, .. }
+                        if tool_id == "w1" && error.contains("Plan mode")
                 )
             }),
             "Plan mode should StepFailed on write, got: {updates:?}"
@@ -1372,7 +1385,7 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::TokenUsage { total, .. } if *total == usage.total
+                    AgentUpdate::TokenUsage(u) if u.total == usage.total
                 )
             }),
             "expected TokenUsage from mock, got: {updates:?}"
@@ -1433,12 +1446,12 @@ mod tests {
             updates.push(u);
         }
 
-        let read_done = updates
-            .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1"));
-        let write_done = updates
-            .iter()
-            .position(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1"));
+        let read_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"),
+        );
+        let write_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"),
+        );
         assert!(
             read_done.is_some() && write_done.is_some() && read_done < write_done,
             "read must finish before write on same file, got: {updates:?}"

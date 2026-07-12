@@ -1,6 +1,6 @@
 //! Mouse scroll handling extracted from the main event loop for testability.
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, LogSelection, TextPosition};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MousePanelHit {
@@ -70,27 +70,40 @@ pub(crate) fn end_panel_resize(app: &mut App) {
 
 /// Triple-click on a log line selects the line (or whole code block when enabled).
 pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_code_blocks: bool) {
-    app.mouse.log_word_selection = None;
     if expand_code_blocks
         && let Some((cb_start, cb_end)) = app.find_code_block_containing_logical(line_idx)
     {
-        app.mouse.log_selection = Some((cb_start, cb_end));
+        if let Some(start_phys) = app.visible_message_index(cb_start) {
+            let end_phys = app.visible_message_index(cb_end).unwrap_or(start_phys);
+            let end_len = app.raw_messages[end_phys].len();
+            app.mouse.log_selection = Some(LogSelection::new(
+                TextPosition::new(start_phys, 0),
+                TextPosition::new(end_phys, end_len),
+            ));
+        }
         app.mouse.dragging_log = true;
         return;
     }
-    app.mouse.log_selection = Some((line_idx, line_idx));
+    if let Some(phys) = app.visible_message_index(line_idx) {
+        let len = app.raw_messages[phys].len();
+        app.mouse.log_selection = Some(LogSelection::full_message(phys, len));
+    }
     app.mouse.dragging_log = true;
 }
 
-/// Double-click on a tool block opens its detail popup.
-pub(crate) fn handle_tool_block_click(app: &mut App, tool_idx: usize, phys_idx: usize) {
+/// Double-click on a tool detail card opens its detail popup.
+pub(crate) fn handle_tool_block_click(
+    app: &mut App,
+    tool_idx: usize,
+    phys_idx: usize,
+    relative_row: usize,
+) {
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
-        app.open_diff_popup(phys_idx);
+        app.open_diff_popup_at_row(phys_idx, relative_row);
         return;
     }
     if app.mouse.click_count == 1 {
         app.mouse.last_click_tool = Some(tool_idx);
-        app.mouse.log_word_selection = None;
         app.mouse.log_selection = None;
         app.mouse.dragging_log = false;
     }
@@ -101,6 +114,7 @@ mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
     use crate::widgets::state::DiffPopup;
+    use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
     use std::collections::HashMap;
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
 
@@ -147,6 +161,7 @@ mod tests {
             inline_content: Some("line\n".into()),
             lang: String::new(),
             use_diff_gutter: false,
+            is_diff: false,
             scroll: 0,
             cached_content: None,
             highlighted_lines: Vec::new(),
@@ -167,16 +182,17 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted(
-            0,
-            "b1".into(),
-            "bash".into(),
-            "echo hi".into(),
-        ));
-        app.handle_agent_update(AgentUpdate::StepFinished(
-            0,
-            "b1".into(),
-            StepResult {
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
                 tool: "bash".into(),
                 arg_summary: "echo hi".into(),
                 arg_full: Some("echo hi".into()),
@@ -186,17 +202,61 @@ mod tests {
                 duration_us: Some(1),
                 permission_label: None,
             },
-        ));
+        });
 
         let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
         app.mouse.click_count = 1;
-        handle_tool_block_click(&mut app, 0, phys_idx);
+        handle_tool_block_click(&mut app, 0, phys_idx, 0);
         assert!(app.tools.popup.is_none());
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
-        handle_tool_block_click(&mut app, 0, phys_idx);
+        // Detail card starts after the 2-row header.
+        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS);
         assert!(app.tools.popup.is_some());
+    }
+
+    #[test]
+    fn double_click_tool_header_does_not_open_diff_popup() {
+        let mut app = make_app();
+        app.plan.visible = true;
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            "b1",
+            HashMap::from([("command".to_string(), "echo hi".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "echo hi".into(),
+                arg_full: Some("echo hi".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("hi\n".into()),
+                duration_us: Some(1),
+                permission_label: None,
+            },
+        });
+
+        let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
+        app.mouse.click_count = 2;
+        app.mouse.last_click_tool = Some(0);
+        // Click on the title row (row 0).
+        handle_tool_block_click(&mut app, 0, phys_idx, 0);
+        assert!(app.tools.popup.is_none());
+        // Click on the meta row (row 1).
+        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1);
+        assert!(app.tools.popup.is_none());
     }
 
     #[test]
@@ -237,9 +297,9 @@ mod tests {
 
         handle_log_triple_click(&mut app, 0, false);
 
-        assert_eq!(app.mouse.log_selection, Some((0, 0)));
+        let expected = Some(LogSelection::full_message(0, "pick this line".len()));
+        assert_eq!(app.mouse.log_selection, expected);
         assert!(app.mouse.dragging_log);
-        assert!(app.mouse.log_word_selection.is_none());
     }
 
     #[test]
@@ -250,15 +310,23 @@ mod tests {
         let inside_line = (0..20)
             .find(|&logical| app.find_code_block_containing_logical(logical).is_some())
             .expect("logical line inside fenced code block");
-        let expected = app
+        let (cb_start, cb_end) = app
             .find_code_block_containing_logical(inside_line)
             .expect("code block range");
 
         handle_log_triple_click(&mut app, inside_line, true);
 
-        assert_eq!(app.mouse.log_selection, Some(expected));
+        let start_phys = app.visible_message_index(cb_start).unwrap();
+        let end_phys = app.visible_message_index(cb_end).unwrap();
+        let expected = Some(LogSelection::new(
+            TextPosition::new(start_phys, 0),
+            TextPosition::new(end_phys, app.raw_messages[end_phys].len()),
+        ));
+        assert_eq!(app.mouse.log_selection, expected);
         assert!(
-            expected.1 > expected.0,
+            expected.as_ref().unwrap().end.phys_idx > expected.as_ref().unwrap().start.phys_idx
+                || expected.as_ref().unwrap().end.byte_offset
+                    > expected.as_ref().unwrap().start.byte_offset,
             "expected multi-line block selection"
         );
         assert!(app.mouse.dragging_log);
