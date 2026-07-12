@@ -546,15 +546,15 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                                     app.open_thinking_popup(phys_idx);
                                                 } else if app.mouse.click_count == 2 {
                                                     // Double click: select word
-                                                    if let Some((phys, byte)) =
-                                                        app.byte_offset_from_log_position(line_idx, visual_row, col)
-                                                    {
-                                                        if let Some((ws, we)) =
+                                                    if let Some((phys, byte)) = app
+                                                        .byte_offset_from_log_position(
+                                                            line_idx, visual_row, col,
+                                                        )
+                                                        && let Some((ws, we)) =
                                                             app.find_word_bounds(line_idx, byte)
-                                                        {
-                                                            app.mouse.log_selection =
-                                                                Some(LogSelection::span(phys, ws, we));
-                                                        }
+                                                    {
+                                                        app.mouse.log_selection =
+                                                            Some(LogSelection::span(phys, ws, we));
                                                     }
                                                     app.mouse.dragging_log = true;
                                                 } else if app.mouse.click_count >= 3 {
@@ -562,7 +562,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                                         &mut app, line_idx, true,
                                                     );
                                                 } else if let Some((phys, byte)) =
-                                                    app.byte_offset_from_log_position(line_idx, visual_row, col)
+                                                    app.byte_offset_from_log_position(
+                                                        line_idx, visual_row, col,
+                                                    )
                                                 {
                                                     // Single click: start character selection for press-drag-copy
                                                     app.mouse.log_selection =
@@ -612,14 +614,14 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                         .column
                                         .saturating_sub(app.mouse.log_area.x + 1)
                                         as usize;
-                                    if line_idx < app.total_log_lines() {
-                                        if let Some((phys, byte)) =
-                                            app.byte_offset_from_log_position(line_idx, visual_row, col)
-                                        {
-                                            if let Some(ref mut sel) = app.mouse.log_selection {
-                                                sel.end = TextPosition::new(phys, byte);
-                                            }
-                                        }
+                                    if line_idx < app.total_log_lines()
+                                        && let Some((phys, byte)) = app
+                                            .byte_offset_from_log_position(
+                                                line_idx, visual_row, col,
+                                            )
+                                        && let Some(ref mut sel) = app.mouse.log_selection
+                                    {
+                                        sel.end = TextPosition::new(phys, byte);
                                     }
                                 } else if app.mouse.dragging_plan && in_plan {
                                     let item_idx =

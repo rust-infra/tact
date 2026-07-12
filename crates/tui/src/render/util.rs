@@ -138,7 +138,7 @@ pub(crate) fn visual_pos_to_byte_offset(
             }
             continue;
         }
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0) as usize;
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if wrap_width > 0 && col + width > wrap_width {
             if line == target_line && target_col >= col {
                 return idx;
