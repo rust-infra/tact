@@ -20,7 +20,7 @@ impl Default for SelectPopup {
             options: Vec::new(),
             selected: 0,
             respond: None,
-            log_confirm: true, 
+            log_confirm: true,
         }
     }
 }
