@@ -21,7 +21,7 @@
 # LLM (required for tact-ui unless overridden via CLI)
 # ---------------------------------------------------------------------------
 [llm]
-# Provider: "anthropic" | "openai" | "deepseek" | "kimi"
+# Provider: "anthropic" | "openai" | "deepseek" | "kimi" | "xai"
 provider = "anthropic"
 
 # Model name (optional for openai)
@@ -30,7 +30,7 @@ model = "claude-sonnet-4-20250514"
 # API key
 api_key = "sk-ant-..."
 
-# API base URL (required for anthropic; defaults below for openai/deepseek/kimi)
+# API base URL (required for anthropic; defaults below for openai/deepseek/kimi/xai)
 base_url = "https://api.anthropic.com"
 
 # Max tokens per LLM call (default: 8000)
@@ -56,6 +56,12 @@ base_url = "https://api.anthropic.com"
 # model = "kimi-k2.5"
 # api_key = "sk-..."
 # # base_url defaults to https://api.moonshot.cn/v1
+#
+# xAI / Grok example (OpenAI-compatible, default base URL):
+# provider = "xai"
+# model = "grok-4.5"
+# api_key = "xai-..."
+# # base_url defaults to https://api.x.ai/v1
 
 # Old style: you can also use provider = "openai" with a Moonshot-compatible base URL:
 # provider = "openai"

@@ -92,7 +92,7 @@ let api_key = args.api_key.clone()
 ```
 
 Required LLM fields without a default: **`provider`**, **`api_key`**, **`model`**.  
-`base_url` falls back to provider-specific defaults (`openai`, `deepseek`, `kimi`).
+`base_url` falls back to provider-specific defaults (`openai`, `deepseek`, `kimi`, `xai`).
 
 ---
 
@@ -102,7 +102,7 @@ Top-level sections in `TactTomlConfig`:
 
 ```toml
 [llm]
-provider = "kimi"          # anthropic | openai | deepseek | kimi
+provider = "kimi"          # anthropic | openai | deepseek | kimi | xai
 model = "kimi-for-coding"
 api_key = "sk-..."
 base_url = "https://api.kimi.com/coding/v1"   # optional; default is https://api.moonshot.cn/v1

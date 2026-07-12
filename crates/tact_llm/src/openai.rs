@@ -84,11 +84,21 @@ struct StreamCompletionTokensDetails {
 /// - Kimi K2.5 uses `{ type: "enabled" }`.
 /// - Kimi K2.6 uses `{ type: "enabled", keep: "all" }` for Preserved Thinking.
 /// - Kimi K2.7-code has thinking always on; do not inject anything.
+/// - xAI never accepts Anthropic-style `thinking`; models with an adjustable
+///   reasoning knob get `reasoning_effort` instead (see `xai.rs`).
 fn inject_thinking_param(
     request: &CreateMessageParams,
     body: &mut serde_json::Value,
     provider: &crate::ProviderInfo,
 ) {
+    if provider.is_xai() {
+        if let Some(effort) =
+            crate::xai::reasoning_effort(&provider.model, request.thinking.is_some())
+        {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+        return;
+    }
     if provider.is_kimi_k27() {
         // K2.7-code forces thinking on; passing `thinking` is unnecessary and can error.
         return;
@@ -669,6 +679,36 @@ mod tests {
             body["thinking"],
             serde_json::json!({"type": "enabled", "keep": "all"})
         );
+    }
+
+    #[test]
+    fn inject_thinking_skips_for_xai_always_on_model() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "xai".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "grok-4.5".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body["thinking"].is_null());
+        assert!(body["reasoning_effort"].is_null());
+    }
+
+    #[test]
+    fn inject_thinking_maps_to_reasoning_effort_for_xai_adjustable_model() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: "xai".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "grok-4.3".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body["thinking"].is_null());
+        assert_eq!(body["reasoning_effort"], "high");
     }
 
     #[test]

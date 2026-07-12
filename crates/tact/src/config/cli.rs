@@ -12,7 +12,7 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
-    /// LLM provider: "anthropic", "openai", "deepseek", or "kimi"
+    /// LLM provider: "anthropic", "openai", "deepseek", "kimi", or "xai"
     #[arg(long)]
     pub provider: Option<String>,
 

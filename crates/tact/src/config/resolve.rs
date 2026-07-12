@@ -34,6 +34,7 @@ fn default_base_url(provider: &str) -> Option<String> {
         "openai" => Some("https://api.openai.com/v1".to_string()),
         "deepseek" => Some("https://api.deepseek.com".to_string()),
         "kimi" => Some("https://api.moonshot.cn/v1".to_string()),
+        "xai" => Some("https://api.x.ai/v1".to_string()),
         _ => None,
     }
 }
@@ -50,7 +51,7 @@ fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result
         return Ok(p.clone());
     }
     anyhow::bail!(
-        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi"
+        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi|xai"
     )
 }
 
@@ -467,6 +468,44 @@ model = "kimi-k2.5"
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
+    }
+
+    #[test]
+    fn resolve_xai_config_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "xai"
+api_key = "xai-test"
+model = "grok-4.5"
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, "xai");
+        assert_eq!(resolved.llm.base_url, "https://api.x.ai/v1");
     }
 
     #[test]

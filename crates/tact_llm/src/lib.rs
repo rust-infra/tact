@@ -2,12 +2,14 @@
 //!
 //! Supports Anthropic (Messages API), OpenAI-compatible providers
 //! (Chat Completions API) via the `async-openai` crate, DeepSeek
-//! (which uses the OpenAI-compatible API), and Kimi/Moonshot
-//! (also OpenAI-compatible).
+//! (which uses the OpenAI-compatible API), Kimi/Moonshot
+//! (also OpenAI-compatible), and xAI/Grok (OpenAI-compatible with
+//! `reasoning_effort` semantics; see `xai.rs`).
 
 pub mod anthropic;
 pub mod convert;
 pub mod openai;
+pub mod xai;
 
 #[cfg(test)]
 mod test_openai;
@@ -39,10 +41,10 @@ impl ProviderInfo {
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider.as_str() {
             "anthropic" => self.build_anthropic(),
-            "openai" | "deepseek" | "kimi" => self.build_openai_compatible(),
+            "openai" | "deepseek" | "kimi" | "xai" => self.build_openai_compatible(),
             other => {
                 anyhow::bail!(
-                    "Unknown provider: {other}. Use 'anthropic', 'openai', 'deepseek', or 'kimi'."
+                    "Unknown provider: {other}. Use 'anthropic', 'openai', 'deepseek', 'kimi', or 'xai'."
                 )
             }
         }
@@ -72,6 +74,7 @@ impl ProviderInfo {
                 "openai" => "https://api.openai.com/v1",
                 "deepseek" => "https://api.deepseek.com",
                 "kimi" => "https://api.moonshot.cn/v1",
+                "xai" => xai::DEFAULT_BASE_URL,
                 other => anyhow::bail!("no default base_url for provider '{other}'"),
             }
             .to_string()
@@ -1001,6 +1004,17 @@ mod tests {
             panic!("expected OpenAi adapter for kimi");
         };
         assert_eq!(adapter.base_url(), "https://api.moonshot.cn/v1");
+    }
+
+    #[test]
+    fn xai_builds_openai_adapter_with_default_base_url() {
+        let p = provider_info("xai", "xai-test", "", "grok-4.5");
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAi(adapter) = result.unwrap() else {
+            panic!("expected OpenAi adapter for xai");
+        };
+        assert_eq!(adapter.base_url(), "https://api.x.ai/v1");
     }
 
     #[test]

@@ -29,9 +29,9 @@ Two adapter families share one trait:
 | Adapter | Providers | HTTP API |
 |---------|-----------|----------|
 | `AnthropicAdapter` | `anthropic` | Anthropic Messages (`/messages`) |
-| `OpenAiAdapter` | `openai`, `deepseek`, `kimi` | OpenAI-compatible Chat Completions |
+| `OpenAiAdapter` | `openai`, `deepseek`, `kimi`, `xai` | OpenAI-compatible Chat Completions |
 
-DeepSeek and Kimi reuse `OpenAiAdapter` with different default base URLs from config resolution.
+DeepSeek, Kimi, and xAI reuse `OpenAiAdapter` with different default base URLs from config resolution. xAI-specific semantics (default `https://api.x.ai/v1`, `reasoning_effort` mapping) live in `xai.rs`.
 
 ---
 
@@ -42,7 +42,7 @@ pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-    pub provider: String,   // anthropic | openai | deepseek | kimi
+    pub provider: String,   // anthropic | openai | deepseek | kimi | xai
 }
 ```
 
@@ -103,6 +103,7 @@ Heuristic helpers on `ProviderInfo` (also exported at crate root):
 | `is_kimi_k2x()` | K2.x family — drives **32k max_tokens** and **900k context** defaults in config |
 | `is_kimi_k27()` | K2.7-code / `kimi-for-coding` / `api.kimi.com/coding` |
 | `is_deepseek()` | Provider or URL/model contains deepseek |
+| `is_xai()` | Provider name `xai`, base URL contains `api.x.ai`, or model starts with `grok-` |
 
 These are used by config resolution, TUI balance polling, and request shaping in `convert.rs`.
 
@@ -216,7 +217,8 @@ Streaming path:
 Notable behaviors:
 
 - **SSE parsing** via `reqwest-eventsource` (handles `\n\n` / `\r\n\r\n` correctly).
-- **`reasoning_content` field** mapped to thinking chunks for DeepSeek/Kimi reasoning models.
+- **`reasoning_content` field** mapped to thinking chunks for DeepSeek/Kimi/xAI reasoning models.
+- **xAI thinking mapping** — `inject_thinking_param` never sends Anthropic-style `thinking` to xAI; models with an adjustable reasoning knob (grok-4.3 family) get `reasoning_effort: "high"` instead (`xai.rs`).
 - **Tool call deltas** reassembled by `index` across stream events.
 - **`StreamUsage`** captures prompt/completion tokens, cache hit/miss (DeepSeek), and `reasoning_tokens`.
 - **`set_user_id`** adds `"user_id"` to the JSON body for OpenAI-compatible cache isolation.
@@ -324,6 +326,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | `tact_llm/src/anthropic.rs` | Messages API streaming + non-streaming |
 | `tact_llm/src/openai.rs` | Chat Completions SSE, reasoning_content, tool deltas |
 | `tact_llm/src/convert.rs` | Request translation, Kimi thinking blocks |
+| `tact_llm/src/xai.rs` | xAI/Grok semantics: default base URL, `is_xai`, `reasoning_effort` mapping |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` at loop start |
 | `crates/tact/src/compact.rs` | `create_message` for summarization |
 
