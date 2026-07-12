@@ -30,7 +30,10 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     }
 }
 
-fn resolve_provider_kind(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ProviderKind> {
+fn resolve_provider_kind(
+    args: &CliArgs,
+    toml_cfg: &TactTomlConfig,
+) -> anyhow::Result<ProviderKind> {
     let raw = args
         .provider
         .clone()

@@ -1050,8 +1050,18 @@ mod tests {
     #[test]
     fn is_kimi_detection() {
         assert!(provider_info(ProviderKind::Kimi, "", "", "kimi-k2.5").is_kimi());
-        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.moonshot.cn/v1", "").is_kimi());
-        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.kimi.com/coding/v1", "").is_kimi());
+        assert!(
+            provider_info(ProviderKind::OpenAi, "", "https://api.moonshot.cn/v1", "").is_kimi()
+        );
+        assert!(
+            provider_info(
+                ProviderKind::OpenAi,
+                "",
+                "https://api.kimi.com/coding/v1",
+                ""
+            )
+            .is_kimi()
+        );
         assert!(provider_info(ProviderKind::OpenAi, "", "", "kimi-k2.5").is_kimi());
         assert!(!provider_info(ProviderKind::Anthropic, "", "", "claude-sonnet-4").is_kimi());
     }
@@ -1088,7 +1098,12 @@ mod tests {
         assert!(!coding.is_kimi_balance_supported());
         assert!(coding.is_kimi_usage_supported());
 
-        let cn = provider_info(ProviderKind::Kimi, "", "https://api.moonshot.cn/v1", "kimi-k2.5");
+        let cn = provider_info(
+            ProviderKind::Kimi,
+            "",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        );
         assert!(!cn.is_kimi_coding());
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
