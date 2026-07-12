@@ -77,22 +77,20 @@ If none exist, an empty `TactTomlConfig::default()` is used.
 
 Explicit `--config /path/to/file.toml` bypasses the search list.
 
-### Merge rule: CLI > TOML > defaults
+### Merge rule: CLI > TOML entry > TOML global > defaults
 
-For each field, `resolve.rs` prefers CLI flags, then TOML values, then built-in defaults. Example for LLM:
+`llm.provider` (or `--provider`) selects the active `ProviderKind` and looks up
+`llm.providers.<name>`. For that entry:
 
-```rust
-let provider = args.provider.clone()
-    .or(toml_cfg.llm.provider.clone())
-    .ok_or_else(|| anyhow!("LLM provider not configured"))?;
+| Field | Priority |
+|-------|----------|
+| `api_key` / `model` | CLI → entry (required) |
+| `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
+| `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
 
-let api_key = args.api_key.clone()
-    .or(toml_cfg.llm.api_key.clone())
-    .ok_or_else(|| anyhow!("api_key not configured"))?;
-```
-
-Required LLM fields without a default: **`provider`**, **`api_key`**, **`model`**.  
-`base_url` falls back to provider-specific defaults (`openai`, `deepseek`, `kimi`).
+Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
+entry. `anthropic` has no default `base_url` and must set one explicitly.
+Unknown map keys or missing active entries error at resolve time.
 
 ---
 
@@ -102,12 +100,20 @@ Top-level sections in `TactTomlConfig`:
 
 ```toml
 [llm]
-provider = "kimi"          # anthropic | openai | deepseek | kimi
-model = "kimi-for-coding"
-api_key = "sk-..."
-base_url = "https://api.kimi.com/coding/v1"   # optional; default is https://api.moonshot.cn/v1
-max_tokens = 32000
+provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi
+max_tokens = 32000         # optional global default
 thinking_budget = 32000
+
+[llm.providers.kimi]
+api_key = "sk-..."
+model = "kimi-k2.5"
+# base_url defaults to https://api.moonshot.cn/v1
+# max_tokens = 64000       # optional per-provider override
+
+[llm.providers.anthropic]
+api_key = "sk-ant-..."
+model = "claude-sonnet-4-20250514"
+base_url = "https://api.anthropic.com"   # required for anthropic
 
 [permission]
 mode = "default"           # default | plan | auto
@@ -128,7 +134,8 @@ theme = "retro"
 brave_search_api_key = "bsk-..."
 ```
 
-See `types.rs` for the full serde structs and unit tests with sample TOML.
+Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, … }`
+for the hot path. See `types.rs` for serde structs and unit tests.
 
 ---
 
@@ -165,8 +172,9 @@ CLI-only overrides:
 
 | Flag | Maps to |
 |------|---------|
-| `--provider`, `--model`, `--api-key`, `--base-url` | `[llm]` |
-| `--max-tokens`, `--thinking-budget` | `[llm]` + agent request assembly |
+| `--provider` | selects active `llm.providers.*` entry (`ProviderKind`) |
+| `--model`, `--api-key`, `--base-url` | override that entry’s fields |
+| `--max-tokens`, `--thinking-budget` | CLI → entry → `[llm]` global → defaults |
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--context-limit-chars`, `--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |

@@ -20,48 +20,41 @@
 # ---------------------------------------------------------------------------
 # LLM (required for tact-ui unless overridden via CLI)
 # ---------------------------------------------------------------------------
+# Active provider selects which [llm.providers.*] entry is used.
+# Credentials live under providers — not as flat fields on [llm].
+# Switch with llm.provider or --provider (anthropic | openai | deepseek | kimi).
 [llm]
-# Provider: "anthropic" | "openai" | "deepseek" | "kimi"
 provider = "anthropic"
 
-# Model name (optional for openai)
-model = "claude-sonnet-4-20250514"
-
-# API key
-api_key = "sk-ant-..."
-
-# API base URL (required for anthropic; defaults below for openai/deepseek/kimi)
-base_url = "https://api.anthropic.com"
-
-# Max tokens per LLM call (default: 8000)
+# Optional globals (overridable per provider entry, then by CLI flags)
 # max_tokens = 8000
-
-# Extended thinking budget (default: 32000)
 # thinking_budget = 32000
 
-# OpenAI-compatible examples:
-# provider = "openai"
-# model = "gpt-4o"
-# api_key = "sk-..."
-# base_url = "https://api.openai.com/v1"
-#
-# DeepSeek example (OpenAI-compatible, default base URL):
-# provider = "deepseek"
-# model = "deepseek-chat"
-# api_key = "sk-..."
-# # base_url defaults to https://api.deepseek.com
-#
-# Kimi / Moonshot example (OpenAI-compatible, default base URL):
-# provider = "kimi"
-# model = "kimi-k2.5"
-# api_key = "sk-..."
-# # base_url defaults to https://api.moonshot.cn/v1
+[llm.providers.anthropic]
+api_key = "sk-ant-..."
+model = "claude-sonnet-4-20250514"
+# Anthropic has no default base_url — required
+base_url = "https://api.anthropic.com"
 
-# Old style: you can also use provider = "openai" with a Moonshot-compatible base URL:
-# provider = "openai"
-# base_url = "https://api.kimi.com/coding/v1"
-# model = "kimi-for-coding"
-# api_key = "sk-kimi-..."
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+# base_url defaults to https://api.openai.com/v1
+
+[llm.providers.deepseek]
+api_key = "sk-..."
+model = "deepseek-chat"
+# base_url defaults to https://api.deepseek.com
+
+[llm.providers.kimi]
+api_key = "sk-..."
+model = "kimi-k2.5"
+# base_url defaults to https://api.moonshot.cn/v1
+# max_tokens = 32000           # optional per-provider override
+# thinking_budget = 64000
+
+# Heuristics still allow provider = "openai" + a Moonshot/Kimi-compatible
+# base_url; prefer a dedicated [llm.providers.kimi] entry.
 
 # ---------------------------------------------------------------------------
 # Permission
