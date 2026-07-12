@@ -13,8 +13,8 @@ pub(crate) struct SelectPopup {
     pub(crate) log_confirm: bool,
 }
 
-impl SelectPopup {
-    pub(crate) fn new() -> Self {
+impl Default for SelectPopup {
+    fn default() -> Self {
         Self {
             prompt: String::new(),
             options: Vec::new(),
@@ -22,6 +22,23 @@ impl SelectPopup {
             respond: None,
             log_confirm: true,
         }
+    }
+}
+
+impl SelectPopup {
+    /// Set popup content without a oneshot channel (local TUI flows like `/model`).
+    pub(crate) fn set_local(
+        &mut self,
+        prompt: String,
+        options: Vec<String>,
+        selected: usize,
+        log_confirm: bool,
+    ) {
+        self.prompt = prompt;
+        self.options = options;
+        self.selected = selected.min(self.options.len().saturating_sub(1));
+        self.respond = None;
+        self.log_confirm = log_confirm;
     }
 
     /// Set popup content and activate.

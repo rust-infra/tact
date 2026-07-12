@@ -158,8 +158,8 @@ async fn handle_user_command_with_account(
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
     use tact_llm::MockClient;
+    use tact_llm::{ContentBlock, StopReason};
 
     use crate::test_support::{build_test_agent, install_test_config};
     use tact_protocol::{AgentUpdate, UserCommand};

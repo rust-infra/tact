@@ -4,7 +4,6 @@ mod harness;
 
 use std::time::Duration;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     bash_tool_use, first_index, mock_turn, mock_turn_with_usage, read_file_tool_use, run_commands,
     run_single_task, run_single_task_with_setup, sample_token_usage, step_finished_ids, text_block,
@@ -13,6 +12,7 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::StopReason;
 use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
 
 #[tokio::test]

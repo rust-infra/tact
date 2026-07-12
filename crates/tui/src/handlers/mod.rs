@@ -258,6 +258,13 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "model" => {
+            crate::handlers::select::start_model_picker(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "save" => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let filename = format!("agent_log_{}.txt", timestamp);

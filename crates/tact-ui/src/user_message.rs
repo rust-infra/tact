@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role::User};
 use base64::Engine as _;
 use regex::Regex;
 use tact::tool::safe_path;
+use tact_llm::{ContentBlock, ImageSource, Message, Role::User};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
@@ -159,8 +159,8 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
 mod tests {
     use super::*;
     use crate::test_support::install_test_config;
-    use anthropic_ai_sdk::types::message::MessageContent;
     use std::path::PathBuf;
+    use tact_llm::MessageContent;
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tact_tui_test_{}", std::process::id()));

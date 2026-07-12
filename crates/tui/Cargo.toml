@@ -7,6 +7,8 @@ edition = "2024"
 test-support = []
 
 [dependencies]
+tact = { path = "../tact" }
+tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
 arboard = { workspace = true }
@@ -30,4 +32,5 @@ unicode-width = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+tact = { path = "../tact", features = ["test-support"] }
 tempfile = { workspace = true }

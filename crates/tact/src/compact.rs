@@ -9,7 +9,6 @@
 //! - [`compacted_context`]: generates a replacement context containing
 //!   a summary of what was compacted.
 
-use anthropic_ai_sdk::types::message::{ContentBlock, Message, MessageContent, Role};
 use anyhow::Context as _;
 use std::{
     fs::{self, File},
@@ -17,6 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tact_llm::{ContentBlock, Message, MessageContent, Role};
 
 use crate::consts::TactPath;
 

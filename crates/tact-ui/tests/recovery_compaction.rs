@@ -2,22 +2,23 @@
 
 mod harness;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     bash_tool_use, read_file_tool_use, run_single_task_with_config, task_completed_with, text_block,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
-use tact_llm::{LlmError, MockClient};
+use tact_llm::StopReason;
+use tact_llm::{LlmError, MockClient, ProviderKind};
 use tact_protocol::AgentUpdate;
 
 fn tiny_context_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
         llm: tact::config::LlmSettings {
-            provider: "mock".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "mock-model".to_string(),
+            models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
             context_limit_chars: 500,
@@ -40,6 +41,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         permission_mode: None,
         tokio_console: false,
+        config_path: None,
     }
 }
 

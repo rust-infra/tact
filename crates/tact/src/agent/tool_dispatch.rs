@@ -2,9 +2,9 @@
 
 use super::Agent;
 
-use anthropic_ai_sdk::types::message::ContentBlock;
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
+use tact_llm::ContentBlock;
 
 use crate::compact::persist_large_output;
 use crate::hook::{HookControl, ToolResult, ToolUse};
