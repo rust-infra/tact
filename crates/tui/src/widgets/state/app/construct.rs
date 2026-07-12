@@ -87,7 +87,7 @@ impl App {
             task_done_time: None,
             process_start_time: chrono::Local::now(),
             workspace_dir,
-            select: SelectPopup::new(),
+            select: SelectPopup::default(),
             select_kind: SelectKind::Agent,
             file_picker: FilePicker::new(),
             slash_command: SlashCommandState::default(),
