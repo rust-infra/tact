@@ -3,6 +3,7 @@ use super::types::{
     AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
     VisionImageSettings,
 };
+use tact_llm::ProviderKind;
 
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     let compress = toml_cfg
@@ -29,56 +30,65 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     }
 }
 
-fn default_base_url(provider: &str) -> Option<String> {
-    match provider {
-        "openai" => Some("https://api.openai.com/v1".to_string()),
-        "deepseek" => Some("https://api.deepseek.com".to_string()),
-        "kimi" => Some("https://api.moonshot.cn/v1".to_string()),
-        _ => None,
-    }
-}
-
-fn default_model(_provider: &str) -> Option<String> {
-    None
-}
-
-fn resolve_provider(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<String> {
-    if let Some(ref p) = args.provider {
-        return Ok(p.clone());
-    }
-    if let Some(ref p) = toml_cfg.llm.provider {
-        return Ok(p.clone());
-    }
-    anyhow::bail!(
-        "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi"
-    )
+fn resolve_provider_kind(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ProviderKind> {
+    let raw = args
+        .provider
+        .clone()
+        .or_else(|| toml_cfg.llm.provider.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi"
+            )
+        })?;
+    raw.parse::<ProviderKind>().map_err(anyhow::Error::msg)
 }
 
 fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmSettings> {
-    let provider = resolve_provider(args, toml_cfg)?;
+    let provider = resolve_provider_kind(args, toml_cfg)?;
+
+    for key in toml_cfg.llm.providers.keys() {
+        key.parse::<ProviderKind>().map_err(anyhow::Error::msg)?;
+    }
+
+    let entry = toml_cfg
+        .llm
+        .providers
+        .get(provider.as_str())
+        .ok_or_else(|| {
+            let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
+            anyhow::anyhow!(
+                "provider '{provider}' not found in llm.providers (have: {})",
+                if have.is_empty() {
+                    "<none>".into()
+                } else {
+                    have.join(", ")
+                }
+            )
+        })?;
 
     let api_key = args
         .api_key
         .clone()
-        .or_else(|| toml_cfg.llm.api_key.clone())
+        .or_else(|| entry.api_key.clone())
+        .filter(|k| !k.is_empty())
         .ok_or_else(|| anyhow::anyhow!("api_key not configured for provider '{provider}'"))?;
 
     let base_url = args
         .base_url
         .clone()
-        .or_else(|| toml_cfg.llm.base_url.clone())
-        .or_else(|| default_base_url(&provider))
+        .or_else(|| entry.base_url.clone())
+        .or_else(|| provider.default_base_url().map(str::to_string))
+        .filter(|u| !u.is_empty())
         .ok_or_else(|| anyhow::anyhow!("base_url not configured for provider '{provider}'"))?;
 
     let model = args
         .model
         .clone()
-        .or_else(|| toml_cfg.llm.model.clone())
-        .or_else(|| default_model(&provider))
+        .or_else(|| entry.model.clone())
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "model not configured for provider '{provider}'. Set llm.model in config.toml or pass --model"
+                "model not configured for provider '{provider}'. Set llm.providers.{provider}.model or pass --model"
             )
         })?;
 
@@ -134,7 +144,7 @@ pub(super) fn resolve_non_llm_settings(
 
     ResolvedConfig {
         llm: LlmSettings {
-            provider: String::new(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
@@ -165,9 +175,11 @@ pub(super) fn resolve_config(
 ) -> anyhow::Result<ResolvedConfig> {
     let llm = resolve_llm(args, toml_cfg)?;
     let provider_info = llm.provider_info();
+    let entry = toml_cfg.llm.providers.get(llm.provider.as_str());
 
     let max_tokens = args
         .max_tokens
+        .or_else(|| entry.and_then(|e| e.max_tokens))
         .or(toml_cfg.llm.max_tokens)
         .unwrap_or_else(|| {
             if provider_info.is_kimi_k2x() {
@@ -179,6 +191,7 @@ pub(super) fn resolve_config(
 
     let thinking_budget = args
         .thinking_budget
+        .or_else(|| entry.and_then(|e| e.thinking_budget))
         .or(toml_cfg.llm.thinking_budget)
         .unwrap_or(32_000);
 
@@ -259,18 +272,8 @@ mod tests {
     use crate::config::cli::CliArgs;
     use crate::config::types::TactTomlConfig;
 
-    #[test]
-    fn resolve_config_from_toml() {
-        let toml_cfg: TactTomlConfig = toml::from_str(
-            r#"
-[llm]
-provider = "openai"
-api_key = "sk-test"
-model = "gpt-4o"
-"#,
-        )
-        .unwrap();
-        let args = CliArgs {
+    fn empty_cli_args() -> CliArgs {
+        CliArgs {
             command: None,
             config: None,
             provider: None,
@@ -291,9 +294,24 @@ model = "gpt-4o"
             no_notifications: false,
             brave_search_api_key: None,
             tokio_console: false,
-        };
-        let resolved = resolve_config(&args, &toml_cfg).unwrap();
-        assert_eq!(resolved.llm.provider, "openai");
+        }
+    }
+
+    #[test]
+    fn resolve_config_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
@@ -324,29 +342,7 @@ jpeg_quality = 70
 "#,
         )
         .unwrap();
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: false,
-            notifications: None,
-            context_limit_chars: None,
-            theme: None,
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
-        let resolved = resolve_non_llm_settings(&args, &toml_cfg);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg);
         assert!(!resolved.ui.vision_image.compress);
         assert_eq!(resolved.ui.vision_image.max_edge, 1024);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 70);
@@ -362,29 +358,7 @@ jpeg_quality = 0
 "#,
         )
         .unwrap();
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: false,
-            notifications: None,
-            context_limit_chars: None,
-            theme: None,
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
-        let resolved = resolve_non_llm_settings(&args, &toml_cfg);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg);
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
     }
@@ -395,78 +369,122 @@ jpeg_quality = 0
             r#"
 [llm]
 provider = "deepseek"
+
+[llm.providers.deepseek]
 api_key = "sk-test"
 model = "deepseek-chat"
 "#,
         )
         .unwrap();
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: false,
-            notifications: None,
-            context_limit_chars: None,
-            theme: None,
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
-        let resolved = resolve_config(&args, &toml_cfg).unwrap();
-        assert_eq!(resolved.llm.provider, "deepseek");
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::DeepSeek);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.model, "deepseek-chat");
         assert_eq!(resolved.llm.base_url, "https://api.deepseek.com");
     }
 
     #[test]
-    fn resolve_kimi_config_from_toml() {
+    fn resolve_kimi_from_providers_map() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "kimi"
+max_tokens = 8000
+
+[llm.providers.kimi]
 api_key = "mk-test"
 model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: false,
-            notifications: None,
-            context_limit_chars: None,
-            theme: None,
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
-        let resolved = resolve_config(&args, &toml_cfg).unwrap();
-        assert_eq!(resolved.llm.provider, "kimi");
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::Kimi);
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
+        assert_eq!(resolved.agent.max_tokens, 8000);
+    }
+
+    #[test]
+    fn cli_provider_switches_entry() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "mk-test"
+model = "kimi-k2.5"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.provider = Some("openai".to_string());
+        let resolved = resolve_config(&args, &toml_cfg).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
+        assert_eq!(resolved.llm.api_key, "sk-test");
+        assert_eq!(resolved.llm.model, "gpt-4o");
+    }
+
+    #[test]
+    fn per_provider_max_tokens_overrides_global() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+max_tokens = 32000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 32000);
+    }
+
+    #[test]
+    fn missing_provider_entry_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+
+[llm.providers.kimi]
+api_key = "mk-test"
+model = "kimi-k2.5"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not found in llm.providers"));
+    }
+
+    #[test]
+    fn unknown_provider_name_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "foo"
+
+[llm.providers.foo]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown provider"));
     }
 
     #[test]
@@ -475,60 +493,23 @@ model = "kimi-k2.5"
             r#"
 [llm]
 provider = "openai"
+
+[llm.providers.openai]
 api_key = "sk-test"
 "#,
         )
         .unwrap();
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: false,
-            notifications: None,
-            context_limit_chars: None,
-            theme: None,
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
-        let err = resolve_config(&args, &toml_cfg).unwrap_err().to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("model not configured"));
     }
 
     #[test]
     fn list_sessions_does_not_require_llm() {
-        let args = CliArgs {
-            command: None,
-            config: None,
-            provider: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tokens: None,
-            thinking_budget: None,
-            permission_mode: None,
-            session: None,
-            resume_last: false,
-            list_sessions: true,
-            notifications: None,
-            context_limit_chars: None,
-            theme: Some("nord".to_string()),
-            snapshot_max_items: None,
-            no_micro_compact: false,
-            no_notifications: false,
-            brave_search_api_key: None,
-            tokio_console: false,
-        };
+        let mut args = empty_cli_args();
+        args.list_sessions = true;
+        args.theme = Some("nord".to_string());
         let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default());
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
