@@ -38,60 +38,48 @@ impl ProviderInfo {
     /// Build an LLM client for this provider configuration.
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider.as_str() {
-            "anthropic" => {
-                if self.api_key.is_empty() {
-                    anyhow::bail!("api_key not configured for provider 'anthropic'");
-                }
-                if self.base_url.is_empty() {
-                    anyhow::bail!("base_url not configured for provider 'anthropic'");
-                }
-                Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
-                    self.api_key.clone(),
-                    self.base_url.clone(),
-                )))
-            }
-            "openai" => {
-                if self.api_key.is_empty() {
-                    anyhow::bail!("api_key not configured for provider 'openai'");
-                }
-                let base_url = if self.base_url.is_empty() {
-                    "https://api.openai.com/v1".to_string()
-                } else {
-                    self.base_url.clone()
-                };
-                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
-                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-            }
-            "deepseek" => {
-                if self.api_key.is_empty() {
-                    anyhow::bail!("api_key not configured for provider 'deepseek'");
-                }
-                let base_url = if self.base_url.is_empty() {
-                    "https://api.deepseek.com".to_string()
-                } else {
-                    self.base_url.clone()
-                };
-                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
-                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-            }
-            "kimi" => {
-                if self.api_key.is_empty() {
-                    anyhow::bail!("api_key not configured for provider 'kimi'");
-                }
-                let base_url = if self.base_url.is_empty() {
-                    "https://api.moonshot.cn/v1".to_string()
-                } else {
-                    self.base_url.clone()
-                };
-                let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
-                Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
-            }
+            "anthropic" => self.build_anthropic(),
+            "openai" | "deepseek" | "kimi" => self.build_openai_compatible(),
             other => {
                 anyhow::bail!(
                     "Unknown provider: {other}. Use 'anthropic', 'openai', 'deepseek', or 'kimi'."
                 )
             }
         }
+    }
+
+    /// Build an Anthropic Messages API client.
+    fn build_anthropic(&self) -> anyhow::Result<LlmProvider> {
+        if self.api_key.is_empty() {
+            anyhow::bail!("api_key not configured for provider 'anthropic'");
+        }
+        if self.base_url.is_empty() {
+            anyhow::bail!("base_url not configured for provider 'anthropic'");
+        }
+        Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
+            self.api_key.clone(),
+            self.base_url.clone(),
+        )))
+    }
+
+    /// Build an OpenAI-compatible (Chat Completions API) client.
+    fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
+        if self.api_key.is_empty() {
+            anyhow::bail!("api_key not configured for provider '{}'", self.provider);
+        }
+        let base_url = if self.base_url.is_empty() {
+            match self.provider.as_str() {
+                "openai" => "https://api.openai.com/v1",
+                "deepseek" => "https://api.deepseek.com",
+                "kimi" => "https://api.moonshot.cn/v1",
+                other => anyhow::bail!("no default base_url for provider '{other}'"),
+            }
+            .to_string()
+        } else {
+            self.base_url.clone()
+        };
+        let config = openai::CompatibleConfig::new(self.api_key.clone(), base_url);
+        Ok(LlmProvider::OpenAi(openai::OpenAiAdapter::new(config)))
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.

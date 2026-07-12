@@ -188,14 +188,16 @@ pub fn anthropic_messages_to_openai(
     // and ensure no assistant message is completely empty (OpenAI rejects empty
     // assistant messages, which can happen after MaxTokens when thinking blocks
     // are dropped or a tool-call was truncated before any text was emitted).
-    sanitize_assistant_messages(&mut result);
+    sanitize_assistant_messages(&mut result, &mut reasoning);
     (result, reasoning)
 }
 
 /// Defensive validation of assistant messages for OpenAI-compatible APIs.
 ///
 /// 1. Every assistant message with `tool_calls` must be immediately followed by
-///    matching `ToolMessage` entries. If not, strip the orphaned `tool_calls`.
+///    matching `ToolMessage` entries. If not, strip the orphaned `tool_calls`
+///    **and** remove the consecutive following `ToolMessage`s (leaving them
+///    would produce orphan tool results that OpenAI rejects with 400).
 /// 2. Assistant messages cannot have empty `content` and no `tool_calls`. If a
 ///    message ends up empty (e.g. thinking block was dropped, or truncation
 ///    happened before any tokens), insert a short stub.
@@ -204,7 +206,11 @@ pub fn anthropic_messages_to_openai(
 /// MaxTokens recovery. The real fix may be to avoid producing empty assistant
 /// messages in the agent runtime / conversion pipeline rather than patching
 /// them after the fact.
-fn sanitize_assistant_messages(messages: &mut [ChatCompletionRequestMessage]) {
+fn sanitize_assistant_messages(
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    reasoning: &mut Vec<Option<String>>,
+) {
+    debug_assert_eq!(messages.len(), reasoning.len());
     let mut i = 0;
     while i < messages.len() {
         let ChatCompletionRequestMessage::Assistant(assistant) = &messages[i] else {
@@ -245,17 +251,23 @@ fn sanitize_assistant_messages(messages: &mut [ChatCompletionRequestMessage]) {
             }
 
             if matched < tool_call_ids.len() {
-                // Some tool calls are orphaned. Drop *all* tool_calls from this
-                // assistant message to keep the API happy. The model will have
-                // another chance to request the tools in the next turn.
+                // Incomplete tool results. Drop *all* tool_calls from this
+                // assistant and remove the consecutive ToolMessages that would
+                // otherwise become orphans without a parent tool_calls list.
                 if let ChatCompletionRequestMessage::Assistant(ref mut assistant) = messages[i] {
                     tracing::warn!(
                         orphaned_tool_calls = ?tool_call_ids,
                         matched_tool_messages = matched,
-                        "Stripping orphaned tool_calls from assistant message \
+                        "Stripping orphaned tool_calls and following tool messages \
                          (context may have been compacted or continued past MaxTokens)."
                     );
                     assistant.tool_calls = None;
+                }
+                let remove_end = j;
+                let remove_start = i + 1;
+                if remove_start < remove_end {
+                    messages.drain(remove_start..remove_end);
+                    reasoning.drain(remove_start..remove_end);
                 }
             }
         }
@@ -621,6 +633,83 @@ mod tests {
             .expect("assistant message");
         assert!(assistant_msg.tool_calls.is_some());
         assert_eq!(assistant_msg.tool_calls.as_ref().unwrap().len(), 1);
+        assert!(
+            openai_request
+                .messages
+                .iter()
+                .any(|m| matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            "matching tool result should be kept"
+        );
+    }
+
+    #[test]
+    fn partial_tool_results_strip_tool_calls_and_orphan_tool_messages() {
+        // Assistant requested two tools, but only one result is present (e.g. after
+        // compaction). Stripping tool_calls alone would leave an orphan ToolMessage.
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "a.rs"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_2".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "b.rs"}),
+                },
+            ],
+        );
+        let user = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "partial".to_string(),
+            }],
+        );
+        let follow_up = Message::new_text(Role::User, "continue".to_string());
+        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
+            anthropic_ai_sdk::types::message::RequiredMessageParams {
+                model: "mock".to_string(),
+                messages: vec![assistant, user, follow_up],
+                max_tokens: 1024,
+            },
+        );
+
+        let (openai_request, reasoning) = build_openai_request(&request);
+        assert_eq!(
+            openai_request.messages.len(),
+            reasoning.len(),
+            "reasoning must stay aligned after sanitize removals"
+        );
+        let assistant_msg = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert!(assistant_msg.tool_calls.is_none());
+        assert!(
+            openai_request
+                .messages
+                .iter()
+                .all(|m| !matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            "orphan tool messages must be removed with stripped tool_calls"
+        );
+        assert!(
+            openai_request.messages.iter().any(|m| matches!(
+                m,
+                ChatCompletionRequestMessage::User(u)
+                    if matches!(
+                        &u.content,
+                        ChatCompletionRequestUserMessageContent::Text(t) if t == "continue"
+                    )
+            )),
+            "subsequent user messages must be preserved"
+        );
     }
 
     #[test]

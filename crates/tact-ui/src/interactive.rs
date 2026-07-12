@@ -22,6 +22,7 @@ use crate::account;
 use crate::driver::run_command_loop_with_account;
 use crate::permission::permission_mode_from_config;
 use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
+use tact_protocol::AccountUpdate;
 
 pub async fn run_interactive(
     args: CliArgs,
@@ -142,17 +143,17 @@ async fn run_interactive_locked(
         } else {
             None
         };
-        tui::run_tui(
+        tui::run_tui(tui::TuiConfig {
             agent_rx,
             account_rx,
             user_cmd_tx,
-            tui_work_dir,
-            input_history,
+            work_dir: tui_work_dir,
+            input_history_entries: input_history,
             session_id,
             history_save_tx,
             theme,
             context_limit_chars,
-        )
+        })
         .await
     }));
 
@@ -160,8 +161,13 @@ async fn run_interactive_locked(
         // Initial query on startup so the bottom bar can show data immediately.
         let startup_tx = account_tx.clone();
         tokio::spawn(async move {
-            if let Ok(result) = account::query_once().await {
-                let _ = startup_tx.send(account::into_update(result));
+            match account::query_once().await {
+                Ok(result) => {
+                    let _ = startup_tx.send(account::into_update(result));
+                }
+                Err(err) => {
+                    let _ = startup_tx.send(AccountUpdate::Error(err));
+                }
             }
         });
         account::spawn_poller(account_tx.clone());

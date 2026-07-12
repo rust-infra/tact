@@ -112,10 +112,82 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
     result
 }
 
+/// Convert a visual position within a raw text line to a byte offset.
+///
+/// `target_line`: 0-based visual line within the logical row (accounting for wrapping).
+/// `target_col`: 0-based display column after accounting for prefix/indent.
+/// Returns the byte index of the character whose display column covers `target_col`.
+/// If the position is past the end of the text, returns `raw_text.len()`.
+pub(crate) fn visual_pos_to_byte_offset(
+    raw_text: &str,
+    wrap_width: usize,
+    target_line: usize,
+    target_col: usize,
+) -> usize {
+    let mut line = 0usize;
+    let mut col = 0usize;
+    for (idx, ch) in raw_text.char_indices() {
+        if ch == '\n' {
+            if line == target_line && target_col >= col {
+                return idx;
+            }
+            line += 1;
+            col = 0;
+            if line > target_line {
+                return idx;
+            }
+            continue;
+        }
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0) as usize;
+        if wrap_width > 0 && col + width > wrap_width {
+            if line == target_line && target_col >= col {
+                return idx;
+            }
+            line += 1;
+            col = 0;
+            if line > target_line {
+                return idx;
+            }
+            if line == target_line && width > target_col {
+                return idx;
+            }
+        }
+        if line == target_line && col + width > target_col {
+            return idx;
+        }
+        col += width;
+    }
+    raw_text.len()
+}
+
 #[cfg(test)]
 mod wrap_tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
+
+    #[test]
+    fn visual_pos_to_byte_offset_basic() {
+        assert_eq!(visual_pos_to_byte_offset("hello", 10, 0, 2), 2);
+        assert_eq!(visual_pos_to_byte_offset("hello world", 5, 0, 0), 0);
+        assert_eq!(visual_pos_to_byte_offset("hello world", 5, 1, 0), 5);
+        assert_eq!(visual_pos_to_byte_offset("hello world", 5, 1, 1), 6);
+        assert_eq!(visual_pos_to_byte_offset("hello", 10, 0, 100), 5);
+    }
+
+    #[test]
+    fn visual_pos_to_byte_offset_multibyte() {
+        let text = "こんにちは"; // each char is width 2 and 3 bytes
+        assert_eq!(visual_pos_to_byte_offset(text, 10, 0, 0), 0);
+        assert_eq!(visual_pos_to_byte_offset(text, 10, 0, 1), 0); // middle of first char
+        assert_eq!(visual_pos_to_byte_offset(text, 10, 0, 2), 3); // start of second char
+    }
+
+    #[test]
+    fn visual_pos_to_byte_offset_newline() {
+        assert_eq!(visual_pos_to_byte_offset("ab\ncd", 10, 0, 1), 1);
+        assert_eq!(visual_pos_to_byte_offset("ab\ncd", 10, 1, 0), 3);
+        assert_eq!(visual_pos_to_byte_offset("ab\ncd", 10, 1, 1), 4);
+    }
 
     #[test]
     fn line_style_after_wrap() {

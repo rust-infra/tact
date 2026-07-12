@@ -33,7 +33,8 @@ impl AccountState {
         self.balance = None;
     }
 
-    /// Clear cached account state, e.g. after an error or unsupported query.
+    /// Clear cached account state, e.g. when the provider permanently does not
+    /// support account queries.
     pub(crate) fn clear(&mut self) {
         self.balance = None;
         self.quota = None;

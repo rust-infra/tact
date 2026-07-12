@@ -103,33 +103,10 @@ pub(crate) fn handle_normal_mode(
                     }
                 }
                 FocusedPanel::Log => {
-                    // Prefer mouse selection over last message
-                    if let Some((s, e)) = app.mouse.log_selection {
-                        let start = s.min(e);
-                        let end = s.max(e);
-                        // If there's a word selection (double-click), copy word instead of entire line
-                        if let Some((word_start, word_end)) = app.mouse.log_word_selection {
-                            if let Some(phys_idx) = app.visible_message_index(start) {
-                                let text = &app.raw_messages[phys_idx];
-                                let word =
-                                    &text[word_start.min(text.len())..word_end.min(text.len())];
-                                Some(word.to_string())
-                            } else {
-                                None
-                            }
-                        } else {
-                            let mut selected = Vec::new();
-                            for logical_i in start..=end {
-                                if let Some(phys_idx) = app.visible_message_index(logical_i) {
-                                    selected.push(app.raw_messages[phys_idx].as_str());
-                                }
-                            }
-                            if selected.is_empty() {
-                                None
-                            } else {
-                                Some(selected.join("\n"))
-                            }
-                        }
+                    // Prefer character-level mouse selection over last message
+                    if let Some(sel) = app.mouse.log_selection {
+                        let (start, end) = sel.normalized();
+                        Some(app.extract_selected_text(start, end))
                     } else {
                         // Last visible message
                         let total = app.total_log_lines();
@@ -222,6 +199,7 @@ pub(crate) fn handle_normal_mode(
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
+    use crate::widgets::state::{LogSelection, TextPosition};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -327,5 +305,36 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('N')), &tx);
         assert_eq!(app.search.current_match, 0);
+    }
+
+    #[test]
+    fn y_copies_partial_line_selection() {
+        let mut app = make_app();
+        app.add_system_message("hello world".into());
+        app.mouse.log_selection = Some(LogSelection::new(
+            TextPosition::new(0, 6),
+            TextPosition::new(0, 11), // "world"
+        ));
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
+
+        assert!(app.raw_messages.iter().any(|m| m.contains("world")));
+    }
+
+    #[test]
+    fn y_copies_multi_line_selection() {
+        let mut app = make_app();
+        app.add_system_message("first line".into());
+        app.add_system_message("second line".into());
+        app.mouse.log_selection = Some(LogSelection::new(
+            TextPosition::new(0, 6),
+            TextPosition::new(1, 6), // "line\nsecond line"
+        ));
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
+
+        assert!(app.raw_messages.iter().any(|m| m.contains("second line")));
     }
 }

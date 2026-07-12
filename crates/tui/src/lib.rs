@@ -26,7 +26,7 @@ use crate::render::{
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
     render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
+use crate::widgets::state::{App, FocusedPanel, InputMode, LogSelection, Status, TextPosition};
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -56,19 +56,32 @@ pub(crate) fn should_repaint(app: &App) -> bool {
     app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
 }
 
+/// Configuration for launching the TUI.
+pub struct TuiConfig {
+    pub agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+    pub user_cmd_tx: UnboundedSender<UserCommand>,
+    pub work_dir: PathBuf,
+    pub input_history_entries: Vec<String>,
+    pub session_id: String,
+    pub history_save_tx: UnboundedSender<(String, String)>,
+    pub theme: String,
+    pub context_limit_chars: usize,
+}
+
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_tui(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
-    account_rx: Option<UnboundedReceiver<AccountUpdate>>,
-    user_cmd_tx: UnboundedSender<UserCommand>,
-    work_dir: PathBuf,
-    input_history_entries: Vec<String>,
-    session_id: String,
-    history_save_tx: UnboundedSender<(String, String)>,
-    theme: String,
-    context_limit_chars: usize,
-) -> Result<()> {
+pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
+    let TuiConfig {
+        agent_rx,
+        account_rx,
+        user_cmd_tx,
+        work_dir,
+        input_history_entries,
+        session_id,
+        history_save_tx,
+        theme,
+        context_limit_chars,
+    } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -465,7 +478,6 @@ pub async fn run_tui(
                                             if app.mouse.click_count == 1 {
                                                 app.mouse.last_click_card = Some(card_idx);
                                                 // Single click: remember the card for double-click open, don't select text
-                                                app.mouse.log_word_selection = None;
                                                 app.mouse.log_selection = None;
                                                 app.mouse.dragging_log = false;
                                             } else if app.mouse.click_count == 2
@@ -483,11 +495,12 @@ pub async fn run_tui(
                                             app.mouse.last_click_card = None;
                                         }
                                         // Check if clicked on a tool block (file write preview) → double-click opens popup
-                                        if let Some((tool_idx, phys_idx, _, _)) =
+                                        if let Some((tool_idx, phys_idx, logical_start, _)) =
                                             app.find_tool_at_logical(line_idx)
                                         {
+                                            let relative_row = line_idx - logical_start;
                                             crate::handlers::handle_tool_block_click(
-                                                &mut app, tool_idx, phys_idx,
+                                                &mut app, tool_idx, phys_idx, relative_row,
                                             );
                                             if app.mouse.click_count >= 3 {
                                                 crate::handlers::handle_log_triple_click(
@@ -510,7 +523,6 @@ pub async fn run_tui(
                                             if let Some((code_idx, _block)) = code_hit {
                                                 if app.mouse.click_count == 1 {
                                                     app.mouse.last_click_code = Some(code_idx);
-                                                    app.mouse.log_word_selection = None;
                                                     app.mouse.log_selection = None;
                                                     app.mouse.dragging_log = false;
                                                 } else if app.mouse.click_count == 2
@@ -534,18 +546,27 @@ pub async fn run_tui(
                                                     app.open_thinking_popup(phys_idx);
                                                 } else if app.mouse.click_count == 2 {
                                                     // Double click: select word
-                                                    app.mouse.log_selection = Some((line_idx, line_idx));
-                                                    app.mouse.log_word_selection =
-                                                        app.find_word_bounds(line_idx, col);
+                                                    if let Some((phys, byte)) =
+                                                        app.byte_offset_from_log_position(line_idx, visual_row, col)
+                                                    {
+                                                        if let Some((ws, we)) =
+                                                            app.find_word_bounds(line_idx, byte)
+                                                        {
+                                                            app.mouse.log_selection =
+                                                                Some(LogSelection::span(phys, ws, we));
+                                                        }
+                                                    }
                                                     app.mouse.dragging_log = true;
                                                 } else if app.mouse.click_count >= 3 {
                                                     crate::handlers::handle_log_triple_click(
                                                         &mut app, line_idx, true,
                                                     );
-                                                } else {
-                                                    // Single click: start selection for natural press-drag-copy behaviour
-                                                    app.mouse.log_word_selection = None;
-                                                    app.mouse.log_selection = Some((line_idx, line_idx));
+                                                } else if let Some((phys, byte)) =
+                                                    app.byte_offset_from_log_position(line_idx, visual_row, col)
+                                                {
+                                                    // Single click: start character selection for press-drag-copy
+                                                    app.mouse.log_selection =
+                                                        Some(LogSelection::span(phys, byte, byte));
                                                     app.mouse.dragging_log = true;
                                                 }
                                             }
@@ -587,10 +608,19 @@ pub async fn run_tui(
                                         + mouse.row.saturating_sub(app.mouse.log_area.y + 1)
                                             as usize;
                                     let line_idx = app.logical_from_visual(visual_row);
-                                    if line_idx < app.total_log_lines()
-                                        && let Some((start, _)) = app.mouse.log_selection {
-                                            app.mouse.log_selection = Some((start, line_idx));
+                                    let col = mouse
+                                        .column
+                                        .saturating_sub(app.mouse.log_area.x + 1)
+                                        as usize;
+                                    if line_idx < app.total_log_lines() {
+                                        if let Some((phys, byte)) =
+                                            app.byte_offset_from_log_position(line_idx, visual_row, col)
+                                        {
+                                            if let Some(ref mut sel) = app.mouse.log_selection {
+                                                sel.end = TextPosition::new(phys, byte);
+                                            }
                                         }
+                                    }
                                 } else if app.mouse.dragging_plan && in_plan {
                                     let item_idx =
                                         (mouse.row.saturating_sub(app.mouse.plan_area.y + 1))

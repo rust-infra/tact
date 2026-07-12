@@ -221,7 +221,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // ```
 
     let has_search = !app.search.term.is_empty();
-    let has_selection = app.mouse.log_selection.is_some();
     let search_term = app.search.term.clone();
     let log_fg = app.theme.fg;
 
@@ -242,14 +241,14 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         let is_match = has_search && app.search.matches.contains(&logical_i);
-        let is_selected = has_selection
-            && app
-                .mouse
-                .log_selection
-                .map(|(s, e)| logical_i >= s.min(e) && logical_i <= s.max(e))
-                .unwrap_or(false);
 
         let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
+
+        // Compute the byte-range selection for this logical row, if any.
+        let selection_range = app.mouse.log_selection.and_then(|sel| {
+            let phys = phys_idx?;
+            sel.byte_range_for(phys, app.raw_messages[phys].len())
+        });
 
         // ── Message category separator ──────────────────────────────
         // Between message groups of different types (user ↔ system ↔ assistant),
@@ -382,10 +381,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         let raw_text = phys_idx
             .map(|p| app.raw_messages[p].clone())
             .unwrap_or_default();
-        let word_sel = app
-            .mouse
-            .log_word_selection
-            .filter(|_| is_selected && phys_idx.is_some());
         let se_search_term = if is_match {
             search_term.clone()
         } else {
@@ -393,25 +388,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         };
 
         // Thinking blocks with >3 hidden lines get a "↑ N/M blocks hidden ↑" prefix.
-        let prefix = phys_idx.and_then(|phys| {
-            app.thinking.blocks.iter().find_map(|block| {
-                if block.title_idx == phys {
-                    let total = block.end_idx.saturating_sub(block.title_idx);
-                    if total > 3 {
-                        Some(
-                            app.msgs()
-                                .scroll_indicator_tmpl
-                                .replacen("{}", &total.min(3).to_string(), 1)
-                                .replacen("{}", &total.to_string(), 1),
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-        });
+        let prefix = phys_idx.and_then(|phys| app.thinking_collapse_prefix(phys));
 
         let indent_cols = phys_idx.map(|p| app.nested_log_indent(p)).unwrap_or(0);
 
@@ -420,8 +397,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             raw_text,
             se_search_term,
             is_match,
-            is_selected,
-            word_sel,
+            selection_range,
             prefix,
             indent_cols,
             log_fg,

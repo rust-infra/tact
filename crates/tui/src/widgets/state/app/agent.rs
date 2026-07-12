@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
+use tact_protocol::{AccountError, AccountUpdate, AgentErrorKind, AgentUpdate};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -501,7 +501,11 @@ impl App {
             AccountUpdate::Balance(info) => self.account.set_balance(info),
             AccountUpdate::UsageQuota(info) => self.account.set_quota(info),
             AccountUpdate::Error(err) => {
-                self.account.clear();
+                // Only clear on permanent unsupported; keep last-known values
+                // across transient poll / network failures.
+                if matches!(err, AccountError::NotSupported) {
+                    self.account.clear();
+                }
                 self.flash_msg = Some((err.to_string(), std::time::Instant::now()));
             }
         }
@@ -843,6 +847,10 @@ mod lifecycle_tests {
         let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
         app.account_rx = Some(account_rx);
+        app.account.balance = Some(tact_protocol::BalanceInfo {
+            is_available: true,
+            balance_infos: vec![],
+        });
         app.handle_account_update(AccountUpdate::Error(AccountError::QueryFailed(
             "network down".into(),
         )));
@@ -850,6 +858,10 @@ mod lifecycle_tests {
             app.flash_msg
                 .as_ref()
                 .is_some_and(|(msg, _)| msg.contains("network down"))
+        );
+        assert!(
+            app.account.balance.is_some(),
+            "transient query failures must keep the last successful balance"
         );
     }
 

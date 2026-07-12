@@ -398,6 +398,23 @@ impl App {
         }
     }
 
+    /// Open a tool detail popup only if the click was inside the detail card area.
+    pub(crate) fn open_diff_popup_at_row(&mut self, phys_idx: usize, relative_row: usize) {
+        let Some(output) = self.tool_output_at(phys_idx) else {
+            return;
+        };
+        if !output.layout.has_detail_card {
+            return;
+        }
+        let card_height = output.visual_rows(true);
+        let total_height = output.visual_rows(false);
+        let detail_card_start = total_height - card_height;
+        if relative_row < detail_card_start || relative_row >= total_height {
+            return;
+        }
+        self.open_diff_popup(phys_idx);
+    }
+
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools.popup = None;
