@@ -1,7 +1,7 @@
-use anthropic_ai_sdk::types::message::{Message, Role};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_llm::{Message, Role};
 use tool_refactor_macros::tool;
 
 use crate::{

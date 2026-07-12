@@ -24,6 +24,7 @@ pub fn auto_confirm_select(app: &mut App, choice: usize) {
     }
     app.select.selected = choice.min(app.select.options.len().saturating_sub(1));
     app.select.confirm();
+    app.select_kind = crate::widgets::state::SelectKind::Agent;
     app.input_mode = InputMode::Normal;
 }
 

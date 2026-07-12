@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::{ContentBlock, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
 use tact_ui::driver::run_command_loop;
 use tact_ui::test_support::{

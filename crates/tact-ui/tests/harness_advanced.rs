@@ -5,7 +5,6 @@ mod harness;
 
 use std::sync::{Arc, Mutex};
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     assert_update_before, batch_edit_tool_use, batch_read_tool_use, edit_file_tool_use,
     run_single_task, step_failed, step_succeeded, task_completed_with, text_block,
@@ -13,6 +12,7 @@ use harness::{
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
+use tact_llm::StopReason;
 use tact_llm::{LlmError, MockClient};
 use tact_protocol::{AgentUpdate, UserCommand};
 

@@ -2,7 +2,6 @@
 
 mod harness;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     read_file_tool_use, run_single_task, run_single_task_with_setup, text_block,
     write_file_tool_use,
@@ -10,6 +9,7 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::StopReason;
 use tact_protocol::AgentUpdate;
 use tui::test_support::TestApp;
 

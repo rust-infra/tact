@@ -281,10 +281,13 @@ impl LlmClient for OpenAiAdapter {
         let mut body =
             serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
         body["stream_options"] = serde_json::json!({"include_usage": true});
-        inject_thinking_param(request, &mut body, crate::get_provider());
+        inject_thinking_param(request, &mut body, &crate::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::is_kimi());
         inject_user_id(&mut body, &self.user_id);
         let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
+
+        // CreateChatCompletionRequest stream path uses EventSource - keep using stream_options
+        // from the same body.
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -486,10 +489,13 @@ impl LlmClient for OpenAiAdapter {
 
         let mut body =
             serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
-        inject_thinking_param(request, &mut body, crate::get_provider());
+        inject_thinking_param(request, &mut body, &crate::get_provider());
         inject_reasoning_content(&mut body, &reasoning_per_message, crate::is_kimi());
         inject_user_id(&mut body, &self.user_id);
         let json_body = serde_json::to_vec(&body).map_err(|e| LlmError::Other(e.to_string()))?;
+
+        // CreateChatCompletionRequest stream path uses EventSource - keep using stream_options
+        // from the same body.
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -594,7 +600,7 @@ impl LlmClient for OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProviderInfo;
+    use crate::{ProviderInfo, ProviderKind};
     use anthropic_ai_sdk::types::message::{RequiredMessageParams, Thinking, ThinkingType};
 
     fn sample_request_with_thinking() -> CreateMessageParams {
@@ -614,7 +620,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
@@ -631,7 +637,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.7-code".to_string(),
@@ -645,7 +651,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: "https://api.kimi.com/coding/v1".to_string(),
             model: "kimi-for-coding".to_string(),
@@ -659,7 +665,7 @@ mod tests {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
-            provider: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "kimi-k2.6".to_string(),

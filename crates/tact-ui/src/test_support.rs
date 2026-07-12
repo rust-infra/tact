@@ -10,7 +10,7 @@ use tact::{
     store::{DynSessionStore, open_sqlite_session_store},
     tool::{test_support::test_context, toolset},
 };
-use tact_llm::{LlmProvider, MockClient};
+use tact_llm::{LlmProvider, MockClient, ProviderKind};
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -24,10 +24,11 @@ fn unique_workspace_name(prefix: &str) -> String {
 fn default_test_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
         llm: tact::config::LlmSettings {
-            provider: "mock".to_string(),
+            provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: String::new(),
             model: "mock-model".to_string(),
+            models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
             context_limit_chars: 500_000,
@@ -50,6 +51,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
         },
         permission_mode: None,
         tokio_console: false,
+        config_path: None,
     }
 }
 

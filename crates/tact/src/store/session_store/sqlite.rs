@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use anthropic_ai_sdk::types::message::{Message, MessageContent, Role};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
+use tact_llm::{Message, MessageContent, Role};
 use tact_protocol::TokenUsageInfo;
 
 use super::process_identity::process_identity;
@@ -822,8 +822,8 @@ fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use anthropic_ai_sdk::types::message::{MessageContent, Role};
     use sqlx::Row;
+    use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
     use super::super::SessionStore;
@@ -1007,7 +1007,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_replace_session_messages_rewrites_history() {
-        use anthropic_ai_sdk::types::message::Message;
+        use tact_llm::Message;
 
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");

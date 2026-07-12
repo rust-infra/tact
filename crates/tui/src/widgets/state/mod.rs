@@ -53,6 +53,7 @@ pub(crate) enum InputMode {
 /// Commands shown in the command palette (triggered by `:`).
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
+    ("model", "Switch model for current provider"),
     ("save", "Save log to file"),
     ("cancel", "Cancel current task"),
     ("quit", "Quit application"),
@@ -63,6 +64,17 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("lang", "Toggle language (EN/中文)"),
     ("party", "Toggle party mode"),
 ];
+
+/// Why the select popup is open (agent permission vs `/model` flow).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectKind {
+    /// Agent `RequestSelect` — confirm sends oneshot reply.
+    Agent,
+    /// `/model` picker — confirm applies `set_model` then may open persist prompt.
+    ModelPick,
+    /// Optional "Save to config?" after a model switch.
+    PersistModel { model: String },
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FocusedPanel {
@@ -193,6 +205,8 @@ pub struct App {
     pub(crate) code_popup: Option<CodePopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
+    /// Distinguishes agent permission selects from `/model` UX.
+    pub(crate) select_kind: SelectKind,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,

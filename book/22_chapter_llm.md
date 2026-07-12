@@ -12,7 +12,7 @@ Implementation: `crates/tact_llm/src/` (`lib.rs`, `anthropic.rs`, `openai.rs`, `
 
 ```mermaid
 flowchart TB
-    Config[config::install → init_provider] --> PI[ProviderInfo OnceLock]
+    Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
     PI --> Build[get_llm_client → build_client]
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
@@ -38,15 +38,29 @@ DeepSeek and Kimi reuse `OpenAiAdapter` with different default base URLs from co
 ## 2. ProviderInfo and Initialization
 
 ```rust
+pub enum ProviderKind {
+    Anthropic,
+    OpenAi,
+    DeepSeek,
+    Kimi,
+}
+
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-    pub provider: String,   // anthropic | openai | deepseek | kimi
+    pub provider: ProviderKind,
 }
 ```
 
-Installed once at startup:
+`ProviderKind` is the single identity type for config, CLI (`FromStr`), and
+`build_client` (exhaustive match). TOML names are lowercase:
+`anthropic` | `openai` | `deepseek` | `kimi`.
+
+Installed at startup (and re-init under test overrides). The active provider is
+kept in an `RwLock` so the TUI `/model` command can change only the `model`
+string mid-session via `tact_llm::set_model` (in-flight streams keep the old id;
+`max_tokens` / thinking heuristics from process start are not recomputed).
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -63,7 +77,9 @@ let mut client = tact_llm::get_llm_client()?;
 client.set_user_id(&session_id);   // per-session KV cache isolation
 ```
 
-`build_client()` validates non-empty `api_key` and maps the provider string to `LlmProvider::Anthropic` or `LlmProvider::OpenAi`.
+`build_client()` validates non-empty `api_key` and matches on `ProviderKind`:
+Anthropic → `LlmProvider::Anthropic`; OpenAi / DeepSeek / Kimi →
+`LlmProvider::OpenAi` (OpenAI-compatible adapters).
 
 ```mermaid
 sequenceDiagram
@@ -83,13 +99,14 @@ sequenceDiagram
     Install->>LlmInit: provider_info()
     LlmInit->>Once: set ProviderInfo
     Install->>Once: set ResolvedConfig
-    Note over Once: install-once semantics, later set attempts fail
-    Get->>Once: read ProviderInfo
+    Note over Once: RwLock; `/model` may update model only
+    Get->>Once: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: Anthropic or OpenAi adapter
 ```
 
-Provider initialization flows from Ch 21's resolved configuration into `tact_llm`, where `OnceLock` makes both app settings and provider metadata immutable after startup.
+Provider initialization flows from Ch 21's resolved configuration into `tact_llm`.
+The active `ProviderInfo` is mutable for mid-session model switches (`set_model`).
 
 ---
 
@@ -99,12 +116,15 @@ Heuristic helpers on `ProviderInfo` (also exported at crate root):
 
 | Function | Purpose |
 |----------|---------|
-| `is_kimi()` | Provider name, base URL, or model contains moonshot/kimi |
+| `is_kimi()` | `provider == Kimi`, **or** base URL / model contains moonshot/kimi |
 | `is_kimi_k2x()` | K2.x family — drives **32k max_tokens** and **900k context** defaults in config |
 | `is_kimi_k27()` | K2.7-code / `kimi-for-coding` / `api.kimi.com/coding` |
-| `is_deepseek()` | Provider or URL/model contains deepseek |
+| `is_deepseek()` | `provider == DeepSeek`, **or** URL/model contains deepseek |
 
-These are used by config resolution, TUI balance polling, and request shaping in `convert.rs`.
+So `provider = openai` + a Moonshot-compatible `base_url` still behaves as Kimi
+for thinking injection and balance polling; prefer a dedicated
+`[llm.providers.kimi]` entry. Used by config resolution, TUI balance polling,
+and request shaping in `convert.rs`.
 
 ---
 
@@ -320,6 +340,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 
 | File | Role |
 |------|------|
+| `tact_llm/src/provider_kind.rs` | `ProviderKind` enum (`FromStr` / `Display` / defaults) |
 | `tact_llm/src/lib.rs` | `ProviderInfo`, `LlmClient`, `LlmProvider`, init/get helpers, balance APIs |
 | `tact_llm/src/anthropic.rs` | Messages API streaming + non-streaming |
 | `tact_llm/src/openai.rs` | Chat Completions SSE, reasoning_content, tool deltas |
@@ -333,7 +354,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 
 | Gap | Detail |
 |-----|--------|
-| **Four named providers only** | `build_client` rejects unknown provider strings; generic OpenAI proxies must use `provider = "openai"` |
+| **Four named providers only** | `ProviderKind` / `FromStr` reject unknown names; generic OpenAI proxies must use `provider = "openai"` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
 | **Anthropic SDK partial use** | Types from `anthropic-ai-sdk`; streaming is custom HTTP |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |

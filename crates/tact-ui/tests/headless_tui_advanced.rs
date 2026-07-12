@@ -3,11 +3,11 @@
 
 mod harness;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{bash_tool_use, read_file_tool_use, text_block, write_file_tool_use};
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::StopReason;
 use tact_ui::headless_session::run_headless_session_with_options;
 use tui::test_support::TestApp;
 

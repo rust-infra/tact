@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
-use tact_llm::ProviderInfo;
+use tact_llm::{ProviderInfo, ProviderKind};
 
 /// Top-level TOML config (`tact.toml` or `.tact/config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,23 +26,29 @@ pub struct TactTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LlmTomlConfig {
-    /// Provider name: "anthropic", "openai", "deepseek", or "kimi"
+    /// Active provider (`anthropic` | `openai` | `deepseek` | `kimi`).
     pub provider: Option<String>,
 
-    /// Model name
-    pub model: Option<String>,
-
-    /// API key
-    pub api_key: Option<String>,
-
-    /// API base URL
-    pub base_url: Option<String>,
-
-    /// Maximum tokens to generate per LLM call.
+    /// Global default max tokens (overridable per provider entry).
     pub max_tokens: Option<u32>,
 
-    /// Budget tokens for extended thinking (Anthropic-style thinking / Kimi `thinking`).
+    /// Global default thinking budget (overridable per provider entry).
     pub thinking_budget: Option<usize>,
+
+    /// Per-provider credentials and optional overrides.
+    pub providers: HashMap<String, ProviderEntryToml>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProviderEntryToml {
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub thinking_budget: Option<usize>,
+    /// Candidate models for the `/model` picker (optional).
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,10 +118,12 @@ pub struct ToolsTomlConfig {
 
 #[derive(Debug, Clone)]
 pub struct LlmSettings {
-    pub provider: String,
+    pub provider: ProviderKind,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Candidate models for the `/model` TUI picker.
+    pub models: Vec<String>,
 }
 
 impl LlmSettings {
@@ -122,7 +132,7 @@ impl LlmSettings {
             api_key: self.api_key.clone(),
             base_url: self.base_url.clone(),
             model: self.model.clone(),
-            provider: self.provider.clone(),
+            provider: self.provider,
         }
     }
 }
@@ -169,6 +179,8 @@ pub struct ResolvedConfig {
     pub tools: ToolSettings,
     pub permission_mode: Option<String>,
     pub tokio_console: bool,
+    /// Path of the TOML file loaded at startup (for optional `/model` persist).
+    pub config_path: Option<std::path::PathBuf>,
 }
 #[cfg(test)]
 mod tests {
@@ -182,7 +194,7 @@ provider = "anthropic"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("anthropic"));
-        assert_eq!(cfg.llm.model, None);
+        assert!(cfg.llm.providers.is_empty());
         assert_eq!(cfg.permission.mode.as_deref(), Some("default"));
     }
 
@@ -191,11 +203,13 @@ provider = "anthropic"
         let toml_str = r#"
 [llm]
 provider = "openai"
+max_tokens = 16000
+thinking_budget = 64000
+
+[llm.providers.openai]
 model = "gpt-4o"
 api_key = "sk-test"
 base_url = "https://proxy.example.com/v1"
-max_tokens = 16000
-thinking_budget = 64000
 
 [permission]
 mode = "auto"
@@ -216,11 +230,13 @@ brave_search_api_key = "bsk-test"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("openai"));
-        assert_eq!(cfg.llm.model.as_deref(), Some("gpt-4o"));
-        assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-test"));
-        assert!(cfg.llm.base_url.is_some());
         assert_eq!(cfg.llm.max_tokens, Some(16000));
         assert_eq!(cfg.llm.thinking_budget, Some(64000));
+        let openai = cfg.llm.providers.get("openai").unwrap();
+        assert_eq!(openai.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(openai.api_key.as_deref(), Some("sk-test"));
+        assert!(openai.base_url.is_some());
+        assert!(openai.models.is_empty());
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
         assert_eq!(cfg.agent.context_limit_chars, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
@@ -230,5 +246,24 @@ brave_search_api_key = "bsk-test"
         assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));
         assert_eq!(cfg.ui.vision_image.jpeg_quality, Some(75));
         assert_eq!(cfg.tools.brave_search_api_key.as_deref(), Some("bsk-test"));
+    }
+
+    #[test]
+    fn parse_provider_models_list() {
+        let toml_str = r#"
+[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "sk-test"
+model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        let kimi = cfg.llm.providers.get("kimi").unwrap();
+        assert_eq!(
+            kimi.models,
+            vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
+        );
     }
 }

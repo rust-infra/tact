@@ -2,7 +2,6 @@
 
 mod harness;
 
-use anthropic_ai_sdk::types::message::StopReason;
 use harness::{
     apply_patch_tool_use, ask_user_tool_use, background_run_tool_use, check_background_tool_use,
     cron_create_tool_use, cron_list_tool_use, load_skill_tool_use, read_inbox_tool_use,
@@ -13,6 +12,7 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::MockClient;
+use tact_llm::StopReason;
 use tact_protocol::{AgentUpdate, StepStatus};
 
 #[tokio::test]

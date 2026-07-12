@@ -8,7 +8,6 @@ mod harness;
 
 use std::{borrow::Cow, sync::Arc};
 
-use anthropic_ai_sdk::types::message::{ContentBlock, StopReason};
 use harness::run_single_task_with_mcp;
 use rmcp::{
     ErrorData as McpError,
@@ -18,6 +17,7 @@ use rmcp::{
 use serde_json::json;
 use tact::mcp::{MCPToolRouter, McpClient, MockMcpService};
 use tact_llm::MockClient;
+use tact_llm::{ContentBlock, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus};
 
 fn echo_tool() -> McpTool {

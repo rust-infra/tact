@@ -3,13 +3,13 @@
 mod tool_dispatch;
 mod tool_schedule;
 
-use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, Message, MessageContent, RequiredMessageParams, Role,
-    StopReason, Thinking, ThinkingType,
-};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
+use tact_llm::{
+    ContentBlock, CreateMessageParams, Message, MessageContent, RequiredMessageParams, Role,
+    StopReason, Thinking, ThinkingType,
+};
 
 use crate::ToolSpec;
 use crate::compact::{
@@ -353,7 +353,7 @@ impl Agent {
             // Stable sections are placed before DYNAMIC_BOUNDARY to keep prefix cache-friendly.
             let system = self.build_system_prompt()?;
 
-            let model_name = crate::get_model().to_string();
+            let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: self.runtime.context.clone(),
@@ -651,7 +651,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             prompt.push_str(&format!("\n\nRecent files to reopen if needed:\n{recent}"));
         }
 
-        let model_name = crate::get_model().to_string();
+        let model_name = crate::get_model();
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
@@ -995,9 +995,9 @@ fn load_claude_md_prompt(workdir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anthropic_ai_sdk::types::message::{ContentBlock, Message, Role, StopReason};
     use std::sync::Once;
-    use tact_llm::{LlmProvider, MockClient};
+    use tact_llm::{ContentBlock, Message, Role, StopReason};
+    use tact_llm::{LlmProvider, MockClient, ProviderKind};
 
     use crate::tool::test_support::test_context;
 
@@ -1007,10 +1007,11 @@ mod tests {
         INIT_CONFIG.call_once(|| {
             let config = crate::config::ResolvedConfig {
                 llm: crate::config::LlmSettings {
-                    provider: "mock".to_string(),
+                    provider: ProviderKind::OpenAi,
                     api_key: String::new(),
                     base_url: String::new(),
                     model: "mock-model".to_string(),
+                    models: Vec::new(),
                 },
                 agent: crate::config::AgentSettings {
                     context_limit_chars: 500_000,
@@ -1033,6 +1034,7 @@ mod tests {
                 },
                 permission_mode: None,
                 tokio_console: false,
+                config_path: None,
             };
             crate::config::install(config);
         });
