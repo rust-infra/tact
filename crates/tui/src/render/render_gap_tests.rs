@@ -6,7 +6,7 @@ use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use std::collections::HashMap;
 use std::time::Duration;
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus};
 
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
     app.plan.visible = true;
@@ -16,16 +16,17 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
         "wf1",
         HashMap::from([("path".to_string(), path.to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "wf1".into(),
-        "write_file".into(),
-        path.into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "wf1".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "wf1".into(),
+        tool_name: "write_file".into(),
+        arg_summary: path.into(),
+        arg_full: path.into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "wf1".into(),
+        result: StepResult {
             tool: "write_file".into(),
             arg_summary: path.into(),
             arg_full: Some(path.into()),
@@ -35,7 +36,7 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
             duration_us: Some(50),
             permission_label: None,
         },
-    ));
+    });
 }
 
 fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
@@ -46,16 +47,17 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
         "bash1",
         HashMap::from([("command".to_string(), command.to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "bash1".into(),
-        "bash".into(),
-        command.into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "bash1".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash1".into(),
+        tool_name: "bash".into(),
+        arg_summary: command.into(),
+        arg_full: command.into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash1".into(),
+        result: StepResult {
             tool: "bash".into(),
             arg_summary: command.into(),
             arg_full: Some(command.into()),
@@ -65,7 +67,7 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 }
 
 fn open_last_tool_popup(app: &mut App) {
@@ -182,16 +184,17 @@ fn plan_panel_shows_multiple_steps_with_one_running() {
         "r2",
         HashMap::from([("path".to_string(), "b.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "r1".into(),
-        "read_file".into(),
-        "a.txt".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "r1".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "r1".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "a.txt".into(),
+        arg_full: "a.txt".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "r1".into(),
+        result: StepResult {
             tool: "read_file".into(),
             arg_summary: "a.txt".into(),
             arg_full: None,
@@ -201,13 +204,14 @@ fn plan_panel_shows_multiple_steps_with_one_running() {
             duration_us: Some(1),
             permission_label: None,
         },
-    ));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        1,
-        "r2".into(),
-        "read_file".into(),
-        "b.txt".into(),
-    ));
+    });
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 1,
+        tool_id: "r2".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "b.txt".into(),
+        arg_full: "b.txt".into(),
+    });
 
     let backend = TestBackend::new(60, 12);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -232,17 +236,18 @@ fn plan_panel_lists_failed_step_description() {
         "fail1",
         HashMap::from([("path".to_string(), "nope.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "fail1".into(),
-        "read_file".into(),
-        "nope.txt".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFailed(
-        0,
-        "fail1".into(),
-        "file not found".into(),
-    ));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "fail1".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "nope.txt".into(),
+        arg_full: "nope.txt".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFailed {
+        idx: 0,
+        tool_id: "fail1".into(),
+        error: "file not found".into(),
+    });
 
     let text = render_app_text(&mut app, 120, 30);
     assert!(
@@ -475,16 +480,17 @@ fn full_frame_edit_file_tool_shows_in_log() {
             ("new_text".to_string(), "fn new()".to_string()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "edit1".into(),
-        "edit_file".into(),
-        "lib.rs".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "edit1".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "edit1".into(),
+        tool_name: "edit_file".into(),
+        arg_summary: "lib.rs".into(),
+        arg_full: "lib.rs".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "edit1".into(),
+        result: StepResult {
             tool: "edit_file".into(),
             arg_summary: "lib.rs".into(),
             arg_full: Some("lib.rs".into()),
@@ -494,7 +500,7 @@ fn full_frame_edit_file_tool_shows_in_log() {
             duration_us: Some(200),
             permission_label: None,
         },
-    ));
+    });
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -508,15 +514,16 @@ fn full_frame_edit_file_tool_shows_in_log() {
 fn balance_update_renders_in_bottom_bar() {
     use tact_protocol::{BalanceEntry, BalanceInfo};
 
+    let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = make_app();
-    app.account_query_supported = true;
-    app.handle_agent_update(AgentUpdate::Balance(BalanceInfo {
+    app.account_rx = Some(account_rx);
+    app.handle_account_update(AccountUpdate::Balance(BalanceInfo {
         is_available: true,
         balance_infos: vec![BalanceEntry {
             currency: "USD".into(),
-            total_balance: "42.00".into(),
-            granted_balance: "40.00".into(),
-            topped_up_balance: "2.00".into(),
+            total_balance: 42.00,
+            granted_balance: 40.00,
+            topped_up_balance: 2.00,
         }],
     }));
 
@@ -532,14 +539,15 @@ fn balance_update_renders_in_bottom_bar() {
 fn usage_quota_update_renders_in_bottom_bar() {
     use tact_protocol::{UsageQuotaInfo, UsageQuotaWindow};
 
+    let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = make_app();
-    app.account_query_supported = true;
-    app.handle_agent_update(AgentUpdate::UsageQuota(UsageQuotaInfo {
+    app.account_rx = Some(account_rx);
+    app.handle_account_update(AccountUpdate::UsageQuota(UsageQuotaInfo {
         is_available: true,
         windows: vec![UsageQuotaWindow {
             label: "week".into(),
-            limit: "100".into(),
-            remaining: "42".into(),
+            limit: Some(100.0),
+            remaining: Some(42.0),
             reset_time: None,
         }],
         membership_level: None,

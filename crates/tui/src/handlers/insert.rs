@@ -30,6 +30,17 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
 fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSender<UserCommand>) {
     // Deactivate slash command on submit.
     app.slash_command.active = false;
+
+    // Check input length limit before processing.
+    if app.input.chars().count() > app.context_limit_chars {
+        let msg = app
+            .msgs()
+            .input_too_long_tmpl
+            .replace("{}", &app.context_limit_chars.to_string());
+        app.add_system_message(msg);
+        return;
+    }
+
     if key
         .modifiers
         .contains(crossterm::event::KeyModifiers::SHIFT)
@@ -56,6 +67,15 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSen
                 return;
             }
         }
+        // Check if a previous prompt is still being processed.
+        if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+            app.flash_msg = Some((
+                app.msgs().input_busy_msg.to_string(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+
         // Save to history (skip consecutive duplicates)
         let task_text = app.input.clone();
         if app.input_history.entries.last() != Some(&task_text) {
@@ -521,13 +541,13 @@ mod tests {
         drop(agent_tx);
         let app = App::new(
             agent_rx,
+            None,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
-            false,
         );
         (app, user_cmd_rx)
     }
@@ -669,6 +689,54 @@ mod tests {
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "expected /party not to submit task"
+        );
+    }
+
+    #[test]
+    fn submit_rejected_when_input_exceeds_char_limit() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.context_limit_chars = 5;
+        app.input = "hello world".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected long input not to submit task"
+        );
+        assert!(
+            !app.messages.is_empty(),
+            "expected a system message about input length"
+        );
+    }
+
+    #[test]
+    fn submit_rejected_while_agent_busy() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Planning;
+        app.input = "do something".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected busy input not to submit task"
+        );
+        assert!(
+            app.flash_msg.is_some(),
+            "expected a flash message while busy"
         );
     }
 }

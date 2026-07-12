@@ -1,0 +1,26 @@
+/* Minimal styles for Tact Book CHM (pandoc standalone HTML) */
+body {
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-size: 10pt;
+  line-height: 1.5;
+  margin: 1.2em 1.5em;
+  color: #1a1a1a;
+  max-width: 52em;
+}
+
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+
+img { max-width: 100%; height: auto; }

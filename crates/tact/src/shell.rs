@@ -8,6 +8,8 @@ const BLOCKED_SUBSTRINGS: &[&str] = &[
     "reboot",
     "> /dev/",
     ">> /dev/",
+    ">/dev/",
+    ">>/dev/",
     "rm -rf /",
     "rm -fr /",
     "rm -rf /*",
@@ -43,6 +45,16 @@ mod tests {
     #[test]
     fn blocks_rm_rf_root_variants() {
         for cmd in ["rm -rf /", "rm -rf /*", "rm -rf ~", "rm -fr $HOME"] {
+            assert!(
+                validate_shell_command(cmd).is_err(),
+                "expected block: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_redirections_with_and_without_spaces() {
+        for cmd in ["> /dev/null", "> /dev/zero", ">/dev/null", ">>/dev/null"] {
             assert!(
                 validate_shell_command(cmd).is_err(),
                 "expected block: {cmd}"

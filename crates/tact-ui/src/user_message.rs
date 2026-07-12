@@ -8,9 +8,8 @@ use tact::tool::safe_path;
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
 ///
-/// Images are base64-encoded and attached as vision blocks; text files are
-/// embedded as file content blocks. References that cannot be resolved are left
-/// in the text unchanged.
+/// Images are optionally downscaled and re-encoded per `[ui.vision_image]` in config
+/// (`compress = true` by default) before base64 attachment.
 pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
     static REF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = REF_RE.get_or_init(|| {
@@ -134,31 +133,32 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
     if !path.is_file() {
         return None;
     }
-    let bytes = tokio::fs::read(path).await.ok()?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let media_type = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "tiff" | "tif" => "image/tiff",
-        _ => return None,
-    };
+    if !crate::image_attach::is_supported_image_ext(&ext) {
+        return None;
+    }
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let settings = crate::image_attach::vision_settings_from_config();
+    let prepared = tokio::task::spawn_blocking(move || {
+        crate::image_attach::prepare_image_attachment(&bytes, &ext, &settings)
+    })
+    .await
+    .ok()??;
     Some(ImageSource {
         type_: "base64".to_string(),
-        media_type: media_type.to_string(),
-        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        media_type: prepared.media_type,
+        data: base64::engine::general_purpose::STANDARD.encode(prepared.bytes),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::install_test_config;
     use anthropic_ai_sdk::types::message::MessageContent;
     use std::path::PathBuf;
 
@@ -226,16 +226,22 @@ mod tests {
 
     #[test]
     fn test_at_image_file_attaches_vision_block() {
+        install_test_config();
         let dir = temp_dir();
         let file_path = dir.join("pixel.png");
-        std::fs::write(&file_path, b"not-really-a-png").unwrap();
+        write_test_png(&file_path, 8, 8);
 
         let msg = rt().block_on(async { build_user_message("look at @pixel.png", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 2);
         assert_text_contains(blocks[0], "look at ");
-        assert!(matches!(blocks[1], ContentBlock::Image { .. }));
+        match blocks[1] {
+            ContentBlock::Image { source } => {
+                assert_eq!(source.media_type, "image/jpeg");
+            }
+            _ => panic!("expected image block"),
+        }
     }
 
     #[test]
@@ -267,9 +273,10 @@ mod tests {
 
     #[test]
     fn test_combined_markdown_image_and_at_file() {
+        install_test_config();
         let dir = temp_dir();
         std::fs::write(dir.join("code.rs"), "fn main() {}").unwrap();
-        std::fs::write(dir.join("shot.png"), b"fake").unwrap();
+        write_test_png(&dir.join("shot.png"), 16, 16);
 
         let msg = rt().block_on(async {
             build_user_message("check ![shot](shot.png) and @code.rs", &dir).await
@@ -286,5 +293,11 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main")))
         );
+    }
+
+    fn write_test_png(path: &std::path::Path, w: u32, h: u32) {
+        use image::{ImageBuffer, Rgb, RgbImage};
+        let img: RgbImage = ImageBuffer::from_fn(w, h, |_, _| Rgb([40, 120, 200]));
+        img.save(path).expect("write test png");
     }
 }

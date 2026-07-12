@@ -79,6 +79,22 @@ pub struct AgentTomlConfig {
 pub struct UiTomlConfig {
     /// Initial TUI theme name (e.g. "retro", "nord", "dark").
     pub theme: Option<String>,
+
+    /// Vision image attachment compression (user `@file` / markdown images).
+    pub vision_image: VisionImageTomlConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct VisionImageTomlConfig {
+    /// Downscale and JPEG re-encode user-attached images (default: true).
+    pub compress: Option<bool>,
+
+    /// Longest edge in pixels before downscaling (default: 1280).
+    pub max_edge: Option<u32>,
+
+    /// JPEG quality 1–100 for re-encoded attachments (default: 80).
+    pub jpeg_quality: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -122,8 +138,22 @@ pub struct AgentSettings {
 }
 
 #[derive(Debug, Clone)]
+pub struct VisionImageSettings {
+    pub compress: bool,
+    pub max_edge: u32,
+    pub jpeg_quality: u8,
+}
+
+impl VisionImageSettings {
+    pub const DEFAULT_COMPRESS: bool = true;
+    pub const DEFAULT_MAX_EDGE: u32 = 1280;
+    pub const DEFAULT_JPEG_QUALITY: u8 = 80;
+}
+
+#[derive(Debug, Clone)]
 pub struct UiSettings {
     pub theme: String,
+    pub vision_image: VisionImageSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +207,9 @@ micro_compact_enabled = false
 
 [ui]
 theme = "nord"
+vision_image.compress = false
+vision_image.max_edge = 1024
+vision_image.jpeg_quality = 75
 
 [tools]
 brave_search_api_key = "bsk-test"
@@ -193,6 +226,9 @@ brave_search_api_key = "bsk-test"
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
+        assert_eq!(cfg.ui.vision_image.compress, Some(false));
+        assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));
+        assert_eq!(cfg.ui.vision_image.jpeg_quality, Some(75));
         assert_eq!(cfg.tools.brave_search_api_key.as_deref(), Some("bsk-test"));
     }
 }

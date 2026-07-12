@@ -28,13 +28,13 @@ impl TestApp {
         let (history_tx, _history_rx) = unbounded_channel();
         Self(App::new(
             agent_rx,
+            None,
             user_cmd_tx,
             work_dir,
             Vec::new(),
             "bridge-test".into(),
             history_tx,
             "retro".into(),
-            false,
         ))
     }
 

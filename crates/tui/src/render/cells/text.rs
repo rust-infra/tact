@@ -24,16 +24,14 @@ fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
 pub(crate) struct TextCell {
     /// Pre-wrapped visual lines (cloned directly during normal rendering).
     cached_lines: Vec<Line<'static>>,
-    /// Raw text (used for search highlighting).
+    /// Raw text (used for search highlighting and selection).
     raw_text: String,
     /// Search term.
     search_term: String,
     /// Whether this line is a search match.
     is_search_match: bool,
-    /// Whether this line is selected by mouse.
-    is_selected: bool,
-    /// Word-level selection (start_byte, end_byte); None means line-level selection.
-    word_selection: Option<(usize, usize)>,
+    /// Selected byte range within raw_text, None if no selection.
+    selection_range: Option<(usize, usize)>,
     /// First line prefix (thinking block collapse indicator).
     prefix: Option<String>,
     /// Left gutter columns (thinking / tool nesting).
@@ -51,8 +49,7 @@ impl TextCell {
         raw_text: String,
         search_term: String,
         is_search_match: bool,
-        is_selected: bool,
-        word_selection: Option<(usize, usize)>,
+        selection_range: Option<(usize, usize)>,
         prefix: Option<String>,
         indent_cols: u16,
         fg_color: Color,
@@ -64,8 +61,7 @@ impl TextCell {
             raw_text,
             search_term,
             is_search_match,
-            is_selected,
-            word_selection,
+            selection_range,
             prefix,
             indent_cols,
             fg_color,
@@ -75,15 +71,23 @@ impl TextCell {
     }
 
     /// Build the visual line list for rendering (chooses search highlight/selection/cache based on state).
-    fn build_lines(&self, wrap_width: u16) -> Vec<Line<'_>> {
+    fn build_lines(&self, width: u16) -> Vec<Line<'_>> {
+        let wrap_width = width + self.indent_cols;
         if self.is_search_match {
             return self.build_highlighted_line(wrap_width);
         }
-        if self.is_selected {
-            if let Some((ws, we)) = self.word_selection {
-                return self.build_word_selected_lines(wrap_width, ws, we);
+        if let Some((sel_start, sel_end)) = self.selection_range {
+            // Whole-line selection can reuse the cached wrap and only flip style.
+            if sel_start == 0 && sel_end == self.raw_text.len() {
+                let mut lines = self.cached_lines.clone();
+                for line in &mut lines {
+                    for span in line.spans.iter_mut() {
+                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
+                }
+                return lines;
             }
-            return self.build_line_selected_lines();
+            return self.build_selected_lines(wrap_width, sel_start, sel_end);
         }
         self.cached_lines.clone()
     }
@@ -135,7 +139,7 @@ impl TextCell {
         }
 
         let mut line = Line::from(spans);
-        if self.is_selected {
+        if self.selection_range == Some((0, self.raw_text.len())) {
             for span in line.spans.iter_mut() {
                 span.style = span.style.add_modifier(Modifier::REVERSED);
             }
@@ -143,45 +147,34 @@ impl TextCell {
         wrap_line(&line, wrap_width as usize)
     }
 
-    fn build_word_selected_lines(
+    fn build_selected_lines(
         &self,
         wrap_width: u16,
-        ws: usize,
-        we: usize,
+        sel_start: usize,
+        sel_end: usize,
     ) -> Vec<Line<'static>> {
         let raw = &self.raw_text;
-        let w_start = raw.floor_char_boundary(ws.min(raw.len()));
-        let w_end = raw.floor_char_boundary(we.min(raw.len()));
-        let (w_start, w_end) = if w_end < w_start {
-            (w_end, w_start)
+        let sel_start = raw.floor_char_boundary(sel_start.min(raw.len()));
+        let sel_end = raw.floor_char_boundary(sel_end.min(raw.len()));
+        let (sel_start, sel_end) = if sel_end < sel_start {
+            (sel_end, sel_start)
         } else {
-            (w_start, w_end)
+            (sel_start, sel_end)
         };
-        let before = &raw[..w_start];
-        let word = &raw[w_start..w_end];
-        let after = &raw[w_end..];
+        let before = &raw[..sel_start];
+        let selected = &raw[sel_start..sel_end];
+        let after = &raw[sel_end..];
         let styled_line = Line::from(vec![
-            Span::raw(before.to_string()),
+            Span::styled(before.to_string(), Style::default().fg(self.fg_color)),
             Span::styled(
-                word.to_string(),
-                Style::default().add_modifier(Modifier::REVERSED),
+                selected.to_string(),
+                Style::default()
+                    .add_modifier(Modifier::REVERSED)
+                    .fg(self.fg_color),
             ),
-            Span::raw(after.to_string()),
+            Span::styled(after.to_string(), Style::default().fg(self.fg_color)),
         ]);
         wrap_line(&styled_line, wrap_width as usize)
-    }
-
-    fn build_line_selected_lines(&self) -> Vec<Line<'static>> {
-        self.cached_lines
-            .iter()
-            .map(|line| {
-                let mut line = line.clone();
-                for span in line.spans.iter_mut() {
-                    span.style = span.style.add_modifier(Modifier::REVERSED);
-                }
-                line
-            })
-            .collect()
     }
 }
 
@@ -231,7 +224,6 @@ mod render_tests {
             "alpha beta gamma".into(),
             String::new(),
             false,
-            false,
             None,
             None,
             0,
@@ -248,7 +240,6 @@ mod render_tests {
             "find TOKEN end".into(),
             "TOKEN".into(),
             true,
-            false,
             None,
             None,
             0,
@@ -278,8 +269,7 @@ mod render_tests {
             "select all of this".into(),
             String::new(),
             false,
-            true,
-            None,
+            Some((0, 18)),
             None,
             0,
             Color::White,
@@ -307,7 +297,6 @@ mod render_tests {
             "alpha beta gamma".into(),
             String::new(),
             false,
-            true,
             Some((6, 10)),
             None,
             0,

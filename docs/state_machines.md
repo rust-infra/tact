@@ -4,6 +4,16 @@ This document describes the state machines used across the `tact` codebase. Most
 
 ---
 
+## 0. Agent–TUI Protocol
+
+Full documentation: **[book/25_chapter_protocol.md](../book/25_chapter_protocol.md)**.
+
+Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifecycle, TUI `Status` / `InputMode` state diagrams, message categories, and typical ordering (incl. sequence diagram).
+
+Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/agent/tool_dispatch.rs`
+
+---
+
 ## 1. TUI Execution Status
 
 File: `crates/tui/src/widgets/state/mod.rs`
@@ -15,10 +25,11 @@ pub(crate) enum Status {
     Idle,
     Planning,
     Executing { current_step: usize, total: usize },
-    WaitingForUser { prompt: String, step_index: usize, approval_tx: oneshot::Sender<bool> },
     Done,
 }
 ```
+
+`RequestSelect` switches `InputMode` to `Select` while `Status` stays `Executing`. Full diagrams: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md) §4.
 
 ### State transitions
 
@@ -27,21 +38,19 @@ stateDiagram-v2
     [*] --> Idle: startup
 
     Idle --> Planning: user submits task (Enter in Insert mode)
-    Planning --> Executing: AgentUpdate:StepAdded (first tool step)
+    Planning --> Executing: AgentUpdate::StepAdded (first tool step)
 
-    Note right of Planning: PlanGenerated handler exists in TUI but agent never emits it today
-
-    Executing --> Executing: AgentUpdate:StepStarted (current_step updated)
-    Executing --> WaitingForUser: AgentUpdate:RequestSelect
-    Executing --> Done: AgentUpdate:TaskComplete
-    Executing --> Idle: user Cancel (no TaskComplete)
-    Executing --> Idle: AgentUpdate:StepFailed / Error(Other)
-
-    WaitingForUser --> Executing: user approves (y / Enter)
-    WaitingForUser --> Idle: user denies (n / Esc)
+    Executing --> Executing: AgentUpdate::StepStarted (current_step updated)
+    Executing --> Done: AgentUpdate::TaskComplete
+    Executing --> Idle: AgentUpdate::StepFailed / Error(Other)
 
     Done --> Idle: after 2s timeout
     Idle --> [*]: user quits
+
+    note right of Executing
+        UserCommand::Cancel: Info only,
+        no TaskComplete, Status unchanged
+    end note
 ```
 
 ### Transition triggers
@@ -49,14 +58,11 @@ stateDiagram-v2
 | From | To | Trigger | Notes |
 |---|---|---|---|
 | `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; plan panel is cleared. |
-| `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `total` is set from plan length. Legacy `PlanGenerated` would also transition here but is not emitted by agent. |
-| `Executing` | `Executing` | `AgentUpdate::StepStarted(idx, tool_id, …)`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
-| `Executing` | `WaitingForUser` | `AgentUpdate::RequestSelect`. | `input_mode` is forced to `Select`. Legacy `NeedApproval` would force `Normal`, but agent does not emit it today. |
+| `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `ensure_executing_status` sets `total` from plan length. |
+| `Executing` | `Executing` | `AgentUpdate::StepStarted { idx, tool_id, … }`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
 | `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by `interactive.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false. |
-| `Executing` | `Idle` | User `/cancel` or Escape during run. | Loop returns `Ok(())` with `cancel_flag` set; **no** `TaskComplete` — UI stays in `Idle` without the 2s done highlight. |
 | `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
-| `WaitingForUser` | `Executing` | User presses `y` / `Enter` to approve. | `approval_tx.send(true)`. |
-| `WaitingForUser` | `Idle` | User presses `n` / `Esc` to deny. | `approval_tx.send(false)`. |
+| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel`. | Sets `cancel_flag`; emits `Info("Cancelling…")`; loop returns `Ok(())` without `TaskComplete`. |
 | `Done` | `Idle` | 2-second auto-timeout elapses. | Implemented in the main TUI loop. Cost timer is frozen via `last_prompt_elapsed_secs` and kept until the next prompt. |
 
 ---
@@ -93,8 +99,9 @@ stateDiagram-v2
     Normal --> Palette
     Palette --> Normal: Enter / Esc
 
-    Normal --> Select: AgentUpdate:RequestSelect
+    Normal --> Select: AgentUpdate::RequestSelect
     Select --> Normal: Enter / Esc
+    note right of Select: Status stays Executing
 ```
 
 ### Mode-specific behavior
@@ -245,7 +252,7 @@ Hooks are invoked in this order during a tool call:
 
 ## 7. Step Execution Status
 
-File: `crates/protocol/src/lib.rs`
+File: `crates/protocol/src/agent.rs`
 
 A small enum attached to `StepResult` for TUI display.
 
@@ -256,7 +263,7 @@ pub enum StepStatus {
 }
 ```
 
-This is not a lifecycle state machine by itself; it is the outcome of a single tool execution recorded in `StepResult`.
+This is not a lifecycle state machine by itself; it is the outcome of a single tool execution recorded in `StepResult`. The per-step lifecycle is driven by `StepAdded` → `StepStarted` → `StepFinished` / `StepFailed` (see section 0).
 
 ---
 
@@ -279,10 +286,10 @@ Transitions:
 
 | Event | Action |
 |---|---|
-| `StepStarted(_, tool_id, …)` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
-| `StepFinished(_, tool_id, result)` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
-| `StepFailed(_, tool_id, …)` | Same finalize path, or fallback system message if no active block |
-| New task (`SubmitTask`) / legacy `PlanGenerated` | `cancel_all_active_tools()` — `PlanGenerated` is not emitted by agent today |
+| `StepStarted { tool_id, arg_full, … }` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
+| `StepFinished { tool_id, result }` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
+| `StepFailed { tool_id, error }` | Same finalize path, or fallback system message if no active block |
+| New task (`SubmitTask`) | `cancel_all_active_tools()` removed; stale blocks cleared per `StepStarted` restart |
 
 `StepResult` (from runtime) includes `permission_label` (e.g. `"Allow once"`, `"Always allow this tool"`) shown in the tool meta row.
 
@@ -350,6 +357,7 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 
 | State machine | File | Driven by | Purpose |
 |---|---|---|---|
+| **Agent–TUI protocol** | `crates/protocol/src/agent.rs` | `AgentUpdate` / `UserCommand` | Message-driven plan step and task lifecycle. |
 | `Status` | `crates/tui/src/widgets/state/mod.rs` | `AgentUpdate` + user input | Top-level TUI execution state. |
 | `InputMode` | `crates/tui/src/widgets/state/mod.rs` | Keyboard events | Keyboard input interpretation. |
 | `ToolState` | `crates/tui/src/widgets/state/tool_state.rs` | `StepStarted` / `StepFinished` | Concurrent running tool blocks + diff popup. |
@@ -357,7 +365,7 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 | `BackgroundTaskStatus` | `crates/tact/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
 | `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
 | `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
-| `StepStatus` | `crates/protocol/src/lib.rs` | Tool execution result | Per-step success/failure display. |
+| `StepStatus` | `crates/protocol/src/agent.rs` | Tool execution result | Per-step success/failure display. |
 | `SelectPopup` | `crates/tui/src/widgets/state/select_popup.rs` | `RequestSelect` + keys | User option selection popup. |
 | `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
 | `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |

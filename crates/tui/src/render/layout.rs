@@ -92,16 +92,17 @@ mod render_tests {
             "tool_read_1",
             HashMap::from([("path".to_string(), "main.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted(
-            0,
-            "tool_read_1".into(),
-            "read_file".into(),
-            "main.rs".into(),
-        ));
-        app.handle_agent_update(AgentUpdate::StepFinished(
-            0,
-            "tool_read_1".into(),
-            StepResult {
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "tool_read_1".into(),
+            tool_name: "read_file".into(),
+            arg_summary: "main.rs".into(),
+            arg_full: "main.rs".into(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "tool_read_1".into(),
+            result: StepResult {
                 tool: "read_file".into(),
                 arg_summary: "main.rs".into(),
                 arg_full: None,
@@ -111,7 +112,7 @@ mod render_tests {
                 duration_us: Some(1000),
                 permission_label: None,
             },
-        ));
+        });
         app.handle_agent_update(AgentUpdate::StreamChunk("Hello from mock.".into()));
         app.handle_agent_update(AgentUpdate::TaskComplete("Hello from mock.".into()));
 

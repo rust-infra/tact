@@ -252,8 +252,8 @@ async fn update_order_read_before_write() {
 
     assert_update_before(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "r1"),
-        |u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "w1"),
+        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "r1"),
+        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "w1"),
         "read must finish before write",
     );
 }

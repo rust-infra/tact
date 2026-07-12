@@ -2,11 +2,12 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use ratatui::text::Line;
 use std::path::PathBuf;
-use tact_protocol::{AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub(crate) use tact_protocol::PlanStep;
 
+pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
@@ -22,10 +23,11 @@ mod stream_state;
 mod thinking_state;
 mod tool_state;
 
+pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use log_scroll::LogScroll;
-pub(crate) use mouse_state::MouseState;
+pub(crate) use mouse_state::{LogSelection, MouseState, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
 pub(crate) use search_state::SearchState;
 pub(crate) use select_popup::SelectPopup;
@@ -127,12 +129,15 @@ pub struct App {
     pub(crate) input_cursor: usize,
     pub(crate) input_scroll: u16,
     pub(crate) cmd_line: String,
+    /// Maximum allowed input length (from agent config `context_limit_chars`).
+    pub(crate) context_limit_chars: usize,
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) raw_message_types: Vec<RawMessageType>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
@@ -195,22 +200,15 @@ pub struct App {
     pub(crate) stream: StreamState,
     // Thinking state
     pub(crate) thinking: ThinkingState,
-    /// DeepSeek / Moonshot account balance info (queried on load and cached).
-    pub(crate) balance_info: Option<tact_protocol::BalanceInfo>,
-    /// Kimi Code subscription quota (weekly + rolling window).
-    pub(crate) usage_quota: Option<tact_protocol::UsageQuotaInfo>,
-    /// Whether the active LLM provider supports balance or usage quota queries.
-    pub(crate) account_query_supported: bool,
+    /// Cached account balance / usage quota state from the account service.
+    pub(crate) account: AccountState,
     /// Party mode: easter egg triggered by Konami Code.
     pub(crate) party_mode: bool,
     /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).
     pub(crate) konami_progress: u8,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
-    /// Loading placeholder index in messages.
-    ///
-    /// Legacy `PlanGenerated` inserts this row; current agent updates usually
-    /// drive the plan panel through `StepAdded` / `StepStarted` instead.
+    /// Loading placeholder index in messages (spinner row while waiting for output).
     pub(crate) loading_idx: Option<usize>,
     /// Panel split ratio (0.0–1.0) for the Plan panel width. 0.20 = 20% plan, 80% log.
     pub(crate) panel_split_ratio: f64,

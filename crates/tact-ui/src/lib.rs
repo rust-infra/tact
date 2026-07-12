@@ -6,7 +6,9 @@ pub mod session_lock;
 pub mod sessions;
 pub mod test_support;
 
+mod account;
 mod headless;
+mod image_attach;
 mod interactive;
 mod permission;
 mod user_message;

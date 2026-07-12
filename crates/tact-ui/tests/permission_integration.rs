@@ -37,7 +37,7 @@ async fn default_mode_allow_once_runs_edit_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "e1"
                         && result.tool == "edit_file"
                         && matches!(result.status, StepStatus::Success)
@@ -75,7 +75,7 @@ async fn default_mode_deny_blocks_edit_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFailed(_, id, msg)
+                AgentUpdate::StepFailed { tool_id: id, error: msg, .. }
                     if id == "e1" && msg.contains("denied")
             )
         }),
@@ -109,7 +109,7 @@ async fn high_risk_bash_shell_guard_blocks_after_permission_allow() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, id, result)
+                AgentUpdate::StepFinished { tool_id: id, result, .. }
                     if id == "bash_sudo"
                         && matches!(result.status, StepStatus::Failed)
                         && result.message.contains("Dangerous command blocked")
@@ -151,7 +151,7 @@ async fn always_allow_skips_second_permission_prompt() {
         .filter(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished(_, _, result)
+                AgentUpdate::StepFinished { result, .. }
                     if result.permission_label.as_deref() == Some("Always allow this tool")
             )
         })

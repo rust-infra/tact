@@ -12,6 +12,7 @@ async-openai = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
 reqwest-eventsource = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }

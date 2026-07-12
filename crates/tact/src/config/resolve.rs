@@ -1,7 +1,33 @@
 use super::cli::CliArgs;
 use super::types::{
     AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
+    VisionImageSettings,
 };
+
+fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
+    let compress = toml_cfg
+        .ui
+        .vision_image
+        .compress
+        .unwrap_or(VisionImageSettings::DEFAULT_COMPRESS);
+    let max_edge = toml_cfg
+        .ui
+        .vision_image
+        .max_edge
+        .unwrap_or(VisionImageSettings::DEFAULT_MAX_EDGE)
+        .clamp(256, 4096);
+    let jpeg_quality = toml_cfg
+        .ui
+        .vision_image
+        .jpeg_quality
+        .unwrap_or(VisionImageSettings::DEFAULT_JPEG_QUALITY)
+        .clamp(1, 100);
+    VisionImageSettings {
+        compress,
+        max_edge,
+        jpeg_quality,
+    }
+}
 
 fn default_base_url(provider: &str) -> Option<String> {
     match provider {
@@ -93,6 +119,8 @@ pub(super) fn resolve_non_llm_settings(
         .or_else(|| toml_cfg.ui.theme.clone())
         .unwrap_or_else(|| "retro".to_string());
 
+    let vision_image = resolve_vision_image(toml_cfg);
+
     let brave_search_api_key = args
         .brave_search_api_key
         .clone()
@@ -119,7 +147,10 @@ pub(super) fn resolve_non_llm_settings(
             snapshot_max_items,
             micro_compact_enabled,
         },
-        ui: UiSettings { theme },
+        ui: UiSettings {
+            theme,
+            vision_image,
+        },
         tools: ToolSettings {
             brave_search_api_key,
         },
@@ -187,6 +218,8 @@ pub(super) fn resolve_config(
         .or_else(|| toml_cfg.ui.theme.clone())
         .unwrap_or_else(|| "retro".to_string());
 
+    let vision_image = resolve_vision_image(toml_cfg);
+
     let brave_search_api_key = args
         .brave_search_api_key
         .clone()
@@ -208,7 +241,10 @@ pub(super) fn resolve_config(
             snapshot_max_items,
             micro_compact_enabled,
         },
-        ui: UiSettings { theme },
+        ui: UiSettings {
+            theme,
+            vision_image,
+        },
         tools: ToolSettings {
             brave_search_api_key,
         },
@@ -262,7 +298,95 @@ model = "gpt-4o"
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
         assert_eq!(resolved.ui.theme, "retro");
+        assert_eq!(
+            resolved.ui.vision_image.compress,
+            VisionImageSettings::DEFAULT_COMPRESS
+        );
+        assert_eq!(
+            resolved.ui.vision_image.max_edge,
+            VisionImageSettings::DEFAULT_MAX_EDGE
+        );
+        assert_eq!(
+            resolved.ui.vision_image.jpeg_quality,
+            VisionImageSettings::DEFAULT_JPEG_QUALITY
+        );
         assert!(resolved.agent.micro_compact_enabled);
+    }
+
+    #[test]
+    fn resolve_vision_image_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[ui.vision_image]
+compress = false
+max_edge = 1024
+jpeg_quality = 70
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_non_llm_settings(&args, &toml_cfg);
+        assert!(!resolved.ui.vision_image.compress);
+        assert_eq!(resolved.ui.vision_image.max_edge, 1024);
+        assert_eq!(resolved.ui.vision_image.jpeg_quality, 70);
+    }
+
+    #[test]
+    fn resolve_vision_image_clamps_out_of_range() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[ui.vision_image]
+max_edge = 99999
+jpeg_quality = 0
+"#,
+        )
+        .unwrap();
+        let args = CliArgs {
+            command: None,
+            config: None,
+            provider: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tokens: None,
+            thinking_budget: None,
+            permission_mode: None,
+            session: None,
+            resume_last: false,
+            list_sessions: false,
+            notifications: None,
+            context_limit_chars: None,
+            theme: None,
+            snapshot_max_items: None,
+            no_micro_compact: false,
+            no_notifications: false,
+            brave_search_api_key: None,
+            tokio_console: false,
+        };
+        let resolved = resolve_non_llm_settings(&args, &toml_cfg);
+        assert_eq!(resolved.ui.vision_image.max_edge, 4096);
+        assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
     }
 
     #[test]

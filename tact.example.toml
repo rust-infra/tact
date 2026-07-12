@@ -95,6 +95,11 @@ mode = "default"
 #            nord, retro (default), kawaii, japanese
 theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 
+# User-attached images (`@file.png`, `![alt](path)`)
+# vision_image.compress = true       # downscale + JPEG (default); false = send original
+# vision_image.max_edge = 1280       # longest edge in px (256–4096)
+# vision_image.jpeg_quality = 80     # JPEG quality 1–100 (when compress = true)
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------

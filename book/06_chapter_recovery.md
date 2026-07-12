@@ -138,6 +138,30 @@ No recap, no repetition. Pick up mid-sentence if needed.";
 
 The continuation message is persisted to the session store like any user message, so restored sessions replay correctly.
 
+### A subtle 400 risk: empty assistant messages
+
+Truncation is not the only way continuation can fail. The internal context stores Anthropic-shaped messages; when they are converted to OpenAI format in `crates/tact_llm/src/convert.rs`, **thinking blocks are dropped for non-Kimi providers**. If the truncated turn (or even a normal turn) contained only a thinking block and no text or tool calls, the resulting assistant message becomes:
+
+```json
+{ "role": "assistant", "content": null, "tool_calls": null }
+```
+
+OpenAI-compatible APIs reject this. The same invalid shape appears when a truncated turn includes orphaned `tool_calls` that are not followed by matching tool-result messages.
+
+The current workaround is `sanitize_assistant_messages` in `convert.rs`:
+
+```rust
+// Ensure the assistant message is not empty. This can happen when the
+// only content was a thinking block that gets dropped for non-Kimi
+// providers, or when the response was truncated before emitting text.
+if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() {
+    assistant.content =
+        Some("[Assistant response was empty or truncated. Continuing...]".to_string());
+}
+```
+
+It stubs empty assistant messages and strips orphaned tool calls on **every** outgoing request, not only during recovery. A cleaner long-term fix would be to avoid adding empty assistant turns to `context` in `agent_loop` rather than patching them at request time. See the `REVIEW` comments in `crates/tact/src/agent/mod.rs` and `crates/tact_llm/src/convert.rs`.
+
 ---
 
 ## 7. Code Map
@@ -158,6 +182,7 @@ The continuation message is persisted to the session store like any user message
 | String-based classification | Matching on lowercased error text is fragile; a provider rewording breaks detection |
 | Broad transport patterns | `"connection"` matches many unrelated errors (e.g. a tool error echoed into an LLM failure) |
 | `compact_attempts` never resets mid-loop | Three prompt-too-long errors anywhere in a long session exhaust the budget permanently for that loop |
+| Empty assistant workaround is post-hoc | `sanitize_assistant_messages` patches empty assistant messages after they are already in context; the real fix is to avoid persisting them in `agent_loop` |
 | No retry for `create_message` | `compact_history`'s own summarization call has no recovery — a transient failure there aborts the loop |
 | Clock-based jitter | Sub-second timestamp is deterministic under some schedulers; simultaneous retries may collide |
 | No user-configurable cap | `MAX_RECOVERY_ATTEMPTS` and delays are compile-time constants |

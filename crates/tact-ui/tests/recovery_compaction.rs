@@ -29,6 +29,11 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),
+            vision_image: tact::config::VisionImageSettings {
+                compress: tact::config::VisionImageSettings::DEFAULT_COMPRESS,
+                max_edge: tact::config::VisionImageSettings::DEFAULT_MAX_EDGE,
+                jpeg_quality: tact::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+            },
         },
         tools: tact::config::ToolSettings {
             brave_search_api_key: None,
@@ -154,7 +159,7 @@ async fn max_tokens_with_pending_tools_executes_then_continues() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "bash1")),
+            .any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "bash1")),
         "pending bash tool should still execute, got: {updates:?}"
     );
     assert!(

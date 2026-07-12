@@ -29,7 +29,7 @@ async fn ask_user_tool_returns_question() {
         run_single_task_with_setup(mock, "ask user", PermissionMode::Auto, |_| {}).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "ask1" && result.tool == "ask_user" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "ask1" && result.tool == "ask_user" && matches!(result.status, StepStatus::Success))),
         "ask_user should succeed: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Done."));
@@ -55,7 +55,7 @@ async fn save_memory_persists_file() {
         run_single_task_with_setup(mock, "save memory", PermissionMode::Auto, |_| {}).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "mem1" && result.tool == "save_memory" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "mem1" && result.tool == "save_memory" && matches!(result.status, StepStatus::Success))),
         "save_memory should succeed: {updates:?}"
     );
     let memory_file = work_dir
@@ -94,7 +94,7 @@ async fn load_skill_reads_skill_file() {
     .await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "skill1" && result.tool == "load_skill" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "skill1" && result.tool == "load_skill" && matches!(result.status, StepStatus::Success))),
         "load_skill should succeed: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Skill loaded."));
@@ -135,7 +135,7 @@ async fn teammate_spawn_send_read_inbox() {
 
     for id in ["spawn1", "msg1", "inbox1"] {
         assert!(
-            updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, tool_id, result) if tool_id == id && matches!(result.status, StepStatus::Success))),
+            updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id, result, .. } if tool_id == id && matches!(result.status, StepStatus::Success))),
             "step {id} should succeed: {updates:?}"
         );
     }
@@ -159,11 +159,11 @@ async fn cron_create_list_delete() {
         run_single_task_with_setup(mock, "cron flow", PermissionMode::Auto, |_| {}).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "cron1" && result.tool == "cron_create" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "cron1" && result.tool == "cron_create" && matches!(result.status, StepStatus::Success))),
         "cron_create should succeed: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "cron2" && result.tool == "cron_list")),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "cron2" && result.tool == "cron_list")),
         "cron_list should run: {updates:?}"
     );
 }
@@ -189,13 +189,13 @@ async fn background_run_and_check() {
         run_single_task_with_setup(mock, "background flow", PermissionMode::Auto, |_| {}).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "bg1" && result.tool == "background_run" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "bg1" && result.tool == "background_run" && matches!(result.status, StepStatus::Success))),
         "background_run should succeed: {updates:?}"
     );
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::StepFinished(_, id, _) if id == "bg2")),
+            .any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "bg2")),
         "check_background should run: {updates:?}"
     );
 }
@@ -217,7 +217,7 @@ async fn search_code_finds_matches() {
         .await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "search1" && result.tool == "search_code" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "search1" && result.tool == "search_code" && matches!(result.status, StepStatus::Success))),
         "search_code should succeed: {updates:?}"
     );
 }
@@ -249,7 +249,7 @@ async fn apply_patch_modifies_file() {
         .await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, id, result) if id == "patch1" && result.tool == "apply_patch" && matches!(result.status, StepStatus::Success))),
+        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "patch1" && result.tool == "apply_patch" && matches!(result.status, StepStatus::Success))),
         "apply_patch should succeed: {updates:?}"
     );
     let content = std::fs::read_to_string(work_dir.join("src/main.rs")).unwrap();
@@ -307,7 +307,7 @@ async fn worktree_create_lists_and_shows_status() {
 
     for id in ["wt1", "wt2", "wt3"] {
         assert!(
-            updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished(_, tool_id, result) if tool_id == id && matches!(result.status, StepStatus::Success))),
+            updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id, result, .. } if tool_id == id && matches!(result.status, StepStatus::Success))),
             "step {id} should succeed: {updates:?}"
         );
     }

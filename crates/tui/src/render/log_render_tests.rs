@@ -3,7 +3,7 @@
 use super::test_harness::{
     buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
-use crate::widgets::state::{App, RawMessageType, Status};
+use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
 use ratatui::style::Modifier;
 use std::collections::HashMap;
 use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
@@ -26,16 +26,17 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
         "bash-tall",
         HashMap::from([("command".to_string(), "seq".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted(
-        0,
-        "bash-tall".into(),
-        "bash".into(),
-        "seq".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::StepFinished(
-        0,
-        "bash-tall".into(),
-        StepResult {
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash-tall".into(),
+        tool_name: "bash".into(),
+        arg_summary: "seq".into(),
+        arg_full: "seq".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash-tall".into(),
+        result: StepResult {
             tool: "bash".into(),
             arg_summary: "seq".into(),
             arg_full: Some("seq".into()),
@@ -45,7 +46,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
             duration_us: Some(100),
             permission_label: None,
         },
-    ));
+    });
 }
 
 fn line_column_of(rendered: &str, needle: &str) -> Option<usize> {
@@ -97,8 +98,8 @@ fn log_search_match_uses_highlight_background() {
 fn log_line_selection_applies_reversed_modifier() {
     let mut app = make_app();
     app.add_system_message("select this entire line".into());
-    app.mouse.log_selection = Some((0, 0));
-    app.mouse.log_word_selection = None;
+    let raw = app.raw_messages[0].clone();
+    app.mouse.log_selection = Some(LogSelection::full_message(0, raw.len()));
 
     let terminal = render_log_panel_terminal(&mut app, 80, 16);
     assert!(
@@ -108,11 +109,10 @@ fn log_line_selection_applies_reversed_modifier() {
 }
 
 #[test]
-fn log_word_selection_applies_reversed_modifier() {
+fn log_partial_selection_applies_reversed_modifier() {
     let mut app = make_app();
     app.add_system_message("alpha beta gamma".into());
-    app.mouse.log_selection = Some((0, 0));
-    app.mouse.log_word_selection = Some((6, 10)); // "beta"
+    app.mouse.log_selection = Some(LogSelection::span(0, 6, 10));
 
     let terminal = render_log_panel_terminal(&mut app, 80, 16);
     assert!(

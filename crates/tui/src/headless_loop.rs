@@ -51,12 +51,12 @@ pub fn make_headless_app(
     let (history_tx, _history_rx) = unbounded_channel();
     App::new(
         agent_rx,
+        None,
         user_cmd_tx,
         work_dir,
         Vec::new(),
         "headless-session".into(),
         history_tx,
         "retro".into(),
-        false,
     )
 }

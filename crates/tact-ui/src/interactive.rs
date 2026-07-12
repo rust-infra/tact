@@ -16,15 +16,13 @@ use tact::{
     tool::{ToolContext, toolset},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-use tact_llm::{
-    get_llm_client, is_account_query_supported, query_deepseek_balance, query_kimi_balance,
-    query_kimi_code_usage,
-};
-use tact_protocol::AgentUpdate;
+use tact_llm::get_llm_client;
 
-use crate::driver::run_command_loop;
+use crate::account;
+use crate::driver::run_command_loop_with_account;
 use crate::permission::permission_mode_from_config;
 use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
+use tact_protocol::AccountUpdate;
 
 pub async fn run_interactive(
     args: CliArgs,
@@ -98,8 +96,8 @@ async fn run_interactive_locked(
     let mcp_router = load_mcp_router().await?;
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (account_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    let agent_tx2 = agent_tx.clone();
 
     let tools = toolset();
     let tool_context = ToolContext {
@@ -137,39 +135,50 @@ async fn run_interactive_locked(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
-    let account_query_supported = is_account_query_supported();
+    let context_limit_chars = tact::config::settings().agent.context_limit_chars;
+    let account_enabled = account::is_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
-        tui::run_tui(
+        let account_rx = if account_enabled {
+            Some(account_rx)
+        } else {
+            None
+        };
+        tui::run_tui(tui::TuiConfig {
             agent_rx,
+            account_rx,
             user_cmd_tx,
-            tui_work_dir,
-            input_history,
+            work_dir: tui_work_dir,
+            input_history_entries: input_history,
             session_id,
             history_save_tx,
             theme,
-            account_query_supported,
-        )
+            context_limit_chars,
+        })
         .await
     }));
 
-    if account_query_supported {
-        let balance_tx = agent_tx2;
+    if account_enabled {
+        // Initial query on startup so the bottom bar can show data immediately.
+        let startup_tx = account_tx.clone();
         tokio::spawn(async move {
-            if tact_llm::is_deepseek() {
-                if let Ok(balance) = query_deepseek_balance().await {
-                    let _ = balance_tx.send(AgentUpdate::Balance(balance));
+            match account::query_once().await {
+                Ok(result) => {
+                    let _ = startup_tx.send(account::into_update(result));
                 }
-            } else if tact_llm::is_kimi_balance_supported() {
-                if let Ok(balance) = query_kimi_balance().await {
-                    let _ = balance_tx.send(AgentUpdate::Balance(balance));
+                Err(err) => {
+                    let _ = startup_tx.send(AccountUpdate::Error(err));
                 }
-            } else if let Ok(quota) = query_kimi_code_usage().await {
-                let _ = balance_tx.send(AgentUpdate::UsageQuota(quota));
             }
         });
+        account::spawn_poller(account_tx.clone());
     }
 
-    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, image_work_dir));
+    let driver = tokio::spawn(run_command_loop_with_account(
+        agent,
+        user_cmd_rx,
+        image_work_dir,
+        Some(account_tx),
+    ));
 
     tui_handle.await??;
     let agent = driver.await.expect("command driver task panicked");

@@ -119,7 +119,25 @@ sequenceDiagram
 
 ---
 
+## Mind Map
+
+Right-hand tree of all 25 chapters. [Open full page](./mindmap.html) · [Mermaid source](./mindmap.md) · [PNG](./mindmap.png)
+
+<!-- Embedded interactive mind map (renders in HTML/CHM export and VS Code preview; GitHub strips iframes) -->
+<iframe
+  src="./mindmap.html?embed"
+  title="Tact Book Mind Map"
+  width="100%"
+  height="880"
+  style="border:1px solid #2a2a3e;border-radius:10px;background:#1a1a2e;display:block;max-width:100%;"
+  loading="lazy"
+></iframe>
+
+---
+
 ## Table of Contents
+
+**Windows CHM:** run `./book/scripts/build-chm.sh` then `powershell -File book/scripts/build-chm.ps1` on Windows — see [scripts/README.md](./scripts/README.md#chm-windows-compiled-html-help).
 
 Chapters follow **`Agent::agent_loop` execution order**: session → prompt inputs → compaction → LLM recovery → tool pipeline → domain tools → side systems.
 
@@ -149,12 +167,13 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 22 | [LLM Providers](./22_chapter_llm.md) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
 | 23 | [Terminal UI](./23_chapter_tui.md) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
 | 24 | [Testing Strategy](./24_chapter_testing.md) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
+| 25 | [Agent–TUI Protocol](./25_chapter_protocol.md) | `tact_protocol` message types, plan step lifecycle, task-level state transitions |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 24** documents the integration test harness.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 24** documents the integration test harness. **Ch 25** documents the `tact_protocol` message types and state transitions.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
@@ -190,8 +209,8 @@ Future additions may cover deployment or plugin APIs.
 - Tact LSP source: [crates/tact/src/lsp/](../crates/tact/src/lsp/)
 - Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
 - Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
-- Tact TUI source: [crates/tui/src/lib.rs](../crates/tui/src/lib.rs)
-- Tact UI binary: [crates/tact-ui/](../crates/tact-ui/) (`main.rs`, `interactive.rs`, `headless.rs`, …)
+- Tact protocol source: [crates/protocol/src/agent.rs](../crates/protocol/src/agent.rs)
+- Protocol state machines: [book/25_chapter_protocol.md](./25_chapter_protocol.md)
 - TUI rendering deep dive: [docs/tui_rendering.md](../docs/tui_rendering.md)
 
 ---
