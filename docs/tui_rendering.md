@@ -51,7 +51,7 @@ The main loop is in `run_tui()` in `crates/tui/src/lib.rs`:
 
 1. **Consume Agent updates**: drain `agent_rx` before drawing to keep state consistent.
 2. **Dirty check**: redraw when `app.dirty` is `true`, `Status::Done`, or any tool is still running (`!app.tools.active.is_empty()` — keeps live elapsed time updating).
-3. **Compute layout**: split the area based on terminal size, input box height, and balance row count.
+3. **Compute layout**: split the area based on terminal size and input box height (bottom bar is always 2 rows).
 4. **Render by layer**: status bar → main area → input box → bottom bar → popups.
 5. **Clean up state**: e.g., `Done` highlight reverts to `Idle` after 2s, `flash_msg` clears after 3s.
 
@@ -99,7 +99,7 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 ### Top Status Bar (`render_status_bar`)
 
-- Shows current input mode (`Normal` / `Insert` / `Search` / `Palette` / `Select`).
+- Shows current input mode (`Normal` / `Insert` / `Palette` / `Select` / `FilePicker`).
 - Shows current focus panel (`[Log]` / `[Plan]`).
 - Shows task status according to `Status`:
   - `Idle`: theme, language, shortcut hints
@@ -112,13 +112,10 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 ### Bottom Bar (`render_bottom_bar`)
 
-- Focus panel hint
-- Working directory, Git branch
-- Current model, max tokens, thinking budget
-- Token statistics (prompt / completion / cache hit / reasoning)
-- **Cost**: elapsed time for the current prompt (live while running; frozen after task complete/fail until the next prompt)
-- **Up**: total TUI process uptime
-- DeepSeek and Kimi account balances (optional extra rows)
+Always **2 rows**:
+
+- **Row 1**: focus panel hint, working directory, Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
+- **Row 2**: current model, max tokens, thinking budget; token statistics (prompt / completion / cache hit / reasoning); **Cost** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime)
 
 ---
 
@@ -126,7 +123,7 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 ### Command Line (`render_command_line`)
 
-Used for `Search` (prefixed with `/`) and `Palette` (no prefix) modes:
+Used for `Palette` mode:
 
 - Displays `cmd_line` content.
 - Cursor is positioned at the end of the text.
@@ -224,10 +221,9 @@ pub(crate) trait Renderable {
 The basic log rendering unit, supporting:
 
 - Pre-wrapping cache
-- Search highlight (yellow background)
-- Mouse selection (inverted color)
-- Word-level double-click selection
+- Mouse / word selection (inverted color via `selection_range`)
 - Thinking block collapsed indicator prefix
+- Left gutter indent columns
 
 ### Card Cells
 
@@ -330,7 +326,7 @@ Popups usually:
 Rendering is driven by the following state machines; see `docs/state_machines.md` for details:
 
 - `Status`: Idle / Planning / Executing / WaitingForUser / Done
-- `InputMode`: Normal / Insert / Search / Palette / Select
+- `InputMode`: Normal / Insert / Palette / Select / FilePicker
 - `SelectPopup`: Inactive / Active / Confirmed / Cancelled
 - `StreamState` / `ThinkingState`: streaming output parsing
 

@@ -99,7 +99,7 @@ Pre-push runs `./scripts/check-rust.sh` (fmt check, clippy, and integration test
 
 **Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + selected row), diff/code/thinking popups (scroll + write_file gutter + bash output), `open_diff_popup` after real `StepFinished`, Normal mode, WaitingForUser full frame, plan multi-step, markdown/code cards in log, narrow terminal.
 
-**Handler tests:** `file_picker.rs`, `select.rs`, `palette.rs`, `search.rs`, `normal.rs`, `mouse.rs` (keyboard, scroll wheel, tool double-click).
+**Handler tests:** `file_picker.rs`, `select.rs`, `palette.rs`, `normal.rs`, `mouse.rs` (keyboard, scroll wheel, tool double-click).
 
 **Gap tests:** `render_gap_tests.rs` (P0/P1/P2 + Balance/flash_msg/startup logo/theme).
 

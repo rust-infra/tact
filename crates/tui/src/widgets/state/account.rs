@@ -16,11 +16,6 @@ pub(crate) struct AccountState {
 }
 
 impl AccountState {
-    /// Whether the state currently holds either balance or quota data.
-    pub(crate) fn is_populated(&self) -> bool {
-        self.balance.is_some() || self.quota.is_some()
-    }
-
     /// Replace any previous state with a balance result.
     pub(crate) fn set_balance(&mut self, info: BalanceInfo) {
         self.balance = Some(info);

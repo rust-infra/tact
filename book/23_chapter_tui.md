@@ -193,7 +193,7 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 │    ├─ draggable divider
 │    └─ log panel (right or full width)
 ├─ input (1–3 lines + border) ───────── render_input_box
-└─ bottom (2–3 rows) ────────────────── render_bottom_bar
+└─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
@@ -202,7 +202,7 @@ Vertical constraints in `lib.rs`:
 - Top bar: fixed 1 row.
 - Main area: `Constraint::Min(3)`.
 - Input height: `min(lines, 3) + 2` for border.
-- Bottom height: 2 rows, or 3 when balance info is present.
+- Bottom height: always 2 rows (account balance/quota appends to row 1, not a third row).
 
 Popups are drawn **after** the base layout so they paint on top. Most use `Clear` first (no drop shadow — avoids dark bands on some terminals).
 
@@ -285,7 +285,9 @@ pub(crate) trait Renderable {
 
 **Top bar** (`render_status_bar`): input mode, focused panel (`Log` / `Plan`), `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`.
 
-**Bottom bar** (`render_bottom_bar`): cwd, git branch, model + token limits, token usage (prompt / completion / cache / reasoning), prompt elapsed time (live while running), process uptime, optional DeepSeek/Kimi balance rows.
+**Bottom bar** (`render_bottom_bar`, always 2 rows):
+- Row 1: focus hint, cwd, git branch, plus optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi when available).
+- Row 2: model + token limits, token usage (prompt / completion / cache / reasoning), prompt elapsed time (live while running), process uptime.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
 
@@ -297,8 +299,8 @@ pub(crate) trait Renderable {
 
 | Popup | Trigger | File |
 |-------|---------|------|
-| Command palette | `:` / `InputMode::Palette` | `popups/command_palette.rs` |
-| Slash commands | `/` while typing | `popups/slash_command.rs` |
+| Command palette | `/` in Normal mode / `InputMode::Palette` | `popups/command_palette.rs` |
+| Slash commands | `/` while typing in Insert | `popups/slash_command.rs` |
 | File picker | `@` attachment flow | `popups/file_picker.rs` |
 | Select | `RequestSelect` permission / agent choice | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
@@ -578,7 +580,7 @@ Cross-reference: [Ch 25 Agent–TUI Protocol](./25_chapter_protocol.md) for mess
 
 ## 7. Input Modes and Themes
 
-`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Select`, `Palette`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`.
+`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Palette`, `Select`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`. Normal-mode `/` opens the command palette; Insert-mode `/` opens the slash-command popup (same command list). Palette command `save` writes the log to `std::env::temp_dir()/agent_log_{timestamp}.txt` and shows the full path in a system message.
 
 Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 

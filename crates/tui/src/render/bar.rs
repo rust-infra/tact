@@ -76,6 +76,69 @@ fn render_progress_bar(current: usize, total: usize, _theme: &crate::theme::Them
     bar
 }
 
+/// Format balance or usage quota for the bottom bar (appended to row 1).
+fn format_account_suffix(app: &App) -> Option<String> {
+    let msgs = app.msgs();
+    app.account_rx.as_ref()?;
+    if let Some(bi) = &app.account.balance {
+        let status = if bi.is_available {
+            msgs.bottom_balance_ok
+        } else {
+            msgs.bottom_balance_err
+        };
+        let entries: String = bi
+            .balance_infos
+            .iter()
+            .map(|e| {
+                format!(
+                    " {}:total={:.2} grant={:.2} topup={:.2}",
+                    e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" |");
+        return Some(
+            msgs.bottom_balance_tmpl
+                .replacen("{}", status, 1)
+                .replacen("{}", &entries, 1),
+        );
+    }
+    if let Some(quota) = &app.account.quota {
+        let status = if quota.is_available {
+            msgs.bottom_balance_ok
+        } else {
+            msgs.bottom_balance_err
+        };
+        let entries: String = quota
+            .windows
+            .iter()
+            .map(|w| {
+                let remaining = format_quota_value(w.remaining);
+                let limit = format_quota_value(w.limit);
+                if let Some(pct) = w.usage_pct() {
+                    format!(
+                        " {}:{:.0}% {} {}/{}",
+                        w.label,
+                        pct,
+                        render_usage_bar(pct),
+                        remaining,
+                        limit
+                    )
+                } else {
+                    format!(" {}:{}/{}", w.label, remaining, limit)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" |");
+        return Some(
+            msgs.bottom_usage_tmpl
+                .replacen("{}", status, 1)
+                .replacen("{}", &entries, 1),
+        );
+    }
+    None
+}
+
 /// Render the bottom bar, showing focused panel, shortcut hints, working directory, Git branch,
 /// Model info, token stats, task elapsed time, TUI uptime, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
@@ -143,13 +206,16 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             .split(area);
         let top_area = areas[0];
         let mid_area = areas.get(1).copied().unwrap_or(top_area);
-        let bottom_area = areas.get(2).copied();
-        let top_text = msgs
+        let mut top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
             //.replacen("{}", tips, 1)
             .replacen("{}", &app.workspace_dir, 1)
             .replacen("{}", branch, 1);
+        if let Some(account) = format_account_suffix(app) {
+            top_text.push_str(" │ ");
+            top_text.push_str(&account);
+        }
         let cache_str = if app.status_bar.token_total > 0
             || app.status_bar.token_cache_hit > 0
             || app.status_bar.token_cache_miss > 0
@@ -193,68 +259,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         let bar2 = Paragraph::new(mid_text).style(style);
         frame.render_widget(bar1, top_area);
         frame.render_widget(bar2, mid_area);
-
-        if let Some(bottom_area) = bottom_area
-            && app.account_rx.is_some()
-        {
-            if let Some(bi) = &app.account.balance {
-                let status = if bi.is_available {
-                    msgs.bottom_balance_ok
-                } else {
-                    msgs.bottom_balance_err
-                };
-                let entries: String = bi
-                    .balance_infos
-                    .iter()
-                    .map(|e| {
-                        format!(
-                            " {}:total={:.2} grant={:.2} topup={:.2}",
-                            e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" |");
-                let balance_text = msgs
-                    .bottom_balance_tmpl
-                    .replacen("{}", status, 1)
-                    .replacen("{}", &entries, 1);
-                let bar3 = Paragraph::new(balance_text).style(style);
-                frame.render_widget(bar3, bottom_area);
-            } else if let Some(quota) = &app.account.quota {
-                let status = if quota.is_available {
-                    msgs.bottom_balance_ok
-                } else {
-                    msgs.bottom_balance_err
-                };
-                let entries: String = quota
-                    .windows
-                    .iter()
-                    .map(|w| {
-                        let remaining = format_quota_value(w.remaining);
-                        let limit = format_quota_value(w.limit);
-                        if let Some(pct) = w.usage_pct() {
-                            format!(
-                                " {}:{:.0}% {} {}/{}",
-                                w.label,
-                                pct,
-                                render_usage_bar(pct),
-                                remaining,
-                                limit
-                            )
-                        } else {
-                            format!(" {}:{}/{}", w.label, remaining, limit)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" |");
-                let usage_text = msgs
-                    .bottom_usage_tmpl
-                    .replacen("{}", status, 1)
-                    .replacen("{}", &entries, 1);
-                let bar3 = Paragraph::new(usage_text).style(style);
-                frame.render_widget(bar3, bottom_area);
-            }
-        }
     }
 }
 
@@ -428,10 +432,9 @@ mod render_tests {
         });
 
         let text = render_app_text(&mut app, 120, 12);
-        let bottom_row = text.lines().last().unwrap_or("");
         assert!(
-            bottom_row.contains("12.50") || bottom_row.contains("USD"),
-            "balance row should render on bottom bar last row: {bottom_row:?}"
+            text.contains("12.50") || text.contains("USD"),
+            "balance should append on bottom bar row 1, got:\n{text}"
         );
     }
 

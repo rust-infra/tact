@@ -528,10 +528,9 @@ fn balance_update_renders_in_bottom_bar() {
     }));
 
     let text = render_app_text(&mut app, 120, 12);
-    let bottom_row = text.lines().last().unwrap_or("");
     assert!(
-        bottom_row.contains("42.00") || bottom_row.contains("USD"),
-        "Balance amount should render on bottom bar last row, got: {bottom_row:?}\nfull:\n{text}"
+        text.contains("42.00") || text.contains("USD"),
+        "Balance amount should append on bottom bar row 1, got:\n{text}"
     );
 }
 
@@ -554,14 +553,13 @@ fn usage_quota_update_renders_in_bottom_bar() {
     }));
 
     let text = render_app_text(&mut app, 120, 12);
-    let bottom_row = text.lines().last().unwrap_or("");
     assert!(
-        bottom_row.contains("week") && bottom_row.contains("58%"),
-        "usage quota should render label and percentage on bottom bar, got: {bottom_row:?}\nfull:\n{text}"
+        text.contains("week") && text.contains("58%"),
+        "usage quota should render label and percentage on bottom bar row 1, got:\n{text}"
     );
     assert!(
-        bottom_row.contains('█') || bottom_row.contains('░'),
-        "usage quota should render an ASCII progress bar, got: {bottom_row:?}\nfull:\n{text}"
+        text.contains('█') || text.contains('░'),
+        "usage quota should render an ASCII progress bar, got:\n{text}"
     );
 }
 
