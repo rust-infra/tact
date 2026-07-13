@@ -63,11 +63,11 @@ impl App {
 
     pub(crate) fn close_overlay_popup(&mut self) {
         if self.thinking.popup.is_some() {
-            self.thinking.popup = None;
+            self.close_thinking_popup();
         } else if self.tools.popup.is_some() {
-            self.tools.popup = None;
+            self.close_diff_popup();
         } else if self.code_popup.is_some() {
-            self.code_popup = None;
+            self.close_code_popup();
         }
     }
 

@@ -1,6 +1,7 @@
 use crate::theme::Theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Theme-aware StyleSheet for tui-markdown.
 #[derive(Clone, Copy, Debug)]
@@ -151,7 +152,20 @@ pub(crate) fn is_horizontal_rule(line: &str) -> bool {
     marks.iter().all(|&c| c == first)
 }
 
+/// Display width of a cell (CJK counts as 2 columns in terminal).
+fn cell_display_width(cell: &str) -> usize {
+    UnicodeWidthStr::width(cell)
+}
+
+/// Pad a cell to `width` terminal columns (left content, right spaces).
+fn pad_cell(cell: &str, width: usize) -> String {
+    let pad = width.saturating_sub(cell_display_width(cell));
+    format!(" {cell}{:pad$} ", "", pad = pad)
+}
+
 /// Parses Markdown table raw lines into column-aligned ratatui Lines.
+///
+/// Column widths use Unicode display width so CJK headers/cells align with ASCII.
 pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
     let rows: Vec<Vec<String>> = lines
         .iter()
@@ -174,9 +188,17 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
     let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut col_widths = vec![0; col_count];
     for row in &rows {
+        // Skip separator rows when measuring — dashes shouldn't widen columns.
+        let is_sep = row.iter().all(|c| {
+            c.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        });
+        if is_sep {
+            continue;
+        }
         for (i, cell) in row.iter().enumerate() {
             if i < col_widths.len() {
-                col_widths[i] = col_widths[i].max(cell.len());
+                col_widths[i] = col_widths[i].max(cell_display_width(cell));
             }
         }
     }
@@ -185,21 +207,35 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
     let mut raw_lines = Vec::new();
 
     for (row_idx, row) in rows.iter().enumerate() {
-        let mut cells = Vec::new();
-        for (i, cell) in row.iter().enumerate() {
-            let width = col_widths.get(i).copied().unwrap_or(0);
-            cells.push(format!(" {:width$} ", cell, width = width));
-        }
-        let line_text = format!("|{}|", cells.join("|"));
-
         let is_sep = row.iter().all(|c| {
             c.chars()
                 .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
         });
 
         if is_sep {
+            // Render a visual separator that matches column widths.
+            let sep_cells: Vec<String> = (0..col_count)
+                .map(|i| {
+                    let w = col_widths.get(i).copied().unwrap_or(0).max(1);
+                    format!(" {} ", "-".repeat(w))
+                })
+                .collect();
+            let line_text = format!("|{}|", sep_cells.join("|"));
+            styled_lines.push(Line::from(Span::styled(
+                line_text.clone(),
+                Style::default().fg(theme.accent),
+            )));
+            raw_lines.push(line_text);
             continue;
         }
+
+        let mut cells = Vec::new();
+        for i in 0..col_count {
+            let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            let width = col_widths.get(i).copied().unwrap_or(0);
+            cells.push(pad_cell(cell, width));
+        }
+        let line_text = format!("|{}|", cells.join("|"));
 
         let style = if row_idx == 0 {
             Style::default()
@@ -277,5 +313,63 @@ mod tests {
         let (styled, raw) = format_table(&rows, &theme());
         assert!(!styled.is_empty());
         assert!(raw.iter().any(|r| r.contains("foo")));
+        // Header + separator + body
+        assert_eq!(raw.len(), 3);
+        let pipe_cols: Vec<Vec<usize>> = raw
+            .iter()
+            .map(|r| {
+                r.char_indices()
+                    .filter(|(_, c)| *c == '|')
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .collect();
+        assert!(
+            pipe_cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe columns should align:\n{}",
+            raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn format_table_aligns_cjk_and_ascii() {
+        let rows = vec![
+            "| # | 文件名 | 类型 | 内容 |".to_string(),
+            "|---|--------|------|------|".to_string(),
+            "| 1 | 'alpha_27c4.txt' | 文本 | 随机问候 + 时间戳 |".to_string(),
+            "| 3 | 'gamma_a1b2.json' | JSON | {\"name\":\"gamma\"} |".to_string(),
+            "| 5 | 'epsilon.env' | 环境变量 | 测试配置 |".to_string(),
+        ];
+        let (_styled, raw) = format_table(&rows, &theme());
+        assert_eq!(raw.len(), 5, "header + sep + 3 data rows");
+
+        // All rows must have the same display width and pipe positions.
+        let widths: Vec<usize> = raw
+            .iter()
+            .map(|r| UnicodeWidthStr::width(r.as_str()))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "row display widths differ: {widths:?}\n{}",
+            raw.join("\n")
+        );
+
+        let pipe_display_cols = |s: &str| -> Vec<usize> {
+            let mut cols = Vec::new();
+            let mut col = 0;
+            for ch in s.chars() {
+                if ch == '|' {
+                    cols.push(col);
+                }
+                col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            cols
+        };
+        let cols: Vec<Vec<usize>> = raw.iter().map(|r| pipe_display_cols(r)).collect();
+        assert!(
+            cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe display columns misaligned:\n{}",
+            raw.join("\n")
+        );
     }
 }
