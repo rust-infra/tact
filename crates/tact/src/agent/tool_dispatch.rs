@@ -553,10 +553,7 @@ mod tests {
             "Error: Text not found in src/lib.rs",
             &StepStatus::Failed,
         );
-        assert_eq!(
-            out.as_deref(),
-            Some("Error: Text not found in src/lib.rs")
-        );
+        assert_eq!(out.as_deref(), Some("Error: Text not found in src/lib.rs"));
     }
 
     #[test]

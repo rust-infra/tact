@@ -46,15 +46,9 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
     }
 
     let (updated, replaced) = if input.replace_all {
-        (
-            content.replace(&input.old_text, &input.new_text),
-            count,
-        )
+        (content.replace(&input.old_text, &input.new_text), count)
     } else {
-        (
-            content.replacen(&input.old_text, &input.new_text, 1),
-            1,
-        )
+        (content.replacen(&input.old_text, &input.new_text, 1), 1)
     };
 
     fs::write(&path, updated)
