@@ -7,13 +7,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-/// Render command-line input (Search / Palette mode).
+/// Render command-line input (Palette mode).
 pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
-    let prefix = match app.input_mode {
-        InputMode::Search => "/",
-        _ => "",
-    };
-    let content = format!("{}{}", prefix, app.cmd_line);
+    let content = app.cmd_line.clone();
     let input_para = Paragraph::new(content)
         .style(
             Style::default()
@@ -33,7 +29,7 @@ pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Render the main input box (Insert mode), or delegate to command-line rendering.
 pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
-    if app.input_mode == InputMode::Search || app.input_mode == InputMode::Palette {
+    if app.input_mode == InputMode::Palette {
         render_command_line(frame, area, app);
         return;
     }

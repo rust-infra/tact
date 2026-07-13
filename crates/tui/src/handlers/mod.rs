@@ -4,7 +4,6 @@ mod insert;
 mod mouse;
 mod normal;
 mod palette;
-mod search;
 mod select;
 
 pub(crate) use file_picker::handle_file_picker_mode;
@@ -15,10 +14,9 @@ pub(crate) use mouse::{
 };
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use palette::handle_palette_mode;
-pub(crate) use search::handle_search_mode;
 pub(crate) use select::handle_select_mode;
 
-use crate::widgets::state::{App, InputMode, Status};
+use crate::widgets::state::{App, Status};
 use arboard::Clipboard;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -307,14 +305,6 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
-        "search" => {
-            app.input_mode = InputMode::Search;
-            app.cmd_line.clear();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
-        }
         "cancel" => {
             if !matches!(app.status, Status::Idle) {
                 let _ = app.user_cmd_tx.send(UserCommand::Cancel);
@@ -344,13 +334,6 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "lang" => {
             app.toggle_language();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
-        }
-        "party" => {
-            app.toggle_party_mode();
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,

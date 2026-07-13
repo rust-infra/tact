@@ -69,9 +69,9 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
 
                 // Determine icon: folder or file
                 let (icon, path_display) = if opt.ends_with('/') {
-                    ("📁 ", opt.trim_end_matches('/'))
+                    ("\u{f114} ", opt.trim_end_matches('/'))
                 } else {
-                    ("📄 ", opt.as_str())
+                    ("\u{f15b} ", opt.as_str())
                 };
 
                 let prefix = if is_selected {

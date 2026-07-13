@@ -77,7 +77,7 @@ pub struct Theme {
     pub warning: Color,       // Warning (approval needed, executing)
     pub error: Color,         // Error color
     pub success: Color,       // Success (user input, completion markers)
-    pub highlight: Color,     // Highlight (selection, search match background)
+    pub highlight: Color,     // Highlight (selection background)
     pub border: Color,        // Border color
     pub status_bar_bg: Color, // Status bar background
     pub bottom_bar_bg: Color, // Bottom bar background
@@ -86,9 +86,8 @@ pub struct Theme {
     pub input_box_fg: Color,  // Input box foreground
 }
 
-impl Theme {
-    /// Returns the color configuration for the given theme name.
-    pub fn by_name(name: ThemeName) -> Self {
+impl From<ThemeName> for Theme {
+    fn from(name: ThemeName) -> Self {
         match name {
             ThemeName::Dark => Self {
                 name,
@@ -252,7 +251,9 @@ impl Theme {
             },
         }
     }
+}
 
+impl Theme {
     /// Panel/card border style. Neo-Brutal uses square corners instead of rounded.
     pub fn block_border_type(&self) -> BorderType {
         match self.name {
@@ -335,29 +336,5 @@ impl Theme {
         } else {
             Color::Rgb(128, 128, 128)
         }
-    }
-
-    pub fn search_match_bg(&self) -> Color {
-        if self.is_light() {
-            self.highlight
-        } else {
-            Color::Yellow
-        }
-    }
-
-    pub fn search_match_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Black
-        }
-    }
-
-    /// Parse a theme name string and return the matching theme, falling back to Retro.
-    #[allow(dead_code)]
-    pub(super) fn by_name_str(name: &str) -> Self {
-        name.parse()
-            .map(Self::by_name)
-            .unwrap_or_else(|_| Self::by_name(ThemeName::Retro))
     }
 }

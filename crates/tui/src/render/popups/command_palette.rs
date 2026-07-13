@@ -16,10 +16,9 @@ fn cmd_emoji(cmd: &str) -> &'static str {
         "quit" => "✕",
         "help" => "❓",
         "history" => "📜",
-        "search" => "🔍",
         "balance" => "💰",
         "lang" => "🌐",
-        "party" => "🎉",
+        "model" => "🧠",
         _ => "⚡",
     }
 }
@@ -28,8 +27,8 @@ fn cmd_emoji(cmd: &str) -> &'static str {
 fn cmd_category(cmd: &str) -> &'static str {
     match cmd {
         "save" | "cancel" | "quit" => "  Actions",
-        "help" | "history" | "search" => "  Tools",
-        "theme" | "lang" | "balance" | "party" => "  Settings",
+        "help" | "history" => "  Tools",
+        "theme" | "lang" | "balance" | "model" => "  Settings",
         _ => "",
     }
 }

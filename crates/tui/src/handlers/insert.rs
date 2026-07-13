@@ -671,28 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_party_toggles_party_mode_without_submit() {
-        let (mut app, mut user_cmd_rx) = make_app();
-        let user_cmd_tx = app.user_cmd_tx.clone();
-        app.input = "/party".to_string();
-        app.input_cursor = app.input.len();
-
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
-
-        assert!(app.party_mode, "expected /party to toggle party mode");
-        assert_eq!(app.input, "");
-        assert_eq!(app.input_cursor, 0);
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected /party not to submit task"
-        );
-    }
-
-    #[test]
     fn submit_rejected_when_input_exceeds_char_limit() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();

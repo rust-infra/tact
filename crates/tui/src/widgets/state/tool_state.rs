@@ -4,6 +4,7 @@ use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::text::Line;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
+#[derive(Default)]
 pub(crate) struct ToolState {
     /// Currently running tool blocks (live elapsed time in meta row).
     pub(crate) active: Vec<ActiveToolBlock>,
@@ -49,14 +50,4 @@ pub(crate) struct DiffPopup {
     pub scroll: u16,
     pub cached_content: Option<String>,
     pub highlighted_lines: Vec<Line<'static>>,
-}
-
-impl ToolState {
-    pub(crate) fn new() -> Self {
-        Self {
-            active: Vec::new(),
-            blocks: Vec::new(),
-            popup: None,
-        }
-    }
 }

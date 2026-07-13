@@ -147,15 +147,6 @@
 //! │                                                                       │
 //! │  Files: render/cells/tool.rs (render_partial, case B)                 │
 //! └───────────────────────────────────────────────────────────────────────┘
-//!
-//! ┌─ TODO(step 6): wire _summary_raw into search ── DEFERRED ─────────────┐
-//! │                                                                       │
-//! │  _summary_raw is the unstyled copy of the summary line. Once search   │
-//! │  covers LogColumnRenderer cells (not just TextCell raw_text), include │
-//! │  this field in the search corpus.                                     │
-//! │                                                                       │
-//! │  Files: render/cells/tool.rs, widgets/state/app/search.rs             │
-//! └───────────────────────────────────────────────────────────────────────┘
 //! ```
 
 use std::time::Instant;

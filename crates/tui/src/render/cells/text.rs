@@ -20,16 +20,12 @@ fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
 }
 
 /// Rendering unit for a single log message.
-/// Pre-cached line wrapping result, supporting search highlights and mouse selections.
+/// Pre-cached line wrapping result, supporting mouse selections.
 pub(crate) struct TextCell {
     /// Pre-wrapped visual lines (cloned directly during normal rendering).
     cached_lines: Vec<Line<'static>>,
-    /// Raw text (used for search highlighting and selection).
+    /// Raw text (used for selection).
     raw_text: String,
-    /// Search term.
-    search_term: String,
-    /// Whether this line is a search match.
-    is_search_match: bool,
     /// Selected byte range within raw_text, None if no selection.
     selection_range: Option<(usize, usize)>,
     /// First line prefix (thinking block collapse indicator).
@@ -38,44 +34,30 @@ pub(crate) struct TextCell {
     indent_cols: u16,
     /// Normal foreground color.
     fg_color: Color,
-    search_match_bg: Color,
-    search_match_fg: Color,
 }
 
 impl TextCell {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         cached_lines: Vec<Line<'static>>,
         raw_text: String,
-        search_term: String,
-        is_search_match: bool,
         selection_range: Option<(usize, usize)>,
         prefix: Option<String>,
         indent_cols: u16,
         fg_color: Color,
-        search_match_bg: Color,
-        search_match_fg: Color,
     ) -> Self {
         TextCell {
             cached_lines,
             raw_text,
-            search_term,
-            is_search_match,
             selection_range,
             prefix,
             indent_cols,
             fg_color,
-            search_match_bg,
-            search_match_fg,
         }
     }
 
-    /// Build the visual line list for rendering (chooses search highlight/selection/cache based on state).
+    /// Build the visual line list for rendering (selection overlay or cache).
     fn build_lines(&self, width: u16) -> Vec<Line<'_>> {
         let wrap_width = width + self.indent_cols;
-        if self.is_search_match {
-            return self.build_highlighted_line(wrap_width);
-        }
         if let Some((sel_start, sel_end)) = self.selection_range {
             // Whole-line selection can reuse the cached wrap and only flip style.
             if sel_start == 0 && sel_end == self.raw_text.len() {
@@ -90,61 +72,6 @@ impl TextCell {
             return self.build_selected_lines(wrap_width, sel_start, sel_end);
         }
         self.cached_lines.clone()
-    }
-
-    fn build_highlighted_line(&self, wrap_width: u16) -> Vec<Line<'static>> {
-        let lower_raw = self.raw_text.to_lowercase();
-        let lower_term = self.search_term.to_lowercase();
-        // Byte indices from `lower_raw` only align with `raw_text` when lengths match
-        // (e.g. ß → ss would desync). Fall back to unhighlighted rendering.
-        if lower_raw.len() != self.raw_text.len() || lower_term.is_empty() {
-            return wrap_line(
-                &Line::from(Span::styled(
-                    self.raw_text.clone(),
-                    Style::default().fg(self.fg_color),
-                )),
-                wrap_width as usize,
-            );
-        }
-
-        let mut spans = Vec::new();
-        let mut last_idx = 0;
-
-        for (match_idx, _) in lower_raw.match_indices(&lower_term) {
-            let match_idx = self.raw_text.floor_char_boundary(match_idx);
-            let end_idx = self
-                .raw_text
-                .floor_char_boundary(match_idx.saturating_add(lower_term.len()));
-            if match_idx > last_idx {
-                let start = self.raw_text.floor_char_boundary(last_idx);
-                spans.push(Span::styled(
-                    self.raw_text[start..match_idx].to_string(),
-                    Style::default().fg(self.fg_color),
-                ));
-            }
-            spans.push(Span::styled(
-                self.raw_text[match_idx..end_idx].to_string(),
-                Style::default()
-                    .bg(self.search_match_bg)
-                    .fg(self.search_match_fg),
-            ));
-            last_idx = end_idx;
-        }
-        if last_idx < self.raw_text.len() {
-            let start = self.raw_text.floor_char_boundary(last_idx);
-            spans.push(Span::styled(
-                self.raw_text[start..].to_string(),
-                Style::default().fg(self.fg_color),
-            ));
-        }
-
-        let mut line = Line::from(spans);
-        if self.selection_range == Some((0, self.raw_text.len())) {
-            for span in line.spans.iter_mut() {
-                span.style = span.style.add_modifier(Modifier::REVERSED);
-            }
-        }
-        wrap_line(&line, wrap_width as usize)
     }
 
     fn build_selected_lines(
@@ -222,44 +149,11 @@ mod render_tests {
         TextCell::new(
             vec![Line::from("alpha beta gamma")],
             "alpha beta gamma".into(),
-            String::new(),
-            false,
             None,
             None,
             0,
             Color::White,
-            Color::Yellow,
-            Color::Black,
         )
-    }
-
-    #[test]
-    fn search_match_paints_highlight_background() {
-        let cell = TextCell::new(
-            vec![Line::from("find TOKEN end")],
-            "find TOKEN end".into(),
-            "TOKEN".into(),
-            true,
-            None,
-            None,
-            0,
-            Color::White,
-            Color::Yellow,
-            Color::Black,
-        );
-        let area = Rect::new(0, 0, 40, 1);
-        let mut buf = Buffer::empty(area);
-        cell.render(area, &mut buf);
-        let mut has_highlight = false;
-        for x in 0..area.width {
-            if buf[(x, 0)].bg == Color::Yellow {
-                has_highlight = true;
-            }
-        }
-        assert!(
-            has_highlight,
-            "search match should use highlight background"
-        );
     }
 
     #[test]
@@ -267,14 +161,10 @@ mod render_tests {
         let cell = TextCell::new(
             vec![Line::from("select all of this")],
             "select all of this".into(),
-            String::new(),
-            false,
             Some((0, 18)),
             None,
             0,
             Color::White,
-            Color::Yellow,
-            Color::Black,
         );
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
@@ -295,14 +185,10 @@ mod render_tests {
         let cell = TextCell::new(
             vec![Line::from("alpha beta gamma")],
             "alpha beta gamma".into(),
-            String::new(),
-            false,
             Some((6, 10)),
             None,
             0,
             Color::White,
-            Color::Yellow,
-            Color::Black,
         );
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);

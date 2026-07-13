@@ -20,7 +20,7 @@ mod headless_loop;
 
 use crate::handlers::{
     handle_file_picker_mode, handle_insert_mode, handle_normal_mode, handle_palette_mode,
-    handle_search_mode, handle_select_mode,
+    handle_select_mode,
 };
 use crate::render::{
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
@@ -331,35 +331,6 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                             app.show_help = false;
                             app.show_history = false;
                         } else {
-                            // === Konami Code easter egg detection ===
-                            // ↑ ↑ ↓ ↓ ← → ← → b a
-                            let konami_seq: &[KeyCode] = &[
-                                KeyCode::Up,
-                                KeyCode::Up,
-                                KeyCode::Down,
-                                KeyCode::Down,
-                                KeyCode::Left,
-                                KeyCode::Right,
-                                KeyCode::Left,
-                                KeyCode::Right,
-                                KeyCode::Char('b'),
-                                KeyCode::Char('a'),
-                            ];
-                            let expected = konami_seq[app.konami_progress as usize];
-                            if key.code == expected && key.modifiers.is_empty() {
-                                app.konami_progress += 1;
-                                if app.konami_progress >= 10 {
-                                    app.toggle_party_mode();
-                                    app.konami_progress = 0;
-                                }
-                            } else if key.code != KeyCode::Up
-                                && key.code != KeyCode::Down
-                                && key.code != KeyCode::Left
-                                && key.code != KeyCode::Right
-                            {
-                                // Non-arrow key input interrupts the sequence
-                                app.konami_progress = 0;
-                            }
                             // Dispatch to the key handler for the current input mode
                             match app.input_mode {
                                 InputMode::Normal => {
@@ -368,7 +339,6 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 InputMode::Insert => {
                                     handle_insert_mode(&mut app, key, &user_cmd_tx)
                                 }
-                                InputMode::Search => handle_search_mode(&mut app, key),
                                 InputMode::Palette => handle_palette_mode(&mut app, key),
                                 InputMode::Select => handle_select_mode(&mut app, key),
                                 InputMode::FilePicker => {
@@ -653,7 +623,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 app.input = before.clone() + &data + &after;
                                 app.input_cursor = before.len() + data.len();
                             }
-                            InputMode::Search | InputMode::Palette => {
+                            InputMode::Palette => {
                                 // Single-line command: replace newlines with spaces, append to end
                                 let text: String = data.replace(['\n', '\r'], " ");
                                 app.cmd_line.push_str(&text);

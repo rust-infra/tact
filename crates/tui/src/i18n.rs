@@ -39,8 +39,7 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
-    pub log_search_count_tmpl: &'static str, // " 📋 [Log] ({}/{}) " — shown when search active
-    pub thinking_card_title: &'static str,   // "🧠 Thinking ({} line{})"
+    pub thinking_card_title: &'static str, // "🧠 Thinking ({} line{})"
     pub thinking_card_title_pl: &'static str, // "s" / "" for plural
     pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
     pub diff_card_title: &'static str,      // "+{} {}"
@@ -68,7 +67,6 @@ pub struct Messages {
     // ---- 状态栏 ----
     pub mode_normal: &'static str,
     pub mode_insert: &'static str,
-    pub mode_search: &'static str,
     pub mode_palette: &'static str,
     pub mode_select: &'static str,
     pub mode_file_picker: &'static str,
@@ -89,10 +87,9 @@ pub struct Messages {
     pub status_executing_tmpl: &'static str,
     pub status_running_tmpl: &'static str,
     pub status_done_tmpl: &'static str,
-    pub status_party_tmpl: &'static str,
 
     // ---- 底部栏 ----
-    pub bottom_focus_log_plan: &'static str, // "🐬 Plan" / "🐬 Log"
+    pub bottom_focus_log_plan: &'static str, // "● Plan" / "● Log"
     pub bottom_focus_log: &'static str,
     pub bottom_tips_log: &'static str,
     pub bottom_tips_plan: &'static str,
@@ -124,8 +121,6 @@ pub struct Messages {
     pub help_G: &'static str,
     pub help_y: &'static str,
     pub help_t: &'static str,
-    pub help_slash: &'static str,
-    pub help_nN: &'static str,
     pub help_colon: &'static str,
     pub help_insert_header: &'static str,
     pub help_type_task: &'static str,
@@ -176,10 +171,8 @@ pub struct Messages {
     pub cmd_quit: &'static str,
     pub cmd_help: &'static str,
     pub cmd_history: &'static str,
-    pub cmd_search: &'static str,
     pub cmd_balance: &'static str,
     pub cmd_lang: &'static str,
-    pub cmd_party: &'static str,
 
     // ---- 系统消息 ----
     pub step_started_tmpl: &'static str,
@@ -210,11 +203,6 @@ pub struct Messages {
     pub exit_bye: &'static str,
 
     // ---- 派对模式 ----
-    pub party_msg_1: &'static str,
-    pub party_msg_2: &'static str,
-    pub party_msg_3: &'static str,
-    pub party_hint: &'static str,
-    pub party_exit: &'static str,
 
     // ---- 其他 ----
     pub scroll_indicator_tmpl: &'static str,
@@ -232,7 +220,6 @@ impl Messages {
     fn english() -> Self {
         Self {
             log_title: " [Log] ",
-            log_search_count_tmpl: " [Log] ({}/{}) ",
             thinking_card_title: " 🧠 Thinking ({} line{}) ",
             thinking_card_title_pl: "s",
             thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
@@ -245,11 +232,11 @@ impl Messages {
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
             tool_meta_sep: " · ",
-            plan_title: " 🔥 [Execution Plan] ",
+            plan_title: " 📋 [Execution Plan] ",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
-            command_title: " 💻 Command ",
-            input_box_title: " ✏️ Input (Shift/Alt+Enter=newline) ",
+            command_title: " ⌘ Command ",
+            input_box_title: " ❯ Input (Shift/Alt+Enter=newline) ",
             input_box_placeholder: "Type a task and press Enter…",
             history_title: " Task History (Enter to retry, Esc to close) ",
             help_title: " Help (Esc to close) ",
@@ -260,7 +247,6 @@ impl Messages {
 
             mode_normal: " NORMAL ",
             mode_insert: " INSERT ",
-            mode_search: " SEARCH ",
             mode_palette: " PALETTE ",
             mode_select: " SELECT ",
             mode_file_picker: " FILES ",
@@ -281,10 +267,9 @@ impl Messages {
             status_executing_tmpl: "Executing step {}/{}",
             status_running_tmpl: "running {}",
             status_done_tmpl: "{} {} | ✅ Task completed",
-            status_party_tmpl: "🎉 PARTY MODE 🎉 | {}",
 
-            bottom_focus_log_plan: "🐬 Plan",
-            bottom_focus_log: "🐬 Log",
+            bottom_focus_log_plan: "● Plan",
+            bottom_focus_log: "● Log",
             bottom_tips_log: "[j/k scroll] [g/G top/bottom] [y copy] [Y copy code] [e toggle plan]",
             bottom_tips_plan: "[j/k move] [y copy] [e toggle plan]",
             bottom_branch_unknown: "unknown",
@@ -313,8 +298,6 @@ impl Messages {
             help_G: "    G           Go to bottom of log",
             help_y: "    y           Copy selected to clipboard",
             help_t: "    t           Open/close thinking card popup",
-            help_slash: "    :           Search in log (:<term> Enter, n/N navigate)",
-            help_nN: "    n/N         Next/previous search match",
             help_colon: "    /           Command palette (fuzzy filter & execute)",
             help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
             help_type_task: "    Type task, Enter to submit, @ to attach file",
@@ -361,10 +344,8 @@ impl Messages {
             cmd_quit: "Quit application",
             cmd_help: "Show help panel",
             cmd_history: "Show task history",
-            cmd_search: "Search log messages",
             cmd_balance: "Query account balance (DeepSeek/Kimi)",
             cmd_lang: "Toggle language (EN/中文)",
-            cmd_party: "Toggle party mode",
 
             step_started_tmpl: "▶ Executing: {}",
             step_success_prefix: "✓",
@@ -386,7 +367,7 @@ impl Messages {
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
 
-            startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands, ':' for search.",
+            startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
             startup_quotes: &[
                 "  thoughtful communication",
@@ -401,12 +382,6 @@ impl Messages {
             ],
             exit_bye: "Bye! 🔔",
 
-            party_msg_1: "  ✨  Hey there! ✨",
-            party_msg_2: "  You're doing great!",
-            party_msg_3: "  This cat believes in you 🐱",
-            party_hint: "  (Press Konami or \":party\" to toggle)",
-            party_exit: "👋 Party's over! But remember: you're still awesome.",
-
             scroll_indicator_tmpl: "↕ {}/{} ",
         }
     }
@@ -414,7 +389,6 @@ impl Messages {
     fn chinese() -> Self {
         Self {
             log_title: " [日志] ",
-            log_search_count_tmpl: " [日志] ({}/{}) ",
             thinking_card_title: " 🧠 思考中 ({} 行) ",
             thinking_card_title_pl: "", // Chinese has no plural form
             thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
@@ -427,11 +401,11 @@ impl Messages {
             tool_phase_success: "成功",
             tool_phase_failed: "失败",
             tool_meta_sep: " · ",
-            plan_title: " 🔥 [执行计划] ",
+            plan_title: " 📋 [执行计划] ",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
-            command_title: " 💻 命令 ",
-            input_box_title: " ✏️ 输入 (Shift/Alt+Enter 换行) ",
+            command_title: " ⌘ 命令 ",
+            input_box_title: " ❯ 输入 (Shift/Alt+Enter 换行) ",
             input_box_placeholder: "输入任务，按 Enter 提交…",
             history_title: " 任务历史 (Enter 重试, Esc 关闭) ",
             help_title: " 帮助 (Esc 关闭) ",
@@ -442,7 +416,6 @@ impl Messages {
 
             mode_normal: " 普通 ",
             mode_insert: " 插入 ",
-            mode_search: " 搜索 ",
             mode_palette: " 面板 ",
             mode_select: " 选择 ",
             mode_file_picker: " 文件 ",
@@ -458,15 +431,14 @@ impl Messages {
             theme_kawaii: "可爱",
             theme_japanese: "和風",
             theme_brutal: "粗野",
-            status_idle_tmpl: "{} {} │ ⭾ Tab 切换 │ ⌨H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
+            status_idle_tmpl: "{} {} │ ⭾ Tab 切换 │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
             status_planning: "规划中...",
             status_executing_tmpl: "正在执行步骤 {}/{}",
             status_running_tmpl: "并行中 {}",
             status_done_tmpl: "{} {} | ✅ 任务完成",
-            status_party_tmpl: "🎉 派对模式 🎉 | {}",
 
-            bottom_focus_log_plan: "🐬 计划",
-            bottom_focus_log: "🐬 日志",
+            bottom_focus_log_plan: "● 计划",
+            bottom_focus_log: "● 日志",
             bottom_tips_log: "[j/k 滚动] [g/G 顶部/底部] [y 复制] [Y 复制代码] [e 切换计划]",
             bottom_tips_plan: "[j/k 移动] [y 复制] [e 切换计划]",
             bottom_branch_unknown: "未知",
@@ -495,8 +467,6 @@ impl Messages {
             help_G: "    G           跳到日志底部",
             help_y: "    y           复制选中内容到剪贴板",
             help_t: "    t           打开/关闭思考卡片弹窗",
-            help_slash: "    :           搜索日志 (:关键词 Enter, n/N 导航)",
-            help_nN: "    n/N         下一个/上一个搜索结果",
             help_colon: "    /           命令面板 (模糊过滤并执行)",
             help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",
             help_type_task: "    输入任务，按 Enter 提交，@ 附加文件",
@@ -543,10 +513,8 @@ impl Messages {
             cmd_quit: "退出应用",
             cmd_help: "显示帮助面板",
             cmd_history: "显示任务历史",
-            cmd_search: "搜索日志消息",
             cmd_balance: "查询账户余额 (DeepSeek/Kimi)",
             cmd_lang: "切换语言 (EN/中文)",
-            cmd_party: "切换派对模式",
 
             step_started_tmpl: "▶ 正在执行: {}",
             step_success_prefix: "✓",
@@ -568,7 +536,7 @@ impl Messages {
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
 
-            startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板, ':' 搜索。",
+            startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",
             startup_quotes: &[
                 "  thoughtful communication",
@@ -581,12 +549,6 @@ impl Messages {
                 "  🤖 哔啵哔啵，来写代码吧",
             ],
             exit_bye: "再见! 🔔",
-
-            party_msg_1: "  ✨  你好呀! ✨",
-            party_msg_2: "  你做得很棒!",
-            party_msg_3: "  这只猫相信你 🐱",
-            party_hint: "  (按 Konami 码或 \":party\" 切换)",
-            party_exit: "👋 派对结束了! 但记住: 你依然很棒。",
 
             scroll_indicator_tmpl: "↕ {}/{} ",
         }

@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 /// Thinking state: manages reasoning content buffer, title markers, active/completed blocks, and popups.
+#[derive(Default)]
 pub(crate) struct ThinkingState {
     /// Reasoning content buffer.
     pub(crate) buffer: String,
@@ -49,18 +50,4 @@ pub(crate) struct ThinkingPopup {
     pub title: String,
     /// Popup internal scroll offset (line number, relative to the first thinking content line).
     pub scroll: u16,
-}
-
-impl ThinkingState {
-    pub(crate) fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            title_added: false,
-            active_start: None,
-            active_end: None,
-            thinking_start: None,
-            blocks: Vec::new(),
-            popup: None,
-        }
-    }
 }

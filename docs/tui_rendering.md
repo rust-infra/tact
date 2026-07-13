@@ -108,7 +108,6 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
   - `WaitingForUser`: waiting for user approval
   - `Done`: task complete (green highlight for 2s)
 - Special overrides:
-  - `party_mode`: full-color party banner
   - `flash_msg`: temporary notification (3s)
 
 ### Bottom Bar (`render_bottom_bar`)

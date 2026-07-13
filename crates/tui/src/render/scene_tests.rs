@@ -216,16 +216,16 @@ fn full_frame_select_popup_overlays() {
 }
 
 #[test]
-fn full_frame_search_mode_command_line() {
+fn full_frame_palette_mode_command_line() {
     let mut app = make_app();
-    app.input_mode = InputMode::Search;
-    app.cmd_line = "find pattern".into();
+    app.input_mode = InputMode::Palette;
+    app.cmd_line = "theme".into();
 
     let text = render_app_text(&mut app, 100, 24);
 
     assert!(
-        text.contains("find pattern"),
-        "search cmd_line should render, got:\n{text}"
+        text.contains("theme"),
+        "palette cmd_line should render, got:\n{text}"
     );
 }
 

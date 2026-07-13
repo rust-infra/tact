@@ -262,9 +262,6 @@ impl App {
 
                 self.log_scroll.state =
                     ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-                if !self.search.term.is_empty() {
-                    self.update_search_matches();
-                }
                 // u16::MAX is correctly clipped by render_log_panel based on visual line count
                 self.log_scroll.offset = u16::MAX;
             }
@@ -474,9 +471,6 @@ impl App {
 
                 self.log_scroll.state =
                     ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-                if !self.search.term.is_empty() {
-                    self.update_search_matches();
-                }
                 // Auto-scroll to bottom (u16::MAX clipped by render_log_panel to visual line count)
                 self.log_scroll.offset = u16::MAX;
             }
@@ -487,9 +481,6 @@ impl App {
         // StreamChunk / ThinkingChunk also update separately; this redundant call is
         // cheap and harmless).
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        if !self.search.term.is_empty() {
-            self.update_search_matches();
-        }
     }
 
     /// Apply an account-service update (balance / usage quota).

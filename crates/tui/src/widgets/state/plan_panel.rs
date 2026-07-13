@@ -4,6 +4,7 @@ use super::PlanStep;
 use ratatui::widgets::{ListState, ScrollbarState};
 
 /// Execution Plan panel state.
+#[derive(Default)]
 pub(crate) struct PlanPanel {
     pub(crate) steps: Vec<PlanStep>,
     pub(crate) steps_set: BTreeMap<String, PlanStep>,
@@ -15,17 +16,6 @@ pub(crate) struct PlanPanel {
 }
 
 impl PlanPanel {
-    pub(crate) fn new() -> Self {
-        Self {
-            steps: Vec::new(),
-            steps_set: BTreeMap::new(),
-            collapsed: Vec::new(),
-            selected: 0,
-            list_state: ListState::default(),
-            scroll_state: ScrollbarState::new(0),
-            visible: false,
-        }
-    }
     pub(crate) fn reset(&mut self) {
         self.steps_set.clear();
         self.steps.clear();

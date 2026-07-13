@@ -656,8 +656,5 @@ impl App {
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             self.log_scroll.offset = u16::MAX;
         }
-        if !self.search.term.is_empty() {
-            self.update_search_matches();
-        }
     }
 }

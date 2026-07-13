@@ -218,11 +218,13 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
-    use crate::theme::Theme;
+    use crate::theme::{Theme, ThemeName};
 
     fn theme() -> Theme {
-        Theme::by_name_str("retro")
+        Theme::from(ThemeName::from_str("retro").unwrap())
     }
 
     #[test]
