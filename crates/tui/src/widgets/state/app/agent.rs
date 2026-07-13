@@ -1,11 +1,11 @@
 use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
 use crate::widgets::state::*;
 use crate::widgets::tool_widget::{ToolPhase, ToolWidget};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
-use tact_protocol::{AccountError, AccountUpdate, AgentErrorKind, AgentUpdate};
+use tact_protocol::{AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, ThinkingChunk};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -36,11 +36,16 @@ impl App {
 
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
-        // Close the previous thinking block: when any non-ThinkingChunk update arrives,
-        // it means the LLM has finished the thinking phase and subsequent output
-        // does not belong to the thinking region.
-        if !matches!(update, AgentUpdate::ThinkingChunk(_)) {
-            self.flush_and_close_thinking();
+        // Safety net: close an open thinking region on content-producing updates
+        // that are not ThinkingChunk. Explicit ThinkingChunk::Finished is preferred;
+        // TokenUsage / ModelInfo must not close the region (they can arrive mid-stream).
+        match &update {
+            AgentUpdate::ThinkingChunk(_)
+            | AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_) => {}
+            _ => {
+                self.flush_and_close_thinking();
+            }
         }
         // Remove the loading placeholder on any content-producing update.
         // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
@@ -214,81 +219,26 @@ impl App {
                 self.select.set(prompt, options, respond, false);
                 self.input_mode = InputMode::Select;
             }
-            AgentUpdate::ThinkingChunk(text) => {
-                self.thinking.buffer.push_str(&text);
-                let msgs = self.msgs();
-
-                // Add a title line on first thinking chunk
-                if !self.thinking.title_added {
-                    let title_style = Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC)
-                        .bg(Color::Rgb(35, 35, 45));
-                    // Insert a blank isolation line before the title to establish visual
-                    // separation before collapsing
-                    self.append_blank(RawMessageType::LLMThinking);
-                    let separator_idx = self.messages.len() - 1;
-
-                    self.append_msg(
-                        Line::from(Span::styled(msgs.thinking_title.to_string(), title_style)),
-                        msgs.thinking_title.to_string(),
-                        RawMessageType::LLMThinking,
-                    );
-                    self.thinking.title_added = true;
-                    self.thinking.active_start = Some(separator_idx);
-                    self.thinking.thinking_start = Some(Instant::now());
+            AgentUpdate::ThinkingChunk(chunk) => {
+                match chunk {
+                    ThinkingChunk::Started => {
+                        self.begin_thinking_block();
+                    }
+                    ThinkingChunk::Delta(text) => {
+                        // Started may be missing on older producers — open on first delta.
+                        if !self.thinking.title_added {
+                            self.begin_thinking_block();
+                        }
+                        self.append_thinking_delta(&text);
+                    }
+                    ThinkingChunk::Finished => {
+                        self.flush_and_close_thinking();
+                    }
                 }
-
-                // Line-level buffering: extract complete lines for real-time display
-                let style = Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::ITALIC)
-                    .bg(Color::Rgb(35, 35, 45));
-                while let Some(idx) = self.thinking.buffer.find('\n') {
-                    let line = self.thinking.buffer[..idx].to_string();
-                    self.thinking.buffer = self.thinking.buffer[idx + 1..].to_string();
-                    let text = if line.is_empty() {
-                        String::new()
-                    } else {
-                        msgs.thinking_line_prefix.replace("{}", &line).to_string()
-                    };
-                    self.append_msg(
-                        Line::from(Span::styled(text.clone(), style)),
-                        text,
-                        RawMessageType::LLMThinking,
-                    );
-                    self.thinking.active_end = Some(self.messages.len() - 1);
-                }
-
-                self.log_scroll.state =
-                    ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-                // u16::MAX is correctly clipped by render_log_panel based on visual line count
-                self.log_scroll.offset = u16::MAX;
             }
             AgentUpdate::StreamChunk(text) => {
                 self.ensure_gap_after_tools();
-                // Flush leftover thinking lines (the last line without trailing newline)
-                // Note: the thinking block has already been closed by the gate at
-                // the entry of handle_agent_update.
-                if !self.thinking.buffer.is_empty() {
-                    let style = Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC)
-                        .bg(Color::Rgb(35, 35, 45));
-                    let text = if self.thinking.buffer.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("│ {}", self.thinking.buffer)
-                    };
-                    if !text.is_empty() {
-                        self.append_msg(
-                            Line::from(Span::styled(text.clone(), style)),
-                            text,
-                            RawMessageType::LLMThinking,
-                        );
-                    }
-                    self.thinking.buffer.clear();
-                }
+                // Thinking region is closed by the safety gate above when still open.
                 self.stream.buffer.push_str(&text);
 
                 // Line-level buffering: code blocks accumulate by complete unit,
@@ -538,6 +488,7 @@ mod lifecycle_tests {
     use std::path::PathBuf;
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
+        ThinkingChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -797,7 +748,9 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunk_flushes_on_stream() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk("reasoning line".into()));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "reasoning line".into(),
+        )));
         assert!(!app.thinking.buffer.is_empty());
         app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
         assert!(app.thinking.buffer.is_empty());
@@ -909,11 +862,74 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunks_accumulate_before_non_thinking_update() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk("part1 ".into()));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk("part2".into()));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "part1 ".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "part2".into(),
+        )));
         assert!(app.thinking.buffer.contains("part1"));
         assert!(app.thinking.buffer.contains("part2"));
         app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
         assert!(app.thinking.buffer.is_empty());
+    }
+
+    #[test]
+    fn thinking_finished_closes_without_other_update() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "done thinking\n".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        assert!(app.thinking.buffer.is_empty());
+        assert!(app.thinking.active_start.is_none());
+        assert!(!app.thinking.blocks.is_empty());
+    }
+
+    #[test]
+    fn token_usage_does_not_close_open_thinking() {
+        use tact_protocol::TokenUsageInfo;
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "still thinking".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::TokenUsage(TokenUsageInfo {
+            prompt: 1,
+            completion: 2,
+            total: 3,
+            ..Default::default()
+        }));
+        assert!(app.thinking.active_start.is_some());
+        assert!(app.thinking.buffer.contains("still thinking"));
+    }
+
+    #[test]
+    fn empty_started_finished_leaves_no_thinking_ui() {
+        let mut app = make_app();
+        let before = app.raw_messages.len();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        assert!(app.thinking.active_start.is_some());
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.blocks.is_empty());
+        assert_eq!(app.raw_messages.len(), before);
+        assert!(!app.thinking.title_added);
+    }
+
+    #[test]
+    fn whitespace_only_delta_finished_leaves_no_thinking_block() {
+        let mut app = make_app();
+        let before = app.raw_messages.len();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "   ".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        assert!(app.thinking.blocks.is_empty());
+        assert!(app.thinking.active_start.is_none());
+        assert_eq!(app.raw_messages.len(), before);
     }
 }

@@ -19,9 +19,46 @@ use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
 
 use super::{LlmClient, LlmError, convert::build_openai_request};
+
+/// Build UI events for one OpenAI-compatible stream delta.
+///
+/// Reasoning is always emitted before content so a single SSE chunk that carries
+/// both fields still renders thinking above the answer.
+fn openai_delta_ui_events(
+    thinking_open: &mut bool,
+    reasoning: Option<&str>,
+    content: Option<&str>,
+) -> Vec<AgentUpdate> {
+    let mut events = Vec::new();
+    if let Some(reasoning) = reasoning.filter(|s| !s.is_empty()) {
+        if !*thinking_open {
+            *thinking_open = true;
+            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        }
+        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            reasoning.to_string(),
+        )));
+    }
+    if let Some(content) = content.filter(|s| !s.is_empty()) {
+        if *thinking_open {
+            *thinking_open = false;
+            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        }
+        events.push(AgentUpdate::StreamChunk(content.to_string()));
+    }
+    events
+}
+
+fn finish_thinking_event(thinking_open: &mut bool) -> Option<AgentUpdate> {
+    if !*thinking_open {
+        return None;
+    }
+    *thinking_open = false;
+    Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+}
 
 // ── Streaming response types ──────────────────────────────────────────
 
@@ -329,6 +366,9 @@ impl LlmClient for OpenAiAdapter {
         let mut tool_call_buffers: Vec<(Option<String>, Option<String>, String)> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
         let mut token_usage: Option<TokenUsageInfo> = None;
+        // OpenAI-compatible streams only expose reasoning deltas — synthesize
+        // Started / Finished around the first and last reasoning fragment.
+        let mut thinking_open = false;
 
         while let Some(event) = event_stream.next().await {
             match event {
@@ -352,27 +392,32 @@ impl LlmClient for OpenAiAdapter {
                     for choice in &chunk.choices {
                         let delta = &choice.delta;
 
-                        // content
-                        if let Some(ref content) = delta.content
-                            && !content.is_empty()
-                        {
-                            text_buffer.push_str(content);
-                            if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::StreamChunk(content.clone()));
+                        for event in openai_delta_ui_events(
+                            &mut thinking_open,
+                            delta.reasoning_content.as_deref(),
+                            delta.content.as_deref(),
+                        ) {
+                            match &event {
+                                AgentUpdate::StreamChunk(content) => {
+                                    text_buffer.push_str(content);
+                                }
+                                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning)) => {
+                                    reasoning_buffer.push_str(reasoning);
+                                }
+                                _ => {}
                             }
-                        }
-
-                        // reasoning_content (thinking)
-                        if let Some(ref reasoning) = delta.reasoning_content
-                            && !reasoning.is_empty()
-                        {
-                            reasoning_buffer.push_str(reasoning);
                             if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::ThinkingChunk(reasoning.clone()));
+                                let _ = tx.send(event);
                             }
                         }
 
                         // tool_calls
+                        if !delta.tool_calls.is_empty()
+                            && let Some(finished) = finish_thinking_event(&mut thinking_open)
+                            && let Some(ref tx) = ui_tx
+                        {
+                            let _ = tx.send(finished);
+                        }
                         for tc in &delta.tool_calls {
                             let idx = tc.index as usize;
                             while tool_call_buffers.len() <= idx {
@@ -434,6 +479,12 @@ impl LlmClient for OpenAiAdapter {
             }
         }
 
+        if let Some(finished) = finish_thinking_event(&mut thinking_open)
+            && let Some(ref tx) = ui_tx
+        {
+            let _ = tx.send(finished);
+        }
+
         // Build response blocks
         let mut response_blocks = Vec::new();
         if !reasoning_buffer.is_empty() {
@@ -454,23 +505,6 @@ impl LlmClient for OpenAiAdapter {
 
         Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
     }
-
-    /*
-    ── Legacy stream_message (hand-written SSE parsing) ───────────────────────
-    Kept for reference. Using eventsource-stream fixed the following issues:
-    - Only supported \n\n delimiter, not \r\n\r\n
-    - data: [DONE] break only exited inner loop; outer loop would still continue
-    - stream_options not set; usage stats were dead code
-    - Residual buffer silently discarded after stream end
-
-    async fn stream_message(
-        &self,
-        request: &CreateMessageParams,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>), LlmError> {
-        ...
-    }
-    */
 
     async fn create_message(
         &self,
@@ -741,5 +775,64 @@ mod tests {
         )
         .expect("valid tool call");
         assert!(matches!(block, ContentBlock::ToolUse { .. }));
+    }
+
+    #[test]
+    fn openai_delta_emits_started_delta_then_finished_before_content() {
+        let mut open = false;
+        let events = openai_delta_ui_events(&mut open, Some("reason"), Some("answer"));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
+                AgentUpdate::StreamChunk(c),
+            ] if r == "reason" && c == "answer"
+        ));
+        assert!(!open);
+    }
+
+    #[test]
+    fn openai_delta_reasoning_only_leaves_thinking_open() {
+        let mut open = false;
+        let events = openai_delta_ui_events(&mut open, Some("think"), None);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
+            ] if r == "think"
+        ));
+        assert!(open);
+        let finished = finish_thinking_event(&mut open);
+        assert!(matches!(
+            finished,
+            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+        ));
+        assert!(!open);
+        assert!(finish_thinking_event(&mut open).is_none());
+    }
+
+    #[test]
+    fn openai_delta_content_after_open_thinking_finishes_once() {
+        let mut open = true;
+        let events = openai_delta_ui_events(&mut open, None, Some("done"));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
+                AgentUpdate::StreamChunk(c),
+            ] if c == "done"
+        ));
+        assert!(!open);
+    }
+
+    #[test]
+    fn openai_delta_skips_empty_fields() {
+        let mut open = false;
+        let events = openai_delta_ui_events(&mut open, Some(""), Some(""));
+        assert!(events.is_empty());
+        assert!(!open);
     }
 }

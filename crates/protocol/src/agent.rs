@@ -124,8 +124,23 @@ pub enum AgentUpdate {
     },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),
-    /// Streaming thinking / reasoning content fragment
-    ThinkingChunk(String),
+    /// Streaming thinking / reasoning lifecycle event
+    ThinkingChunk(ThinkingChunk),
+}
+
+/// Lifecycle of a streaming thinking / reasoning block.
+///
+/// Producers emit `Started` once, zero or more `Delta` fragments, then `Finished`.
+/// Adapters that only expose deltas (e.g. OpenAI `reasoning_content`) must synthesize
+/// `Started` / `Finished` around the delta stream.
+#[derive(Debug, Clone)]
+pub enum ThinkingChunk {
+    /// A new thinking block is opening (title / region start).
+    Started,
+    /// Incremental reasoning text.
+    Delta(String),
+    /// The thinking block is complete; TUI should flush and collapse it.
+    Finished,
 }
 
 /// User commands sent from the TUI to the Agent.

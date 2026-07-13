@@ -387,15 +387,17 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 
 `handle_agent_update` (`widgets/state/app/agent.rs`) is the sole writer of log rows from agent events. Every update sets `dirty = true`. Two global gates run before the match arm:
 
-1. **Thinking gate** — any update *except* `ThinkingChunk` calls `flush_and_close_thinking()`, closing the active thinking region so later output cannot leak inside it.
+1. **Thinking gate** — content-producing updates *except* `ThinkingChunk` / `TokenUsage` / `ModelInfo` call `flush_and_close_thinking()` as a safety net if a thinking region is still open. Prefer explicit `ThinkingChunk::Finished` from producers.
 2. **Loading gate** — most updates call `remove_loading_placeholder()`. Metadata-only updates (`TokenUsage`, `ModelInfo`) skip removal. Legacy `PlanGenerated` handler also skips removal, but the agent never emits it — the loading row path is inactive.
 
 **Active agent path:** `StepAdded` updates the plan panel only (no log row). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
 
 | `AgentUpdate` | Physical rows inserted / updated | Side effects |
 |---------------|----------------------------------|--------------|
-| **`StreamChunk`** | Completed lines → `append_msg` (`LLM`); incomplete tail stays in `stream.buffer` | Auto-scroll; code/table/paragraph sub-parsers; closes thinking (gate) |
-| **`ThinkingChunk`** | First chunk: blank + title row; each `\n`: `│ …` line (`LLMThinking`) | Does *not* trigger thinking gate; auto-scroll |
+| **`StreamChunk`** | Completed lines → `append_msg` (`LLM`); incomplete tail stays in `stream.buffer` | Auto-scroll; code/table/paragraph sub-parsers; safety-closes thinking if still open |
+| **`ThinkingChunk::Started`** | Blank + title row (`LLMThinking`) | Opens active thinking region |
+| **`ThinkingChunk::Delta`** | Each `\n`: `│ …` line (`LLMThinking`); opens region if `Started` was missed | Auto-scroll |
+| **`ThinkingChunk::Finished`** | Flush leftover buffer; collapse into `ThinkingBlock` | Closes active region |
 | **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
 | **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream; first step transitions `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
@@ -423,7 +425,7 @@ Three buffers can hold text that is not yet a permanent log row:
 | Buffer | Owner | Becomes physical rows when… |
 |--------|-------|----------------------------|
 | `stream.buffer` | `StreamState` | A `\n` completes a line (→ paragraph/table/code path) or `flush_stream_pending()` runs |
-| `thinking.buffer` | `ThinkingState` | A `\n` arrives during `ThinkingChunk`, or flush/close on non-thinking update |
+| `thinking.buffer` | `ThinkingState` | A `\n` arrives during `ThinkingChunk::Delta`, or flush on `Finished` / safety-close |
 | `stream.paragraph` / `table_buffer` / `code_block_buffer` | `StreamState` | Blank line, fence close, or flush |
 
 **Active vs completed assistant text:**
@@ -433,14 +435,13 @@ While tokens arrive, the tail of the current assistant reply lives in `stream.bu
 **Thinking block lifecycle:**
 
 ```text
-ThinkingChunk (first)  →  blank + title row, active_start set
-ThinkingChunk (lines)  →  append │ content rows, active_end updated
-Any other AgentUpdate  →  flush thinking.buffer, close_active_thinking_block()
+ThinkingChunk::Started →  blank + title row, active_start set
+ThinkingChunk::Delta   →  append │ content rows, active_end updated
+ThinkingChunk::Finished→  flush thinking.buffer, close_active_thinking_block()
                           →  push ThinkingBlock { title_idx, end_idx, scroll_offset, … }
-StreamChunk            →  thinking already closed by gate; may flush leftover thinking.buffer line
-StepStarted            →  flush_stream_pending closes any open thinking first
+StreamChunk / Step*    →  safety-close if Finished was missed
+TokenUsage / ModelInfo →  do not close thinking
 ```
-
 On close, only the last three content lines remain *visible* (`scroll_offset = total − 3` when `total > 3`); earlier lines stay in `messages[]` but are filtered by `is_message_visible`. A purple **thinking card overlay** (`render_thinking_cards`) draws the collapsed preview on top of the visible slice.
 
 **Final persistence:** `TaskComplete` calls `flush_stream_pending()` then `add_task_end_separator()`. The summary string in the update is saved to `task_history` only — the UI assumes `StreamChunk` already displayed the assistant's final text. Setting `log_scroll.offset = u16::MAX` pins the viewport to the bottom (clamped in render).

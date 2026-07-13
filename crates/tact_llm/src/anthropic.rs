@@ -16,9 +16,22 @@ use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_protocol::{AgentUpdate, ModelCallParams, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
 
 use super::{LlmClient, LlmError};
+
+/// Events emitted when an Anthropic thinking content block starts.
+fn thinking_start_events(initial_thinking: &str) -> Vec<ThinkingChunk> {
+    let mut events = vec![ThinkingChunk::Started];
+    if !initial_thinking.is_empty() {
+        events.push(ThinkingChunk::Delta(initial_thinking.to_string()));
+    }
+    events
+}
+
+fn is_thinking_content_block(block: Option<&ContentBlock>) -> bool {
+    matches!(block, Some(ContentBlock::Thinking { .. }))
+}
 
 #[derive(Clone)]
 pub struct AnthropicAdapter {
@@ -275,11 +288,11 @@ impl LlmClient for AnthropicAdapter {
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
-                                    if !thinking.is_empty()
-                                        && let Some(ref tx) = ui_tx
-                                    {
-                                        let _ =
-                                            tx.send(AgentUpdate::ThinkingChunk(thinking.clone()));
+                                    if let Some(ref tx) = ui_tx {
+                                        for chunk in thinking_start_events(thinking) {
+                                            let _ = tx
+                                                .send(AgentUpdate::ThinkingChunk(chunk));
+                                        }
                                     }
                                 }
                                 ContentBlock::ToolUse { .. } => {
@@ -316,7 +329,9 @@ impl LlmClient for AnthropicAdapter {
                                         existing.push_str(&thinking);
                                     }
                                     if let Some(ref tx) = ui_tx {
-                                        let _ = tx.send(AgentUpdate::ThinkingChunk(thinking));
+                                        let _ = tx.send(AgentUpdate::ThinkingChunk(
+                                            ThinkingChunk::Delta(thinking),
+                                        ));
                                     }
                                 }
                                 ContentBlockDelta::InputJsonDelta { partial_json } => {
@@ -342,6 +357,12 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse content_block_stop: {e}"
                                     )))
                                 })?;
+                            if is_thinking_content_block(response_blocks.get(stop.index))
+                                && let Some(ref tx) = ui_tx
+                            {
+                                let _ =
+                                    tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                            }
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
                             }) = response_blocks.get_mut(stop.index)
@@ -531,5 +552,34 @@ mod tests {
         ));
         assert!(parse_stop_reason(Some("unknown".to_string())).is_none());
         assert!(parse_stop_reason(None).is_none());
+    }
+
+    #[test]
+    fn thinking_start_events_empty_initial() {
+        assert!(matches!(
+            thinking_start_events("").as_slice(),
+            [ThinkingChunk::Started]
+        ));
+    }
+
+    #[test]
+    fn thinking_start_events_with_initial_text() {
+        let events = thinking_start_events("seed");
+        assert!(matches!(
+            events.as_slice(),
+            [ThinkingChunk::Started, ThinkingChunk::Delta(t)] if t == "seed"
+        ));
+    }
+
+    #[test]
+    fn is_thinking_content_block_detects_thinking() {
+        assert!(is_thinking_content_block(Some(&ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: String::new(),
+        })));
+        assert!(!is_thinking_content_block(Some(&ContentBlock::Text {
+            text: "hi".into(),
+        })));
+        assert!(!is_thinking_content_block(None));
     }
 }

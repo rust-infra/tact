@@ -137,13 +137,15 @@ mod overlay_tests {
     use super::*;
     use crate::render::test_harness::{buffer_text, make_app};
     use ratatui::{Terminal, backend::TestBackend};
-    use tact_protocol::AgentUpdate;
+    use tact_protocol::{AgentUpdate, ThinkingChunk};
 
     #[test]
     fn thinking_card_overlay_renders_collapsed_preview() {
         let mut app = make_app();
         for i in 1..=4 {
-            app.handle_agent_update(AgentUpdate::ThinkingChunk(format!("reason {i}\n")));
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                format!("reason {i}\n"),
+            )));
         }
         app.handle_agent_update(AgentUpdate::StreamChunk("answer".into()));
         assert!(!app.thinking.blocks.is_empty());

@@ -6,7 +6,7 @@ use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use std::collections::HashMap;
 use std::time::Duration;
-use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus};
+use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
     app.plan.visible = true;
@@ -117,8 +117,12 @@ fn bash_tool_popup_shows_command_output() {
 #[test]
 fn log_renders_collapsed_thinking_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk("Analyzing the problem…".into()));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(" considering options.".into()));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Analyzing the problem…".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        " considering options.".into(),
+    )));
     app.handle_agent_update(AgentUpdate::StreamChunk("Final answer.".into()));
 
     let text = render_main_area_text(&mut app, 100, 28);
