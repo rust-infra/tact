@@ -1,7 +1,7 @@
 use crate::widgets::state::App;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem},
@@ -17,7 +17,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands);
     let n = filtered.len();
     if n == 0 {
-        let hint_area = centered_rect(30, 5, area);
+        let hint_area = super::centered_list_popup_area(area, 30, 5);
         let hint_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -42,7 +42,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let list_height = n.min(max_visible) as u16;
     let popup_width: u16 = 42;
 
-    let popup_area = centered_rect(popup_width, list_height + 2, area);
+    let popup_area = super::centered_list_popup_area(area, popup_width, list_height + 2);
 
     // Determine visible range (scroll if needed)
     let offset = if n > max_visible && selected >= max_visible {
@@ -101,25 +101,4 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
 
     frame.render_widget(Clear, popup_area);
     frame.render_widget(list, popup_area);
-}
-
-/// Helper to create a centered rectangle.
-fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - 60) / 2),
-            Constraint::Length(height),
-            Constraint::Percentage((100 - 60) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(100)) / 2),
-            Constraint::Length(percent_x.min(100)),
-            Constraint::Percentage((100 - percent_x.min(100)) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }

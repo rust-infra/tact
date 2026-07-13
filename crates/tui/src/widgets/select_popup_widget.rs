@@ -49,9 +49,8 @@ impl Widget for SelectPopupWidget<'_> {
         let count = self.state.options.len().max(1) as u16;
         let popup_width = 50u16.min(area.width.saturating_sub(4));
         let popup_height = (count + 4).min(area.height.saturating_sub(4));
-        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
-        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+        let popup_area =
+            crate::render::popups::centered_list_popup_area(area, popup_width, popup_height);
 
         // Clear existing popup area content
         Clear.render(popup_area, buf);
@@ -64,13 +63,7 @@ impl Widget for SelectPopupWidget<'_> {
             .style(Style::default().bg(self.bg_color));
         block.render(popup_area, buf);
 
-        // Popup inner area
-        let inner = Rect::new(
-            popup_area.x + 1,
-            popup_area.y + 1,
-            popup_area.width.saturating_sub(2),
-            popup_area.height.saturating_sub(2),
-        );
+        let inner = crate::render::popups::popup_inner(popup_area);
 
         // Build option list
         let items: Vec<ListItem> = if self.state.options.is_empty() {

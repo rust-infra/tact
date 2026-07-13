@@ -224,6 +224,12 @@ Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connec
 - **TUI mode** (`tact-ui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
 - **Headless mode** (`tact-ui headless`) — CI/CD pipelines, scripts, or non-interactive workflows
 
+### 🖼️ Image attachments (vision)
+
+Attach workspace images with `@path/to.png` or `![alt](path)`. Raster files are optionally compressed via `[ui.vision_image]` before base64 attachment.
+
+**Requires a vision-capable model/endpoint.** OpenAI-compatible providers send images as `image_url` content parts; text-only models or gateways that only accept `text` reject the request (HTTP 400, e.g. `unknown variant image_url, expected text`). Use a multimodal model (e.g. Claude vision, GPT-4o), or omit image attachments on text-only models.
+
 ### 💾 Persistent State
 
 Transcripts, tool results, memories, cron jobs, and task state all persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
@@ -375,6 +381,10 @@ notifications_enabled = true
 
 [ui]
 theme = "retro"                  # or "auto"
+# vision_image.* only reduces tokens for attached images; does not enable vision
+# vision_image.compress = true
+# vision_image.max_edge = 1280
+# vision_image.jpeg_quality = 80
 
 [tools]
 brave_search_api_key = "bsk-..."

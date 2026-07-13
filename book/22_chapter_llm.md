@@ -243,6 +243,8 @@ Notable behaviors:
 
 `convert.rs` builds provider-specific request JSON from shared `CreateMessageParams` (Anthropic message shape used internally throughout Tact).
 
+**User image attachments:** TUI/headless turn `@file.png` / `![alt](path)` into `ContentBlock::Image` ([Ch 23](./23_chapter_tui.md)). For OpenAI-compatible requests, `anthropic_messages_to_openai` maps those blocks to `{ type: "image_url", image_url: { url: "data:<media_type>;base64,..." } }`. Anthropic keeps the native Messages `image` + base64 `source` shape. There is no per-model vision capability gate: text-only Chat Completions APIs (or proxies whose content-part enum only allows `text`) reject `image_url` with HTTP 400.
+
 **Kimi reasoning replay:** `anthropic_messages_to_openai` returns a `reasoning` vector aligned **one-to-one** with emitted OpenAI messages (not Anthropic source messages). When a user turn splits into multiple tool-result messages, each gets `None`; assistant thinking is attached only to the matching assistant row. `inject_reasoning_content` uses that parallel vector for Kimi/Moonshot.
 
 **Incomplete tool calls:** stream and non-stream parsers skip tool-call slots with empty `id` or `name` so truncated SSE does not insert phantom `ToolUse` blocks.
@@ -344,7 +346,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | `tact_llm/src/lib.rs` | `ProviderInfo`, `LlmClient`, `LlmProvider`, init/get helpers, balance APIs |
 | `tact_llm/src/anthropic.rs` | Messages API streaming + non-streaming |
 | `tact_llm/src/openai.rs` | Chat Completions SSE, reasoning_content, tool deltas |
-| `tact_llm/src/convert.rs` | Request translation, Kimi thinking blocks |
+| `tact_llm/src/convert.rs` | Request translation, Image → `image_url`, Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` at loop start |
 | `crates/tact/src/compact.rs` | `create_message` for summarization |
 
@@ -358,6 +360,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
 | **Anthropic SDK partial use** | Types from `anthropic-ai-sdk`; streaming is custom HTTP |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |
+| **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
 
 ---
 

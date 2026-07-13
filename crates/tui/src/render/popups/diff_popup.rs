@@ -146,7 +146,6 @@ fn render_popup_chrome(
 ) -> Rect {
     let popup_area = super::centered_popup_area(area);
     frame.render_widget(Clear, popup_area);
-    super::render_popup_shadow(frame, popup_area);
 
     let code_bg = app.theme.code_block_bg();
 

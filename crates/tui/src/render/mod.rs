@@ -12,7 +12,6 @@ pub(crate) mod popups;
 pub(crate) mod render_md;
 pub(crate) mod renderable;
 pub(crate) mod util;
-pub(crate) mod welcome;
 
 pub(super) use bar::{render_bottom_bar, render_status_bar};
 pub(super) use input::render_input_box;

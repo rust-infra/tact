@@ -19,20 +19,20 @@ pub mod test_support;
 mod headless_loop;
 
 use crate::handlers::{
-    handle_file_picker_mode, handle_insert_mode, handle_normal_mode, handle_palette_mode,
-    handle_select_mode,
+    handle_file_picker_mode, handle_insert_mode, handle_mouse_event, handle_normal_mode,
+    handle_overlay_key, handle_palette_mode, handle_select_mode,
 };
 use crate::render::{
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
     render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
-use crate::widgets::state::{App, FocusedPanel, InputMode, LogSelection, Status, TextPosition};
+use crate::widgets::state::{App, InputMode, Status};
 use anyhow::Result;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-        MouseButton, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -259,68 +259,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 }
                                 _ => {}
                             }
-                        } else if app.tools.popup.is_some() {
-                            // Keyboard handling for file diff popup
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.close_diff_popup();
-                                }
-                                KeyCode::Char('y') => {
-                                    app.copy_diff_popup();
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    app.diff_popup_scroll_down();
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    app.diff_popup_scroll_up();
-                                }
-                                _ => {}
-                            }
-                        } else if app.code_popup.is_some() {
-                            // Keyboard handling for code block popup
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.close_code_popup();
-                                }
-                                KeyCode::Char('y') => {
-                                    app.copy_code_popup();
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    app.code_popup_scroll_down();
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    app.code_popup_scroll_up();
-                                }
-                                KeyCode::Char('G') => {
-                                    // Jump to bottom — use a large value; rendering will clamp
-                                    if let Some(ref mut p) = app.code_popup {
-                                        p.scroll = u16::MAX;
-                                    }
-                                }
-                                KeyCode::Char('g') => {
-                                    if let Some(ref mut p) = app.code_popup {
-                                        p.scroll = 0;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else if app.thinking.popup.is_some() {
-                            // Keyboard handling for thinking popup
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.close_thinking_popup();
-                                }
-                                KeyCode::Char('y') => {
-                                    app.copy_thinking_popup();
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    app.thinking_popup_scroll_down();
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    app.thinking_popup_scroll_up();
-                                }
-                                _ => {}
-                            }
+                        } else if handle_overlay_key(&mut app, key) {
+                            // Overlay popup consumed the key.
                         } else if key.code == KeyCode::Tab {
                             app.focused_panel = match app.focused_panel {
                                 crate::widgets::state::FocusedPanel::Log => crate::widgets::state::FocusedPanel::Plan,
@@ -347,268 +287,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         }
                     }
                     Event::Mouse(mouse) => {
-                        let in_log = mouse.column >= app.mouse.log_area.x
-                            && mouse.column < app.mouse.log_area.x + app.mouse.log_area.width
-                            && mouse.row >= app.mouse.log_area.y
-                            && mouse.row < app.mouse.log_area.y + app.mouse.log_area.height;
-                        let in_plan = mouse.column >= app.mouse.plan_area.x
-                            && mouse.column < app.mouse.plan_area.x + app.mouse.plan_area.width
-                            && mouse.row >= app.mouse.plan_area.y
-                            && mouse.row < app.mouse.plan_area.y + app.mouse.plan_area.height;
-                        let in_divider = mouse.column >= app.mouse.divider_area.x
-                            && mouse.column < app.mouse.divider_area.x + app.mouse.divider_area.width
-                            && mouse.row >= app.mouse.divider_area.y
-                            && mouse.row < app.mouse.divider_area.y + app.mouse.divider_area.height;
-                        let hit = crate::handlers::MousePanelHit {
-                            in_log,
-                            in_plan,
-                        };
-                        match mouse.kind {
-                            MouseEventKind::ScrollUp => {
-                                crate::handlers::handle_mouse_scroll_up(&mut app, hit);
-                            }
-                            MouseEventKind::ScrollDown => {
-                                crate::handlers::handle_mouse_scroll_down(&mut app, hit);
-                            }
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                if app.thinking.popup.is_some() {
-                                    let pa = app.mouse.thinking_popup_area;
-                                    let in_popup = mouse.column >= pa.x
-                                        && mouse.column < pa.x + pa.width
-                                        && mouse.row >= pa.y
-                                        && mouse.row < pa.y + pa.height;
-                                    if !in_popup {
-                                        app.close_thinking_popup();
-                                    }
-                                } else if app.tools.popup.is_some() {
-                                    let pa = app.mouse.diff_popup_area;
-                                    let in_popup = mouse.column >= pa.x
-                                        && mouse.column < pa.x + pa.width
-                                        && mouse.row >= pa.y
-                                        && mouse.row < pa.y + pa.height;
-                                    if !in_popup {
-                                        app.close_diff_popup();
-                                    }
-                                } else if app.code_popup.is_some() {
-                                    let pa = app.mouse.code_popup_area;
-                                    let in_popup = mouse.column >= pa.x
-                                        && mouse.column < pa.x + pa.width
-                                        && mouse.row >= pa.y
-                                        && mouse.row < pa.y + pa.height;
-                                    if !in_popup {
-                                        app.close_code_popup();
-                                    }
-                                } else if in_divider {
-                                    crate::handlers::begin_panel_resize(&mut app);
-                                } else if in_log {
-                                    app.focused_panel = FocusedPanel::Log;
-                                    // Mouse row → visual line → logical line, accounting for wrapping
-                                    let visual_base = app
-                                        .log_scroll
-                                        .visual_start
-                                        .get(app.log_scroll.offset as usize)
-                                        .copied()
-                                        .unwrap_or(0);
-                                    let visual_row = visual_base
-                                        + mouse.row.saturating_sub(app.mouse.log_area.y + 1)
-                                            as usize;
-                                    let line_idx = app.logical_from_visual(visual_row);
-                                    // Compute the column position within the text for word selection
-                                    let col = mouse
-                                        .column
-                                        .saturating_sub(app.mouse.log_area.x + 1)
-                                        as usize;
-                                    // Track consecutive click count
-                                    let now = std::time::Instant::now();
-                                    let pos = (mouse.column, mouse.row);
-                                    let is_same_click = app.mouse.last_click_pos == Some(pos)
-                                        && app.mouse
-                                            .last_click_time
-                                            .is_some_and(|t| {
-                                                now.duration_since(t).as_millis() < 500
-                                            });
-                                    if is_same_click {
-                                        app.mouse.click_count = (app.mouse.click_count + 1).min(3);
-                                    } else {
-                                        app.mouse.click_count = 1;
-                                    }
-                                    app.mouse.last_click_time = Some(now);
-                                    app.mouse.last_click_pos = Some(pos);
-                                    if let Some(phys_idx) = app.visible_message_index(line_idx) {
-                                        // Check if the click lands within a collapsed thinking card area
-                                        let card_hit = app.thinking.blocks.iter().position(|b| {
-                                            app.phys_to_logical_fast(b.title_idx)
-                                                .zip(app.phys_to_logical_fast(b.end_idx + 1))
-                                                .is_some_and(|(tl, bl)| {
-                                                    line_idx >= tl && line_idx < bl
-                                                })
-                                        });
-                                        if let Some(card_idx) = card_hit {
-                                            if app.mouse.click_count == 1 {
-                                                app.mouse.last_click_card = Some(card_idx);
-                                                // Single click: remember the card for double-click open, don't select text
-                                                app.mouse.log_selection = None;
-                                                app.mouse.dragging_log = false;
-                                            } else if app.mouse.click_count == 2
-                                                && app.mouse.last_click_card == Some(card_idx)
-                                            {
-                                                // Double click: open the thinking popup
-                                                let block = &app.thinking.blocks[card_idx];
-                                                app.open_thinking_popup(block.title_idx);
-                                            } else if app.mouse.click_count >= 3 {
-                                                crate::handlers::handle_log_triple_click(
-                                                    &mut app, line_idx, false,
-                                                );
-                                            }
-                                        } else {
-                                            app.mouse.last_click_card = None;
-                                        }
-                                        // Check if clicked on a tool block (file write preview) → double-click opens popup
-                                        if let Some((tool_idx, phys_idx, logical_start, _)) =
-                                            app.find_tool_at_logical(line_idx)
-                                        {
-                                            let relative_row = line_idx - logical_start;
-                                            crate::handlers::handle_tool_block_click(
-                                                &mut app, tool_idx, phys_idx, relative_row,
-                                            );
-                                            if app.mouse.click_count >= 3 {
-                                                crate::handlers::handle_log_triple_click(
-                                                    &mut app, line_idx, false,
-                                                );
-                                            }
-                                        } else {
-                                            app.mouse.last_click_tool = None;
-                                            // Check if clicked on a code block → double-click opens popup
-                                            let code_hit = app
-                                                .code_blocks
-                                                .iter()
-                                                .enumerate()
-                                                .find(|(_, b)| {
-                                                    app.phys_to_logical_fast(b.start_idx)
-                                                        .is_some_and(|si| line_idx >= si)
-                                                        && app.phys_to_logical_fast(b.end_idx)
-                                                            .is_some_and(|ei| line_idx < ei)
-                                                });
-                                            if let Some((code_idx, _block)) = code_hit {
-                                                if app.mouse.click_count == 1 {
-                                                    app.mouse.last_click_code = Some(code_idx);
-                                                    app.mouse.log_selection = None;
-                                                    app.mouse.dragging_log = false;
-                                                } else if app.mouse.click_count == 2
-                                                    && app.mouse.last_click_code == Some(code_idx)
-                                                {
-                                                    app.open_code_popup(code_idx);
-                                                } else if app.mouse.click_count >= 3 {
-                                                    crate::handlers::handle_log_triple_click(
-                                                        &mut app, line_idx, false,
-                                                    );
-                                                }
-                                            } else {
-                                                app.mouse.last_click_code = None;
-                                                // Check if clicked on a thinking title line → open popup
-                                                let thinking_title = app
-                                                    .thinking
-                                                    .blocks
-                                                    .iter()
-                                                    .any(|b| b.title_idx == phys_idx);
-                                                if thinking_title {
-                                                    app.open_thinking_popup(phys_idx);
-                                                } else if app.mouse.click_count == 2 {
-                                                    // Double click: select word
-                                                    if let Some((phys, byte)) = app
-                                                        .byte_offset_from_log_position(
-                                                            line_idx, visual_row, col,
-                                                        )
-                                                        && let Some((ws, we)) =
-                                                            app.find_word_bounds(line_idx, byte)
-                                                    {
-                                                        app.mouse.log_selection =
-                                                            Some(LogSelection::span(phys, ws, we));
-                                                    }
-                                                    app.mouse.dragging_log = true;
-                                                } else if app.mouse.click_count >= 3 {
-                                                    crate::handlers::handle_log_triple_click(
-                                                        &mut app, line_idx, true,
-                                                    );
-                                                } else if let Some((phys, byte)) =
-                                                    app.byte_offset_from_log_position(
-                                                        line_idx, visual_row, col,
-                                                    )
-                                                {
-                                                    // Single click: start character selection for press-drag-copy
-                                                    app.mouse.log_selection =
-                                                        Some(LogSelection::span(phys, byte, byte));
-                                                    app.mouse.dragging_log = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else if in_plan {
-                                    app.focused_panel = FocusedPanel::Plan;
-                                    let item_idx =
-                                        (mouse.row.saturating_sub(app.mouse.plan_area.y + 1))
-                                            as usize;
-                                    if item_idx < app.plan.steps.len() {
-                                        app.plan.selected = item_idx;
-                                        app.plan.list_state.select(Some(app.plan.selected));
-                                        app.mouse.plan_selection = Some((item_idx, item_idx));
-                                        app.mouse.dragging_plan = true;
-                                    }
-                                }
-                            }
-                            MouseEventKind::Drag(MouseButton::Left) => {
-                                if app.mouse.is_resizing_panel {
-                                    let total_width = app.mouse.plan_area.width
-                                        + app.mouse.divider_area.width
-                                        + app.mouse.log_area.width;
-                                    let plan_area_x = app.mouse.plan_area.x;
-                                    crate::handlers::update_panel_resize(
-                                        &mut app,
-                                        mouse.column,
-                                        plan_area_x,
-                                        total_width,
-                                    );
-                                } else if app.mouse.dragging_log && in_log {
-                                    let visual_base = app
-                                        .log_scroll
-                                        .visual_start
-                                        .get(app.log_scroll.offset as usize)
-                                        .copied()
-                                        .unwrap_or(0);
-                                    let visual_row = visual_base
-                                        + mouse.row.saturating_sub(app.mouse.log_area.y + 1)
-                                            as usize;
-                                    let line_idx = app.logical_from_visual(visual_row);
-                                    let col = mouse
-                                        .column
-                                        .saturating_sub(app.mouse.log_area.x + 1)
-                                        as usize;
-                                    if line_idx < app.total_log_lines()
-                                        && let Some((phys, byte)) = app
-                                            .byte_offset_from_log_position(
-                                                line_idx, visual_row, col,
-                                            )
-                                        && let Some(ref mut sel) = app.mouse.log_selection
-                                    {
-                                        sel.end = TextPosition::new(phys, byte);
-                                    }
-                                } else if app.mouse.dragging_plan && in_plan {
-                                    let item_idx =
-                                        (mouse.row.saturating_sub(app.mouse.plan_area.y + 1))
-                                            as usize;
-                                    if item_idx < app.plan.steps.len()
-                                        && let Some((start, _)) = app.mouse.plan_selection {
-                                            app.mouse.plan_selection = Some((start, item_idx));
-                                        }
-                                }
-                            }
-                            MouseEventKind::Up(MouseButton::Left) => {
-                                app.mouse.dragging_log = false;
-                                app.mouse.dragging_plan = false;
-                                crate::handlers::end_panel_resize(&mut app);
-                            }
-                            _ => {}
-                        }
+                        handle_mouse_event(&mut app, mouse);
                     }
                     Event::Paste(data) => {
                         // Paste text (including newlines) into the current input buffer

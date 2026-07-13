@@ -31,16 +31,11 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let popup_width = (area.width as f32 * 0.8) as u16;
-    let popup_height = (area.height as f32 * 0.8) as u16;
-    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    let popup_area = super::centered_popup_area(area);
 
     frame.render_widget(Clear, popup_area);
-    super::render_popup_shadow(frame, popup_area);
 
-    let content_height = popup_height.saturating_sub(3) as usize;
+    let content_height = popup_area.height.saturating_sub(3) as usize;
     let max_scroll = total.saturating_sub(1);
     let scroll = (popup.scroll as usize).min(max_scroll);
     let start_line = scroll;
@@ -62,7 +57,7 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     text.push_line(Line::from(""));
 
     // Render code lines, truncating to popup width minus borders/padding
-    let max_chars = popup_width.saturating_sub(4) as usize;
+    let max_chars = popup_area.width.saturating_sub(4) as usize;
     for &line in &lines[start_line..end_line] {
         let display: String = line.chars().take(max_chars).collect();
         text.push_line(Line::from(Span::styled(

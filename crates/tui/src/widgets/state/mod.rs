@@ -160,8 +160,6 @@ pub struct App {
     pub(crate) input_mode: InputMode,
     // Command palette
     pub(crate) palette_selected: usize,
-    // Command history (brief)
-    pub(crate) _command_history: Vec<String>,
     /// User input history.
     pub(crate) input_history: InputHistory,
     /// Project root directory.
