@@ -265,14 +265,16 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "save" => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-            let filename = format!("agent_log_{}.txt", timestamp);
-            if let Ok(mut file) = std::fs::File::create(&filename) {
+            let path = std::env::temp_dir().join(format!("agent_log_{timestamp}.txt"));
+            if let Ok(mut file) = std::fs::File::create(&path) {
                 use std::io::Write;
                 for msg in &app.raw_messages {
                     writeln!(file, "{}", msg).ok();
                 }
                 let msgs = app.msgs();
-                app.add_system_message(msgs.log_saved_tmpl.replace("{}", &filename));
+                app.add_system_message(
+                    msgs.log_saved_tmpl.replace("{}", &path.display().to_string()),
+                );
             } else {
                 let msgs = app.msgs();
                 app.add_system_message(msgs.log_save_failed.to_string());

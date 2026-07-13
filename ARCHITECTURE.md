@@ -379,7 +379,7 @@ block-beta
     space
     block:status
         columns 1
-        status_bar["Status Bar (height 1)<br/>Status / model / token usage / balance"]
+        status_bar["Status Bar (height 1)<br/>Mode / focus / Status"]
     end
     block:main
         columns 2
@@ -388,11 +388,11 @@ block-beta
     end
     block:input
         columns 1
-        input_box["Input Box (height 1–3 + border)<br/>Insert mode: task input<br/>Command mode: :cmd<br/>Search mode: /term"]
+        input_box["Input Box (height 1–3 + border)<br/>Insert mode: task input<br/>Palette mode: /cmd"]
     end
     block:bottom
         columns 1
-        bottom_bar["Bottom Bar (height 2–3)<br/>Mode hints / shortcuts / uptime"]
+        bottom_bar["Bottom Bar (height 2)<br/>cwd / branch / account · model / tokens / uptime"]
     end
     space
 
@@ -462,8 +462,8 @@ flowchart TD
     ModeDispatch --> Normal["handle_normal_mode()"]
     ModeDispatch --> Insert["handle_insert_mode()"]
     ModeDispatch --> Command["handle_palette_mode()"]
-    ModeDispatch --> Search["handle_search_mode()"]
     ModeDispatch --> Select["handle_select_mode()"]
+    ModeDispatch --> FilePicker["handle_file_picker_mode()"]
 
     HandleEvent --> Mouse["Mouse event:<br/>scroll wheel / click / drag select"]
     HandleEvent --> Resize["Resize event:<br/>recalculate layout"]
@@ -476,8 +476,8 @@ flowchart TD
     Normal --> QuitCheck
     Insert --> QuitCheck
     Command --> QuitCheck
-    Search --> QuitCheck
     Select --> QuitCheck
+    FilePicker --> QuitCheck
     Mouse --> QuitCheck
     Resize --> QuitCheck
 
@@ -495,9 +495,7 @@ flowchart TD
 | `j` / `k` | Scroll log or move plan selection. |
 | `g` / `G` | Jump to top / bottom of log. |
 | `i` / `Enter` | Enter insert mode. |
-| `:` | Open command palette. |
-| `/` | Enter search mode. |
-| `n` / `N` | Next / previous search match. |
+| `/` | Open command palette. |
 | `y` | Copy selection / last message / approve if waiting. |
 | `Y` | Copy last code block. |
 | `V` | Open closest code-block popup. |

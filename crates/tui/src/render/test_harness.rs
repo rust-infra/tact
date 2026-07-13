@@ -91,7 +91,7 @@ pub fn buffer_first_char_x(buf: &ratatui::buffer::Buffer, ch: char) -> Option<u1
 pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
     let input_lines = app.input.lines().count().clamp(1, 3) as u16;
     let input_height = input_lines + 2;
-    let bottom_height = if app.shows_account_bar_row() { 3 } else { 2 };
+    let bottom_height = 2u16;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

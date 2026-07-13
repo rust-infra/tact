@@ -185,12 +185,10 @@ binary_search 反向映射：
 for logical_i in logical_start..logical_end {
     let cell = TextCell::new(
         cached_lines,     // 换行缓存
-        raw_text,         // 原始文本（搜索用）
-        search_term,      // 搜索词
-        is_match,         // 是否命中搜索
-        is_selected,      // 是否鼠标选中
-        word_sel,         // 词级选择范围
+        raw_text,         // 原始文本（选中范围用）
+        selection_range,  // 字节级选中范围，None 表示未选中
         prefix,           // thinking 折叠提示
+        indent_cols,      // 左侧 gutter 缩进列
         fg_color,         // 前景色
     );
     renderer.push(visual_start, cell);
@@ -203,10 +201,9 @@ for logical_i in logical_start..logical_end {
 
 | 优先级 | 状态 | 渲染方式 |
 |--------|------|----------|
-| 1 | 搜索匹配 | `build_highlighted_line()` — 匹配词黄底黑字 |
-| 2 | 整行选中 | `build_line_selected_lines()` — 全行 REVERSED |
-| 3 | 词级选中 | `build_word_selected_lines()` — 仅选中词 REVERSED |
-| 4 | 默认 | 直接返回 `cached_lines` 克隆 |
+| 1 | 整行选中 | 复用 `cached_lines`，整行加 `REVERSED` |
+| 2 | 部分选中 | `build_selected_lines()` — 仅选中字节范围 `REVERSED` |
+| 3 | 默认 | 直接返回 `cached_lines` 克隆 |
 
 `render_partial(area, buf, skip_lines)` 支持从第 N 行开始绘制，跳过视口外的行。
 
@@ -281,7 +278,7 @@ sb_position = visual_scroll × (total_visual - 1) / (total_visual - visible_heig
 | `height` | `u16` | 面板可用高度 |
 | `visible_indices` | `Vec<usize>` | 可见索引缓存：逻辑行 → 物理消息索引（由 render_log_panel 每帧重建） |
 | `visual_start` | `Vec<usize>` | 视觉行起始索引（每次渲染后从 `visual_start_cache` 克隆，供鼠标命中测试/滚动处理使用） |
-| `visual_cache` | `Vec<Line>` | 所有视觉行（已折行，不含搜索/选中样式） |
+| `visual_cache` | `Vec<Line>` | 所有视觉行（已折行，不含选中样式） |
 | `visual_start_cache` | `Vec<usize>` | 逻辑行 → 视觉行起始位置（前缀和） |
 | `visual_cache_width` | `u16` | 缓存时的面板宽度 |
 | `visual_cache_ver` | `usize` | 缓存版本号 = `messages.len()` |
@@ -293,12 +290,10 @@ sb_position = visual_scroll × (total_visual - 1) / (total_visual - visible_heig
 | 字段 | 说明 |
 |------|------|
 | `cached_lines` | 预折行的视觉行（纯文本，无样式） |
-| `raw_text` | 原始文本（用于搜索高亮重建） |
-| `search_term` | 当前搜索词 |
-| `is_search_match` | 是否命中搜索 |
-| `is_selected` | 是否被鼠标选中 |
-| `word_selection` | 词级选择 `(start_byte, end_byte)` |
+| `raw_text` | 原始文本（用于选中范围重建） |
+| `selection_range` | 选中字节范围 `(start, end)`，`None` 表示未选中 |
 | `prefix` | 首行前缀（thinking 折叠提示） |
+| `indent_cols` | 左侧 gutter 缩进列数 |
 | `fg_color` | 前景色 |
 
 ### Renderable trait (`renderable.rs`)
@@ -319,6 +314,6 @@ trait Renderable {
 
 1. **版本号驱动的增量缓存** — `visual_cache_ver`、`visible_indices_ver` 用消息数量做版本号，只在变化时重建；`visual_cache_width` 额外检测宽度变化
 2. **三维度索引映射** — 物理消息 → 逻辑消息 → 视觉行，用前缀和 + 二分查找高效转换
-3. **渲染策略分离** — 缓存存原始文本，搜索/选中时现场重建样式行，避免缓存膨胀
+3. **渲染策略分离** — 缓存存原始文本，选中时现场重建样式行，避免缓存膨胀
 4. **视口裁剪贯穿始终** — Phase 2 粗粒度过滤，`LogColumnRenderer` 二次过滤，cell 内部 `skip_lines` 精确裁剪
 5. **Widget 组合模式** — `LogColumnRenderer` 实现 ratatui `Widget` trait，可直接 `frame.render_widget()`

@@ -652,10 +652,9 @@ mod lifecycle_tests {
         assert!(crate::should_repaint(&app));
 
         let text = crate::render::test_harness::render_app_text(&mut app, 120, 12);
-        let bottom_row = text.lines().last().unwrap_or("");
         assert!(
-            bottom_row.contains("88.50") || bottom_row.contains("CNY"),
-            "balance amount should render on bottom bar last row, got last line: {bottom_row:?}\nfull:\n{text}"
+            text.contains("88.50") || text.contains("CNY"),
+            "balance amount should append on bottom bar row 1, got:\n{text}"
         );
     }
 

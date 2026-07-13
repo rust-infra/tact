@@ -10,11 +10,6 @@ impl App {
             .filter(move |(cmd, _)| account_enabled || *cmd != "balance")
     }
 
-    /// Whether the bottom bar should reserve a third row for balance or usage quota.
-    pub(crate) fn shows_account_bar_row(&self) -> bool {
-        self.account_rx.is_some() && self.account.is_populated()
-    }
-
     pub(crate) fn save_history(&self, entry: &str) {
         let _ = self
             .history_save_tx

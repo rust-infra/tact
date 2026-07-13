@@ -75,11 +75,11 @@ Determines how keyboard input is interpreted.
 
 ```rust
 pub(crate) enum InputMode {
-    Normal,   // navigation, shortcuts
-    Insert,   // typing a task
-    Search,   // searching log messages
-    Palette,  // command palette
-    Select,   // option selection popup
+    Normal,     // navigation, shortcuts
+    Insert,     // typing a task
+    Palette,    // command palette
+    Select,     // option selection popup
+    FilePicker, // @ file attachment picker
 }
 ```
 
@@ -93,11 +93,11 @@ stateDiagram-v2
     Insert --> Normal: Esc
     Insert --> Normal: Enter (submits task)
 
-    Normal --> Search: /
-    Search --> Normal: Enter / Esc
-
-    Normal --> Palette
+    Normal --> Palette: /
     Palette --> Normal: Enter / Esc
+
+    Insert --> FilePicker: @
+    FilePicker --> Insert: Enter / Esc
 
     Normal --> Select: AgentUpdate::RequestSelect
     Select --> Normal: Enter / Esc
@@ -110,9 +110,9 @@ stateDiagram-v2
 |---|---|---|---|
 | `Normal` | Navigate panels, run shortcuts, approve/deny. | — | — |
 | `Insert` | Type a natural-language task. | `Enter` | `Esc` |
-| `Search` | Filter log messages with `/term`. | `Enter` | `Esc` |
-| `Palette` | Run commands (`theme`, `quit`, `balance`, …). | `Enter` | `Esc` |
+| `Palette` | Run commands (`theme`, `quit`, `balance`, `save`, …). Opened with `/` in Normal. | `Enter` | `Esc` |
 | `Select` | Pick one option from a popup. | `Enter` | `Esc` |
+| `FilePicker` | Attach a workspace file via `@`. | `Enter` | `Esc` |
 
 ---
 
