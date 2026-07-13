@@ -127,10 +127,11 @@ Restricted set for isolated workers spawned by the `task` tool:
 | `bash` | Shell commands |
 | `read_file` | Read workspace files |
 | `write_file` | Create/overwrite files |
+| `edit_file` | Single replacement edits |
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
+Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 
@@ -205,8 +206,8 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 
 | Module | Tool name(s) | Notes |
 |--------|--------------|-------|
-| `read_file.rs`, `write_file.rs` | file I/O | Path-safe |
-| `batch_read.rs`, `batch_edit.rs` | batch ops | Atomic batch edit |
+| `read_file.rs`, `write_file.rs`, `edit_file.rs` | file I/O | Path-safe |
+| `batch_read.rs` | batch ops | Parallel multi-file read |
 | `bash.rs` | `bash` | Shell + `validate_shell_command` |
 | `search_code.rs` | `search_code` | Ripgrep wrapper |
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
@@ -254,5 +255,5 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 - [MCP Protocol and Agent Integration](./08_chapter_mcp.md) — external tools
 - [Team Coordination](./14_chapter_team.md), [Worktree Lanes](./15_chapter_worktree.md), [Background Tasks](./13_chapter_background.md) — manager-backed tool families on `ToolContext`
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI tool blocks
-- [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read / batch_edit flow
+- [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read flow
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — macro overview

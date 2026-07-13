@@ -41,6 +41,7 @@ impl ToolPhase {
 pub enum ToolDisplayKind {
     FileWrite,
     FileRead,
+    FileEdit,
     Command,
     Generic,
 }
@@ -49,6 +50,7 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
     match tool {
         "write_file" => ToolDisplayKind::FileWrite,
         "read_file" => ToolDisplayKind::FileRead,
+        "edit_file" => ToolDisplayKind::FileEdit,
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
         _ => ToolDisplayKind::Generic,
     }
@@ -419,7 +421,7 @@ impl<'a> ToolWidget<'a> {
 
     pub fn size_bytes(&self) -> Option<usize> {
         match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead => {
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead | ToolDisplayKind::FileEdit => {
                 self.detail.as_ref().map(|d| d.len()).filter(|len| *len > 0)
             }
             _ => None,
@@ -460,7 +462,7 @@ impl<'a> ToolWidget<'a> {
         let layout = self.layout();
         let use_diff_gutter = matches!(
             display_kind(&self.tool_name),
-            ToolDisplayKind::FileWrite
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit
         );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
@@ -534,6 +536,7 @@ impl<'a> ToolWidget<'a> {
             display_kind(&self.tool_name),
             ToolDisplayKind::FileWrite
                 | ToolDisplayKind::FileRead
+                | ToolDisplayKind::FileEdit
                 | ToolDisplayKind::Command
         ) && matches!(self.phase, ToolPhase::Success)
     }
@@ -543,7 +546,7 @@ impl<'a> ToolWidget<'a> {
             return self.msgs.tool_error_card_title.to_string();
         }
         match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite => self
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit => self
                 .msgs
                 .diff_card_title
                 .replacen("{}", &total_lines.to_string(), 1)
@@ -723,15 +726,15 @@ mod tests {
     #[test]
     fn failed_tool_shows_error_card_with_preview() {
         let (theme, msgs) = fixture();
-        let error = "BatchEdit aborted — 1 validation error(s):\nEdit 0: old_string not found";
+        let error = "Permission denied by user for edit_file";
         let output = ToolWidget::new(&theme, &msgs)
-            .with_tool("batch_edit")
+            .with_tool("edit_file")
             .with_phase(ToolPhase::Failed)
             .with_detail(error)
             .build();
         assert!(output.layout.has_detail_card);
-        assert_eq!(output.layout.preview_lines, 2);
-        assert_eq!(output.detail_preview.len(), 2);
+        assert_eq!(output.layout.preview_lines, 1);
+        assert_eq!(output.detail_preview.len(), 1);
         assert!(output.card_bottom.contains("error"));
     }
 
@@ -776,8 +779,8 @@ mod tests {
     fn from_step_result_failed_keeps_detail_only() {
         let (theme, msgs) = fixture();
         let result = StepResult {
-            tool: "batch_edit".to_string(),
-            arg_summary: r#"{"edits":[]}"#.to_string(),
+            tool: "edit_file".to_string(),
+            arg_summary: "src/lib.rs".to_string(),
             arg_full: None,
             status: StepStatus::Failed,
             message: "truncated summary".to_string(),
@@ -816,11 +819,11 @@ mod tests {
     }
 
     #[test]
-    fn write_file_builds_detail_card_with_diff_gutter() {
+    fn edit_file_builds_detail_card_with_diff_gutter() {
         let (theme, msgs) = fixture();
         let detail = "new line one\nnew line two".to_string();
         let widget = ToolWidget::new(&theme, &msgs)
-            .with_tool("write_file")
+            .with_tool("edit_file")
             .with_arg_summary("src/lib.rs")
             .with_phase(ToolPhase::Success)
             .with_detail(detail);

@@ -37,6 +37,18 @@ pub fn write_file_tool_use(id: &str, path: &str, content: &str) -> ContentBlock 
     }
 }
 
+pub fn edit_file_tool_use(id: &str, path: &str, old_text: &str, new_text: &str) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.to_string(),
+        name: "edit_file".to_string(),
+        input: serde_json::json!({
+            "path": path,
+            "old_text": old_text,
+            "new_text": new_text,
+        }),
+    }
+}
+
 pub fn bash_tool_use(id: &str, command: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),
@@ -263,24 +275,6 @@ pub fn batch_read_tool_use(id: &str, paths: &[&str]) -> ContentBlock {
         id: id.to_string(),
         name: "batch_read".to_string(),
         input: serde_json::json!({ "files": files }),
-    }
-}
-
-pub fn batch_edit_tool_use(id: &str, edits: &[(&str, &str, &str)]) -> ContentBlock {
-    let edits: Vec<serde_json::Value> = edits
-        .iter()
-        .map(|(path, old, new)| {
-            serde_json::json!({
-                "file_path": path,
-                "old_string": old,
-                "new_string": new,
-            })
-        })
-        .collect();
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "batch_edit".to_string(),
-        input: serde_json::json!({ "edits": edits }),
     }
 }
 

@@ -155,6 +155,10 @@ fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str)
             .get("content")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        "edit_file" => input
+            .get("new_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -530,27 +534,28 @@ mod tests {
     use tact_protocol::StepStatus;
 
     #[test]
-    fn tool_detail_content_write_file_returns_content() {
+    fn tool_detail_content_edit_file_returns_new_text() {
         let input = serde_json::json!({
             "path": "src/lib.rs",
-            "content": "fn new() {}",
+            "old_text": "fn old() {}",
+            "new_text": "fn new() {}",
         });
-        let out = super::tool_detail_content("write_file", &input, "wrote");
+        let out = super::tool_detail_content("edit_file", &input, "wrote");
         assert_eq!(out.as_deref(), Some("fn new() {}"));
     }
 
     #[test]
     fn step_result_detail_on_failure_returns_full_output() {
-        let input = serde_json::json!({"edits": []});
+        let input = serde_json::json!({"path": "src/lib.rs"});
         let out = step_result_detail(
-            "batch_edit",
+            "edit_file",
             &input,
-            "BatchEdit aborted — 1 validation error(s):\nEdit 0: bad",
+            "Error: Text not found in src/lib.rs",
             &StepStatus::Failed,
         );
         assert_eq!(
             out.as_deref(),
-            Some("BatchEdit aborted — 1 validation error(s):\nEdit 0: bad")
+            Some("Error: Text not found in src/lib.rs")
         );
     }
 

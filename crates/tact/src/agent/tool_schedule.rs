@@ -108,12 +108,8 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
                 ..Default::default()
             }
         }
-        "write_file" => ToolResources {
+        "write_file" | "edit_file" => ToolResources {
             writes: single("path"),
-            ..Default::default()
-        },
-        "batch_edit" => ToolResources {
-            writes: list("edits", "file_path"),
             ..Default::default()
         },
         // Side-effect-free tools that touch no workspace file: safe to run
@@ -387,21 +383,6 @@ mod tests {
     fn resources_unknown_tool_is_barrier() {
         let r = tool_resources("some_new_tool", &serde_json::json!({}), Path::new("/work"));
         assert!(r.barrier);
-    }
-
-    #[test]
-    fn resources_batch_edit_collects_all_writes() {
-        let input = serde_json::json!({
-            "edits": [
-                {"file_path": "a.rs", "old_string": "x", "new_string": "y"},
-                {"file_path": "b.rs", "old_string": "x", "new_string": "y"}
-            ]
-        });
-        let r = tool_resources("batch_edit", &input, Path::new("/work"));
-        assert_eq!(
-            r.writes,
-            vec![PathBuf::from("/work/a.rs"), PathBuf::from("/work/b.rs")]
-        );
     }
 
     #[test]

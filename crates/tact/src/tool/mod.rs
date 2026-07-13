@@ -47,10 +47,10 @@ mod apply_patch;
 mod ask_user;
 mod background_run;
 mod bash;
-mod batch_edit;
 mod batch_read;
 mod compact;
 mod cron;
+mod edit_file;
 mod load_skill;
 mod lsp_tool;
 mod memory;
@@ -75,11 +75,11 @@ use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
 use bash::BashTool;
 #[cfg(test)]
-use batch_edit::BatchEditTool;
-#[cfg(test)]
 use batch_read::BatchReadTool;
 #[cfg(test)]
 use cron::{CronCreateTool, CronDeleteTool, CronListTool};
+#[cfg(test)]
+use edit_file::EditFileTool;
 #[cfg(test)]
 use load_skill::LoadSkillTool;
 #[cfg(test)]
@@ -283,15 +283,12 @@ mod tests {
             "bash",
             "read_file",
             "write_file",
+            "edit_file",
             "search_code",
             "sleep",
         ] {
             assert!(names.contains(&tool.to_string()), "missing {tool}");
         }
-        assert!(
-            !names.iter().any(|n| n == "edit_file"),
-            "edit_file was removed from the toolset"
-        );
     }
 
     #[tokio::test]
@@ -425,6 +422,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_file_replaces_first_match() {
+        let router = ToolRouter::new().route(EditFileTool);
+        let context = test_context("edit_file_replaces_first_match");
+        write_workspace_file(&context.work_dir, "edit.txt", "alpha beta gamma");
+
+        let output = router
+            .call(
+                &context,
+                "edit_file",
+                serde_json::json!({
+                    "path": "edit.txt",
+                    "old_text": "beta",
+                    "new_text": "BETA"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.contains("Edited"));
+        let updated = std::fs::read_to_string(context.work_dir.join("edit.txt")).unwrap();
+        assert_eq!(updated, "alpha BETA gamma");
+    }
+
+    #[tokio::test]
+    async fn edit_file_errors_when_text_missing() {
+        let router = ToolRouter::new().route(EditFileTool);
+        let context = test_context("edit_file_errors_when_text_missing");
+        write_workspace_file(&context.work_dir, "edit.txt", "unchanged");
+
+        let error = router
+            .call(
+                &context,
+                "edit_file",
+                serde_json::json!({
+                    "path": "edit.txt",
+                    "old_text": "missing",
+                    "new_text": "new"
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Text not found"));
+    }
+
+    #[tokio::test]
     async fn batch_read_reads_multiple_files() {
         let router = ToolRouter::new().route(BatchReadTool);
         let context = test_context("batch_read_reads_multiple_files");
@@ -461,46 +504,6 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("files array must not be empty"));
-    }
-
-    #[tokio::test]
-    async fn batch_edit_applies_edits_atomically() {
-        let router = ToolRouter::new().route(BatchEditTool);
-        let context = test_context("batch_edit_applies_edits_atomically");
-        write_workspace_file(&context.work_dir, "one.txt", "foo bar");
-        write_workspace_file(&context.work_dir, "two.txt", "ping pong");
-
-        let output = router
-            .call(
-                &context,
-                "batch_edit",
-                serde_json::json!({
-                    "edits": [
-                        {
-                            "file_path": "one.txt",
-                            "old_string": "foo",
-                            "new_string": "FOO"
-                        },
-                        {
-                            "file_path": "two.txt",
-                            "old_string": "pong",
-                            "new_string": "PONG"
-                        }
-                    ]
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.contains("BatchEdit"));
-        assert_eq!(
-            std::fs::read_to_string(context.work_dir.join("one.txt")).unwrap(),
-            "FOO bar"
-        );
-        assert_eq!(
-            std::fs::read_to_string(context.work_dir.join("two.txt")).unwrap(),
-            "ping PONG"
-        );
     }
 
     #[tokio::test]
