@@ -503,6 +503,7 @@ In `sfull`, these capabilities are no longer scattered across independent crates
 - Store has no cross-process file locking.
 - MCP covers stdio servers and tool calls only — no resources, prompts, OAuth, or auto-reconnect.
 - Hooks have types and registration methods but no full config-file-driven system.
+- Image attachments (`@file.png`, `![alt](path)` in `tact-ui`) require a vision-capable model; OpenAI-compatible adapters send `image_url` with no capability gate, so text-only endpoints may return HTTP 400.
 
 ## Recommended Reading Order
 

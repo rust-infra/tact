@@ -76,6 +76,8 @@ pub enum UserCommand {
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. Raster images use `[ui.vision_image]` in config: `compress` (default `true`) downscales and re-encodes as JPEG (`max_edge` 1280, `jpeg_quality` 80); set `compress = false` to send the original file bytes. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 
+**Vision capability required.** Compression only shrinks payloads; it does not make a text-only model accept images. On OpenAI-compatible providers (`openai` / `deepseek` / `kimi`), `ContentBlock::Image` is converted to Chat Completions `image_url` parts ([Ch 22](./22_chapter_llm.md)). Endpoints that only deserialize `text` content parts return HTTP 400 (`unknown variant image_url, expected text`). Anthropic uses native Messages API image blocks instead. Use a multimodal model, or do not attach images.
+
 ---
 
 ## 4. `AgentUpdate` Handling
