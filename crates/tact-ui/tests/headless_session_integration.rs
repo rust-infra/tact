@@ -5,7 +5,8 @@ mod harness;
 use std::time::Duration;
 
 use harness::{
-    bash_tool_use, mock_turn, read_file_tool_use, text_block, write_file_tool_use,
+    bash_tool_use, edit_file_tool_use, mock_turn, read_file_tool_use, text_block,
+    write_file_tool_use,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
@@ -85,10 +86,10 @@ async fn headless_session_read_file_shows_executing_snapshot() {
 async fn headless_session_default_permission_shows_select_popup() {
     let mock = MockClient::new(vec![
         mock_turn(
-            vec![write_file_tool_use("w1", "main.rs", "new code")],
+            vec![edit_file_tool_use("e1", "main.rs", "old", "new")],
             StopReason::ToolUse,
         ),
-        mock_turn(vec![text_block("Written.")], StopReason::EndTurn),
+        mock_turn(vec![text_block("Edited.")], StopReason::EndTurn),
     ]);
 
     let result = run_headless_session(
@@ -98,7 +99,7 @@ async fn headless_session_default_permission_shows_select_popup() {
         |dir| write_workspace_file(dir, "main.rs", "old code"),
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("write main".into()))
+                tx.send(UserCommand::SubmitTask("edit main".into()))
                     .unwrap();
                 drop(tx);
             })
@@ -118,7 +119,7 @@ async fn headless_session_default_permission_shows_select_popup() {
     );
 
     let content = std::fs::read_to_string(result.work_dir.join("main.rs")).unwrap();
-    assert!(content.contains("new"), "allow-once should apply write");
+    assert!(content.contains("new"), "allow-once should apply edit");
     assert!(result.is_done);
 }
 

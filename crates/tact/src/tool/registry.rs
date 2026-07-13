@@ -5,10 +5,10 @@ use super::apply_patch::ApplyPatchTool;
 use super::ask_user::AskUserTool;
 use super::background_run::{BackgroundRunTool, CheckBackgroundTool};
 use super::bash::BashTool;
-use super::batch_edit::BatchEditTool;
 use super::batch_read::BatchReadTool;
 use super::compact::CompactTool;
 use super::cron::{CronCreateTool, CronDeleteTool, CronListTool};
+use super::edit_file::EditFileTool;
 use super::load_skill::LoadSkillTool;
 use super::lsp_tool::QueryLspTool;
 use super::memory::SaveMemoryTool;
@@ -33,7 +33,6 @@ pub fn toolset() -> ToolRouter {
         .route(ApplyPatchTool)
         .route(AskUserTool)
         .route(BashTool)
-        .route(BatchEditTool)
         .route(BatchReadTool)
         .route(BackgroundRunTool)
         .route(CheckBackgroundTool)
@@ -44,6 +43,7 @@ pub fn toolset() -> ToolRouter {
         .route(SearchCodeTool)
         .route(SleepTool)
         .route(WriteFileTool)
+        .route(EditFileTool)
         .route(LoadSkillTool)
         .route(QueryLspTool)
         .route(SaveMemoryTool)
@@ -78,4 +78,5 @@ pub fn subagent_toolset() -> ToolRouter {
         .route(SearchCodeTool)
         .route(SleepTool)
         .route(WriteFileTool)
+        .route(EditFileTool)
 }

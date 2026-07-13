@@ -254,6 +254,81 @@ fn main_area_loading_spinner_when_executing() {
 }
 
 #[test]
+fn open_diff_popup_after_edit_file_step_uses_git_diff() {
+    use std::collections::HashMap;
+    use std::process::Command;
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let file = tmp.join("lib.rs");
+    std::fs::write(&file, "fn old() {}").unwrap();
+
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&tmp)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .args(args);
+        cmd.output().unwrap()
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "init"]);
+
+    std::fs::write(&file, "fn new() {}").unwrap();
+
+    let mut app = make_app();
+    app.work_dir = tmp.clone();
+
+    let path = file.to_string_lossy().into_owned();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "edit",
+        "edit_file",
+        "edit_popup",
+        HashMap::from([
+            ("path".to_string(), path.clone()),
+            ("old_text".to_string(), "fn old() {}".into()),
+            ("new_text".to_string(), "fn new() {}".into()),
+        ]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "edit_popup".into(),
+        tool_name: "edit_file".into(),
+        arg_summary: path.clone(),
+        arg_full: path.clone(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "edit_popup".into(),
+        result: StepResult {
+            tool: "edit_file".into(),
+            arg_summary: path.clone(),
+            arg_full: Some(path.clone()),
+            status: StepStatus::Success,
+            message: "wrote".into(),
+            detail: Some("fn new() {}".into()),
+            duration_us: Some(100),
+            permission_label: None,
+        },
+    });
+
+    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    app.open_diff_popup(phys_idx);
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        text.contains("fn new()") || text.contains("@@") || text.contains('+'),
+        "edit_file popup should render git diff, got:\n{text}"
+    );
+}
+
+#[test]
 fn full_frame_file_picker_empty_shows_placeholder() {
     let mut app = make_app();
     app.input_mode = InputMode::FilePicker;
@@ -281,7 +356,7 @@ fn diff_popup_renders_unified_diff_markers() {
 ";
     let mut app = make_app();
     app.tools.popup = Some(DiffPopup {
-        title: "write_file".into(),
+        title: "edit_file".into(),
         file_path: None,
         git_diff_path: None,
         workspace_dir: None,
@@ -365,6 +440,96 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
     );
 }
 
+#[test]
+fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
+    use std::collections::HashMap;
+    use std::process::Command;
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let file = tmp.join("calc.rs");
+    std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}").unwrap();
+
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&tmp)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .args(args);
+        cmd.output().unwrap()
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "init"]);
+
+    // Edit: change `a + b` to `a - b`
+    std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 {\n    a - b\n}").unwrap();
+
+    let mut app = make_app();
+    app.work_dir = tmp.clone();
+    let path = file.to_string_lossy().into_owned();
+
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "edit",
+        "edit_file",
+        "edit_calc",
+        HashMap::from([
+            ("path".to_string(), path.clone()),
+            ("old_text".to_string(), "a + b".into()),
+            ("new_text".to_string(), "a - b".into()),
+        ]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "edit_calc".into(),
+        tool_name: "edit_file".into(),
+        arg_summary: path.clone(),
+        arg_full: path.clone(),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "edit_calc".into(),
+        result: StepResult {
+            tool: "edit_file".into(),
+            arg_summary: path.clone(),
+            arg_full: Some(path.clone()),
+            status: StepStatus::Success,
+            message: "wrote".into(),
+            detail: Some("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}".into()),
+            duration_us: Some(100),
+            permission_label: None,
+        },
+    });
+
+    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    app.open_diff_popup(phys_idx);
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    // Unified diff must show both the removed line (-) and the added line (+)
+    assert!(
+        text.contains("-    a + b"),
+        "git diff should show removed line '-    a + b', got:\n{text}"
+    );
+    assert!(
+        text.contains("+    a - b"),
+        "git diff should show added line '+    a - b', got:\n{text}"
+    );
+    // Context around the change
+    assert!(
+        text.contains("fn add"),
+        "context line around diff should appear, got:\n{text}"
+    );
+    // Hunk header present
+    assert!(
+        text.contains("@@"),
+        "diff should show @@ hunk header, got:\n{text}"
+    );
+}
 #[test]
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;

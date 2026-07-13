@@ -157,7 +157,7 @@ Use the builder methods in `Agent::build_system_prompt`:
 ```rust
 .constraints([
     "Always run cargo check after editing Rust files",
-    "Prefer apply_patch over write_file for small changes to existing files",
+    "Prefer edit_file over write_file for small changes",
 ])
 ```
 

@@ -314,6 +314,26 @@ impl App {
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             }),
+            "edit_file" => {
+                let path = if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                };
+                Some(DiffPopup {
+                    title: path.clone(),
+                    file_path: None,
+                    git_diff_path: Some(path.clone()),
+                    workspace_dir: Some(self.work_dir.to_string_lossy().to_string()),
+                    inline_content: output.detail_full.clone(),
+                    lang: crate::render::popups::diff_popup::popup_lang_for_path(&path),
+                    use_diff_gutter: false,
+                    is_diff: true,
+                    scroll: 0,
+                    cached_content: None,
+                    highlighted_lines: Vec::new(),
+                })
+            }
             "bash" | "shell" | "run_command" => {
                 let content = output.detail_full.clone()?;
                 let full_arg = if output.arg_full.is_empty() {

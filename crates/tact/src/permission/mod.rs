@@ -442,7 +442,7 @@ mod tests {
     fn default_mode_asks_for_non_high_writes() {
         let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
 
-        let decision = manager.check("write_file", &json!({ "path": "src/lib.rs" }));
+        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
 
         assert_eq!(decision.behavior, PermissionBehavior::Ask);
         assert!(decision.reason.contains("asking user"));
@@ -452,11 +452,11 @@ mod tests {
     fn always_allow_adds_exact_tool_allowlist_entry() {
         let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
 
-        let approved = manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "write_file");
+        let approved = manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "edit_file");
 
         assert!(approved);
-        assert!(manager.rules().contains(&"write_file".to_string()));
-        let decision = manager.check("write_file", &json!({ "path": "src/lib.rs" }));
+        assert!(manager.rules().contains(&"edit_file".to_string()));
+        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
         assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 

@@ -2,7 +2,7 @@
 
 This document describes the overall architecture, core data flow, and terminal UI layout of `tact` using Mermaid diagrams. It reflects the current implementation rather than the original MVP design.
 
-For detailed state-machine diagrams (TUI status, input mode, task lifecycle, permissions, hooks, etc.), see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI rendering architecture (layout, log panel, popups), see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For tool invocation UI (3-tier blocks, concurrent active tools, popups), see [`docs/tool_rendering.md`](./docs/tool_rendering.md). For the `batch_read`/`batch_edit` execution and TUI interaction flowcharts, see [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md).
+For detailed state-machine diagrams (TUI status, input mode, task lifecycle, permissions, hooks, etc.), see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI rendering architecture (layout, log panel, popups), see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For tool invocation UI (3-tier blocks, concurrent active tools, popups), see [`docs/tool_rendering.md`](./docs/tool_rendering.md). For the `batch_read` execution and TUI interaction flowcharts, see [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md).
 
 ---
 
@@ -360,7 +360,7 @@ Recovery mechanisms inside `agent_loop()`:
 
 | Feature | Module | Description |
 |---|---|---|
-| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `search_code`, `sleep`). |
+| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `search_code`, `sleep`). |
 | Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.claude/tasks/`. |
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.claude/worktrees/`. |
@@ -649,6 +649,6 @@ If you are reading older branches or notes, the following major evolutions have 
 | [`docs/state_machines.md`](./docs/state_machines.md) | Detailed state-machine diagrams for the TUI, tasks, background jobs, permissions, hooks, and recovery. |
 | [`docs/tui_rendering.md`](./docs/tui_rendering.md) | TUI rendering architecture: layout, log panel, popups, Markdown, cells, performance optimization. |
 | [`docs/tool_rendering.md`](./docs/tool_rendering.md) | Tool block design: ToolWidget → ToolCell pipeline, concurrent tools, detail cards, DiffPopup. |
-| [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md) | `batch_read`/`batch_edit` tool execution flow and interaction sequence diagrams with the TUI. |
+| [`docs/batch_tools_flow.md`](./docs/batch_tools_flow.md) | `batch_read` tool execution flow and interaction sequence diagrams with the TUI. |
 | [`docs/compaction.md`](./docs/compaction.md) | Context compaction behavior and tuning. |
 | [`docs/token_usage_schema.md`](./docs/token_usage_schema.md) | SQLite `token_usages` schema, cache metrics, `request_body` debug column. |

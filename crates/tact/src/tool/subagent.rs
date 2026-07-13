@@ -69,15 +69,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subagent_toolset_has_five_tools() {
+    fn subagent_toolset_has_six_tools() {
         let router = subagent_toolset();
         let specs = router.tool_specs();
-        assert_eq!(specs.len(), 5, "subagent should have exactly 5 tools");
+        assert_eq!(specs.len(), 6, "subagent should have exactly 6 tools");
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
-        assert!(!names.contains(&"edit_file"));
+        assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"sleep"));
     }
