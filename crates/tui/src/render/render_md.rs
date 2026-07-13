@@ -237,19 +237,45 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
         }
         let line_text = format!("|{}|", cells.join("|"));
 
-        let style = if row_idx == 0 {
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(theme.accent)
+        let styled = if row_idx == 0 {
+            // Header: bold accent cells, dim pipes — keeps `#` / titles visually distinct.
+            styled_table_row(&cells, theme.accent, true, theme)
         } else {
-            Style::default().fg(theme.fg)
+            Line::from(Span::styled(
+                line_text.clone(),
+                Style::default().fg(theme.fg),
+            ))
         };
 
-        styled_lines.push(Line::from(Span::styled(line_text.clone(), style)));
+        styled_lines.push(styled);
         raw_lines.push(line_text);
     }
 
     (styled_lines, raw_lines)
+}
+
+/// Build a table row as alternating pipe + cell spans.
+fn styled_table_row(
+    cells: &[String],
+    cell_fg: ratatui::style::Color,
+    bold: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let pipe = Style::default().fg(theme.accent);
+    let mut cell_style = Style::default().fg(cell_fg);
+    if bold {
+        cell_style = cell_style.add_modifier(Modifier::BOLD);
+    }
+    let mut spans = Vec::with_capacity(cells.len() * 2 + 1);
+    spans.push(Span::styled("|".to_string(), pipe));
+    for (i, cell) in cells.iter().enumerate() {
+        spans.push(Span::styled(cell.clone(), cell_style));
+        if i + 1 < cells.len() {
+            spans.push(Span::styled("|".to_string(), pipe));
+        }
+    }
+    spans.push(Span::styled("|".to_string(), pipe));
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -370,6 +396,31 @@ mod tests {
             cols.windows(2).all(|w| w[0] == w[1]),
             "pipe display columns misaligned:\n{}",
             raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn format_table_header_is_bold() {
+        let rows = vec![
+            "| # | 文件 | 内容 |".to_string(),
+            "|---|------|------|".to_string(),
+            "| 1 | a.txt | hello |".to_string(),
+        ];
+        let (styled, _raw) = format_table(&rows, &theme());
+        let header = &styled[0];
+        assert!(
+            header
+                .spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD) && s.content.contains('#')),
+            "header cell with # should be bold: {header:?}"
+        );
+        let body = &styled[2];
+        assert!(
+            body.spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
+            "body row should not be bold"
         );
     }
 }
