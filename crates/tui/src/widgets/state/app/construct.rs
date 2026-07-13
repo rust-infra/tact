@@ -72,7 +72,6 @@ impl App {
             mouse: MouseState::new(),
             input_mode: InputMode::Insert,
             palette_selected: 0,
-            _command_history: Vec::new(),
             input_history: InputHistory::new(input_history_entries),
             work_dir,
             session_id,

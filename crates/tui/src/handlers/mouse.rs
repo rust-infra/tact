@@ -1,21 +1,48 @@
-//! Mouse scroll handling extracted from the main event loop for testability.
+//! Mouse handling extracted from the main event loop for testability.
 
-use crate::widgets::state::{App, LogSelection, TextPosition};
+use crate::widgets::state::{App, FocusedPanel, LogSelection, TextPosition};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MousePanelHit {
     pub in_log: bool,
     pub in_plan: bool,
+    pub in_divider: bool,
 }
 
-/// Handle mouse wheel up (mirrors `lib.rs` scroll-up branch).
+fn panel_hit(app: &App, column: u16, row: u16) -> MousePanelHit {
+    MousePanelHit {
+        in_log: point_in_rect(column, row, app.mouse.log_area),
+        in_plan: point_in_rect(column, row, app.mouse.plan_area),
+        in_divider: point_in_rect(column, row, app.mouse.divider_area),
+    }
+}
+
+fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
+    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
+}
+
+/// Dispatch a mouse event (scroll, click, drag, resize).
+pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+    let hit = panel_hit(app, mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => handle_mouse_scroll_up(app, hit),
+        MouseEventKind::ScrollDown => handle_mouse_scroll_down(app, hit),
+        MouseEventKind::Down(MouseButton::Left) => handle_mouse_down(app, mouse, hit),
+        MouseEventKind::Drag(MouseButton::Left) => handle_mouse_drag(app, mouse, hit),
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.mouse.dragging_log = false;
+            app.mouse.dragging_plan = false;
+            end_panel_resize(app);
+        }
+        _ => {}
+    }
+}
+
+/// Handle mouse wheel up.
 pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
-    if app.thinking.popup.is_some() {
-        app.thinking_popup_scroll_up();
-    } else if app.tools.popup.is_some() {
-        app.diff_popup_scroll_up();
-    } else if app.code_popup.is_some() {
-        app.code_popup_scroll_up();
+    if app.has_overlay_popup() {
+        app.overlay_popup_scroll_up();
     } else if hit.in_log && app.log_scroll.offset > 0 {
         app.log_scroll.offset -= 1;
     } else if hit.in_plan && app.plan.selected > 0 {
@@ -24,14 +51,10 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
     }
 }
 
-/// Handle mouse wheel down (mirrors `lib.rs` scroll-down branch).
+/// Handle mouse wheel down.
 pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
-    if app.thinking.popup.is_some() {
-        app.thinking_popup_scroll_down();
-    } else if app.tools.popup.is_some() {
-        app.diff_popup_scroll_down();
-    } else if app.code_popup.is_some() {
-        app.code_popup_scroll_down();
+    if app.has_overlay_popup() {
+        app.overlay_popup_scroll_down();
     } else if hit.in_log {
         app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
     } else if hit.in_plan
@@ -40,6 +63,165 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     {
         app.plan.selected += 1;
         app.plan.list_state.select(Some(app.plan.selected));
+    }
+}
+
+fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
+    if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
+        return;
+    }
+    if hit.in_divider {
+        begin_panel_resize(app);
+        return;
+    }
+    if hit.in_log {
+        handle_log_click(app, mouse);
+        return;
+    }
+    if hit.in_plan {
+        app.focused_panel = FocusedPanel::Plan;
+        let item_idx = (mouse.row.saturating_sub(app.mouse.plan_area.y + 1)) as usize;
+        if item_idx < app.plan.steps.len() {
+            app.plan.selected = item_idx;
+            app.plan.list_state.select(Some(app.plan.selected));
+            app.mouse.plan_selection = Some((item_idx, item_idx));
+            app.mouse.dragging_plan = true;
+        }
+    }
+}
+
+fn handle_log_click(app: &mut App, mouse: MouseEvent) {
+    app.focused_panel = FocusedPanel::Log;
+    let visual_base = app
+        .log_scroll
+        .visual_start
+        .get(app.log_scroll.offset as usize)
+        .copied()
+        .unwrap_or(0);
+    let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+    let line_idx = app.logical_from_visual(visual_row);
+    let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+
+    let now = std::time::Instant::now();
+    let pos = (mouse.column, mouse.row);
+    let is_same_click = app.mouse.last_click_pos == Some(pos)
+        && app
+            .mouse
+            .last_click_time
+            .is_some_and(|t| now.duration_since(t).as_millis() < 500);
+    if is_same_click {
+        app.mouse.click_count = (app.mouse.click_count + 1).min(3);
+    } else {
+        app.mouse.click_count = 1;
+    }
+    app.mouse.last_click_time = Some(now);
+    app.mouse.last_click_pos = Some(pos);
+
+    let Some(phys_idx) = app.visible_message_index(line_idx) else {
+        return;
+    };
+
+    let card_hit = app.thinking.blocks.iter().position(|b| {
+        app.phys_to_logical_fast(b.title_idx)
+            .zip(app.phys_to_logical_fast(b.end_idx + 1))
+            .is_some_and(|(tl, bl)| line_idx >= tl && line_idx < bl)
+    });
+    if let Some(card_idx) = card_hit {
+        if app.mouse.click_count == 1 {
+            app.mouse.last_click_card = Some(card_idx);
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+        } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(card_idx) {
+            let block = &app.thinking.blocks[card_idx];
+            app.open_thinking_popup(block.title_idx);
+        } else if app.mouse.click_count >= 3 {
+            handle_log_triple_click(app, line_idx, false);
+        }
+    } else {
+        app.mouse.last_click_card = None;
+    }
+
+    if let Some((tool_idx, tool_phys, logical_start, _)) = app.find_tool_at_logical(line_idx) {
+        let relative_row = line_idx - logical_start;
+        handle_tool_block_click(app, tool_idx, tool_phys, relative_row);
+        if app.mouse.click_count >= 3 {
+            handle_log_triple_click(app, line_idx, false);
+        }
+        return;
+    }
+
+    app.mouse.last_click_tool = None;
+    let code_hit = app.code_blocks.iter().enumerate().find(|(_, b)| {
+        app.phys_to_logical_fast(b.start_idx)
+            .is_some_and(|si| line_idx >= si)
+            && app
+                .phys_to_logical_fast(b.end_idx)
+                .is_some_and(|ei| line_idx < ei)
+    });
+    if let Some((code_idx, _block)) = code_hit {
+        if app.mouse.click_count == 1 {
+            app.mouse.last_click_code = Some(code_idx);
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+        } else if app.mouse.click_count == 2 && app.mouse.last_click_code == Some(code_idx) {
+            app.open_code_popup(code_idx);
+        } else if app.mouse.click_count >= 3 {
+            handle_log_triple_click(app, line_idx, false);
+        }
+        return;
+    }
+
+    app.mouse.last_click_code = None;
+    let thinking_title = app.thinking.blocks.iter().any(|b| b.title_idx == phys_idx);
+    if thinking_title {
+        app.open_thinking_popup(phys_idx);
+        return;
+    }
+
+    if app.mouse.click_count == 2 {
+        if let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
+            && let Some((ws, we)) = app.find_word_bounds(line_idx, byte)
+        {
+            app.mouse.log_selection = Some(LogSelection::span(phys, ws, we));
+        }
+        app.mouse.dragging_log = true;
+    } else if app.mouse.click_count >= 3 {
+        handle_log_triple_click(app, line_idx, true);
+    } else if let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
+    {
+        app.mouse.log_selection = Some(LogSelection::span(phys, byte, byte));
+        app.mouse.dragging_log = true;
+    }
+}
+
+fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
+    if app.mouse.is_resizing_panel {
+        let total_width =
+            app.mouse.plan_area.width + app.mouse.divider_area.width + app.mouse.log_area.width;
+        update_panel_resize(app, mouse.column, app.mouse.plan_area.x, total_width);
+    } else if app.mouse.dragging_log && hit.in_log {
+        let visual_base = app
+            .log_scroll
+            .visual_start
+            .get(app.log_scroll.offset as usize)
+            .copied()
+            .unwrap_or(0);
+        let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+        let line_idx = app.logical_from_visual(visual_row);
+        let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+        if line_idx < app.total_log_lines()
+            && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
+            && let Some(ref mut sel) = app.mouse.log_selection
+        {
+            sel.end = TextPosition::new(phys, byte);
+        }
+    } else if app.mouse.dragging_plan && hit.in_plan {
+        let item_idx = (mouse.row.saturating_sub(app.mouse.plan_area.y + 1)) as usize;
+        if item_idx < app.plan.steps.len()
+            && let Some((start, _)) = app.mouse.plan_selection
+        {
+            app.mouse.plan_selection = Some((start, item_idx));
+        }
     }
 }
 
@@ -128,6 +310,7 @@ mod tests {
             MousePanelHit {
                 in_log: true,
                 in_plan: false,
+                in_divider: false,
             },
         );
 
@@ -144,6 +327,7 @@ mod tests {
             MousePanelHit {
                 in_log: true,
                 in_plan: false,
+                in_divider: false,
             },
         );
 
@@ -211,7 +395,6 @@ mod tests {
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
-        // Detail card starts after the 2-row header.
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS);
         assert!(app.tools.popup.is_some());
     }
@@ -251,10 +434,8 @@ mod tests {
         let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
-        // Click on the title row (row 0).
         handle_tool_block_click(&mut app, 0, phys_idx, 0);
         assert!(app.tools.popup.is_none());
-        // Click on the meta row (row 1).
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1);
         assert!(app.tools.popup.is_none());
     }

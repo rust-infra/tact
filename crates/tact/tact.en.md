@@ -283,6 +283,7 @@ Native and MCP tools share the same permission and result path.
 - Store has no cross-process file locking.
 - MCP only covers stdio tool calls.
 - Hooks are not configuration-driven yet.
+- Image attachments (`@file.png`, `![alt](path)` via `tact-ui`) need a vision model; OpenAI-compatible paths always emit `image_url`, so text-only APIs may return HTTP 400.
 
 ## Verify
 

@@ -1,4 +1,3 @@
-use super::copy_text;
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
@@ -112,7 +111,7 @@ pub(crate) fn handle_normal_mode(
                 }
             };
             if let Some(t) = text {
-                copy_text(app, &t);
+                app.copy_text(&t);
                 app.add_new_line();
             }
         }
@@ -120,7 +119,7 @@ pub(crate) fn handle_normal_mode(
             if app.focused_panel == FocusedPanel::Log
                 && let Some(code) = app.extract_last_code_block()
             {
-                copy_text(app, &code);
+                app.copy_text(&code);
                 app.add_new_line();
             }
         }

@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use crate::widgets::state::RawMessageType;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
@@ -69,11 +69,16 @@ pub(crate) fn restyle_log_line(
             if style.bg == Some(Color::Rgb(70, 90, 140)) {
                 style.bg = Some(theme.highlight);
             }
-            style.fg = match style.fg {
-                Some(Color::Blue) | Some(Color::LightBlue) => style.fg,
-                Some(Color::Green) => Some(theme.success),
-                Some(Color::Cyan) => Some(theme.accent),
-                _ => Some(theme.fg),
+            style.fg = if style.add_modifier.contains(Modifier::BOLD) {
+                // Table headers / emphasis: keep accent so bold stays visible.
+                Some(theme.accent)
+            } else {
+                match style.fg {
+                    Some(Color::Blue) | Some(Color::LightBlue) => style.fg,
+                    Some(Color::Green) => Some(theme.success),
+                    Some(Color::Cyan) => Some(theme.accent),
+                    _ => Some(theme.fg),
+                }
             };
             Span::styled(span.content.to_string(), style)
         })

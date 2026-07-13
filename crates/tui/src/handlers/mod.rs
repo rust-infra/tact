@@ -3,52 +3,21 @@ mod file_picker;
 mod insert;
 mod mouse;
 mod normal;
+mod overlay;
 mod palette;
 mod select;
 
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
-pub(crate) use mouse::{
-    MousePanelHit, begin_panel_resize, end_panel_resize, handle_log_triple_click,
-    handle_mouse_scroll_down, handle_mouse_scroll_up, handle_tool_block_click, update_panel_resize,
-};
+pub(crate) use mouse::handle_mouse_event;
 pub(crate) use normal::handle_normal_mode;
+pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 
 use crate::widgets::state::{App, Status};
-use arboard::Clipboard;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Local;
 use tact_protocol::UserCommand;
-
-fn copy_text(app: &mut App, text: &str) {
-    let preview = text.chars().take(40).collect::<String>();
-
-    // 1. Try native clipboard
-    if let Ok(mut clip) = Clipboard::new()
-        && clip.set_text(text).is_ok()
-    {
-        let msgs = app.msgs();
-        app.add_system_message(msgs.copied_tmpl.replace("{}", &preview));
-        return;
-    }
-
-    // 2. Fallback: OSC 52 terminal clipboard (for SSH / tmux scenarios)
-    let encoded = BASE64.encode(text);
-    let osc52 = format!("\x1b]52;c;{}\x07", encoded);
-    if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-        let msgs = app.msgs();
-        app.add_system_message(msgs.copied_terminal_tmpl.replace("{}", &preview));
-        return;
-    }
-
-    // 3. Last resort: save to internal buffer
-    app.clipboard_buffer = text.to_string();
-    let msgs = app.msgs();
-    app.add_system_message(msgs.copied_internal_tmpl.replace("{}", &preview));
-}
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
