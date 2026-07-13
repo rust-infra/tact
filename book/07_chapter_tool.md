@@ -127,7 +127,7 @@ Restricted set for isolated workers spawned by the `task` tool:
 | `bash` | Shell commands |
 | `read_file` | Read workspace files |
 | `write_file` | Create/overwrite files |
-| `edit_file` | Single replacement edits |
+| `edit_file` | Exact string replace (first or all) |
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 

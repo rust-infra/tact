@@ -775,7 +775,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
                 "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
                 "When editing files, always re-read the file first if its content may have changed since you last read it",
-                "For multi-line changes, prefer apply_patch; for single-line exact replacements, use edit_file",
+                "For multi-line changes, prefer apply_patch; for exact string replacements, use edit_file (replace_all=true to change every occurrence in the file)",
                 "If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
             ])
