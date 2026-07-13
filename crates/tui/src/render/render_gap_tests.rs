@@ -434,7 +434,7 @@ fn status_bar_shows_idle_after_done_expires() {
     );
 }
 
-// --- Handler-adjacent render: Planning, RequestSelect, edit_file ---
+// --- Handler-adjacent render: Planning, RequestSelect, write_file ---
 
 #[test]
 fn full_frame_planning_status_renders_in_status_bar() {
@@ -456,7 +456,7 @@ fn request_select_update_renders_select_popup() {
     let (tx, _rx) = tokio::sync::oneshot::channel();
 
     app.handle_agent_update(AgentUpdate::RequestSelect {
-        prompt: "Allow edit_file on lib.rs?".into(),
+        prompt: "Allow write_file on lib.rs?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
         respond: tx,
     });
@@ -465,42 +465,41 @@ fn request_select_update_renders_select_popup() {
 
     let text = render_app_text(&mut app, 100, 28);
     assert!(
-        text.contains("Allow edit_file") || text.contains("lib.rs"),
+        text.contains("Allow write_file") || text.contains("lib.rs"),
         "RequestSelect should render permission prompt in full frame, got:\n{text}"
     );
 }
 
 #[test]
-fn full_frame_edit_file_tool_shows_in_log() {
+fn full_frame_write_file_tool_shows_in_log() {
     let mut app = make_app();
     app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "patch lib",
-        "edit_file",
-        "edit1",
+        "write lib",
+        "write_file",
+        "write1",
         HashMap::from([
             ("path".to_string(), "lib.rs".to_string()),
-            ("old_text".to_string(), "fn old()".to_string()),
-            ("new_text".to_string(), "fn new()".to_string()),
+            ("content".to_string(), "fn new()".to_string()),
         ]),
     )));
     app.handle_agent_update(AgentUpdate::StepStarted {
         idx: 0,
-        tool_id: "edit1".into(),
-        tool_name: "edit_file".into(),
+        tool_id: "write1".into(),
+        tool_name: "write_file".into(),
         arg_summary: "lib.rs".into(),
         arg_full: "lib.rs".into(),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
-        tool_id: "edit1".into(),
+        tool_id: "write1".into(),
         result: StepResult {
-            tool: "edit_file".into(),
+            tool: "write_file".into(),
             arg_summary: "lib.rs".into(),
             arg_full: Some("lib.rs".into()),
             status: StepStatus::Success,
-            message: "patched".into(),
-            detail: Some("- fn old()\n+ fn new()".into()),
+            message: "wrote".into(),
+            detail: Some("fn new()".into()),
             duration_us: Some(200),
             permission_label: None,
         },
@@ -509,8 +508,8 @@ fn full_frame_edit_file_tool_shows_in_log() {
     let text = render_app_text(&mut app, 120, 30);
 
     assert!(
-        text.contains("edit_file") || text.contains("lib.rs") || text.contains("fn new"),
-        "edit_file tool card should render in log, got:\n{text}"
+        text.contains("write_file") || text.contains("lib.rs") || text.contains("fn new"),
+        "write_file tool card should render in log, got:\n{text}"
     );
 }
 

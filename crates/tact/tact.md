@@ -237,7 +237,7 @@ These belong to the agent runtime. This boundary prevents the tool layer from in
 
 `toolset()` registers the complete tool set:
 
-- Basic: `bash`, `read_file`, `write_file`, `edit_file`
+- Basic: `bash`, `read_file`, `write_file`
 - Skill: `load_skill`
 - Memory: `save_memory`
 - Compact: `compact`
@@ -253,7 +253,8 @@ Subagents use a separate `subagent_toolset()`, which only exposes:
 - `bash`
 - `read_file`
 - `write_file`
-- `edit_file`
+- `search_code`
+- `sleep`
 
 This allows subagents to independently explore and modify files without recursively creating new teams, cron jobs, background tasks, or worktree control planes.
 

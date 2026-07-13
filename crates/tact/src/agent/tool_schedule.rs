@@ -108,7 +108,7 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
                 ..Default::default()
             }
         }
-        "write_file" | "edit_file" => ToolResources {
+        "write_file" => ToolResources {
             writes: single("path"),
             ..Default::default()
         },

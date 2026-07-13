@@ -37,18 +37,6 @@ pub fn write_file_tool_use(id: &str, path: &str, content: &str) -> ContentBlock 
     }
 }
 
-pub fn edit_file_tool_use(id: &str, path: &str, old_text: &str, new_text: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "edit_file".to_string(),
-        input: serde_json::json!({
-            "path": path,
-            "old_text": old_text,
-            "new_text": new_text,
-        }),
-    }
-}
-
 pub fn bash_tool_use(id: &str, command: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),

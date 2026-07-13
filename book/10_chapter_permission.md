@@ -153,7 +153,7 @@ flowchart TD
 
 `PermissionManager` holds `always_allowed_tools: Vec<String>`. On construction (`try_new`), it is seeded with `"read_file"`.
 
-When the user picks **"Always allow this tool"** in the TUI, `allow_tool(tool_name)` appends the exact tool name (e.g. `edit_file`, `bash`). Future **Write**-risk calls to that name skip the Default-mode prompt.
+When the user picks **"Always allow this tool"** in the TUI, `allow_tool(tool_name)` appends the exact tool name (e.g. `write_file`, `bash`). Future **Write**-risk calls to that name skip the Default-mode prompt.
 
 The allowlist is **in-memory only** — it is not persisted to SQLite or TOML between sessions.
 

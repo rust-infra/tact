@@ -360,7 +360,7 @@ Recovery mechanisms inside `agent_loop()`:
 
 | Feature | Module | Description |
 |---|---|---|
-| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `search_code`, `sleep`). |
+| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `search_code`, `sleep`). |
 | Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.claude/tasks/`. |
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.claude/worktrees/`. |
