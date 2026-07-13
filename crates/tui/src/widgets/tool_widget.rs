@@ -1,11 +1,8 @@
 use std::time::Instant;
 
 use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
 };
 use tact_protocol::{StepResult, StepStatus};
 
@@ -140,41 +137,6 @@ fn truncate_tool_error(error: &str) -> String {
             one_line.chars().take(MAX_CHARS - 1).collect::<String>()
         )
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_meta_line(
-    phase: ToolPhase,
-    permission_label: Option<&str>,
-    size_bytes: Option<usize>,
-    duration_us: Option<u64>,
-    error_message: Option<&str>,
-    spinner_char: char,
-    theme: &Theme,
-    msgs: &Messages,
-) -> Line<'static> {
-    let style = match phase {
-        ToolPhase::Running => Style::default().fg(theme.warning),
-        ToolPhase::Success => Style::default().fg(theme.success),
-        ToolPhase::Failed => Style::default().fg(theme.error),
-    };
-    Line::from(Span::styled(
-        build_meta_text(
-            phase,
-            permission_label,
-            size_bytes,
-            duration_us,
-            error_message,
-            spinner_char,
-            msgs.tool_phase_running,
-            msgs.tool_phase_success,
-            msgs.tool_phase_failed,
-            msgs.tool_meta_sep,
-            msgs.step_success_prefix,
-            msgs.step_fail_prefix,
-        ),
-        style,
-    ))
 }
 
 pub fn running_elapsed_us(started_at: Instant) -> u64 {
@@ -557,80 +519,6 @@ impl<'a> ToolWidget<'a> {
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
             ToolDisplayKind::Generic => format!("{} output", self.tool_name),
         }
-    }
-}
-
-fn inset_content_rect(area: Rect) -> Rect {
-    Rect::new(
-        area.x + 2,
-        area.y,
-        area.width.saturating_sub(2),
-        area.height,
-    )
-}
-
-impl Widget for ToolWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 {
-            return;
-        }
-
-        let output = self.build();
-        let meta = build_meta_line(
-            output.phase,
-            output.permission_label.as_deref(),
-            output.size_bytes,
-            output.duration_us,
-            output.error_message.as_deref(),
-            RUNNING_SPINNER[0],
-            self.theme,
-            self.msgs,
-        );
-
-        if !output.layout.has_detail_card {
-            let inner = inset_content_rect(area);
-            Paragraph::new(vec![output.title_line, meta])
-                .style(Style::default().fg(self.theme.fg).bg(self.theme.bg))
-                .render(inner, buf);
-            return;
-        }
-
-        let title = output.detail_title.unwrap_or_default();
-        let card_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(self.theme.block_border_type())
-            .border_style(Style::default().fg(self.theme.accent))
-            .style(Style::default().bg(self.theme.bg))
-            .title(title)
-            .title_bottom(Line::from(Span::styled(
-                self.msgs.diff_card_bottom,
-                Style::default()
-                    .fg(self.theme.accent)
-                    .add_modifier(Modifier::ITALIC),
-            )));
-
-        if area.height <= TOOL_HEADER_ROWS as u16 {
-            let inner = inset_content_rect(area);
-            Paragraph::new(vec![output.title_line, meta]).render(inner, buf);
-            return;
-        }
-
-        let title_area = Rect::new(area.x + 2, area.y, area.width.saturating_sub(2), 1);
-        output.title_line.render(title_area, buf);
-        let meta_area = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(2), 1);
-        meta.render(meta_area, buf);
-
-        let card_area = Rect::new(
-            area.x + 2,
-            area.y + TOOL_HEADER_ROWS as u16,
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(TOOL_HEADER_ROWS as u16),
-        );
-        if card_area.height < 3 {
-            return;
-        }
-
-        card_block.render(card_area, buf);
     }
 }
 

@@ -3,17 +3,103 @@ use crate::widgets::tool_widget::ToolPhase;
 use arboard::Clipboard;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use ratatui::layout::Rect;
 use ratatui::text::Line;
-use tact_protocol::UserCommand;
 
 impl App {
-    #[allow(dead_code)]
-    pub(crate) fn retry_task(&mut self, task: String) {
-        self.add_user_message(task.clone());
-        self.plan.reset();
-        self.status = Status::Planning;
-        let _ = self.user_cmd_tx.send(UserCommand::SubmitTask(task));
-        self.show_history = false;
+    /// Copy text via native clipboard → OSC 52 → internal buffer.
+    pub(crate) fn copy_text(&mut self, text: &str) {
+        let preview: String = text.chars().take(40).collect();
+
+        if let Ok(mut clip) = Clipboard::new()
+            && clip.set_text(text).is_ok()
+        {
+            let msgs = self.msgs();
+            self.add_system_message(msgs.copied_tmpl.replace("{}", &preview));
+            return;
+        }
+
+        let encoded = BASE64.encode(text);
+        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
+        if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
+            let msgs = self.msgs();
+            self.add_system_message(msgs.copied_terminal_tmpl.replace("{}", &preview));
+            return;
+        }
+
+        self.clipboard_buffer = text.to_string();
+        let msgs = self.msgs();
+        self.add_system_message(msgs.copied_internal_tmpl.replace("{}", &preview));
+    }
+
+    /// True when thinking / tool-diff / code overlay popup is open.
+    pub(crate) fn has_overlay_popup(&self) -> bool {
+        self.thinking.popup.is_some() || self.tools.popup.is_some() || self.code_popup.is_some()
+    }
+
+    fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
+        if let Some(p) = self.thinking.popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.tools.popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.code_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn overlay_popup_scroll_up(&mut self) {
+        if let Some(scroll) = self.overlay_scroll_mut() {
+            *scroll = scroll.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn overlay_popup_scroll_down(&mut self) {
+        if let Some(scroll) = self.overlay_scroll_mut() {
+            *scroll = scroll.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn close_overlay_popup(&mut self) {
+        if self.thinking.popup.is_some() {
+            self.thinking.popup = None;
+        } else if self.tools.popup.is_some() {
+            self.tools.popup = None;
+        } else if self.code_popup.is_some() {
+            self.code_popup = None;
+        }
+    }
+
+    /// Close the active overlay if the click is outside its area.
+    /// Returns `true` if an overlay was active (click is consumed).
+    pub(crate) fn close_overlay_on_outside_click(&mut self, column: u16, row: u16) -> bool {
+        let area = if self.thinking.popup.is_some() {
+            Some(self.mouse.thinking_popup_area)
+        } else if self.tools.popup.is_some() {
+            Some(self.mouse.diff_popup_area)
+        } else if self.code_popup.is_some() {
+            Some(self.mouse.code_popup_area)
+        } else {
+            None
+        };
+        let Some(pa) = area else {
+            return false;
+        };
+        if !point_in_rect(column, row, pa) {
+            self.close_overlay_popup();
+        }
+        true
+    }
+
+    pub(crate) fn copy_overlay_popup(&mut self) {
+        if self.thinking.popup.is_some() {
+            self.copy_thinking_popup();
+        } else if self.tools.popup.is_some() {
+            self.copy_diff_popup();
+        } else if self.code_popup.is_some() {
+            self.copy_code_popup();
+        }
     }
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.
@@ -120,20 +206,6 @@ impl App {
         self.thinking.popup = None;
     }
 
-    /// Scroll up within the popup.
-    pub(crate) fn thinking_popup_scroll_up(&mut self) {
-        if let Some(ref mut popup) = self.thinking.popup {
-            popup.scroll = popup.scroll.saturating_sub(1);
-        }
-    }
-
-    /// Scroll down within the popup (upper bound clamped by actual line count during render).
-    pub(crate) fn thinking_popup_scroll_down(&mut self) {
-        if let Some(ref mut popup) = self.thinking.popup {
-            popup.scroll = popup.scroll.saturating_add(1);
-        }
-    }
-
     /// Find the code block containing the given logical line number.
     /// Returns (logical_start, logical_end) including the opening and closing ``` markers.
     pub(crate) fn find_code_block_containing_logical(
@@ -210,35 +282,7 @@ impl App {
             return;
         }
         let text = block.cached_preview.join("\n");
-        let preview = if text.chars().count() > 40 {
-            format!("{}…", text.chars().take(40).collect::<String>())
-        } else {
-            text.clone()
-        };
-
-        // 1. Try native clipboard
-        if let Ok(mut clip) = Clipboard::new()
-            && clip.set_text(&text).is_ok()
-        {
-            self.add_system_message(format!("📋 Copied: {}", preview));
-            return;
-        }
-
-        // 2. Fallback: OSC 52 terminal clipboard
-        let encoded = BASE64.encode(&text);
-        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
-        if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-            self.add_system_message(format!("📋 Copied to terminal clipboard: {}", preview));
-            return;
-        }
-
-        // 3. Last resort: save to internal buffer
-        self.clipboard_buffer = text;
-        self.add_system_message(format!(
-            "📋 Copied to internal buffer (clipboard unavailable): {}",
-            preview
-        ));
-        self.thinking.popup = None;
+        self.copy_text(&text);
     }
 
     /// Find tool render output whose block starts at `phys_idx`.
@@ -420,20 +464,6 @@ impl App {
         self.tools.popup = None;
     }
 
-    /// Scroll up within the popup.
-    pub(crate) fn diff_popup_scroll_up(&mut self) {
-        if let Some(ref mut popup) = self.tools.popup {
-            popup.scroll = popup.scroll.saturating_sub(1);
-        }
-    }
-
-    /// Scroll down within the popup (upper bound clamped by actual line count during render).
-    pub(crate) fn diff_popup_scroll_down(&mut self) {
-        if let Some(ref mut popup) = self.tools.popup {
-            popup.scroll = popup.scroll.saturating_add(1);
-        }
-    }
-
     /// Copy the popup content to the clipboard.
     pub(crate) fn copy_diff_popup(&mut self) {
         let popup = match &self.tools.popup {
@@ -455,30 +485,7 @@ impl App {
         } else {
             return;
         };
-        let preview = if text.chars().count() > 40 {
-            format!("{}…", text.chars().take(40).collect::<String>())
-        } else {
-            text.clone()
-        };
-
-        if let Ok(mut clip) = Clipboard::new()
-            && clip.set_text(&text).is_ok()
-        {
-            self.add_system_message(format!("📋 Copied: {}", preview));
-            return;
-        }
-        let encoded = BASE64.encode(&text);
-        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
-        if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-            self.add_system_message(format!("📋 Copied to terminal clipboard: {}", preview));
-            return;
-        }
-        self.clipboard_buffer = text;
-        self.add_system_message(format!(
-            "📋 Copied to internal buffer (clipboard unavailable): {}",
-            preview
-        ));
-        self.tools.popup = None;
+        self.copy_text(&text);
     }
 
     // ========== Code Popup ==========
@@ -500,51 +507,16 @@ impl App {
         self.code_popup = None;
     }
 
-    /// Scroll up within the popup.
-    pub(crate) fn code_popup_scroll_up(&mut self) {
-        if let Some(ref mut popup) = self.code_popup {
-            popup.scroll = popup.scroll.saturating_sub(1);
-        }
-    }
-
-    /// Scroll down within the popup (upper bound clamped by actual line count during render).
-    pub(crate) fn code_popup_scroll_down(&mut self) {
-        if let Some(ref mut popup) = self.code_popup {
-            popup.scroll = popup.scroll.saturating_add(1);
-        }
-    }
-
     /// Copy the popup code content to the clipboard.
     pub(crate) fn copy_code_popup(&mut self) {
-        let popup = match &self.code_popup {
-            Some(p) => p,
-            None => return,
-        };
-        let block = &self.code_blocks[popup.block_idx];
-        let text = &block.content;
-        let preview = if text.chars().count() > 40 {
-            format!("{}…", text.chars().take(40).collect::<String>())
-        } else {
-            text.clone()
-        };
-
-        if let Ok(mut clip) = Clipboard::new()
-            && clip.set_text(text).is_ok()
-        {
-            self.add_system_message(format!("📋 Copied: {}", preview));
+        let Some(popup) = &self.code_popup else {
             return;
-        }
-        let encoded = BASE64.encode(text);
-        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
-        if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-            self.add_system_message(format!("📋 Copied to terminal clipboard: {}", preview));
-            return;
-        }
-        self.clipboard_buffer = text.clone();
-        self.add_system_message(format!(
-            "📋 Copied to internal buffer (clipboard unavailable): {}",
-            preview
-        ));
-        self.code_popup = None;
+        };
+        let text = self.code_blocks[popup.block_idx].content.clone();
+        self.copy_text(&text);
     }
+}
+
+fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
+    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
 }
