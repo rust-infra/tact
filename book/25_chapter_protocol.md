@@ -44,9 +44,17 @@ pub enum AgentUpdate {
     Info(String),
     RequestSelect { prompt, options, respond },
     StreamChunk(String),
-    ThinkingChunk(String),
+    ThinkingChunk(ThinkingChunk),
+}
+
+pub enum ThinkingChunk {
+    Started,
+    Delta(String),
+    Finished,
 }
 ```
+
+`ThinkingChunk` is a lifecycle enum: producers emit `Started`, zero or more `Delta` fragments, then `Finished`. OpenAI-compatible adapters that only expose `reasoning_content` deltas synthesize `Started` / `Finished` around the stream.
 
 ### `UserCommand`
 
@@ -280,11 +288,11 @@ stateDiagram-v2
 
 | Category | Variants | TUI side effects |
 |----------|----------|------------------|
-| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `Error`, `RequestSelect` | Close thinking block; remove loading placeholder; mutate log / plan |
-| **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder |
+| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `Error`, `RequestSelect` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
+| **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder; **do not** close an open thinking region |
 | **Request–response** | `RequestSelect { respond }` | Blocks on user choice via oneshot channel |
 
-Before handling any non-`ThinkingChunk` update, the TUI calls `flush_and_close_thinking()` so subsequent output does not append to the thinking region.
+Thinking lifecycle is explicit: `ThinkingChunk::Started` opens the region, `Delta` appends text, `Finished` flushes and collapses. As a safety net, content-producing non-thinking updates still call `flush_and_close_thinking()` if a region is still open. `TokenUsage` / `ModelInfo` never close thinking (they may arrive mid-stream).
 
 ---
 
@@ -392,6 +400,7 @@ Streaming chunks may arrive between step events. `TokenUsage` is usually emitted
 | Type | File | Role |
 |------|------|------|
 | `AgentUpdate` | `agent.rs` | Agent → TUI event enum |
+| `ThinkingChunk` | `agent.rs` | Thinking stream lifecycle (`Started` / `Delta` / `Finished`) |
 | `UserCommand` | `agent.rs` | TUI → agent command enum |
 | `PlanStep` | `agent.rs` | Plan panel row; serde for session persistence |
 | `StepResult` / `StepStatus` | `agent.rs` | Structured tool outcome |

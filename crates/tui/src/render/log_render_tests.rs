@@ -6,7 +6,7 @@ use super::test_harness::{
 use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
 use ratatui::style::Modifier;
 use std::collections::HashMap;
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -160,7 +160,9 @@ fn log_task_end_separator_renders_dashed_rule() {
 fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
     let mut app = make_app();
     for i in 1..=6 {
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(format!("reason line {i}\n")));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
+            "reason line {i}\n"
+        ))));
     }
     app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
 

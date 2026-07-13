@@ -6,7 +6,7 @@ use super::test_harness::{buffer_text, make_app, render_app_text};
 use crate::widgets::state::{App, HistoryEntry, InputMode, Status};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use std::collections::HashMap;
-use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
+use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
 fn seed_executing_read_step(app: &mut App) {
     app.plan.visible = true;
@@ -129,7 +129,9 @@ fn full_frame_stream_and_task_complete() {
 #[test]
 fn full_frame_thinking_then_stream() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk("Let me think…".into()));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Let me think…".into(),
+    )));
     app.handle_agent_update(AgentUpdate::StreamChunk("Therefore: 42".into()));
 
     let text = render_app_text(&mut app, 100, 24);

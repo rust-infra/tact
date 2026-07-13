@@ -221,7 +221,7 @@ Streaming path:
 
 1. POST JSON to `{base_url}/messages` with `stream: true`.
 2. Parse SSE events into `ContentBlockDelta` variants.
-3. Forward text/thinking deltas to `ui_tx` as `AgentUpdate::StreamChunk` / `ThinkingChunk`.
+3. Forward text/thinking to `ui_tx` as `AgentUpdate::StreamChunk` / `ThinkingChunk::{Started,Delta,Finished}`.
 4. Emit `AgentUpdate::ModelInfo` with model name and generation limits.
 5. Aggregate final blocks, `StopReason`, and `TokenUsageInfo`.
 
@@ -236,7 +236,7 @@ Streaming path:
 Notable behaviors:
 
 - **SSE parsing** via `reqwest-eventsource` (handles `\n\n` / `\r\n\r\n` correctly).
-- **`reasoning_content` field** mapped to thinking chunks for DeepSeek/Kimi reasoning models.
+- **`reasoning_content` field** mapped to `ThinkingChunk::{Started, Delta, Finished}` (synthesized lifecycle) for DeepSeek/Kimi reasoning models.
 - **Tool call deltas** reassembled by `index` across stream events.
 - **`StreamUsage`** captures prompt/completion tokens, cache hit/miss (DeepSeek), and `reasoning_tokens`.
 - **`set_user_id`** adds `"user_id"` to the JSON body for OpenAI-compatible cache isolation.
@@ -258,7 +258,7 @@ During `stream_message`, adapters push to the optional `ui_tx`:
 | Event | `AgentUpdate` |
 |-------|---------------|
 | Text token | `StreamChunk(String)` |
-| Reasoning / thinking | `ThinkingChunk(String)` |
+| Reasoning / thinking | `ThinkingChunk::{Started, Delta, Finished}` |
 | Request metadata | `ModelInfo(ModelCallParams)` |
 | Usage at end of stream | `TokenUsage { ... }` |
 

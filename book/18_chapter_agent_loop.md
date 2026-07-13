@@ -78,7 +78,7 @@ flowchart TD
 | Stream event | `AgentUpdate` |
 |--------------|---------------|
 | Text delta | `StreamChunk` |
-| Thinking delta | `ThinkingChunk` |
+| Thinking lifecycle | `ThinkingChunk::{Started, Delta, Finished}` |
 | Model metadata | `ModelInfo` |
 | Token counts | `TokenUsage` |
 

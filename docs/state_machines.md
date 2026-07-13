@@ -332,7 +332,9 @@ Key transitions:
 
 | Event | StreamState change |
 |---|---|
-| `AgentUpdate::ThinkingChunk` | Buffer thinking text; flush on newline; close on first non-thinking update. |
+| `AgentUpdate::ThinkingChunk(ThinkingChunk::Started)` | Open thinking title / region. |
+| `AgentUpdate::ThinkingChunk(ThinkingChunk::Delta)` | Buffer thinking text; flush on newline. |
+| `AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)` | Flush buffer and collapse the active thinking block. |
 | `AgentUpdate::StreamChunk` with ` ```lang ` | Enter code-block mode, remember start index. |
 | `AgentUpdate::StreamChunk` with ` ``` ` | Close code block, replace placeholders with a `CodeBlock` overlay. |
 | `AgentUpdate::StreamChunk` blank line | Flush paragraph and table buffers. |

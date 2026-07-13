@@ -10,8 +10,8 @@ pub mod agent;
 pub mod biz;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, TokenUsageInfo,
-    UserCommand,
+    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, ThinkingChunk,
+    TokenUsageInfo, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

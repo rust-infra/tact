@@ -27,7 +27,7 @@ sequenceDiagram
     loop LLM streaming response
         LLM->>Agent: StreamChunk / ThinkingChunk
         Agent->>TUI: AgentUpdate::StreamChunk(text)
-        Agent->>TUI: AgentUpdate::ThinkingChunk(thinking)
+        Agent->>TUI: AgentUpdate::ThinkingChunk(Started|Delta|Finished)
     end
 
     LLM->>Agent: ToolUse {name: "batch_read", input}
@@ -183,7 +183,7 @@ flowchart TD
 
     E -->|ModelInfo| F[Update app.model_call_params]
     E -->|StreamChunk| G[Append text message or append to current reasoning/output]
-    E -->|ThinkingChunk| H[Append thinking block message]
+    E -->|ThinkingChunk lifecycle| H[Append / close thinking block]
     E -->|StepAdded| I[Add to plan.steps]
     E -->|StepStarted| J[Mark current executing step]
     E -->|StepFinished| K[Update step result status]

@@ -5,6 +5,7 @@ use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
+use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
 impl App {
@@ -244,6 +245,9 @@ impl App {
 
     /// Close the currently active thinking block, adding it to thinking_blocks
     /// and showing only the last 3 lines by default.
+    ///
+    /// If the block was opened (`Started`) but never received content, the title
+    /// and isolation blank are removed so an empty lifecycle leaves no UI residue.
     pub(crate) fn close_active_thinking_block(&mut self) {
         if let Some(blank_idx) = self.thinking.active_start.take() {
             let end = self.thinking.active_end.unwrap_or(blank_idx);
@@ -251,7 +255,8 @@ impl App {
             self.thinking.title_added = false;
             // blank_idx is the isolation blank line above the title (inserted in ThinkingChunk)
             // title at blank_idx+1, thinking content lines at blank_idx+2..=end
-            if end > blank_idx {
+            let title_idx = blank_idx + 1;
+            if end > title_idx {
                 // Insert a blank line at the end as visual separator (isolation line above already inserted during streaming)
                 self.insert_msg(
                     end + 1,
@@ -260,7 +265,6 @@ impl App {
                     RawMessageType::LLMThinking,
                 );
 
-                let title_idx = blank_idx + 1;
                 let end_idx = end; // Not affected by insert since insert happens after end
                 let total = end_idx.saturating_sub(title_idx);
                 let scroll_offset = total.saturating_sub(3);
@@ -295,11 +299,69 @@ impl App {
                     cached_markdown: styled_lines,
                     elapsed,
                 });
+            } else {
+                // No content lines: drop the blank + title placeholder rows.
+                let remove_end = title_idx.saturating_add(1).min(self.messages.len());
+                if blank_idx < remove_end {
+                    self.drain_msgs(blank_idx..remove_end);
+                }
+                self.thinking.thinking_start = None;
             }
         }
-        // log_scroll clamping is deferred to render_log_panel,
-        // avoiding scroll offset mismatches between the update phase and the current screen render.
-        // See the clamp logic at the start of render_log_panel in render.rs.
+    }
+
+    /// Open a new thinking block: blank isolation line + title row.
+    pub(crate) fn begin_thinking_block(&mut self) {
+        if self.thinking.title_added {
+            return;
+        }
+        let msgs = self.msgs();
+        let title_style = Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::ITALIC)
+            .bg(Color::Rgb(35, 35, 45));
+        // Insert a blank isolation line before the title to establish visual
+        // separation before collapsing
+        self.append_blank(RawMessageType::LLMThinking);
+        let separator_idx = self.messages.len() - 1;
+
+        self.append_msg(
+            Line::from(Span::styled(msgs.thinking_title.to_string(), title_style)),
+            msgs.thinking_title.to_string(),
+            RawMessageType::LLMThinking,
+        );
+        self.thinking.title_added = true;
+        self.thinking.active_start = Some(separator_idx);
+        self.thinking.thinking_start = Some(Instant::now());
+    }
+
+    /// Append a thinking text delta with line-level buffering.
+    pub(crate) fn append_thinking_delta(&mut self, text: &str) {
+        self.thinking.buffer.push_str(text);
+        let msgs = self.msgs();
+        let style = Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::ITALIC)
+            .bg(Color::Rgb(35, 35, 45));
+        while let Some(idx) = self.thinking.buffer.find('\n') {
+            let line = self.thinking.buffer[..idx].to_string();
+            self.thinking.buffer = self.thinking.buffer[idx + 1..].to_string();
+            let text = if line.is_empty() {
+                String::new()
+            } else {
+                msgs.thinking_line_prefix.replace("{}", &line).to_string()
+            };
+            self.append_msg(
+                Line::from(Span::styled(text.clone(), style)),
+                text,
+                RawMessageType::LLMThinking,
+            );
+            self.thinking.active_end = Some(self.messages.len() - 1);
+        }
+
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        // u16::MAX is correctly clipped by render_log_panel based on visual line count
+        self.log_scroll.offset = u16::MAX;
     }
 
     /// Flush leftover lines in the thinking buffer and close the currently active thinking block.
@@ -322,9 +384,9 @@ impl App {
                         flush_text,
                         RawMessageType::LLMThinking,
                     );
+                    self.thinking.active_end = Some(self.messages.len() - 1);
                 }
                 self.thinking.buffer.clear();
-                self.thinking.active_end = Some(self.messages.len() - 1);
             }
             self.close_active_thinking_block();
         }

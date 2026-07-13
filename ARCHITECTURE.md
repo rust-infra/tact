@@ -213,7 +213,7 @@ Key `AgentUpdate` variants used today:
 | `StepFailed(usize, tool_id, String)` | Step failed with error message. |
 | `RequestSelect { prompt, options, respond }` | Ask the user to pick an option. |
 | `StreamChunk(String)` | Streaming assistant text fragment. |
-| `ThinkingChunk(String)` | Streaming reasoning/thinking fragment. |
+| `ThinkingChunk(Started \| Delta(String) \| Finished)` | Streaming reasoning lifecycle. |
 | `ModelInfo(ModelCallParams)` | Model name, max tokens, thinking budget. |
 | `TokenUsage { ... }` | Prompt/completion/cache token counts. |
 | `Balance(BalanceInfo)` | DeepSeek / Kimi account balance (where available). |
