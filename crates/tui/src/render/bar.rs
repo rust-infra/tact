@@ -266,7 +266,6 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let (mode_emoji, mode_indicator) = match app.input_mode {
         InputMode::Normal => ("◆", msgs.mode_normal),
         InputMode::Insert => ("◇", msgs.mode_insert),
-        InputMode::Search => ("◎", msgs.mode_search),
         InputMode::Palette => ("⚡", msgs.mode_palette),
         InputMode::Select => ("▣", msgs.mode_select),
         InputMode::FilePicker => ("📎", msgs.mode_file_picker),
@@ -383,15 +382,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
     };
-    let (display_text, display_style) = if app.party_mode {
-        (
-            msgs.status_party_tmpl.replace("{}", focus_str),
-            Style::default()
-                .bg(Color::Rgb(255, 105, 180))
-                .fg(Color::Rgb(255, 255, 255))
-                .add_modifier(Modifier::BOLD),
-        )
-    } else if let Some((ref msg, _)) = app.flash_msg {
+    let (display_text, display_style) = if let Some((ref msg, _)) = app.flash_msg {
         (
             format!("⚠ {}", msg),
             Style::default()
@@ -453,17 +444,5 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
-    }
-
-    #[test]
-    fn bottom_bar_shows_party_mode_banner() {
-        let mut app = make_app();
-        app.party_mode = true;
-
-        let text = render_app_text(&mut app, 120, 30);
-        assert!(
-            text.contains("PARTY") || text.contains("🎉"),
-            "party mode status bar should render banner, got:\n{text}"
-        );
     }
 }

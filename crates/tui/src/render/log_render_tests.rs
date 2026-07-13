@@ -1,7 +1,7 @@
 //! Log panel render coverage: P0 interaction, P1 content shapes, P2 chrome/edge cases.
 
 use super::test_harness::{
-    buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
+    buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
 use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
 use ratatui::style::Modifier;
@@ -57,42 +57,7 @@ fn line_index_of(rendered: &str, needle: &str) -> Option<usize> {
     rendered.lines().position(|line| line.contains(needle))
 }
 
-// ── P0: search, selection, scroll ───────────────────────────────────────────
-
-#[test]
-fn log_search_shows_match_count_in_panel_title() {
-    let mut app = make_app();
-    app.add_system_message("needle alpha".into());
-    app.add_system_message("plain text".into());
-    app.add_system_message("needle beta".into());
-    app.search.term = "needle".into();
-    app.update_search_matches();
-    assert!(app.search.matches.len() >= 2);
-
-    let text = render_log_panel_text(&mut app, 80, 20);
-
-    assert!(
-        text.contains("(1/2)") || text.contains("(2/2)"),
-        "search-active log title should show current/total, got:\n{text}"
-    );
-}
-
-#[test]
-fn log_search_match_uses_highlight_background() {
-    let mut app = make_app();
-    app.add_system_message("find UNIQUE_TOKEN here".into());
-    app.search.term = "UNIQUE".into();
-    app.update_search_matches();
-
-    let terminal = render_log_panel_terminal(&mut app, 80, 16);
-    let buf = terminal.backend().buffer();
-    let highlight_bg = app.theme.search_match_bg();
-
-    assert!(
-        buffer_has_bg(buf, highlight_bg),
-        "search match should paint highlight background (expected {highlight_bg:?})"
-    );
-}
+// ── P0: selection, scroll ───────────────────────────────────────────────────
 
 #[test]
 fn log_line_selection_applies_reversed_modifier() {

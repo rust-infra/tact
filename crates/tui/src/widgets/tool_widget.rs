@@ -636,12 +636,15 @@ impl Widget for ToolWidget<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
-    use crate::i18n::Language;
+    use crate::{i18n::Language, theme::ThemeName};
 
     fn fixture() -> (Theme, Messages) {
+        let theme_name = ThemeName::from_str("retro").unwrap();
         (
-            Theme::by_name_str("retro"),
+            Theme::from(theme_name),
             Messages::by_language(Language::English),
         )
     }

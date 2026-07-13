@@ -58,20 +58,10 @@ pub(crate) fn handle_normal_mode(
                 app.log_scroll.offset = u16::MAX;
             }
         }
-        KeyCode::Char('n') => {
-            app.jump_to_next_match();
-        }
-        KeyCode::Char('N') => {
-            app.jump_to_prev_match();
-        }
         KeyCode::Char('/') => {
             app.input_mode = InputMode::Palette;
             app.cmd_line.clear();
             app.palette_selected = 0;
-        }
-        KeyCode::Char(':') => {
-            app.input_mode = InputMode::Search;
-            app.cmd_line.clear();
         }
         KeyCode::Enter => {
             app.input_mode = InputMode::Insert;
@@ -232,17 +222,6 @@ mod tests {
     }
 
     #[test]
-    fn colon_enters_search_mode() {
-        let mut app = make_app();
-        let (tx, _rx) = unbounded_channel();
-
-        handle_normal_mode(&mut app, key(KeyCode::Char(':')), &tx);
-
-        assert!(matches!(app.input_mode, InputMode::Search));
-        assert!(app.cmd_line.is_empty());
-    }
-
-    #[test]
     fn e_toggles_plan_panel_visibility() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
@@ -288,23 +267,6 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
         assert_eq!(app.log_scroll.offset, 5);
-    }
-
-    #[test]
-    fn n_and_shift_n_jump_search_matches() {
-        let mut app = make_app();
-        let (tx, _rx) = unbounded_channel();
-        app.add_system_message("needle first".into());
-        app.add_system_message("needle second".into());
-        app.search.term = "needle".into();
-        app.update_search_matches();
-        assert!(app.search.matches.len() >= 2);
-
-        handle_normal_mode(&mut app, key(KeyCode::Char('n')), &tx);
-        assert_eq!(app.search.current_match, 1);
-
-        handle_normal_mode(&mut app, key(KeyCode::Char('N')), &tx);
-        assert_eq!(app.search.current_match, 0);
     }
 
     #[test]

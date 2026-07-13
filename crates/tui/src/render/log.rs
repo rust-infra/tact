@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
-/// Render the Log panel: wrapping, scrolling, search highlighting, and mouse selection.
+/// Render the Log panel: wrapping, scrolling, and mouse selection.
 ///
 /// # Pipeline overview
 ///
@@ -211,8 +211,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // ```text
     //  wrap cache (plain text)          TextCell (on demand)
     //  ┌─────────────────────┐          ┌─────────────────────┐
-    //  │ cached_lines        │  search │ yellow highlight    │
-    //  │ no search/selection │  ──→    │ or REVERSED select  │
+    //  │ cached_lines        │  select │ REVERSED style      │
+    //  │ no selection        │  ──→    │ overlay             │
     //  └─────────────────────┘          └─────────────────────┘
     //
     //  Viewport clipping happens twice:
@@ -220,8 +220,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     //    2. LogColumnRenderer — skip_lines inside partially visible cells
     // ```
 
-    let has_search = !app.search.term.is_empty();
-    let search_term = app.search.term.clone();
     let log_fg = app.theme.fg;
 
     let mut renderer =
@@ -239,8 +237,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             logical_i += 1;
             continue;
         }
-
-        let is_match = has_search && app.search.matches.contains(&logical_i);
 
         let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
 
@@ -381,11 +377,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         let raw_text = phys_idx
             .map(|p| app.raw_messages[p].clone())
             .unwrap_or_default();
-        let se_search_term = if is_match {
-            search_term.clone()
-        } else {
-            String::new()
-        };
 
         // Thinking blocks with >3 hidden lines get a "↑ N/M blocks hidden ↑" prefix.
         let prefix = phys_idx.and_then(|phys| app.thinking_collapse_prefix(phys));
@@ -395,14 +386,10 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         let cell = super::cells::text::TextCell::new(
             cached_lines,
             raw_text,
-            se_search_term,
-            is_match,
             selection_range,
             prefix,
             indent_cols,
             log_fg,
-            app.theme.search_match_bg(),
-            app.theme.search_match_fg(),
         );
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
@@ -411,21 +398,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         logical_i += 1;
     }
 
-    // Build panel title — show search count when search is active
-    let panel_title: String = if has_search {
-        let total = app.search.matches.len();
-        let current = if total > 0 {
-            app.search.current_match + 1
-        } else {
-            0
-        };
-        app.msgs()
-            .log_search_count_tmpl
-            .replacen("{}", &current.to_string(), 1)
-            .replacen("{}", &total.to_string(), 1)
-    } else {
-        app.msgs().log_title.to_string()
-    };
+    let panel_title = app.msgs().log_title.to_string();
 
     // Render bordered log panel
     let log_block = Block::default()

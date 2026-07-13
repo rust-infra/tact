@@ -11,11 +11,10 @@ pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
-mod log_messages;
+pub(crate) mod log_messages;
 mod log_scroll;
 mod mouse_state;
 mod plan_panel;
-mod search_state;
 mod select_popup;
 mod slash_command;
 mod status_bar_state;
@@ -29,7 +28,6 @@ pub(crate) use input_history::InputHistory;
 pub(crate) use log_scroll::LogScroll;
 pub(crate) use mouse_state::{LogSelection, MouseState, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
-pub(crate) use search_state::SearchState;
 pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
@@ -44,13 +42,12 @@ pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, ToolBlock, ToolState};
 pub(crate) enum InputMode {
     Normal,
     Insert,
-    Search,
     Palette,
     Select,
     FilePicker,
 }
 
-/// Commands shown in the command palette (triggered by `:`).
+/// Commands shown in the command palette (triggered by `/`).
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
     ("model", "Switch model for current provider"),
@@ -59,10 +56,8 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("quit", "Quit application"),
     ("help", "Show help panel"),
     ("history", "Show task history"),
-    ("search", "Search log messages"),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
-    ("party", "Toggle party mode"),
 ];
 
 /// Why the select popup is open (agent permission vs `/model` flow).
@@ -165,8 +160,6 @@ pub struct App {
     pub(crate) input_mode: InputMode,
     // Command palette
     pub(crate) palette_selected: usize,
-    // Search
-    pub(crate) search: SearchState,
     // Command history (brief)
     pub(crate) _command_history: Vec<String>,
     /// User input history.
@@ -216,10 +209,6 @@ pub struct App {
     pub(crate) thinking: ThinkingState,
     /// Cached account balance / usage quota state from the account service.
     pub(crate) account: AccountState,
-    /// Party mode: easter egg triggered by Konami Code.
-    pub(crate) party_mode: bool,
-    /// Konami Code input progress (0 = not started, 1–10 = in progress, 10 = triggered).
-    pub(crate) konami_progress: u8,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

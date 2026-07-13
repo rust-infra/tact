@@ -13,7 +13,7 @@ pub(crate) struct LogScroll {
     pub(crate) height: u16,
     /// Visual line starting index list.
     pub(crate) visual_start: Vec<usize>,
-    /// Cached visual lines (wrap_line results, excluding search/selection styles).
+    /// Cached visual lines (wrap_line results, excluding selection styles).
     pub(crate) visual_cache: Vec<Line<'static>>,
     /// Cached logical→visual mapping (visual_cache start indices).
     pub(crate) visual_start_cache: Vec<usize>,

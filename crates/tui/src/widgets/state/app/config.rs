@@ -1,8 +1,6 @@
 use crate::i18n::Messages;
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::state::*;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 impl App {
     /// Palette commands visible for the current provider configuration.
     pub(crate) fn palette_commands(&self) -> impl Iterator<Item = &(&'static str, &'static str)> {
@@ -39,7 +37,7 @@ impl App {
             ThemeName::Brutal => msgs.theme_brutal,
         };
         self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
-        self.theme = Theme::by_name(next_name);
+        self.theme = Theme::from(next_name);
     }
 
     pub(crate) fn msgs(&self) -> Messages {
@@ -56,10 +54,8 @@ impl App {
             "quit" => msgs.cmd_quit.to_string(),
             "help" => msgs.cmd_help.to_string(),
             "history" => msgs.cmd_history.to_string(),
-            "search" => msgs.cmd_search.to_string(),
             "balance" => msgs.cmd_balance.to_string(),
             "lang" => msgs.cmd_lang.to_string(),
-            "party" => msgs.cmd_party.to_string(),
             _ => cmd.to_string(),
         }
     }
@@ -70,62 +66,6 @@ impl App {
         let old_msgs = self.msgs();
         self.language = next;
         self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", label));
-    }
-
-    pub(crate) fn toggle_party_mode(&mut self) {
-        self.party_mode = !self.party_mode;
-        let msgs = self.msgs();
-        if self.party_mode {
-            let colors = [
-                Color::Rgb(255, 105, 180),
-                Color::Rgb(255, 165, 0),
-                Color::Rgb(255, 215, 0),
-                Color::Rgb(50, 205, 50),
-                Color::Rgb(0, 191, 255),
-                Color::Rgb(138, 43, 226),
-                Color::Rgb(255, 0, 255),
-            ];
-
-            let cat_art = [
-                "  ╱|、",
-                " (˚ˎ 。7  ",
-                "  |、˜\\\\",
-                " じしˍ,)ノ",
-                "",
-                msgs.party_msg_1,
-                msgs.party_msg_2,
-                msgs.party_msg_3,
-                "",
-                msgs.party_hint,
-            ];
-
-            self.add_new_line();
-            for (line_num, &line) in cat_art.iter().enumerate() {
-                let color = colors[line_num % colors.len()];
-                self.append_msg(
-                    Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    )),
-                    line.to_string(),
-                    RawMessageType::LLM,
-                );
-            }
-            self.add_new_line();
-        } else {
-            self.add_new_line();
-            self.append_msg(
-                Line::from(Span::styled(
-                    msgs.party_exit,
-                    Style::default()
-                        .fg(Color::Rgb(180, 180, 180))
-                        .add_modifier(Modifier::ITALIC),
-                )),
-                msgs.party_exit.to_string(),
-                RawMessageType::LLM,
-            );
-            self.add_new_line();
-        }
     }
 }
 

@@ -36,8 +36,6 @@ impl<'a> Widget for HelpWidget<'a> {
             Line::from(Span::styled(msgs.help_G, normal_style)),
             Line::from(Span::styled(msgs.help_y, normal_style)),
             Line::from(Span::styled(msgs.help_t, normal_style)),
-            Line::from(Span::styled(msgs.help_slash, normal_style)),
-            Line::from(Span::styled(msgs.help_nN, normal_style)),
             Line::from(Span::styled(msgs.help_colon, normal_style)),
             Line::from(""),
             // ── Insert Mode ──

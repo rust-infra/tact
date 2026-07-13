@@ -48,15 +48,8 @@ pub(crate) fn restyle_log_line(
         return single_span(raw, theme.success);
     }
 
-    let trimmed = raw.trim_start();
-    if trimmed.starts_with('✓') || trimmed.starts_with('✔') {
-        return single_span(raw, theme.success);
-    }
-    if trimmed.starts_with('✗') {
-        return single_span(raw, theme.error);
-    }
-    if trimmed.starts_with('⚠') {
-        return single_span(raw, theme.warning);
+    if let Some(style) = crate::widgets::state::log_messages::SystemMsgStyle::from_marker(raw) {
+        return single_span(raw, style.color(theme));
     }
 
     if msg_type == RawMessageType::SysTool {
@@ -114,11 +107,11 @@ mod tests {
     use crate::theme::ThemeName;
 
     fn brutal() -> Theme {
-        Theme::by_name(ThemeName::Brutal)
+        Theme::from(ThemeName::Brutal)
     }
 
     fn retro() -> Theme {
-        Theme::by_name(ThemeName::Retro)
+        Theme::from(ThemeName::Retro)
     }
 
     fn stored_plain(text: &str, fg: Color) -> Line<'static> {
@@ -190,9 +183,29 @@ mod tests {
             false,
         );
 
+        let err_x = restyle_log_line(
+            &stored_plain("❌ boom", Color::Red),
+            "❌ boom",
+            &theme,
+            RawMessageType::LLM,
+            false,
+        );
+        let ok_badge = restyle_log_line(
+            &stored_plain("✅ ok", Color::Green),
+            "✅ ok",
+            &theme,
+            RawMessageType::LLM,
+            false,
+        );
+
         assert_eq!(ok.spans.first().unwrap().style.fg, Some(theme.success));
         assert_eq!(err.spans.first().unwrap().style.fg, Some(theme.error));
         assert_eq!(warn.spans.first().unwrap().style.fg, Some(theme.warning));
+        assert_eq!(err_x.spans.first().unwrap().style.fg, Some(theme.error));
+        assert_eq!(
+            ok_badge.spans.first().unwrap().style.fg,
+            Some(theme.success)
+        );
     }
 
     #[test]
@@ -254,7 +267,7 @@ mod tests {
         use crate::theme::ThemeName;
         use ratatui::style::Modifier;
 
-        let theme = Theme::by_name(ThemeName::Dark);
+        let theme = Theme::from(ThemeName::Dark);
         let (lines, raw) = render_markdown_tui("### Popular exchanges in HK", &theme);
         assert_eq!(lines.len(), 1);
         let restyled = restyle_log_line(&lines[0], &raw[0], &theme, RawMessageType::LLM, false);

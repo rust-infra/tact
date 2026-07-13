@@ -1,5 +1,5 @@
 use crate::render::render_md::render_markdown_tui;
-use crate::widgets::state::log_messages::classify_system_message;
+use crate::widgets::state::log_messages::{SystemMsgStyle, classify_system_message};
 use crate::widgets::state::*;
 use chrono::Local;
 use ratatui::style::{Color, Modifier, Style};
@@ -108,27 +108,8 @@ impl App {
     /// Add a system message, auto-color by prefix, and update scroll position.
     /// Non-system-marker messages are parsed as Markdown.
     pub(crate) fn add_system_message(&mut self, content: String) {
-        let trimmed = content.trim_start();
-        let is_system = trimmed.starts_with('✓')
-            || trimmed.starts_with('✗')
-            || trimmed.starts_with('⚠')
-            || trimmed.starts_with('📝')
-            || trimmed.starts_with('❌')
-            || trimmed.starts_with('✅')
-            || trimmed.starts_with('▶')
-            || trimmed.starts_with('🤖')
-            || trimmed.starts_with("  ");
-
-        if is_system {
-            let color = if content.starts_with('✓') {
-                self.theme.success
-            } else if content.starts_with('✗') {
-                self.theme.error
-            } else if content.starts_with('⚠') {
-                self.theme.warning
-            } else {
-                self.theme.accent
-            };
+        if let Some(style) = SystemMsgStyle::from_line(&content) {
+            let color = style.color(&self.theme);
             for line in content.split('\n') {
                 let ty = classify_system_message(line);
                 self.append_msg(
@@ -146,9 +127,6 @@ impl App {
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             // u16::MAX is correctly clipped by render_log_panel based on visual line count
             self.log_scroll.offset = u16::MAX;
-        }
-        if !self.search.term.is_empty() {
-            self.update_search_matches();
         }
     }
 
@@ -184,5 +162,54 @@ impl App {
             self.task_history.remove(0);
         }
         self.refresh_tool_log_scroll();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::test_harness::make_app;
+
+    #[test]
+    fn add_system_message_applies_semantic_colors() {
+        let mut app = make_app();
+
+        app.add_system_message("❌ Error: boom".into());
+        assert_eq!(
+            app.messages.last().unwrap().spans[0].style.fg,
+            Some(app.theme.error)
+        );
+
+        app.add_system_message("✓ Selected: x".into());
+        assert_eq!(
+            app.messages.last().unwrap().spans[0].style.fg,
+            Some(app.theme.success)
+        );
+
+        app.add_system_message("  ✓ still success".into());
+        assert_eq!(
+            app.messages.last().unwrap().spans[0].style.fg,
+            Some(app.theme.success)
+        );
+
+        app.add_system_message("📋 Copied: x".into());
+        assert_eq!(
+            app.messages.last().unwrap().spans[0].style.fg,
+            Some(app.theme.accent)
+        );
+    }
+
+    #[test]
+    fn indent_prefix_uses_plain_path_not_markdown() {
+        let mut app = make_app();
+        app.add_system_message("  **not bold**".into());
+        assert_eq!(
+            app.raw_messages.last().map(String::as_str),
+            Some("  **not bold**")
+        );
+        let spans = &app.messages.last().unwrap().spans;
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style.fg, Some(app.theme.accent));
+        assert!(!spans[0].style.add_modifier.contains(Modifier::BOLD));
     }
 }

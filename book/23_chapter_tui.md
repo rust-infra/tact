@@ -168,7 +168,7 @@ flowchart TB
 | `render/mod.rs` | Re-exports panel entry points |
 | `render/layout.rs` | Main content routing (history, help, plan+log, popups) |
 | `render/bar.rs` | Top status bar + bottom stats bar |
-| `render/input.rs` | Multi-line input box, approval banner, palette/search line |
+| `render/input.rs` | Multi-line input box, approval banner, palette command line |
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
 | `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `render/log_style.rs` | Shared log text styles |
@@ -272,7 +272,7 @@ pub(crate) trait Renderable {
 
 | Cell | File | Draws |
 |------|------|-------|
-| `TextCell` | `cells/text.rs` | User/assistant/system text, search highlight, selection, stream buffer |
+| `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
 | Thinking overlay | `cells/thinking.rs` | Collapsed thinking card (up to 3 preview lines) |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
@@ -283,11 +283,11 @@ pub(crate) trait Renderable {
 
 ### 6.6 Status bars and input
 
-**Top bar** (`render_status_bar`): input mode, focused panel (`Log` / `Plan`), `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: `party_mode` banner, temporary `flash_msg`.
+**Top bar** (`render_status_bar`): input mode, focused panel (`Log` / `Plan`), `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`.
 
 **Bottom bar** (`render_bottom_bar`): cwd, git branch, model + token limits, token usage (prompt / completion / cache / reasoning), prompt elapsed time (live while running), process uptime, optional DeepSeek/Kimi balance rows.
 
-**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Search/palette modes use `render_command_line` with `/` prefix for search.
+**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
 
 ### 6.7 Markdown
 
@@ -346,7 +346,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | Vector | Type | Purpose |
 |--------|------|---------|
 | `messages[]` | `Vec<Line<'static>>` | Pre-styled ratatui line for rendering (Markdown, colors, modifiers) |
-| `raw_messages[]` | `Vec<String>` | Plain text for search, copy, category detection, and hit testing |
+| `raw_messages[]` | `Vec<String>` | Plain text for copy, category detection, and hit testing |
 | `raw_message_types[]` | `Vec<RawMessageType>` | Gutter indent and styling hints |
 
 `RawMessageType` has three variants (`widgets/state/mod.rs`):
@@ -472,7 +472,7 @@ For each closed `ThinkingBlock`, content rows where `title_idx < idx ≤ end_idx
 
 Tool placeholder rows and code placeholder rows **are** visible individually in Phase 0, but Phase 3 replaces the entire placeholder *range* with one `ToolCell` (or an overlay for code). Empty `spans` rows and the task-end sentinel participate in logical counting but produce minimal visual height.
 
-Search (`update_search_matches`) and `total_log_lines()` both skip invisible physical indices, keeping logical numbering aligned with what the user sees.
+`total_log_lines()` skips invisible physical indices, keeping logical numbering aligned with what the user sees.
 
 ### 6.15 Wrap, scroll, and auto-follow
 
@@ -484,7 +484,7 @@ Search (`update_search_matches`) and `total_log_lines()` both skip invisible phy
 
 **Bottom pinning (`resolve_visual_scroll`):** when offset is at the maximum, the viewport pins to `total_visual − visible_height` rather than using `visual_start_cache[offset]`. This prevents a tall tool detail card at the bottom from leaving its last rows unreachable when the preceding row is a long wrapped paragraph (see unit tests in `log.rs`).
 
-**Manual scroll:** mouse wheel and `j`/`k` in normal mode adjust logical offset by one. Search jump centers the current match: `offset = match_idx − height/2`. When the user scrolls up, new streaming content does not force offset unless an update explicitly sets `u16::MAX` (streaming chunks always do — so live tasks re-follow the tail unless the user keeps scrolling away each frame).
+**Manual scroll:** mouse wheel and `j`/`k` in normal mode adjust logical offset by one. When the user scrolls up, new streaming content does not force offset unless an update explicitly sets `u16::MAX` (streaming chunks always do — so live tasks re-follow the tail unless the user keeps scrolling away each frame).
 
 **Cache persistence:** after each draw, `visual_start_cache` is copied to `log_scroll.visual_start` for mouse hit testing outside the render function (click row → visual → logical mapping in `lib.rs`).
 
@@ -512,7 +512,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
 | **Loading spinner** | Overlay | 1 row at `loading_idx` if set | — (usually inactive — see `PlanGenerated` legacy) |
 
-**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Search matches rebuild spans with yellow highlight; selection applies `REVERSED` modifier (word-level or whole-line). A collapsed-thinking prefix (`↑ 3/8 blocks hidden ↑`) prepends the first line when `total > 3`. Left gutter `indent_cols` comes from `RawMessageType`.
+**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). A collapsed-thinking prefix (`↑ 3/8 blocks hidden ↑`) prepends the first line when `total > 3`. Left gutter `indent_cols` comes from `RawMessageType`.
 
 **ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration; completed blocks read from `tools.blocks`.
 
@@ -521,8 +521,6 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 Diff previews for file-write tools are now folded into `ToolCell` detail cards; the legacy `DiffBlock` overlay path is mostly migrated ([§11 Gaps](#11-current-gaps)).
 
 ### 6.17 Log interaction
-
-**Search** (`InputMode::Search`, `/` prefix): `update_search_matches` scans visible `raw_messages` plus live `stream.buffer`, storing logical indices in `search.matches`. Panel title switches to `Log (3/12)` template. `TextCell` highlights matches; `n`/`N` jump between matches with centered scroll.
 
 **Mouse selection** (log area clicks in `lib.rs`):
 
@@ -580,7 +578,7 @@ Cross-reference: [Ch 25 Agent–TUI Protocol](./25_chapter_protocol.md) for mess
 
 ## 7. Input Modes and Themes
 
-`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Search`, `Select`, `Palette`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`.
+`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Select`, `Palette`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`.
 
 Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 
