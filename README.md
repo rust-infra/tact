@@ -296,7 +296,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 |------|-------------|
 | `read_file` | Read file contents with optional offset/limit |
 | `write_file` | Write or overwrite a file |
-| `edit_file` | Replace exact text in a file (single match) |
+| `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `apply_patch` | Apply unified diff patches |
 | `batch_read` | Read multiple files in parallel |
 | `bash` | Run a shell command |

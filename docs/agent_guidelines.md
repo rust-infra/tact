@@ -7,7 +7,9 @@ ensure consistent and efficient tool usage in this project.
 
 ### edit_file
 
-- Use `edit_file` for exact single-match replacements in an existing file.
+- Use `edit_file` for exact string replacements in an existing file.
+- Default: replace only the first match. Set `replace_all=true` when every
+  occurrence in that file should change (e.g. rename a local symbol).
 - Diff preview is lazy-loaded: the tool output shows `new_text` directly (it is
   already part of the arguments, no extra cost). The user can click the card to
   run `git diff` for the full comparison.

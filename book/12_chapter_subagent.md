@@ -100,7 +100,7 @@ sequenceDiagram
 | `bash` | Shell commands (subject to `validate_shell_command`) |
 | `read_file` | Read workspace files |
 | `write_file` | Create or overwrite files |
-| `edit_file` | Single replacement edits |
+| `edit_file` | Exact string replace (first or all) |
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
