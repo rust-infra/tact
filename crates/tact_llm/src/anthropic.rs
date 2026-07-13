@@ -290,8 +290,7 @@ impl LlmClient for AnthropicAdapter {
                                     tool_input_buffers[index].clear();
                                     if let Some(ref tx) = ui_tx {
                                         for chunk in thinking_start_events(thinking) {
-                                            let _ = tx
-                                                .send(AgentUpdate::ThinkingChunk(chunk));
+                                            let _ = tx.send(AgentUpdate::ThinkingChunk(chunk));
                                         }
                                     }
                                 }

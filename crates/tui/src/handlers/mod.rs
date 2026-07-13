@@ -273,7 +273,8 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 }
                 let msgs = app.msgs();
                 app.add_system_message(
-                    msgs.log_saved_tmpl.replace("{}", &path.display().to_string()),
+                    msgs.log_saved_tmpl
+                        .replace("{}", &path.display().to_string()),
                 );
             } else {
                 let msgs = app.msgs();

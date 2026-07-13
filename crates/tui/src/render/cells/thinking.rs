@@ -143,9 +143,9 @@ mod overlay_tests {
     fn thinking_card_overlay_renders_collapsed_preview() {
         let mut app = make_app();
         for i in 1..=4 {
-            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-                format!("reason {i}\n"),
-            )));
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
+                "reason {i}\n"
+            ))));
         }
         app.handle_agent_update(AgentUpdate::StreamChunk("answer".into()));
         assert!(!app.thinking.blocks.is_empty());
