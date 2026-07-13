@@ -182,7 +182,7 @@ Runtime policy such as permissions, recovery, hooks, and model context stays out
 
 The full toolset includes:
 
-- base: `bash`, `read_file`, `write_file`, `edit_file`
+- base: `bash`, `read_file`, `write_file`
 - skill: `load_skill`
 - memory: `save_memory`
 - compact: `compact`
@@ -193,7 +193,7 @@ The full toolset includes:
 - team: `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox`, `plan_approval`, `shutdown_request`, `shutdown_response`
 - worktree: `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events`
 
-Subagents get a smaller toolset: `bash`, `read_file`, `write_file`, and `edit_file`.
+Subagents get a smaller toolset: `bash`, `read_file`, `write_file`, `search_code`, and `sleep`.
 
 ## Store
 

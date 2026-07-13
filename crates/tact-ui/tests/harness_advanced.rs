@@ -6,9 +6,9 @@ mod harness;
 use std::sync::{Arc, Mutex};
 
 use harness::{
-    assert_update_before, batch_edit_tool_use, batch_read_tool_use, edit_file_tool_use,
-    run_single_task, step_failed, step_succeeded, task_completed_with, text_block,
-    token_usage_total, wire_permission_responder_with_counter,
+    assert_update_before, batch_edit_tool_use, batch_read_tool_use, run_single_task, step_failed,
+    step_succeeded, task_completed_with, text_block, token_usage_total,
+    wire_permission_responder_with_counter, write_file_tool_use,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
@@ -165,11 +165,11 @@ async fn batch_edit_applies_atomically() {
 async fn permission_sequence_allow_then_deny() {
     let mock = MockClient::new(vec![
         (
-            vec![edit_file_tool_use("e1", "lib.rs", "v1", "v2")],
+            vec![write_file_tool_use("w1", "lib.rs", "v2")],
             Some(StopReason::ToolUse),
         ),
         (
-            vec![edit_file_tool_use("e2", "lib.rs", "v2", "v3")],
+            vec![write_file_tool_use("w2", "lib.rs", "v3")],
             Some(StopReason::ToolUse),
         ),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
@@ -177,7 +177,7 @@ async fn permission_sequence_allow_then_deny() {
 
     let (updates, work_dir, prompt_count) = run_single_task_with_permission_choice_and_choices(
         mock,
-        "edit twice",
+        "write twice",
         PermissionMode::Default,
         vec![Some(0), Some(1)], // allow once, then deny
         |dir| write_workspace_file(dir, "lib.rs", "v1"),
@@ -185,12 +185,12 @@ async fn permission_sequence_allow_then_deny() {
     .await;
 
     assert!(
-        step_succeeded(&updates, "e1"),
-        "first edit should succeed: {updates:?}"
+        step_succeeded(&updates, "w1"),
+        "first write should succeed: {updates:?}"
     );
     assert!(
-        step_failed(&updates, "e2"),
-        "second edit should be denied: {updates:?}"
+        step_failed(&updates, "w2"),
+        "second write should be denied: {updates:?}"
     );
     assert_eq!(
         prompt_count.load(std::sync::atomic::Ordering::Relaxed),
@@ -199,7 +199,7 @@ async fn permission_sequence_allow_then_deny() {
     );
 
     let content = std::fs::read_to_string(work_dir.join("lib.rs")).unwrap();
-    assert_eq!(content, "v2", "only first edit should be applied");
+    assert_eq!(content, "v2", "only first write should be applied");
 }
 
 #[tokio::test]

@@ -90,7 +90,7 @@ After all waves finish:
 | `read_file` | `input.path` | read |
 | `batch_read` | `input.files[].path` | read |
 | `search_code` | directory scope | read |
-| `write_file`, `edit_file` | `input.path` | write |
+| `write_file` | `input.path` | write |
 | `batch_edit` | `input.edits[].file_path` | write |
 | `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |

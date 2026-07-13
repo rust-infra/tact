@@ -52,7 +52,6 @@ graph TB
     subgraph FileTools["File Tools"]
         ReadFile
         WriteFile
-        EditFile
     end
     subgraph ExecTools["Execution"]
         Bash

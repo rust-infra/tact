@@ -8,13 +8,12 @@ ensure consistent and efficient tool usage in this project.
 ### batch_edit
 
 - **`batch_edit` must only be used when the edit spans 3 or more distinct files.**
-- For edits touching fewer than 3 different files, prefer individual `edit_file`
-  calls instead. This avoids the overhead of batch validation when simple
-  single-file edits suffice.
+- For fewer than 3 files, prefer `apply_patch` (structured / multi-line) or
+  `write_file` (full rewrite / new file). This avoids batch-validation overhead
+  for simple single-file changes.
 
-### edit_file
+### apply_patch / write_file
 
-- Diff preview is lazy-loaded: the tool output shows `new_text` directly (it is
-  already part of the arguments, no extra cost). The user can click the card to
-  run `git diff` for the full comparison.
+- Prefer `apply_patch` for multi-line or structured edits to existing files.
+- Use `write_file` for new files or complete rewrites.
 - Avoid running auto-diff on every edit — it impacts performance.

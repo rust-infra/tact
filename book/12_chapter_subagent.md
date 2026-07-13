@@ -93,14 +93,13 @@ sequenceDiagram
 
 ## 4. Restricted Tool Set
 
-`subagent_toolset()` registers exactly six tools:
+`subagent_toolset()` registers exactly five tools:
 
 | Tool | Purpose |
 |------|---------|
 | `bash` | Shell commands (subject to `validate_shell_command`) |
 | `read_file` | Read workspace files |
 | `write_file` | Create or overwrite files |
-| `edit_file` | Single replacement edits |
 | `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
@@ -110,7 +109,7 @@ Notable **omissions** compared to the main agent:
 - No cron, team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
-The module comment above `subagent_toolset()` still says "four tools" — the `route()` list above is authoritative (also enforced by unit test `subagent_toolset_includes_core_file_tools`).
+The `route()` list above is authoritative (also enforced by unit tests around `subagent_toolset`).
 
 ---
 

@@ -182,7 +182,7 @@ Multi-turn conversation loop with built-in context management: auto-compaction w
 
 | Category | Tools |
 |----------|-------|
-| **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch`, `batch_edit`, `batch_read` |
+| **File System** | `read_file`, `write_file`, `apply_patch`, `batch_edit`, `batch_read` |
 | **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
 | **Code Intelligence** | `search_code` (ripgrep), `lsp` (hover / goto-def / references / diagnostics) |
 | **Web** | `web_search`, `web_fetch` |
@@ -296,7 +296,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 |------|-------------|
 | `read_file` | Read file contents with optional offset/limit |
 | `write_file` | Write or overwrite a file |
-| `edit_file` | Replace exact text in a file (single match) |
 | `batch_edit` | Apply multiple edits atomically |
 | `apply_patch` | Apply unified diff patches |
 | `batch_read` | Read multiple files in parallel |

@@ -32,7 +32,7 @@ pub struct BatchEditInput {
         description = "Edits to apply atomically. All old_string values are validated against \
                        the original file contents before any write. Same-file edits must use \
                        non-overlapping, uniquely matching old_string values; chained edits that \
-                       depend on prior replacements belong in edit_file or a single merged edit."
+                       depend on prior replacements belong in apply_patch or a single merged edit."
     )]
     pub edits: Vec<SingleEdit>,
     #[schemars(description = "Optional human-readable description of what this batch edit does.")]
@@ -48,7 +48,7 @@ pub struct BatchEditInput {
                     entire batch is rejected and no files are changed. Rules: each old_string \
                     must match exactly once; same-file edits must not overlap or nest (e.g. \
                     \"alpha beta\" and \"beta\" together); edits on one file cannot depend on \
-                    another edit's new_string—use edit_file sequentially or merge into one edit \
+                    another edit's new_string—use apply_patch / write_file or merge into one edit \
                     instead."
 )]
 pub async fn batch_edit(ctx: ToolContext, input: BatchEditInput) -> Result<String> {
