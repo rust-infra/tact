@@ -19,24 +19,28 @@ fn cmd_emoji(cmd: &str) -> &'static str {
         "balance" => "💰",
         "lang" => "🌐",
         "model" => "🧠",
+        "skills" => "📋",
+        "skill-reload" => "🔄",
         _ => "⚡",
     }
 }
 
 /// Group commands into categories for visual separation.
-fn cmd_category(cmd: &str) -> &'static str {
+fn cmd_category(cmd: &str, desc: &str) -> &'static str {
     match cmd {
         "save" | "cancel" | "quit" => "  Actions",
         "help" | "history" => "  Tools",
+        "skills" | "skill-reload" => "  Skills",
         "theme" | "lang" | "balance" | "model" => "  Settings",
+        _ if desc.starts_with('🎯') => "  Skills",
         _ => "",
     }
 }
 
 pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
     let filter = app.cmd_line.to_lowercase();
-    let commands: Vec<_> = app.palette_commands().copied().collect();
-    let filtered: Vec<(usize, &(&str, &str))> = commands
+    let commands = app.palette_commands();
+    let filtered: Vec<(usize, &(String, String))> = commands
         .iter()
         .enumerate()
         .filter(|(_, (cmd, desc))| {
@@ -68,8 +72,8 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
         let selected = app.palette_selected.min(filtered.len().saturating_sub(1));
         let mut results: Vec<ListItem> = Vec::new();
         let mut last_cat = "";
-        for (i, (_orig_idx, (cmd, _desc))) in filtered.iter().enumerate() {
-            let cat = cmd_category(cmd);
+        for (i, (_orig_idx, (cmd, desc))) in filtered.iter().enumerate() {
+            let cat = cmd_category(cmd, desc);
             // Insert category separator
             if !cat.is_empty() && cat != last_cat {
                 // Change the last_cat BEFORE using it
@@ -92,7 +96,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let text = format!("  {}  {:<10} {}", emoji, cmd, app.localize_cmd_desc(cmd));
+            let text = format!("  {}  {:<10} {}", emoji, cmd, desc);
             results.push(ListItem::new(Span::styled(text, style)));
         }
         results

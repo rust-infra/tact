@@ -173,6 +173,9 @@ pub struct Messages {
     pub cmd_history: &'static str,
     pub cmd_balance: &'static str,
     pub cmd_lang: &'static str,
+    pub cmd_skills: &'static str,
+    pub cmd_skill_reload: &'static str,
+    pub skill_reloaded_tmpl: &'static str,
 
     // ---- 系统消息 ----
     pub step_started_tmpl: &'static str,
@@ -347,6 +350,9 @@ impl Messages {
             cmd_history: "Show task history",
             cmd_balance: "Query account balance (DeepSeek/Kimi)",
             cmd_lang: "Toggle language (EN/中文)",
+            cmd_skills: "List available skills",
+            cmd_skill_reload: "Reload skills from disk",
+            skill_reloaded_tmpl: "📋 Reloaded {} skill(s)",
 
             step_started_tmpl: "▶ Executing: {}",
             step_success_prefix: "✓",
@@ -517,6 +523,9 @@ impl Messages {
             cmd_history: "显示任务历史",
             cmd_balance: "查询账户余额 (DeepSeek/Kimi)",
             cmd_lang: "切换语言 (EN/中文)",
+            cmd_skills: "列出可用的技能",
+            cmd_skill_reload: "从磁盘重新加载技能",
+            skill_reloaded_tmpl: "📋 重新加载了 {} 个技能",
 
             step_started_tmpl: "▶ 正在执行: {}",
             step_success_prefix: "✓",

@@ -67,6 +67,8 @@ pub struct TuiConfig {
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
     pub context_limit_chars: usize,
+    pub skills_description: String,
+    pub skills_data: Vec<(String, String)>,
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
@@ -81,6 +83,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         history_save_tx,
         theme,
         context_limit_chars,
+        skills_description,
+        skills_data,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -105,6 +109,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         session_id,
         history_save_tx,
         theme,
+        skills_description,
+        skills_data,
     );
     app.context_limit_chars = context_limit_chars;
     app.add_startup_logo();

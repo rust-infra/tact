@@ -56,6 +56,8 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("quit", "Quit application"),
     ("help", "Show help panel"),
     ("history", "Show task history"),
+    ("skills", "List available skills"),
+    ("skill-reload", "Reload skills from disk"),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
 ];
@@ -207,6 +209,10 @@ pub struct App {
     pub(crate) thinking: ThinkingState,
     /// Cached account balance / usage quota state from the account service.
     pub(crate) account: AccountState,
+    /// List of available skills (name + description lines).
+    pub(crate) skills_description: String,
+    /// Full skill name + body for the `/skill` picker.
+    pub(crate) skills_data: Vec<(String, String)>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

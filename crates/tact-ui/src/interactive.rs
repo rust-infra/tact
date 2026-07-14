@@ -153,6 +153,12 @@ async fn run_interactive_locked(
             history_save_tx,
             theme,
             context_limit_chars,
+            skills_description: skill_registry.describe_available(),
+            skills_data: skill_registry
+                .skills()
+                .iter()
+                .map(|(_, doc)| (doc.manifest.name.clone(), doc.body.clone()))
+                .collect(),
         })
         .await
     }));

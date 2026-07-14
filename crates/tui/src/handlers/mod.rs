@@ -217,6 +217,26 @@ pub(super) struct CommandExecOutcome {
 }
 
 pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
+    // Handle skill commands — each skill is a palette command (Claude Code style)
+    if let Some((_name, body)) = app
+        .skills_data
+        .iter()
+        .find(|(name, _)| name.as_str() == cmd)
+    {
+        let body = body.clone();
+        let user_input = std::mem::take(&mut app.input);
+        let combined = if user_input.is_empty() {
+            body
+        } else {
+            format!("{body}\n\nARGUMENTS: {user_input}")
+        };
+        let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(combined));
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: true,
+        };
+    }
+
     match cmd {
         "theme" => {
             app.toggle_theme();
@@ -277,6 +297,25 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "skills" => {
+            app.add_system_message(format!(
+                "# Available skills\n\n{}",
+                app.skills_description,
+            ));
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        "skill-reload" => {
+            let count = reload_skills(app);
+            let msg = app.msgs().skill_reloaded_tmpl.replace("{}", &count.to_string());
+            app.add_system_message(msg);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to abort.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
@@ -319,6 +358,25 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
+/// Reload skills from disk. Returns number of skills loaded.
+fn reload_skills(app: &mut App) -> usize {
+    match tact::skill::get_skill_registry(&app.work_dir) {
+        Ok(reg) => {
+            app.skills_description = reg.describe_available();
+            app.skills_data = reg
+                .skills()
+                .iter()
+                .map(|(name, doc)| (name.clone(), doc.body.clone()))
+                .collect();
+            app.skills_data.len()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to reload skills: {e}");
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::execute_palette_command;
@@ -341,6 +399,8 @@ mod tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            String::new(),
+            Vec::new(),
         );
         (app, user_cmd_rx)
     }
@@ -350,7 +410,8 @@ mod tests {
         let (mut app, _user_cmd_rx) = make_app();
         let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
         app.account_rx = Some(account_rx);
-        let commands: Vec<_> = app.palette_commands().copied().collect();
+        let cmds = app.palette_commands();
+        let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
 
         for (cmd, _desc) in &commands {
             if *cmd == "cancel" {

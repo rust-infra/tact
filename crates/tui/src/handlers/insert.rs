@@ -10,7 +10,8 @@ use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
-    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app.palette_commands();
+    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let cmds = app
         .slash_command
         .matched_commands(&app.input, app.input_cursor, &commands);
@@ -30,7 +31,8 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
 /// Enter on an open slash popup: run the highlighted command immediately.
 /// Tab still only autocompletes via [`apply_selected_slash_command`].
 fn execute_selected_slash_command(app: &mut App) -> bool {
-    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app.palette_commands();
+    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let cmds = app
         .slash_command
         .matched_commands(&app.input, app.input_cursor, &commands);
@@ -125,7 +127,8 @@ pub(crate) fn handle_insert_mode(
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
-            let commands: Vec<_> = app.palette_commands().copied().collect();
+            let cmds = app.palette_commands();
+    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
             let n = app
                 .slash_command
                 .matched_commands(&app.input, app.input_cursor, &commands)
@@ -135,7 +138,8 @@ pub(crate) fn handle_insert_mode(
             }
         }
         KeyCode::Down if app.slash_command.active => {
-            let commands: Vec<_> = app.palette_commands().copied().collect();
+            let cmds = app.palette_commands();
+    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
             let n = app
                 .slash_command
                 .matched_commands(&app.input, app.input_cursor, &commands)
@@ -568,6 +572,8 @@ mod tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            String::new(),
+            Vec::new(),
         );
         (app, user_cmd_rx)
     }

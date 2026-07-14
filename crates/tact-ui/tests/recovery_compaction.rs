@@ -27,6 +27,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             snapshot_max_items: 80,
             notifications_enabled: false,
             micro_compact_enabled: true,
+            skill_body_auto_inject: false,
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),

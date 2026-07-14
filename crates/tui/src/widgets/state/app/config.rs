@@ -2,12 +2,24 @@ use crate::i18n::Messages;
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::state::*;
 impl App {
-    /// Palette commands visible for the current provider configuration.
-    pub(crate) fn palette_commands(&self) -> impl Iterator<Item = &(&'static str, &'static str)> {
+    /// Palette commands visible for the current provider configuration,
+    /// including dynamic skill commands.
+    pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
-        PALETTE_COMMANDS
+        let mut cmds: Vec<(String, String)> = PALETTE_COMMANDS
             .iter()
             .filter(move |(cmd, _)| account_enabled || *cmd != "balance")
+            .map(|&(cmd, _desc)| {
+                let desc = self.localize_cmd_desc(cmd);
+                (cmd.to_string(), desc)
+            })
+            .collect();
+        // Add each skill as a palette command (Claude Code style)
+        for (name, _body) in &self.skills_data {
+            let desc = format!("🎯 {}", name);
+            cmds.push((name.clone(), desc));
+        }
+        cmds
     }
 
     pub(crate) fn save_history(&self, entry: &str) {
@@ -51,6 +63,8 @@ impl App {
             "history" => msgs.cmd_history.to_string(),
             "balance" => msgs.cmd_balance.to_string(),
             "lang" => msgs.cmd_lang.to_string(),
+            "skills" => msgs.cmd_skills.to_string(),
+            "skill-reload" => msgs.cmd_skill_reload.to_string(),
             _ => cmd.to_string(),
         }
     }

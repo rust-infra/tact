@@ -784,7 +784,13 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 "If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
             ])
-            .skills_available(self.tool_context.skill_registry.describe_available())
+            .skills_available(
+            if self.agent_settings.skill_body_auto_inject {
+                self.tool_context.skill_registry.describe_available_with_body()
+            } else {
+                self.tool_context.skill_registry.describe_available()
+            },
+        )
             .memory(self.load_memory_prompt()?)
             .claude_md(cached_md_section(
                 &mut self.runtime.cached_claude_md,
@@ -1085,6 +1091,7 @@ mod tests {
                     snapshot_max_items: 80,
                     notifications_enabled: false,
                     micro_compact_enabled: true,
+                    skill_body_auto_inject: false,
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
@@ -1129,6 +1136,7 @@ mod tests {
             snapshot_max_items: 10,
             notifications_enabled: false,
             micro_compact_enabled: true,
+            skill_body_auto_inject: false,
         };
         let agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
