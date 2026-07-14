@@ -5,7 +5,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
-use tact_protocol::{AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, ThinkingChunk};
+use tact_protocol::{
+    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
+};
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
@@ -59,110 +61,24 @@ impl App {
             }
         }
         match update {
-            AgentUpdate::StepAdded(step) => {
-                // Flush leftover streaming text, preventing LLM output from appearing
-                // between StepAdded and StepStarted.
-                self.flush_stream_pending();
-                let idx = self.plan.steps.len();
-                self.plan.steps.push(step.clone());
-                self.plan
-                    .steps_set
-                    .insert(step.tool_id.clone(), step.clone());
-                self.plan.collapsed.push(false);
-                // Don't change current_step or total — the step hasn't started yet.
-                // Ensure there is an Executing status before StepStarted arrives.
-                self.ensure_executing_status(idx);
-                self.plan.scroll_state =
-                    ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
-            }
+            AgentUpdate::StepAdded(step) => self.on_step_added(step),
             AgentUpdate::StepStarted {
                 idx,
                 tool_id,
                 tool_name,
                 arg_summary,
                 arg_full,
-            } => {
-                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
-                self.flush_stream_pending();
-                // Same tool_id restarting without a finish: drop stale placeholder rows.
-                self.cancel_active_tool(&tool_id);
-                if let Status::Executing {
-                    current_step,
-                    total,
-                } = &mut self.status
-                {
-                    *current_step = idx;
-                    if idx >= *total {
-                        *total = idx + 1;
-                    }
-                }
-                let msgs = self.msgs();
-                let output = ToolWidget::new(&self.theme, &msgs)
-                    .with_tool(tool_name)
-                    .with_arg_summary(arg_summary)
-                    .with_arg_full(arg_full)
-                    .with_step_index(idx)
-                    .with_phase(ToolPhase::Running)
-                    .with_duration_us(0)
-                    .build();
-                let phys_idx = self.push_tool_placeholder_rows(&output);
-                self.tools.active.push(ActiveToolBlock {
-                    phys_idx,
-                    tool_id,
-                    output,
-                    started_at: Instant::now(),
-                });
-                self.refresh_tool_log_scroll();
-            }
+            } => self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full),
             AgentUpdate::StepFinished {
                 idx,
                 tool_id,
                 result,
-            } => {
-                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
-                self.flush_stream_pending();
-                let msgs = self.msgs();
-                let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
-                    .with_step_index(idx)
-                    .build();
-                self.finalize_tool_block(&tool_id, output);
-
-                if let Some(step) = self.plan.steps.get_mut(idx) {
-                    step.output = Some(result.message);
-                }
-            }
+            } => self.on_step_finished(idx, tool_id, result),
             AgentUpdate::StepFailed {
                 idx,
                 tool_id,
                 error,
-            } => {
-                let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
-                self.flush_stream_pending();
-                if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
-                    let elapsed_us = active.started_at.elapsed().as_micros() as u64;
-                    let tool_name = active.output.tool_name.clone();
-                    let arg_summary = active.output.arg_summary.clone();
-                    let msgs = self.msgs();
-                    let output = ToolWidget::new(&self.theme, &msgs)
-                        .with_tool(tool_name)
-                        .with_arg_summary(arg_summary)
-                        .with_step_index(idx)
-                        .with_phase(ToolPhase::Failed)
-                        .with_duration_us(elapsed_us)
-                        .with_detail(error)
-                        .build();
-                    self.finalize_tool_block(&tool_id, output);
-                } else {
-                    let msgs = self.msgs();
-                    self.add_system_message(
-                        msgs.step_failed_tmpl
-                            .replacen("{}", &(idx + 1).to_string(), 1)
-                            .replacen("{}", &error, 1),
-                    );
-                }
-                self.status = Status::Idle;
-                self.freeze_last_prompt_cost();
-            }
+            } => self.on_step_failed(idx, tool_id, error),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -236,194 +152,7 @@ impl App {
                     }
                 }
             }
-            AgentUpdate::StreamChunk(text) => {
-                self.ensure_gap_after_tools();
-                // Thinking region is closed by the safety gate above when still open.
-                self.stream.buffer.push_str(&text);
-
-                // Line-level buffering: code blocks accumulate by complete unit,
-                // table rows accumulate by table, normal lines accumulate by paragraph
-                let mut completed = Vec::new();
-                while let Some(idx) = self.stream.buffer.find('\n') {
-                    let line = self.stream.buffer[..idx].to_string();
-                    self.stream.buffer = self.stream.buffer[idx + 1..].to_string();
-
-                    let trimmed = line.trim();
-                    let is_code_fence = trimmed.starts_with("```");
-                    let is_code_fence_close = trimmed == "```" && self.stream.code_block;
-
-                    if is_code_fence_close {
-                        // Completed: replace streaming placeholders with a sized blank region,
-                        // then store a CodeBlock overlay for card rendering.
-                        const MAX_CODE_PREVIEW: usize = 30;
-                        let lang = std::mem::take(&mut self.stream.code_block_lang);
-                        let lines = std::mem::take(&mut self.stream.code_block_buffer);
-
-                        if let Some(start_idx) = self.stream.code_block_start_idx.take() {
-                            let stream_end = start_idx + self.stream.code_block_line_count;
-
-                            if !lines.is_empty() {
-                                let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                                let (styled, _) = render_markdown_tui(&code_text, &self.theme);
-                                let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
-                                let placeholders: Vec<Line<'static>> =
-                                    (0..placeholder_count).map(|_| Line::from("")).collect();
-                                let raw_placeholders: Vec<String> =
-                                    (0..placeholder_count).map(|_| String::new()).collect();
-                                self.splice_msgs(
-                                    start_idx..stream_end,
-                                    placeholders,
-                                    raw_placeholders,
-                                    RawMessageType::LLM,
-                                );
-                                self.code_blocks.push(CodeBlock {
-                                    start_idx,
-                                    end_idx: start_idx + placeholder_count,
-                                    lang,
-                                    content: lines.join("\n"),
-                                    styled,
-                                });
-                            } else {
-                                self.drain_msgs(start_idx..stream_end);
-                            }
-                        } else if !lines.is_empty() {
-                            let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                            let (styled, raw) = render_markdown_tui(&code_text, &self.theme);
-                            completed.extend(styled.into_iter().zip(raw));
-                        }
-                        self.stream.code_block = false;
-                        self.stream.code_block_line_count = 0;
-                    } else if self.stream.code_block {
-                        // Streaming: update previous line (remove indicator), append new line with indicator
-                        self.stream.code_block_buffer.push(line.clone());
-
-                        let prev_idx = self.messages.len().saturating_sub(1);
-                        if self.stream.code_block_line_count > 1
-                            && let Some(prev_raw) = self.raw_messages.get_mut(prev_idx)
-                            && prev_raw.ends_with(STREAMING_INDICATOR)
-                        {
-                            let clean = prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
-                            *prev_raw = clean.clone();
-                            self.messages[prev_idx] = Line::from(vec![
-                                Span::styled(
-                                    "│ ",
-                                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                                ),
-                                Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
-                            ]);
-                        }
-
-                        let display_line = format!("{}{}", line, STREAMING_INDICATOR);
-                        self.append_msg(
-                            Line::from(vec![
-                                Span::styled(
-                                    "│ ",
-                                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                                ),
-                                Span::styled(
-                                    display_line,
-                                    Style::default().fg(CODE_FG).bg(CODE_BG),
-                                ),
-                            ]),
-                            line,
-                            RawMessageType::LLM,
-                        );
-                        self.stream.code_block_line_count += 1;
-                    } else if is_code_fence {
-                        // Open new code block: flush pending content first
-                        if !self.stream.paragraph.is_empty() {
-                            let paragraph = std::mem::take(&mut self.stream.paragraph);
-                            let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                            completed.extend(styled.into_iter().zip(raw));
-                        }
-                        if !self.stream.table_buffer.is_empty() {
-                            let (styled, raw) =
-                                format_table(&self.stream.table_buffer, &self.theme);
-                            completed.extend(styled.into_iter().zip(raw));
-                            self.stream.table_buffer.clear();
-                        }
-
-                        // Flush completed lines so start_idx is accurate
-                        for (styled_line, raw_line) in completed.drain(..) {
-                            self.append_msg(styled_line, raw_line, RawMessageType::LLM);
-                        }
-
-                        let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
-                        self.stream.code_block = true;
-                        self.stream.code_block_buffer.clear();
-                        self.stream.code_block_lang = lang.clone();
-                        self.stream.code_block_start_idx = Some(self.messages.len());
-                        self.stream.code_block_line_count = 1;
-
-                        // Container header: ╭─ lang ─────
-                        let label = if lang.is_empty() {
-                            "code".to_string()
-                        } else {
-                            lang.clone()
-                        };
-                        let header_text = format!("╭─ {} ", label);
-                        self.append_msg(
-                            Line::from(Span::styled(
-                                header_text.clone(),
-                                Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                            )),
-                            format!("```{}", lang),
-                            RawMessageType::LLM,
-                        );
-                    } else {
-                        // Regular line handling
-                        let is_table_line = trimmed.starts_with('|');
-                        let is_blank = trimmed.is_empty();
-                        let is_hr = is_horizontal_rule(&line);
-
-                        if is_table_line {
-                            if !self.stream.paragraph.is_empty() {
-                                let paragraph = std::mem::take(&mut self.stream.paragraph);
-                                let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                                completed.extend(styled.into_iter().zip(raw));
-                            }
-                            self.stream.table_buffer.push(line);
-                        } else if is_blank || is_hr {
-                            if !self.stream.paragraph.is_empty() {
-                                let paragraph = std::mem::take(&mut self.stream.paragraph);
-                                let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                                completed.extend(styled.into_iter().zip(raw));
-                            }
-                            if !self.stream.table_buffer.is_empty() {
-                                let (styled, raw) =
-                                    format_table(&self.stream.table_buffer, &self.theme);
-                                completed.extend(styled.into_iter().zip(raw));
-                                self.stream.table_buffer.clear();
-                            }
-                            if is_hr {
-                                // Discard horizontal rules
-                            } else {
-                                completed.push((Line::from(""), String::new()));
-                            }
-                        } else {
-                            if !self.stream.table_buffer.is_empty() {
-                                let (styled, raw) =
-                                    format_table(&self.stream.table_buffer, &self.theme);
-                                completed.extend(styled.into_iter().zip(raw));
-                                self.stream.table_buffer.clear();
-                            }
-                            if !self.stream.paragraph.is_empty() {
-                                self.stream.paragraph.push('\n');
-                            }
-                            self.stream.paragraph.push_str(&line);
-                        }
-                    }
-                }
-
-                for (styled_line, raw_line) in completed {
-                    self.append_msg(styled_line, raw_line, RawMessageType::LLM);
-                }
-
-                self.log_scroll.state =
-                    ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-                // Auto-scroll to bottom (u16::MAX clipped by render_log_panel to visual line count)
-                self.log_scroll.offset = u16::MAX;
-            }
+            AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
         }
         // Unified tail scroll state refresh, covering cases where helpers like
         // flush_and_close_thinking / flush_stream_pending inserted messages without
@@ -431,6 +160,282 @@ impl App {
         // StreamChunk / ThinkingChunk also update separately; this redundant call is
         // cheap and harmless).
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+    }
+
+    fn on_step_added(&mut self, step: PlanStep) {
+        // Flush leftover streaming text, preventing LLM output from appearing
+        // between StepAdded and StepStarted.
+        self.flush_stream_pending();
+        let idx = self.plan.steps.len();
+        self.plan.steps.push(step.clone());
+        self.plan
+            .steps_set
+            .insert(step.tool_id.clone(), step.clone());
+        self.plan.collapsed.push(false);
+        // Don't change current_step or total — the step hasn't started yet.
+        // Ensure there is an Executing status before StepStarted arrives.
+        self.ensure_executing_status(idx);
+        self.plan.scroll_state = ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
+    }
+
+    fn on_step_started(
+        &mut self,
+        idx: usize,
+        tool_id: String,
+        tool_name: String,
+        arg_summary: String,
+        arg_full: String,
+    ) {
+        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        self.flush_stream_pending();
+        // Same tool_id restarting without a finish: drop stale placeholder rows.
+        self.cancel_active_tool(&tool_id);
+        if let Status::Executing {
+            current_step,
+            total,
+        } = &mut self.status
+        {
+            *current_step = idx;
+            if idx >= *total {
+                *total = idx + 1;
+            }
+        }
+        let msgs = self.msgs();
+        let output = ToolWidget::new(&self.theme, &msgs)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(idx)
+            .with_phase(ToolPhase::Running)
+            .with_duration_us(0)
+            .build();
+        let phys_idx = self.push_tool_placeholder_rows(&output);
+        self.tools.active.push(ActiveToolBlock {
+            phys_idx,
+            tool_id,
+            output,
+            started_at: Instant::now(),
+        });
+        self.refresh_tool_log_scroll();
+    }
+
+    fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
+        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        self.flush_stream_pending();
+        let msgs = self.msgs();
+        let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+            .with_step_index(idx)
+            .build();
+        self.finalize_tool_block(&tool_id, output);
+
+        if let Some(step) = self.plan.steps.get_mut(idx) {
+            step.output = Some(result.message);
+        }
+    }
+
+    fn on_step_failed(&mut self, idx: usize, tool_id: String, error: String) {
+        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        self.flush_stream_pending();
+        if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
+            let elapsed_us = active.started_at.elapsed().as_micros() as u64;
+            let tool_name = active.output.tool_name.clone();
+            let arg_summary = active.output.arg_summary.clone();
+            let msgs = self.msgs();
+            let output = ToolWidget::new(&self.theme, &msgs)
+                .with_tool(tool_name)
+                .with_arg_summary(arg_summary)
+                .with_step_index(idx)
+                .with_phase(ToolPhase::Failed)
+                .with_duration_us(elapsed_us)
+                .with_detail(error)
+                .build();
+            self.finalize_tool_block(&tool_id, output);
+        } else {
+            let msgs = self.msgs();
+            self.add_system_message(
+                msgs.step_failed_tmpl
+                    .replacen("{}", &(idx + 1).to_string(), 1)
+                    .replacen("{}", &error, 1),
+            );
+        }
+        self.status = Status::Idle;
+        self.freeze_last_prompt_cost();
+    }
+
+    fn apply_stream_chunk(&mut self, text: String) {
+        self.ensure_gap_after_tools();
+        // Thinking region is closed by the safety gate above when still open.
+        self.stream.buffer.push_str(&text);
+
+        // Line-level buffering: code blocks accumulate by complete unit,
+        // table rows accumulate by table, normal lines accumulate by paragraph
+        let mut completed = Vec::new();
+        while let Some(idx) = self.stream.buffer.find('\n') {
+            let line = self.stream.buffer[..idx].to_string();
+            self.stream.buffer = self.stream.buffer[idx + 1..].to_string();
+
+            let trimmed = line.trim();
+            let is_code_fence = trimmed.starts_with("```");
+            let is_code_fence_close = trimmed == "```" && self.stream.code_block;
+
+            if is_code_fence_close {
+                // Completed: replace streaming placeholders with a sized blank region,
+                // then store a CodeBlock overlay for card rendering.
+                const MAX_CODE_PREVIEW: usize = 30;
+                let lang = std::mem::take(&mut self.stream.code_block_lang);
+                let lines = std::mem::take(&mut self.stream.code_block_buffer);
+
+                if let Some(start_idx) = self.stream.code_block_start_idx.take() {
+                    let stream_end = start_idx + self.stream.code_block_line_count;
+
+                    if !lines.is_empty() {
+                        let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
+                        let (styled, _) = render_markdown_tui(&code_text, &self.theme);
+                        let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
+                        let placeholders: Vec<Line<'static>> =
+                            (0..placeholder_count).map(|_| Line::from("")).collect();
+                        let raw_placeholders: Vec<String> =
+                            (0..placeholder_count).map(|_| String::new()).collect();
+                        self.splice_msgs(
+                            start_idx..stream_end,
+                            placeholders,
+                            raw_placeholders,
+                            RawMessageType::LLM,
+                        );
+                        self.code_blocks.push(CodeBlock {
+                            start_idx,
+                            end_idx: start_idx + placeholder_count,
+                            lang,
+                            content: lines.join("\n"),
+                            styled,
+                        });
+                    } else {
+                        self.drain_msgs(start_idx..stream_end);
+                    }
+                } else if !lines.is_empty() {
+                    let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
+                    let (styled, raw) = render_markdown_tui(&code_text, &self.theme);
+                    completed.extend(styled.into_iter().zip(raw));
+                }
+                self.stream.code_block = false;
+                self.stream.code_block_line_count = 0;
+            } else if self.stream.code_block {
+                // Streaming: update previous line (remove indicator), append new line with indicator
+                self.stream.code_block_buffer.push(line.clone());
+
+                let prev_idx = self.messages.len().saturating_sub(1);
+                if self.stream.code_block_line_count > 1
+                    && let Some(prev_raw) = self.raw_messages.get_mut(prev_idx)
+                    && prev_raw.ends_with(STREAMING_INDICATOR)
+                {
+                    let clean = prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
+                    *prev_raw = clean.clone();
+                    self.messages[prev_idx] = Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                        Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                    ]);
+                }
+
+                let display_line = format!("{}{}", line, STREAMING_INDICATOR);
+                self.append_msg(
+                    Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                        Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                    ]),
+                    line,
+                    RawMessageType::LLM,
+                );
+                self.stream.code_block_line_count += 1;
+            } else if is_code_fence {
+                // Open new code block: flush pending content first
+                if !self.stream.paragraph.is_empty() {
+                    let paragraph = std::mem::take(&mut self.stream.paragraph);
+                    let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
+                    completed.extend(styled.into_iter().zip(raw));
+                }
+                if !self.stream.table_buffer.is_empty() {
+                    let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                    completed.extend(styled.into_iter().zip(raw));
+                    self.stream.table_buffer.clear();
+                }
+
+                // Flush completed lines so start_idx is accurate
+                for (styled_line, raw_line) in completed.drain(..) {
+                    self.append_msg(styled_line, raw_line, RawMessageType::LLM);
+                }
+
+                let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
+                self.stream.code_block = true;
+                self.stream.code_block_buffer.clear();
+                self.stream.code_block_lang = lang.clone();
+                self.stream.code_block_start_idx = Some(self.messages.len());
+                self.stream.code_block_line_count = 1;
+
+                // Container header: ╭─ lang ─────
+                let label = if lang.is_empty() {
+                    "code".to_string()
+                } else {
+                    lang.clone()
+                };
+                let header_text = format!("╭─ {} ", label);
+                self.append_msg(
+                    Line::from(Span::styled(
+                        header_text.clone(),
+                        Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                    )),
+                    format!("```{}", lang),
+                    RawMessageType::LLM,
+                );
+            } else {
+                // Regular line handling
+                let is_table_line = trimmed.starts_with('|');
+                let is_blank = trimmed.is_empty();
+                let is_hr = is_horizontal_rule(&line);
+
+                if is_table_line {
+                    if !self.stream.paragraph.is_empty() {
+                        let paragraph = std::mem::take(&mut self.stream.paragraph);
+                        let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
+                        completed.extend(styled.into_iter().zip(raw));
+                    }
+                    self.stream.table_buffer.push(line);
+                } else if is_blank || is_hr {
+                    if !self.stream.paragraph.is_empty() {
+                        let paragraph = std::mem::take(&mut self.stream.paragraph);
+                        let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
+                        completed.extend(styled.into_iter().zip(raw));
+                    }
+                    if !self.stream.table_buffer.is_empty() {
+                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        completed.extend(styled.into_iter().zip(raw));
+                        self.stream.table_buffer.clear();
+                    }
+                    if is_hr {
+                        // Discard horizontal rules
+                    } else {
+                        completed.push((Line::from(""), String::new()));
+                    }
+                } else {
+                    if !self.stream.table_buffer.is_empty() {
+                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        completed.extend(styled.into_iter().zip(raw));
+                        self.stream.table_buffer.clear();
+                    }
+                    if !self.stream.paragraph.is_empty() {
+                        self.stream.paragraph.push('\n');
+                    }
+                    self.stream.paragraph.push_str(&line);
+                }
+            }
+        }
+
+        for (styled_line, raw_line) in completed {
+            self.append_msg(styled_line, raw_line, RawMessageType::LLM);
+        }
+
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        // Auto-scroll to bottom (u16::MAX clipped by render_log_panel to visual line count)
+        self.log_scroll.offset = u16::MAX;
     }
 
     /// Apply an account-service update (balance / usage quota).

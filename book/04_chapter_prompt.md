@@ -65,10 +65,10 @@ The final output follows this order:
 |---------|--------|-----------|
 | `role` | hard-coded agent identity | static |
 | `skills_available` | skill registry | mostly static |
-| `claude_md` | `CLAUDE.md` in workspace | static per project |
+| `claude_md` | `CLAUDE.md` (loaded once per session, cached) | static per session |
 | `guidelines` / `constraints` | agent defaults | static |
 | `memory_guidance` | constant prompt text | static |
-| `additional` | optional extra markdown | varies |
+| `additional` | project / cwd `AGENTS.md` (loaded once per session, cached) | static per session |
 | `memory` | `MemoryManager` | dynamic |
 | `dynamic_context` | directory snapshot / recent files | dynamic |
 
@@ -109,13 +109,14 @@ let prompt = SystemPrompt::builder()
     .constraints([...])
     .skills_available(self.tool_context.skill_registry.describe_available())
     .memory(self.load_memory_prompt()?)
-    .claude_md(load_claude_md_prompt(workdir))
+    .claude_md(cached_md_section(&mut cached_claude_md, || assemble_claude_md_prompt(workdir)))
+    .additional(cached_md_section(&mut cached_agents_md, || assemble_agents_md_prompt(workdir)))
     .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
     .memory_guidance(MEMORY_GUIDANCE.trim())
     .build()?;
 ```
 
-`build_system_prompt()` is called **inside the agent loop**, right before each LLM request. That means `memory` and `dynamic_context` are refreshed every turn.
+`build_system_prompt()` is called **once per task**, at the top of `agent_loop` before the turn loop starts. The same rendered string is reused for every LLM request within that task, keeping the prompt byte-stable across turns for prefix KV-caching. `memory` and `dynamic_context` are re-evaluated at the start of the next task; `CLAUDE.md` / `AGENTS.md` and the directory snapshot are assembled **once per session** and cached.
 
 ---
 
@@ -126,7 +127,7 @@ let prompt = SystemPrompt::builder()
 | Variant | Behavior | Use case |
 |---------|----------|----------|
 | `Static` | Returns the same string every time | Tests, demos, or when you want full manual control |
-| `Dynamic` | Re-renders the template each turn | Normal operation; keeps context and memory fresh |
+| `Dynamic` | Re-renders the template at the start of each task | Normal operation; keeps context and memory fresh |
 
 In normal Tact usage (`tact-ui` / headless), the agent starts in `Dynamic` mode.
 
@@ -142,9 +143,9 @@ The line:
 === DYNAMIC_BOUNDARY ===
 ```
 
-is a visual marker inside the system prompt. Everything above it should stay identical across turns so the provider can reuse the cached prefix. Everything below it (`memory`, `dynamic_context`) is allowed to change.
+is a visual marker inside the system prompt. Everything above it should stay identical across tasks so the provider can reuse the cached prefix. Everything below it (`memory`, `dynamic_context`) is allowed to change.
 
-Because `build_system_prompt()` runs every turn, only the suffix from the boundary onward needs to be re-evaluated. If the provider supports prompt caching, you get fresh context without paying full cost for the entire instruction block.
+Because `build_system_prompt()` runs at each task start, only the suffix from the boundary onward needs to be re-evaluated. If the provider supports prompt caching, you get fresh context without paying full cost for the entire instruction block.
 
 ---
 
@@ -161,9 +162,11 @@ Use the builder methods in `Agent::build_system_prompt`:
 ])
 ```
 
-### 6.2 Injecting extra markdown
+### 6.2 Injecting extra markdown (`AGENTS.md`)
 
-You can append arbitrary markdown via `additional`:
+`Agent::build_system_prompt` loads project `AGENTS.md` (and a cwd-relative copy when cwd ≠ workdir) into the template `additional` slot on the **first** render of a session, then reuses the cached string for later turns.
+
+You can also append arbitrary markdown via the builder:
 
 ```rust
 .additional("# Project conventions\n\nUse anyhow::Result everywhere.")

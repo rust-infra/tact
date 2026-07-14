@@ -278,17 +278,18 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "cancel" => {
-            if !matches!(app.status, Status::Idle) {
+            // Only cancel an in-flight task; Idle and Done have nothing to abort.
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = app.user_cmd_tx.send(UserCommand::Cancel);
-                CommandExecOutcome {
-                    handled: true,
-                    clear_input: true,
-                }
             } else {
-                CommandExecOutcome {
-                    handled: true,
-                    clear_input: false,
-                }
+                app.flash_msg = Some((
+                    app.msgs().cancel_noop_msg.to_string(),
+                    std::time::Instant::now(),
+                ));
+            }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
             }
         }
         "balance" => {
@@ -366,6 +367,36 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
+    }
+
+    #[test]
+    fn cancel_while_done_is_noop() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.status = Status::Done;
+        let outcome = execute_palette_command(&mut app, "cancel");
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(app.flash_msg.is_some());
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Done must not dispatch Cancel"
+        );
+    }
+
+    #[test]
+    fn cancel_while_executing_dispatches() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        let outcome = execute_palette_command(&mut app, "cancel");
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
     }
 
     #[test]

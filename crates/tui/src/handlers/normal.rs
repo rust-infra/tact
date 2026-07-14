@@ -146,7 +146,8 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('c') => {
-            if !matches!(app.status, Status::Idle) {
+            // Same gate as `/cancel`: only Planning / Executing.
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = _user_cmd_tx.send(UserCommand::Cancel);
             }
         }
@@ -252,6 +253,67 @@ mod tests {
         handle_normal_mode(&mut app, key(KeyCode::Char('q')), &tx);
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn c_cancels_while_executing() {
+        use crate::widgets::state::Status;
+        use std::path::PathBuf;
+        use tact_protocol::{AgentUpdate, UserCommand};
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            user_cmd_tx.clone(),
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+        );
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('c')), &user_cmd_tx);
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
+    }
+
+    #[test]
+    fn c_noop_while_done() {
+        use crate::widgets::state::Status;
+        use std::path::PathBuf;
+        use tact_protocol::{AgentUpdate, UserCommand};
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            user_cmd_tx.clone(),
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+        );
+        app.status = Status::Done;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('c')), &user_cmd_tx);
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Done must not dispatch Cancel via Normal-mode c"
+        );
     }
 
     #[test]

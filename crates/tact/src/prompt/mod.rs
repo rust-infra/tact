@@ -42,9 +42,9 @@ pub struct SystemPrompt {
     #[builder(default, setter(custom))]
     constraints: Vec<String>,
 
-    /// Optional additional raw markdown to append to the prompt
+    /// Optional additional raw markdown to append to the prompt.
     ///
-    /// For instance, if you would like to support an AGENTS.md file, add it here.
+    /// The agent loads project `AGENTS.md` into this field when present.
     #[builder(default)]
     additional: Option<String>,
 

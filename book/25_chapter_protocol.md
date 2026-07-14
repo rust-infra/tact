@@ -327,7 +327,7 @@ flowchart TB
 | Command | TUI precondition | Handler effect |
 |---------|------------------|----------------|
 | `SubmitTask(text)` | Enter in Insert mode → `Status::Planning` | `build_user_message` → `agent_loop` |
-| `Cancel` | `/cancel` or Escape during run | Set `cancel_flag`; loop exits without `TaskComplete` |
+| `Cancel` | `/cancel` or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits without `TaskComplete` |
 | `QueryBalance` | `/balance` or palette | `account::query_once()` → `AccountUpdate` channel |
 
 ---

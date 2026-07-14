@@ -1,20 +1,30 @@
 //! Skill (custom instruction) loading.
 //!
-//! Skills are markdown files (`SKILL.md`) nested in subdirectories of a
-//! configurable skills directory.  Each file has optional YAML frontmatter
-//! for `name` and `description`.
+//! Skills are markdown files (`SKILL.md`) nested in subdirectories under one or
+//! more skill roots. Discovery matches Claude Code:
 //!
-//! - [`SkillRegistry`] scans the skills directory, parses frontmatter, and
+//! - user: `~/.claude/skills/`
+//! - project: `<workdir>/.claude/skills/`
+//! - legacy (compat): `<workdir>/skills/`
+//!
+//! Each file has optional YAML frontmatter for `name` and `description`.
+//!
+//! - [`SkillRegistry`] scans skill directories, parses frontmatter, and
 //!   provides lookup by name.
-//! - [`get_skill_registry`] is the convenience constructor.
+//! - [`get_skill_registry`] is the convenience constructor for a workdir.
 //! - The rendered skill body is wrapped in `<skill>` XML tags for injection
-//!   into the system prompt.
+//!   into tool results.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 use walkdir::WalkDir;
+
+use crate::consts::TactPath;
 
 pub struct SkillManifest {
     pub name: String,
@@ -39,21 +49,24 @@ impl std::fmt::Display for SkillDocument {
     }
 }
 
-pub fn get_skill_registry(skills_dir: PathBuf) -> Result<SkillRegistry> {
-    let mut registry = SkillRegistry::new(skills_dir);
+/// Build a registry for `workdir` by scanning Claude-compatible skill roots
+/// (plus legacy `<workdir>/skills` for backward compatibility).
+pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
+    let dirs = TactPath::new(workdir.as_ref()).skill_search_dirs();
+    let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
     Ok(registry)
 }
 
 pub struct SkillRegistry {
-    skills_dir: PathBuf,
+    skill_dirs: Vec<PathBuf>,
     skills: HashMap<String, SkillDocument>,
 }
 
 impl SkillRegistry {
-    pub fn new(skills_dir: PathBuf) -> Self {
+    pub fn new(skill_dirs: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
-            skills_dir,
+            skill_dirs: skill_dirs.into_iter().collect(),
             skills: HashMap::new(),
         }
     }
@@ -61,11 +74,21 @@ impl SkillRegistry {
     pub fn load_skills(&mut self) -> Result<()> {
         self.skills.clear();
 
-        if !self.skills_dir.exists() {
+        // Later directories win on name clash: legacy → user → project.
+        let dirs = self.skill_dirs.clone();
+        for dir in dirs {
+            self.load_skills_from_dir(&dir)?;
+        }
+
+        Ok(())
+    }
+
+    fn load_skills_from_dir(&mut self, skills_dir: &Path) -> Result<()> {
+        if !skills_dir.exists() {
             return Ok(());
         }
 
-        for entry in WalkDir::new(&self.skills_dir)
+        for entry in WalkDir::new(skills_dir)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().is_file())
@@ -140,6 +163,10 @@ impl SkillRegistry {
     pub fn skills(&self) -> &HashMap<String, SkillDocument> {
         &self.skills
     }
+
+    pub fn skill_dirs(&self) -> &[PathBuf] {
+        &self.skill_dirs
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -166,7 +193,8 @@ fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_frontmatter;
+    use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn parses_frontmatter_with_lf_line_endings() {
@@ -186,5 +214,52 @@ mod tests {
         assert_eq!(meta.name.as_deref(), Some("test"));
         assert_eq!(meta.description.as_deref(), Some("hello"));
         assert_eq!(body, "body");
+    }
+
+    fn write_skill(root: &Path, name: &str, description: &str, body: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn loads_from_project_claude_skills_dir() {
+        let dir = tempdir().unwrap();
+        let project_skills = dir.path().join(".claude/skills");
+        write_skill(&project_skills, "deploy", "Deploy playbook", "step 1");
+
+        let registry = get_skill_registry(dir.path()).unwrap();
+        assert!(registry.skills().contains_key("deploy"));
+        assert!(registry.load_full_text("deploy").contains("step 1"));
+    }
+
+    #[test]
+    fn loads_legacy_workdir_skills_dir() {
+        let dir = tempdir().unwrap();
+        let legacy = dir.path().join("skills");
+        write_skill(&legacy, "old", "Legacy skill", "legacy body");
+
+        let registry = get_skill_registry(dir.path()).unwrap();
+        assert!(registry.skills().contains_key("old"));
+    }
+
+    #[test]
+    fn project_skill_overrides_legacy_same_name() {
+        let dir = tempdir().unwrap();
+        write_skill(&dir.path().join("skills"), "style", "legacy", "LEGACY");
+        write_skill(
+            &dir.path().join(".claude/skills"),
+            "style",
+            "project",
+            "PROJECT",
+        );
+
+        let registry = get_skill_registry(dir.path()).unwrap();
+        assert!(registry.load_full_text("style").contains("PROJECT"));
+        assert!(!registry.load_full_text("style").contains("LEGACY"));
     }
 }

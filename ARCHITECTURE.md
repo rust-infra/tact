@@ -314,7 +314,8 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 | Role / guidelines / constraints | Static template |
 | Skills | `skill_registry.describe_available()` |
 | Memory | `.claude/memory/*.md` via `MemoryManager` |
-| CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir |
+| CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir — **cached once per session** |
+| AGENTS.md | project `AGENTS.md` (and cwd if it differs), injected via `additional` — **cached once per session** |
 | **Dynamic context** | `load_dynamic_context()` — date, workdir, model, platform, **Project structure** |
 
 ### Project structure snapshot

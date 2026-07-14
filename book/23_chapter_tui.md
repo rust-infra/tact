@@ -71,7 +71,7 @@ pub enum UserCommand {
 | Command | Source | Handler in `tui.rs` |
 |---------|--------|---------------------|
 | **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
-| **`Cancel`** | `/cancel`, Escape during run | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
+| **`Cancel`** | `/cancel`, or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. Raster images use `[ui.vision_image]` in config: `compress` (default `true`) downscales and re-encodes as JPEG (`max_edge` 1280, `jpeg_quality` 80); set `compress = false` to send the original file bytes. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
