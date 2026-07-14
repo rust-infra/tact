@@ -44,7 +44,9 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
         return false;
     };
-    if is_skill_command(app, cmd) {
+    // Skills autocomplete; built-ins execute. Built-in names never appear as skills
+    // in the palette list, but keep the guard if data drifts.
+    if is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd) {
         return apply_selected_slash_command(app);
     }
     app.slash_command.active = false;

@@ -221,9 +221,19 @@ pub(super) struct CommandExecOutcome {
     pub clear_input: bool,
 }
 
+/// True when `cmd` is a built-in palette entry (wins over same-named skills).
+pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
+    crate::widgets::state::PALETTE_COMMANDS
+        .iter()
+        .any(|(name, _)| *name == cmd)
+}
+
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
-    if let Some(outcome) = skills::handle_skill_command(app, cmd) {
-        return outcome;
+    // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
+    if !is_builtin_palette_command(cmd) {
+        if let Some(outcome) = skills::handle_skill_command(app, cmd) {
+            return outcome;
+        }
     }
 
     match cmd {
@@ -419,6 +429,8 @@ fn reload_skills(app: &mut App) -> usize {
                     body: doc.body.clone(),
                 })
                 .collect();
+            // Skill list affects log highlighting; force visual-cache rebuild.
+            app.log_scroll.visual_cache_ver = 0;
             app.skills_data.len()
         }
         Err(e) => {
@@ -563,5 +575,50 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "theme");
         assert!(outcome.handled);
         assert_ne!(app.theme.name, ThemeName::Retro);
+    }
+
+    #[test]
+    fn builtin_command_wins_over_same_named_skill() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.skills_data = vec![SkillEntry {
+            name: "cancel".into(),
+            description: "fake".into(),
+            body: "should not run".into(),
+        }];
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        let outcome = execute_palette_command(&mut app, "cancel");
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("Cancel"),
+            UserCommand::Cancel
+        ));
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "must not SubmitTask skill body"
+        );
+    }
+
+    #[test]
+    fn colliding_skill_omitted_from_palette_list() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, _rx) = make_app();
+        app.skills_data = vec![SkillEntry {
+            name: "help".into(),
+            description: "skill help".into(),
+            body: "x".into(),
+        }];
+        let help_rows: Vec<_> = app
+            .palette_commands()
+            .into_iter()
+            .filter(|(c, _)| c == "help")
+            .collect();
+        assert_eq!(help_rows.len(), 1, "builtin help only once: {help_rows:?}");
+        assert_eq!(help_rows[0].1, app.localize_cmd_desc("help"));
     }
 }

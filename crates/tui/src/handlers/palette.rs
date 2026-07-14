@@ -27,6 +27,7 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 app.cmd_line.clear();
                 // Skills: jump to Insert with `/name ` so the user can add args.
                 if is_skill_command(app, &cmd) {
+                    app.save_undo();
                     app.input = format!("/{cmd} ");
                     app.input_cursor = app.input.len();
                     app.input_mode = InputMode::Insert;
@@ -135,5 +136,37 @@ mod tests {
         assert!(app.cmd_line.is_empty());
         assert!(!app.show_help);
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn enter_on_skill_preserves_prior_input_via_undo() {
+        use crate::widgets::state::SkillEntry;
+
+        let mut app = make_app();
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "d".into(),
+            body: "body".into(),
+        }];
+        app.input = "draft text".into();
+        app.input_cursor = app.input.len();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(c, _)| c == "demo")
+            .expect("demo skill in palette");
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input, "/demo ");
+        assert!(matches!(app.input_mode, InputMode::Insert));
+        assert!(
+            !app.undo_stack.is_empty(),
+            "overwrite must push undo snapshot"
+        );
+        // Restore prior draft.
+        let (prev, _) = app.undo_stack.last().cloned().expect("undo");
+        assert_eq!(prev, "draft text");
     }
 }
