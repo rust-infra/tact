@@ -157,7 +157,11 @@ async fn run_interactive_locked(
             skills_data: skill_registry
                 .skills()
                 .iter()
-                .map(|(_, doc)| (doc.manifest.name.clone(), doc.body.clone()))
+                .map(|(_, doc)| tui::SkillEntry {
+                    name: doc.manifest.name.clone(),
+                    description: doc.manifest.description.clone(),
+                    body: doc.body.clone(),
+                })
                 .collect(),
         })
         .await

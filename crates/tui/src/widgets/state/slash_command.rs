@@ -23,17 +23,19 @@ impl SlashCommandState {
     }
 
     /// Compute the list of matching slash commands with fuzzy scores.
-    /// Returns `(index_into_PALETTE, (cmd, desc), score)` sorted by descending score.
+    /// Returns `(index_into_commands, (cmd, desc), score)` sorted by descending
+    /// score, then built-ins before skills, then original index.
     pub(crate) fn matched_commands<'a>(
         &self,
         input: &str,
         cursor: usize,
         commands: &[(&'a str, &'a str)],
+        skill_names: &std::collections::HashSet<&str>,
     ) -> Vec<(usize, (&'a str, &'a str), i32)> {
         let query = self.query(input, cursor);
         let query_lower = query.to_lowercase();
         if query_lower.is_empty() || query_lower == "/" {
-            // Show all commands when only '/' is typed
+            // Show all commands when only '/' is typed (palette order: cmds then skills)
             commands
                 .iter()
                 .enumerate()
@@ -56,7 +58,15 @@ impl SlashCommandState {
                     }
                 })
                 .collect();
-            scored.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+            scored.sort_by(|a, b| {
+                b.2.cmp(&a.2)
+                    .then_with(|| {
+                        let a_skill = skill_names.contains(a.1.0);
+                        let b_skill = skill_names.contains(b.1.0);
+                        a_skill.cmp(&b_skill) // commands (false) before skills (true)
+                    })
+                    .then_with(|| a.0.cmp(&b.0))
+            });
             scored
         }
     }

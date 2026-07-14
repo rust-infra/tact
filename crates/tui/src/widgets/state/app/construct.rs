@@ -5,8 +5,8 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use crate::widgets::state::{
     AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState,
-    PlanPanel, SelectKind, SelectPopup, SlashCommandState, Status, StatusBarState, StreamState,
-    ThinkingState, ToolState,
+    PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status, StatusBarState,
+    StreamState, ThinkingState, ToolState,
 };
 use std::path::PathBuf;
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
@@ -25,7 +25,7 @@ impl App {
         history_save_tx: UnboundedSender<(String, String)>,
         theme: String,
         skills_description: String,
-        skills_data: Vec<(String, String)>,
+        skills_data: Vec<SkillEntry>,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -99,6 +99,7 @@ impl App {
             account: AccountState::default(),
             skills_description,
             skills_data,
+            equipped_skill: None,
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,
