@@ -80,6 +80,9 @@ pub struct AgentTomlConfig {
 
     /// Enable micro-compaction of old tool results (default: true)
     pub micro_compact_enabled: Option<bool>,
+
+    /// Auto-inject full skill body into system prompt (default: false)
+    pub skill_body_auto_inject: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -145,6 +148,7 @@ pub struct AgentSettings {
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
+    pub skill_body_auto_inject: bool,
 }
 
 #[derive(Debug, Clone)]

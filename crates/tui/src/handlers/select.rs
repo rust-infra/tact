@@ -193,6 +193,7 @@ mod tests {
                 notifications_enabled: false,
                 snapshot_max_items: 80,
                 micro_compact_enabled: true,
+                skill_body_auto_inject: false,
             },
             ui: tact::config::UiSettings {
                 theme: "retro".into(),

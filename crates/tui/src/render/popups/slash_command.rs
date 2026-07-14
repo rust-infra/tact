@@ -13,7 +13,8 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         return;
     }
 
-    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app.palette_commands();
+    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands);
     let n = filtered.len();
     if n == 0 {

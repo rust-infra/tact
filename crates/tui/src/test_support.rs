@@ -35,6 +35,8 @@ impl TestApp {
             "bridge-test".into(),
             history_tx,
             "retro".into(),
+            String::new(),
+            Vec::new(),
         ))
     }
 

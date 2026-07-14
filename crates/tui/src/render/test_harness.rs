@@ -32,6 +32,8 @@ pub fn make_app() -> App {
         "render-test".to_string(),
         history_tx,
         "retro".to_string(),
+        String::new(),
+        Vec::new(),
     )
 }
 

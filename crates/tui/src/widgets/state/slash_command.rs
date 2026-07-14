@@ -24,12 +24,12 @@ impl SlashCommandState {
 
     /// Compute the list of matching slash commands with fuzzy scores.
     /// Returns `(index_into_PALETTE, (cmd, desc), score)` sorted by descending score.
-    pub(crate) fn matched_commands(
+    pub(crate) fn matched_commands<'a>(
         &self,
         input: &str,
         cursor: usize,
-        commands: &[(&'static str, &'static str)],
-    ) -> Vec<(usize, (&'static str, &'static str), i32)> {
+        commands: &[(&'a str, &'a str)],
+    ) -> Vec<(usize, (&'a str, &'a str), i32)> {
         let query = self.query(input, cursor);
         let query_lower = query.to_lowercase();
         if query_lower.is_empty() || query_lower == "/" {

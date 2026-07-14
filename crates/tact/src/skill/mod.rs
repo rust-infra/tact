@@ -1,11 +1,11 @@
 //! Skill (custom instruction) loading.
 //!
 //! Skills are markdown files (`SKILL.md`) nested in subdirectories under one or
-//! more skill roots. Discovery matches Claude Code:
+//! more skill roots. Discovery order (later wins on name clash):
 //!
-//! - user: `~/.claude/skills/`
+//! - legacy: `<workdir>/skills/`
+//! - user:   `~/.tact/skills/`
 //! - project: `<workdir>/.claude/skills/`
-//! - legacy (compat): `<workdir>/skills/`
 //!
 //! Each file has optional YAML frontmatter for `name` and `description`.
 //!
@@ -20,8 +20,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::Deserialize;
+use tracing::warn;
 use walkdir::WalkDir;
 
 use crate::consts::TactPath;
@@ -90,14 +91,25 @@ impl SkillRegistry {
 
         for entry in WalkDir::new(skills_dir)
             .into_iter()
-            .filter_map(Result::ok)
+            .filter_map(|r| match r {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!("skipping skill dir entry: {e}");
+                    None
+                }
+            })
             .filter(|entry| entry.file_type().is_file())
             .filter(|entry| entry.file_name().to_str() == Some("SKILL.md"))
         {
             let path = entry.path();
 
-            let content = std::fs::read_to_string(path)
-                .with_context(|| format!("can't read skill file: {}", path.display()))?;
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("can't read skill file {}: {e}", path.display());
+                    continue;
+                }
+            };
 
             let (meta, body) = parse_frontmatter(&content);
             let fallback_name = path
@@ -126,6 +138,7 @@ impl SkillRegistry {
         Ok(())
     }
 
+    /// List available skills with name + description (metadata only).
     pub fn describe_available(&self) -> String {
         if self.skills.is_empty() {
             return "(no skills available)".to_string();
@@ -141,6 +154,22 @@ impl SkillRegistry {
                     format!(" - {}: {}", skill.manifest.name, skill.manifest.description)
                 })
             })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// List available skills with full body injected (Claude Code style).
+    pub fn describe_available_with_body(&self) -> String {
+        if self.skills.is_empty() {
+            return "(no skills available)".to_string();
+        }
+
+        let mut names = self.skills.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+
+        names
+            .into_iter()
+            .filter_map(|name| self.skills.get(&name).map(|s| s.to_string()))
             .collect::<Vec<_>>()
             .join("\n")
     }

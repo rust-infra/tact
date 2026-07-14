@@ -24,6 +24,8 @@ impl App {
         session_id: String,
         history_save_tx: UnboundedSender<(String, String)>,
         theme: String,
+        skills_description: String,
+        skills_data: Vec<(String, String)>,
     ) -> Self {
         let git_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -95,6 +97,8 @@ impl App {
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
             account: AccountState::default(),
+            skills_description,
+            skills_data,
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,

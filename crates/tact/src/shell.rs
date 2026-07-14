@@ -33,6 +33,8 @@ pub fn validate_shell_command(command: &str) -> Result<()> {
 /// Returns true for shell commands that require explicit user approval.
 pub fn is_high_risk_shell_command(command: &str) -> bool {
     let lower = command.to_ascii_lowercase();
+    // Strip /dev/null to avoid false-positives on common stderr/stdout suppression.
+    let lower = lower.replace("/dev/null", "");
     BLOCKED_SUBSTRINGS
         .iter()
         .any(|pattern| lower.contains(pattern))
@@ -53,11 +55,21 @@ mod tests {
     }
 
     #[test]
-    fn blocks_redirections_with_and_without_spaces() {
-        for cmd in ["> /dev/null", "> /dev/zero", ">/dev/null", ">>/dev/null"] {
+    fn blocks_dangerous_device_redirects() {
+        for cmd in ["> /dev/sda", "> /dev/mem", ">/dev/nvme0n1", ">>/dev/kmem"] {
             assert!(
                 validate_shell_command(cmd).is_err(),
                 "expected block: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_dev_null_redirect() {
+        for cmd in ["> /dev/null", ">/dev/null", ">>/dev/null", "2>/dev/null", "2>&1 >/dev/null"] {
+            assert!(
+                validate_shell_command(cmd).is_ok(),
+                "expected allow: {cmd}"
             );
         }
     }

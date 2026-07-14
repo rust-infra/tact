@@ -128,6 +128,9 @@ pub(super) fn resolve_non_llm_settings(
         toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
     };
 
+    let skill_body_auto_inject = args.skill_body_auto_inject
+        || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+
     let theme = args
         .theme
         .clone()
@@ -162,6 +165,7 @@ pub(super) fn resolve_non_llm_settings(
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
+            skill_body_auto_inject,
         },
         ui: UiSettings {
             theme,
@@ -233,6 +237,9 @@ pub(super) fn resolve_config(
         toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
     };
 
+    let skill_body_auto_inject = args.skill_body_auto_inject
+        || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+
     let theme = args
         .theme
         .clone()
@@ -261,6 +268,7 @@ pub(super) fn resolve_config(
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
+            skill_body_auto_inject,
         },
         ui: UiSettings {
             theme,
@@ -303,6 +311,7 @@ mod tests {
             no_notifications: false,
             brave_search_api_key: None,
             tokio_console: false,
+            skill_body_auto_inject: false,
         }
     }
 

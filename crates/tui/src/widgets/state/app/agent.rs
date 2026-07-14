@@ -510,6 +510,8 @@ mod lifecycle_tests {
             "test-session".to_string(),
             history_tx,
             "retro".to_string(),
+            String::new(),
+            Vec::new(),
         )
     }
 

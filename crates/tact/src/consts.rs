@@ -70,11 +70,11 @@ impl TactPath {
         self.workdir.join(SKILL_DIR)
     }
 
-    /// Skill roots in load order. Later entries win on name clash:
-    /// legacy `<workdir>/skills` → `~/.claude/skills` → `<workdir>/.claude/skills`.
+    /// Skill roots in load order (later entries win on name clash):
+    /// legacy `<workdir>/skills` → `~/.tact/skills` → `<workdir>/.claude/skills`.
     pub fn skill_search_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.legacy_skills_dir()];
-        if let Some(home) = Self::home_claude_dir() {
+        if let Some(home) = Self::home_tact_dir() {
             dirs.push(home.join(SKILL_DIR));
         }
         dirs.push(self.skills_dir());

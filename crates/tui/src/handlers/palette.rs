@@ -7,7 +7,7 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter => {
             let filter = app.cmd_line.to_lowercase();
-            let commands: Vec<_> = app.palette_commands().copied().collect();
+            let commands = app.palette_commands();
             let filtered: Vec<usize> = commands
                 .iter()
                 .enumerate()
@@ -20,7 +20,7 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 .collect();
             if !filtered.is_empty() {
                 let idx = app.palette_selected.min(filtered.len() - 1);
-                let cmd = commands[filtered[idx]].0;
+                let cmd = commands[filtered[idx]].0.as_str();
                 app.cmd_line.clear();
                 app.input_mode = InputMode::Normal;
                 let _ = execute_palette_command(app, cmd);
@@ -82,6 +82,7 @@ mod tests {
 
     fn help_index(app: &App) -> usize {
         app.palette_commands()
+            .iter()
             .position(|(cmd, _)| *cmd == "help")
             .expect("help command")
     }

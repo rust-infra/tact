@@ -83,6 +83,10 @@ pub struct CliArgs {
     /// Enable tokio-console debugging subscriber.
     #[arg(long)]
     pub tokio_console: bool,
+
+    /// Auto-inject full skill body into system prompt (default: false).
+    #[arg(long)]
+    pub skill_body_auto_inject: bool,
 }
 
 #[derive(Subcommand, Debug)]
