@@ -99,7 +99,6 @@ impl App {
             account: AccountState::default(),
             skills_description,
             skills_data,
-            equipped_skill: None,
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,

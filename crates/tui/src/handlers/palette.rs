@@ -1,4 +1,7 @@
-use super::{execute_palette_command, prev_word_boundary};
+use super::{
+    execute_palette_command, prev_word_boundary,
+    skills::is_skill_command,
+};
 use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -20,10 +23,17 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 .collect();
             if !filtered.is_empty() {
                 let idx = app.palette_selected.min(filtered.len() - 1);
-                let cmd = commands[filtered[idx]].0.as_str();
+                let cmd = commands[filtered[idx]].0.clone();
                 app.cmd_line.clear();
+                // Skills: jump to Insert with `/name ` so the user can add args.
+                if is_skill_command(app, &cmd) {
+                    app.input = format!("/{cmd} ");
+                    app.input_cursor = app.input.len();
+                    app.input_mode = InputMode::Insert;
+                    return;
+                }
                 app.input_mode = InputMode::Normal;
-                let _ = execute_palette_command(app, cmd);
+                let _ = execute_palette_command(app, &cmd);
             }
         }
         // Ctrl+W: delete last word
