@@ -134,23 +134,37 @@ impl App {
     pub(crate) fn add_user_message(&mut self, content: String) {
         // Insert a blank line as separator first
         self.add_new_line();
-        let mut is_first = true;
         let msgs = self.msgs();
-        for line in content.split('\n') {
-            let text = if is_first {
-                msgs.user_msg_prefix.replace("{}", line)
-            } else {
-                msgs.user_msg_cont.replace("{}", line)
-            };
-            self.append_msg(
-                Line::from(Span::styled(
-                    text.clone(),
-                    Style::default().fg(self.theme.success),
-                )),
-                text,
-                RawMessageType::LLM,
-            );
-            is_first = false;
+        // Style offline first so we don't hold `&self.skills_data` across `append_msg`.
+        let theme = self.theme;
+        let skill_names = crate::render::slash_style::skill_name_set(&self.skills_data);
+        let pending: Vec<(Line<'static>, String)> = content
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                let text = if i == 0 {
+                    msgs.user_msg_prefix.replace("{}", line)
+                } else {
+                    msgs.user_msg_cont.replace("{}", line)
+                };
+                let styled = crate::render::slash_style::style_user_skill_line(
+                    &text,
+                    &skill_names,
+                    &theme,
+                    msgs.user_msg_prefix,
+                    msgs.user_msg_cont,
+                )
+                .unwrap_or_else(|| {
+                    Line::from(Span::styled(
+                        text.clone(),
+                        Style::default().fg(theme.success),
+                    ))
+                });
+                (styled, text)
+            })
+            .collect();
+        for (styled, text) in pending {
+            self.append_msg(styled, text, RawMessageType::LLM);
         }
         let timestamp = Local::now().format("%H:%M:%S").to_string();
         self.task_history.push(HistoryEntry {

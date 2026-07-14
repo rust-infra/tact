@@ -1,7 +1,9 @@
+use super::slash_style::style_user_skill_line;
 use crate::theme::Theme;
 use crate::widgets::state::RawMessageType;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::collections::HashSet;
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
 pub(crate) fn is_user_message_line(raw_messages: &[String], phys_idx: usize) -> bool {
@@ -40,11 +42,47 @@ pub(crate) fn restyle_log_line(
     msg_type: RawMessageType,
     is_user_line: bool,
 ) -> Line<'static> {
+    let empty = HashSet::new();
+    restyle_log_line_with_skills(
+        stored,
+        raw,
+        theme,
+        msg_type,
+        is_user_line,
+        &empty,
+        "💬 {}",
+        "  {}",
+    )
+}
+
+/// Like [`restyle_log_line`], but can highlight `/skill args` in user lines.
+///
+/// Caller should build `skill_names` once per cache rebuild (`perf-` / `mem-reuse`).
+/// `user_prefix_tmpl` / `user_cont_tmpl` are i18n templates like `"💬 {}"`.
+pub(crate) fn restyle_log_line_with_skills(
+    stored: &Line,
+    raw: &str,
+    theme: &Theme,
+    msg_type: RawMessageType,
+    is_user_line: bool,
+    skill_names: &HashSet<&str>,
+    user_prefix_tmpl: &str,
+    user_cont_tmpl: &str,
+) -> Line<'static> {
     if raw.is_empty() {
         return Line::default();
     }
 
     if is_user_line {
+        if let Some(line) = style_user_skill_line(
+            raw,
+            skill_names,
+            theme,
+            user_prefix_tmpl,
+            user_cont_tmpl,
+        ) {
+            return line;
+        }
         return single_span(raw, theme.success);
     }
 

@@ -8,6 +8,7 @@ mod log;
 mod log_column;
 mod log_style;
 mod plan;
+pub(crate) mod slash_style;
 pub(crate) mod popups;
 pub(crate) mod render_md;
 pub(crate) mod renderable;

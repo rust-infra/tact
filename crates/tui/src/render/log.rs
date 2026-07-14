@@ -114,6 +114,12 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         app.log_scroll.visual_start_cache.clear();
         app.log_scroll.visual_start_cache.push(0);
 
+        // Build once for the whole rebuild — not once per line.
+        let skill_names = super::slash_style::skill_name_set(&app.skills_data);
+        let msgs = app.msgs();
+        let user_prefix_tmpl = msgs.user_msg_prefix;
+        let user_cont_tmpl = msgs.user_msg_cont;
+
         for logical_i in 0..total_logical {
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx])
@@ -121,12 +127,15 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 {
                     Line::default()
                 } else {
-                    super::log_style::restyle_log_line(
+                    super::log_style::restyle_log_line_with_skills(
                         &app.messages[phys_idx],
                         &app.raw_messages[phys_idx],
                         &app.theme,
                         app.raw_message_types[phys_idx],
                         super::log_style::is_user_message_line(&app.raw_messages, phys_idx),
+                        &skill_names,
+                        user_prefix_tmpl,
+                        user_cont_tmpl,
                     )
                 }
             } else {

@@ -14,8 +14,14 @@ impl App {
                 (cmd.to_string(), desc)
             })
             .collect();
-        // Skills as slash targets (Claude Code style `/skill-name`)
+        // Skills as slash targets (Claude Code style `/skill-name`).
+        // Skip names that collide with built-ins — builtins always win on Enter.
+        let builtin_names: std::collections::HashSet<&str> =
+            PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
         for skill in &self.skills_data {
+            if builtin_names.contains(skill.name.as_str()) {
+                continue;
+            }
             let desc = if skill.description.is_empty() {
                 skill.name.clone()
             } else {

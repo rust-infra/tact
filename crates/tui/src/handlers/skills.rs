@@ -7,12 +7,20 @@ use tact_protocol::UserCommand;
 /// Extract args after `/{skill_name}` from the input box (empty if none / partial).
 pub(super) fn skill_args_from_input(input: &str, skill_name: &str) -> String {
     let trimmed = input.trim();
-    let prefix = format!("/{skill_name}");
-    trimmed
-        .strip_prefix(&prefix)
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return String::new();
+    };
+    let Some(after_name) = rest.strip_prefix(skill_name) else {
+        return String::new();
+    };
+    // End of token or whitespace boundary (avoid `/demo` matching `/demo-test`).
+    if after_name.is_empty() {
+        return String::new();
+    }
+    if !after_name.starts_with(char::is_whitespace) {
+        return String::new();
+    }
+    after_name.trim().to_string()
 }
 
 pub(super) fn find_skill<'a>(app: &'a App, cmd: &str) -> Option<&'a SkillEntry> {
@@ -24,14 +32,46 @@ pub(crate) fn is_skill_command(app: &App, cmd: &str) -> bool {
 }
 
 pub(crate) fn skill_name_set(app: &App) -> std::collections::HashSet<&str> {
-    app.skills_data.iter().map(|s| s.name.as_str()).collect()
+    crate::render::slash_style::skill_name_set(&app.skills_data)
+}
+
+/// True when body has a bare `$ARGUMENTS` placeholder (not `$ARGUMENTS[N]`).
+fn has_bare_arguments_placeholder(body: &str) -> bool {
+    let mut rest = body;
+    while let Some(idx) = rest.find("$ARGUMENTS") {
+        let after = &rest[idx + "$ARGUMENTS".len()..];
+        if !after.starts_with('[') {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Substitute bare `$ARGUMENTS` only — leave `$ARGUMENTS[N]` untouched.
+fn substitute_arguments(body: &str, args: &str) -> String {
+    let mut out: String = String::with_capacity(body.len() + args.len());
+    let mut rest = body;
+    while let Some(idx) = rest.find("$ARGUMENTS") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + "$ARGUMENTS".len()..];
+        if after.starts_with('[') {
+            out.push_str("$ARGUMENTS");
+            rest = after;
+        } else {
+            out.push_str(args);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Render skill body for the agent, Claude-style `$ARGUMENTS` / append.
 pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
     let body = skill.body.trim();
-    if body.contains("$ARGUMENTS") {
-        body.replace("$ARGUMENTS", args)
+    if has_bare_arguments_placeholder(body) {
+        substitute_arguments(body, args)
     } else if args.is_empty() {
         body.to_string()
     } else {
@@ -90,16 +130,20 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
 
 /// Invoke `/skill-name` [args]: always runs (no equip step).
 pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandExecOutcome> {
-    let skill = find_skill(app, cmd)?.clone();
-    let args = skill_args_from_input(&app.input, &skill.name);
+    // Borrow skill long enough to render the task, then drop before mutating `app`.
+    let (display, agent_task) = {
+        let skill = find_skill(app, cmd)?;
+        let args = skill_args_from_input(&app.input, &skill.name);
+        let display = if args.is_empty() {
+            format!("/{}", skill.name)
+        } else {
+            format!("/{} {}", skill.name, args)
+        };
+        let agent_task = format_skill_agent_task(skill, &args);
+        (display, agent_task)
+    };
     app.slash_command.active = false;
 
-    let display = if args.is_empty() {
-        format!("/{}", skill.name)
-    } else {
-        format!("/{} {}", skill.name, args)
-    };
-    let agent_task = format_skill_agent_task(&skill, &args);
     if submit_user_task(app, display, agent_task) {
         app.input.clear();
         app.input_cursor = 0;
@@ -126,6 +170,8 @@ mod tests {
             ""
         );
         assert_eq!(skill_args_from_input("/cod", "code-reviewer"), "");
+        // Prefix skill must not steal args from a longer skill name.
+        assert_eq!(skill_args_from_input("/demo-test x", "demo"), "");
     }
 
     #[test]
@@ -152,6 +198,17 @@ mod tests {
         assert!(out.contains("Deploy v2 to prod."));
         assert!(!out.contains("$ARGUMENTS"));
         assert!(!out.contains("ARGUMENTS:"));
+    }
+
+    #[test]
+    fn format_skill_leaves_indexed_arguments_placeholder() {
+        let skill = SkillEntry {
+            name: "deploy".into(),
+            description: "d".into(),
+            body: "First $ARGUMENTS[0]; all $ARGUMENTS.".into(),
+        };
+        let out = format_skill_agent_task(&skill, "v2");
+        assert!(out.contains("First $ARGUMENTS[0]; all v2."));
     }
 
     #[test]
