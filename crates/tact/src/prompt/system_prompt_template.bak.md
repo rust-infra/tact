@@ -30,6 +30,10 @@
 {% endfor %}
 {% endif -%}
 
+{% if memory -%}
+{{memory}}
+{% endif -%}
+
 {% if claude_md -%}
 {{claude_md}}
 {% endif -%}
@@ -44,18 +48,8 @@
 {{additional}}
 {% endif -%}
 
-{% if memory or dynamic_context -%}
+{% if dynamic_context -%}
 === DYNAMIC_BOUNDARY ===
 
-{# Dynamic context below — may change mid-session without breaking the
-   static prefix KV-cache.  Only the suffix from this point onward is
-   invalidated when these sections change. #}
-
-{% if memory -%}
-{{memory}}
-{% endif -%}
-
-{% if dynamic_context -%}
 {{dynamic_context}}
-{% endif -%}
 {% endif -%}

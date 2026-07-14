@@ -82,7 +82,7 @@ async fn run_interactive_locked(
     let work_dir = tact_path.workdir().to_path_buf();
     let tui_work_dir = work_dir.clone();
     let image_work_dir = work_dir.clone();
-    let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
+    let skill_registry = Arc::new(get_skill_registry(tact_path.workdir())?);
     let store_root = StoreRoot::new(tact_path.claude_dir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;

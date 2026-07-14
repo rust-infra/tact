@@ -60,9 +60,25 @@ impl TactPath {
         self.workdir.join(CLAUDE_DIR)
     }
 
-    /// `<workdir>/skills`
+    /// `<workdir>/.claude/skills` — Claude Code–compatible project skills.
     pub fn skills_dir(&self) -> PathBuf {
+        self.claude_dir().join(SKILL_DIR)
+    }
+
+    /// Legacy `<workdir>/skills` (still scanned for backward compatibility).
+    pub fn legacy_skills_dir(&self) -> PathBuf {
         self.workdir.join(SKILL_DIR)
+    }
+
+    /// Skill roots in load order. Later entries win on name clash:
+    /// legacy `<workdir>/skills` → `~/.claude/skills` → `<workdir>/.claude/skills`.
+    pub fn skill_search_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.legacy_skills_dir()];
+        if let Some(home) = Self::home_claude_dir() {
+            dirs.push(home.join(SKILL_DIR));
+        }
+        dirs.push(self.skills_dir());
+        dirs
     }
 
     // ----------------------------------------------------------------

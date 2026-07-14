@@ -195,6 +195,7 @@ pub struct Messages {
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
     pub input_busy_msg: &'static str,
+    pub cancel_noop_msg: &'static str,
 
     // ---- 启动/退出 ----
     pub startup_welcome: &'static str,
@@ -366,6 +367,7 @@ impl Messages {
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
+            cancel_noop_msg: "Nothing to cancel",
 
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
@@ -535,6 +537,7 @@ impl Messages {
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
+            cancel_noop_msg: "当前没有可取消的任务",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

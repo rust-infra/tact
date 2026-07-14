@@ -23,19 +23,20 @@ This matches the design note in `tact.md`: summaries at startup, full content wh
 
 ```mermaid
 graph TB
-    subgraph Disk["<workdir>/skills/"]
-        S1["my-skill/SKILL.md"]
-        S2["deploy/SKILL.md"]
+    subgraph Disk["Skill roots"]
+        U["~/.claude/skills/*/SKILL.md"]
+        P["workdir/.claude/skills/*/SKILL.md"]
+        L["workdir/skills/*/SKILL.md legacy"]
     end
 
     subgraph Startup["Session startup"]
-        TP[TactPath.skills_dir]
+        TP[TactPath.skill_search_dirs]
         SR[SkillRegistry.load_skills]
         TP --> SR
         Disk --> SR
     end
 
-    subgraph Prompt["Each LLM turn"]
+    subgraph Prompt["Each task"]
         BSP[build_system_prompt]
         DA[describe_available]
         BSP --> DA
@@ -53,7 +54,15 @@ graph TB
     SR --> LFT
 ```
 
-Skills live under `<workdir>/skills/`, **not** under `.claude/`. Path from `TactPath::skills_dir()`.
+Discovery matches Claude Code (plus a legacy path):
+
+| Root | Path | Role |
+|------|------|------|
+| User | `~/.claude/skills/` | Personal skills across projects |
+| Project | `<workdir>/.claude/skills/` | Team / repo skills (canonical) |
+| Legacy | `<workdir>/skills/` | Backward compatible; still scanned |
+
+Load order: legacy → user → project. **Same name: later wins** (project overrides user/legacy).
 
 ---
 
@@ -115,11 +124,11 @@ Files **without** frontmatter still load — the entire file becomes the body (a
 
 `SkillRegistry::load_skills()`:
 
-- Recursively walks `skills_dir` (`WalkDir`)
+- Walks each root in `skill_search_dirs()` (`WalkDir`)
 - Matches files named exactly `SKILL.md`
 - Inserts into `HashMap<String, SkillDocument>` keyed by skill name
 
-Duplicate names: later files **overwrite** earlier ones in walk order — no warning.
+Duplicate names: later roots **overwrite** earlier ones — no warning. Within a single root, later walk entries also overwrite.
 
 ---
 
@@ -127,8 +136,8 @@ Duplicate names: later files **overwrite** earlier ones in walk order — no war
 
 | Method | Role |
 |--------|------|
-| `new(skills_dir)` | Empty registry |
-| `load_skills()` | Scan disk and populate map |
+| `new(skill_dirs)` | Empty registry over one or more roots |
+| `load_skills()` | Scan all roots and populate map |
 | `describe_available()` | Sorted `" - name: description"` list for system prompt |
 | `load_full_text(name)` | Full `<skill>` block or error string listing available names |
 | `skills()` | Read-only map access |
@@ -136,10 +145,10 @@ Duplicate names: later files **overwrite** earlier ones in walk order — no war
 Convenience constructor:
 
 ```rust
-pub fn get_skill_registry(skills_dir: PathBuf) -> Result<SkillRegistry>
+pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
 ```
 
-Used in `tui.rs` at startup; result wrapped in `Arc<SkillRegistry>` on `ToolContext`.
+Used in `interactive.rs` / `headless.rs` at startup; result wrapped in `Arc<SkillRegistry>` on `ToolContext`.
 
 ---
 
@@ -180,7 +189,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 
 | Aspect | Skills | Memory |
 |--------|--------|--------|
-| Location | `<workdir>/skills/` | `<workdir>/.claude/memory/` |
+| Location | `.claude/skills/` (+ `~/.claude/skills/`, legacy `skills/`) | `<workdir>/.claude/memory/` |
 | Format | `SKILL.md` + optional frontmatter | `{name}.md` + required frontmatter |
 | Prompt injection | Summaries always; body on demand | Full content every turn (dynamic section) |
 | Write path | Edit files on disk (no agent tool) | `save_memory` tool |
@@ -198,7 +207,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |
 | `crates/tact/src/tool/registry.rs` | `LoadSkillTool` in `toolset()` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `get_skill_registry()` at startup |
-| `crates/tact/src/consts.rs` | `TactPath::skills_dir()` → `<workdir>/skills` |
+| `crates/tact/src/consts.rs` | `skills_dir()` → `.claude/skills`; `skill_search_dirs()` for discovery |
 
 ---
 

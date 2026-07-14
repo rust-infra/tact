@@ -11,7 +11,7 @@ Implementation: `crates/tact/src/agent/mod.rs` (`Agent`, `AgentRuntime`, `agent_
 | Concern | Where in the loop | Dedicated chapter |
 |---------|-------------------|-------------------|
 | Session restore / persist | `ensure_session`, `push_message`, `persist_message` | [Ch 1 Store](./01_chapter_store.md) |
-| System prompt | `build_system_prompt()` each iteration | [Ch 4 Prompt](./04_chapter_prompt.md) |
+| System prompt | `build_system_prompt()` once per task, before the turn loop | [Ch 4 Prompt](./04_chapter_prompt.md) |
 | Context size | `micro_compact`, optional `compact_history` | [Ch 5 Compact](./05_chapter_compact.md) |
 | LLM streaming | `stream_message` | this chapter |
 | Failure recovery | compact / backoff / continue branches | [Ch 6 Recovery](./06_chapter_recovery.md) |
@@ -43,14 +43,14 @@ Subagents call `agent_loop(None)` with context pre-seeded; see [Ch 12 Subagents]
 
 ```mermaid
 flowchart TD
+    Prompt[build_system_prompt<br/>once per task] --> Start
     Start([loop top]) --> Cancel{cancel_flag?}
     Cancel -- yes --> ExitCancel[return Ok]
     Cancel -- no --> Micro[micro_compact]
     Micro --> Limit{context > limit?}
     Limit -- yes --> AutoCompact[compact_history]
-    Limit -- no --> Prompt[build_system_prompt]
-    AutoCompact --> Prompt
-    Prompt --> Stream[stream_message + tools + thinking]
+    Limit -- no --> Stream[stream_message + tools + thinking]
+    AutoCompact --> Stream
     Stream -->|Err| Recovery[recovery branches]
     Recovery --> Stream
     Stream -->|Ok| PersistA[persist assistant message]
@@ -68,7 +68,7 @@ flowchart TD
 
 - **`micro_compact`** — stub old tool results in memory ([Ch 5](./05_chapter_compact.md)).
 - **Auto compact** — when `estimate_context_size` exceeds `config.settings().agent.context_limit_chars`, runs `compact_history` and emits `[auto compact]` via `AgentUpdate::Info`.
-- **`build_system_prompt`** — dynamic Tera render or static string for subagents ([Ch 4](./04_chapter_prompt.md)).
+- **`build_system_prompt`** — dynamic Tera render or static string for subagents; runs once per task before the turn loop, and the rendered string is reused for every turn ([Ch 4](./04_chapter_prompt.md)).
 - **Request assembly** — `CreateMessageParams` with `all_tool_specs()` (native + MCP), streaming, and thinking budget from config.
 
 ### Streaming
@@ -140,7 +140,7 @@ pub struct AgentRuntime {
     pub last_message_db_id: i64,
     /// `last_message_db_id` captured when `persist_llm_call` runs (before assistant row).
     pub llm_call_last_message_id: i64,
-    // … cached_dir_snapshot
+    // … cached_dir_snapshot, cached_claude_md, cached_agents_md
 }
 ```
 

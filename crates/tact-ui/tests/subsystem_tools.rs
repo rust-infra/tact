@@ -82,7 +82,7 @@ async fn load_skill_reads_skill_file() {
         "load skill",
         PermissionMode::Auto,
         |dir| {
-            let skill_dir = dir.join("skills").join("rust_style");
+            let skill_dir = dir.join(".claude/skills").join("rust_style");
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
                 skill_dir.join("SKILL.md"),

@@ -57,7 +57,7 @@ pub async fn run_headless(
 
     let store_root = StoreRoot::new(tact_path.claude_dir())?;
     let work_dir = tact_path.workdir().to_path_buf();
-    let skill_registry = Arc::new(get_skill_registry(tact_path.skills_dir())?);
+    let skill_registry = Arc::new(get_skill_registry(tact_path.workdir())?);
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;
     let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);

@@ -56,6 +56,10 @@ pub struct AgentRuntime {
     /// Cached project-directory snapshot, computed once per session so the
     /// deterministic output doesn't churn the DeepSeek prefix KV-cache.
     pub cached_dir_snapshot: Option<String>,
+    /// Cached `CLAUDE.md` assembly (once per session) for a stable prompt prefix.
+    pub cached_claude_md: Option<String>,
+    /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
+    pub cached_agents_md: Option<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -114,6 +118,8 @@ impl Agent {
                 last_message_db_id: 0,
                 llm_call_last_message_id: 0,
                 cached_dir_snapshot: None,
+                cached_claude_md: None,
+                cached_agents_md: None,
             },
             tool_context,
             tools,
@@ -331,6 +337,10 @@ impl Agent {
             self.push_message(msg).await?;
         }
 
+        // Build the system prompt once per task. Memory saved mid-task takes
+        // effect on the next task; stable sections stay before DYNAMIC_BOUNDARY
+        // so the prefix KV-cache holds across turns and tasks.
+        let system = self.build_system_prompt()?;
         loop {
             if self
                 .runtime
@@ -348,11 +358,6 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
-
-            // Re-render the system prompt each turn so memory/dynamic_context stay fresh.
-            // Stable sections are placed before DYNAMIC_BOUNDARY to keep prefix cache-friendly.
-            let system = self.build_system_prompt()?;
-
             let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
@@ -781,7 +786,14 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             ])
             .skills_available(self.tool_context.skill_registry.describe_available())
             .memory(self.load_memory_prompt()?)
-            .claude_md(load_claude_md_prompt(workdir))
+            .claude_md(cached_md_section(
+                &mut self.runtime.cached_claude_md,
+                || assemble_claude_md_prompt(workdir),
+            ))
+            .additional(cached_md_section(
+                &mut self.runtime.cached_agents_md,
+                || assemble_agents_md_prompt(workdir),
+            ))
             .dynamic_context(load_dynamic_context(
                 workdir,
                 &mut self.runtime.cached_dir_snapshot,
@@ -945,7 +957,19 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     Some(out.join("\n"))
 }
 
-fn load_claude_md_prompt(workdir: &Path) -> String {
+/// Return a session-cached markdown section, computing it once on first use.
+///
+/// Empty string is still cached so missing files do not re-stat every turn.
+fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> String) -> String {
+    if let Some(hit) = cached.as_ref() {
+        return hit.clone();
+    }
+    let value = compute();
+    *cached = Some(value.clone());
+    value
+}
+
+fn assemble_claude_md_prompt(workdir: &Path) -> String {
     let mut sources = Vec::new();
 
     let user_claude = crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
@@ -983,6 +1007,47 @@ fn load_claude_md_prompt(workdir: &Path) -> String {
     }
 
     let mut lines = vec!["# CLAUDE.md instructions".to_string(), String::new()];
+    for (label, content) in sources {
+        lines.push(format!("## From {}", label));
+        lines.push(String::new());
+        lines.push(content);
+        lines.push(String::new());
+    }
+    lines.join("\n").trim().to_string()
+}
+
+/// Assemble project `AGENTS.md` for the system-prompt `additional` section.
+///
+/// Looks at the agent workdir and, when different, the process cwd — matching
+/// the local CLAUDE.md discovery paths (without a user-global file).
+fn assemble_agents_md_prompt(workdir: &Path) -> String {
+    let mut sources = Vec::new();
+
+    let project_agents = workdir.join("AGENTS.md");
+    if let Ok(content) = std::fs::read_to_string(&project_agents) {
+        sources.push((
+            "project root (AGENTS.md)".to_string(),
+            content.trim().to_string(),
+        ));
+    }
+
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd != workdir
+    {
+        let subdir_agents = cwd.join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&subdir_agents) {
+            sources.push((
+                format!("subdir ({}/AGENTS.md)", cwd.display()),
+                content.trim().to_string(),
+            ));
+        }
+    }
+
+    if sources.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec!["# AGENTS.md instructions".to_string(), String::new()];
     for (label, content) in sources {
         lines.push(format!("## From {}", label));
         lines.push(String::new());
@@ -1462,5 +1527,61 @@ mod tests {
             std::fs::read_to_string(work_dir.join("shared.txt")).unwrap(),
             "next"
         );
+    }
+
+    #[test]
+    fn assemble_agents_md_prompt_reads_workdir_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("AGENTS.md"),
+            "# Crate map\n\n- `crates/tact` — runtime\n",
+        )
+        .unwrap();
+
+        let rendered = assemble_agents_md_prompt(dir.path());
+        assert!(rendered.contains("AGENTS.md instructions"));
+        assert!(rendered.contains("project root (AGENTS.md)"));
+        assert!(rendered.contains("Crate map"));
+        assert!(rendered.contains("crates/tact"));
+    }
+
+    #[test]
+    fn assemble_agents_md_prompt_empty_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(assemble_agents_md_prompt(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn cached_md_section_computes_once() {
+        let mut cache = None;
+        let mut calls = 0usize;
+        let first = cached_md_section(&mut cache, || {
+            calls += 1;
+            "hello".to_string()
+        });
+        let second = cached_md_section(&mut cache, || {
+            calls += 1;
+            "should-not-run".to_string()
+        });
+        assert_eq!(first, "hello");
+        assert_eq!(second, "hello");
+        assert_eq!(calls, 1);
+        assert_eq!(cache.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn cached_md_section_caches_empty_string() {
+        let mut cache = None;
+        let mut calls = 0usize;
+        let _ = cached_md_section(&mut cache, || {
+            calls += 1;
+            String::new()
+        });
+        let _ = cached_md_section(&mut cache, || {
+            calls += 1;
+            "later".to_string()
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(cache.as_deref(), Some(""));
     }
 }

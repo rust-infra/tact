@@ -27,6 +27,26 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
     false
 }
 
+/// Enter on an open slash popup: run the highlighted command immediately.
+/// Tab still only autocompletes via [`apply_selected_slash_command`].
+fn execute_selected_slash_command(app: &mut App) -> bool {
+    let commands: Vec<_> = app.palette_commands().copied().collect();
+    let cmds = app
+        .slash_command
+        .matched_commands(&app.input, app.input_cursor, &commands);
+    let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
+    let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) else {
+        return false;
+    };
+    app.slash_command.active = false;
+    let outcome = execute_palette_command(app, cmd);
+    if outcome.clear_input {
+        app.input.clear();
+        app.input_cursor = 0;
+    }
+    true
+}
+
 fn handle_enter_submit(app: &mut App, key: &KeyEvent, user_cmd_tx: &UnboundedSender<UserCommand>) {
     // Deactivate slash command on submit.
     app.slash_command.active = false;
@@ -129,8 +149,8 @@ pub(crate) fn handle_insert_mode(
             apply_selected_slash_command(app);
         }
         KeyCode::Enter if app.slash_command.active => {
-            // Enter accepts the selected slash command from popup, same as Tab.
-            if apply_selected_slash_command(app) {
+            // Enter runs the highlighted slash command; Tab only autocompletes.
+            if execute_selected_slash_command(app) {
                 return;
             }
             // If no command matches, fallback to the normal Enter behavior.
@@ -597,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_enter_completes_selected_command_without_submit() {
+    fn slash_popup_enter_runs_selected_command() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "/qu".to_string();
@@ -612,14 +632,41 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert_eq!(app.input, "/quit ");
-        assert_eq!(app.input_cursor, app.input.len());
+        assert!(app.should_quit, "expected Enter to execute /quit");
+        assert!(app.input.is_empty(), "expected input cleared after /quit");
         assert!(!app.slash_command.active);
-        assert!(!app.should_quit);
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected popup Enter completion not to submit task"
+            "expected popup Enter not to submit a task"
         );
+    }
+
+    #[test]
+    fn slash_popup_enter_cancel_dispatches_while_executing() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.input = "/cancel".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
+        assert!(app.input.is_empty());
+        assert!(!app.slash_command.active);
     }
 
     #[test]
@@ -649,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_cancel_idle_keeps_input_and_does_not_submit() {
+    fn slash_cancel_idle_clears_input_and_does_not_dispatch() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Idle;
@@ -662,11 +709,33 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert_eq!(app.input, "/cancel");
-        assert_eq!(app.input_cursor, app.input.len());
+        assert!(app.input.is_empty());
+        assert!(app.flash_msg.is_some());
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "expected idle /cancel not to dispatch UserCommand"
+        );
+    }
+
+    #[test]
+    fn slash_cancel_done_clears_input_and_does_not_dispatch() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Done;
+        app.input = "/cancel".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(app.input.is_empty());
+        assert!(app.flash_msg.is_some());
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected Done /cancel not to dispatch UserCommand::Cancel"
         );
     }
 

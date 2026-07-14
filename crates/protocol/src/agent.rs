@@ -148,7 +148,9 @@ pub enum ThinkingChunk {
 pub enum UserCommand {
     /// Submit a new natural-language task
     SubmitTask(String),
-    /// Cancel the current task (full cancellation logic not yet implemented)
+    /// Cancel the current in-flight task by setting `cancel_flag`.
+    /// The agent loop exits cooperatively at the next check point and does not
+    /// emit `TaskComplete`. The next `SubmitTask` clears the flag.
     Cancel,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
