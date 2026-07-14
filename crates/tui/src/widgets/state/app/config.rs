@@ -14,10 +14,14 @@ impl App {
                 (cmd.to_string(), desc)
             })
             .collect();
-        // Add each skill as a palette command (Claude Code style)
-        for (name, _body) in &self.skills_data {
-            let desc = format!("🎯 {}", name);
-            cmds.push((name.clone(), desc));
+        // Skills as slash targets (Claude Code style `/skill-name`)
+        for skill in &self.skills_data {
+            let desc = if skill.description.is_empty() {
+                skill.name.clone()
+            } else {
+                skill.description.clone()
+            };
+            cmds.push((skill.name.clone(), desc));
         }
         cmds
     }

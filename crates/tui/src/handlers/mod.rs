@@ -6,6 +6,7 @@ mod normal;
 mod overlay;
 mod palette;
 mod select;
+mod skills;
 
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
@@ -15,8 +16,12 @@ pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 
+use crate::render::render_md::format_table;
+use crate::widgets::state::log_messages::classify_system_message;
 use crate::widgets::state::{App, Status};
 use chrono::Local;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use tact_protocol::UserCommand;
 
 /// Returns the byte index of the previous char boundary before `cursor`.
@@ -216,25 +221,9 @@ pub(super) struct CommandExecOutcome {
     pub clear_input: bool,
 }
 
-pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
-    // Handle skill commands — each skill is a palette command (Claude Code style)
-    if let Some((_name, body)) = app
-        .skills_data
-        .iter()
-        .find(|(name, _)| name.as_str() == cmd)
-    {
-        let body = body.clone();
-        let user_input = std::mem::take(&mut app.input);
-        let combined = if user_input.is_empty() {
-            body
-        } else {
-            format!("{body}\n\nARGUMENTS: {user_input}")
-        };
-        let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(combined));
-        return CommandExecOutcome {
-            handled: true,
-            clear_input: true,
-        };
+pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
+    if let Some(outcome) = skills::handle_skill_command(app, cmd) {
+        return outcome;
     }
 
     match cmd {
@@ -298,10 +287,7 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skills" => {
-            app.add_system_message(format!(
-                "# Available skills\n\n{}",
-                app.skills_description,
-            ));
+            show_skills_command(app);
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -309,7 +295,10 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "skill-reload" => {
             let count = reload_skills(app);
-            let msg = app.msgs().skill_reloaded_tmpl.replace("{}", &count.to_string());
+            let msg = app
+                .msgs()
+                .skill_reloaded_tmpl
+                .replace("{}", &count.to_string());
             app.add_system_message(msg);
             CommandExecOutcome {
                 handled: true,
@@ -358,6 +347,64 @@ pub(super) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
+/// Render `/skills` as a Markdown table via [`format_table`], with blank lines
+/// before/after so consecutive invocations do not glue together.
+fn show_skills_command(app: &mut App) {
+    app.add_new_line();
+
+    let title = "📋 Available skills";
+    let title_ty = classify_system_message(title);
+    app.append_msg(
+        Line::from(Span::styled(title, Style::default().fg(app.theme.accent))),
+        title.to_string(),
+        title_ty,
+    );
+    app.add_new_line();
+
+    let rows = skills_table_rows(&app.skills_description);
+    if rows.len() <= 2 {
+        let empty = "(no skills available)";
+        app.append_msg(
+            Line::from(Span::styled(empty, Style::default().fg(app.theme.fg))),
+            empty.to_string(),
+            classify_system_message(empty),
+        );
+    } else {
+        let (styled, raw) = format_table(&rows, &app.theme);
+        let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
+        app.extend_msgs(styled, raw, ty);
+    }
+
+    // Trailing blank so the next `/skills` (or other system block) is not flush.
+    app.add_new_line();
+
+    if app.input_mode == crate::widgets::state::InputMode::Insert
+        || app.input_mode == crate::widgets::state::InputMode::Normal
+    {
+        app.log_scroll.offset = u16::MAX;
+    }
+}
+
+/// Build Markdown table rows for [`format_table`] from `describe_available` text.
+fn skills_table_rows(description: &str) -> Vec<String> {
+    let mut rows = vec![
+        "| Skill | Description |".to_string(),
+        "|-------|-------------|".to_string(),
+    ];
+    for line in description.lines() {
+        let line = line.trim().trim_start_matches('-').trim();
+        if line.is_empty() || line == "(no skills available)" {
+            continue;
+        }
+        if let Some((name, desc)) = line.split_once(':') {
+            rows.push(format!("| {} | {} |", name.trim(), desc.trim()));
+        } else {
+            rows.push(format!("| {line} |  |"));
+        }
+    }
+    rows
+}
+
 /// Reload skills from disk. Returns number of skills loaded.
 fn reload_skills(app: &mut App) -> usize {
     match tact::skill::get_skill_registry(&app.work_dir) {
@@ -366,7 +413,11 @@ fn reload_skills(app: &mut App) -> usize {
             app.skills_data = reg
                 .skills()
                 .iter()
-                .map(|(name, doc)| (name.clone(), doc.body.clone()))
+                .map(|(_, doc)| crate::widgets::state::SkillEntry {
+                    name: doc.manifest.name.clone(),
+                    description: doc.manifest.description.clone(),
+                    body: doc.body.clone(),
+                })
                 .collect();
             app.skills_data.len()
         }
@@ -379,7 +430,7 @@ fn reload_skills(app: &mut App) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::execute_palette_command;
+    use super::{execute_palette_command, skills_table_rows};
     use crate::widgets::state::{App, Status};
     use std::path::PathBuf;
     use tact_protocol::{AgentUpdate, UserCommand};
@@ -411,7 +462,8 @@ mod tests {
         let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
         app.account_rx = Some(account_rx);
         let cmds = app.palette_commands();
-        let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
+        let commands: Vec<(&str, &str)> =
+            cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
 
         for (cmd, _desc) in &commands {
             if *cmd == "cancel" {
@@ -428,6 +480,48 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
+    }
+
+    #[test]
+    fn skills_table_rows_parses_describe_available() {
+        let rows =
+            skills_table_rows("- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能");
+        assert_eq!(rows[0], "| Skill | Description |");
+        assert_eq!(rows[1], "|-------|-------------|");
+        assert_eq!(rows[2], "| code-reviewer | 代码审查专家 |");
+        assert_eq!(rows[3], "| demo-test | 测试 skill 加载功能 |");
+    }
+
+    #[test]
+    fn skills_table_rows_empty_description_is_header_only() {
+        let rows = skills_table_rows("(no skills available)");
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn skills_command_adds_separators_around_table() {
+        let (mut app, _rx) = make_app();
+        app.skills_description = "- code-reviewer: 代码审查专家\n- demo-test: 测试".to_string();
+        let before = app.raw_messages.len();
+        execute_palette_command(&mut app, "skills");
+        let after_first = app.raw_messages.len();
+        assert!(after_first > before);
+        assert!(
+            app.raw_messages.iter().any(|m| m.contains("Skill")),
+            "expected table header, got: {:?}",
+            app.raw_messages
+        );
+        // Second invocation must not glue flush to the previous block.
+        execute_palette_command(&mut app, "skills");
+        let joined = app.raw_messages[after_first.saturating_sub(1)..].join("\n");
+        assert!(
+            app.raw_messages[after_first - 1].is_empty()
+                || app
+                    .raw_messages
+                    .get(after_first)
+                    .is_some_and(|s| s.is_empty()),
+            "expected blank separator between skills blocks, around: {joined}"
+        );
     }
 
     #[test]

@@ -62,6 +62,22 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("lang", "Toggle language (EN/中文)"),
 ];
 
+/// A skill available in the TUI slash / palette picker.
+#[derive(Debug, Clone)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// Skill equipped via slash; applied on the next user task submit.
+#[derive(Debug, Clone)]
+pub(crate) struct EquippedSkill {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectKind {
@@ -211,8 +227,10 @@ pub struct App {
     pub(crate) account: AccountState,
     /// List of available skills (name + description lines).
     pub(crate) skills_description: String,
-    /// Full skill name + body for the `/skill` picker.
-    pub(crate) skills_data: Vec<(String, String)>,
+    /// Skills for `/name` slash + palette picker.
+    pub(crate) skills_data: Vec<SkillEntry>,
+    /// Skill armed by slash Enter with no args; consumed on next task submit.
+    pub(crate) equipped_skill: Option<EquippedSkill>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

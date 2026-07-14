@@ -27,6 +27,7 @@ use crate::render::{
     render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
 use crate::widgets::state::{App, InputMode, Status};
+pub use crate::widgets::state::SkillEntry;
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -68,7 +69,7 @@ pub struct TuiConfig {
     pub theme: String,
     pub context_limit_chars: usize,
     pub skills_description: String,
-    pub skills_data: Vec<(String, String)>,
+    pub skills_data: Vec<SkillEntry>,
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.

@@ -583,7 +583,19 @@ Cross-reference: [Ch 25 Agent–TUI Protocol](./25_chapter_protocol.md) for mess
 
 ## 7. Input Modes and Themes
 
-`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Palette`, `Select`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`. Normal-mode `/` opens the command palette; Insert-mode `/` opens the slash-command popup (same command list). Palette command `save` writes the log to `std::env::temp_dir()/agent_log_{timestamp}.txt` and shows the full path in a system message.
+`InputMode` in `widgets/state/mod.rs`: `Normal`, `Insert`, `Palette`, `Select`, `FilePicker`. Handlers live under `crates/tui/src/handlers/`. Normal-mode `/` opens the command palette; Insert-mode `/` opens the slash-command popup (same command list, grouped as **Commands** then **Skills**). Palette command `save` writes the log to `std::env::temp_dir()/agent_log_{timestamp}.txt` and shows the full path in a system message.
+
+### Slash skills
+
+Each discovered skill appears as `/{name}` with its frontmatter `description`. Flow (`handlers/skills.rs`):
+
+| Input | Behavior |
+|-------|----------|
+| `/skill-name` (no args) | **Equip** the skill: system preview of the body, wait for the next natural-language task |
+| `/skill-name args…` | Submit immediately: log shows `args`; agent receives `<skill>…</skill>` + request |
+| Enter while equipped | Same wrap as above; equip slot clears after submit |
+
+Normal Enter and skill-with-args share `submit_user_task` (Planning, user bubble, busy gate, history). This is separate from the model calling `load_skill` mid-turn ([Ch 2](./02_chapter_skill.md)).
 
 Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 

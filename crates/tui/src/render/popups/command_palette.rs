@@ -8,7 +8,10 @@ use ratatui::{
 };
 
 /// Map command name to emoji icon for palette display.
-fn cmd_emoji(cmd: &str) -> &'static str {
+fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
+    if is_skill {
+        return "🎯";
+    }
     match cmd {
         "theme" => "🎨",
         "save" => "💾",
@@ -26,15 +29,20 @@ fn cmd_emoji(cmd: &str) -> &'static str {
 }
 
 /// Group commands into categories for visual separation.
-fn cmd_category(cmd: &str, desc: &str) -> &'static str {
+fn cmd_category(cmd: &str, is_skill: bool) -> &'static str {
+    if is_skill {
+        return "  Skills";
+    }
     match cmd {
         "save" | "cancel" | "quit" => "  Actions",
-        "help" | "history" => "  Tools",
-        "skills" | "skill-reload" => "  Skills",
+        "help" | "history" | "skills" | "skill-reload" => "  Tools",
         "theme" | "lang" | "balance" | "model" => "  Settings",
-        _ if desc.starts_with('🎯') => "  Skills",
         _ => "",
     }
+}
+
+fn is_skill_cmd(app: &App, cmd: &str) -> bool {
+    app.skills_data.iter().any(|s| s.name == cmd)
 }
 
 pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
@@ -50,22 +58,23 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
+    let msgs = app.msgs();
     let count = filtered.len().max(1) as u16;
-    let popup_width = 48u16;
-    let popup_height = count + 4 + 3; // extra space for category headers
+    let popup_width = 64u16;
+    let popup_height = count + 6; // room for category headers
     let popup_area = super::centered_list_popup_area(area, popup_width, popup_height);
 
     let inner = super::render_list_popup_chrome(
         frame,
         popup_area,
-        app.msgs().palette_title.replace("{}", &app.cmd_line),
+        msgs.palette_title.replace("{}", &app.cmd_line),
         app.theme.block_border_type(),
         app.theme.bottom_bar_bg,
     );
 
     let items: Vec<ListItem> = if filtered.is_empty() {
         vec![ListItem::new(Span::styled(
-            app.msgs().palette_empty,
+            msgs.palette_empty,
             Style::default().fg(Color::Gray),
         ))]
     } else {
@@ -73,12 +82,10 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
         let mut results: Vec<ListItem> = Vec::new();
         let mut last_cat = "";
         for (i, (_orig_idx, (cmd, desc))) in filtered.iter().enumerate() {
-            let cat = cmd_category(cmd, desc);
-            // Insert category separator
+            let skill = is_skill_cmd(app, cmd);
+            let cat = cmd_category(cmd, skill);
             if !cat.is_empty() && cat != last_cat {
-                // Change the last_cat BEFORE using it
-                // Use dimmed header for category
-                if !results.is_empty() {
+                if !results.is_empty() || skill {
                     results.push(ListItem::new(Line::from(Span::styled(
                         cat,
                         Style::default()
@@ -90,13 +97,14 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
             }
 
             let is_selected = i == selected;
-            let emoji = cmd_emoji(cmd);
+            let emoji = cmd_emoji(cmd, skill);
             let style = if is_selected {
                 Style::default().bg(app.theme.highlight).fg(Color::White)
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let text = format!("  {}  {:<10} {}", emoji, cmd, desc);
+            let desc_short = truncate_chars(desc, 36);
+            let text = format!("  {emoji}  {cmd:<14} {desc_short}");
             results.push(ListItem::new(Span::styled(text, style)));
         }
         results
@@ -104,4 +112,14 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
 
     let list = List::new(items).block(Block::default());
     frame.render_widget(list, inner);
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }

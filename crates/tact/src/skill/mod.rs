@@ -151,7 +151,7 @@ impl SkillRegistry {
             .into_iter()
             .filter_map(|name| {
                 self.skills.get(&name).map(|skill| {
-                    format!(" - {}: {}", skill.manifest.name, skill.manifest.description)
+                    format!("- {}: {}", skill.manifest.name, skill.manifest.description)
                 })
             })
             .collect::<Vec<_>>()
