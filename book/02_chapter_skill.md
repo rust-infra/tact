@@ -14,7 +14,7 @@ A skill is a Markdown document that teaches the agent how to perform a specializ
 |-------|---------------------|
 | Every turn (system prompt) | Skill **names and descriptions** via `describe_available()` |
 | On demand (`load_skill` tool) | Full body wrapped in `<skill>` XML tags |
-| TUI slash `/skill-name` | Same `<skill>` wrap injected into the **user task** (equip or run-with-args; see [TUI](./23_chapter_tui.md)) |
+| TUI slash `/skill-name` | Same `<skill>` wrap injected into the **user task** on invoke (see [TUI](./23_chapter_tui.md)) |
 
 This matches the design note in `tact.md`: summaries at startup, full content when the model (or the user via slash) loads a skill.
 
@@ -208,7 +208,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |
 | `crates/tact/src/tool/registry.rs` | `LoadSkillTool` in `toolset()` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `get_skill_registry()` at startup; pass `SkillEntry` into TUI |
-| `crates/tui/src/handlers/skills.rs` | Slash equip / run-with-args + shared `submit_user_task` |
+| `crates/tui/src/handlers/skills.rs` | Slash invoke (`$ARGUMENTS`) + shared `submit_user_task` |
 | `crates/tact/src/consts.rs` | `skills_dir()` → `.claude/skills`; `skill_search_dirs()` for discovery |
 
 ---
@@ -220,7 +220,7 @@ Shared across main agent and sub-agents. Sub-agents can call `load_skill` if the
 | No `save_skill` tool | Skills are not writable by the agent at runtime |
 | Duplicate name overwrite | Silent last-wins behavior during scan |
 | Sub-agents lack `load_skill` | Restricted toolset cannot load skills in isolated workers |
-| No validation of body size | Very large skills can flood context when loaded (slash equip/run too) |
+| No validation of body size | Very large skills can flood context when loaded (slash invoke too) |
 | No glob / enable list | All discovered skills appear in `describe_available()` and the slash palette |
 
 `/skill-reload` reloads the registry for the TUI list / slash picker; the system prompt skill summary is built once per task and does not auto-refresh mid-task.

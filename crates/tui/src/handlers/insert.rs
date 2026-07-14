@@ -1,7 +1,7 @@
 use super::{
     cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
     line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-    skills::{peek_equipped_agent_task, skill_name_set, submit_user_task},
+    skills::{is_skill_command, skill_name_set, submit_user_task},
     start_of_line,
 };
 use crate::widgets::state::App;
@@ -30,19 +30,23 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
     false
 }
 
-/// Enter on an open slash popup: run the highlighted command immediately.
-/// Tab still only autocompletes via [`apply_selected_slash_command`].
+/// Enter on an open slash popup:
+/// - **skills** → autocomplete to `/name ` only (user may add args, then Enter to run)
+/// - **built-in commands** → execute immediately
 fn execute_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let skill_names = skill_name_set(app);
-    let cmds = app
+    let matched = app
         .slash_command
         .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
-    let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
-    let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) else {
+    let sel = app.slash_command.selected.min(matched.len().saturating_sub(1));
+    let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
         return false;
     };
+    if is_skill_command(app, cmd) {
+        return apply_selected_slash_command(app);
+    }
     app.slash_command.active = false;
     let outcome = execute_palette_command(app, cmd);
     if outcome.clear_input {
@@ -92,9 +96,8 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         let display = app.input.clone();
-        let agent_task = peek_equipped_agent_task(app, &display);
         let limit = app.context_limit_chars;
-        if display.chars().count() > limit || agent_task.chars().count() > limit {
+        if display.chars().count() > limit {
             let msg = app
                 .msgs()
                 .input_too_long_tmpl
@@ -105,8 +108,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
 
         app.input.clear();
         app.input_cursor = 0;
-        app.equipped_skill = None;
-        let _ = submit_user_task(app, display, agent_task);
+        let _ = submit_user_task(app, display.clone(), display);
     }
 }
 
@@ -789,7 +791,38 @@ mod tests {
     }
 
     #[test]
-    fn slash_skill_without_args_equips_and_does_not_submit() {
+    fn slash_popup_enter_on_skill_only_autocompletes() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "Demo skill".into(),
+            body: "Follow the checklist.".into(),
+        }];
+        app.input = "/dem".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "/demo ");
+        assert!(!app.slash_command.active);
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "popup Enter on skill must not SubmitTask"
+        );
+    }
+
+    #[test]
+    fn slash_skill_without_args_invokes() {
         use crate::widgets::state::SkillEntry;
 
         let (mut app, mut user_cmd_rx) = make_app();
@@ -808,20 +841,24 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert!(app.equipped_skill.is_some());
+        assert!(matches!(app.status, Status::Planning));
         assert!(app.input.is_empty());
+        match user_cmd_rx.try_recv().expect("SubmitTask") {
+            UserCommand::SubmitTask(task) => {
+                assert!(task.contains("<skill name=\"demo\">"));
+                assert!(task.contains("Follow the checklist."));
+                assert!(!task.contains("ARGUMENTS:"));
+            }
+            other => panic!("expected SubmitTask, got {other:?}"),
+        }
         assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "equip must not SubmitTask"
-        );
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("demo")),
-            "expected equip preview message"
+            app.raw_messages.iter().any(|m| m.contains("/demo")),
+            "user bubble should show slash command"
         );
     }
 
     #[test]
-    fn slash_skill_with_args_submits_stripped_request() {
+    fn slash_skill_with_args_appends_arguments() {
         use crate::widgets::state::SkillEntry;
 
         let (mut app, mut user_cmd_rx) = make_app();
@@ -841,55 +878,17 @@ mod tests {
         );
 
         assert!(matches!(app.status, Status::Planning));
-        assert!(app.input.is_empty());
-        let cmd = user_cmd_rx.try_recv().expect("expected SubmitTask");
-        match cmd {
+        match user_cmd_rx.try_recv().expect("SubmitTask") {
             UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"));
-                assert!(task.contains("Follow the checklist."));
-                assert!(task.contains("fix auth"));
-                assert!(!task.contains("/demo"));
+                assert!(task.contains("ARGUMENTS: fix auth"));
             }
             other => panic!("expected SubmitTask, got {other:?}"),
         }
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("fix auth")),
-            "user bubble should show args only"
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("/demo fix auth")),
+            "user bubble should show slash + args"
         );
-    }
-
-    #[test]
-    fn equipped_skill_applies_on_next_enter() {
-        use crate::widgets::state::{EquippedSkill, SkillEntry};
-
-        let (mut app, mut user_cmd_rx) = make_app();
-        let user_cmd_tx = app.user_cmd_tx.clone();
-        app.skills_data = vec![SkillEntry {
-            name: "demo".into(),
-            description: "Demo skill".into(),
-            body: "Use Result.".into(),
-        }];
-        app.equipped_skill = Some(EquippedSkill {
-            name: "demo".into(),
-            description: "Demo skill".into(),
-            body: "Use Result.".into(),
-        });
-        app.input = "refactor foo".to_string();
-        app.input_cursor = app.input.len();
-
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
-
-        assert!(app.equipped_skill.is_none());
-        match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"));
-                assert!(task.contains("refactor foo"));
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
     }
 }

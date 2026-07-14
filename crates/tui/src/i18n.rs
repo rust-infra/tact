@@ -176,9 +176,6 @@ pub struct Messages {
     pub cmd_skills: &'static str,
     pub cmd_skill_reload: &'static str,
     pub skill_reloaded_tmpl: &'static str,
-    pub skill_equipped_tmpl: &'static str,
-    pub skill_preview_label: &'static str,
-    pub skill_equipped_hint: &'static str,
     pub slash_section_commands: &'static str,
     pub slash_section_skills: &'static str,
 
@@ -358,9 +355,6 @@ impl Messages {
             cmd_skills: "List available skills",
             cmd_skill_reload: "Reload skills from disk",
             skill_reloaded_tmpl: "📋 Reloaded {} skill(s)",
-            skill_equipped_tmpl: "🎯 Skill equipped: {}",
-            skill_preview_label: "Preview:",
-            skill_equipped_hint: "Type your task and press Enter to run with this skill.",
             slash_section_commands: "Commands",
             slash_section_skills: "Skills",
 
@@ -536,9 +530,6 @@ impl Messages {
             cmd_skills: "列出可用的技能",
             cmd_skill_reload: "从磁盘重新加载技能",
             skill_reloaded_tmpl: "📋 重新加载了 {} 个技能",
-            skill_equipped_tmpl: "🎯 已装备技能: {}",
-            skill_preview_label: "预览:",
-            skill_equipped_hint: "输入任务并按 Enter，将按此技能执行。",
             slash_section_commands: "命令",
             slash_section_skills: "技能",
 

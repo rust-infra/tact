@@ -591,11 +591,11 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. F
 
 | Input | Behavior |
 |-------|----------|
-| `/skill-name` (no args) | **Equip** the skill: system preview of the body, wait for the next natural-language task |
-| `/skill-name args…` | Submit immediately: log shows `args`; agent receives `<skill>…</skill>` + request |
-| Enter while equipped | Same wrap as above; equip slot clears after submit |
+| Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) — add optional args, then Enter to run |
+| Slash popup Enter on a **built-in** | Execute immediately (`/quit`, `/cancel`, …) |
+| `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (`$ARGUMENTS` substituted, or `ARGUMENTS:` appended) |
 
-Normal Enter and skill-with-args share `submit_user_task` (Planning, user bubble, busy gate, history). This is separate from the model calling `load_skill` mid-turn ([Ch 2](./02_chapter_skill.md)).
+Palette Enter on a skill opens Insert with `/name ` prefilled. Separate from the model calling `load_skill` mid-turn ([Ch 2](./02_chapter_skill.md)).
 
 Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 
