@@ -7,9 +7,6 @@
 use std::error::Error;
 use std::time::Duration;
 
-use anthropic_ai_sdk::types::message::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, MessageError, StreamUsage,
-};
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
@@ -17,7 +14,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
 
-use super::{LlmClient, LlmError, StopReason};
+use super::{
+    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, MessageError,
+    StopReason, StreamUsage,
+};
 
 /// Events emitted when an Anthropic thinking content block starts.
 fn thinking_start_events(initial_thinking: &str) -> Vec<ThinkingChunk> {
@@ -60,6 +60,26 @@ impl AnthropicAdapter {
     /// body as `metadata.user_id`.
     pub fn set_user_id(&mut self, user_id: String) {
         self.user_id = Some(user_id);
+    }
+
+    /// Serialize the request, set the `stream` flag, and inject `metadata.user_id`
+    /// if one was configured via [`set_user_id`].
+    fn prepare_body(
+        &self,
+        request: &CreateMessageParams,
+        stream: bool,
+    ) -> Result<serde_json::Value, LlmError> {
+        let mut body = serde_json::to_value(request)
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+        body["stream"] = serde_json::json!(stream);
+        if let Some(ref uid) = self.user_id {
+            if let Some(meta) = body["metadata"].as_object_mut() {
+                meta.insert("user_id".to_string(), serde_json::json!(uid));
+            } else {
+                body["metadata"] = serde_json::json!({"user_id": uid});
+            }
+        }
+        Ok(body)
     }
 
     fn messages_url(&self) -> String {
@@ -168,16 +188,7 @@ impl LlmClient for AnthropicAdapter {
         let mut stop_reason: Option<StopReason> = None;
         let mut token_usage: Option<TokenUsageInfo> = None;
 
-        let mut body = serde_json::to_value(request)
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
-        body["stream"] = serde_json::json!(true);
-        if let Some(ref uid) = self.user_id {
-            if let Some(meta) = body["metadata"].as_object_mut() {
-                meta.insert("user_id".to_string(), serde_json::json!(uid));
-            } else {
-                body["metadata"] = serde_json::json!({"user_id": uid});
-            }
-        }
+        let body = self.prepare_body(request, true)?;
 
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
@@ -369,11 +380,10 @@ impl LlmClient for AnthropicAdapter {
                                 })?;
                             stop_reason = parse_stop_reason(delta_event.delta.stop_reason);
                             if let Some(usage) = delta_event.usage {
-                                // The SDK's StreamUsage only has input/output
-                                // tokens.  DeepSeek's Anthropic-compatible
-                                // endpoint also returns cache and reasoning
-                                // tokens in the same usage object.  Parse them
-                                // from the raw JSON value so they aren't lost.
+                                // StreamUsage carries input/output tokens.
+                                // DeepSeek's Anthropic-compatible endpoint also
+                                // returns cache and reasoning tokens in the same
+                                // usage object — parse those from the raw JSON.
                                 let usage_json = &value["usage"];
                                 let cache_hit = usage_json["prompt_cache_hit_tokens"]
                                     .as_u64()
@@ -439,16 +449,7 @@ impl LlmClient for AnthropicAdapter {
         ),
         LlmError,
     > {
-        let mut body = serde_json::to_value(request)
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
-        body["stream"] = serde_json::json!(false);
-        if let Some(ref uid) = self.user_id {
-            if let Some(meta) = body["metadata"].as_object_mut() {
-                meta.insert("user_id".to_string(), serde_json::json!(uid));
-            } else {
-                body["metadata"] = serde_json::json!({"user_id": uid});
-            }
-        }
+        let body = self.prepare_body(request, false)?;
 
         let json_body = serde_json::to_vec(&body).unwrap();
 

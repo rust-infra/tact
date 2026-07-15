@@ -1,8 +1,7 @@
 //! Provider-agnostic stop / finish reason for the agent loop.
 //!
-//! Adapters map each provider's native signal into this enum. Prefer this type
-//! over `anthropic_ai_sdk::types::message::StopReason` in business code so new
-//! API values (and OpenAI `finish_reason` strings) do not leak into `agent_loop`.
+//! Adapters map each provider's native signal into this enum so new API values
+//! (and OpenAI `finish_reason` strings) do not leak into `agent_loop`.
 
 use serde::{Deserialize, Serialize};
 

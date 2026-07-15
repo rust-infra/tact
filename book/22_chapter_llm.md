@@ -4,7 +4,7 @@ This chapter covers the `tact_llm` crate: provider selection, adapter constructi
 
 Configuration that feeds this layer is resolved in [Ch 21 Configuration](./21_chapter_config.md). The agent loop consumes the client via `Agent::stream_message` ([Ch 18 Agent Main Loop](./18_chapter_agent_loop.md)).
 
-Implementation: `crates/tact_llm/src/` (`lib.rs`, `anthropic.rs`, `openai.rs`, `convert.rs`).
+Implementation: `crates/tact_llm/src/` (`lib.rs`, `content.rs`, `request.rs`, `stop_reason.rs`, `anthropic.rs`, `openai.rs`, `convert.rs`).
 
 ---
 
@@ -382,6 +382,8 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 |------|------|
 | `tact_llm/src/provider_kind.rs` | `ProviderKind` enum (`FromStr` / `Display` / defaults) |
 | `tact_llm/src/stop_reason.rs` | Provider-agnostic `StopReason` + `from_anthropic` / `from_openai` |
+| `tact_llm/src/content.rs` | Owned `ContentBlock`, `Message`, `ContentBlockDelta`, `StreamUsage`, … |
+| `tact_llm/src/request.rs` | Owned `CreateMessageParams`, `Thinking`, `Tool`, `ToolChoice`, … |
 | `tact_llm/src/lib.rs` | `ProviderInfo`, `LlmClient`, `LlmProvider`, init/get helpers, balance APIs |
 | `tact_llm/src/anthropic.rs` | Messages API streaming + non-streaming |
 | `tact_llm/src/openai.rs` | Chat Completions SSE, `reasoning_effort` / thinking inject, tool deltas |
@@ -397,13 +399,13 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 |-----|--------|
 | **Four named providers only** | `ProviderKind` / `FromStr` reject unknown names; generic OpenAI proxies must use `provider = "openai"` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
-| **Anthropic SDK partial use** | Message/content types from `anthropic-ai-sdk`; `StopReason` is already Tact-owned, streaming is custom HTTP |
+| **No Anthropic SDK dependency** | Conversation, request, stop, stream-delta, and error types are all owned by `tact_llm`; Anthropic is spoken via custom HTTP + SSE only |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
 
 ### Protocol compatibility gaps (internal Anthropic shape → wire)
 
-`tact_llm` uses Anthropic `CreateMessageParams` as the shared request model. Each adapter must translate fields; several OpenAI-native differences are **not** handled yet:
+`tact_llm` owns [`CreateMessageParams`](../crates/tact_llm/src/request.rs) (same Anthropic *wire shape* for serde, but no longer the SDK type). Each adapter must translate fields; several OpenAI-native differences are **not** handled yet:
 
 | Internal / intent | Anthropic | DeepSeek / Kimi (OpenAI-compat) | Native OpenAI Chat Completions | Status |
 |-------------------|-----------|----------------------------------|--------------------------------|--------|

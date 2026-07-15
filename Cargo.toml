@@ -15,7 +15,6 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-anthropic-ai-sdk = "0.2"
 anyhow = "1.0"
 arboard = "3"
 async-openai = "0.20"

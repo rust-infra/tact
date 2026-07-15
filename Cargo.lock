@@ -96,26 +96,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anthropic-ai-sdk"
-version = "0.2.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb40cde602d77505c1f9053947e2a7f7f2c6222e92018f15f3966951aee26a07"
-dependencies = [
- "async-trait",
- "eventsource-stream",
- "futures-lite",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -885,7 +865,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
- "serde_core",
 ]
 
 [[package]]
@@ -1276,19 +1255,6 @@ name = "futures-io"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
-
-[[package]]
-name = "futures-lite"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
-dependencies = [
- "fastrand",
- "futures-core",
- "futures-io",
- "parking",
- "pin-project-lite",
-]
 
 [[package]]
 name = "futures-macro"
@@ -4245,7 +4211,6 @@ dependencies = [
 name = "tact_llm"
 version = "0.19.0"
 dependencies = [
- "anthropic-ai-sdk",
  "anyhow",
  "async-openai",
  "async-trait",
