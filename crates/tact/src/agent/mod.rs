@@ -1041,17 +1041,16 @@ fn assemble_claude_md_prompt(
         }
     }
 
-    if sources.claude_subdir {
-        if let Ok(cwd) = std::env::current_dir()
-            && cwd != workdir
-        {
-            let subdir_claude = cwd.join("CLAUDE.md");
-            if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
-                file_sources.push((
-                    format!("subdir ({}/CLAUDE.md)", cwd.display()),
-                    content.trim().to_string(),
-                ));
-            }
+    if sources.claude_subdir
+        && let Ok(cwd) = std::env::current_dir()
+        && cwd != workdir
+    {
+        let subdir_claude = cwd.join("CLAUDE.md");
+        if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
+            file_sources.push((
+                format!("subdir ({}/CLAUDE.md)", cwd.display()),
+                content.trim().to_string(),
+            ));
         }
     }
 
