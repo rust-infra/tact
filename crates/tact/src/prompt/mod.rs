@@ -458,6 +458,13 @@ mod tests {
         assert!(output.contains("- Never expose secrets"));
         assert!(output.contains("# Memory guidance"));
         assert!(output.contains("# Additional context"));
+        assert!(output.contains("Extra context here"));
+        let additional = output.find("# Additional context").unwrap();
+        let project_rules = output.find("# Project rules").unwrap();
+        assert!(
+            project_rules > additional,
+            "CLAUDE.md content should render inside Additional context"
+        );
         assert!(output.contains("=== DYNAMIC_BOUNDARY ==="));
         assert!(output.contains("## Memory"));
         assert!(output.contains("You previously discussed async runtime"));

@@ -93,8 +93,11 @@ After a successful stream, the assistant message is appended to `runtime.context
 | `StopReason` | Behavior |
 |--------------|----------|
 | **`ToolUse`** | Run `execute_tool_call`, append tool results, **loop again** |
-| **`EndTurn`** (or other non-ToolUse) | **`return Ok(())`** — task finished from the loop's perspective |
-| **`MaxTokens`** | Recovery: optionally run pending tool calls first, append `CONTINUATION_MESSAGE`, retry (up to 3) — [Ch 6](./06_chapter_recovery.md) |
+| **`EndTurn`** / **`StopSequence`** | **`return Ok(())`** — task finished from the loop's perspective |
+| **`MaxTokens`** | Recovery: optionally run pending tool calls first, append `CONTINUATION_MESSAGE`, retry (up to 3) — [Ch 6](./06_chapter_recovery.md). Exhausted attempts still finish with `Ok` |
+| **`Refusal`** | Emit an Info update and **`return Err`** so the TUI shows a clear refusal instead of a false `TaskComplete`. Rephrase the request or switch models; no automatic multi-model fallback yet ([Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)) |
+
+**Mapped at the LLM adapter (not separate enum variants):** `pause_turn` → `EndTurn` (Tact does not use Anthropic server tools); `model_context_window_exceeded` → `MaxTokens` (treat as truncated output).
 
 **Cancellation:** `cancel_flag` is checked at the top of each iteration and again before tool execution. When set, the loop returns `Ok(())` after emitting `AgentUpdate::Info("Cancelled by user")`. A new `SubmitTask` clears `cancel_flag` before calling `agent_loop` again.
 

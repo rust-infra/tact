@@ -8,12 +8,14 @@
 //! [`install`] and accessed through [`settings`].
 
 mod cli;
+mod instruction_sources;
 mod load;
 mod persist;
 mod resolve;
 mod types;
 
 pub use cli::{CliArgs, CliCommand};
+pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
     ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,

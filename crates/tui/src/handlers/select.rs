@@ -227,6 +227,7 @@ mod tests {
                 snapshot_max_items: 80,
                 micro_compact_enabled: true,
                 skill_body_auto_inject: false,
+                instruction_sources: tact::config::InstructionSources::default(),
             },
             ui: tact::config::UiSettings {
                 theme: "retro".into(),
