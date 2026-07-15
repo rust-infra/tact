@@ -520,10 +520,29 @@ impl Agent {
             }
             self.runtime.recovery_state.continuation_attempts = 0;
 
-            if let Some(stop_reason) = stop_reason
-                && !matches!(stop_reason, StopReason::ToolUse)
-            {
-                return Ok(());
+            // Stop-reason handling follows Anthropic guidance:
+            // https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+            // - end_turn / stop_sequence → finish
+            // - max_tokens → continuation path above (or finish if attempts exhausted)
+            // - tool_use → execute tools and loop
+            // - refusal → surface clearly (HTTP 200, not a transport error); no auto
+            //   model fallback yet — see refusals-and-fallback docs
+            // - pause_turn → mapped to EndTurn in tact_llm (no Anthropic server tools)
+            match &stop_reason {
+                Some(StopReason::ToolUse) => {}
+                Some(StopReason::Refusal) => {
+                    let info_msg = "Model refused this request (stop_reason=refusal). Try rephrasing, \
+                         or switch to another model with different safety filters."
+                        .to_string();
+                    self.emit_update(AgentUpdate::Info(info_msg));
+                    return Err(anyhow::anyhow!(
+                        "model refused to process this request (stop_reason=refusal)"
+                    ));
+                }
+                Some(StopReason::EndTurn | StopReason::StopSequence | StopReason::MaxTokens)
+                | None => {
+                    return Ok(());
+                }
             }
 
             if self
@@ -793,14 +812,12 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 }
             })
             .memory(self.load_memory_prompt()?)
-            .claude_md(cached_md_section(
-                &mut self.runtime.cached_claude_md,
-                || assemble_claude_md_prompt(workdir),
-            ))
-            .additional(cached_md_section(
-                &mut self.runtime.cached_agents_md,
-                || assemble_agents_md_prompt(workdir),
-            ))
+            .claude_md(cached_md_section(&mut self.runtime.cached_claude_md, || {
+                assemble_claude_md_prompt(workdir, &self.agent_settings.instruction_sources)
+            }))
+            .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
+                assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
+            }))
             .dynamic_context(load_dynamic_context(
                 workdir,
                 &mut self.runtime.cached_dir_snapshot,
@@ -976,46 +993,60 @@ fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> Stri
     value
 }
 
-fn assemble_claude_md_prompt(workdir: &Path) -> String {
-    let mut sources = Vec::new();
-
-    let user_claude = crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
-    if let Some(path) = user_claude
-        && let Ok(content) = std::fs::read_to_string(&path)
-    {
-        sources.push((
-            "user global (~/.claude/CLAUDE.md)".to_string(),
-            content.trim().to_string(),
-        ));
+fn assemble_claude_md_prompt(
+    workdir: &Path,
+    sources: &crate::config::InstructionSources,
+) -> String {
+    if !sources.claude_user && !sources.claude_project && !sources.claude_subdir {
+        return String::new();
     }
 
-    let project_claude = workdir.join("CLAUDE.md");
-    if let Ok(content) = std::fs::read_to_string(&project_claude) {
-        sources.push((
-            "project root (CLAUDE.md)".to_string(),
-            content.trim().to_string(),
-        ));
-    }
+    let mut file_sources = Vec::new();
 
-    if let Ok(cwd) = std::env::current_dir()
-        && cwd != workdir
-    {
-        let subdir_claude = cwd.join("CLAUDE.md");
-        if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
-            sources.push((
-                format!("subdir ({}/CLAUDE.md)", cwd.display()),
+    if sources.claude_user {
+        let user_claude =
+            crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
+        if let Some(path) = user_claude
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            file_sources.push((
+                "user global (~/.claude/CLAUDE.md)".to_string(),
                 content.trim().to_string(),
             ));
         }
     }
 
-    if sources.is_empty() {
+    if sources.claude_project {
+        let project_claude = workdir.join("CLAUDE.md");
+        if let Ok(content) = std::fs::read_to_string(&project_claude) {
+            file_sources.push((
+                "project root (CLAUDE.md)".to_string(),
+                content.trim().to_string(),
+            ));
+        }
+    }
+
+    if sources.claude_subdir {
+        if let Ok(cwd) = std::env::current_dir()
+            && cwd != workdir
+        {
+            let subdir_claude = cwd.join("CLAUDE.md");
+            if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
+                file_sources.push((
+                    format!("subdir ({}/CLAUDE.md)", cwd.display()),
+                    content.trim().to_string(),
+                ));
+            }
+        }
+    }
+
+    if file_sources.is_empty() {
         return String::new();
     }
 
-    let mut lines = vec!["# CLAUDE.md instructions".to_string(), String::new()];
-    for (label, content) in sources {
-        lines.push(format!("## From {}", label));
+    let mut lines = vec!["## CLAUDE.md instructions".to_string(), String::new()];
+    for (label, content) in file_sources {
+        lines.push(format!("### From {}", label));
         lines.push(String::new());
         lines.push(content);
         lines.push(String::new());
@@ -1027,12 +1058,19 @@ fn assemble_claude_md_prompt(workdir: &Path) -> String {
 ///
 /// Looks at the agent workdir and, when different, the process cwd — matching
 /// the local CLAUDE.md discovery paths (without a user-global file).
-fn assemble_agents_md_prompt(workdir: &Path) -> String {
-    let mut sources = Vec::new();
+fn assemble_agents_md_prompt(
+    workdir: &Path,
+    sources: &crate::config::InstructionSources,
+) -> String {
+    if !sources.agents_md {
+        return String::new();
+    }
+
+    let mut file_sources = Vec::new();
 
     let project_agents = workdir.join("AGENTS.md");
     if let Ok(content) = std::fs::read_to_string(&project_agents) {
-        sources.push((
+        file_sources.push((
             "project root (AGENTS.md)".to_string(),
             content.trim().to_string(),
         ));
@@ -1043,20 +1081,20 @@ fn assemble_agents_md_prompt(workdir: &Path) -> String {
     {
         let subdir_agents = cwd.join("AGENTS.md");
         if let Ok(content) = std::fs::read_to_string(&subdir_agents) {
-            sources.push((
+            file_sources.push((
                 format!("subdir ({}/AGENTS.md)", cwd.display()),
                 content.trim().to_string(),
             ));
         }
     }
 
-    if sources.is_empty() {
+    if file_sources.is_empty() {
         return String::new();
     }
 
-    let mut lines = vec!["# AGENTS.md instructions".to_string(), String::new()];
-    for (label, content) in sources {
-        lines.push(format!("## From {}", label));
+    let mut lines = vec!["## AGENTS.md instructions".to_string(), String::new()];
+    for (label, content) in file_sources {
+        lines.push(format!("### From {}", label));
         lines.push(String::new());
         lines.push(content);
         lines.push(String::new());
@@ -1093,6 +1131,7 @@ mod tests {
                     notifications_enabled: false,
                     micro_compact_enabled: true,
                     skill_body_auto_inject: false,
+                    instruction_sources: crate::config::InstructionSources::default(),
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
@@ -1138,6 +1177,7 @@ mod tests {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            instruction_sources: crate::config::InstructionSources::default(),
         };
         let agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
@@ -1228,6 +1268,56 @@ mod tests {
         assert!(
             agent.runtime.context.len() >= 2,
             "context should have at least user + assistant messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_surfaces_refusal_as_error() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+
+        let context = test_context("agent_loop_refusal");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("I cannot help with that.")],
+            Some(StopReason::Refusal),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "unsafe request")))
+            .await;
+
+        let err = result.expect_err("refusal should return Err");
+        assert!(
+            err.to_string().contains("refusal"),
+            "error should mention refusal, got: {err}"
+        );
+
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("refused"))),
+            "expected Info about refusal, got: {updates:?}"
         );
     }
 
@@ -1547,9 +1637,10 @@ mod tests {
         )
         .unwrap();
 
-        let rendered = assemble_agents_md_prompt(dir.path());
-        assert!(rendered.contains("AGENTS.md instructions"));
-        assert!(rendered.contains("project root (AGENTS.md)"));
+        let rendered =
+            assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default());
+        assert!(rendered.starts_with("## AGENTS.md instructions"));
+        assert!(rendered.contains("### From project root (AGENTS.md)"));
         assert!(rendered.contains("Crate map"));
         assert!(rendered.contains("crates/tact"));
     }
@@ -1557,7 +1648,43 @@ mod tests {
     #[test]
     fn assemble_agents_md_prompt_empty_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(assemble_agents_md_prompt(dir.path()).is_empty());
+        assert!(
+            assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn assemble_agents_md_prompt_skipped_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Rules\n").unwrap();
+        let sources =
+            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
+                .unwrap();
+        assert!(assemble_agents_md_prompt(dir.path(), &sources).is_empty());
+    }
+
+    #[test]
+    fn assemble_claude_md_prompt_skipped_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
+        assert!(
+            assemble_claude_md_prompt(dir.path(), &crate::config::InstructionSources::default())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn assemble_claude_md_prompt_reads_project_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
+        let sources =
+            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
+                .unwrap();
+        let rendered = assemble_claude_md_prompt(dir.path(), &sources);
+        assert!(rendered.starts_with("## CLAUDE.md instructions"));
+        assert!(rendered.contains("### From project root (CLAUDE.md)"));
+        assert!(rendered.contains("Claude rules"));
     }
 
     #[test]

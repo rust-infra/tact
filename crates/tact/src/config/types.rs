@@ -83,6 +83,12 @@ pub struct AgentTomlConfig {
 
     /// Auto-inject full skill body into system prompt (default: false)
     pub skill_body_auto_inject: Option<bool>,
+
+    /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
+    ///
+    /// Supported values: `agents_md`, `claude_md` (all CLAUDE paths), `claude_md_user`,
+    /// `claude_md_project`, `claude_md_subdir`.
+    pub instruction_sources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -149,6 +155,7 @@ pub struct AgentSettings {
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
     pub skill_body_auto_inject: bool,
+    pub instruction_sources: crate::config::InstructionSources,
 }
 
 #[derive(Debug, Clone)]

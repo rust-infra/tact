@@ -12,10 +12,6 @@
 When a user message already contains a `<skill name="…">…</skill>` block, the user slash-invoked that skill — follow those instructions directly and do not call `load_skill` for the same skill. If the block includes an `ARGUMENTS:` line (Claude Code convention when the skill has no `$ARGUMENTS` placeholder), that line is the user's slash-command arguments for this invocation; apply the skill to fulfill them.
 {% endif -%}
 
-{% if claude_md -%}
-{{claude_md}}
-{% endif -%}
-
 {% if guidelines and guidelines | length > 0 -%}
 # Guidelines you need to follow
 
@@ -42,10 +38,16 @@ When a user message already contains a `<skill name="…">…</skill>` block, th
 {{memory_guidance}}
 {% endif -%}
 
-{% if additional -%}
+{% if claude_md or additional -%}
 # Additional context
 
+{% if claude_md -%}
+{{claude_md}}
+
+{% endif -%}
+{% if additional -%}
 {{additional}}
+{% endif -%}
 {% endif -%}
 
 {% if memory or dynamic_context -%}

@@ -77,6 +77,12 @@ mode = "default"
 # Truncate old tool results in context (default: true)
 # micro_compact_enabled = true
 
+# Project instruction files injected into the system prompt (default: ["agents_md"]).
+# Options: agents_md, claude_md (all CLAUDE paths), claude_md_user,
+#          claude_md_project, claude_md_subdir
+# instruction_sources = ["agents_md"]
+# instruction_sources = ["agents_md", "claude_md"]
+
 # Desktop notifications on macOS (default: true)
 # notifications_enabled = true
 

@@ -99,12 +99,15 @@ fn parse_stop_reason(reason: Option<String>) -> Option<StopReason> {
     match reason.as_deref() {
         Some("end_turn") => Some(StopReason::EndTurn),
         Some("max_tokens") => Some(StopReason::MaxTokens),
+        // Output filled the model context window — treat like truncation so the
+        // agent can continue / compact (SDK StopReason has no dedicated variant).
+        Some("model_context_window_exceeded") => Some(StopReason::MaxTokens),
         Some("stop_sequence") => Some(StopReason::StopSequence),
         Some("tool_use") => Some(StopReason::ToolUse),
         Some("refusal") => Some(StopReason::Refusal),
-        // `pause_turn` is returned by newer Anthropic models when they want to
-        // hand control back to the caller. Treat it the same as `end_turn` for
-        // the agent loop.
+        // Server-tool sampling hit its iteration limit. Correct handling is to
+        // send the assistant message back and continue; Tact does not use
+        // Anthropic server tools, so EndTurn (finish the turn) is fine here.
         Some("pause_turn") => Some(StopReason::EndTurn),
         _ => None,
     }
@@ -536,7 +539,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_stop_reason_handles_pause_turn() {
+    fn parse_stop_reason_handles_known_values() {
         assert!(matches!(
             parse_stop_reason(Some("pause_turn".to_string())),
             Some(StopReason::EndTurn)
@@ -548,6 +551,14 @@ mod tests {
         assert!(matches!(
             parse_stop_reason(Some("tool_use".to_string())),
             Some(StopReason::ToolUse)
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("refusal".to_string())),
+            Some(StopReason::Refusal)
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("model_context_window_exceeded".to_string())),
+            Some(StopReason::MaxTokens)
         ));
         assert!(parse_stop_reason(Some("unknown".to_string())).is_none());
         assert!(parse_stop_reason(None).is_none());

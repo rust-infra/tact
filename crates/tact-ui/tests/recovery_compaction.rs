@@ -28,6 +28,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            instruction_sources: tact::config::InstructionSources::default(),
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),

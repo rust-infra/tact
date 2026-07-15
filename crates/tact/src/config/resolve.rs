@@ -1,4 +1,5 @@
 use super::cli::CliArgs;
+use super::instruction_sources::InstructionSources;
 use super::types::{
     AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
     VisionImageSettings,
@@ -131,6 +132,9 @@ pub(super) fn resolve_non_llm_settings(
     let skill_body_auto_inject = args.skill_body_auto_inject
         || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
+    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+        .expect("invalid instruction_sources in config");
+
     let theme = args
         .theme
         .clone()
@@ -166,6 +170,7 @@ pub(super) fn resolve_non_llm_settings(
             snapshot_max_items,
             micro_compact_enabled,
             skill_body_auto_inject,
+            instruction_sources,
         },
         ui: UiSettings {
             theme,
@@ -240,6 +245,9 @@ pub(super) fn resolve_config(
     let skill_body_auto_inject = args.skill_body_auto_inject
         || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
+    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let theme = args
         .theme
         .clone()
@@ -269,6 +277,7 @@ pub(super) fn resolve_config(
             snapshot_max_items,
             micro_compact_enabled,
             skill_body_auto_inject,
+            instruction_sources,
         },
         ui: UiSettings {
             theme,
@@ -347,6 +356,26 @@ model = "gpt-4o"
             VisionImageSettings::DEFAULT_JPEG_QUALITY
         );
         assert!(resolved.agent.micro_compact_enabled);
+        assert_eq!(
+            resolved.agent.instruction_sources,
+            InstructionSources::default()
+        );
+    }
+
+    #[test]
+    fn resolve_instruction_sources_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[agent]
+instruction_sources = ["agents_md", "claude_md_project"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        assert!(resolved.agent.instruction_sources.agents_md);
+        assert!(!resolved.agent.instruction_sources.claude_user);
+        assert!(resolved.agent.instruction_sources.claude_project);
+        assert!(!resolved.agent.instruction_sources.claude_subdir);
     }
 
     #[test]

@@ -113,7 +113,8 @@ flowchart TB
     Cont --> Retry
     Stop -->|ToolUse| Tools[execute_tool_call]
     Tools --> Retry
-    Stop -->|end_turn| Done([return Ok])
+    Stop -->|refusal| Refuse([return Err])
+    Stop -->|end_turn / stop_sequence| Done([return Ok])
 ```
 
 Each recovery emits an `AgentUpdate::Info` line visible in the TUI, e.g.:
