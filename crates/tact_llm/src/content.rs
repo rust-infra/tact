@@ -131,18 +131,11 @@ mod tests {
 
     #[test]
     fn content_block_delta_serde() {
-        let delta = ContentBlockDelta::TextDelta {
-            text: "hi".into(),
-        };
+        let delta = ContentBlockDelta::TextDelta { text: "hi".into() };
         let json = serde_json::to_value(&delta).unwrap();
         assert_eq!(json["type"], "text_delta");
         assert_eq!(json["text"], "hi");
         let round: ContentBlockDelta = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            round,
-            ContentBlockDelta::TextDelta {
-                text: "hi".into()
-            }
-        );
+        assert_eq!(round, ContentBlockDelta::TextDelta { text: "hi".into() });
     }
 }

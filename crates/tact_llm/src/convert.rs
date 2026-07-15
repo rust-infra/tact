@@ -425,11 +425,10 @@ mod tests {
     fn empty_assistant_message_gets_stubbed() {
         let assistant = Message::new_blocks(Role::Assistant, vec![]);
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -462,11 +461,10 @@ mod tests {
         );
         let user = Message::new_text(Role::User, "keep going".to_string());
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant, user],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant, user],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -497,11 +495,10 @@ mod tests {
             }],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -537,11 +534,10 @@ mod tests {
             ],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -573,11 +569,10 @@ mod tests {
         );
         let user = Message::new_text(Role::User, "keep going".to_string());
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant, user],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant, user],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -610,11 +605,10 @@ mod tests {
             }],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant, user],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant, user],
+            max_tokens: 1024,
+        });
 
         let (openai_request, _) = build_openai_request(&request);
         let assistant_msg = openai_request
@@ -664,11 +658,10 @@ mod tests {
         );
         let follow_up = Message::new_text(Role::User, "continue".to_string());
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "mock".to_string(),
-                messages: vec![assistant, user, follow_up],
-                max_tokens: 1024,
-            },
-        );
+            model: "mock".to_string(),
+            messages: vec![assistant, user, follow_up],
+            max_tokens: 1024,
+        });
 
         let (openai_request, reasoning) = build_openai_request(&request);
         assert_eq!(
@@ -741,11 +734,10 @@ mod tests {
         );
 
         let request = CreateMessageParams::new(RequiredMessageParams {
-                model: "kimi-k2.5".to_string(),
-                messages: vec![assistant.clone(), user],
-                max_tokens: 1024,
-            },
-        );
+            model: "kimi-k2.5".to_string(),
+            messages: vec![assistant.clone(), user],
+            max_tokens: 1024,
+        });
 
         let (openai_request, reasoning) = build_openai_request(&request);
         assert_eq!(openai_request.messages.len(), reasoning.len());
