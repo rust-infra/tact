@@ -9,13 +9,17 @@ pub mod anthropic;
 pub mod convert;
 pub mod openai;
 pub mod provider_kind;
+pub mod stop_reason;
+pub use openai::reasoning_effort_from_budget;
 pub use provider_kind::ProviderKind;
+pub use stop_reason::StopReason;
 
 /// Re-export the Anthropic Messages types used as Tact's internal request/response
 /// shape. Callers should prefer these over depending on `anthropic_ai_sdk` directly.
+/// Stop reasons use [`StopReason`] (this crate), not the SDK enum.
 pub use anthropic_ai_sdk::types::message::{
     ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, MessageError,
-    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType, Tool, ToolChoice,
+    RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
 };
 
 #[cfg(test)]
@@ -800,10 +804,7 @@ where
 }
 
 fn clone_stop_reason(stop_reason: &Option<StopReason>) -> Option<StopReason> {
-    stop_reason.as_ref().map(|s| {
-        serde_json::from_value(serde_json::to_value(s).expect("serialize StopReason"))
-            .expect("deserialize StopReason")
-    })
+    stop_reason.clone()
 }
 
 fn clone_llm_error(e: &LlmError) -> LlmError {

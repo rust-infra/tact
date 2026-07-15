@@ -373,7 +373,9 @@ impl Agent {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: request.thinking.as_ref().map(|_| "high".to_string()),
+                reasoning_effort: request.thinking.as_ref().and_then(|t| {
+                    tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                }),
                 extra_body: request
                     .thinking
                     .as_ref()
@@ -539,7 +541,19 @@ impl Agent {
                         "model refused to process this request (stop_reason=refusal)"
                     ));
                 }
-                Some(StopReason::EndTurn | StopReason::StopSequence | StopReason::MaxTokens)
+                Some(StopReason::Unknown(raw)) => {
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "Unrecognized stop_reason={raw:?}; treating as end of turn"
+                    )));
+                    return Ok(());
+                }
+                // PauseTurn: Tact does not use Anthropic server tools; finish like EndTurn.
+                Some(
+                    StopReason::EndTurn
+                    | StopReason::StopSequence
+                    | StopReason::MaxTokens
+                    | StopReason::PauseTurn,
+                )
                 | None => {
                     return Ok(());
                 }
@@ -686,8 +700,8 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             model: model_name,
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-            reasoning_effort: request.thinking.as_ref().map(|t| match t.type_ {
-                ThinkingType::Enabled => "high".to_string(),
+            reasoning_effort: request.thinking.as_ref().and_then(|t| {
+                tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
             }),
             extra_body: request
                 .thinking

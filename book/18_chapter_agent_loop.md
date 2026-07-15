@@ -93,11 +93,12 @@ After a successful stream, the assistant message is appended to `runtime.context
 | `StopReason` | Behavior |
 |--------------|----------|
 | **`ToolUse`** | Run `execute_tool_call`, append tool results, **loop again** |
-| **`EndTurn`** / **`StopSequence`** | **`return Ok(())`** — task finished from the loop's perspective |
+| **`EndTurn`** / **`StopSequence`** / **`PauseTurn`** | **`return Ok(())`** — task finished (`PauseTurn` is Anthropic server-tool pause; Tact does not use those tools yet) |
 | **`MaxTokens`** | Recovery: optionally run pending tool calls first, append `CONTINUATION_MESSAGE`, retry (up to 3) — [Ch 6](./06_chapter_recovery.md). Exhausted attempts still finish with `Ok` |
 | **`Refusal`** | Emit an Info update and **`return Err`** so the TUI shows a clear refusal instead of a false `TaskComplete`. Rephrase the request or switch models; no automatic multi-model fallback yet ([Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)) |
+| **`Unknown`** | Emit Info with the raw provider string, then finish with `Ok` |
 
-**Mapped at the LLM adapter (not separate enum variants):** `pause_turn` → `EndTurn` (Tact does not use Anthropic server tools); `model_context_window_exceeded` → `MaxTokens` (treat as truncated output).
+`StopReason` is owned by `tact_llm` ([`stop_reason.rs`](../crates/tact_llm/src/stop_reason.rs)), not the Anthropic SDK. Adapters map provider-native strings (`end_turn`, `finish_reason=length`, …) into this enum; `model_context_window_exceeded` maps to `MaxTokens`.
 
 **Cancellation:** `cancel_flag` is checked at the top of each iteration and again before tool execution. When set, the loop returns `Ok(())` after emitting `AgentUpdate::Info("Cancelled by user")`. A new `SubmitTask` clears `cancel_flag` before calling `agent_loop` again.
 
