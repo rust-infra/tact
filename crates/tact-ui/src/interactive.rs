@@ -159,8 +159,8 @@ async fn run_interactive_locked(
             skills_data: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.skills()
-                    .iter()
-                    .map(|(_, doc)| tui::SkillEntry {
+                    .values()
+                    .map(|doc| tui::SkillEntry {
                         name: doc.manifest.name.clone(),
                         description: doc.manifest.description.clone(),
                         body: doc.body.clone(),
