@@ -6,21 +6,21 @@
 //! (also OpenAI-compatible).
 
 pub mod anthropic;
+pub mod content;
 pub mod convert;
 pub mod openai;
 pub mod provider_kind;
+pub mod request;
 pub mod stop_reason;
+pub use content::{
+    ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, Role, StreamUsage,
+};
 pub use openai::reasoning_effort_from_budget;
 pub use provider_kind::ProviderKind;
-pub use stop_reason::StopReason;
-
-/// Re-export the Anthropic Messages types used as Tact's internal request/response
-/// shape. Callers should prefer these over depending on `anthropic_ai_sdk` directly.
-/// Stop reasons use [`StopReason`] (this crate), not the SDK enum.
-pub use anthropic_ai_sdk::types::message::{
-    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, MessageError,
-    RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
+pub use request::{
+    CreateMessageParams, RequiredMessageParams, Thinking, ThinkingType, Tool, ToolChoice,
 };
+pub use stop_reason::StopReason;
 
 #[cfg(test)]
 mod test_openai;
@@ -30,6 +30,27 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fmt, time::Duration};
+
+/// Anthropic / Messages-adapter failures (HTTP, parse, API body).
+#[derive(Debug)]
+pub enum MessageError {
+    ApiError(String),
+}
+
+impl fmt::Display for MessageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::ApiError(msg) = self;
+        f.write_str(msg)
+    }
+}
+
+impl std::error::Error for MessageError {}
+
+impl From<String> for MessageError {
+    fn from(error: String) -> Self {
+        MessageError::ApiError(error)
+    }
+}
 use tokio::sync::mpsc::UnboundedSender;
 
 use tact_protocol::AgentUpdate;

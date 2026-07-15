@@ -1,8 +1,8 @@
 //! Conversion helpers between Anthropic and OpenAI types.
 
-use anthropic_ai_sdk::types::message::{ContentBlock, Message, MessageContent, Role, Tool};
-
-use crate::StopReason;
+use crate::{
+    ContentBlock, CreateMessageParams, Message, MessageContent, Role, StopReason, Tool, ToolChoice,
+};
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
     ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart,
@@ -293,7 +293,7 @@ fn sanitize_assistant_messages(
     }
 }
 
-/// Build an OpenAI `CreateChatCompletionRequest` from Anthropic `CreateMessageParams`.
+/// Build an OpenAI `CreateChatCompletionRequest` from Tact [`CreateMessageParams`].
 ///
 /// Also returns a parallel vector of optional `reasoning_content` strings, one for each
 /// message in the generated OpenAI message list. This is needed for providers such as
@@ -301,7 +301,7 @@ fn sanitize_assistant_messages(
 /// assistant messages (especially assistant messages containing `tool_calls`).
 #[allow(deprecated)]
 pub fn build_openai_request(
-    request: &anthropic_ai_sdk::types::message::CreateMessageParams,
+    request: &CreateMessageParams,
 ) -> (CreateChatCompletionRequest, Vec<Option<String>>) {
     let mut messages = Vec::new();
     let mut reasoning_per_message = Vec::new();
@@ -353,19 +353,18 @@ pub fn build_openai_request(
     (openai_request, reasoning_per_message)
 }
 
-fn map_tool_choice(
-    tc: &anthropic_ai_sdk::types::message::ToolChoice,
-) -> async_openai::types::ChatCompletionToolChoiceOption {
-    use anthropic_ai_sdk::types::message::ToolChoice as Atc;
+fn map_tool_choice(tc: &ToolChoice) -> async_openai::types::ChatCompletionToolChoiceOption {
     use async_openai::types::ChatCompletionToolChoiceOption as Otco;
     match tc {
-        Atc::Auto => Otco::Auto,
-        Atc::Any => Otco::Auto, // OpenAI has no exact "any" equivalent; auto is closest.
-        Atc::None => Otco::None,
-        Atc::Tool { name } => Otco::Named(async_openai::types::ChatCompletionNamedToolChoice {
-            r#type: ChatCompletionToolType::Function,
-            function: async_openai::types::FunctionName { name: name.clone() },
-        }),
+        ToolChoice::Auto => Otco::Auto,
+        ToolChoice::Any => Otco::Auto, // OpenAI has no exact "any" equivalent; auto is closest.
+        ToolChoice::None => Otco::None,
+        ToolChoice::Tool { name } => {
+            Otco::Named(async_openai::types::ChatCompletionNamedToolChoice {
+                r#type: ChatCompletionToolType::Function,
+                function: async_openai::types::FunctionName { name: name.clone() },
+            })
+        }
     }
 }
 
@@ -385,7 +384,7 @@ pub fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> Option<Stop
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anthropic_ai_sdk::types::message::{ContentBlock, ImageSource, Message, Role};
+    use crate::{ContentBlock, ImageSource, Message, RequiredMessageParams, Role};
 
     #[test]
     fn convert_user_message_with_image_to_openai_content_parts() {
@@ -425,8 +424,7 @@ mod tests {
     #[test]
     fn empty_assistant_message_gets_stubbed() {
         let assistant = Message::new_blocks(Role::Assistant, vec![]);
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant],
                 max_tokens: 1024,
@@ -463,8 +461,7 @@ mod tests {
             }],
         );
         let user = Message::new_text(Role::User, "keep going".to_string());
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant, user],
                 max_tokens: 1024,
@@ -499,8 +496,7 @@ mod tests {
                 signature: String::new(),
             }],
         );
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant],
                 max_tokens: 1024,
@@ -540,8 +536,7 @@ mod tests {
                 },
             ],
         );
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant],
                 max_tokens: 1024,
@@ -577,8 +572,7 @@ mod tests {
             ],
         );
         let user = Message::new_text(Role::User, "keep going".to_string());
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant, user],
                 max_tokens: 1024,
@@ -615,8 +609,7 @@ mod tests {
                 content: "file content".to_string(),
             }],
         );
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant, user],
                 max_tokens: 1024,
@@ -670,8 +663,7 @@ mod tests {
             }],
         );
         let follow_up = Message::new_text(Role::User, "continue".to_string());
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "mock".to_string(),
                 messages: vec![assistant, user, follow_up],
                 max_tokens: 1024,
@@ -748,8 +740,7 @@ mod tests {
             ],
         );
 
-        let request = anthropic_ai_sdk::types::message::CreateMessageParams::new(
-            anthropic_ai_sdk::types::message::RequiredMessageParams {
+        let request = CreateMessageParams::new(RequiredMessageParams {
                 model: "kimi-k2.5".to_string(),
                 messages: vec![assistant.clone(), user],
                 max_tokens: 1024,

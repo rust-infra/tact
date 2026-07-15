@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 tact_protocol = { path = "../protocol" }
-anthropic-ai-sdk = { workspace = true }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }

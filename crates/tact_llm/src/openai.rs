@@ -9,9 +9,7 @@
 //! hand-rolled byte-level parsing, for correct handling of `\n\n` / `\r\n\r\n`
 //! delimiters and connection lifecycle.
 
-use anthropic_ai_sdk::types::message::{ContentBlock, CreateMessageParams};
-
-use crate::StopReason;
+use crate::{ContentBlock, CreateMessageParams, StopReason};
 use async_openai::config::Config;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -675,7 +673,7 @@ impl LlmClient for OpenAiAdapter {
 mod tests {
     use super::*;
     use crate::{ProviderInfo, ProviderKind};
-    use anthropic_ai_sdk::types::message::{RequiredMessageParams, Thinking, ThinkingType};
+    use crate::{RequiredMessageParams, Thinking, ThinkingType};
 
     fn sample_request_with_thinking() -> CreateMessageParams {
         CreateMessageParams::new(RequiredMessageParams {
