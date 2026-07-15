@@ -116,11 +116,22 @@ pub enum AgentUpdate {
     /// Informational notice (does not change state)
     Info(String),
 
-    /// Request user to choose from a list of options; returns option index (None = cancelled)
+    /// Request user to choose **one** option; returns option index (None = cancelled).
+    /// Used by permission prompts and single-choice `ask_user`.
     RequestSelect {
         prompt: String,
         options: Vec<String>,
         respond: oneshot::Sender<Option<usize>>,
+        /// When true, TUI appends a "Selected: …" system line after confirm.
+        /// Permission prompts keep this `false` (choice already shown on the tool meta row).
+        log_confirm: bool,
+    },
+    /// Request user to choose **zero or more** options (Space toggles, Enter confirms).
+    /// Used by `ask_user` when `multi_select` is true. Does not affect [`RequestSelect`].
+    RequestMultiSelect {
+        prompt: String,
+        options: Vec<String>,
+        respond: oneshot::Sender<Option<Vec<usize>>>,
     },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),

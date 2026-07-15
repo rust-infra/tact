@@ -1,4 +1,10 @@
-//! Slash / palette skill invocation (Claude-like: complete first, Enter to run).
+//! Slash / palette skill invocation (complete first, Enter to run).
+//!
+//! Built-ins win over same-named skills. Invoke wraps the body in `<skill>` and
+//! applies Claude Code–style bare `$ARGUMENTS` substitution (or appends
+//! `ARGUMENTS:` when the placeholder is absent and args are present). Indexed
+//! `$ARGUMENTS[N]` is left unchanged. Shared [`submit_user_task`] matches a
+//! normal Insert Enter submit (Planning / log / history).
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
@@ -35,12 +41,23 @@ pub(crate) fn skill_name_set(app: &App) -> std::collections::HashSet<&str> {
     crate::render::slash_style::skill_name_set(&app.skills_data)
 }
 
-/// True when body has a bare `$ARGUMENTS` placeholder (not `$ARGUMENTS[N]`).
+/// True when `$ARGUMENTS` is a bare placeholder at this position (not indexed,
+/// not a longer token like `$ARGUMENTS2`).
+fn is_bare_arguments_placeholder(after: &str) -> bool {
+    match after.chars().next() {
+        None => true,
+        Some('[') => false,
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
+        Some(_) => true,
+    }
+}
+
+/// True when body has a bare `$ARGUMENTS` placeholder.
 fn has_bare_arguments_placeholder(body: &str) -> bool {
     let mut rest = body;
     while let Some(idx) = rest.find("$ARGUMENTS") {
         let after = &rest[idx + "$ARGUMENTS".len()..];
-        if !after.starts_with('[') {
+        if is_bare_arguments_placeholder(after) {
             return true;
         }
         rest = after;
@@ -48,18 +65,18 @@ fn has_bare_arguments_placeholder(body: &str) -> bool {
     false
 }
 
-/// Substitute bare `$ARGUMENTS` only — leave `$ARGUMENTS[N]` untouched.
+/// Substitute bare `$ARGUMENTS` only — leave `$ARGUMENTS[N]` / `$ARGUMENTS2` untouched.
 fn substitute_arguments(body: &str, args: &str) -> String {
     let mut out: String = String::with_capacity(body.len() + args.len());
     let mut rest = body;
     while let Some(idx) = rest.find("$ARGUMENTS") {
         out.push_str(&rest[..idx]);
         let after = &rest[idx + "$ARGUMENTS".len()..];
-        if after.starts_with('[') {
-            out.push_str("$ARGUMENTS");
+        if is_bare_arguments_placeholder(after) {
+            out.push_str(args);
             rest = after;
         } else {
-            out.push_str(args);
+            out.push_str("$ARGUMENTS");
             rest = after;
         }
     }
@@ -67,7 +84,14 @@ fn substitute_arguments(body: &str, args: &str) -> String {
     out
 }
 
-/// Render skill body for the agent, Claude-style `$ARGUMENTS` / append.
+/// Escape attribute text for skill name in `<skill name="…">`.
+fn escape_xml_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+/// Render skill body for the agent, Claude Code–style `$ARGUMENTS` / append.
 pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
     let body = skill.body.trim();
     if has_bare_arguments_placeholder(body) {
@@ -75,16 +99,20 @@ pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
     } else if args.is_empty() {
         body.to_string()
     } else {
-        // Claude Code default when `$ARGUMENTS` is absent.
+        // Claude Code: when `$ARGUMENTS` is absent, append so the model still sees args.
         format!("{body}\n\nARGUMENTS: {args}")
     }
 }
 
 /// Build the agent-facing task text with skill body wrapped like `load_skill`.
+///
+/// Argument framing matches Claude Code (`$ARGUMENTS` or trailing `ARGUMENTS:`).
+/// The system prompt explains that slash-invoked `<skill>` blocks (including
+/// `ARGUMENTS:`) are user invocations, not `load_skill` tool metadata.
 pub(super) fn format_skill_agent_task(skill: &SkillEntry, args: &str) -> String {
     format!(
         "<skill name=\"{}\">\n{}\n</skill>",
-        skill.name,
+        escape_xml_attr(&skill.name),
         render_skill_body(skill, args)
     )
 }
@@ -103,7 +131,15 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
     let limit = app.context_limit_chars;
-    if display_chars > limit || agent_chars > limit {
+    if agent_chars > limit {
+        let msg = app
+            .msgs()
+            .skill_task_too_long_tmpl
+            .replace("{}", &limit.to_string());
+        app.add_system_message(msg);
+        return false;
+    }
+    if display_chars > limit {
         let msg = app
             .msgs()
             .input_too_long_tmpl
@@ -212,6 +248,17 @@ mod tests {
     }
 
     #[test]
+    fn format_skill_leaves_longer_arguments_token() {
+        let skill = SkillEntry {
+            name: "deploy".into(),
+            description: "d".into(),
+            body: "See $ARGUMENTS2 and use $ARGUMENTS.".into(),
+        };
+        let out = format_skill_agent_task(&skill, "v2");
+        assert!(out.contains("See $ARGUMENTS2 and use v2."));
+    }
+
+    #[test]
     fn format_skill_no_args_is_body_only() {
         let skill = SkillEntry {
             name: "demo".into(),
@@ -221,5 +268,16 @@ mod tests {
         let out = format_skill_agent_task(&skill, "");
         assert!(out.contains("Just run."));
         assert!(!out.contains("ARGUMENTS:"));
+    }
+
+    #[test]
+    fn format_skill_escapes_name_attr() {
+        let skill = SkillEntry {
+            name: r#"weird"name"#.into(),
+            description: "d".into(),
+            body: "x".into(),
+        };
+        let out = format_skill_agent_task(&skill, "");
+        assert!(out.contains(r#"<skill name="weird&quot;name">"#));
     }
 }

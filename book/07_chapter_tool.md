@@ -76,7 +76,7 @@ Shared state for all native tool handlers (`crates/tact/src/tool/mod.rs`):
 
 ```rust
 pub struct ToolContext {
-    pub skill_registry: Arc<SkillRegistry>,
+    pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
     pub memory_manager: Arc<Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,

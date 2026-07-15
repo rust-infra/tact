@@ -88,7 +88,7 @@ Sections above `=== DYNAMIC_BOUNDARY ===` change rarely. Sections below it may c
 ```rust
 let prompt = SystemPrompt::builder()
     .role("You are a coding agent operating in /home/xxxx/Projects/tact.")
-    .skills_available("- bash\n- read_file")
+    .skills_available("- rust-skills: Comprehensive Rust coding guidelines")
     .add_guideline("Think before you act")
     .add_constraint("Never expose secrets")
     .memory("User prefers Rust over Python")

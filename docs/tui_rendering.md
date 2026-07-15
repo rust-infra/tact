@@ -23,6 +23,7 @@ crates/tui/src/render/
 ├── plan.rs             # execution plan panel
 ├── render_md.rs        # Markdown rendering
 ├── renderable.rs       # Renderable trait
+├── slash_style.rs      # /skill-name vs args highlighting
 ├── util.rs             # text wrapping utilities
 ├── welcome.rs          # startup logo component
 ├── cells/              # card rendering cells
@@ -39,7 +40,7 @@ crates/tui/src/render/
     ├── help.rs
     ├── history.rs
     ├── select.rs
-    ├── slash_command.rs # /-slash command menu
+    ├── slash_command.rs # Insert `/` menu (Commands then Skills)
     └── thinking_popup.rs
 ```
 
@@ -253,7 +254,8 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Command palette | `command_palette.rs` | Triggered by `:`, fuzzy-filtered commands |
 | File picker | `file_picker.rs` | Triggered by `@`, directory-browsable file selector with query filtering |
 | Select popup | `select.rs` | Agent asks the user to choose |
-| Slash commands | `slash_command.rs` | Triggered by `/` while typing, shortcut menu |
+| Slash commands | `slash_command.rs` | Insert-mode `/`: Commands then Skills; skill Enter autocompletes `/name `, second Enter invokes |
+| Skill slash style | `slash_style.rs` | Accent+bold skill token, theme.fg args — used by `input.rs` and user lines in `log.rs` |
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
 | Thinking detail | `thinking_popup.rs` | View full thinking content |

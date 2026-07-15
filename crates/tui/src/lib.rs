@@ -70,6 +70,8 @@ pub struct TuiConfig {
     pub context_limit_chars: usize,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
+    /// Shared with the agent `ToolContext` so `/skill-reload` updates both sides.
+    pub skill_registry: tact::skill::SharedSkillRegistry,
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
@@ -86,6 +88,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         context_limit_chars,
         skills_description,
         skills_data,
+        skill_registry,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -113,6 +116,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
     );
+    app.skill_registry = skill_registry;
     app.context_limit_chars = context_limit_chars;
     app.add_startup_logo();
     let msgs = app.msgs();

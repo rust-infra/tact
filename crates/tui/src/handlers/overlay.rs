@@ -6,7 +6,17 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 /// Handle a key while an overlay popup is open.
 /// Returns `true` if an overlay was active (key is consumed either way).
+///
+/// Modal input modes ([`InputMode::Select`], FilePicker, Palette) take priority —
+/// otherwise ↑/↓/j/k would scroll the overlay instead of moving the selection.
 pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
+    use crate::widgets::state::InputMode;
+    if matches!(
+        app.input_mode,
+        InputMode::Select | InputMode::FilePicker | InputMode::Palette
+    ) {
+        return false;
+    }
     if !app.has_overlay_popup() {
         return false;
     }
@@ -46,6 +56,22 @@ mod tests {
     fn returns_false_when_no_overlay() {
         let mut app = make_app();
         assert!(!handle_overlay_key(&mut app, key(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn yields_to_select_mode_even_with_overlay() {
+        use crate::widgets::state::InputMode;
+        let mut app = make_app();
+        app.thinking.popup = Some(ThinkingPopup {
+            block_idx: 0,
+            title: "t".into(),
+            scroll: 0,
+        });
+        app.input_mode = InputMode::Select;
+        assert!(
+            !handle_overlay_key(&mut app, key(KeyCode::Down)),
+            "Select mode must receive ↑↓, not the overlay"
+        );
     }
 
     #[test]

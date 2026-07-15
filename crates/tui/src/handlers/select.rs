@@ -2,8 +2,12 @@ use crate::widgets::state::{App, InputMode, SelectKind};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Select popup mode key handling: up/down to navigate, Enter to confirm, Esc to cancel.
+/// Multi-select also uses Space to toggle checkboxes.
 pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
     match key.code {
+        KeyCode::Char(' ') if app.select.multi => {
+            app.select.toggle_checked();
+        }
         KeyCode::Enter => {
             if app.select.options.is_empty() {
                 let msgs = app.msgs();
@@ -14,6 +18,35 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             }
 
             let log_confirm = app.select.log_confirm;
+            let multi = app.select.multi;
+
+            if multi {
+                let idxs = app.select.confirm_multi();
+                let chosen: Vec<String> = idxs
+                    .iter()
+                    .filter_map(|&i| app.select.options.get(i).cloned())
+                    .collect();
+                let label = if chosen.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    chosen.join(", ")
+                };
+                match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
+                    SelectKind::Agent => {
+                        if log_confirm {
+                            let msgs = app.msgs();
+                            app.add_system_message(msgs.selected_tmpl.replace("{}", &label));
+                        }
+                        app.input_mode = InputMode::Normal;
+                    }
+                    // Multi is only opened for agent ask_user; local flows stay single-select.
+                    SelectKind::ModelPick | SelectKind::PersistModel { .. } => {
+                        app.input_mode = InputMode::Normal;
+                    }
+                }
+                return;
+            }
+
             let idx = app.select.confirm().unwrap_or(0);
             let chosen = app
                 .select
@@ -231,6 +264,18 @@ mod tests {
     }
 
     #[test]
+    fn arrow_keys_navigate_options() {
+        let mut app = make_app();
+        let _rx = seed_select(&mut app);
+
+        assert_eq!(app.select.selected, 0);
+        handle_select_mode(&mut app, key(KeyCode::Down));
+        assert_eq!(app.select.selected, 1);
+        handle_select_mode(&mut app, key(KeyCode::Up));
+        assert_eq!(app.select.selected, 0);
+    }
+
+    #[test]
     fn enter_confirms_selection_and_returns_to_normal() {
         let mut app = make_app();
         let mut rx = seed_select(&mut app);
@@ -240,6 +285,13 @@ mod tests {
 
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_eq!(rx.try_recv(), Ok(Some(1)));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("Deny") || m.contains("Selected") || m.contains("已选择")),
+            "log_confirm should render selection in the log: {:?}",
+            app.raw_messages
+        );
     }
 
     #[test]

@@ -176,8 +176,10 @@ pub struct Messages {
     pub cmd_skills: &'static str,
     pub cmd_skill_reload: &'static str,
     pub skill_reloaded_tmpl: &'static str,
+    pub skill_reload_failed_tmpl: &'static str,
     pub slash_section_commands: &'static str,
     pub slash_section_skills: &'static str,
+    pub slash_title_mixed: &'static str,
 
     // ---- 系统消息 ----
     pub step_started_tmpl: &'static str,
@@ -199,6 +201,7 @@ pub struct Messages {
 
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
+    pub skill_task_too_long_tmpl: &'static str,
     pub input_busy_msg: &'static str,
     pub cancel_noop_msg: &'static str,
 
@@ -304,12 +307,12 @@ impl Messages {
             help_G: "    G           Go to bottom of log",
             help_y: "    y           Copy selected to clipboard",
             help_t: "    t           Open/close thinking card popup",
-            help_colon: "    /           Command palette (fuzzy filter & execute)",
+            help_colon: "    /           Command palette (commands & skills)",
             help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
-            help_type_task: "    Type task, Enter to submit, @ to attach file",
+            help_type_task: "    Type task or /skill, Enter to submit, @ to attach file",
             help_ctrl_z: "    Ctrl+Z/Y    Undo/redo input",
             help_global_header: "  🌐 Global",
-            help_yn: "    Enter/Esc   Confirm/cancel select popup",
+            help_yn: "    ↑↓/j/k      Move in select popup; Enter/Esc confirm/cancel",
             help_ctrl_h: "    Ctrl+H      Show history",
             help_ctrl_t: "    Ctrl+T      Toggle theme",
             help_ctrl_l: "    Ctrl+L      Toggle language",
@@ -355,8 +358,10 @@ impl Messages {
             cmd_skills: "List available skills",
             cmd_skill_reload: "Reload skills from disk",
             skill_reloaded_tmpl: "📋 Reloaded {} skill(s)",
+            skill_reload_failed_tmpl: "⚠ Failed to reload skills: {}",
             slash_section_commands: "Commands",
             slash_section_skills: "Skills",
+            slash_title_mixed: "Commands / Skills",
 
             step_started_tmpl: "▶ Executing: {}",
             step_success_prefix: "✓",
@@ -376,6 +381,8 @@ impl Messages {
             lang_changed_tmpl: "🌐 Language: {}",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
+            skill_task_too_long_tmpl:
+                "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
             cancel_noop_msg: "Nothing to cancel",
 
@@ -479,12 +486,12 @@ impl Messages {
             help_G: "    G           跳到日志底部",
             help_y: "    y           复制选中内容到剪贴板",
             help_t: "    t           打开/关闭思考卡片弹窗",
-            help_colon: "    /           命令面板 (模糊过滤并执行)",
+            help_colon: "    /           命令面板 (内置命令与 Skills)",
             help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",
-            help_type_task: "    输入任务，按 Enter 提交，@ 附加文件",
+            help_type_task: "    输入任务或 /skill，Enter 提交，@ 附加文件",
             help_ctrl_z: "    Ctrl+Z/Y    撤销/重做输入",
             help_global_header: "  🌐 全局",
-            help_yn: "    Enter/Esc   确认/取消选择弹窗",
+            help_yn: "    ↑↓/j/k      选择弹窗移动；Enter/Esc 确认/取消",
             help_ctrl_h: "    Ctrl+H      显示历史",
             help_ctrl_t: "    Ctrl+T      切换主题",
             help_ctrl_l: "    Ctrl+L      切换语言",
@@ -530,8 +537,10 @@ impl Messages {
             cmd_skills: "列出可用的技能",
             cmd_skill_reload: "从磁盘重新加载技能",
             skill_reloaded_tmpl: "📋 重新加载了 {} 个技能",
+            skill_reload_failed_tmpl: "⚠ 重新加载技能失败：{}",
             slash_section_commands: "命令",
             slash_section_skills: "技能",
+            slash_title_mixed: "命令 / 技能",
 
             step_started_tmpl: "▶ 正在执行: {}",
             step_success_prefix: "✓",
@@ -551,6 +560,7 @@ impl Messages {
             lang_changed_tmpl: "🌐 语言: {}",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
+            skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
             cancel_noop_msg: "当前没有可取消的任务",
 

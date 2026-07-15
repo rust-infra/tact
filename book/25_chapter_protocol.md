@@ -42,7 +42,8 @@ pub enum AgentUpdate {
     TokenUsage(TokenUsageInfo),
     ModelInfo(ModelCallParams),
     Info(String),
-    RequestSelect { prompt, options, respond },
+    RequestSelect { prompt, options, respond, log_confirm }, // single; permission=`false`, ask_user=`true`
+    RequestMultiSelect { prompt, options, respond },         // multi; ask_user only (`multi_select`)
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
 }

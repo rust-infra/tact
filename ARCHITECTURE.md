@@ -312,7 +312,7 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 | Block | Source |
 |---|---|
 | Role / guidelines / constraints | Static template |
-| Skills | `skill_registry.describe_available()` |
+| Skills | `skill_registry.describe_available()` (name/description only; full body via `load_skill` or TUI `/skill`) |
 | Memory | `.claude/memory/*.md` via `MemoryManager` |
 | CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir — **cached once per session** |
 | AGENTS.md | project `AGENTS.md` (and cwd if it differs), injected via `additional` — **cached once per session** |
@@ -368,7 +368,7 @@ Recovery mechanisms inside `agent_loop()`:
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
 | Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.claude/cron/`. |
 | Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
-| Skills | `skill/` | `SKILL.md` files loaded into the system prompt wrapped in `<skill>` tags. |
+| Skills | `skill/` | `SKILL.md` under legacy `skills/`, `~/.tact/skills/`, and `.claude/skills/`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 
 ---
 

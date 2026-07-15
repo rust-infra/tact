@@ -33,7 +33,6 @@ use crate::ToolSpec;
 use crate::background::SharedBackgroundManager;
 use crate::cron::SharedCronScheduler;
 use crate::memory::MemoryManager;
-use crate::skill::SkillRegistry;
 use crate::task::SharedTaskManager;
 use crate::team::SharedTeammateManager;
 use crate::worktree::SharedWorktreeManager;
@@ -104,7 +103,9 @@ use write_file::WriteFileTool;
 /// cron scheduling, teammates, and worktrees.
 #[derive(Clone)]
 pub struct ToolContext {
-    pub skill_registry: Arc<SkillRegistry>,
+    /// Shared with the TUI in interactive mode so `/skill-reload` updates
+    /// `load_skill` / system-prompt skill summaries without restarting.
+    pub skill_registry: crate::skill::SharedSkillRegistry,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,

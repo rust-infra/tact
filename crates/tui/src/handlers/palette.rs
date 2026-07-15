@@ -1,5 +1,5 @@
 use super::{
-    execute_palette_command, prev_word_boundary,
+    execute_palette_command, is_builtin_palette_command, prev_word_boundary,
     skills::is_skill_command,
 };
 use crate::widgets::state::{App, InputMode};
@@ -26,7 +26,8 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 let cmd = commands[filtered[idx]].0.clone();
                 app.cmd_line.clear();
                 // Skills: jump to Insert with `/name ` so the user can add args.
-                if is_skill_command(app, &cmd) {
+                // Built-ins win even if a same-named skill exists on disk.
+                if is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd) {
                     app.save_undo();
                     app.input = format!("/{cmd} ");
                     app.input_cursor = app.input.len();
@@ -168,5 +169,26 @@ mod tests {
         // Restore prior draft.
         let (prev, _) = app.undo_stack.last().cloned().expect("undo");
         assert_eq!(prev, "draft text");
+    }
+
+    #[test]
+    fn enter_on_builtin_wins_over_same_named_skill() {
+        use crate::widgets::state::SkillEntry;
+
+        let mut app = make_app();
+        app.skills_data = vec![SkillEntry {
+            name: "help".into(),
+            description: "skill help".into(),
+            body: "should not equip".into(),
+        }];
+        app.input_mode = InputMode::Palette;
+        app.cmd_line = "help".into();
+        app.palette_selected = 0;
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(app.show_help, "builtin help should execute");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_ne!(app.input, "/help ");
     }
 }

@@ -3,11 +3,12 @@
 mod harness;
 
 use harness::{
-    apply_patch_tool_use, ask_user_tool_use, background_run_tool_use, check_background_tool_use,
-    cron_create_tool_use, cron_list_tool_use, load_skill_tool_use, read_inbox_tool_use,
-    run_single_task_with_setup, save_memory_tool_use, search_code_tool_use, send_message_tool_use,
-    spawn_teammate_tool_use, task_completed_with, text_block, worktree_create_tool_use,
-    worktree_list_tool_use, worktree_status_tool_use,
+    apply_patch_tool_use, ask_user_tool_use, ask_user_tool_use_ex, background_run_tool_use,
+    check_background_tool_use, cron_create_tool_use, cron_list_tool_use, load_skill_tool_use,
+    read_inbox_tool_use, run_single_task_with_permission_choice, run_single_task_with_setup,
+    save_memory_tool_use, search_code_tool_use, send_message_tool_use, spawn_teammate_tool_use,
+    task_completed_with, text_block, worktree_create_tool_use, worktree_list_tool_use,
+    worktree_status_tool_use,
 };
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
@@ -32,7 +33,88 @@ async fn ask_user_tool_returns_question() {
         updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "ask1" && result.tool == "ask_user" && matches!(result.status, StepStatus::Success))),
         "ask_user should succeed: {updates:?}"
     );
+    assert!(
+        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("What is your name?"))),
+        "free-text ask_user should emit Info: {updates:?}"
+    );
     assert!(task_completed_with(&updates, "Done."));
+}
+
+#[tokio::test]
+async fn ask_user_with_options_uses_select_popup() {
+    let mock = MockClient::new(vec![
+        (
+            vec![ask_user_tool_use(
+                "ask1",
+                "Pick one",
+                Some(&["alpha", "beta"]),
+            )],
+            Some(StopReason::ToolUse),
+        ),
+        (vec![text_block("Picked.")], Some(StopReason::EndTurn)),
+    ]);
+
+    // choice 1 → "beta" (wire_permission_responder auto-answers RequestSelect).
+    let (updates, _work_dir) = run_single_task_with_permission_choice(
+        mock,
+        "ask user options",
+        PermissionMode::Auto,
+        Some(1),
+        |_| {},
+    )
+    .await;
+
+    assert!(
+        updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::StepFinished { tool_id: id, result, .. }
+                if id == "ask1"
+                    && result.tool == "ask_user"
+                    && matches!(result.status, StepStatus::Success)
+                    && result.message.contains("User selected: beta")
+        )),
+        "ask_user should return selected option: {updates:?}"
+    );
+    assert!(task_completed_with(&updates, "Picked."));
+}
+
+#[tokio::test]
+async fn ask_user_multi_select_uses_multi_popup() {
+    let mock = MockClient::new(vec![
+        (
+            vec![ask_user_tool_use_ex(
+                "ask1",
+                "Pick many",
+                Some(&["a", "b", "c"]),
+                true,
+            )],
+            Some(StopReason::ToolUse),
+        ),
+        (vec![text_block("Multi done.")], Some(StopReason::EndTurn)),
+    ]);
+
+    // Harness maps choice 0 → multi selection [0] → "a".
+    let (updates, _work_dir) = run_single_task_with_permission_choice(
+        mock,
+        "ask user multi",
+        PermissionMode::Auto,
+        Some(0),
+        |_| {},
+    )
+    .await;
+
+    assert!(
+        updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::StepFinished { tool_id: id, result, .. }
+                if id == "ask1"
+                    && result.tool == "ask_user"
+                    && matches!(result.status, StepStatus::Success)
+                    && result.message.contains("User selected: a")
+        )),
+        "multi ask_user should return selection: {updates:?}"
+    );
+    assert!(task_completed_with(&updates, "Multi done."));
 }
 
 #[tokio::test]

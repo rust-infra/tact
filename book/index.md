@@ -144,7 +144,7 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | # | Chapter | Description |
 |---|---------|-------------|
 | 1 | [Store and Persistence](./01_chapter_store.md) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
-| 2 | [Skill Registry](./02_chapter_skill.md) | `SKILL.md` discovery, prompt summaries, `load_skill` on-demand loading, and `<skill>` tag format |
+| 2 | [Skill Registry](./02_chapter_skill.md) | `SKILL.md` multi-root discovery, prompt summaries, `load_skill`, TUI slash invoke (`$ARGUMENTS`), and `<skill>` tag format |
 | 3 | [Persistent Memory](./03_chapter_memory.md) | Markdown memories under `.claude/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
 | 4 | [System Prompt](./04_chapter_prompt.md) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
 | 5 | [Context Compaction](./05_chapter_compact.md) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |

@@ -7,17 +7,24 @@
 //! - user:   `~/.tact/skills/`
 //! - project: `<workdir>/.claude/skills/`
 //!
-//! Each file has optional YAML frontmatter for `name` and `description`.
+//! Each file has optional YAML frontmatter for `name` and `description`
+//! (Agent Skills–compatible). Bodies are unrestricted; TUI slash invoke may
+//! additionally substitute Claude Code–style bare `$ARGUMENTS`.
 //!
 //! - [`SkillRegistry`] scans skill directories, parses frontmatter, and
 //!   provides lookup by name.
-//! - [`get_skill_registry`] is the convenience constructor for a workdir.
-//! - The rendered skill body is wrapped in `<skill>` XML tags for injection
-//!   into tool results.
+//! - [`get_skill_registry`] / [`shared_skill_registry`] construct registries;
+//!   interactive mode shares [`SharedSkillRegistry`] between agent tools and the TUI
+//!   so `/skill-reload` updates both without restart.
+//! - [`SkillRegistry::describe_available`] supplies name/description lines for
+//!   the system prompt (not full bodies).
+//! - Full bodies are wrapped in `<skill>` XML for `load_skill` tool results
+//!   and for TUI slash invocation (user task).
 
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use anyhow::Result;
@@ -50,6 +57,9 @@ impl std::fmt::Display for SkillDocument {
     }
 }
 
+/// Shared registry used by the agent tools and (in interactive mode) the TUI.
+pub type SharedSkillRegistry = Arc<Mutex<SkillRegistry>>;
+
 /// Build a registry for `workdir` by scanning Claude-compatible skill roots
 /// (plus legacy `<workdir>/skills` for backward compatibility).
 pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
@@ -57,6 +67,16 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
     let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
     Ok(registry)
+}
+
+/// Load skills into a mutex-backed registry shared across agent + TUI.
+pub fn shared_skill_registry(workdir: impl AsRef<Path>) -> Result<SharedSkillRegistry> {
+    Ok(Arc::new(Mutex::new(get_skill_registry(workdir)?)))
+}
+
+/// Lock the shared skill registry (recovers from poison).
+pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> {
+    reg.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub struct SkillRegistry {
@@ -290,5 +310,34 @@ mod tests {
         let registry = get_skill_registry(dir.path()).unwrap();
         assert!(registry.load_full_text("style").contains("PROJECT"));
         assert!(!registry.load_full_text("style").contains("LEGACY"));
+    }
+
+    #[test]
+    fn shared_registry_reload_updates_in_place() {
+        let dir = tempdir().unwrap();
+        let unique = format!("reload-demo-{}", std::process::id());
+        let shared = shared_skill_registry(dir.path()).unwrap();
+        assert!(
+            !lock_skills(&shared).skills().contains_key(&unique),
+            "fresh temp workdir should not already contain {unique}"
+        );
+
+        write_skill(
+            &dir.path().join(".claude/skills"),
+            &unique,
+            "Deploy",
+            "v1 body",
+        );
+        {
+            let mut reg = lock_skills(&shared);
+            *reg = get_skill_registry(dir.path()).unwrap();
+            assert!(reg.load_full_text(&unique).contains("v1 body"));
+        }
+        // Same Arc still visible to other holders.
+        assert!(
+            lock_skills(&shared)
+                .load_full_text(&unique)
+                .contains("v1 body")
+        );
     }
 }

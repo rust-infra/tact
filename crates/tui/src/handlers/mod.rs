@@ -304,12 +304,22 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skill-reload" => {
-            let count = reload_skills(app);
-            let msg = app
-                .msgs()
-                .skill_reloaded_tmpl
-                .replace("{}", &count.to_string());
-            app.add_system_message(msg);
+            match reload_skills(app) {
+                Ok(count) => {
+                    let msg = app
+                        .msgs()
+                        .skill_reloaded_tmpl
+                        .replace("{}", &count.to_string());
+                    app.add_system_message(msg);
+                }
+                Err(err) => {
+                    let msg = app
+                        .msgs()
+                        .skill_reload_failed_tmpl
+                        .replace("{}", &err);
+                    app.add_system_message(msg);
+                }
+            }
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -415,29 +425,24 @@ fn skills_table_rows(description: &str) -> Vec<String> {
     rows
 }
 
-/// Reload skills from disk. Returns number of skills loaded.
-fn reload_skills(app: &mut App) -> usize {
-    match tact::skill::get_skill_registry(&app.work_dir) {
-        Ok(reg) => {
-            app.skills_description = reg.describe_available();
-            app.skills_data = reg
-                .skills()
-                .iter()
-                .map(|(_, doc)| crate::widgets::state::SkillEntry {
-                    name: doc.manifest.name.clone(),
-                    description: doc.manifest.description.clone(),
-                    body: doc.body.clone(),
-                })
-                .collect();
-            // Skill list affects log highlighting; force visual-cache rebuild.
-            app.log_scroll.visual_cache_ver = 0;
-            app.skills_data.len()
-        }
-        Err(e) => {
-            tracing::warn!("Failed to reload skills: {e}");
-            0
-        }
-    }
+/// Reload skills from disk into the shared registry (agent + TUI).
+fn reload_skills(app: &mut App) -> Result<usize, String> {
+    let mut reg = tact::skill::lock_skills(&app.skill_registry);
+    // Keep search roots in sync with the current workdir (tests may set work_dir late).
+    *reg = tact::skill::get_skill_registry(&app.work_dir).map_err(|e| e.to_string())?;
+    app.skills_description = reg.describe_available();
+    app.skills_data = reg
+        .skills()
+        .iter()
+        .map(|(_, doc)| crate::widgets::state::SkillEntry {
+            name: doc.manifest.name.clone(),
+            description: doc.manifest.description.clone(),
+            body: doc.body.clone(),
+        })
+        .collect();
+    // Skill list affects log highlighting; force visual-cache rebuild.
+    app.log_scroll.visual_cache_ver = 0;
+    Ok(app.skills_data.len())
 }
 
 #[cfg(test)]
