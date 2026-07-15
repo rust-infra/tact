@@ -63,10 +63,15 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// A skill available in the TUI slash / palette picker.
+///
+/// Enter on a skill autocompletes `/name `; a second Enter invokes (body wrapped
+/// in `<skill>`, with optional `$ARGUMENTS` handling). Built-in command names
+/// take priority and exclude colliding skills from [`App::palette_commands`].
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     pub name: String,
     pub description: String,
+    /// Markdown body after frontmatter (from disk at load / skill-reload time).
     pub body: String,
 }
 
@@ -221,6 +226,8 @@ pub struct App {
     pub(crate) skills_description: String,
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
+    /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
+    pub(crate) skill_registry: tact::skill::SharedSkillRegistry,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

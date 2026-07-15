@@ -1,11 +1,11 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     background::SharedBackgroundManager,
     cron::{CronScheduler, SharedCronScheduler},
     memory::MemoryManager,
-    skill::SkillRegistry,
+    skill::{SharedSkillRegistry, SkillRegistry},
     store::StoreRoot,
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
@@ -33,7 +33,9 @@ pub fn test_context(name: &str) -> ToolContext {
     let store_root = StoreRoot::new(root_dir.join(".claude")).unwrap();
 
     ToolContext {
-        skill_registry: Arc::new(SkillRegistry::new([root_dir.join(".claude/skills")])),
+        skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
+            root_dir.join(".claude/skills"),
+        ]))),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".claude/memory"),
         ))),
@@ -57,7 +59,7 @@ pub fn write_workspace_file(work_dir: &Path, path: &str, content: &str) {
     std::fs::write(full, content).unwrap();
 }
 
-pub fn install_skill(work_dir: &Path, name: &str, body: &str) -> Arc<SkillRegistry> {
+pub fn install_skill(work_dir: &Path, name: &str, body: &str) -> SharedSkillRegistry {
     let skill_dir = work_dir.join(".claude/skills").join(name);
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -67,5 +69,5 @@ pub fn install_skill(work_dir: &Path, name: &str, body: &str) -> Arc<SkillRegist
     .unwrap();
     let mut registry = SkillRegistry::new([work_dir.join(".claude/skills")]);
     registry.load_skills().unwrap();
-    Arc::new(registry)
+    Arc::new(Mutex::new(registry))
 }

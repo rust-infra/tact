@@ -33,8 +33,17 @@ pub(crate) fn split_skill_slash<'a>(
     Some((&line[..skill_end], &line[skill_end..]))
 }
 
+/// Skill names eligible for slash highlighting / matching (excludes built-ins).
 pub(crate) fn skill_name_set(skills: &[SkillEntry]) -> HashSet<&str> {
-    skills.iter().map(|s| s.name.as_str()).collect()
+    let builtins: HashSet<&str> = crate::widgets::state::PALETTE_COMMANDS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| !builtins.contains(n))
+        .collect()
 }
 
 /// Static prefix of an i18n template like `"💬 {}"` → `"💬 "`.
@@ -123,6 +132,25 @@ mod tests {
     fn split_skill_slash_rejects_unknown() {
         let names: HashSet<&str> = ["demo-test"].into_iter().collect();
         assert!(split_skill_slash("/quit now", &names).is_none());
+    }
+
+    #[test]
+    fn skill_name_set_excludes_builtin_names() {
+        let skills = vec![
+            SkillEntry {
+                name: "help".into(),
+                description: "skill help".into(),
+                body: "x".into(),
+            },
+            SkillEntry {
+                name: "demo".into(),
+                description: "d".into(),
+                body: "y".into(),
+            },
+        ];
+        let names = skill_name_set(&skills);
+        assert!(!names.contains("help"));
+        assert!(names.contains("demo"));
     }
 
     #[test]

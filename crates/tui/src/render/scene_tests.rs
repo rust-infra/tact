@@ -208,6 +208,7 @@ fn full_frame_select_popup_overlays() {
         prompt: "Allow bash?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
         respond: tx,
+        log_confirm: false,
     });
 
     let text = render_app_text(&mut app, 100, 30);
@@ -215,6 +216,34 @@ fn full_frame_select_popup_overlays() {
     assert!(
         text.contains("Allow bash") || text.contains("Allow once"),
         "select popup should overlay frame, got:\n{text}"
+    );
+}
+
+#[test]
+fn full_frame_select_popup_wraps_long_prompt() {
+    let mut app = make_app();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    let prompt = "📝 对比题：He went to ___ school to pick up his daughter after ___ class.";
+    app.handle_agent_update(AgentUpdate::RequestSelect {
+        prompt: prompt.into(),
+        options: vec![
+            "A. the ... the".into(),
+            "B. Ø ... Ø".into(),
+            "C. the ... Ø".into(),
+            "D. Ø ... the".into(),
+        ],
+        respond: tx,
+        log_confirm: false,
+    });
+
+    let text = render_app_text(&mut app, 80, 28);
+    assert!(
+        text.contains("daughter") && text.contains("school"),
+        "long select prompt should wrap in body (not truncate in title), got:\n{text}"
+    );
+    assert!(
+        text.contains("A. the") && text.contains("D. Ø"),
+        "options should still render, got:\n{text}"
     );
 }
 

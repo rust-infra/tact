@@ -10,7 +10,7 @@ use crate::compact::persist_large_output;
 use crate::hook::{HookControl, ToolResult, ToolUse};
 use crate::invoke_hooks;
 use crate::mcp::MCPToolRouter;
-use crate::permission::PermissionBehavior;
+use crate::permission::{PermissionBehavior, format_permission_prompt};
 use crate::tool::{ToolContext, ToolRouter};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus};
 
@@ -263,13 +263,8 @@ impl Agent {
                         PermissionBehavior::Ask => {
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
                                 let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-                                let input_preview = tool_use
-                                    .input
-                                    .to_string()
-                                    .chars()
-                                    .take(80)
-                                    .collect::<String>();
-                                let prompt = format!("Allow {}: {}", tool_use.name, input_preview);
+                                let prompt =
+                                    format_permission_prompt(&tool_use.name, &tool_use.input);
                                 let options = vec![
                                     "Allow once".to_string(),
                                     "Deny".to_string(),
@@ -279,6 +274,7 @@ impl Agent {
                                     prompt,
                                     options,
                                     respond: respond_tx,
+                                    log_confirm: false,
                                 });
                                 match respond_rx.await {
                                     Ok(Some(0)) => Some("allow_once"),

@@ -784,13 +784,14 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 "If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
             ])
-            .skills_available(
-            if self.agent_settings.skill_body_auto_inject {
-                self.tool_context.skill_registry.describe_available_with_body()
-            } else {
-                self.tool_context.skill_registry.describe_available()
-            },
-        )
+            .skills_available({
+                let reg = crate::skill::lock_skills(&self.tool_context.skill_registry);
+                if self.agent_settings.skill_body_auto_inject {
+                    reg.describe_available_with_body()
+                } else {
+                    reg.describe_available()
+                }
+            })
             .memory(self.load_memory_prompt()?)
             .claude_md(cached_md_section(
                 &mut self.runtime.cached_claude_md,

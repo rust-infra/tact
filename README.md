@@ -204,7 +204,7 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 ### 🪝 Hooks & Skills
 
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
-- **Skills** — reusable prompt snippets that extend agent capabilities (e.g., "refactor this module Rust 2024 edition style").
+- **Skills** — `SKILL.md` playbooks under `~/.tact/skills/` and `.claude/skills/` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 👥 Sub-agents & Team
@@ -337,7 +337,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | `cron_create` | Create a scheduled prompt |
 | `cron_list` | List scheduled prompts |
 | `cron_delete` | Delete a scheduled prompt |
-| `ask_user` | Ask the user a question |
+| `ask_user` | Ask the user (TUI popup; `multi_select` for checkboxes) |
 
 ---
 

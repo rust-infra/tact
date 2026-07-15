@@ -126,6 +126,30 @@ pub fn build_meta_text(
     parts.join(meta_sep)
 }
 
+/// Map ask_user tool messages onto a short meta-row label (aligned with Success).
+fn compact_ask_user_meta(message: &str) -> Option<String> {
+    let msg = message.trim();
+    if msg.is_empty() {
+        return None;
+    }
+    const MAX: usize = 60;
+    let label = if let Some(rest) = msg.strip_prefix("User selected: ") {
+        format!("Selected: {rest}")
+    } else if msg.starts_with("User cancelled") {
+        "Cancelled".to_string()
+    } else if msg.starts_with("Question shown") {
+        // Free-text ask — keep meta clean; full text is for the model.
+        return None;
+    } else {
+        msg.to_string()
+    };
+    Some(if label.chars().count() <= MAX {
+        label
+    } else {
+        format!("{}…", label.chars().take(MAX - 1).collect::<String>())
+    })
+}
+
 fn truncate_tool_error(error: &str) -> String {
     const MAX_CHARS: usize = 80;
     let one_line = error.replace('\n', " ").trim().to_string();
@@ -318,6 +342,11 @@ impl<'a> ToolWidget<'a> {
 
     pub fn from_step_result(result: &StepResult, theme: &'a Theme, msgs: &'a Messages) -> Self {
         let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
+        // ask_user answers compress onto the meta row (same slot as permission labels),
+        // not a separate detail card line.
+        let ask_user_label = (!failed && result.tool == "ask_user")
+            .then(|| compact_ask_user_meta(&result.message))
+            .flatten();
         let detail = result.detail.clone().or_else(|| {
             if failed && !result.message.is_empty() {
                 Some(result.message.clone())
@@ -325,6 +354,13 @@ impl<'a> ToolWidget<'a> {
                 None
             }
         });
+        let permission_label = match (result.permission_label.clone(), ask_user_label) {
+            // Permission Ask then ask_user choice — keep both on the meta row.
+            (Some(perm), Some(choice)) => Some(format!("{perm} · {choice}")),
+            (Some(perm), None) => Some(perm),
+            (None, Some(choice)) => Some(choice),
+            (None, None) => None,
+        };
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
@@ -336,7 +372,7 @@ impl<'a> ToolWidget<'a> {
             phase: ToolPhase::from_status(&result.status),
             detail,
             duration_us: result.duration_us,
-            permission_label: result.permission_label.clone(),
+            permission_label,
             error_message: None,
             theme,
             msgs,
@@ -704,6 +740,68 @@ mod tests {
             Some("Always allow this tool")
         );
         assert!(output.layout.has_detail_card);
+    }
+
+    #[test]
+    fn ask_user_selection_compresses_onto_meta_row() {
+        let (theme, msgs) = fixture();
+        let result = StepResult {
+            tool: "ask_user".to_string(),
+            arg_summary: "Pick one".to_string(),
+            arg_full: Some("Pick one".to_string()),
+            status: StepStatus::Success,
+            message: "User selected: C. Ø ( 不加冠词 )".to_string(),
+            detail: None,
+            duration_us: Some(12_370_000),
+            permission_label: None,
+        };
+        let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
+        let output = widget.build();
+
+        assert_eq!(
+            output.permission_label.as_deref(),
+            Some("Selected: C. Ø ( 不加冠词 )")
+        );
+        assert!(
+            !output.layout.has_detail_card,
+            "selection must not open a detail card"
+        );
+        let meta = build_meta_text(
+            output.phase,
+            output.permission_label.as_deref(),
+            output.size_bytes,
+            output.duration_us,
+            None,
+            ' ',
+            msgs.tool_phase_running,
+            msgs.tool_phase_success,
+            msgs.tool_phase_failed,
+            msgs.tool_meta_sep,
+            msgs.step_success_prefix,
+            msgs.step_fail_prefix,
+        );
+        assert!(meta.contains("Selected: C. Ø"));
+        assert!(meta.contains(msgs.tool_phase_success) || meta.contains("Success"));
+    }
+
+    #[test]
+    fn ask_user_keeps_permission_label_and_selection() {
+        let (theme, msgs) = fixture();
+        let result = StepResult {
+            tool: "ask_user".to_string(),
+            arg_summary: "Pick one".to_string(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "User selected: B. the".to_string(),
+            detail: None,
+            duration_us: Some(1_000),
+            permission_label: Some("Allow once".to_string()),
+        };
+        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        assert_eq!(
+            output.permission_label.as_deref(),
+            Some("Allow once · Selected: B. the")
+        );
     }
 
     #[test]

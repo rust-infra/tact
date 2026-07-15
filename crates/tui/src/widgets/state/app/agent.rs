@@ -130,9 +130,20 @@ impl App {
                 prompt,
                 options,
                 respond,
+                log_confirm,
             } => {
                 self.select_kind = SelectKind::Agent;
-                self.select.set(prompt, options, respond, false);
+                self.select.set(prompt, options, respond, log_confirm);
+                self.input_mode = InputMode::Select;
+            }
+            AgentUpdate::RequestMultiSelect {
+                prompt,
+                options,
+                respond,
+            } => {
+                self.select_kind = SelectKind::Agent;
+                // Choice is shown on the ask_user tool meta row; no duplicate log line.
+                self.select.set_multi(prompt, options, respond, false);
                 self.input_mode = InputMode::Select;
             }
             AgentUpdate::ThinkingChunk(chunk) => {
@@ -747,6 +758,7 @@ mod lifecycle_tests {
             prompt: "Allow bash?".into(),
             options: vec!["Yes".into(), "No".into()],
             respond: tx,
+            log_confirm: false,
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));

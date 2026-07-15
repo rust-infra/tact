@@ -81,6 +81,10 @@ pub fn wire_permission_responder(
                 AgentUpdate::RequestSelect { respond, .. } => {
                     let _ = respond.send(choice);
                 }
+                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                    // Map single harness choice → one-element multi selection (or cancel).
+                    let _ = respond.send(choice.map(|i| vec![i]));
+                }
                 other => {
                     let _ = collect_tx.send(other);
                 }
@@ -462,7 +466,16 @@ pub fn cron_delete_tool_use(id: &str, cron_id: &str) -> ContentBlock {
 }
 
 pub fn ask_user_tool_use(id: &str, question: &str, options: Option<&[&str]>) -> ContentBlock {
-    let mut input = serde_json::json!({ "question": question });
+    ask_user_tool_use_ex(id, question, options, false)
+}
+
+pub fn ask_user_tool_use_ex(
+    id: &str,
+    question: &str,
+    options: Option<&[&str]>,
+    multi_select: bool,
+) -> ContentBlock {
+    let mut input = serde_json::json!({ "question": question, "multi_select": multi_select });
     if let Some(opts) = options {
         input["options"] = serde_json::Value::Array(
             opts.iter()
@@ -536,6 +549,10 @@ pub fn wire_permission_responder_with_choices(
                 AgentUpdate::RequestSelect { respond, .. } => {
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice);
+                }
+                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                    let choice = choices.next().unwrap_or(None);
+                    let _ = respond.send(choice.map(|i| vec![i]));
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -652,6 +669,11 @@ pub fn wire_permission_responder_with_counter(
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice);
+                }
+                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                    counter_clone.fetch_add(1, Ordering::Relaxed);
+                    let choice = choices.next().unwrap_or(None);
+                    let _ = respond.send(choice.map(|i| vec![i]));
                 }
                 other => {
                     let _ = collect_tx.send(other);

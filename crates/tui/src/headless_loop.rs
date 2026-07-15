@@ -22,8 +22,16 @@ pub fn auto_confirm_select(app: &mut App, choice: usize) {
     if !matches!(app.input_mode, InputMode::Select) || app.select.options.is_empty() {
         return;
     }
-    app.select.selected = choice.min(app.select.options.len().saturating_sub(1));
-    app.select.confirm();
+    let idx = choice.min(app.select.options.len().saturating_sub(1));
+    app.select.selected = idx;
+    if app.select.multi {
+        if let Some(slot) = app.select.checked.get_mut(idx) {
+            *slot = true;
+        }
+        app.select.confirm_multi();
+    } else {
+        app.select.confirm();
+    }
     app.select_kind = crate::widgets::state::SelectKind::Agent;
     app.input_mode = InputMode::Normal;
 }

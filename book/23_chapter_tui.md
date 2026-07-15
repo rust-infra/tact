@@ -587,15 +587,17 @@ Cross-reference: [Ch 25 Agent–TUI Protocol](./25_chapter_protocol.md) for mess
 
 ### Slash skills
 
-Each discovered skill appears as `/{name}` with its frontmatter `description`. Flow (`handlers/skills.rs`):
+Each discovered skill appears as `/{name}` with its frontmatter `description`. Built-ins **override** same-named skills (those skills are omitted from the Skills group). Flow (`handlers/skills.rs`):
 
 | Input | Behavior |
 |-------|----------|
 | Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) — add optional args, then Enter to run |
 | Slash popup Enter on a **built-in** | Execute immediately (`/quit`, `/cancel`, …) |
-| `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (`$ARGUMENTS` substituted, or `ARGUMENTS:` appended) |
+| `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (bare `$ARGUMENTS` substituted, else Claude-style `ARGUMENTS:` appended when args present) |
+| Palette Enter on a skill | Insert mode with `/name ` prefilled (undo checkpoint preserved) |
+| `/skill-reload` | Rescan roots into shared registry (TUI + agent), invalidate visual cache |
 
-Palette Enter on a skill opens Insert with `/name ` prefilled. Separate from the model calling `load_skill` mid-turn ([Ch 2](./02_chapter_skill.md)).
+Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 
 Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 

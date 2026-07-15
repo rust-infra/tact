@@ -99,6 +99,9 @@ impl App {
             account: AccountState::default(),
             skills_description,
             skills_data,
+            skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
+                tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
+            )),
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,

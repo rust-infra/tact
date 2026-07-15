@@ -114,7 +114,7 @@ config::init()
   → dispatch headless or interactive
 Create LLM client
   → Resolve PermissionMode (permission.rs / TUI prompt)
-  → Scan skills/
+  → Scan skill roots (legacy skills/ → ~/.tact/skills → .claude/skills)
   → Create .claude StoreRoot
   → Initialize task/background/cron/team/worktree managers
   → Initialize memory manager
@@ -212,7 +212,7 @@ Each tool uses strongly-typed input and generates model-visible `input_schema` v
 
 ```rust
 pub struct ToolContext {
-    pub skill_registry: Arc<SkillRegistry>,
+    pub skill_registry: Arc<Mutex<SkillRegistry>>,
     pub memory_manager: Arc<Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
@@ -435,13 +435,15 @@ The main agent builds a dynamic prompt each loop. Subagents use a static prompt 
 
 ## Skills & Memory
 
-The skill system scans:
+The skill system scans (later root wins on name clash):
 
 ```text
-skills/*/SKILL.md
+<workdir>/skills/*/SKILL.md          # legacy
+~/.tact/skills/*/SKILL.md            # user
+<workdir>/.claude/skills/*/SKILL.md  # project (canonical)
 ```
 
-At startup, only skill summaries are placed in the system prompt. Full content is loaded on demand via `load_skill`.
+At startup, only skill summaries go into the system prompt (`describe_available`). Full content is loaded on demand via `load_skill`, or injected as a user task from the TUI when the user runs `/skill-name` (see book Ch 2 / Ch 23).
 
 The memory system uses `.claude/memory`, writing preferences, facts, feedback, and references via `save_memory`. The system prompt loads a memory summary, allowing the agent to retain important information across sessions.
 

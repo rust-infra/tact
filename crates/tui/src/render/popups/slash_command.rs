@@ -16,8 +16,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let msgs = app.msgs();
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-    let skill_names: std::collections::HashSet<&str> =
-        app.skills_data.iter().map(|s| s.name.as_str()).collect();
+    let skill_names = crate::render::slash_style::skill_name_set(&app.skills_data);
     let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
     let n = filtered.len();
     if n == 0 {
@@ -33,7 +32,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
             inner.x,
             inner.y + 1,
             &Line::from(Span::styled(
-                "No matching command",
+                msgs.palette_empty,
                 Style::default().fg(Color::Gray),
             )),
             inner.width,
@@ -125,7 +124,14 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         Some(Section::Skills) if filtered.iter().all(|(_, (c, _), _)| skill_names.contains(*c)) => {
             msgs.slash_section_skills
         }
-        _ => "Commands / Skills",
+        Some(Section::Commands)
+            if filtered
+                .iter()
+                .all(|(_, (c, _), _)| !skill_names.contains(*c)) =>
+        {
+            msgs.slash_section_commands
+        }
+        _ => msgs.slash_title_mixed,
     };
 
     let block = Block::default()

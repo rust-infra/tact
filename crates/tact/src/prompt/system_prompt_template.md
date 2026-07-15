@@ -8,6 +8,8 @@
 # Available skills
 
 {{skills_available}}
+
+When a user message already contains a `<skill name="…">…</skill>` block, the user slash-invoked that skill — follow those instructions directly and do not call `load_skill` for the same skill. If the block includes an `ARGUMENTS:` line (Claude Code convention when the skill has no `$ARGUMENTS` placeholder), that line is the user's slash-command arguments for this invocation; apply the skill to fulfill them.
 {% endif -%}
 
 {% if claude_md -%}

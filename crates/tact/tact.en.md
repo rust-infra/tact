@@ -103,7 +103,7 @@ config::init() + session store (main.rs)
   -> dispatch interactive or headless
 create LLM client
   -> resolve PermissionMode (permission.rs / TUI)
-  -> scan skills/
+  -> scan skill roots (legacy skills/ → ~/.tact/skills → .claude/skills)
   -> create .claude StoreRoot
   -> initialize task/background/cron/team/worktree managers
   -> initialize memory manager
@@ -165,7 +165,7 @@ This is still the s01 loop, with production-oriented boundaries around each stag
 
 ```rust
 pub struct ToolContext {
-    pub skill_registry: Arc<SkillRegistry>,
+    pub skill_registry: Arc<Mutex<SkillRegistry>>,
     pub memory_manager: Arc<Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
@@ -257,7 +257,7 @@ The dynamic system prompt includes:
 - dynamic context
 - memory guidance
 
-Skills are loaded on demand with `load_skill`. Memory is saved with `save_memory` and loaded into future prompts.
+Skill summaries appear in the system prompt; full bodies load via `load_skill`, or via TUI slash `/skill-name` (user task with `<skill>` wrap). Memory is saved with `save_memory` and loaded into future prompts.
 
 ## MCP
 

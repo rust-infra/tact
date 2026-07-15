@@ -9,7 +9,6 @@ use tact::{
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::PermissionManager,
-    skill::get_skill_registry,
     store::{DynSessionStore, StoreRoot},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
@@ -82,7 +81,7 @@ async fn run_interactive_locked(
     let work_dir = tact_path.workdir().to_path_buf();
     let tui_work_dir = work_dir.clone();
     let image_work_dir = work_dir.clone();
-    let skill_registry = Arc::new(get_skill_registry(tact_path.workdir())?);
+    let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
     let store_root = StoreRoot::new(tact_path.claude_dir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;
@@ -153,16 +152,22 @@ async fn run_interactive_locked(
             history_save_tx,
             theme,
             context_limit_chars,
-            skills_description: skill_registry.describe_available(),
-            skills_data: skill_registry
-                .skills()
-                .iter()
-                .map(|(_, doc)| tui::SkillEntry {
-                    name: doc.manifest.name.clone(),
-                    description: doc.manifest.description.clone(),
-                    body: doc.body.clone(),
-                })
-                .collect(),
+            skills_description: {
+                let reg = tact::skill::lock_skills(&skill_registry);
+                reg.describe_available()
+            },
+            skills_data: {
+                let reg = tact::skill::lock_skills(&skill_registry);
+                reg.skills()
+                    .iter()
+                    .map(|(_, doc)| tui::SkillEntry {
+                        name: doc.manifest.name.clone(),
+                        description: doc.manifest.description.clone(),
+                        body: doc.body.clone(),
+                    })
+                    .collect()
+            },
+            skill_registry,
         })
         .await
     }));

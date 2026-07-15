@@ -33,7 +33,7 @@ graph TB
     %% ── Subsystems ──
     subgraph Subsystems["Subsystems (via ToolContext)"]
         MemoryMgr["MemoryManager<br/>frontmatter .md files"]
-        SkillReg["SkillRegistry<br/>skills/ directory scan"]
+        SkillReg["SkillRegistry<br/>legacy + ~/.tact + .claude/skills"]
         TaskMgr["TaskManager<br/>task_*.json + index"]
         BackgroundMgr["BackgroundManager<br/>background_tasks.json"]
         CronScheduler["CronScheduler<br/>scheduled_tasks.json"]

@@ -323,13 +323,60 @@ fn is_read_only_bash_command(command: &str) -> bool {
 }
 
 fn truncate_for_prompt(value: &Value, limit: usize) -> String {
-    let text = value.to_string();
-    if text.chars().count() <= limit {
-        return text;
-    }
+    truncate_chars(&value.to_string(), limit)
+}
 
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
     let truncated = text.chars().take(limit).collect::<String>();
     format!("{truncated}...")
+}
+
+/// Human-readable copy for the interactive permission (`RequestSelect`) prompt.
+///
+/// Avoid dumping raw tool JSON — especially for `ask_user`, where the real
+/// question UI comes *after* approval.
+pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
+    match tool_name {
+        "ask_user" => match tool_input
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            Some(q) => format!(
+                "Allow ask_user? The agent wants to ask you a question.\n{}",
+                truncate_chars(q, 80)
+            ),
+            None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
+        },
+        "bash" => match tool_input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            Some(cmd) => format!("Allow bash?\n{}", truncate_chars(cmd, 120)),
+            None => "Allow bash?".to_string(),
+        },
+        "edit_file" | "write_file" | "read_file" | "apply_patch" => {
+            let path = tool_input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Allow {tool_name} on {path}?")
+        }
+        _ => {
+            let preview = truncate_for_prompt(tool_input, 80);
+            if preview == "{}" || preview.is_empty() {
+                format!("Allow {tool_name}?")
+            } else {
+                format!("Allow {tool_name}?\n{preview}")
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -338,7 +385,7 @@ mod tests {
 
     use super::{
         CapabilityRisk, CapabilitySource, PermissionBehavior, PermissionManager, PermissionMode,
-        UserPermissionChoice, normalize_capability,
+        UserPermissionChoice, format_permission_prompt, normalize_capability,
     };
 
     #[test]
@@ -480,5 +527,34 @@ mod tests {
         }
 
         assert!(manager.should_suggest_plan_mode());
+    }
+
+    #[test]
+    fn ask_user_permission_prompt_avoids_options_json() {
+        let prompt = format_permission_prompt(
+            "ask_user",
+            &json!({
+                "question": "你想练哪个新主题？",
+                "options": ["时态", "从句", "被动语态"],
+            }),
+        );
+        assert!(prompt.contains("Allow ask_user?"));
+        assert!(prompt.contains("ask you a question"));
+        assert!(prompt.contains("你想练哪个新主题？"));
+        assert!(!prompt.contains("options"));
+        assert!(!prompt.contains("时态"));
+    }
+
+    #[test]
+    fn bash_permission_prompt_shows_command() {
+        let prompt = format_permission_prompt("bash", &json!({ "command": "ls -la" }));
+        assert_eq!(prompt, "Allow bash?\nls -la");
+    }
+
+    #[test]
+    fn edit_file_permission_prompt_shows_path() {
+        let prompt =
+            format_permission_prompt("edit_file", &json!({ "path": "src/lib.rs", "old": "a" }));
+        assert_eq!(prompt, "Allow edit_file on src/lib.rs?");
     }
 }

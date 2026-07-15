@@ -16,7 +16,7 @@ pub struct LoadSkillInput {
     description = "Load the full body of a named skill into the current context."
 )]
 pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<String> {
-    Ok(ctx.skill_registry.load_full_text(&input.name))
+    Ok(crate::skill::lock_skills(&ctx.skill_registry).load_full_text(&input.name))
 }
 
 #[cfg(test)]
