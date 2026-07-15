@@ -284,8 +284,8 @@ Notable behaviors:
 | Kimi K2.5 | model heuristics | `thinking: { type: "enabled" }` |
 | Kimi K2.6 | model heuristics | `thinking: { type: "enabled", keep: "all" }` |
 | Kimi K2.7 / coding | skipped | *(thinking always on server-side)* |
-| DeepSeek | if `request.thinking` set | `thinking: { type: "enabled", budget_tokens }` |
-| OpenAI (native) | if `request.thinking` and budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget` (`low` / `medium` / `high`) — **not** DeepSeek `thinking` |
+| DeepSeek | if `request.thinking` and budget > 0 | `reasoning_effort` (same Chat Completions path as OpenAI; no `budget_tokens`) |
+| OpenAI (native) | if `request.thinking` and budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget` (`low` / `medium` / `high`) — **not** Anthropic `thinking.budget_tokens` |
 
 `ModelCallParams.reasoning_effort` mirrors that budget→effort mapping for the TUI. Config still exposes `thinking_budget` only; there is no separate `reasoning_effort` TOML key yet.
 
@@ -409,7 +409,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 
 | Internal / intent | Anthropic | DeepSeek / Kimi (OpenAI-compat) | Native OpenAI Chat Completions | Status |
 |-------------------|-----------|----------------------------------|--------------------------------|--------|
-| Enable extended thinking | `thinking.budget_tokens` | `thinking: { type, budget_tokens? }` / Kimi variants | `reasoning_effort` (`low`/`medium`/`high`) | OK — `inject_thinking_param` branches by provider |
+| Enable extended thinking | `thinking.budget_tokens` (internal) | Anthropic: `thinking.budget_tokens`; DeepSeek/Kimi: `thinking.type` (±effort/keep) | OpenAI: `reasoning_effort` | OK — `inject_thinking_param` maps by API wire shape |
 | Thinking budget knob | `thinking_budget` config | mapped to `budget_tokens` | `reasoning_effort_from_budget` bands | OK (bands in `openai.rs`; no dedicated TOML key) |
 | Max output | `max_tokens` | `max_tokens` | o-series often want `max_completion_tokens`; some reject `max_tokens` | not remapped |
 | System prompt | top-level `system` | first `role: system` message | same; some reasoning models prefer `developer` | always `system` |

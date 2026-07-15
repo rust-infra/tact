@@ -2,6 +2,7 @@
 
 use crate::{
     ContentBlock, CreateMessageParams, Message, MessageContent, Role, StopReason, Tool, ToolChoice,
+    openai::CreateChatCompletionRequest,
 };
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
@@ -9,8 +10,8 @@ use async_openai::types::{
     ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent, ChatCompletionTool,
-    ChatCompletionToolType, CreateChatCompletionRequest, FinishReason, FunctionObject, ImageUrl,
-    ImageUrlDetail, Role as OpenAiRole,
+    ChatCompletionToolType, FinishReason, FunctionObject, ImageUrl, ImageUrlDetail,
+    Role as OpenAiRole,
 };
 
 /// Convert Anthropic tool definitions to OpenAI tool definitions.
@@ -336,13 +337,15 @@ pub fn build_openai_request(
         seed: None,
         stop: None,
         stream: Some(true),
+        stream_options: None,
         temperature: request.temperature,
         top_p: request.top_p,
         tools: request.tools.as_ref().map(|t| anthropic_tools_to_openai(t)),
         tool_choice: None,
         user: None,
-        function_call: None,
-        functions: None,
+        user_id: None,
+        thinking: None,
+        reasoning_effort: None,
     };
 
     // Map Anthropic tool_choice to OpenAI if present.
