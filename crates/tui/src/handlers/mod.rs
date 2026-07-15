@@ -313,10 +313,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     app.add_system_message(msg);
                 }
                 Err(err) => {
-                    let msg = app
-                        .msgs()
-                        .skill_reload_failed_tmpl
-                        .replace("{}", &err);
+                    let msg = app.msgs().skill_reload_failed_tmpl.replace("{}", &err);
                     app.add_system_message(msg);
                 }
             }

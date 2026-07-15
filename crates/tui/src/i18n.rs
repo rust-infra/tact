@@ -381,8 +381,7 @@ impl Messages {
             lang_changed_tmpl: "🌐 Language: {}",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
-            skill_task_too_long_tmpl:
-                "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
+            skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
             cancel_noop_msg: "Nothing to cancel",
 

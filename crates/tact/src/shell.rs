@@ -66,11 +66,14 @@ mod tests {
 
     #[test]
     fn allows_dev_null_redirect() {
-        for cmd in ["> /dev/null", ">/dev/null", ">>/dev/null", "2>/dev/null", "2>&1 >/dev/null"] {
-            assert!(
-                validate_shell_command(cmd).is_ok(),
-                "expected allow: {cmd}"
-            );
+        for cmd in [
+            "> /dev/null",
+            ">/dev/null",
+            ">>/dev/null",
+            "2>/dev/null",
+            "2>&1 >/dev/null",
+        ] {
+            assert!(validate_shell_command(cmd).is_ok(), "expected allow: {cmd}");
         }
     }
 

@@ -85,9 +85,9 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
                     Ok(format!("User selected: {chosen}"))
                 }
                 Ok(None) => Ok("User cancelled the question.".to_string()),
-                Err(_) => Ok(
-                    "User interface closed before answering; treat as cancelled.".to_string(),
-                ),
+                Err(_) => {
+                    Ok("User interface closed before answering; treat as cancelled.".to_string())
+                }
             };
         }
 
@@ -205,7 +205,10 @@ mod tests {
             } => {
                 assert_eq!(prompt, "Pick a color");
                 assert_eq!(options, vec!["red", "blue"]);
-                assert!(!log_confirm, "selection renders on tool meta, not a system line");
+                assert!(
+                    !log_confirm,
+                    "selection renders on tool meta, not a system line"
+                );
                 respond.send(Some(1)).unwrap();
             }
             other => panic!("expected RequestSelect, got {other:?}"),

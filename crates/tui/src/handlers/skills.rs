@@ -201,10 +201,7 @@ mod tests {
             skill_args_from_input("/code-reviewer fix auth", "code-reviewer"),
             "fix auth"
         );
-        assert_eq!(
-            skill_args_from_input("/code-reviewer", "code-reviewer"),
-            ""
-        );
+        assert_eq!(skill_args_from_input("/code-reviewer", "code-reviewer"), "");
         assert_eq!(skill_args_from_input("/cod", "code-reviewer"), "");
         // Prefix skill must not steal args from a longer skill name.
         assert_eq!(skill_args_from_input("/demo-test x", "demo"), "");

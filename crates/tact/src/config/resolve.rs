@@ -129,11 +129,12 @@ pub(super) fn resolve_non_llm_settings(
         toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
     };
 
-    let skill_body_auto_inject = args.skill_body_auto_inject
-        || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+    let skill_body_auto_inject =
+        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-        .expect("invalid instruction_sources in config");
+    let instruction_sources =
+        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+            .expect("invalid instruction_sources in config");
 
     let theme = args
         .theme
@@ -242,11 +243,12 @@ pub(super) fn resolve_config(
         toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
     };
 
-    let skill_body_auto_inject = args.skill_body_auto_inject
-        || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+    let skill_body_auto_inject =
+        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let instruction_sources =
+        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let theme = args
         .theme

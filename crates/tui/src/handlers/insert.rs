@@ -14,9 +14,9 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let skill_names = skill_name_set(app);
-    let cmds = app
-        .slash_command
-        .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
+    let cmds =
+        app.slash_command
+            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
     let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
     if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
         let start = app.slash_command.start_pos;
@@ -37,10 +37,13 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let skill_names = skill_name_set(app);
-    let matched = app
+    let matched =
+        app.slash_command
+            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
+    let sel = app
         .slash_command
-        .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
-    let sel = app.slash_command.selected.min(matched.len().saturating_sub(1));
+        .selected
+        .min(matched.len().saturating_sub(1));
     let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
         return false;
     };

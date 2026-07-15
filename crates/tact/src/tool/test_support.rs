@@ -34,7 +34,7 @@ pub fn test_context(name: &str) -> ToolContext {
 
     ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
-            root_dir.join(".claude/skills"),
+            root_dir.join(".claude/skills")
         ]))),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".claude/memory"),

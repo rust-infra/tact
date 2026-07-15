@@ -26,8 +26,8 @@ use crate::render::{
     render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
     render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
 };
-use crate::widgets::state::{App, InputMode, Status};
 pub use crate::widgets::state::SkillEntry;
+use crate::widgets::state::{App, InputMode, Status};
 use anyhow::Result;
 use crossterm::{
     event::{

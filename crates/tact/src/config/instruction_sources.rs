@@ -75,11 +75,7 @@ impl InstructionSources {
             }
         }
 
-        if !out.agents_md
-            && !out.claude_user
-            && !out.claude_project
-            && !out.claude_subdir
-        {
+        if !out.agents_md && !out.claude_user && !out.claude_project && !out.claude_subdir {
             return Err("instruction_sources must enable at least one source".into());
         }
 
@@ -102,11 +98,8 @@ mod tests {
 
     #[test]
     fn claude_md_shorthand_enables_all_claude_paths() {
-        let s = InstructionSources::from_config(Some(vec![
-            "agents_md".into(),
-            "claude_md".into(),
-        ]))
-        .unwrap();
+        let s = InstructionSources::from_config(Some(vec!["agents_md".into(), "claude_md".into()]))
+            .unwrap();
         assert!(s.agents_md);
         assert!(s.claude_user);
         assert!(s.claude_project);

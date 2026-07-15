@@ -533,9 +533,10 @@ impl Agent {
             match &stop_reason {
                 Some(StopReason::ToolUse) => {}
                 Some(StopReason::Refusal) => {
-                    let info_msg = "Model refused this request (stop_reason=refusal). Try rephrasing, \
+                    let info_msg =
+                        "Model refused this request (stop_reason=refusal). Try rephrasing, \
                          or switch to another model with different safety filters."
-                        .to_string();
+                            .to_string();
                     self.emit_update(AgentUpdate::Info(info_msg));
                     return Err(anyhow::anyhow!(
                         "model refused to process this request (stop_reason=refusal)"
