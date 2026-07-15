@@ -121,7 +121,11 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         .collect();
 
     let title = match last_section {
-        Some(Section::Skills) if filtered.iter().all(|(_, (c, _), _)| skill_names.contains(*c)) => {
+        Some(Section::Skills)
+            if filtered
+                .iter()
+                .all(|(_, (c, _), _)| skill_names.contains(*c)) =>
+        {
             msgs.slash_section_skills
         }
         Some(Section::Commands)

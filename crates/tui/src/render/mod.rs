@@ -8,10 +8,10 @@ mod log;
 mod log_column;
 mod log_style;
 mod plan;
-pub(crate) mod slash_style;
 pub(crate) mod popups;
 pub(crate) mod render_md;
 pub(crate) mod renderable;
+pub(crate) mod slash_style;
 pub(crate) mod util;
 
 pub(super) use bar::{render_bottom_bar, render_status_bar};

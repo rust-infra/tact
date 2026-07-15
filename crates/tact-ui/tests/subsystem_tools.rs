@@ -34,7 +34,9 @@ async fn ask_user_tool_returns_question() {
         "ask_user should succeed: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("What is your name?"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("What is your name?"))),
         "free-text ask_user should emit Info: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Done."));

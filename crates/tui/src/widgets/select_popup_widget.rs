@@ -63,14 +63,14 @@ impl Widget for SelectPopupWidget<'_> {
             .unwrap_or(20)
             .saturating_add(4) as u16;
         let half = ((area.width as f32) * 0.5) as u16;
-        let popup_width = half
-            .max(content_w)
-            .max(MIN_WIDTH.min(max_w))
-            .min(max_w);
+        let popup_width = half.max(content_w).max(MIN_WIDTH.min(max_w)).min(max_w);
 
         let inner_w = popup_width.saturating_sub(2).max(1) as usize;
         let prompt_style = Style::default().fg(self.fg_color);
-        let mut prompt_lines = wrap_line(&Line::from(Span::styled(self.state.prompt.clone(), prompt_style)), inner_w);
+        let mut prompt_lines = wrap_line(
+            &Line::from(Span::styled(self.state.prompt.clone(), prompt_style)),
+            inner_w,
+        );
 
         let max_popup_h = area.height.saturating_sub(2).max(1);
         // borders(2) + separator(1) + options + optional multi hint(1)

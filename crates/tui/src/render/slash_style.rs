@@ -171,14 +171,7 @@ mod tests {
     fn style_user_skill_line_uses_i18n_prefix() {
         let theme = Theme::from(ThemeName::Japanese);
         let names: HashSet<&str> = ["demo"].into_iter().collect();
-        let line = style_user_skill_line(
-            "💬 /demo hi",
-            &names,
-            &theme,
-            "💬 {}",
-            "  {}",
-        )
-        .unwrap();
+        let line = style_user_skill_line("💬 /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
         assert_eq!(line.spans[0].content.as_ref(), "💬 ");
         assert_eq!(line.spans[1].content.as_ref(), "/demo");
         assert_eq!(line.spans[2].content.as_ref(), " hi");
