@@ -36,6 +36,7 @@ pub(crate) fn is_user_message_line(raw_messages: &[String], phys_idx: usize) -> 
 
 /// Caller should build `skill_names` once per cache rebuild (`perf-` / `mem-reuse`).
 /// `user_prefix_tmpl` / `user_cont_tmpl` are i18n templates like `"💬 {}"`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn restyle_log_line_with_skills(
     stored: &Line,
     raw: &str,
@@ -141,6 +142,26 @@ mod tests {
                 .fg(Color::Rgb(200, 200, 210))
                 .bg(Color::Rgb(30, 35, 50)),
         ))
+    }
+
+    fn restyle_log_line(
+        stored: &Line,
+        raw: &str,
+        theme: &Theme,
+        msg_type: RawMessageType,
+        is_user_line: bool,
+    ) -> Line<'static> {
+        let empty = HashSet::new();
+        restyle_log_line_with_skills(
+            stored,
+            raw,
+            theme,
+            msg_type,
+            is_user_line,
+            &empty,
+            "💬 {}",
+            "  {}",
+        )
     }
 
     #[test]

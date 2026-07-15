@@ -230,10 +230,10 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
     // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
-    if !is_builtin_palette_command(cmd) {
-        if let Some(outcome) = skills::handle_skill_command(app, cmd) {
-            return outcome;
-        }
+    if !is_builtin_palette_command(cmd)
+        && let Some(outcome) = skills::handle_skill_command(app, cmd)
+    {
+        return outcome;
     }
 
     match cmd {
@@ -430,8 +430,8 @@ fn reload_skills(app: &mut App) -> Result<usize, String> {
     app.skills_description = reg.describe_available();
     app.skills_data = reg
         .skills()
-        .iter()
-        .map(|(_, doc)| crate::widgets::state::SkillEntry {
+        .values()
+        .map(|doc| crate::widgets::state::SkillEntry {
             name: doc.manifest.name.clone(),
             description: doc.manifest.description.clone(),
             body: doc.body.clone(),

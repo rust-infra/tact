@@ -83,17 +83,15 @@ pub(crate) fn style_user_skill_line(
     user_prefix_tmpl: &str,
     user_cont_tmpl: &str,
 ) -> Option<Line<'static>> {
-    let (lead, payload) = if let Some(pre) = template_prefix(user_prefix_tmpl) {
+    let (lead, payload) = {
+        let pre = template_prefix(user_prefix_tmpl)?;
         if let Some(rest) = raw.strip_prefix(pre) {
             (pre, rest)
-        } else if let Some(pre) = template_prefix(user_cont_tmpl) {
+        } else {
+            let pre = template_prefix(user_cont_tmpl)?;
             let rest = raw.strip_prefix(pre)?;
             (pre, rest)
-        } else {
-            return None;
         }
-    } else {
-        return None;
     };
 
     let (skill, args) = split_skill_slash(payload, skill_names)?;
