@@ -9,7 +9,9 @@
 //! hand-rolled byte-level parsing, for correct handling of `\n\n` / `\r\n\r\n`
 //! delimiters and connection lifecycle.
 
-use anthropic_ai_sdk::types::message::{ContentBlock, CreateMessageParams, StopReason};
+use anthropic_ai_sdk::types::message::{ContentBlock, CreateMessageParams};
+
+use crate::StopReason;
 use async_openai::config::Config;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -115,12 +117,42 @@ struct StreamCompletionTokensDetails {
     reasoning_tokens: Option<u32>,
 }
 
-/// Inject the provider-specific `thinking` block into an OpenAI-compatible JSON body.
+/// Map Anthropic-style `thinking.budget_tokens` to OpenAI `reasoning_effort`.
 ///
-/// - Anthropic-style providers use `{ type: "enabled", budget_tokens }`.
-/// - Kimi K2.5 uses `{ type: "enabled" }`.
-/// - Kimi K2.6 uses `{ type: "enabled", keep: "all" }` for Preserved Thinking.
-/// - Kimi K2.7-code has thinking always on; do not inject anything.
+/// Internal config only exposes a token budget; Chat Completions for OpenAI
+/// reasoning models expects an effort band instead. `None` means do not send
+/// the field (thinking off / budget zero).
+///
+/// Bands (inclusive):
+/// - `0` → omit
+/// - `1..=10_000` → `low`
+/// - `10_001..=32_000` → `medium`
+/// - `> 32_000` → `high`
+pub fn reasoning_effort_from_budget(budget_tokens: usize) -> Option<&'static str> {
+    match budget_tokens {
+        0 => None,
+        1..=10_000 => Some("low"),
+        10_001..=32_000 => Some("medium"),
+        _ => Some("high"),
+    }
+}
+
+fn is_deepseek_target(provider: &crate::ProviderInfo) -> bool {
+    provider.provider == crate::ProviderKind::DeepSeek
+        || provider.base_url.contains("deepseek")
+        || provider.model.contains("deepseek")
+}
+
+/// Inject provider-specific reasoning / thinking controls into an OpenAI-compatible JSON body.
+///
+/// Wire shapes differ by protocol family:
+/// - **Native OpenAI** — `reasoning_effort` (`low` / `medium` / `high`).
+/// - **DeepSeek** — `thinking: { type: "enabled", budget_tokens }`
+///   (<https://api-docs.deepseek.com/zh-cn/guides/thinking_mode>).
+/// - **Kimi K2.5** — `thinking: { type: "enabled" }`.
+/// - **Kimi K2.6** — `thinking: { type: "enabled", keep: "all" }` (Preserved Thinking).
+/// - **Kimi K2.7-code** — thinking always on; do not inject.
+/// - Other OpenAI-compatible proxies — DeepSeek-shaped `thinking` as a best-effort fallback.
 fn inject_thinking_param(
     request: &CreateMessageParams,
     body: &mut serde_json::Value,
@@ -139,13 +171,33 @@ fn inject_thinking_param(
         }
         return;
     }
-    // Default Anthropic-style thinking.
-    if let Some(thinking) = &request.thinking {
+
+    let Some(thinking) = &request.thinking else {
+        return;
+    };
+
+    if is_deepseek_target(provider) {
         body["thinking"] = serde_json::json!({
             "type": "enabled",
             "budget_tokens": thinking.budget_tokens,
         });
+        return;
     }
+
+    // Official OpenAI Chat Completions: reasoning models use `reasoning_effort`,
+    // not Anthropic/DeepSeek `thinking` + `budget_tokens`.
+    if provider.provider == crate::ProviderKind::OpenAi {
+        if let Some(effort) = reasoning_effort_from_budget(thinking.budget_tokens) {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+        return;
+    }
+
+    // Fallback for other OpenAI-compatible endpoints that accept DeepSeek-style thinking.
+    body["thinking"] = serde_json::json!({
+        "type": "enabled",
+        "budget_tokens": thinking.budget_tokens,
+    });
 }
 
 /// Inject `user_id` into the request body for KV cache isolation.
@@ -438,13 +490,7 @@ impl LlmClient for OpenAiAdapter {
 
                         // finish_reason
                         if let Some(ref finish) = choice.finish_reason {
-                            stop_reason = Some(match finish.as_str() {
-                                "stop" => StopReason::EndTurn,
-                                "length" => StopReason::MaxTokens,
-                                "tool_calls" => StopReason::ToolUse,
-                                "content_filter" => StopReason::StopSequence,
-                                _ => StopReason::EndTurn,
-                            });
+                            stop_reason = StopReason::from_openai(Some(finish.as_str()));
                         }
                     }
 
@@ -593,13 +639,7 @@ impl LlmClient for OpenAiAdapter {
             }
         }
 
-        let stop_reason = choice["finish_reason"].as_str().map(|r| match r {
-            "stop" => StopReason::EndTurn,
-            "length" => StopReason::MaxTokens,
-            "tool_calls" => StopReason::ToolUse,
-            "content_filter" => StopReason::StopSequence,
-            _ => StopReason::EndTurn,
-        });
+        let stop_reason = StopReason::from_openai(choice["finish_reason"].as_str());
 
         let token_usage = json["usage"].as_object().map(|u| {
             let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
@@ -650,20 +690,69 @@ mod tests {
     }
 
     #[test]
-    fn inject_thinking_uses_anthropic_shape_for_openai() {
+    fn inject_thinking_uses_reasoning_effort_for_openai() {
         let request = sample_request_with_thinking();
         let mut body = serde_json::json!({});
         let provider = ProviderInfo {
             provider: ProviderKind::OpenAi,
             api_key: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o".to_string(),
+            model: "o3-mini".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["reasoning_effort"], "low"); // budget 1000 → low
+    }
+
+    #[test]
+    fn inject_thinking_omits_reasoning_effort_when_budget_zero() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "o3-mini".to_string(),
+            messages: vec![],
+            max_tokens: 1,
+        })
+        .with_thinking(Thinking {
+            budget_tokens: 0,
+            type_: ThinkingType::Enabled,
+        });
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: ProviderKind::OpenAi,
+            api_key: String::new(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "o3-mini".to_string(),
+        };
+        inject_thinking_param(&request, &mut body, &provider);
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn inject_thinking_uses_deepseek_shape_for_deepseek() {
+        let request = sample_request_with_thinking();
+        let mut body = serde_json::json!({});
+        let provider = ProviderInfo {
+            provider: ProviderKind::DeepSeek,
+            api_key: String::new(),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-reasoner".to_string(),
         };
         inject_thinking_param(&request, &mut body, &provider);
         assert_eq!(
             body["thinking"],
             serde_json::json!({"type": "enabled", "budget_tokens": 1000})
         );
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_bands_from_budget() {
+        assert_eq!(reasoning_effort_from_budget(0), None);
+        assert_eq!(reasoning_effort_from_budget(1), Some("low"));
+        assert_eq!(reasoning_effort_from_budget(10_000), Some("low"));
+        assert_eq!(reasoning_effort_from_budget(10_001), Some("medium"));
+        assert_eq!(reasoning_effort_from_budget(32_000), Some("medium"));
+        assert_eq!(reasoning_effort_from_budget(32_001), Some("high"));
     }
 
     #[test]

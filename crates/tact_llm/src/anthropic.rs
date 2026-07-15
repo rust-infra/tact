@@ -1,15 +1,14 @@
 //! Anthropic LLM adapter.
 //!
 //! Uses direct HTTP + SSE instead of the SDK's streaming client so that we
-//! can gracefully handle new stop_reason values (e.g. `pause_turn`) that the
-//! upstream `anthropic-ai-sdk` crate has not yet added to its `StopReason`
-//! enum.
+//! can map new Anthropic `stop_reason` strings into [`crate::StopReason`]
+//! without waiting on upstream SDK enum updates.
 
 use std::error::Error;
 use std::time::Duration;
 
 use anthropic_ai_sdk::types::message::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, MessageError, StopReason, StreamUsage,
+    ContentBlock, ContentBlockDelta, CreateMessageParams, MessageError, StreamUsage,
 };
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
@@ -18,7 +17,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
 
-use super::{LlmClient, LlmError};
+use super::{LlmClient, LlmError, StopReason};
 
 /// Events emitted when an Anthropic thinking content block starts.
 fn thinking_start_events(initial_thinking: &str) -> Vec<ThinkingChunk> {
@@ -96,21 +95,7 @@ fn format_http_error(e: &(dyn Error + 'static)) -> String {
 }
 
 fn parse_stop_reason(reason: Option<String>) -> Option<StopReason> {
-    match reason.as_deref() {
-        Some("end_turn") => Some(StopReason::EndTurn),
-        Some("max_tokens") => Some(StopReason::MaxTokens),
-        // Output filled the model context window — treat like truncation so the
-        // agent can continue / compact (SDK StopReason has no dedicated variant).
-        Some("model_context_window_exceeded") => Some(StopReason::MaxTokens),
-        Some("stop_sequence") => Some(StopReason::StopSequence),
-        Some("tool_use") => Some(StopReason::ToolUse),
-        Some("refusal") => Some(StopReason::Refusal),
-        // Server-tool sampling hit its iteration limit. Correct handling is to
-        // send the assistant message back and continue; Tact does not use
-        // Anthropic server tools, so EndTurn (finish the turn) is fine here.
-        Some("pause_turn") => Some(StopReason::EndTurn),
-        _ => None,
-    }
+    StopReason::from_anthropic(reason.as_deref())
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,10 +237,10 @@ impl LlmClient for AnthropicAdapter {
                                         .thinking
                                         .as_ref()
                                         .map(|t| t.budget_tokens as u32),
-                                    reasoning_effort: request
-                                        .thinking
-                                        .as_ref()
-                                        .map(|_| "high".to_string()),
+                                    reasoning_effort: request.thinking.as_ref().and_then(|t| {
+                                        crate::reasoning_effort_from_budget(t.budget_tokens)
+                                            .map(str::to_string)
+                                    }),
                                     extra_body: request
                                         .thinking
                                         .as_ref()
@@ -540,28 +525,31 @@ mod tests {
 
     #[test]
     fn parse_stop_reason_handles_known_values() {
-        assert!(matches!(
+        assert_eq!(
             parse_stop_reason(Some("pause_turn".to_string())),
-            Some(StopReason::EndTurn)
-        ));
-        assert!(matches!(
+            Some(StopReason::PauseTurn)
+        );
+        assert_eq!(
             parse_stop_reason(Some("end_turn".to_string())),
             Some(StopReason::EndTurn)
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             parse_stop_reason(Some("tool_use".to_string())),
             Some(StopReason::ToolUse)
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             parse_stop_reason(Some("refusal".to_string())),
             Some(StopReason::Refusal)
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             parse_stop_reason(Some("model_context_window_exceeded".to_string())),
             Some(StopReason::MaxTokens)
-        ));
-        assert!(parse_stop_reason(Some("unknown".to_string())).is_none());
-        assert!(parse_stop_reason(None).is_none());
+        );
+        assert_eq!(
+            parse_stop_reason(Some("brand_new".to_string())),
+            Some(StopReason::Unknown("brand_new".into()))
+        );
+        assert_eq!(parse_stop_reason(None), None);
     }
 
     #[test]

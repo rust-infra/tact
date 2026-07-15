@@ -155,6 +155,29 @@ Both return the serialized request body (`LlmRequestBody`) for session-store deb
 
 Errors unify as `LlmError::Anthropic`, `LlmError::OpenAi`, or `LlmError::Other`.
 
+### StopReason (provider-agnostic)
+
+`StopReason` is owned by `tact_llm` (`stop_reason.rs`) — **not** re-exported from the Anthropic SDK. Adapters normalize provider-native strings at the boundary, so the agent loop never matches on raw API values:
+
+```rust
+pub enum StopReason {
+    EndTurn,          // anthropic end_turn / openai stop
+    MaxTokens,        // max_tokens, model_context_window_exceeded / length
+    StopSequence,     // stop_sequence / content_filter
+    ToolUse,          // tool_use / tool_calls, function_call (legacy)
+    Refusal,          // anthropic refusal (safety classifier, HTTP 200)
+    PauseTurn,        // anthropic pause_turn (server-tool loop paused)
+    Unknown(String),  // unrecognized value — raw string kept for diagnostics
+}
+```
+
+| Constructor | Input | Notes |
+|-------------|-------|-------|
+| `StopReason::from_anthropic` | Messages API `stop_reason` string | `model_context_window_exceeded` → `MaxTokens` (treat as truncation) |
+| `StopReason::from_openai` | Chat Completions `finish_reason` string | legacy `function_call` → `ToolUse`; `content_filter` → `StopSequence` |
+
+Unknown values become `Unknown(raw)` instead of parse failures, so new provider values degrade gracefully. How each variant drives the loop (continue / tools / error) is defined in [Ch 18 §4](./18_chapter_agent_loop.md#4-stop-reasons-and-loop-exit).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -215,7 +238,7 @@ Compaction uses the same provider adapters without SSE; conceptually this is the
 
 ## 5. Anthropic Adapter
 
-`anthropic.rs` uses direct HTTP + SSE (`reqwest-eventsource`) instead of the SDK streaming client so new `stop_reason` values (e.g. `pause_turn`) do not break deserialization.
+`anthropic.rs` uses direct HTTP + SSE (`reqwest-eventsource`) instead of the SDK streaming client so new `stop_reason` values can be mapped into Tact’s own [`StopReason`](../crates/tact_llm/src/stop_reason.rs) without waiting on the Anthropic SDK enum.
 
 Streaming path:
 
@@ -243,6 +266,8 @@ Notable behaviors:
 
 `convert.rs` builds provider-specific request JSON from shared `CreateMessageParams` (Anthropic message shape used internally throughout Tact).
 
+**Tools, not legacy functions:** requests use the current `tools` / `tool_choice` API (parallel `tool_calls`, `role: "tool"` results). The deprecated 2023-era `functions` / `function_call` fields are always sent as `None` (struct literal requires them); only the *response* value `finish_reason=function_call` is still accepted and mapped to `StopReason::ToolUse` for older OpenAI-compatible services.
+
 **User image attachments:** TUI/headless turn `@file.png` / `![alt](path)` into `ContentBlock::Image` ([Ch 23](./23_chapter_tui.md)). For OpenAI-compatible requests, `anthropic_messages_to_openai` maps those blocks to `{ type: "image_url", image_url: { url: "data:<media_type>;base64,..." } }`. Anthropic keeps the native Messages `image` + base64 `source` shape. There is no per-model vision capability gate: text-only Chat Completions APIs (or proxies whose content-part enum only allows `text`) reject `image_url` with HTTP 400.
 
 **Kimi reasoning replay:** `anthropic_messages_to_openai` returns a `reasoning` vector aligned **one-to-one** with emitted OpenAI messages (not Anthropic source messages). When a user turn splits into multiple tool-result messages, each gets `None`; assistant thinking is attached only to the matching assistant row. `inject_reasoning_content` uses that parallel vector for Kimi/Moonshot.
@@ -250,6 +275,19 @@ Notable behaviors:
 **Incomplete tool calls:** stream and non-stream parsers skip tool-call slots with empty `id` or `name` so truncated SSE does not insert phantom `ToolUse` blocks.
 
 **Empty assistant sanitization:** because thinking blocks are dropped when targeting non-Kimi OpenAI-compatible APIs, an assistant turn that contains only thinking (or only orphaned tool calls after truncation) would serialize as `{ "role": "assistant", "content": null, "tool_calls": null }` and be rejected with 400. `sanitize_assistant_messages` in `convert.rs` stubs such messages and strips orphaned `tool_calls` on every request. See [Error Recovery](./06_chapter_recovery.md) for the full context.
+
+**Thinking / reasoning injection (`inject_thinking_param`):** the internal request always carries Anthropic-shaped `Thinking { budget_tokens }`. Adapters rewrite that into each wire protocol:
+
+| Provider | When thinking is set | Wire field |
+|----------|----------------------|------------|
+| Anthropic | always (native Messages type) | `thinking: { type, budget_tokens }` |
+| Kimi K2.5 | model heuristics | `thinking: { type: "enabled" }` |
+| Kimi K2.6 | model heuristics | `thinking: { type: "enabled", keep: "all" }` |
+| Kimi K2.7 / coding | skipped | *(thinking always on server-side)* |
+| DeepSeek | if `request.thinking` set | `thinking: { type: "enabled", budget_tokens }` |
+| OpenAI (native) | if `request.thinking` and budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget` (`low` / `medium` / `high`) — **not** DeepSeek `thinking` |
+
+`ModelCallParams.reasoning_effort` mirrors that budget→effort mapping for the TUI. Config still exposes `thinking_budget` only; there is no separate `reasoning_effort` TOML key yet.
 
 ---
 
@@ -343,9 +381,10 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | File | Role |
 |------|------|
 | `tact_llm/src/provider_kind.rs` | `ProviderKind` enum (`FromStr` / `Display` / defaults) |
+| `tact_llm/src/stop_reason.rs` | Provider-agnostic `StopReason` + `from_anthropic` / `from_openai` |
 | `tact_llm/src/lib.rs` | `ProviderInfo`, `LlmClient`, `LlmProvider`, init/get helpers, balance APIs |
 | `tact_llm/src/anthropic.rs` | Messages API streaming + non-streaming |
-| `tact_llm/src/openai.rs` | Chat Completions SSE, reasoning_content, tool deltas |
+| `tact_llm/src/openai.rs` | Chat Completions SSE, `reasoning_effort` / thinking inject, tool deltas |
 | `tact_llm/src/convert.rs` | Request translation, Image → `image_url`, Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` at loop start |
 | `crates/tact/src/compact.rs` | `create_message` for summarization |
@@ -358,9 +397,29 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 |-----|--------|
 | **Four named providers only** | `ProviderKind` / `FromStr` reject unknown names; generic OpenAI proxies must use `provider = "openai"` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
-| **Anthropic SDK partial use** | Types from `anthropic-ai-sdk`; streaming is custom HTTP |
+| **Anthropic SDK partial use** | Message/content types from `anthropic-ai-sdk`; `StopReason` is already Tact-owned, streaming is custom HTTP |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; `set_user_id` mutates the copy held on `Agent` |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
+
+### Protocol compatibility gaps (internal Anthropic shape → wire)
+
+`tact_llm` uses Anthropic `CreateMessageParams` as the shared request model. Each adapter must translate fields; several OpenAI-native differences are **not** handled yet:
+
+| Internal / intent | Anthropic | DeepSeek / Kimi (OpenAI-compat) | Native OpenAI Chat Completions | Status |
+|-------------------|-----------|----------------------------------|--------------------------------|--------|
+| Enable extended thinking | `thinking.budget_tokens` | `thinking: { type, budget_tokens? }` / Kimi variants | `reasoning_effort` (`low`/`medium`/`high`) | OK — `inject_thinking_param` branches by provider |
+| Thinking budget knob | `thinking_budget` config | mapped to `budget_tokens` | `reasoning_effort_from_budget` bands | OK (bands in `openai.rs`; no dedicated TOML key) |
+| Max output | `max_tokens` | `max_tokens` | o-series often want `max_completion_tokens`; some reject `max_tokens` | not remapped |
+| System prompt | top-level `system` | first `role: system` message | same; some reasoning models prefer `developer` | always `system` |
+| Tool definitions | `tools` (Anthropic schema) | `tools` + `type: function` | same modern tools API | OK (`convert.rs`) |
+| Stop / finish reason | `stop_reason` string | `finish_reason` string | `finish_reason` (+ legacy `function_call`) | OK (`StopReason::from_*`) |
+| Refusal detail | `stop_details` | n/a | n/a | not parsed |
+| Cache / user scoping | `metadata.user_id` | top-level `user_id` | ignored or different meaning | OK for DeepSeek; harmless elsewhere |
+| Stream usage | event usage | `stream_options.include_usage` | same | OK |
+| Vision parts | `image` + base64 source | `image_url` data URL | `image_url` | OK for vision models; no capability gate |
+| Temperature / top_p | optional | optional | many reasoning models reject non-default sampling | passed through blindly |
+
+Remaining OpenAI-native gaps above (`max_completion_tokens`, `developer` role, sampling restrictions) are still open; the former `reasoning_effort` gap is fixed.
 
 ---
 

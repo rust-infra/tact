@@ -159,7 +159,7 @@ tui = { path = "../tui", features = ["test-support"] }
 
 ```rust
 use tact_llm::MockClient;
-use anthropic_ai_sdk::types::message::StopReason;
+use tact_llm::StopReason;
 
 let mock = MockClient::new(vec![
     (vec![tool_use_block], Some(StopReason::ToolUse)),

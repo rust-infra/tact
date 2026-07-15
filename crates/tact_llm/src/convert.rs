@@ -1,8 +1,8 @@
 //! Conversion helpers between Anthropic and OpenAI types.
 
-use anthropic_ai_sdk::types::message::{
-    ContentBlock, Message, MessageContent, Role, StopReason, Tool,
-};
+use anthropic_ai_sdk::types::message::{ContentBlock, Message, MessageContent, Role, Tool};
+
+use crate::StopReason;
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
     ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart,
@@ -369,14 +369,15 @@ fn map_tool_choice(
     }
 }
 
-/// Convert OpenAI `FinishReason` to Anthropic `StopReason`.
+/// Convert OpenAI typed `FinishReason` into Tact [`StopReason`].
 pub fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> Option<StopReason> {
     match reason {
         Some(FinishReason::Stop) => Some(StopReason::EndTurn),
         Some(FinishReason::Length) => Some(StopReason::MaxTokens),
-        Some(FinishReason::ToolCalls) => Some(StopReason::ToolUse),
+        Some(FinishReason::ToolCalls) | Some(FinishReason::FunctionCall) => {
+            Some(StopReason::ToolUse)
+        }
         Some(FinishReason::ContentFilter) => Some(StopReason::StopSequence),
-        Some(FinishReason::FunctionCall) => Some(StopReason::ToolUse),
         None => None,
     }
 }
