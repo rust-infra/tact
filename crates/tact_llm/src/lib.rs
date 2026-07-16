@@ -19,6 +19,8 @@ pub mod provider;
 pub mod types;
 
 #[cfg(test)]
+mod test_deepseek_reasoning;
+#[cfg(test)]
 mod test_openai;
 
 pub use client::{LlmClient, LlmProvider, LlmRequestBody};
