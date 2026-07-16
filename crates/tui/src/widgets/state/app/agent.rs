@@ -121,6 +121,7 @@ impl App {
                 self.status_bar.model_name = params.model;
                 self.status_bar.model_max_tokens = params.max_tokens;
                 self.status_bar.model_thinking_budget = params.thinking_budget;
+                self.status_bar.model_reasoning_effort = params.reasoning_effort;
             }
             // Add system message
             AgentUpdate::Info(msg) => {
@@ -783,12 +784,17 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
             model: "mock-model".into(),
             max_tokens: 4096,
-            thinking_budget: Some(0),
-            reasoning_effort: None,
+            thinking_budget: Some(32_000),
+            reasoning_effort: Some("high".into()),
             extra_body: None,
         }));
         assert_eq!(app.status_bar.model_name, "mock-model");
         assert_eq!(app.status_bar.model_max_tokens, 4096);
+        assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
+        assert_eq!(
+            app.status_bar.model_reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 
     #[test]

@@ -165,7 +165,11 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             info.push_str(&format!(" | max={}", app.status_bar.model_max_tokens));
         }
         if let Some(budget) = app.status_bar.model_thinking_budget {
-            info.push_str(&format!(" | think={budget}"));
+            if let Some(effort) = app.status_bar.model_reasoning_effort.as_deref() {
+                info.push_str(&format!(" | think={budget} ({effort})"));
+            } else {
+                info.push_str(&format!(" | think={budget}"));
+            }
         }
         info
     };
@@ -447,5 +451,48 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
+    }
+
+    #[test]
+    fn bottom_bar_shows_reasoning_effort_with_thinking_budget() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_thinking_budget = Some(32_000);
+        app.status_bar.model_reasoning_effort = Some("high".into());
+        let backend = TestBackend::new(120, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("think=32000 (high)"),
+            "bottom bar should show budget and effort, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_preserves_thinking_budget_when_effort_is_unavailable() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_thinking_budget = Some(32_000);
+        let backend = TestBackend::new(120, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("think=32000"),
+            "bottom bar should preserve the budget display, got:\n{text}"
+        );
+        assert!(
+            !text.contains("think=32000 ("),
+            "bottom bar should omit a missing effort, got:\n{text}"
+        );
     }
 }
