@@ -39,8 +39,8 @@ pub fn body_hook_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::body::test_util::*;
     use crate::ProviderKind;
+    use crate::openai::body::test_util::*;
 
     #[test]
     fn body_hook_for_selects_by_kind_and_heuristics() {
@@ -69,10 +69,9 @@ mod tests {
         assert!(kimi_body.get("reasoning_effort").is_none());
 
         let mut heur_body = empty_body();
-        body_hook_for(&openai_kimi_url, None).unwrap().inject(
-            &mut heur_body,
-            &ctx(&request, &openai_kimi_url, &[]),
-        );
+        body_hook_for(&openai_kimi_url, None)
+            .unwrap()
+            .inject(&mut heur_body, &ctx(&request, &openai_kimi_url, &[]));
         assert_eq!(heur_body["thinking"]["type"], "enabled");
         assert!(heur_body.get("reasoning_effort").is_none());
     }

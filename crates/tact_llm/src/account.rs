@@ -296,9 +296,8 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 
 /// Query Kimi Code subscription quota (`GET .../v1/usages`).
 pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
-    let (api_key, base_url, is_kimi_coding) = read_provider(|p| {
-        (p.api_key.clone(), p.base_url.clone(), p.is_kimi_coding())
-    });
+    let (api_key, base_url, is_kimi_coding) =
+        read_provider(|p| (p.api_key.clone(), p.base_url.clone(), p.is_kimi_coding()));
 
     if !is_kimi_coding {
         anyhow::bail!("usage quota API is only available on Kimi Code (api.kimi.com/coding)");
@@ -437,5 +436,4 @@ mod tests {
         assert!(!info.is_available);
         assert_eq!(info.balance_infos[0].currency, "USD");
     }
-
 }

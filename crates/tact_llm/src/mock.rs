@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason,
-};
+use crate::{ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason};
 
 /// A single canned LLM turn for [`MockClient`].
 struct MockTurn {
@@ -283,4 +281,3 @@ impl LlmClient for MockClient {
         Ok((blocks, stop_reason, usage, None))
     }
 }
-

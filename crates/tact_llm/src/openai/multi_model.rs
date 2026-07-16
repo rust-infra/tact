@@ -68,7 +68,10 @@ impl LlmClient for OpenAiMultiModelAdapter {
         ),
         LlmError,
     > {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| self.assemble_body(r, s)).await
+        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 
     async fn create_message(

@@ -11,10 +11,10 @@ pub mod convert;
 pub mod deepseek;
 pub mod error;
 pub mod hook_select;
+pub mod inject;
 pub mod kimi;
 pub mod mock;
 pub mod openai;
-pub mod inject;
 pub mod provider;
 pub mod types;
 
@@ -30,12 +30,12 @@ pub use content::{
     ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, Role, StreamUsage,
 };
 pub use error::{LlmError, MessageError};
-pub use mock::MockClient;
 pub use hook_select::body_hook_for;
+pub use mock::MockClient;
 pub use openai::reasoning_effort_from_budget;
 pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
-    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k27, is_kimi_k2x,
+    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k27,
     is_kimi_usage_supported, read_provider, set_model,
 };
 pub use types::{

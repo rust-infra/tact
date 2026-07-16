@@ -4,9 +4,7 @@ use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{
-    ContentBlock, CreateMessageParams, LlmError, LlmRequestBody, StopReason,
-};
+use crate::{ContentBlock, CreateMessageParams, LlmError, LlmRequestBody, StopReason};
 
 use super::OpenAiAdapter;
 

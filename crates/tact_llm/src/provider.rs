@@ -57,7 +57,9 @@ impl ProviderInfo {
     /// Build a dedicated DeepSeek Chat Completions client.
     fn build_deepseek(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
-        Ok(LlmProvider::DeepSeek(deepseek::DeepSeekAdapter::new(config)))
+        Ok(LlmProvider::DeepSeek(deepseek::DeepSeekAdapter::new(
+            config,
+        )))
     }
 
     /// Build a dedicated Kimi / Moonshot Chat Completions client.
@@ -200,7 +202,9 @@ where
     F: FnOnce(&ProviderInfo) -> R,
 {
     let guard = PROVIDER.read().expect("LLM provider lock poisoned");
-    f(guard.as_ref().expect("LLM provider not initialized; call tact_llm::init_provider first"))
+    f(guard
+        .as_ref()
+        .expect("LLM provider not initialized; call tact_llm::init_provider first"))
 }
 
 /// Update only the active model id (used by the TUI `/model` command).
@@ -497,5 +501,4 @@ mod tests {
         assert!(set_model("   ").is_err());
         assert_eq!(get_provider().model, "kimi-for-coding");
     }
-
 }

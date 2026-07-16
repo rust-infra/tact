@@ -9,7 +9,9 @@
 //!   OPENAI_BASE_URL=https://api.kimi.com/coding/v1  (optional, defaults to OpenAI official)
 //!   OPENAI_MODEL=moonshot-v1-8k
 
-use super::openai::{CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest};
+use super::openai::{
+    CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest,
+};
 use async_openai::config::Config;
 use async_openai::types::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,

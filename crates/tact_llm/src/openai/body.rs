@@ -7,7 +7,6 @@ use serde_json::Value;
 
 use crate::{CreateMessageParams, LlmError, ProviderInfo, convert::build_openai_request};
 
-
 /// Context passed to [`OpenAiBodyHook::inject`].
 pub struct BodyHookCtx<'a> {
     pub request: &'a CreateMessageParams,

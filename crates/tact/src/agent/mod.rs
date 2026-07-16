@@ -208,9 +208,11 @@ impl Agent {
             return Ok(self.runtime.session_id.clone().unwrap_or_default());
         };
 
-        let session_id = self.runtime.session_id.clone().context(
-            "session_id must be set via with_session before ensure_session",
-        )?;
+        let session_id = self
+            .runtime
+            .session_id
+            .clone()
+            .context("session_id must be set via with_session before ensure_session")?;
 
         // Idempotent: startup normally created the row already.
         let root_dir = self.tool_context.work_dir.display().to_string();

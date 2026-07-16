@@ -84,7 +84,9 @@ fn user_text_message(content: impl Into<String>) -> ChatCompletionRequestMessage
     })
 }
 
-fn user_parts_message(parts: Vec<ChatCompletionRequestMessageContentPart>) -> ChatCompletionRequestMessage {
+fn user_parts_message(
+    parts: Vec<ChatCompletionRequestMessageContentPart>,
+) -> ChatCompletionRequestMessage {
     ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
         content: ChatCompletionRequestUserMessageContent::Array(parts),
         role: OpenAiRole::User,
@@ -207,7 +209,8 @@ pub fn messages_to_openai(
                     };
                     let tool_calls = (!tool_calls.is_empty()).then_some(tool_calls);
                     result.push(assistant_message(content, tool_calls));
-                    reasoning.push((!assistant_reasoning.is_empty()).then_some(assistant_reasoning));
+                    reasoning
+                        .push((!assistant_reasoning.is_empty()).then_some(assistant_reasoning));
                 }
             },
         }
@@ -312,9 +315,7 @@ fn stub_empty_assistant_if_needed(message: &mut ChatCompletionRequestMessage) {
         .as_ref()
         .is_some_and(|tcs| !tcs.is_empty());
     if !has_tool_calls && assistant.content.as_deref().unwrap_or("").is_empty() {
-        tracing::warn!(
-            "Replacing empty assistant message with stub to keep OpenAI request valid"
-        );
+        tracing::warn!("Replacing empty assistant message with stub to keep OpenAI request valid");
         assistant.content =
             Some("[Assistant response was empty or truncated. Continuing...]".to_string());
     }
@@ -389,8 +390,14 @@ mod tests {
     #[test]
     fn finish_reason_maps_via_from() {
         assert_eq!(StopReason::from(FinishReason::Stop), StopReason::EndTurn);
-        assert_eq!(StopReason::from(FinishReason::Length), StopReason::MaxTokens);
-        assert_eq!(StopReason::from(FinishReason::ToolCalls), StopReason::ToolUse);
+        assert_eq!(
+            StopReason::from(FinishReason::Length),
+            StopReason::MaxTokens
+        );
+        assert_eq!(
+            StopReason::from(FinishReason::ToolCalls),
+            StopReason::ToolUse
+        );
         assert_eq!(
             StopReason::from(FinishReason::ContentFilter),
             StopReason::StopSequence

@@ -35,8 +35,8 @@ fn skip_unless_api_key() -> Option<(String, String, String)> {
             return None;
         }
     };
-    let base_url = std::env::var("KIMI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.moonshot.cn/v1".to_string());
+    let base_url =
+        std::env::var("KIMI_BASE_URL").unwrap_or_else(|_| "https://api.moonshot.cn/v1".to_string());
     // Coding endpoint / `kimi-for-coding` omit the `thinking` param; moonshot
     // defaults to kimi-k2.5 with `thinking: { type: "enabled" }`.
     let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| {
@@ -53,10 +53,7 @@ fn skip_unless_api_key() -> Option<(String, String, String)> {
 /// (K2.7-code / `kimi-for-coding` force thinking on).
 fn omit_thinking_param(model: &str) -> bool {
     let m = model.to_lowercase();
-    m == "kimi-for-coding"
-        || m.contains("k2.7")
-        || m.contains("k2-7")
-        || m.contains("kimi-k2.7")
+    m == "kimi-for-coding" || m.contains("k2.7") || m.contains("k2-7") || m.contains("kimi-k2.7")
 }
 
 fn thinking_enabled(model: &str) -> Map<String, Value> {
@@ -168,7 +165,10 @@ fn keep_latest_reasoning_only(messages: &mut [Value]) {
 }
 
 fn count_reasoning(messages: &[Value]) -> usize {
-    messages.iter().filter(|m| reasoning_of(m).is_some()).count()
+    messages
+        .iter()
+        .filter(|m| reasoning_of(m).is_some())
+        .count()
 }
 
 /// Scenario 1+2: plain multi-turn with and without echoing `reasoning_content`.
@@ -195,10 +195,7 @@ async fn kimi_reasoning_plain_multiturn_echo_optional() {
     if skip_if_unavailable(status1, &resp1) {
         return;
     }
-    assert!(
-        status1.is_success(),
-        "turn1 failed: {status1} {resp1}"
-    );
+    assert!(status1.is_success(), "turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
     println!(
@@ -289,10 +286,7 @@ async fn kimi_reasoning_tool_call_echo_required_or_not() {
     if skip_if_unavailable(status1, &resp1) {
         return;
     }
-    assert!(
-        status1.is_success(),
-        "tool turn1 failed: {status1} {resp1}"
-    );
+    assert!(status1.is_success(), "tool turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
     let tool_calls = asst1
@@ -494,7 +488,10 @@ async fn kimi_reasoning_tool_call_echo_latest_only() {
     keep_latest_reasoning_only(&mut history);
     let after = count_reasoning(&history);
     println!("reasoning_content count before keep_latest={before} after={after}");
-    assert_eq!(after, 1, "expected exactly one reasoning_content after keep_latest");
+    assert_eq!(
+        after, 1,
+        "expected exactly one reasoning_content after keep_latest"
+    );
     assert!(
         before >= 2,
         "need at least two historical thinkings to exercise latest-only (got {before})"

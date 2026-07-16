@@ -28,8 +28,7 @@ fn skip_unless_api_key() -> Option<(String, String, String)> {
     };
     let base_url = std::env::var("DEEPSEEK_BASE_URL")
         .unwrap_or_else(|_| "https://api.deepseek.com".to_string());
-    let model =
-        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let model = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
     Some((api_key, base_url, model))
 }
 
@@ -123,7 +122,10 @@ fn keep_latest_reasoning_only(messages: &mut [Value]) {
 }
 
 fn count_reasoning(messages: &[Value]) -> usize {
-    messages.iter().filter(|m| reasoning_of(m).is_some()).count()
+    messages
+        .iter()
+        .filter(|m| reasoning_of(m).is_some())
+        .count()
 }
 
 /// Scenario 1+2: plain multi-turn with and without echoing `reasoning_content`.
@@ -144,10 +146,7 @@ async fn deepseek_reasoning_plain_multiturn_echo_optional() {
     let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body)
         .await
         .expect("turn1 request");
-    assert!(
-        status1.is_success(),
-        "turn1 failed: {status1} {resp1}"
-    );
+    assert!(status1.is_success(), "turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
     println!(
@@ -226,10 +225,7 @@ async fn deepseek_reasoning_tool_call_echo_required_or_not() {
     let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body)
         .await
         .expect("tool turn1 request");
-    assert!(
-        status1.is_success(),
-        "tool turn1 failed: {status1} {resp1}"
-    );
+    assert!(status1.is_success(), "tool turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
     let tool_calls = asst1
@@ -413,7 +409,10 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
     keep_latest_reasoning_only(&mut history);
     let after = count_reasoning(&history);
     println!("reasoning_content count before keep_latest={before} after={after}");
-    assert_eq!(after, 1, "expected exactly one reasoning_content after keep_latest");
+    assert_eq!(
+        after, 1,
+        "expected exactly one reasoning_content after keep_latest"
+    );
     assert!(
         before >= 2,
         "need at least two historical thinkings to exercise latest-only (got {before})"
