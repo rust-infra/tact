@@ -229,5 +229,5 @@ The correct sequence should be: `Assistant(tool_calls=[id1]) → Tool(id1, resul
 
 **Scope**:
 - `crates/tact/src/agent/mod.rs` — `agent_loop()` MaxTokens recovery path
-- `crates/tact_llm/src/convert.rs` — `anthropic_messages_to_openai()` end-of-function defensive validation
+- `crates/tact_llm/src/convert.rs` — `messages_to_openai()` end-of-function defensive validation
 - Only triggered on OpenAI backend (Anthropic native API has no such constraint)

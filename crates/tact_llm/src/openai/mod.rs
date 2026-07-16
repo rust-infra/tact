@@ -9,7 +9,14 @@
 //! hand-rolled byte-level parsing, for correct handling of `\n\n` / `\r\n\r\n`
 //! delimiters and connection lifecycle.
 
-use crate::{ContentBlock, CreateMessageParams, StopReason};
+pub mod body;
+pub(crate) mod compat;
+pub mod wrapper;
+
+pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
+pub use wrapper::OpenAiAdapterWrapper;
+
+use crate::{ContentBlock, StopReason};
 use async_openai::{
     config::Config,
     types::{
@@ -28,7 +35,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
 
-use super::{LlmClient, LlmError, convert::build_openai_request};
+use super::LlmError;
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
@@ -173,28 +180,17 @@ pub struct CreateChatCompletionRequest {
     /// A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse. [Learn more](https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-
-    // deepseek
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Thinking>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Copy, Clone, Serialize)]
 pub struct StreamOptions {
     pub include_usage: Option<bool>,
 }
 
-#[derive(Serialize)]
-pub struct Thinking {
-    #[serde(rename = "type")]
-    pub _type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep: Option<String>,
-}
+/// Default streaming options — request token usage in the final chunk.
+pub(crate) const STREAM_OPTIONS_WITH_USAGE: StreamOptions = StreamOptions {
+    include_usage: Some(true),
+};
 
 /// Top-level SSE chunk from an OpenAI-compatible streaming chat completion.
 #[derive(Debug, Default, Deserialize)]
@@ -269,82 +265,6 @@ pub fn reasoning_effort_from_budget(budget_tokens: usize) -> Option<&'static str
     }
 }
 
-/// Inject provider-specific reasoning / thinking controls into an OpenAI-compatible request.
-///
-/// Chat Completions does **not** use Anthropic's `thinking.budget_tokens` on the wire.
-/// Map the internal budget / provider heuristics into compatible fields:
-/// - **OpenAI-compatible (incl. DeepSeek)** — `reasoning_effort` (`low` / `medium` / `high`).
-/// - **Kimi K2.5** — `thinking: { type: "enabled" }`.
-/// - **Kimi K2.6** — `thinking: { type: "enabled", keep: "all" }` (Preserved Thinking).
-/// - **Kimi K2.7-code** — thinking always on; do not inject.
-fn inject_thinking_param(
-    request: &CreateMessageParams,
-    body: &mut CreateChatCompletionRequest,
-    provider: &crate::ProviderInfo,
-) {
-    if provider.is_kimi_k27() {
-        // K2.7-code forces thinking on; passing `thinking` is unnecessary and can error.
-        return;
-    }
-    if provider.is_kimi_k2x() {
-        if provider.model.contains("k2.6") || provider.model.contains("k2-6") {
-            body.thinking = Some(Thinking {
-                _type: "enabled".to_owned(),
-                keep: Some("all".to_owned()),
-            });
-        } else {
-            body.thinking = Some(Thinking {
-                _type: "enabled".to_owned(),
-                keep: None,
-            });
-        }
-        return;
-    }
-
-    let Some(thinking) = &request.thinking else {
-        return;
-    };
-
-    // Chat Completions: `reasoning_effort` only — never Anthropic `budget_tokens`.
-    if let Some(effort) = reasoning_effort_from_budget(thinking.budget_tokens) {
-        body.reasoning_effort = Some(effort.to_owned());
-    }
-}
-
-/// Inject `user_id` into the request body for KV cache isolation.
-///
-/// DeepSeek uses `user_id` to isolate per-user KV cache.  Requests
-/// that share the same `user_id` can reuse cached prompt tokens,
-/// improving cache hit rate.  Other OpenAI-compatible providers
-/// silently ignore unrecognised fields.
-fn inject_user_id(body: &mut serde_json::Value, user_id: &Option<String>) {
-    if let Some(uid) = user_id {
-        body["user_id"] = serde_json::json!(uid);
-    }
-}
-
-/// For Kimi/Moonshot thinking models, echo historical `reasoning_content` back into
-/// assistant messages. Without this, multi-turn tool-call conversations fail with:
-///   "thinking is enabled but reasoning_content is missing in assistant tool call message"
-fn inject_reasoning_content(
-    body: &mut serde_json::Value,
-    reasoning: &[Option<String>],
-    is_kimi: bool,
-) {
-    if !is_kimi {
-        return;
-    }
-    if let Some(messages) = body["messages"].as_array_mut() {
-        for (i, msg) in messages.iter_mut().enumerate() {
-            if let Some(Some(r)) = reasoning.get(i)
-                && msg.get("role").and_then(|v| v.as_str()) == Some("assistant")
-            {
-                msg["reasoning_content"] = serde_json::Value::String(r.clone());
-            }
-        }
-    }
-}
-
 fn tool_use_block_from_parts(
     id: Option<String>,
     name: Option<String>,
@@ -372,7 +292,7 @@ fn tool_use_block_from_response(id: &str, name: &str, args: &str) -> Option<Cont
 /// `async-openai`'s built-in `OpenAIConfig` unconditionally adds
 /// `OpenAI-Beta: assistants=v1` to every request, which causes 403
 /// on many OpenAI-compatible providers (Kimi, DeepSeek, etc.).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CompatibleConfig {
     api_base: String,
     api_key: Secret<String>,
@@ -419,25 +339,30 @@ impl Config for CompatibleConfig {
     }
 }
 
-#[derive(Clone)]
+/// HTTP transport for OpenAI-compatible Chat Completions.
+///
+/// Request shaping (provider-specific body fields) lives in
+/// [`OpenAiAdapterWrapper`] / [`OpenAiBodyHook`].
+#[derive(Clone, Debug)]
 pub struct OpenAiAdapter {
     config: CompatibleConfig,
-    /// Optional user identifier sent as the `user_id` body field.
-    ///
-    /// DeepSeek uses `user_id` for KV cache isolation: requests with the
-    /// same `user_id` within a session share the KV cache, improving cache
-    /// hit rate and reducing latency / cost.
-    ///
-    /// Session IDs (UUIDs) are natural candidates here.
-    user_id: Option<String>,
+    client: reqwest::Client,
+}
+
+/// Accumulates a streaming tool-call delta across SSE chunks.
+struct PendingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    args: String,
 }
 
 impl OpenAiAdapter {
     pub fn new(config: CompatibleConfig) -> Self {
-        Self {
-            config,
-            user_id: None,
-        }
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_secs(120))
+            .build()
+            .expect("failed to build reqwest client");
+        Self { config, client }
     }
 
     /// Expose the configured API base URL for diagnostics/tests.
@@ -445,24 +370,15 @@ impl OpenAiAdapter {
         self.config.api_base()
     }
 
-    /// Set the `user_id` that will be injected into every outgoing request
-    /// body as `"user_id"`.
-    pub fn set_user_id(&mut self, user_id: String) {
-        self.user_id = Some(user_id);
-    }
-}
-
-#[async_trait::async_trait]
-impl LlmClient for OpenAiAdapter {
     /// Stream a chat completion via SSE, capturing `reasoning_content`
     /// not present in `async-openai`'s response types.
     ///
     /// Uses `eventsource-stream` for robust SSE parsing (handles both
-    /// `\n\n` and `\r\n\r\n` delimiters) and injects `stream_options`
-    /// to receive usage data in the final chunk.
-    async fn stream_message(
+    /// `\n\n` and `\r\n\r\n` delimiters). Caller must set `stream` /
+    /// `stream_options` on `body` when usage is required.
+    pub async fn stream_completion(
         &self,
-        request: &CreateMessageParams,
+        body: &serde_json::Value,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
     ) -> Result<
         (
@@ -473,28 +389,16 @@ impl LlmClient for OpenAiAdapter {
         ),
         LlmError,
     > {
-        let (mut openai_request, _reasoning_per_message) = build_openai_request(request);
-        openai_request.stream = Some(true);
-        openai_request.stream_options = Some(StreamOptions {
-            include_usage: Some(true),
-        });
-        openai_request.user_id = self.user_id.clone();
-
-        inject_thinking_param(request, &mut openai_request, &crate::get_provider());
-        // todo: inject_reasoning_content for Kimi tool-call turns
-        let json_body =
-            serde_json::to_vec(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
+        let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
 
-        let response = reqwest::Client::builder()
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| LlmError::Other(e.to_string()))?
+        let response = self
+            .client
             .post(&url)
             .headers(headers)
-            .json(&openai_request)
+            .json(body)
             .send()
             .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
@@ -522,7 +426,7 @@ impl LlmClient for OpenAiAdapter {
         let mut reasoning_buffer = String::new();
         // Buffer tool call results until the final chunk is received.
         // (vec of (id, name, args) buffers)
-        let mut tool_call_buffers: Vec<(Option<String>, Option<String>, String)> = Vec::new();
+        let mut tool_call_buffers: Vec<PendingToolCall> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
         let mut token_usage: Option<TokenUsageInfo> = None;
         // OpenAI-compatible streams only expose reasoning deltas — synthesize
@@ -580,17 +484,21 @@ impl LlmClient for OpenAiAdapter {
                         for tc in &delta.tool_calls {
                             let idx = tc.index as usize;
                             while tool_call_buffers.len() <= idx {
-                                tool_call_buffers.push((None, None, String::new()));
+                                tool_call_buffers.push(PendingToolCall {
+                                    id: None,
+                                    name: None,
+                                    args: String::new(),
+                                });
                             }
                             if let Some(ref id) = tc.id {
-                                tool_call_buffers[idx].0 = Some(id.clone());
+                                tool_call_buffers[idx].id = Some(id.clone());
                             }
                             if let Some(ref func) = tc.function {
                                 if let Some(ref name) = func.name {
-                                    tool_call_buffers[idx].1 = Some(name.clone());
+                                    tool_call_buffers[idx].name = Some(name.clone());
                                 }
                                 if let Some(ref args) = func.arguments {
-                                    tool_call_buffers[idx].2.push_str(args);
+                                    tool_call_buffers[idx].args.push_str(args);
                                 }
                             }
                         }
@@ -650,7 +558,7 @@ impl LlmClient for OpenAiAdapter {
             response_blocks.push(ContentBlock::Text { text: text_buffer });
         }
         // use tool call buffers
-        for (id, name, args) in tool_call_buffers {
+        for PendingToolCall { id, name, args } in tool_call_buffers {
             if let Some(block) = tool_use_block_from_parts(id, name, args) {
                 response_blocks.push(block);
             }
@@ -659,9 +567,10 @@ impl LlmClient for OpenAiAdapter {
         Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
     }
 
-    async fn create_message(
+    /// Non-streaming chat completion against a finished JSON body.
+    pub async fn create_completion(
         &self,
-        request: &CreateMessageParams,
+        body: &serde_json::Value,
     ) -> Result<
         (
             Vec<ContentBlock>,
@@ -671,33 +580,24 @@ impl LlmClient for OpenAiAdapter {
         ),
         LlmError,
     > {
-        let (mut openai_request, _reasoning_per_message) = build_openai_request(request);
-        openai_request.stream = Some(false);
-        openai_request.stream_options = None;
-        openai_request.user_id = self.user_id.clone();
-
-        inject_thinking_param(request, &mut openai_request, &crate::get_provider());
-        let json_body =
-            serde_json::to_vec(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
+        let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
 
-        let response = reqwest::Client::builder()
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| LlmError::Other(e.to_string()))?
+        let response = self
+            .client
             .post(&url)
             .headers(headers)
-            .json(&openai_request)
+            .json(body)
             .send()
             .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::Other(format!("HTTP {status}: {body}")));
+            let resp_body = response.text().await.unwrap_or_default();
+            return Err(LlmError::Other(format!("HTTP {status}: {resp_body}")));
         }
 
         let json: serde_json::Value = response
@@ -777,100 +677,6 @@ impl LlmClient for OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderInfo, ProviderKind, RequiredMessageParams};
-
-    fn empty_chat_request() -> CreateChatCompletionRequest {
-        CreateChatCompletionRequest {
-            messages: vec![],
-            model: "test".into(),
-            frequency_penalty: None,
-            logit_bias: None,
-            logprobs: None,
-            top_logprobs: None,
-            max_tokens: None,
-            n: None,
-            presence_penalty: None,
-            response_format: None,
-            seed: None,
-            stop: None,
-            stream: None,
-            stream_options: None,
-            temperature: None,
-            top_p: None,
-            tools: None,
-            tool_choice: None,
-            user: None,
-            user_id: None,
-            thinking: None,
-            reasoning_effort: None,
-        }
-    }
-
-    fn sample_request_with_thinking() -> CreateMessageParams {
-        CreateMessageParams::new(RequiredMessageParams {
-            model: "test-model".to_string(),
-            messages: vec![],
-            max_tokens: 1,
-        })
-        .with_thinking(RequestThinking {
-            budget_tokens: 1000,
-            type_: ThinkingType::Enabled,
-        })
-    }
-
-    #[test]
-    fn inject_thinking_uses_reasoning_effort_for_openai() {
-        let request = sample_request_with_thinking();
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::OpenAi,
-            api_key: String::new(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "o3-mini".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        assert!(body.thinking.is_none());
-        assert_eq!(body.reasoning_effort.as_deref(), Some("low"));
-    }
-
-    #[test]
-    fn inject_thinking_omits_reasoning_effort_when_budget_zero() {
-        let request = CreateMessageParams::new(RequiredMessageParams {
-            model: "o3-mini".to_string(),
-            messages: vec![],
-            max_tokens: 1,
-        })
-        .with_thinking(RequestThinking {
-            budget_tokens: 0,
-            type_: ThinkingType::Enabled,
-        });
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::OpenAi,
-            api_key: String::new(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "o3-mini".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        assert!(body.thinking.is_none());
-        assert!(body.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn inject_thinking_uses_reasoning_effort_for_deepseek() {
-        let request = sample_request_with_thinking();
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::DeepSeek,
-            api_key: String::new(),
-            base_url: "https://api.deepseek.com".to_string(),
-            model: "deepseek-reasoner".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        assert!(body.thinking.is_none());
-        assert_eq!(body.reasoning_effort.as_deref(), Some("low"));
-    }
 
     #[test]
     fn reasoning_effort_bands_from_budget() {
@@ -880,100 +686,6 @@ mod tests {
         assert_eq!(reasoning_effort_from_budget(10_001), Some("medium"));
         assert_eq!(reasoning_effort_from_budget(32_000), Some("medium"));
         assert_eq!(reasoning_effort_from_budget(32_001), Some("high"));
-    }
-
-    #[test]
-    fn inject_thinking_skips_for_kimi_k27() {
-        let request = sample_request_with_thinking();
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::OpenAi,
-            api_key: String::new(),
-            base_url: String::new(),
-            model: "kimi-k2.7-code".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        assert!(body.thinking.is_none());
-        assert!(body.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn inject_thinking_skips_for_kimi_code_stable_id() {
-        let request = sample_request_with_thinking();
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::OpenAi,
-            api_key: String::new(),
-            base_url: "https://api.kimi.com/coding/v1".to_string(),
-            model: "kimi-for-coding".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        assert!(body.thinking.is_none());
-        assert!(body.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn inject_thinking_uses_preserved_thinking_for_kimi_k26() {
-        let request = sample_request_with_thinking();
-        let mut body = empty_chat_request();
-        let provider = ProviderInfo {
-            provider: ProviderKind::OpenAi,
-            api_key: String::new(),
-            base_url: String::new(),
-            model: "kimi-k2.6".to_string(),
-        };
-        inject_thinking_param(&request, &mut body, &provider);
-        let thinking = body.thinking.expect("thinking enabled");
-        assert_eq!(thinking._type, "enabled");
-        assert_eq!(thinking.keep.as_deref(), Some("all"));
-    }
-
-    #[test]
-    fn inject_user_id_adds_field_when_set() {
-        let mut body = serde_json::json!({
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        let user_id = Some("a1b2c3d4-5678-90ab-cdef-1234567890ab".to_string());
-        inject_user_id(&mut body, &user_id);
-        assert_eq!(body["user_id"], "a1b2c3d4-5678-90ab-cdef-1234567890ab");
-    }
-
-    #[test]
-    fn inject_user_id_skipped_when_none() {
-        let mut body = serde_json::json!({
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        inject_user_id(&mut body, &None);
-        assert!(body.get("user_id").is_none());
-    }
-
-    #[test]
-    fn inject_reasoning_content_adds_field_for_kimi_assistant() {
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "", "tool_calls": []},
-                {"role": "tool", "content": "ok", "tool_call_id": "1"}
-            ]
-        });
-        let reasoning = vec![None, Some("let me think".to_string()), None];
-        inject_reasoning_content(&mut body, &reasoning, true);
-        assert_eq!(body["messages"][1]["reasoning_content"], "let me think");
-    }
-
-    #[test]
-    fn inject_reasoning_content_skipped_for_non_kimi() {
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "hello"}
-            ]
-        });
-        let reasoning = vec![None, Some("reasoning".to_string())];
-        inject_reasoning_content(&mut body, &reasoning, false);
-        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
     #[test]

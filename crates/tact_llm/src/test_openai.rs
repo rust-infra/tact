@@ -9,16 +9,15 @@
 //!   OPENAI_BASE_URL=https://api.kimi.com/coding/v1  (optional, defaults to OpenAI official)
 //!   OPENAI_MODEL=moonshot-v1-8k
 
-use super::openai::CompatibleConfig;
+use super::openai::{CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest};
 use async_openai::config::Config;
 use async_openai::types::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest, Role,
 };
 
-fn build_test_request(model: String) -> CreateChatCompletionRequest {
-    #[allow(deprecated)]
-    CreateChatCompletionRequest {
+fn build_local_test_request(model: String) -> LocalCreateChatCompletionRequest {
+    LocalCreateChatCompletionRequest {
         model,
         messages: vec![ChatCompletionRequestMessage::User(
             ChatCompletionRequestUserMessage {
@@ -40,13 +39,31 @@ fn build_test_request(model: String) -> CreateChatCompletionRequest {
         seed: None,
         stop: None,
         stream: Some(false),
+        stream_options: None,
         temperature: None,
         top_p: None,
         tools: None,
         tool_choice: None,
         user: None,
-        function_call: None,
-        functions: None,
+    }
+}
+
+fn build_async_openai_test_request(model: String) -> CreateChatCompletionRequest {
+    CreateChatCompletionRequest {
+        model,
+        messages: vec![ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: ChatCompletionRequestUserMessageContent::Text(
+                    "Say hello in one word.".into(),
+                ),
+                role: Role::User,
+                name: None,
+            },
+        )],
+        max_tokens: Some(16),
+        n: Some(1),
+        stream: Some(false),
+        ..Default::default()
     }
 }
 
@@ -62,7 +79,7 @@ async fn test_openai_raw_reqwest() {
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 
     let config = CompatibleConfig::new(&api_key, &base_url);
-    let request = build_test_request(model);
+    let request = build_local_test_request(model);
     let body = serde_json::to_string(&request).unwrap();
 
     let url = config.url("/chat/completions");
@@ -111,7 +128,7 @@ async fn test_openai_async_openai_non_stream() {
 
     let config = CompatibleConfig::new(&api_key, &base_url);
     let client = async_openai::Client::with_config(config);
-    let request = build_test_request(model);
+    let request = build_async_openai_test_request(model);
 
     println!("===== ASYNC-OPENAI NON-STREAM TEST =====");
     println!("URL: {}/chat/completions", base_url);
@@ -145,7 +162,7 @@ async fn test_openai_async_openai_stream() {
 
     let config = CompatibleConfig::new(&api_key, &base_url);
     let client = async_openai::Client::with_config(config);
-    let mut request = build_test_request(model);
+    let mut request = build_async_openai_test_request(model);
     request.stream = Some(true);
 
     println!("===== ASYNC-OPENAI STREAM TEST =====");
