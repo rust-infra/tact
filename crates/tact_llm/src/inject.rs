@@ -14,9 +14,9 @@ pub(crate) fn inject_user_id(body: &mut Value, user_id: Option<&str>) {
 
 /// Echo historical `reasoning_content` on assistant messages.
 ///
-/// Required for Kimi tool-call turns, and for DeepSeek thinking + tool calls
-/// (otherwise the API returns 400). Harmless on plain multi-turn DeepSeek
-/// (ignored when there was no tool call).
+/// Required for Kimi tool-call / Preserved Thinking turns (otherwise 400).
+/// DeepSeek deliberately does **not** call this: live API accepts tool turns
+/// without echo, and omitting it keeps the prompt prefix stable for KV cache.
 pub(crate) fn inject_reasoning_content(body: &mut Value, reasoning: &[Option<String>]) {
     let Some(messages) = body["messages"].as_array_mut() else {
         return;

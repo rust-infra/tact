@@ -1,21 +1,25 @@
 //! DeepSeek Chat Completions adapter (OpenAI-compatible transport).
 //!
 //! Uses [`OpenAiAdapter`] for HTTP/SSE and always applies [`DeepSeekBodyHook`]
-//! for `thinking` + `reasoning_effort` + `user_id` + `reasoning_content`.
+//! for `thinking` + `reasoning_effort` + `user_id`.
+//!
+//! Does **not** echo historical `reasoning_content`: live API accepts tool
+//! turns without it, and omitting it preserves DeepSeek prefix KV-cache hits
+//! (Kimi still requires echo via [`crate::kimi::KimiBodyHook`]).
 
 use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::inject::{inject_reasoning_content, inject_user_id, thinking_budget_enabled};
+use crate::inject::{inject_user_id, thinking_budget_enabled};
 use crate::openai::body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body};
 use crate::openai::compat::{create_assembled, stream_assembled};
 use crate::openai::{CompatibleConfig, OpenAiAdapter};
 use crate::{ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason};
 
 /// DeepSeek hook (official OpenAI format):
-/// `thinking` + `reasoning_effort` (`high` / `max`) + `user_id` + tool-turn
-/// `reasoning_content` echo.
+/// `thinking` + `reasoning_effort` (`high` / `max`) + `user_id`.
+/// Does not replay `reasoning_content` (see module docs).
 #[derive(Debug, Default, Clone)]
 pub struct DeepSeekBodyHook {
     user_id: Option<String>,
@@ -31,7 +35,6 @@ impl OpenAiBodyHook for DeepSeekBodyHook {
     fn inject(&self, body: &mut Value, ctx: &BodyHookCtx<'_>) {
         inject_deepseek_thinking(body, ctx.request);
         inject_user_id(body, self.user_id.as_deref());
-        inject_reasoning_content(body, ctx.reasoning_per_message);
     }
 }
 
@@ -194,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_hook_echoes_reasoning_content() {
+    fn deepseek_hook_does_not_echo_reasoning_content() {
         let request = sample_request_with_thinking();
         let provider = provider(
             ProviderKind::DeepSeek,
@@ -210,6 +213,9 @@ mod tests {
         });
         let reasoning = vec![None, Some("plan tool".to_string()), None];
         DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &reasoning));
-        assert_eq!(body["messages"][1]["reasoning_content"], "plan tool");
+        assert!(
+            body["messages"][1].get("reasoning_content").is_none(),
+            "DeepSeek must omit historical reasoning_content for prefix cache"
+        );
     }
 }
