@@ -45,6 +45,7 @@ pub struct AgentRuntime {
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
+    /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
     pub session_id: Option<String>,
     /// DB row id of the first message persisted for the current LLM-call window.
     pub first_message_db_id: i64,
@@ -164,9 +165,14 @@ impl Agent {
         self
     }
 
-    pub fn with_session(mut self, session_id: Option<String>, store: DynSessionStore) -> Self {
+    /// Attach a session store with a fully initialized session id.
+    ///
+    /// Callers must create/resolve the id and persist the session row before
+    /// this (startup path). Also wires DeepSeek `user_id` for KV cache isolation.
+    pub fn with_session(mut self, session_id: String, store: DynSessionStore) -> Self {
+        self.runtime.client.set_user_id(&session_id);
         self.runtime.session_store = Some(store);
-        self.runtime.session_id = session_id;
+        self.runtime.session_id = Some(session_id);
         self
     }
 
@@ -193,20 +199,20 @@ impl Agent {
         }
     }
 
+    /// Load persisted history into an empty context.
+    ///
+    /// Session id and store must already be set via [`Self::with_session`];
+    /// this does not allocate a new id.
     pub async fn ensure_session(&mut self) -> Result<String> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(self.runtime.session_id.clone().unwrap_or_default());
         };
 
-        let session_id = match self.runtime.session_id.as_ref() {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => {
-                let id = uuid::Uuid::new_v4().to_string();
-                self.runtime.session_id = Some(id.clone());
-                id
-            }
-        };
+        let session_id = self.runtime.session_id.clone().context(
+            "session_id must be set via with_session before ensure_session",
+        )?;
 
+        // Idempotent: startup normally created the row already.
         let root_dir = self.tool_context.work_dir.display().to_string();
         store.ensure_session_row(&session_id, &root_dir).await?;
 
@@ -323,10 +329,8 @@ impl Agent {
     pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
 
-        // Ensure a session exists and optionally restore history.
-        let session_id = self.ensure_session().await?;
-        // Wire the session_id as the DeepSeek `user_id` for KV cache isolation.
-        self.runtime.client.set_user_id(&session_id);
+        // Restore history if the startup path left context empty.
+        self.ensure_session().await?;
 
         // If history is empty, add the initial user message so it is persisted.
         if self.runtime.context.is_empty() {

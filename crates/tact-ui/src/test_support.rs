@@ -197,7 +197,7 @@ pub async fn build_test_agent_with_session(
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
     )
     .with_agent_settings(agent_settings)
-    .with_session(Some(session_id.clone()), session_store.clone());
+    .with_session(session_id.clone(), session_store.clone());
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }

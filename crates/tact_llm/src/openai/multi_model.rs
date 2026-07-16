@@ -1,4 +1,9 @@
-//! OpenAI-compatible client wrapper: live body-hook selection + transport.
+//! OpenAI-compatible multi-model client: live body-hook selection + transport.
+//!
+//! Built once for `ProviderKind::OpenAi`, then re-selects provider hooks each
+//! request so `/model` (and other in-process provider updates) can switch
+//! between OpenAI / DeepSeek-compatible / Kimi body shapes without rebuilding
+//! the long-lived client.
 
 use crate::hook_select::body_hook_for;
 use crate::openai::body::assemble_chat_completion_body;
@@ -7,14 +12,17 @@ use crate::{CreateMessageParams, LlmClient, LlmError};
 
 use super::OpenAiAdapter;
 
-/// OpenAI (or OpenAI-labeled) client that re-selects body hooks each request.
+/// OpenAI-labeled client that re-selects body hooks from the live provider.
+///
+/// Holds an optional DeepSeek `user_id` (session id) so heuristic DeepSeek
+/// endpoints still get KV-cache isolation after a mid-session model switch.
 #[derive(Clone)]
-pub struct OpenAiAdapterWrapper {
+pub struct OpenAiMultiModelAdapter {
     adapter: OpenAiAdapter,
     user_id: Option<String>,
 }
 
-impl OpenAiAdapterWrapper {
+impl OpenAiMultiModelAdapter {
     pub fn new(adapter: OpenAiAdapter) -> Self {
         Self {
             adapter,
@@ -46,7 +54,7 @@ impl OpenAiAdapterWrapper {
 }
 
 #[async_trait::async_trait]
-impl LlmClient for OpenAiAdapterWrapper {
+impl LlmClient for OpenAiMultiModelAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
@@ -89,7 +97,7 @@ mod tests {
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {
         let _guard = crate::provider::lock_provider_for_tests();
-        // Long-lived wrapper is built once; `/model` only updates the global
+        // Long-lived adapter is built once; `/model` only updates the global
         // provider. Body hooks must follow the live model, not construction-time
         // flavor.
         crate::init_provider(ProviderInfo {
@@ -98,18 +106,18 @@ mod tests {
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
         });
-        let wrapper = OpenAiAdapterWrapper::new(OpenAiAdapter::new(CompatibleConfig::new(
+        let adapter = OpenAiMultiModelAdapter::new(OpenAiAdapter::new(CompatibleConfig::new(
             "sk-test",
             "https://api.openai.com/v1",
         )));
         let request = sample_request_with_thinking();
 
-        let openai_body = wrapper.assemble_body(&request, false).unwrap();
+        let openai_body = adapter.assemble_body(&request, false).unwrap();
         assert_eq!(openai_body["reasoning_effort"], "low");
         assert!(openai_body.get("thinking").is_none());
 
         crate::set_model("kimi-k2.5").unwrap();
-        let kimi_body = wrapper.assemble_body(&request, false).unwrap();
+        let kimi_body = adapter.assemble_body(&request, false).unwrap();
         assert_eq!(kimi_body["thinking"]["type"], "enabled");
         assert!(kimi_body.get("reasoning_effort").is_none());
     }

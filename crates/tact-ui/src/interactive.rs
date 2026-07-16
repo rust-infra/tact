@@ -121,7 +121,7 @@ async fn run_interactive_locked(
         AgentSystemPrompt::Dynamic,
     )
     .with_ui_channel(agent_tx)
-    .with_session(Some(session_id.clone()), session_store);
+    .with_session(session_id.clone(), session_store);
 
     let (history_save_tx, mut history_save_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();
@@ -198,7 +198,7 @@ async fn run_interactive_locked(
     tui_handle.await??;
     let agent = driver.await.expect("command driver task panicked");
 
-    if let Some(ref sid) = agent.runtime.session_id {
+    if let Some(sid) = agent.runtime.session_id.as_ref() {
         eprintln!("[session id: {sid}]");
     }
 

@@ -56,7 +56,7 @@ pub trait LlmClient: Send + Sync {
 #[derive(Clone)]
 pub enum LlmProvider {
     Anthropic(anthropic::AnthropicAdapter),
-    OpenAi(openai::OpenAiAdapterWrapper),
+    OpenAi(openai::OpenAiMultiModelAdapter),
     DeepSeek(deepseek::DeepSeekAdapter),
     Kimi(kimi::KimiAdapter),
     /// Mock provider for integration tests. Returns predetermined responses.
@@ -113,7 +113,7 @@ impl LlmProvider {
     /// Set a `user_id` on the underlying client adapter.
     ///
     /// DeepSeek injects top-level `"user_id"` for KV cache isolation.
-    /// OpenAI-compatible wrapper forwards it when the live hook is DeepSeek.
+    /// OpenAI multi-model adapter forwards it when the live hook is DeepSeek.
     /// Anthropic / Kimi / Mock — no-op.
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {

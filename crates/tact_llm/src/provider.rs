@@ -73,7 +73,7 @@ impl ProviderInfo {
     fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
         let adapter = openai::OpenAiAdapter::new(config);
-        Ok(LlmProvider::OpenAi(openai::OpenAiAdapterWrapper::new(
+        Ok(LlmProvider::OpenAi(openai::OpenAiMultiModelAdapter::new(
             adapter,
         )))
     }

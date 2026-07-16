@@ -11,10 +11,10 @@
 
 pub mod body;
 pub(crate) mod compat;
-pub mod wrapper;
+pub mod multi_model;
 
 pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
-pub use wrapper::OpenAiAdapterWrapper;
+pub use multi_model::OpenAiMultiModelAdapter;
 
 use crate::{ContentBlock, StopReason};
 use async_openai::{
@@ -342,7 +342,7 @@ impl Config for CompatibleConfig {
 /// HTTP transport for OpenAI-compatible Chat Completions.
 ///
 /// Request shaping (provider-specific body fields) lives in
-/// [`OpenAiAdapterWrapper`] / [`OpenAiBodyHook`].
+/// [`OpenAiMultiModelAdapter`] / [`OpenAiBodyHook`].
 #[derive(Clone, Debug)]
 pub struct OpenAiAdapter {
     config: CompatibleConfig,
