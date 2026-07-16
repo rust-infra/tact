@@ -213,7 +213,8 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         let mut top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
-            //.replacen("{}", tips, 1)
+            .replacen("{}", &elapsed, 1)
+            .replacen("{}", &uptime, 1)
             .replacen("{}", &app.workspace_dir, 1)
             .replacen("{}", branch, 1);
         if let Some(account) = format_account_suffix(app) {
@@ -253,9 +254,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             .replacen("{}", &app.status_bar.token_total.to_string(), 1)
             .replacen("{}", &app.status_bar.token_prompt.to_string(), 1)
             .replacen("{}", &app.status_bar.token_completion.to_string(), 1)
-            .replacen("{}", &cache_str, 1)
-            .replacen("{}", &elapsed, 1)
-            .replacen("{}", &uptime, 1);
+            .replacen("{}", &cache_str, 1);
         let style = Style::default()
             .bg(app.theme.bottom_bar_bg)
             .fg(app.theme.bottom_bar_fg);
