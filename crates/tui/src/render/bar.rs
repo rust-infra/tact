@@ -268,10 +268,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             "--".to_string()
         };
         let cache_str = msgs.bottom_cache_tmpl.replacen("{}", &hit_pct_str, 1);
-        let meter = format_context_meter(
-            app.status_bar.token_total,
-            app.model_context_window,
-        );
+        let meter = format_context_meter(app.status_bar.token_total, app.model_context_window);
         let mid_text = msgs
             .bottom_mid_tmpl
             .replacen("{}", &model, 1)
