@@ -56,7 +56,7 @@ impl App {
             input_cursor: 0,
             input_scroll: 0,
             cmd_line: String::new(),
-            context_limit_chars: 500_000,
+            model_context_window: 200_000,
             messages: Vec::new(),
             raw_messages: Vec::new(),
             raw_message_types: Vec::new(),

@@ -69,8 +69,8 @@ impl Default for PermissionTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AgentTomlConfig {
-    /// Maximum context size in characters (for auto-compaction)
-    pub context_limit_chars: Option<usize>,
+    /// Model context window in tokens (auto-compaction + TUI usage meter).
+    pub model_context_window: Option<usize>,
 
     /// Enable desktop notifications (default: true)
     pub notifications_enabled: Option<bool>,
@@ -150,7 +150,7 @@ impl LlmSettings {
 pub struct AgentSettings {
     pub max_tokens: u32,
     pub thinking_budget: usize,
-    pub context_limit_chars: usize,
+    pub model_context_window: usize,
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
@@ -226,7 +226,7 @@ base_url = "https://proxy.example.com/v1"
 mode = "auto"
 
 [agent]
-context_limit_chars = 500000
+model_context_window = 500000
 snapshot_max_items = 120
 micro_compact_enabled = false
 
@@ -249,7 +249,7 @@ brave_search_api_key = "bsk-test"
         assert!(openai.base_url.is_some());
         assert!(openai.models.is_empty());
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
-        assert_eq!(cfg.agent.context_limit_chars, Some(500000));
+        assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));

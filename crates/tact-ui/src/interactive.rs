@@ -134,7 +134,7 @@ async fn run_interactive_locked(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
-    let context_limit_chars = tact::config::settings().agent.context_limit_chars;
+    let model_context_window = tact::config::settings().agent.model_context_window;
     let account_enabled = account::is_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
@@ -151,7 +151,7 @@ async fn run_interactive_locked(
             session_id,
             history_save_tx,
             theme,
-            context_limit_chars,
+            model_context_window,
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()

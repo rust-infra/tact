@@ -68,8 +68,8 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
-# Soft context limit in characters before auto-compaction (default: 500000)
-# context_limit_chars = 500000
+# Model context window in tokens (auto-compaction + TUI usage meter; default: 200000)
+# model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)
 # snapshot_max_items = 80

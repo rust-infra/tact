@@ -166,7 +166,7 @@ pub(super) fn resolve_non_llm_settings(
         agent: AgentSettings {
             max_tokens: 8_000,
             thinking_budget: 32_000,
-            context_limit_chars: 500_000,
+            model_context_window: 200_000,
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
@@ -213,16 +213,10 @@ pub(super) fn resolve_config(
         .or(toml_cfg.llm.thinking_budget)
         .unwrap_or(32_000);
 
-    let context_limit_chars = args
-        .context_limit_chars
-        .or(toml_cfg.agent.context_limit_chars)
-        .unwrap_or_else(|| {
-            if provider_info.is_kimi_k2x() {
-                900_000
-            } else {
-                500_000
-            }
-        });
+    let model_context_window = args
+        .model_context_window
+        .or(toml_cfg.agent.model_context_window)
+        .unwrap_or(200_000);
 
     let notifications_enabled = if args.no_notifications {
         false
@@ -274,7 +268,7 @@ pub(super) fn resolve_config(
         agent: AgentSettings {
             max_tokens,
             thinking_budget,
-            context_limit_chars,
+            model_context_window,
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
@@ -315,7 +309,7 @@ mod tests {
             resume_last: false,
             list_sessions: false,
             notifications: None,
-            context_limit_chars: None,
+            model_context_window: None,
             theme: None,
             snapshot_max_items: None,
             no_micro_compact: false,
@@ -699,5 +693,42 @@ api_key = "sk-test"
         let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None);
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_context_window_defaults_to_200k() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 200_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 128000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 128_000);
     }
 }

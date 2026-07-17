@@ -60,9 +60,9 @@ pub struct CliArgs {
     #[arg(long)]
     pub no_notifications: bool,
 
-    /// Soft context limit in characters before auto-compaction is triggered.
+    /// Model context window in tokens before auto-compaction is triggered.
     #[arg(long)]
-    pub context_limit_chars: Option<usize>,
+    pub model_context_window: Option<usize>,
 
     /// UI theme name (e.g. "retro", "nord", "dark").
     #[arg(long)]

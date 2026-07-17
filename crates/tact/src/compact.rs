@@ -148,6 +148,8 @@ pub fn compacted_context(summary: String) -> Vec<Message> {
         format!("This conversation was compacted so the agent can continue working.\n\n{summary}"),
     )]
 }
+
+// TODO，avoid to compute again
 fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
     let mut positions = Vec::new();
     for (message_idx, message) in messages.iter().enumerate() {

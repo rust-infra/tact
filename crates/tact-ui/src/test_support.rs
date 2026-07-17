@@ -31,7 +31,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
-            context_limit_chars: 500_000,
+            model_context_window: 500_000,
             max_tokens: 8192,
             thinking_budget: 0,
             snapshot_max_items: 80,

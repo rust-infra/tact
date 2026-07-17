@@ -130,7 +130,7 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
 
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
-    let limit = app.context_limit_chars;
+    let limit = app.model_context_window;
     if agent_chars > limit {
         let msg = app
             .msgs()

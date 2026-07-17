@@ -140,7 +140,7 @@ impl Agent {
     }
 
     fn context_limit(&self) -> usize {
-        self.agent_settings.context_limit_chars
+        self.agent_settings.model_context_window
     }
 
     fn max_tokens(&self) -> u32 {
@@ -1144,7 +1144,7 @@ mod tests {
                     models: Vec::new(),
                 },
                 agent: crate::config::AgentSettings {
-                    context_limit_chars: 500_000,
+                    model_context_window: 500_000,
                     max_tokens: 8192,
                     thinking_budget: 0,
                     snapshot_max_items: 80,
@@ -1190,7 +1190,7 @@ mod tests {
         .unwrap();
 
         let tiny = crate::config::AgentSettings {
-            context_limit_chars: 500,
+            model_context_window: 500,
             max_tokens: 1024,
             thinking_budget: 0,
             snapshot_max_items: 10,
@@ -1212,15 +1212,15 @@ mod tests {
         #[cfg(feature = "test-support")]
         {
             let mut big = crate::config::settings();
-            big.agent.context_limit_chars = 900_000;
+            big.agent.model_context_window = 900_000;
             crate::config::install_or_override(big);
         }
 
         assert_eq!(agent.context_limit(), 500);
         assert_eq!(agent.max_tokens(), 1024);
         assert_eq!(
-            agent.agent_settings.context_limit_chars,
-            tiny.context_limit_chars
+            agent.agent_settings.model_context_window,
+            tiny.model_context_window
         );
     }
 

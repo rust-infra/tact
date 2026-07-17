@@ -21,7 +21,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
-            context_limit_chars: 500,
+            model_context_window: 500,
             max_tokens: 8192,
             thinking_budget: 0,
             snapshot_max_items: 80,

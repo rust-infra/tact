@@ -67,7 +67,7 @@ pub struct TuiConfig {
     pub session_id: String,
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
-    pub context_limit_chars: usize,
+    pub model_context_window: usize,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared with the agent `ToolContext` so `/skill-reload` updates both sides.
@@ -85,7 +85,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         session_id,
         history_save_tx,
         theme,
-        context_limit_chars,
+        model_context_window,
         skills_description,
         skills_data,
         skill_registry,
@@ -117,7 +117,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
     app.skill_registry = skill_registry;
-    app.context_limit_chars = context_limit_chars;
+    app.model_context_window = model_context_window;
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());

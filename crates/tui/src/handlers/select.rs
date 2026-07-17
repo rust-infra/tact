@@ -222,7 +222,7 @@ mod tests {
             agent: tact::config::AgentSettings {
                 max_tokens: 8000,
                 thinking_budget: 0,
-                context_limit_chars: 500_000,
+                model_context_window: 500_000,
                 notifications_enabled: false,
                 snapshot_max_items: 80,
                 micro_compact_enabled: true,

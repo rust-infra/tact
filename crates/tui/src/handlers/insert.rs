@@ -101,7 +101,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         let display = app.input.clone();
-        let limit = app.context_limit_chars;
+        let limit = app.model_context_window;
         if display.chars().count() > limit {
             let msg = app
                 .msgs()
@@ -751,7 +751,7 @@ mod tests {
     fn submit_rejected_when_input_exceeds_char_limit() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
-        app.context_limit_chars = 5;
+        app.model_context_window = 5;
         app.input = "hello world".to_string();
         app.input_cursor = app.input.chars().count();
 
