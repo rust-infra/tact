@@ -771,6 +771,37 @@ mod tests {
     }
 
     #[test]
+    fn submit_rejected_when_input_exceeds_char_limit() {
+        // model_context_window must NOT control the insert-path char limit.
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.model_context_window = 200_000;
+        app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "expected oversize input not to dispatch UserCommand"
+        );
+        assert!(
+            app.raw_messages.iter().any(|m| m.contains("too long")
+                || m.contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
+            "expected a system message indicating input is too long"
+        );
+        assert_eq!(
+            app.input.chars().count(),
+            tact::consts::MAX_INPUT_CHARS + 1,
+            "expected oversize input to remain uncleared"
+        );
+    }
+
+    #[test]
     fn submit_rejected_while_agent_busy() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
