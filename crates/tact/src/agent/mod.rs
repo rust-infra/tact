@@ -13,7 +13,8 @@ use tact_llm::{
 
 use crate::ToolSpec;
 use crate::compact::{
-    CompactState, compacted_context, estimate_context_size, micro_compact, write_transcript,
+    CompactState, compacted_context, estimate_context_size, micro_compact, should_auto_compact,
+    write_transcript,
 };
 use crate::config::AgentSettings;
 use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
@@ -61,6 +62,8 @@ pub struct AgentRuntime {
     pub cached_claude_md: Option<String>,
     /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
     pub cached_agents_md: Option<String>,
+    /// Total tokens from the most recent LLM usage report (`0` = none yet).
+    pub last_token_total: u32,
 }
 
 /// How the agent builds its system prompt.
@@ -121,6 +124,7 @@ impl Agent {
                 cached_dir_snapshot: None,
                 cached_claude_md: None,
                 cached_agents_md: None,
+                last_token_total: 0,
             },
             tool_context,
             tools,
@@ -139,7 +143,7 @@ impl Agent {
         self
     }
 
-    fn context_limit(&self) -> usize {
+    fn model_context_window(&self) -> usize {
         self.agent_settings.model_context_window
     }
 
@@ -360,7 +364,11 @@ impl Agent {
                 &mut self.runtime.context,
                 self.agent_settings.micro_compact_enabled,
             );
-            if estimate_context_size(&self.runtime.context) > self.context_limit() {
+            if should_auto_compact(
+                self.runtime.last_token_total,
+                self.model_context_window(),
+                estimate_context_size(&self.runtime.context),
+            ) {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
@@ -455,6 +463,7 @@ impl Agent {
 
             if let Some(ref usage) = token_usage {
                 self.runtime.stats.record_token_usage(usage);
+                self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
             let _ = self
@@ -747,6 +756,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
         if let Some(ref usage) = token_usage {
             self.runtime.stats.record_token_usage(usage);
+            self.runtime.last_token_total = usage.total;
         }
         let _ = self
             .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
@@ -1216,7 +1226,7 @@ mod tests {
             crate::config::install_or_override(big);
         }
 
-        assert_eq!(agent.context_limit(), 500);
+        assert_eq!(agent.model_context_window(), 500);
         assert_eq!(agent.max_tokens(), 1024);
         assert_eq!(
             agent.agent_settings.model_context_window,

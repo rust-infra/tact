@@ -166,3 +166,45 @@ fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
     }
     positions
 }
+
+/// Decide whether auto-compact should run before the next LLM call.
+///
+/// TODO: align closer to Codex (12K baseline / effective window %).
+/// For now: last_token_usage.total_tokens / model_context_window.
+pub(crate) fn should_auto_compact(
+    last_token_total: u32,
+    model_context_window: usize,
+    estimated_chars: usize,
+) -> bool {
+    if model_context_window == 0 {
+        return false;
+    }
+    if last_token_total > 0 {
+        return (last_token_total as usize) >= model_context_window;
+    }
+    // Transitional: no usage yet — coarse char estimate vs token window.
+    // TODO: replace once we can estimate tokens pre-call.
+    estimated_chars > model_context_window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_auto_compact;
+
+    #[test]
+    fn should_auto_compact_uses_last_token_total_when_present() {
+        assert!(!should_auto_compact(99, 100, 0));
+        assert!(should_auto_compact(100, 100, 0));
+        assert!(should_auto_compact(150, 100, 0));
+        // When usage is present, char estimate is ignored.
+        assert!(!should_auto_compact(50, 100, 10_000));
+        assert!(!should_auto_compact(1, 0, 10_000));
+    }
+
+    #[test]
+    fn should_auto_compact_falls_back_to_chars_when_no_usage() {
+        assert!(!should_auto_compact(0, 100, 100));
+        assert!(should_auto_compact(0, 100, 101));
+        assert!(!should_auto_compact(0, 0, 10_000));
+    }
+}
