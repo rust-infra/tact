@@ -272,17 +272,8 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
                 .saturating_mul(100)
                 .checked_div(cache_total)
                 .unwrap_or(0);
-            let miss_pct = app
-                .status_bar
-                .token_cache_miss
-                .saturating_mul(100)
-                .checked_div(cache_total)
-                .unwrap_or(0);
             msgs.bottom_cache_tmpl
-                .replacen("{}", &app.status_bar.token_cache_hit.to_string(), 1)
                 .replacen("{}", &hit_pct.to_string(), 1)
-                .replacen("{}", &app.status_bar.token_cache_miss.to_string(), 1)
-                .replacen("{}", &miss_pct.to_string(), 1)
                 .replacen("{}", &app.status_bar.token_reasoning.to_string(), 1)
         } else {
             String::new()
