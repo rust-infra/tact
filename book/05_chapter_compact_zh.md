@@ -335,6 +335,105 @@ flowchart TD
 
 `remember_recent_file` 仅由工具调度里成功的 **`read_file`** 喂入 — 「失忆保险」，让历史消失后 agent 仍能重开刚看过的文件。写文件 / patch **目前不追踪**（§11）。
 
+### 压缩前后对比
+
+`compact_history` 最直观的效果，是把一条**多角色、多轮次**的消息序列，整体塌缩成**单条 user 消息**。下面用一个具体例子走一遍。
+
+#### 压缩前：`self.runtime.context`（`Vec<Message>`）
+
+随任务不断增长的完整对话，典型形态（角色 / 内容混合）：
+
+```text
+[0] User      "帮我给 compact 模块加个 70% 提前触发"
+[1] Assistant  推理 + tool_use(read_file compact.rs)
+[2] User       ToolResult(compact.rs 全文，~5k 字符)
+[3] Assistant  tool_use(read_file agent/mod.rs)
+[4] User       ToolResult(mod.rs 片段，~8k 字符)
+[5] Assistant  tool_use(bash cargo test)
+[6] User       ToolResult(测试日志，~40k 字符)
+[7] Assistant  tool_use(edit_file compact.rs)
+[8] User       ToolResult("edit applied")
+ …             （几十条，累计可达数十万字符 / 逼近 window）
+[N] Assistant  "阈值改好了，接着补测试"
+```
+
+特征：保留完整的 `tool_use` / `ToolResult` 配对、每一步的推理与中间产物；这也是体积的主要来源。
+
+#### 压缩后：`self.runtime.context`
+
+只剩 **1 条 user 消息**（`compacted_context`，见 `crates/tact/src/compact.rs`）：
+
+```text
+[0] User  "This conversation was compacted so the agent can continue working.
+
+           <LLM 摘要，按 6 点组织：>
+           1. 当前目标：给 compact 模块加 70% 提前触发
+           2. 关键发现：should_auto_compact 现等 tokens>=window 才触发
+           3. 涉及文件：crates/tact/src/compact.rs（should_auto_compact）、
+              crates/tact/src/agent/mod.rs（compact_history）
+           4. 剩余工作：补单元测试、跑 cargo test
+           5. 用户偏好：先加 TODO，后续再优化
+           6. 错误：暂无
+
+           Recently accessed files (re-read if you need their contents):
+           - crates/tact/src/compact.rs
+           - crates/tact/src/agent/mod.rs"
+```
+
+原来 `[1]`–`[N]` 的所有 `tool_use` / `ToolResult` / 推理**都不在窗口里了**——它们只存在于两个地方：压缩前落盘的 `transcript_<ts>.jsonl`，以及模型自己写的这段摘要。
+
+#### 逐项变化
+
+| 维度 | 压缩前 | 压缩后 |
+|------|--------|--------|
+| 消息条数 | N 条 | **1 条** |
+| 角色结构 | User / Assistant / ToolResult 交替 | 单条 **User** |
+| `tool_use` / `ToolResult` | 完整保留 | **全部丢弃**（只在磁盘 transcript） |
+| 推理 / thinking | 保留 | 丢弃（摘要器不产 thinking） |
+| 体积 | 可达数十万字符 | 摘要 ≤ 2k tokens + 文件清单 |
+| 原始细节 | 直接可读 | 靠 `recent_files` 提示重新 `read_file` 找回 |
+| 落盘 transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
+
+#### 同时被重置的运行时字段
+
+除了 `context` 本身，`compact_history` 还会顺带重置 message-id 窗口与置位压缩状态：
+
+| 字段 | 压缩前 | 压缩后 |
+|------|--------|--------|
+| `first_message_db_id` | 某个 > 0 的值 | `0` |
+| `last_message_db_id` | 某个 > 0 的值 | `0` |
+| `llm_call_last_message_id` | 某个 > 0 的值 | `0` |
+| `compact_state.has_compacted` | 可能为 `false` | `true` |
+| `compact_state.last_summary` | 旧值 / `None` | 本次摘要文本 |
+| `stats.compactions` | `k` | `k + 1` |
+
+SQLite 侧同步：`replace_persisted_context` 用这条单消息重写 `messages` 表，保证**重开会话不会复活**压缩前的行。
+
+```mermaid
+flowchart LR
+    subgraph Before["压缩前 context"]
+        B0["User 目标"]
+        B1["Assistant tool_use"]
+        B2["ToolResult 5k"]
+        B3["Assistant tool_use"]
+        B4["ToolResult 40k"]
+        B5["… N 条 …"]
+    end
+
+    subgraph After["压缩后 context"]
+        A0["单条 User<br/>摘要 + recent_files"]
+    end
+
+    subgraph Disk["磁盘（非上下文）"]
+        D0["transcript_&lt;ts&gt;.jsonl<br/>压缩前全文"]
+    end
+
+    Before -->|write_transcript| D0
+    Before -->|LLM 摘要| A0
+```
+
+**一句话：** 压缩后模型看到的不再是「对话」，而是它自己写的一份**交接备忘录** + 一份「要用就自己重读」的文件清单；完整历史退居磁盘。
+
 ---
 
 ## 6. 手动压缩：`compact` 工具

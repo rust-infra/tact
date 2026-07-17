@@ -335,6 +335,106 @@ flowchart TD
 
 `remember_recent_file` is fed only from successful **`read_file`** in the tool dispatcher — “amnesia insurance” so the agent can re-open what it was looking at after history vanishes. Writes / patches are **not** tracked today (§11).
 
+### Before / After Comparison
+
+The most visible effect of `compact_history` is collapsing a **multi-role, multi-turn** message sequence into a **single user message**. Let’s walk through a concrete example.
+
+#### Before: `self.runtime.context` (`Vec<Message>`)
+
+The full conversation grows with the task — a mix of roles and content:
+
+```text
+[0] User      "Add an early 70% trigger to the compact module"
+[1] Assistant  reasoning + tool_use(read_file compact.rs)
+[2] User       ToolResult(full compact.rs, ~5k chars)
+[3] Assistant  tool_use(read_file agent/mod.rs)
+[4] User       ToolResult(mod.rs excerpt, ~8k chars)
+[5] Assistant  tool_use(bash cargo test)
+[6] User       ToolResult(test log, ~40k chars)
+[7] Assistant  tool_use(edit_file compact.rs)
+[8] User       ToolResult("edit applied")
+ …             (dozens of entries, potentially hundreds of thousands
+                of chars / approaching the window)
+[N] Assistant  "Threshold updated, moving on to tests"
+```
+
+Characteristics: complete `tool_use` / `ToolResult` pairs, per-step reasoning, and intermediate artifacts are all retained — which is exactly where the bulk comes from.
+
+#### After: `self.runtime.context`
+
+Only **1 user message** remains (`compacted_context`, see `crates/tact/src/compact.rs`):
+
+```text
+[0] User  "This conversation was compacted so the agent can continue working.
+
+           <LLM summary, organized around the 6 points:>
+           1. Current goal: add an early 70% trigger to the compact module
+           2. Key finding: should_auto_compact currently waits for tokens>=window
+           3. Files involved: crates/tact/src/compact.rs (should_auto_compact),
+              crates/tact/src/agent/mod.rs (compact_history)
+           4. Remaining work: add unit tests, run cargo test
+           5. User preference: add TODOs first, optimize later
+           6. Errors: none so far
+
+           Recently accessed files (re-read if you need their contents):
+           - crates/tact/src/compact.rs
+           - crates/tact/src/agent/mod.rs"
+```
+
+Every `tool_use` / `ToolResult` / reasoning block from `[1]`–`[N]` is **no longer in the window** — it survives in only two places: the `transcript_<ts>.jsonl` written before compaction, and whatever the model chose to keep in this summary.
+
+#### Item-by-Item Changes
+
+| Dimension | Before | After |
+|-----------|--------|-------|
+| Message count | N messages | **1 message** |
+| Role structure | User / Assistant / ToolResult interleaved | Single **User** |
+| `tool_use` / `ToolResult` | Fully retained | **All dropped** (disk transcript only) |
+| Reasoning / thinking | Retained | Dropped (summarizer produces no thinking) |
+| Size | Up to hundreds of thousands of chars | Summary ≤ 2k tokens + file list |
+| Raw details | Directly readable | Recoverable via `recent_files` hints + `read_file` |
+| Disk transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
+
+#### Runtime Fields Reset Alongside
+
+Besides `context` itself, `compact_history` also resets the message-id window and flips the compaction state:
+
+| Field | Before | After |
+|-------|--------|-------|
+| `first_message_db_id` | some value > 0 | `0` |
+| `last_message_db_id` | some value > 0 | `0` |
+| `llm_call_last_message_id` | some value > 0 | `0` |
+| `compact_state.has_compacted` | possibly `false` | `true` |
+| `compact_state.last_summary` | old value / `None` | this summary text |
+| `stats.compactions` | `k` | `k + 1` |
+
+SQLite stays in sync: `replace_persisted_context` rewrites the `messages` table with this single message, guaranteeing that **reopening the session cannot resurrect** pre-compaction rows.
+
+```mermaid
+flowchart LR
+    subgraph Before["context before"]
+        B0["User goal"]
+        B1["Assistant tool_use"]
+        B2["ToolResult 5k"]
+        B3["Assistant tool_use"]
+        B4["ToolResult 40k"]
+        B5["… N entries …"]
+    end
+
+    subgraph After["context after"]
+        A0["single User<br/>summary + recent_files"]
+    end
+
+    subgraph Disk["disk (not in context)"]
+        D0["transcript_&lt;ts&gt;.jsonl<br/>full pre-compaction history"]
+    end
+
+    Before -->|write_transcript| D0
+    Before -->|LLM summary| A0
+```
+
+**In one sentence:** after compaction the model no longer sees a “conversation” — it sees a **handover memo it wrote itself**, plus a “re-read it yourself if you need it” file list; the full history retreats to disk.
+
 ---
 
 ## 6. Manual Compaction: the `compact` Tool
