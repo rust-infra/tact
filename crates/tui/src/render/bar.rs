@@ -260,24 +260,14 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             top_text.push_str(" │ ");
             top_text.push_str(&account);
         }
-        let cache_str = if app.status_bar.token_total > 0
-            || app.status_bar.token_cache_hit > 0
-            || app.status_bar.token_cache_miss > 0
-            || app.status_bar.token_reasoning > 0
-        {
-            let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
-            let hit_pct = app
-                .status_bar
-                .token_cache_hit
-                .saturating_mul(100)
-                .checked_div(cache_total)
-                .unwrap_or(0);
-            msgs.bottom_cache_tmpl
-                .replacen("{}", &hit_pct.to_string(), 1)
-                .replacen("{}", &app.status_bar.token_reasoning.to_string(), 1)
+        // Placeholder "--" before the first LLM call reports cache data.
+        let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
+        let hit_pct_str = if cache_total > 0 {
+            (app.status_bar.token_cache_hit.saturating_mul(100) / cache_total).to_string()
         } else {
-            String::new()
+            "--".to_string()
         };
+        let cache_str = msgs.bottom_cache_tmpl.replacen("{}", &hit_pct_str, 1);
         let meter = format_context_meter(
             app.status_bar.token_total,
             app.model_context_window,

@@ -135,6 +135,9 @@ async fn run_interactive_locked(
 
     let theme = tact::config::settings().ui.theme.clone();
     let model_context_window = tact::config::settings().agent.model_context_window;
+    let model_name = tact::get_model();
+    let model_max_tokens = tact::config::settings().agent.max_tokens;
+    let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
@@ -152,6 +155,9 @@ async fn run_interactive_locked(
             history_save_tx,
             theme,
             model_context_window,
+            model_name,
+            model_max_tokens,
+            model_thinking_budget,
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()

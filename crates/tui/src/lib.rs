@@ -68,6 +68,12 @@ pub struct TuiConfig {
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
     pub model_context_window: usize,
+    /// Configured model name, shown in the bottom bar before the first LLM call.
+    pub model_name: String,
+    /// Configured max_tokens per LLM call (0 = hide).
+    pub model_max_tokens: u32,
+    /// Configured thinking budget in tokens (0 = hide).
+    pub model_thinking_budget: usize,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared with the agent `ToolContext` so `/skill-reload` updates both sides.
@@ -86,6 +92,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         history_save_tx,
         theme,
         model_context_window,
+        model_name,
+        model_max_tokens,
+        model_thinking_budget,
         skills_description,
         skills_data,
         skill_registry,
@@ -118,6 +127,15 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     );
     app.skill_registry = skill_registry;
     app.model_context_window = model_context_window;
+    // Seed the bottom bar from config so model/token info renders at startup;
+    // the first ModelInfo/TokenUsage updates will overwrite these.
+    app.status_bar.model_name = model_name;
+    app.status_bar.model_max_tokens = model_max_tokens;
+    if model_thinking_budget > 0 {
+        app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
+        app.status_bar.model_reasoning_effort =
+            tact_llm::reasoning_effort_from_budget(model_thinking_budget).map(str::to_string);
+    }
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());
