@@ -119,7 +119,7 @@ base_url = "https://api.anthropic.com"   # anthropic 必填
 mode = "default"           # default | plan | auto
 
 [agent]
-context_limit_chars = 900000
+model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
@@ -150,7 +150,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, … 
 |------|------|----------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `context_limit_chars` | 500_000 | 900_000 |
+| `model_context_window` | 200_000 | —（tokens；全局，非 per-model） |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
@@ -179,7 +179,7 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 | `--model`、`--api-key`、`--base-url` | 覆盖该条目字段 |
 | `--max-tokens`、`--thinking-budget` | CLI → 条目 → `[llm]` 全局 → 默认值 |
 | `-m` / `--permission-mode` | `[permission].mode` |
-| `--context-limit-chars`、`--snapshot-max-items` | `[agent]` |
+| `--model-context-window`、`--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
@@ -208,7 +208,9 @@ let theme = config::settings().ui.theme.clone();
 
 若未调用 `init()`，`settings()` 会 panic — 对错误接线的二进制有意 fail-fast。
 
-Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `context_limit_chars`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop.md)）。
+Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop.md)）。
+
+**破坏性重命名：** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window`（tokens，默认 200_000）。旧 TOML 键**无静默别名** — 请更新现有配置。
 
 ---
 

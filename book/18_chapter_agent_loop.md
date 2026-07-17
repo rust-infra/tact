@@ -68,7 +68,7 @@ flowchart TD
 ### Pre-LLM steps
 
 - **`micro_compact`** — stub old tool results in memory ([Ch 5](./05_chapter_compact.md)).
-- **Auto compact** — when `estimate_context_size` exceeds `config.settings().agent.context_limit_chars`, runs `compact_history` and emits `[auto compact]` via `AgentUpdate::Info`.
+- **Auto compact** — when `should_auto_compact` fires (`last_token_total >= model_context_window`, or cold-start `estimate_context_size` vs the same window), runs `compact_history` and emits `[auto compact]` via `AgentUpdate::Info` ([Ch 5](./05_chapter_compact.md)).
 - **`build_system_prompt`** — dynamic Tera render or static string for subagents; runs once per task before the turn loop, and the rendered string is reused for every turn ([Ch 4](./04_chapter_prompt.md)).
 - **Request assembly** — `CreateMessageParams` with `all_tool_specs()` (native + MCP), streaming, and thinking budget from config.
 
@@ -214,6 +214,6 @@ UserCommand::Cancel => {
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — tool branch of the loop
 - [Subagents](./12_chapter_subagent.md) — nested `agent_loop`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §2 Agent Task Execution Flow
-- [Configuration](./21_chapter_config.md) — `max_tokens`, `context_limit_chars`, `thinking_budget`
+- [Configuration](./21_chapter_config.md) — `max_tokens`, `model_context_window`, `thinking_budget`
 - [LLM Providers](./22_chapter_llm.md) — `stream_message` adapters
 - [Terminal UI](./23_chapter_tui.md) — `TaskComplete` and channel wiring

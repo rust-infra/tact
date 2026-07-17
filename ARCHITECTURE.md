@@ -341,11 +341,13 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 
 ## 6. Context Compaction
 
-When the conversation approaches the context limit (`agent.context_limit_chars`, default 500_000 characters), the agent compacts history:
+When the conversation approaches the model context window (`agent.model_context_window`, default **200_000 tokens**), the agent compacts history:
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
-2. If still over the limit, `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, replaces in-memory context with a single summary message, and **`replace_session_messages`** syncs SQLite so resumed sessions match the compacted history.
+2. If `should_auto_compact` fires (`last_token_total >= model_context_window`, or a coarse cold-start char estimate vs the same window), `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, replaces in-memory context with a single summary message, and **`replace_session_messages`** syncs SQLite so resumed sessions match the compacted history.
 3. Large `bash` outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context.
+
+The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 
 Recovery mechanisms inside `agent_loop()`:
 

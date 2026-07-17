@@ -132,7 +132,7 @@ base_url = "https://api.anthropic.com"  # required for anthropic
 mode = "default"   # "default" | "plan" | "auto"
 
 [agent]
-context_limit_chars = 500000
+model_context_window = 200000
 snapshot_max_items = 80
 micro_compact_enabled = true
 notifications_enabled = true
@@ -151,7 +151,7 @@ Optional agent settings (config file or CLI):
 | Setting | CLI flag | Default | Description |
 |---|---|---|---|
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
-| `context_limit_chars` | `--context-limit-chars` | `500000` | Soft context limit before auto-compaction |
+| `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (auto-compact + TUI usage meter) |
 | `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
 
 ### 3. Run
@@ -374,7 +374,7 @@ thinking_budget = 32000
 mode = "default"                 # "default" | "plan" | "auto"
 
 [agent]
-context_limit_chars = 500000     # auto-compact threshold
+model_context_window = 200000     # tokens; auto-compact + TUI meter
 snapshot_max_items = 80
 micro_compact_enabled = true
 notifications_enabled = true

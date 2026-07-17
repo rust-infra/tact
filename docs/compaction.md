@@ -8,12 +8,12 @@ tact implements **three-tier progressive compaction**:
 |------|---------|--------|----------|
 | Tier 1: Large Output Persist | Single `bash` output > 30K chars | One tool result | Write to disk, keep `<persisted-output>` preview |
 | Tier 2: Micro Compaction | Before each LLM call | Old tool results | Stub (keep last 12; only if > 120 chars) |
-| Tier 3: Full Compaction | Context > `context_limit_chars` (default 500K), prompt-too-long, or `compact` tool | Entire conversation | JSONL transcript + LLM summary → single user message |
+| Tier 3: Full Compaction | `last_token_total >= model_context_window` (default 200K tokens; cold-start char fallback), prompt-too-long, or `compact` tool | Entire conversation | JSONL transcript + LLM summary → single user message |
 
 ```mermaid
 flowchart TB
     Turn([each agent_loop turn]) --> MC[micro_compact]
-    MC --> Est{estimate > limit?}
+    MC --> Est{should_auto_compact?}
     Est -->|no| Prompt[LLM]
     Est -->|yes| CH[compact_history]
     Prompt -->|prompt too long| CH
@@ -77,7 +77,9 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 ## Tier 3: Full Compaction
 
 **Triggers** (any of):
-- After micro_compact, `estimate_context_size` > `agent.context_limit_chars` (default **500,000**; CLI `--context-limit-chars` / TOML)
+- After micro_compact, `should_auto_compact`:
+  - **Primary:** `last_token_total >= agent.model_context_window` (tokens; default **200,000**; CLI `--model-context-window` / TOML)
+  - **Cold start:** when no usage yet, `estimate_context_size` (chars) vs the same window number — coarse; TODO
 - Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery.md))
 - Manual `compact` tool (after tool results are appended)
 
@@ -99,8 +101,10 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.context_limit_chars` | 500,000 | Auto Tier-3 trigger |
+| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger + TUI usage meter |
 | `agent.micro_compact_enabled` | `true` | Tier-2 stub pass (`--no-micro-compact` disables) |
+
+Breaking rename from `context_limit_chars` / `--context-limit-chars` — **no silent alias**.
 
 Compile-time: 12 / 120 / 30k / 2k / 80k are not configurable yet.
 
@@ -116,6 +120,6 @@ If a tool result was compacted and you need the details, re-run the relevant too
 
 ## Gaps (short)
 
-- Char proxy ≠ tokens; summarization has no retry; spill is bash-only; transcripts/tool-results never pruned; `recent_files` is read-only.
+- Cold-start char estimate vs token window; simple `used/window` meter (no Codex baseline); summarization has no retry; spill is bash-only; transcripts/tool-results never pruned; `recent_files` is read-only.
 
 See the book chapter for diagrams and loop ordering.

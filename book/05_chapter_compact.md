@@ -26,7 +26,7 @@ flowchart LR
         T1 --> U2[user]
         U2 --> A2[assistant]
         A2 --> T2[more tools…]
-        T2 --> Huge["serialized size → context_limit"]
+        T2 --> Huge["usage → model_context_window"]
     end
     Huge -->|without compaction| Fail[API reject / degraded quality]
     Huge -->|with compaction| Fit[fit + continue]
@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop iteration]) --> Cancel{cancelled?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{estimate_context_size<br/>> context_limit_chars?}
+    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>or cold char fallback}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -108,7 +108,7 @@ flowchart TD
 
 Key ordering facts:
 
-1. **`micro_compact` always runs before the size check** — so auto-compact measures a *already-stubbed* context.
+1. **`micro_compact` always runs before the auto-compact check** — so auto-compact measures an *already-stubbed* context.
 2. **Prompt-too-long recovery** runs `compact_history` then `continue`s the loop (same turn, new context). Cap: `MAX_RECOVERY_ATTEMPTS` (3). Details in [Error Recovery](./06_chapter_recovery.md).
 3. **Manual `compact` tool** cannot rewrite context *inside* the tool handler (API validity). Dispatch records a flag; `compact_history` runs **after** tool results are appended.
 
@@ -177,7 +177,23 @@ The stub text is deliberate: it tells the model **how to recover** (`read_file` 
 
 ---
 
-## 4. Size Estimation and the Auto Trigger
+## 4. Auto Trigger and Size Estimation
+
+The shared threshold is **`agent.model_context_window`** — the model context window in **tokens** (default **200,000**). The same value drives auto-compaction and the TUI bottom-bar usage meter.
+
+### Primary path (after at least one `TokenUsage` update)
+
+```text
+if last_token_total > 0 && last_token_total >= model_context_window {
+    compact_history(...)
+}
+```
+
+`last_token_total` is the latest `TokenUsageInfo.total` from the provider stream/`create_message` response.
+
+### Cold-start fallback (no usage yet)
+
+When `last_token_total == 0` (first turn(s) before any API usage), a **temporary** character estimate is compared against the same window number:
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -185,22 +201,30 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
         .map(|serialized| serialized.chars().count())
         .unwrap_or_default()
 }
+
+// Transitional: char estimate vs token window — coarse only.
+// TODO: replace once we can estimate tokens pre-call.
+if last_token_total == 0 && estimate_context_size(context) > model_context_window {
+    compact_history(...)
+}
 ```
 
 ```mermaid
-flowchart LR
-    Ctx[runtime.context] --> JSON[serde_json::to_string]
-    JSON --> Chars["chars().count()"]
-    Chars --> Cmp{> context_limit_chars?}
-    Cmp -->|yes| Auto[auto compact_history]
-    Cmp -->|no| Call[LLM call]
+flowchart TD
+    MC[micro_compact] --> Have{last_token_total > 0?}
+    Have -->|yes| Tok{tokens ≥ model_context_window?}
+    Have -->|no| Est["estimate_context_size (chars)<br/>> model_context_window?"]
+    Tok -->|yes| Auto[auto compact_history]
+    Tok -->|no| Call[LLM call]
+    Est -->|yes| Auto
+    Est -->|no| Call
 ```
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `agent.context_limit_chars` | **500,000** | CLI `--context-limit-chars` / TOML; Kimi K2X may get a different default in `config/resolve.rs` |
+| `agent.model_context_window` | **200,000** | Tokens; CLI `--model-context-window` / TOML. Breaking rename from `context_limit_chars` — **no silent alias**. |
 
-Characters are a **coarse proxy for tokens**. The safety margin is the point — not precision. Multibyte text or code-dense JSON can skew the char↔token ratio (see §11).
+The cold-start path deliberately mixes units (chars vs tokens). Prefer the primary token path once usage is available; see §11.
 
 ---
 
@@ -438,7 +462,7 @@ Neither spill directory is pruned automatically (§11).
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.context_limit_chars` (`--context-limit-chars`) | 500,000 | Auto-compaction trigger after micro_compact |
+| `agent.model_context_window` (`--model-context-window`) | 200,000 | Token window: auto-compact trigger + TUI usage meter |
 | `agent.micro_compact_enabled` (`--no-micro-compact`) | `true` | Enables the per-turn stub pass |
 
 Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > default). Compile-time constants (`KEEP_RECENT_TOOL_RESULTS`, `PERSIST_THRESHOLD`, …) are **not** configurable yet.
@@ -449,7 +473,7 @@ Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > defau
 
 | File | Role |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`, `estimate_context_size`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
+| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_size`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
 | `crates/tact/src/agent/mod.rs` | Loop triggers; `compact_history`; `remember_recent_file`; `replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `persist_large_output` on `bash`; `manual_compact` flag; recent-file tracking |
 | `crates/tact/src/tool/compact.rs` | `compact` tool stub + `focus` |
@@ -475,7 +499,8 @@ flowchart LR
 
 | Gap | Detail |
 |-----|--------|
-| Char-based estimation | 500k chars ≈ token budget only loosely |
+| Cold-start char fallback | Before first `TokenUsage`, compares char estimate to a **token** window (coarse; TODO) |
+| Simple usage % | Meter is `used / model_context_window` (no Codex 12K baseline / effective-window math yet) |
 | Summarization unguarded | Compaction LLM call has no retry; bad summary silently degrades the session |
 | Only last ~80k summarized | Early turns live in transcript; model is not told that path in the replacement message |
 | Spill limited to `bash` | Other tools / MCP can still flood one turn |

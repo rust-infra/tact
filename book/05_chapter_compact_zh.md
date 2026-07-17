@@ -26,7 +26,7 @@ flowchart LR
         T1 --> U2[user]
         U2 --> A2[assistant]
         A2 --> T2[更多 tools…]
-        T2 --> Huge["序列化体积 → context_limit"]
+        T2 --> Huge["用量 → model_context_window"]
     end
     Huge -->|无压缩| Fail[API 拒绝 / 质量下降]
     Huge -->|有压缩| Fit[装得下并继续]
@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop 迭代]) --> Cancel{已取消?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{estimate_context_size<br/>> context_limit_chars?}
+    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>或冷启动字符回退}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -108,7 +108,7 @@ flowchart TD
 
 关键顺序：
 
-1. **`micro_compact` 总是在体积检查之前运行** — 因此 auto-compact 测量的是*已经 stub 过*的上下文。
+1. **`micro_compact` 总是在自动压缩检查之前运行** — 因此 auto-compact 测量的是*已经 stub 过*的上下文。
 2. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery.md)。
 3. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
@@ -177,7 +177,23 @@ Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工
 
 ---
 
-## 4. 体积估算与自动触发
+## 4. 自动触发与体积估算
+
+共享阈值是 **`agent.model_context_window`** — 模型上下文窗口，单位为 **tokens**（默认 **200,000**）。同一数值同时驱动自动压缩与 TUI 底栏用量条。
+
+### 主路径（至少收到一次 `TokenUsage` 之后）
+
+```text
+if last_token_total > 0 && last_token_total >= model_context_window {
+    compact_history(...)
+}
+```
+
+`last_token_total` 来自 provider 流式/`create_message` 响应中最新的 `TokenUsageInfo.total`。
+
+### 冷启动回退（尚无用量）
+
+当 `last_token_total == 0`（首次 API 用量之前）时，用**临时**字符估算与同一窗口数值比较：
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -185,22 +201,30 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
         .map(|serialized| serialized.chars().count())
         .unwrap_or_default()
 }
+
+// 过渡期：字符估算对比 token 窗口 — 仅粗粒度。
+// TODO: 具备调用前 token 估算后替换。
+if last_token_total == 0 && estimate_context_size(context) > model_context_window {
+    compact_history(...)
+}
 ```
 
 ```mermaid
-flowchart LR
-    Ctx[runtime.context] --> JSON[serde_json::to_string]
-    JSON --> Chars["chars().count()"]
-    Chars --> Cmp{> context_limit_chars?}
-    Cmp -->|yes| Auto[auto compact_history]
-    Cmp -->|no| Call[LLM 调用]
+flowchart TD
+    MC[micro_compact] --> Have{last_token_total > 0?}
+    Have -->|yes| Tok{tokens ≥ model_context_window?}
+    Have -->|no| Est["estimate_context_size (字符)<br/>> model_context_window?"]
+    Tok -->|yes| Auto[auto compact_history]
+    Tok -->|no| Call[LLM 调用]
+    Est -->|yes| Auto
+    Est -->|no| Call
 ```
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `agent.context_limit_chars` | **500,000** | CLI `--context-limit-chars` / TOML；Kimi K2X 在 `config/resolve.rs` 可能有不同默认 |
+| `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。 |
 
-字符数是 token 的**粗代理**。重点是安全余量，不是精度。多字节文本或代码密集 JSON 会扭曲 char↔token 比例（见 §11）。
+冷启动路径刻意混用单位（字符 vs tokens）。一旦有用量，优先走主路径；见 §11。
 
 ---
 
@@ -438,7 +462,7 @@ flowchart TB
 
 | 设置 | 默认 | 作用 |
 |------|------|------|
-| `agent.context_limit_chars`（`--context-limit-chars`） | 500,000 | micro_compact 之后的自动压缩触发阈值 |
+| `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：自动压缩触发阈值 + TUI 用量条 |
 | `agent.micro_compact_enabled`（`--no-micro-compact`） | `true` | 启用每轮 stub |
 
 经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
@@ -449,7 +473,7 @@ flowchart TB
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`、`estimate_context_size`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
+| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_size`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
 | `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history`；`remember_recent_file`；`replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `bash` 上的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
 | `crates/tact/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
@@ -475,7 +499,8 @@ flowchart LR
 
 | 缺口 | 细节 |
 |------|------|
-| 基于字符的估算 | 50 万字符 ≈ token 预算只是粗略对应 |
+| 冷启动字符回退 | 首次 `TokenUsage` 之前，用字符估算对比 **token** 窗口（粗粒度；TODO） |
+| 简易用量百分比 | 用量条为 `used / model_context_window`（尚无 Codex 12K baseline / effective-window 算法） |
 | 摘要无防护 | 压缩 LLM 调用无重试；烂摘要会静默拖垮会话 |
 | 只摘要最近 ~80k | 早期回合在 transcript 里；替换消息未告知模型该路径 |
 | 溢出仅限 `bash` | 其它工具 / MCP 仍可单轮洪泛 |

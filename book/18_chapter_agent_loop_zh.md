@@ -69,7 +69,7 @@ flowchart TD
 ### LLM 前步骤
 
 - **`micro_compact`** — 在内存中 stub 旧 tool 结果（[第 5 章](./05_chapter_compact_zh.md)）。
-- **自动 compact** — 当 `estimate_context_size` 超过 `config.settings().agent.context_limit_chars` 时，运行 `compact_history` 并通过 `AgentUpdate::Info` 发出 `[auto compact]`。
+- **自动 compact** — 当 `should_auto_compact` 触发（`last_token_total >= model_context_window`，或冷启动时用 `estimate_context_size` 对比同一窗口）时，运行 `compact_history` 并通过 `AgentUpdate::Info` 发出 `[auto compact]`（[第 5 章](./05_chapter_compact_zh.md)）。
 - **`build_system_prompt`** — 子 agent 用动态 Tera 渲染或静态字符串；每个 task 在 turn 循环前运行一次，渲染字符串在每轮复用（[第 4 章](./04_chapter_prompt.md)）。
 - **请求组装** — `CreateMessageParams` 含 `all_tool_specs()`（原生 + MCP）、流式，以及 config 中的 thinking budget。
 
@@ -215,6 +215,6 @@ UserCommand::Cancel => {
 - [任务与工具调度](./11_chapter_task.md) — 循环的工具分支
 - [Subagents](./12_chapter_subagent.md) — 嵌套 `agent_loop`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §2 Agent Task Execution Flow
-- [Configuration](./21_chapter_config.md) — `max_tokens`、`context_limit_chars`、`thinking_budget`
+- [Configuration](./21_chapter_config.md) — `max_tokens`、`model_context_window`、`thinking_budget`
 - [LLM Providers](./22_chapter_llm.md) — `stream_message` 适配器
 - [Terminal UI](./23_chapter_tui.md) — `TaskComplete` 与通道接线

@@ -121,7 +121,7 @@ base_url = "https://api.anthropic.com"   # required for anthropic
 mode = "default"           # default | plan | auto
 
 [agent]
-context_limit_chars = 900000
+model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
@@ -156,7 +156,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 |---------|---------|-------------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `context_limit_chars` | 500_000 | 900_000 |
+| `model_context_window` | 200_000 | — (tokens; global, not per-model) |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
@@ -185,7 +185,7 @@ CLI-only overrides:
 | `--model`, `--api-key`, `--base-url` | override that entry’s fields |
 | `--max-tokens`, `--thinking-budget` | CLI → entry → `[llm]` global → defaults |
 | `-m` / `--permission-mode` | `[permission].mode` |
-| `--context-limit-chars`, `--snapshot-max-items` | `[agent]` |
+| `--model-context-window`, `--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
@@ -214,7 +214,9 @@ let theme = config::settings().ui.theme.clone();
 
 `settings()` panics if `init()` was not called — intentional fail-fast for miswired binaries.
 
-Agent loop reads `context_limit_chars`, `max_tokens`, and `thinking_budget` from `settings()` when building each LLM request ([Ch 18](./18_chapter_agent_loop.md)).
+Agent loop reads `model_context_window`, `max_tokens`, and `thinking_budget` from `settings()` when building each LLM request ([Ch 18](./18_chapter_agent_loop.md)).
+
+**Breaking rename:** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window` (tokens, default 200_000). There is **no silent alias** for the old TOML key — update existing configs.
 
 ---
 

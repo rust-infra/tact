@@ -116,7 +116,15 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 Always **2 rows**:
 
 - **Row 1**: focus panel hint; **Elapsed** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime); working directory; Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
-- **Row 2**: current model, max tokens, thinking budget; token statistics (prompt / completion / cache hit / reasoning)
+- **Row 2**: model (with optional `max=` / `think=`); context usage meter `[bar] pct% │ used/window`; token statistics (`📊 Tok:…` prompt / completion / cache / reasoning)
+
+  Example shape:
+
+  ```text
+  {model} │ [████░░░░░░] {pct}% │ {used}/{window} │ 📊 Tok:…
+  ```
+
+  Meter denominator is `agent.model_context_window` (tokens); numerator is last `TokenUsageInfo.total` (`status_bar.token_total`). Before the first usage update, shows `0%` / `0/{window}`.
 
 ---
 
