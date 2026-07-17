@@ -262,11 +262,12 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // Placeholder "--" before the first LLM call reports cache data.
         let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
-        let hit_pct_str = if cache_total > 0 {
-            (app.status_bar.token_cache_hit.saturating_mul(100) / cache_total).to_string()
-        } else {
-            "--".to_string()
-        };
+        let hit_pct_str = app
+            .status_bar
+            .token_cache_hit
+            .saturating_mul(100)
+            .checked_div(cache_total)
+            .map_or("--".to_string(), |pct| pct.to_string());
         let cache_str = msgs.bottom_cache_tmpl.replacen("{}", &hit_pct_str, 1);
         let meter = format_context_meter(app.status_bar.token_total, app.model_context_window);
         let mid_text = msgs
