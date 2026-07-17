@@ -115,8 +115,8 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 Always **2 rows**:
 
-- **Row 1**: focus panel hint, working directory, Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
-- **Row 2**: current model, max tokens, thinking budget; token statistics (prompt / completion / cache hit / reasoning); **Cost** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime)
+- **Row 1**: focus panel hint; **Elapsed** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime); working directory; Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
+- **Row 2**: current model, max tokens, thinking budget; token statistics (prompt / completion / cache hit / reasoning)
 
 ---
 

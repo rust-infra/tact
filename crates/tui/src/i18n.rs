@@ -283,7 +283,7 @@ impl Messages {
             bottom_tips_plan: "[j/k move] [y copy] [e toggle plan]",
             bottom_branch_unknown: "unknown",
             bottom_model_unknown: "-",
-            bottom_top_tmpl: "Focus:{} │ ⏳ Cost:{} │ ⏱ Up:{} │ {} │ {}",
+            bottom_top_tmpl: "Focus:{} │ ⏳ Elapsed:{} │ ⏱ Up:{} │ {} │ {}",
             bottom_cache_tmpl: " | 💾 cache:{} hit({}%) /{} miss({}%) | 🧠 think:{}",
             bottom_mid_tmpl: "{} │ 📊 Tok:{}(p{})+{}(c){}",
             bottom_balance_ok: "✅",

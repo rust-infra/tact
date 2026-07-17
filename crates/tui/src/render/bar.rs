@@ -139,18 +139,14 @@ fn format_account_suffix(app: &App) -> Option<String> {
     None
 }
 
-/// Render the bottom bar, showing focused panel, shortcut hints, working directory, Git branch,
-/// Model info, token stats, task elapsed time, TUI uptime, and account balance.
+/// Render the bottom bar, showing focused panel, task elapsed time, TUI uptime, working
+/// directory, Git branch, model info, token stats, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
     let msgs = app.msgs();
     let focus = match app.focused_panel {
         FocusedPanel::Plan => msgs.bottom_focus_log_plan,
         FocusedPanel::Log => msgs.bottom_focus_log,
-    };
-    let _tips = match app.focused_panel {
-        FocusedPanel::Log => msgs.bottom_tips_log,
-        FocusedPanel::Plan => msgs.bottom_tips_plan,
     };
     let branch = if app.status_bar.git_branch.is_empty() {
         msgs.bottom_branch_unknown
@@ -450,6 +446,47 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
+    }
+
+    #[test]
+    fn bottom_bar_shows_elapsed_and_uptime_on_row_1() {
+        let mut app = make_app();
+        app.last_prompt_elapsed_secs = Some(65); // 01:05
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.token_total = 42;
+        app.workspace_dir = "/tmp/tact-ws".into();
+        app.status_bar.git_branch = "main".into();
+
+        let backend = TestBackend::new(140, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 140, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "bottom bar should render two rows, got:\n{text}"
+        );
+        let row1 = lines[0];
+        let row2 = lines[1];
+        assert!(
+            row1.contains("Elapsed:01:05") && row1.contains("Up:"),
+            "elapsed and uptime should be on row 1, got:\n{row1}"
+        );
+        assert!(
+            row1.contains("/tmp/tact-ws") && row1.contains("main"),
+            "cwd and branch should remain on row 1, got:\n{row1}"
+        );
+        assert!(
+            !row2.contains("Elapsed:") && !row2.contains("Up:"),
+            "elapsed/uptime must not appear on row 2, got:\n{row2}"
+        );
+        assert!(
+            row2.contains("Tok:42"),
+            "token stats should stay on row 2, got:\n{row2}"
+        );
     }
 
     #[test]

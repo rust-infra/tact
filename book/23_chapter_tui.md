@@ -288,8 +288,8 @@ pub(crate) trait Renderable {
 **Top bar** (`render_status_bar`): input mode, focused panel (`Log` / `Plan`), `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`.
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
-- Row 1: focus hint, cwd, git branch, plus optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi when available).
-- Row 2: model + token limits, token usage (prompt / completion / cache / reasoning), prompt elapsed time (live while running), process uptime.
+- Row 1: focus hint, prompt elapsed time (live while running; frozen after complete/fail until next prompt), process uptime, cwd, git branch, plus optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi when available).
+- Row 2: model + token limits, token usage (prompt / completion / cache / reasoning).
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
 
