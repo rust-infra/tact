@@ -49,6 +49,49 @@ fn render_usage_bar(pct: f64) -> String {
     bar
 }
 
+/// Compact token count for status display (`590`, `12.5K`, `200K`).
+fn format_tokens_compact(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        let k = n as f64 / 1_000.0;
+        if (k * 10.0).round() % 10.0 == 0.0 {
+            format!("{:.0}K", k)
+        } else {
+            format!("{:.1}K", k)
+        }
+    } else {
+        let m = n as f64 / 1_000_000.0;
+        if (m * 10.0).round() % 10.0 == 0.0 {
+            format!("{:.0}M", m)
+        } else {
+            format!("{:.1}M", m)
+        }
+    }
+}
+
+/// Context usage vs model_context_window.
+///
+/// TODO: align closer to Codex (12K baseline / effective window %).
+/// For now: last_token_usage.total_tokens / model_context_window.
+fn context_usage_pct(used: u32, window: usize) -> u8 {
+    if window == 0 {
+        0
+    } else {
+        ((used as u128) * 100 / window as u128).min(100) as u8
+    }
+}
+
+fn format_context_meter(used: u32, window: usize) -> String {
+    let pct = context_usage_pct(used, window);
+    let bar = render_usage_bar(pct as f64);
+    format!(
+        "{bar} {pct}% │ {}/{}",
+        format_tokens_compact(used as u64),
+        format_tokens_compact(window as u64)
+    )
+}
+
 /// Render a text-based progress bar like `[█████░░░░░] 50%`
 /// Uses a smooth formula: (current + 0.5) / total, so the current step
 /// is treated as half-done. This avoids showing 0% on the first step
@@ -244,9 +287,14 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             String::new()
         };
+        let meter = format_context_meter(
+            app.status_bar.token_total,
+            app.model_context_window,
+        );
         let mid_text = msgs
             .bottom_mid_tmpl
             .replacen("{}", &model, 1)
+            .replacen("{}", &meter, 1)
             .replacen("{}", &app.status_bar.token_total.to_string(), 1)
             .replacen("{}", &app.status_bar.token_prompt.to_string(), 1)
             .replacen("{}", &app.status_bar.token_completion.to_string(), 1)
@@ -446,6 +494,35 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
+    }
+
+    #[test]
+    fn bottom_bar_shows_context_usage_meter_on_row_2() {
+        let mut app = make_app();
+        app.model_context_window = 200_000;
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.token_total = 590;
+        app.status_bar.token_prompt = 400;
+        app.status_bar.token_completion = 190;
+
+        let backend = TestBackend::new(160, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 160, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.len() >= 2, "expected 2 rows, got:\n{text}");
+        let row2 = lines[1];
+        assert!(
+            row2.contains("mock-model") && row2.contains("590/200K") && row2.contains("%"),
+            "row 2 should show model + meter + ratio, got:\n{row2}"
+        );
+        assert!(
+            row2.contains('[') && row2.contains(']'),
+            "row 2 should include progress bar brackets, got:\n{row2}"
+        );
     }
 
     #[test]
