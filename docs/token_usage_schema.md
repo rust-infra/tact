@@ -167,7 +167,7 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
-**TUI cache display:** The bottom-bar `cache hit / miss` percentages come directly from the latest LLM call's `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
+**TUI cache display:** The bottom bar shows only the cache hit rate (e.g. `cache hit: 68%`), derived from the latest LLM call's `prompt_cache_hit_tokens / (hit + miss)`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
 
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 

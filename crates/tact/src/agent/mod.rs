@@ -650,6 +650,13 @@ impl Agent {
             .collect()
     }
 
+    // TODO(compact): current strategy is too aggressive — the whole history is
+    // replaced by a single <=2k-token summary. Softer approach: keep the most
+    // recent N turns verbatim and only summarize older messages, instead of
+    // resetting the entire context.
+    // TODO(compact): the summarization input is a crude tail-truncation to 80k
+    // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
+    // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
         let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
         let transcript_path = write_transcript(&tact_path, &self.runtime.context)?;

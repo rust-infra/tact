@@ -170,6 +170,9 @@ fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
 /// Decide whether auto-compact should run before the next LLM call.
 ///
 /// TODO: align closer to Codex (12K baseline / effective window %).
+/// TODO(compact): trigger earlier (e.g. at 70-80% of the window) instead of
+/// waiting until tokens >= window, so compaction happens before the provider
+/// starts rejecting prompts.
 /// For now: last_token_usage.total_tokens / model_context_window.
 pub(crate) fn should_auto_compact(
     last_token_total: u32,
