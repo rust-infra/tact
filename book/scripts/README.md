@@ -111,9 +111,25 @@ Trigger on `book/**/*.md` changes:
 # TTS + video only on release or manual approval (cost)
 ```
 
+## Chinese translations (`*_zh.md`)
+
+- English chapter: `NN_chapter_<slug>.md` (canonical)
+- Chinese chapter: `NN_chapter_<slug>_zh.md`
+- Chinese TOC: `book/index_zh.md`
+
+Example: `05_chapter_compact.md` ↔ `05_chapter_compact_zh.md`.
+
+Video pipeline slug for a Chinese chapter is `<slug>_zh`:
+
+```bash
+./book/scripts/generate.sh compact_zh --all
+```
+
+CHM build includes all `*_zh.md` chapters under a **中文译本** TOC group automatically.
+
 ## CHM (Windows Compiled HTML Help)
 
-Package all 25 chapters as a single `.chm` for offline reading in Windows Help Viewer.
+Package all 25 chapters (plus any `*_zh.md` translations) as a single `.chm` for offline reading in Windows Help Viewer.
 
 ### Prerequisites
 
