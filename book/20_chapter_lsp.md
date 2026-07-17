@@ -1,4 +1,5 @@
 # LSP Code Intelligence
+> Language: [English](./20_chapter_lsp.md) · [中文](./20_chapter_lsp_zh.md)
 
 This chapter explains Tact's **Language Server Protocol client**: spawning configured language servers, JSON-RPC over stdin/stdout, and the native `lsp` tool for hover, definition, references, symbols, and diagnostics.
 

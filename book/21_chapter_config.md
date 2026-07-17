@@ -1,4 +1,5 @@
 # Configuration
+> Language: [English](./21_chapter_config.md) · [中文](./21_chapter_config_zh.md)
 
 This chapter describes how Tact loads, merges, and installs runtime settings before any agent work begins. Configuration is the **bootstrap layer** that wires LLM credentials, agent limits, UI theme, tool keys, and permission mode into a process-global `ResolvedConfig`.
 

@@ -1,4 +1,5 @@
 # Skill Registry
+> Language: [English](./02_chapter_skill.md) · [中文](./02_chapter_skill_zh.md)
 
 This chapter explains how Tact loads **custom instruction files** (skills) from disk: scanning `SKILL.md` files, exposing summaries in the system prompt, loading full bodies on demand through the `load_skill` tool, and invoking them from the TUI via slash commands.
 

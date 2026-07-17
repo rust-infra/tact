@@ -1,4 +1,5 @@
 # Worktree Lanes
+> Language: [English](./15_chapter_worktree.md) · [中文](./15_chapter_worktree_zh.md)
 
 This chapter explains Tact's **git worktree lanes**: isolated working directories created with `git worktree add`, tracked in a JSON index, and driven through five agent tools. The implementation lives in `crates/tact/src/worktree/mod.rs` with tool wrappers in `crates/tact/src/tool/worktree.rs`.
 

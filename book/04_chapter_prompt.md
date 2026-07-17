@@ -1,4 +1,5 @@
 # System Prompt in Tact
+> Language: [English](./04_chapter_prompt.md) · [中文](./04_chapter_prompt_zh.md)
 
 This chapter explains how Tact builds the **system prompt**—the initial instruction given to the LLM before any user message—and how its structure is designed to stay cache-friendly while still reflecting fresh memory and project context every turn.
 

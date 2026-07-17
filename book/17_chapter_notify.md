@@ -1,4 +1,5 @@
 # Desktop Notifications
+> Language: [English](./17_chapter_notify.md) · [中文](./17_chapter_notify_zh.md)
 
 This chapter explains how Tact sends **native desktop notifications** when key agent lifecycle events occur — primarily task completion and tool-step failures. The module is small and platform-specific: it is fully implemented on macOS and is a no-op elsewhere.
 

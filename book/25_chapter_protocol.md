@@ -1,4 +1,5 @@
 # Agent–TUI Protocol
+> Language: [English](./25_chapter_protocol.md) · [中文](./25_chapter_protocol_zh.md)
 
 This chapter documents the `tact_protocol` crate: message types exchanged between the agent runtime and the terminal UI, and how each `AgentUpdate` variant drives state transitions on both sides.
 

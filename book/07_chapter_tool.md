@@ -1,4 +1,5 @@
 # Tool System
+> Language: [English](./07_chapter_tool.md) · [中文](./07_chapter_tool_zh.md)
 
 This chapter explains how Tact defines, registers, and executes **native tools**: the `Tool` trait, shared `ToolContext`, `ToolRouter` dispatch, the main vs sub-agent tool sets, workspace path safety, and the `#[tool]` proc macro.
 

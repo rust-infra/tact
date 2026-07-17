@@ -1,4 +1,5 @@
 # Subagents
+> Language: [English](./12_chapter_subagent.md) · [中文](./12_chapter_subagent_zh.md)
 
 This chapter explains how Tact spawns **isolated worker agents** through the `task` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, MCP tools, or SQLite session persistence.
 

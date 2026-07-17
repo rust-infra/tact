@@ -1,4 +1,5 @@
 # LLM Providers
+> Language: [English](./22_chapter_llm.md) · [中文](./22_chapter_llm_zh.md)
 
 This chapter covers the `tact_llm` crate: provider selection, adapter construction, streaming and non-streaming calls, token usage, session-scoped cache keys, and balance queries for DeepSeek and Kimi.
 

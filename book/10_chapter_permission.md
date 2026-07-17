@@ -1,4 +1,5 @@
 # Permission Model
+> Language: [English](./10_chapter_permission.md) · [中文](./10_chapter_permission_zh.md)
 
 This chapter explains how Tact decides whether each tool call may run: intent classification by risk, three permission modes, an in-session allowlist, and interactive approval through the TUI.
 

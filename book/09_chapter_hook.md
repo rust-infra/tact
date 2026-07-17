@@ -1,4 +1,5 @@
 # Agent Lifecycle Hooks
+> Language: [English](./09_chapter_hook.md) · [中文](./09_chapter_hook_zh.md)
 
 This chapter explains how Tact lets you inject custom logic around tool execution: inspecting or rewriting tool input before a call, rewriting output after it finishes, and (via the registration API) preparing state before a session begins.
 

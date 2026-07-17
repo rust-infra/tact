@@ -1,4 +1,5 @@
 # Terminal UI (TUI)
+> Language: [English](./23_chapter_tui.md) · [中文](./23_chapter_tui_zh.md)
 
 This chapter describes the `tui` crate: how `tact-ui` wires the agent loop through async channels, and how the **render layer** turns `App` state into a ratatui frame each tick.
 

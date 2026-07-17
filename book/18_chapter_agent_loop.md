@@ -1,4 +1,5 @@
 # Agent Main Loop
+> Language: [English](./18_chapter_agent_loop.md) · [中文](./18_chapter_agent_loop_zh.md)
 
 This chapter is the **capstone** for chapters 1–11: it describes `Agent::agent_loop` — the streaming conversation loop that ties session storage, prompt assembly, compaction, LLM calls, recovery, and tool dispatch into one turn cycle.
 
