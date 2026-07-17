@@ -1,5 +1,29 @@
 use std::path::{Path, PathBuf};
 
+/// Hard cap on user input / skill payload length in characters.
+///
+/// Independent of the model context window (token budget). Do not use
+/// `model_context_window` as a character submit limit.
+pub const MAX_INPUT_CHARS: usize = 500_000;
+
+/// Returns true when `char_count` exceeds [`MAX_INPUT_CHARS`].
+#[inline]
+pub fn exceeds_input_char_limit(char_count: usize) -> bool {
+    char_count > MAX_INPUT_CHARS
+}
+
+#[cfg(test)]
+mod input_limit_tests {
+    use super::{MAX_INPUT_CHARS, exceeds_input_char_limit};
+
+    #[test]
+    fn exceeds_input_char_limit_at_boundaries() {
+        assert!(!exceeds_input_char_limit(0));
+        assert!(!exceeds_input_char_limit(MAX_INPUT_CHARS));
+        assert!(exceeds_input_char_limit(MAX_INPUT_CHARS + 1));
+    }
+}
+
 /// Directories under the workdir.  Kept private; accessed via [`TactPath`].
 const TACT_DIR: &str = ".tact";
 const CLAUDE_DIR: &str = ".claude";

@@ -101,12 +101,11 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         let display = app.input.clone();
-        let limit = app.model_context_window;
-        if display.chars().count() > limit {
+        if tact::consts::exceeds_input_char_limit(display.chars().count()) {
             let msg = app
                 .msgs()
                 .input_too_long_tmpl
-                .replace("{}", &limit.to_string());
+                .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
             app.add_system_message(msg);
             return;
         }
@@ -748,7 +747,8 @@ mod tests {
     }
 
     #[test]
-    fn submit_rejected_when_input_exceeds_char_limit() {
+    fn submit_not_rejected_when_model_context_window_is_tiny() {
+        // Input length guard must not use model_context_window as a char limit.
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.model_context_window = 5;
@@ -761,14 +761,13 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected long input not to submit task"
-        );
-        assert!(
-            !app.messages.is_empty(),
-            "expected a system message about input length"
-        );
+        let cmd = user_cmd_rx
+            .try_recv()
+            .expect("expected short input to submit even when model_context_window is tiny");
+        match cmd {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "hello world"),
+            other => panic!("expected SubmitTask, got {:?}", other),
+        }
     }
 
     #[test]
