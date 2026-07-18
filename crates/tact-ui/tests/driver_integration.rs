@@ -199,6 +199,12 @@ async fn cancel_during_task_does_not_emit_task_complete() {
             .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "cancelled task must not emit TaskComplete, got: {updates:?}"
     );
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskCancelled)),
+        "cancelled task must emit TaskCancelled so TUI leaves busy state, got: {updates:?}"
+    );
 }
 
 #[tokio::test]

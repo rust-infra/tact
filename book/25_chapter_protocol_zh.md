@@ -40,6 +40,8 @@ pub enum AgentUpdate {
     StepFinished { idx, tool_id, result: StepResult },
     StepFailed { idx, tool_id, error },
     TaskComplete(String),
+    /// 任务中取消 — TUI 必须离开 Planning/Executing
+    TaskCancelled,
     Error(AgentErrorKind),
     TokenUsage(TokenUsageInfo),
     ModelInfo(ModelCallParams),
@@ -187,8 +189,8 @@ stateDiagram-v2
 
     note right of Executing
         UserCommand::Cancel 设置 cancel_flag
-        并仅发出 Info — Status 不变，
-        无 TaskComplete。
+        并发出 Info — Status 仍为 busy，
+        直到 TaskCancelled 回到 Idle。
     end note
 ```
 
@@ -198,11 +200,12 @@ stateDiagram-v2
 | `Planning` | `Executing` | 首个 `AgentUpdate::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
+| `Planning` / `Executing` | `Idle` | `TaskCancelled` | 取消后的 driver；释放输入 |
 | `Executing` | `Idle` | `StepFailed` 或 `Error(Other)` | 冻结 cost timer |
 | `Done` | `Idle` | `task_done_time` 后 2 s | 主循环调用 `maybe_expire_done_status` |
-| *（不变）* | *（不变）* | `UserCommand::Cancel` | 仅 `Info("Cancelling…")`；循环退出无 `TaskComplete` |
+| *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `TaskCancelled` |
 
-`TaskComplete` 由 `crates/tact-ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)）。
+`TaskComplete` 由 `crates/tact-ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
 
 ### 4.2 `AgentUpdate` → `Status` 映射
 
@@ -225,6 +228,7 @@ flowchart LR
     subgraph transitions["Status 转换"]
         SA1[StepAdded first] -->|Planning → Executing| EX[Executing]
         TKC[TaskComplete] -->|→ Done| DN[Done]
+        TKX[TaskCancelled] -->|→ Idle| ID0[Idle]
         SFL[StepFailed] -->|→ Idle| ID1[Idle]
         ER[Error Other] -->|→ Idle| ID2[Idle]
         DN -->|2s| ID3[Idle]
@@ -232,6 +236,8 @@ flowchart LR
 
     P[Planning] --> SA1
     EX --> TKC
+    EX --> TKX
+    P --> TKX
     EX --> SFL
     EX --> ER
 ```
@@ -243,6 +249,7 @@ flowchart LR
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer 冻结 |
 | `RequestSelect` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission.md) |
 | `TaskComplete` | `→ Done`（2s → `Idle`） | 由 driver 发出，非 `agent_loop` |
+| `TaskCancelled` | `→ Idle` | 取消后的 driver；解除新 prompt 阻塞 |
 | `TokenUsage` / `ModelInfo` | 无 status 变化 | 仅元数据；状态栏更新 |
 | `StreamChunk` / `ThinkingChunk` / `Info` | 无 status 变化 | 仅 log / stream |
 
@@ -291,7 +298,7 @@ stateDiagram-v2
 
 | 类别 | Variants | TUI 副作用 |
 |------|----------|------------|
-| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`Error`、`RequestSelect` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
+| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
 | **请求–响应** | `RequestSelect { respond }` | 经 oneshot channel 阻塞等待用户选择 |
 
@@ -314,7 +321,7 @@ flowchart TB
     subgraph driver["tact-ui driver"]
         ST[SubmitTask] --> AL[agent_loop]
         AL -->|Ok + !cancel| TC[emit TaskComplete]
-        AL -->|cancel_flag| X[no TaskComplete]
+        AL -->|cancel_flag| XC[emit TaskCancelled]
         CN[Cancel] --> CF[set cancel_flag + Info]
     end
 
@@ -330,7 +337,7 @@ flowchart TB
 | 命令 | TUI 前置条件 | Handler 效果 |
 |------|--------------|--------------|
 | `SubmitTask(text)` | Insert 模式 Enter → `Status::Planning` | `build_user_message` → `agent_loop` |
-| `Cancel` | `/cancel` 或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环退出无 `TaskComplete` |
+| `Cancel` | `/cancel` 或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环退出后 driver 发 `TaskCancelled` → `Idle` |
 | `QueryBalance` | `/balance` 或 palette | `account::query_once()` → `AccountUpdate` channel |
 
 ---

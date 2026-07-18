@@ -107,6 +107,11 @@ pub enum AgentUpdate {
     },
     /// The entire task is complete
     TaskComplete(String),
+    /// The in-flight task was cancelled by the user. TUI must leave
+    /// `Planning` / `Executing` so a new prompt can be submitted.
+    /// Emitted by the command driver after `agent_loop` returns with
+    /// `cancel_flag` set — not by `agent_loop` itself.
+    TaskCancelled,
     /// Agent error, with classification for the TUI to decide display style
     Error(AgentErrorKind),
     /// Token usage stats
@@ -161,7 +166,8 @@ pub enum UserCommand {
     SubmitTask(String),
     /// Cancel the current in-flight task by setting `cancel_flag`.
     /// The agent loop exits cooperatively at the next check point and does not
-    /// emit `TaskComplete`. The next `SubmitTask` clears the flag.
+    /// emit `TaskComplete`. The command driver emits [`AgentUpdate::TaskCancelled`]
+    /// so the TUI can leave the busy state. The next `SubmitTask` clears the flag.
     Cancel,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,

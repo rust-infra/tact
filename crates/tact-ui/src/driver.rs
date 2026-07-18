@@ -128,7 +128,11 @@ async fn handle_user_command_with_account(
                         agent.emit_update(AgentUpdate::TaskComplete(text));
                     }
                 }
-                Ok(()) => {}
+                Ok(()) => {
+                    // Cancelled: clear TUI busy state (Planning/Executing) so
+                    // the next prompt is not blocked behind input_busy_msg.
+                    agent.emit_update(AgentUpdate::TaskCancelled);
+                }
                 Err(e) => {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                 }

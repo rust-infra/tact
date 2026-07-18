@@ -168,7 +168,10 @@ UserCommand::SubmitTask(task) => {
                 agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
             }
         }
-        Ok(()) => {}  // cancelled — no TaskComplete
+                Ok(()) => {
+                    // cancelled — emit TaskCancelled so TUI leaves Planning/Executing
+                    agent.emit_update(AgentUpdate::TaskCancelled);
+                }
         Err(e) => agent.emit_update(AgentUpdate::Error(...)),
     }
 }
@@ -177,7 +180,7 @@ UserCommand::Cancel => {
 }
 ```
 
-**`TaskComplete`** is emitted only when `agent_loop` returns `Ok(())` **and** the user did not cancel. The summary text comes from the **last context message** (often a tool result, not strictly the last assistant turn). Errors surface as `AgentUpdate::Error` instead.
+**`TaskComplete`** is emitted only when `agent_loop` returns `Ok(())` **and** the user did not cancel. On cancel, the driver emits **`TaskCancelled`** instead so the TUI returns to `Idle` and accepts a new prompt. The summary text for `TaskComplete` comes from the **last context message** (often a tool result, not strictly the last assistant turn). Errors surface as `AgentUpdate::Error` instead.
 
 ---
 

@@ -169,7 +169,10 @@ UserCommand::SubmitTask(task) => {
                 agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
             }
         }
-        Ok(()) => {}  // 已取消 — 无 TaskComplete
+                Ok(()) => {
+                    // 已取消 — 发出 TaskCancelled，让 TUI 离开 Planning/Executing
+                    agent.emit_update(AgentUpdate::TaskCancelled);
+                }
         Err(e) => agent.emit_update(AgentUpdate::Error(...)),
     }
 }
@@ -178,7 +181,7 @@ UserCommand::Cancel => {
 }
 ```
 
-**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `AgentUpdate::Error` 呈现。
+**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。取消时 driver 改为发出 **`TaskCancelled`**，使 TUI 回到 `Idle` 并接受新 prompt。`TaskComplete` 的摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `AgentUpdate::Error` 呈现。
 
 ---
 

@@ -98,6 +98,18 @@ impl App {
                 self.task_done_time = Some(chrono::Local::now());
                 // TODO Add task stats block
             }
+            AgentUpdate::TaskCancelled => {
+                // Cancel exits without TaskComplete; must leave Planning/Executing
+                // or Enter keeps flashing input_busy_msg.
+                self.flush_stream_pending();
+                self.add_task_end_separator();
+                if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+                    self.log_scroll.offset = u16::MAX;
+                }
+                self.status = Status::Idle;
+                self.freeze_last_prompt_cost();
+                self.task_done_time = None;
+            }
             // Error handling
             AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
                 // Fatal error: flush leftover streaming lines
@@ -721,6 +733,17 @@ mod lifecycle_tests {
             app.raw_messages
                 .last()
                 .is_some_and(|m| m.contains("Cancelling"))
+        );
+    }
+
+    #[test]
+    fn task_cancelled_clears_busy_status_to_idle() {
+        let mut app = make_app();
+        app.status = Status::Planning;
+        app.handle_agent_update(AgentUpdate::TaskCancelled);
+        assert!(
+            matches!(app.status, Status::Idle),
+            "TaskCancelled must clear Planning/Executing so new prompts can submit"
         );
     }
 
