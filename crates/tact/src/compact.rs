@@ -173,7 +173,11 @@ fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
 /// TODO(compact): trigger earlier (e.g. at 70-80% of the window) instead of
 /// waiting until tokens >= window, so compaction happens before the provider
 /// starts rejecting prompts.
-/// For now: last_token_usage.total_tokens / model_context_window.
+///
+/// Triggers when either:
+/// - the last reported token total is already at/over the window, or
+/// - the current context's char estimate exceeds the window (covers growth
+///   from tool results appended *after* the last TokenUsage update).
 pub(crate) fn should_auto_compact(
     last_token_total: u32,
     model_context_window: usize,
@@ -182,10 +186,11 @@ pub(crate) fn should_auto_compact(
     if model_context_window == 0 {
         return false;
     }
-    if last_token_total > 0 {
-        return (last_token_total as usize) >= model_context_window;
+    if last_token_total > 0 && (last_token_total as usize) >= model_context_window {
+        return true;
     }
-    // Transitional: no usage yet — coarse char estimate vs token window.
+    // Char estimate vs token window is coarse, but catches post-tool growth
+    // that last_token_total cannot see until the next LLM response.
     // TODO: replace once we can estimate tokens pre-call.
     estimated_chars > model_context_window
 }
@@ -199,8 +204,6 @@ mod tests {
         assert!(!should_auto_compact(99, 100, 0));
         assert!(should_auto_compact(100, 100, 0));
         assert!(should_auto_compact(150, 100, 0));
-        // When usage is present, char estimate is ignored.
-        assert!(!should_auto_compact(50, 100, 10_000));
         assert!(!should_auto_compact(1, 0, 10_000));
     }
 
@@ -209,5 +212,13 @@ mod tests {
         assert!(!should_auto_compact(0, 100, 100));
         assert!(should_auto_compact(0, 100, 101));
         assert!(!should_auto_compact(0, 0, 10_000));
+    }
+
+    #[test]
+    fn should_auto_compact_char_estimate_covers_post_tool_growth() {
+        // last_token_total is still under the window (from the previous LLM
+        // call), but tool results since then pushed the char estimate over.
+        assert!(should_auto_compact(50, 100, 10_000));
+        assert!(!should_auto_compact(50, 100, 100));
     }
 }

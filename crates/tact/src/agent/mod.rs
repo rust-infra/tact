@@ -332,25 +332,22 @@ impl Agent {
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
-    pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Result<()> {
+    pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
 
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
 
-        // If history is empty, add the initial user message so it is persisted.
-        if self.runtime.context.is_empty() {
-            if let Some(msg) = initial_user_message {
-                self.push_message(msg).await?;
-            }
-        } else if let Some(msg) = initial_user_message {
-            self.push_message(msg).await?;
+        // Persist this turn's new user message before building the LLM request.
+        // `runtime.context` may already contain restored conversation history.
+        if let Some(message) = user_turn_message {
+            self.push_message(message).await?;
         }
 
         // Build the system prompt once per task. Memory saved mid-task takes
         // effect on the next task; stable sections stay before DYNAMIC_BOUNDARY
         // so the prefix KV-cache holds across turns and tasks.
-        let system = self.build_system_prompt()?;
+        let system_prompt = self.build_system_prompt()?;
         loop {
             if self
                 .runtime
@@ -372,13 +369,18 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
+
+            // Snapshot the complete conversation after micro/auto compaction.
+            // This includes the current user turn plus restored history, or the
+            // replacement summary when compact_history ran above.
+            let conversation_messages = self.runtime.context.clone();
             let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
-                messages: self.runtime.context.clone(),
+                messages: conversation_messages,
                 max_tokens: self.max_tokens(),
             })
-            .with_system(&system)
+            .with_system(&system_prompt)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
             .with_thinking(self.thinking_config());
@@ -763,7 +765,9 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
         if let Some(ref usage) = token_usage {
             self.runtime.stats.record_token_usage(usage);
-            self.runtime.last_token_total = usage.total;
+            // Do NOT assign usage.total to last_token_total: that figure is for
+            // the summarization request (large history prompt), not the size of
+            // the replacement context below.
         }
         let _ = self
             .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
@@ -795,6 +799,10 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             }
         }
         self.runtime.context = compacted_context(full_summary);
+        // Reset so the next should_auto_compact check reflects the new small
+        // context (via char estimate / next main-loop TokenUsage), not the
+        // pre-compact or summarizer-prompt totals.
+        self.runtime.last_token_total = 0;
         self.replace_persisted_context().await?;
         self.runtime.stats.compactions += 1;
         Ok(())

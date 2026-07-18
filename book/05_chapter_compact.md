@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop iteration]) --> Cancel{cancelled?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>or cold char fallback}
+    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>or char estimate over}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -181,19 +181,17 @@ The stub text is deliberate: it tells the model **how to recover** (`read_file` 
 
 The shared threshold is **`agent.model_context_window`** — the model context window in **tokens** (default **200,000**). The same value drives auto-compaction and the TUI bottom-bar usage meter.
 
-### Primary path (after at least one `TokenUsage` update)
+### Decision (OR)
+
+`should_auto_compact` fires when **either** condition holds:
 
 ```text
-if last_token_total > 0 && last_token_total >= model_context_window {
-    compact_history(...)
-}
+last_token_total > 0 && last_token_total >= model_context_window
+  || estimate_context_size(context) > model_context_window
 ```
 
-`last_token_total` is the latest `TokenUsageInfo.total` from the provider stream/`create_message` response.
-
-### Cold-start fallback (no usage yet)
-
-When `last_token_total == 0` (first turn(s) before any API usage), a **temporary** character estimate is compared against the same window number:
+- **`last_token_total`**: latest `TokenUsageInfo.total` from the provider stream/`create_message` response (written when the previous LLM call finished).
+- **Char estimate**: serialized character count of the current `context` vs the same window number. Mixing units is coarse, but it covers growth from tool results appended **after** the last `TokenUsage` update (which `last_token_total` alone cannot see).
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -201,30 +199,22 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
         .map(|serialized| serialized.chars().count())
         .unwrap_or_default()
 }
-
-// Transitional: char estimate vs token window — coarse only.
-// TODO: replace once we can estimate tokens pre-call.
-if last_token_total == 0 && estimate_context_size(context) > model_context_window {
-    compact_history(...)
-}
 ```
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Have{last_token_total > 0?}
-    Have -->|yes| Tok{tokens ≥ model_context_window?}
-    Have -->|no| Est["estimate_context_size (chars)<br/>> model_context_window?"]
+    MC[micro_compact] --> Tok{tokens ≥ window?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Call[LLM call]
+    Tok -->|no| Est["estimate_context_size (chars)<br/>> model_context_window?"]
     Est -->|yes| Auto
-    Est -->|no| Call
+    Est -->|no| Call[LLM call]
 ```
 
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `agent.model_context_window` | **200,000** | Tokens; CLI `--model-context-window` / TOML. Breaking rename from `context_limit_chars` — **no silent alias**. |
 
-The cold-start path deliberately mixes units (chars vs tokens). Prefer the primary token path once usage is available; see §11.
+After compaction, `last_token_total` is **reset to 0** (the summarizer call's usage reflects a large history prompt, not the replacement context size); the next main-loop LLM call writes a fresh value. See §11.
 
 ---
 
@@ -307,6 +297,7 @@ Recently accessed files (re-read if you need their contents):
 |--------|-----|
 | `has_compacted = true`, store `last_summary` | Session knows compaction occurred |
 | Reset `first_message_db_id` / `last_message_db_id` / `llm_call_last_message_id` | New message-id window after rewrite |
+| `last_token_total = 0` | Summarizer usage is a large prompt, not the new context; avoids re-triggering compact every turn |
 | `replace_session_messages` | Reopening the session must **not** resurrect pre-compaction SQLite rows |
 | `stats.compactions += 1` | Observability |
 
@@ -404,6 +395,7 @@ Besides `context` itself, `compact_history` also resets the message-id window an
 | `first_message_db_id` | some value > 0 | `0` |
 | `last_message_db_id` | some value > 0 | `0` |
 | `llm_call_last_message_id` | some value > 0 | `0` |
+| `last_token_total` | pre-compact / summarizer usage | `0` (rewritten on next main-loop call) |
 | `compact_state.has_compacted` | possibly `false` | `true` |
 | `compact_state.last_summary` | old value / `None` | this summary text |
 | `stats.compactions` | `k` | `k + 1` |
@@ -599,7 +591,7 @@ flowchart LR
 
 | Gap | Detail |
 |-----|--------|
-| Cold-start char fallback | Before first `TokenUsage`, compares char estimate to a **token** window (coarse; TODO) |
+| Cold-start / post-tool char estimate | Char estimate vs **token** window (coarse; TODO replace with pre-call token estimate). Still OR'd with token total when usage exists, to cover growth after tool results are appended |
 | Simple usage % | Meter is `used / model_context_window` (no Codex 12K baseline / effective-window math yet) |
 | Summarization unguarded | Compaction LLM call has no retry; bad summary silently degrades the session |
 | Only last ~80k summarized | Early turns live in transcript; model is not told that path in the replacement message |

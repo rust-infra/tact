@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop 迭代]) --> Cancel{已取消?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>或冷启动字符回退}
+    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>或字符估算超限}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -181,19 +181,17 @@ Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工
 
 共享阈值是 **`agent.model_context_window`** — 模型上下文窗口，单位为 **tokens**（默认 **200,000**）。同一数值同时驱动自动压缩与 TUI 底栏用量条。
 
-### 主路径（至少收到一次 `TokenUsage` 之后）
+### 判定（OR）
+
+`should_auto_compact` 在以下**任一**条件成立时触发：
 
 ```text
-if last_token_total > 0 && last_token_total >= model_context_window {
-    compact_history(...)
-}
+last_token_total > 0 && last_token_total >= model_context_window
+  || estimate_context_size(context) > model_context_window
 ```
 
-`last_token_total` 来自 provider 流式/`create_message` 响应中最新的 `TokenUsageInfo.total`。
-
-### 冷启动回退（尚无用量）
-
-当 `last_token_total == 0`（首次 API 用量之前）时，用**临时**字符估算与同一窗口数值比较：
+- **`last_token_total`**：来自 provider 流式/`create_message` 响应中最新的 `TokenUsageInfo.total`（上一轮 LLM 结束时写入）。
+- **字符估算**：对比当前 `context` 的序列化字符数与同一窗口数值。单位混用是粗粒度的，但能覆盖**上一轮 TokenUsage 之后**追加的 tool result 膨胀（仅靠 `last_token_total` 看不到这部分增长）。
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -201,30 +199,22 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
         .map(|serialized| serialized.chars().count())
         .unwrap_or_default()
 }
-
-// 过渡期：字符估算对比 token 窗口 — 仅粗粒度。
-// TODO: 具备调用前 token 估算后替换。
-if last_token_total == 0 && estimate_context_size(context) > model_context_window {
-    compact_history(...)
-}
 ```
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Have{last_token_total > 0?}
-    Have -->|yes| Tok{tokens ≥ model_context_window?}
-    Have -->|no| Est["estimate_context_size (字符)<br/>> model_context_window?"]
+    MC[micro_compact] --> Tok{tokens ≥ window?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Call[LLM 调用]
+    Tok -->|no| Est["estimate_context_size (字符)<br/>> model_context_window?"]
     Est -->|yes| Auto
-    Est -->|no| Call
+    Est -->|no| Call[LLM 调用]
 ```
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。 |
 
-冷启动路径刻意混用单位（字符 vs tokens）。一旦有用量，优先走主路径；见 §11。
+压缩完成后会把 `last_token_total` **清零**（摘要调用本身的 usage 是大 prompt，不能代表新 context 体积）；下一轮主循环 LLM 再写入新的用量。见 §11。
 
 ---
 
@@ -307,6 +297,7 @@ Recently accessed files (re-read if you need their contents):
 |------|------|
 | `has_compacted = true`，保存 `last_summary` | 会话知道已发生压缩 |
 | 重置 `first_message_db_id` / `last_message_db_id` / `llm_call_last_message_id` | 重写后开启新的 message-id 窗口 |
+| `last_token_total = 0` | 摘要调用的 usage 是大 prompt，不能代表新 context；避免下一轮误触发反复 compact |
 | `replace_session_messages` | 重新打开会话**不得**复活压缩前的 SQLite 行 |
 | `stats.compactions += 1` | 可观测性 |
 
@@ -403,6 +394,7 @@ flowchart TD
 | `first_message_db_id` | 某个 > 0 的值 | `0` |
 | `last_message_db_id` | 某个 > 0 的值 | `0` |
 | `llm_call_last_message_id` | 某个 > 0 的值 | `0` |
+| `last_token_total` | 压缩前用量 / 摘要调用用量 | `0`（下一轮主循环再写入） |
 | `compact_state.has_compacted` | 可能为 `false` | `true` |
 | `compact_state.last_summary` | 旧值 / `None` | 本次摘要文本 |
 | `stats.compactions` | `k` | `k + 1` |
@@ -598,7 +590,7 @@ flowchart LR
 
 | 缺口 | 细节 |
 |------|------|
-| 冷启动字符回退 | 首次 `TokenUsage` 之前，用字符估算对比 **token** 窗口（粗粒度；TODO） |
+| 冷启动 / 工具后字符估算 | 字符估算对比 **token** 窗口（粗粒度；TODO 换调用前 token 估算）。有用量时仍 OR 字符估算，以覆盖 tool result 追加后的膨胀 |
 | 简易用量百分比 | 用量条为 `used / model_context_window`（尚无 Codex 12K baseline / effective-window 算法） |
 | 摘要无防护 | 压缩 LLM 调用无重试；烂摘要会静默拖垮会话 |
 | 只摘要最近 ~80k | 早期回合在 transcript 里；替换消息未告知模型该路径 |
