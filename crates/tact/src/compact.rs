@@ -6,8 +6,8 @@
 //! - [`persist_large_output`]: writes oversized tool outputs to disk and
 //!   returns a preview with a file path.
 //! - [`write_transcript`]: serialises the entire conversation as JSONL.
-//! - [`compacted_context`]: generates a replacement context containing
-//!   a summary of what was compacted.
+//! - [`compacted_context`]: legacy single-summary replacement context.
+//! - Codex-style rebuild: [`collect_user_messages`] + [`build_compacted_history`].
 
 use anyhow::Context as _;
 use std::{
@@ -29,6 +29,15 @@ const PERSIST_THRESHOLD: usize = 30_000;
 /// Number of characters shown in the preview when persisting a large output.
 const PREVIEW_CHARS: usize = 2_000;
 const COMPACTED_TOOL_RESULT: &str = "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+
+/// Lead-in for compaction handoff messages. Used both as the summary body
+/// prefix and to detect prior summaries so they are not stacked.
+pub const SUMMARY_PREFIX: &str =
+    "This conversation was compacted so the agent can continue working.";
+
+/// How many characters of recent *real* user-message text to keep verbatim
+/// when rebuilding compacted history (Codex-style).
+pub const KEEP_USER_MESSAGE_CHARS: usize = 80_000;
 
 /// Running compaction state for a session.
 ///
@@ -81,6 +90,82 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
     serde_json::to_string(messages)
         .map(|serialized| serialized.chars().count())
         .unwrap_or_default()
+}
+
+/// Serialized JSON character size of a single message.
+pub fn estimate_message_size(message: &Message) -> usize {
+    estimate_context_size(std::slice::from_ref(message))
+}
+
+/// Coarse chars→tokens conversion for reserving an incoming user turn against
+/// a token-denominated `model_context_window`.
+pub(crate) fn approx_chars_as_tokens(chars: usize) -> usize {
+    chars.div_ceil(4)
+}
+
+/// Whether `text` is a prior compaction handoff (must not be re-kept as a
+/// "real" user message).
+pub fn is_summary_message(text: &str) -> bool {
+    text.starts_with(SUMMARY_PREFIX)
+}
+
+fn user_text_content(message: &Message) -> Option<&str> {
+    match &message.content {
+        MessageContent::Text { content } => Some(content.as_str()),
+        MessageContent::Blocks { .. } => None,
+    }
+}
+
+/// Collect real user text turns, skipping tool-result users and prior summaries.
+pub fn collect_user_messages(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter(|message| matches!(message.role, Role::User))
+        .filter(|message| user_text_content(message).is_some_and(|text| !is_summary_message(text)))
+        .cloned()
+        .collect()
+}
+
+/// Rebuild compacted history: recent real user messages (char budget from the
+/// tail) followed by a single summary user message.
+pub fn build_compacted_history(
+    user_messages: &[Message],
+    summary_text: String,
+    max_chars: usize,
+) -> Vec<Message> {
+    let mut selected: Vec<Message> = Vec::new();
+    if max_chars > 0 {
+        let mut remaining = max_chars;
+        for message in user_messages.iter().rev() {
+            if remaining == 0 {
+                break;
+            }
+            let Some(text) = user_text_content(message) else {
+                continue;
+            };
+            let chars = text.chars().count();
+            if chars <= remaining {
+                selected.push(message.clone());
+                remaining = remaining.saturating_sub(chars);
+            } else {
+                let truncated: String = text.chars().take(remaining).collect();
+                selected.push(Message::new_text(Role::User, truncated));
+                break;
+            }
+        }
+        selected.reverse();
+    }
+
+    let summary_body = if summary_text.is_empty() {
+        "(no summary available)".to_string()
+    } else {
+        summary_text
+    };
+    selected.push(Message::new_text(
+        Role::User,
+        format!("{SUMMARY_PREFIX}\n\n{summary_body}"),
+    ));
+    selected
 }
 
 /// Writes the full conversation to a timestamped JSONL file under
@@ -140,12 +225,11 @@ pub fn persist_large_output(
 }
 
 /// Produces a replacement context (single user message) containing a
-/// summary of what was compacted, so the agent can continue without
-/// re-reading the full history.
+/// summary of what was compacted. Used by [`crate::agent::Agent::compact_history_legacy`].
 pub fn compacted_context(summary: String) -> Vec<Message> {
     vec![Message::new_text(
         Role::User,
-        format!("This conversation was compacted so the agent can continue working.\n\n{summary}"),
+        format!("{SUMMARY_PREFIX}\n\n{summary}"),
     )]
 }
 
@@ -175,50 +259,151 @@ fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
 /// starts rejecting prompts.
 ///
 /// Triggers when either:
-/// - the last reported token total is already at/over the window, or
-/// - the current context's char estimate exceeds the window (covers growth
-///   from tool results appended *after* the last TokenUsage update).
+/// - last token total (+ approx tokens for an *incoming* turn not yet in
+///   context) is at/over the window, or
+/// - estimated context chars (+ incoming turn chars) exceed the window.
 pub(crate) fn should_auto_compact(
     last_token_total: u32,
     model_context_window: usize,
     estimated_chars: usize,
+    incoming_turn_chars: usize,
 ) -> bool {
     if model_context_window == 0 {
         return false;
     }
-    if last_token_total > 0 && (last_token_total as usize) >= model_context_window {
-        return true;
+    if last_token_total > 0 {
+        let projected =
+            (last_token_total as usize).saturating_add(approx_chars_as_tokens(incoming_turn_chars));
+        if projected >= model_context_window {
+            return true;
+        }
     }
     // Char estimate vs token window is coarse, but catches post-tool growth
-    // that last_token_total cannot see until the next LLM response.
+    // and (at entry) a large incoming user turn not yet pushed into context.
     // TODO: replace once we can estimate tokens pre-call.
-    estimated_chars > model_context_window
+    estimated_chars.saturating_add(incoming_turn_chars) > model_context_window
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_auto_compact;
+    use super::{
+        KEEP_USER_MESSAGE_CHARS, SUMMARY_PREFIX, approx_chars_as_tokens, build_compacted_history,
+        collect_user_messages, estimate_context_size, estimate_message_size, is_summary_message,
+        should_auto_compact,
+    };
+    use tact_llm::{ContentBlock, Message, Role};
 
     #[test]
     fn should_auto_compact_uses_last_token_total_when_present() {
-        assert!(!should_auto_compact(99, 100, 0));
-        assert!(should_auto_compact(100, 100, 0));
-        assert!(should_auto_compact(150, 100, 0));
-        assert!(!should_auto_compact(1, 0, 10_000));
+        assert!(!should_auto_compact(99, 100, 0, 0));
+        assert!(should_auto_compact(100, 100, 0, 0));
+        assert!(should_auto_compact(150, 100, 0, 0));
+        assert!(!should_auto_compact(1, 0, 10_000, 0));
     }
 
     #[test]
     fn should_auto_compact_falls_back_to_chars_when_no_usage() {
-        assert!(!should_auto_compact(0, 100, 100));
-        assert!(should_auto_compact(0, 100, 101));
-        assert!(!should_auto_compact(0, 0, 10_000));
+        assert!(!should_auto_compact(0, 100, 100, 0));
+        assert!(should_auto_compact(0, 100, 101, 0));
+        assert!(!should_auto_compact(0, 0, 10_000, 0));
     }
 
     #[test]
     fn should_auto_compact_char_estimate_covers_post_tool_growth() {
-        // last_token_total is still under the window (from the previous LLM
-        // call), but tool results since then pushed the char estimate over.
-        assert!(should_auto_compact(50, 100, 10_000));
-        assert!(!should_auto_compact(50, 100, 100));
+        assert!(should_auto_compact(50, 100, 10_000, 0));
+        assert!(!should_auto_compact(50, 100, 100, 0));
+    }
+
+    #[test]
+    fn should_auto_compact_reserves_incoming_turn_chars() {
+        // Old context alone is under the window, but + incoming tips over.
+        assert!(!should_auto_compact(0, 100, 80, 0));
+        assert!(should_auto_compact(0, 100, 80, 30));
+        // Token path: last_token under window until incoming approx tokens added.
+        assert!(!should_auto_compact(90, 100, 0, 0));
+        let incoming = 4 * 20; // approx_chars_as_tokens → 20
+        assert_eq!(approx_chars_as_tokens(incoming), 20);
+        assert!(should_auto_compact(90, 100, 0, incoming));
+    }
+
+    #[test]
+    fn is_summary_message_detects_prefix() {
+        assert!(is_summary_message(&format!("{SUMMARY_PREFIX}\nhandoff")));
+        assert!(!is_summary_message("please fix the bug"));
+    }
+
+    #[test]
+    fn collect_user_messages_keeps_text_users_skips_summary_and_tool_results() {
+        let messages = vec![
+            Message::new_text(Role::User, "goal A"),
+            Message::new_text(Role::Assistant, "thinking"),
+            Message::new_blocks(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "file dump".into(),
+                }],
+            ),
+            Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\nold summary")),
+            Message::new_text(Role::User, "goal B"),
+        ];
+        let kept = collect_user_messages(&messages);
+        assert_eq!(kept.len(), 2);
+        assert!(matches!(
+            &kept[0].content,
+            tact_llm::MessageContent::Text { content } if content == "goal A"
+        ));
+        assert!(matches!(
+            &kept[1].content,
+            tact_llm::MessageContent::Text { content } if content == "goal B"
+        ));
+    }
+
+    #[test]
+    fn build_compacted_history_keeps_tail_users_then_summary() {
+        let users = vec![
+            Message::new_text(Role::User, "old"),
+            Message::new_text(Role::User, "newer"),
+        ];
+        let history =
+            build_compacted_history(&users, "handoff body".into(), KEEP_USER_MESSAGE_CHARS);
+        assert_eq!(history.len(), 3);
+        assert!(matches!(
+            &history[0].content,
+            tact_llm::MessageContent::Text { content } if content == "old"
+        ));
+        assert!(matches!(
+            &history[1].content,
+            tact_llm::MessageContent::Text { content } if content == "newer"
+        ));
+        assert!(matches!(
+            &history[2].content,
+            tact_llm::MessageContent::Text { content }
+                if content.starts_with(SUMMARY_PREFIX) && content.contains("handoff body")
+        ));
+    }
+
+    #[test]
+    fn build_compacted_history_respects_char_budget_from_tail() {
+        let users = vec![
+            Message::new_text(Role::User, "aaaaaaaaaa"), // 10
+            Message::new_text(Role::User, "bbbbbbbbbb"), // 10
+            Message::new_text(Role::User, "cccccccccc"), // 10
+        ];
+        // Only enough room for the last message (+ maybe truncated earlier).
+        let history = build_compacted_history(&users, "sum".into(), 10);
+        assert_eq!(history.len(), 2); // one retained user + summary
+        assert!(matches!(
+            &history[0].content,
+            tact_llm::MessageContent::Text { content } if content == "cccccccccc"
+        ));
+    }
+
+    #[test]
+    fn estimate_message_size_counts_serialized_chars() {
+        let msg = Message::new_text(Role::User, "hi");
+        let n = estimate_message_size(&msg);
+        assert!(n > 0);
+        assert_eq!(n, estimate_context_size(std::slice::from_ref(&msg)));
     }
 }

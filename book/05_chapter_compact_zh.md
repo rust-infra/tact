@@ -183,15 +183,18 @@ Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工
 
 ### 判定（OR）
 
-`should_auto_compact` 在以下**任一**条件成立时触发：
+`should_auto_compact` 在以下**任一**条件成立时触发（可预留尚未入 context 的本轮 user turn）：
 
 ```text
-last_token_total > 0 && last_token_total >= model_context_window
-  || estimate_context_size(context) > model_context_window
+last_token_total > 0
+  && last_token_total + approx_chars_as_tokens(incoming_turn_chars) >= model_context_window
+  || estimated_chars + incoming_turn_chars > model_context_window
 ```
 
-- **`last_token_total`**：来自 provider 流式/`create_message` 响应中最新的 `TokenUsageInfo.total`（上一轮 LLM 结束时写入）。
-- **字符估算**：对比当前 `context` 的序列化字符数与同一窗口数值。单位混用是粗粒度的，但能覆盖**上一轮 TokenUsage 之后**追加的 tool result 膨胀（仅靠 `last_token_total` 看不到这部分增长）。
+- **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_chars = estimate(user_turn)`），再 `push` 本轮原文。
+- **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_chars = 0`。
+
+摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。旧单消息路径保留为 `compact_history_legacy`。
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -203,9 +206,9 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Tok{tokens ≥ window?}
+    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Est["estimate_context_size (字符)<br/>> model_context_window?"]
+    Tok -->|no| Est["estimate + incoming 字符<br/>> model_context_window?"]
     Est -->|yes| Auto
     Est -->|no| Call[LLM 调用]
 ```
@@ -242,7 +245,7 @@ sequenceDiagram
     LLM-->>CH: text summary blocks
     CH->>CH: 重置 message-id 窗口 (first/last/llm_call ids = 0)
     CH->>CH: 向摘要追加 "Recently accessed files…"
-    CH->>CH: context = compacted_context(full_summary)
+    CH->>CH: context = build_compacted_history(users + summary)
     CH->>Store: replace_session_messages（SQLite 对齐新 context）
     CH->>CH: stats.compactions += 1
 ```
@@ -279,17 +282,21 @@ flowchart LR
 - `Focus to preserve next: {focus}` — 来自手动 `compact` 工具  
 - `Recent files to reopen if needed:` — 来自 `CompactState.recent_files`
 
-**4. 替换 context** — `compacted_context(summary)` 生成**单条 user 消息**：
+**4. 替换 context** — Codex 风格，经 `build_compacted_history` 重建：
 
 ```text
-This conversation was compacted so the agent can continue working.
+[0] User  "<较早的真实 user 原文…>"
+[1] User  "<较近的真实 user 原文…>"
+[2] User  "This conversation was compacted so the agent can continue working.
 
-<summary…>
+           <summary…>
 
-Recently accessed files (re-read if you need their contents):
-- crates/tact/src/agent/mod.rs
-- …
+           Recently accessed files (re-read if you need their contents):
+           - crates/tact/src/agent/mod.rs
+           - …"
 ```
+
+（`compact_history_legacy` 仍会整段换成**单条** summary user 消息。）
 
 **5. 簿记**
 
@@ -564,8 +571,8 @@ flowchart TB
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_size`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
-| `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history`；`remember_recent_file`；`replace_persisted_context` |
+| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_size`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
+| `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history` / `compact_history_legacy`；`remember_recent_file`；`replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `bash` 上的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
 | `crates/tact/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
 | `crates/tact/src/recovery.rs` | Prompt-too-long 分类 → 压缩 |

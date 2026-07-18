@@ -183,15 +183,18 @@ The shared threshold is **`agent.model_context_window`** — the model context w
 
 ### Decision (OR)
 
-`should_auto_compact` fires when **either** condition holds:
+`should_auto_compact` fires when **either** condition holds (optionally reserving an *incoming* user turn not yet in context):
 
 ```text
-last_token_total > 0 && last_token_total >= model_context_window
-  || estimate_context_size(context) > model_context_window
+last_token_total > 0
+  && last_token_total + approx_chars_as_tokens(incoming_turn_chars) >= model_context_window
+  || estimated_chars + incoming_turn_chars > model_context_window
 ```
 
-- **`last_token_total`**: latest `TokenUsageInfo.total` from the provider stream/`create_message` response (written when the previous LLM call finished).
-- **Char estimate**: serialized character count of the current `context` vs the same window number. Mixing units is coarse, but it covers growth from tool results appended **after** the last `TokenUsage` update (which `last_token_total` alone cannot see).
+- **Entry (`agent_loop`)**: compact **old** history first with `incoming_turn_chars = estimate(user_turn)`, then `push` the turn verbatim.
+- **Loop / recovery / manual**: turn already in context → `incoming_turn_chars = 0`.
+
+Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. Legacy single-summary path remains as `compact_history_legacy`.
 
 ```rust
 pub fn estimate_context_size(messages: &[Message]) -> usize {
@@ -203,9 +206,9 @@ pub fn estimate_context_size(messages: &[Message]) -> usize {
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Tok{tokens ≥ window?}
+    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Est["estimate_context_size (chars)<br/>> model_context_window?"]
+    Tok -->|no| Est["estimate + incoming chars<br/>> model_context_window?"]
     Est -->|yes| Auto
     Est -->|no| Call[LLM call]
 ```
@@ -242,7 +245,7 @@ sequenceDiagram
     LLM-->>CH: text summary blocks
     CH->>CH: reset message-id window (first/last/llm_call ids = 0)
     CH->>CH: append "Recently accessed files…" to summary
-    CH->>CH: context = compacted_context(full_summary)
+    CH->>CH: context = build_compacted_history(users + summary)
     CH->>Store: replace_session_messages (SQLite matches new context)
     CH->>CH: stats.compactions += 1
 ```
@@ -279,17 +282,21 @@ Optional appendages:
 - `Focus to preserve next: {focus}` — from the manual `compact` tool  
 - `Recent files to reopen if needed:` — from `CompactState.recent_files`
 
-**4. Context replacement** — `compacted_context(summary)` yields a **single user message**:
+**4. Context replacement** — Codex-style rebuild via `build_compacted_history`:
 
 ```text
-This conversation was compacted so the agent can continue working.
+[0] User  "<earlier real user text…>"
+[1] User  "<more recent real user text…>"
+[2] User  "This conversation was compacted so the agent can continue working.
 
-<summary…>
+           <summary…>
 
-Recently accessed files (re-read if you need their contents):
-- crates/tact/src/agent/mod.rs
-- …
+           Recently accessed files (re-read if you need their contents):
+           - crates/tact/src/agent/mod.rs
+           - …"
 ```
+
+(`compact_history_legacy` still replaces with a **single** summary user message.)
 
 **5. Bookkeeping**
 
@@ -565,8 +572,8 @@ Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > defau
 
 | File | Role |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_size`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
-| `crates/tact/src/agent/mod.rs` | Loop triggers; `compact_history`; `remember_recent_file`; `replace_persisted_context` |
+| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_size`, `collect_user_messages`, `build_compacted_history`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
+| `crates/tact/src/agent/mod.rs` | Loop triggers; `compact_history` / `compact_history_legacy`; `remember_recent_file`; `replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `persist_large_output` on `bash`; `manual_compact` flag; recent-file tracking |
 | `crates/tact/src/tool/compact.rs` | `compact` tool stub + `focus` |
 | `crates/tact/src/recovery.rs` | Prompt-too-long classification → compaction |

@@ -13,8 +13,9 @@ use tact_llm::{
 
 use crate::ToolSpec;
 use crate::compact::{
-    CompactState, compacted_context, estimate_context_size, micro_compact, should_auto_compact,
-    write_transcript,
+    CompactState, KEEP_USER_MESSAGE_CHARS, build_compacted_history, collect_user_messages,
+    compacted_context, estimate_context_size, estimate_message_size, micro_compact,
+    should_auto_compact, write_transcript,
 };
 use crate::config::AgentSettings;
 use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
@@ -31,6 +32,13 @@ use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_llm::{LlmClient, LlmProvider};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+enum CompactRebuildMode {
+    /// Retain recent real user messages + handoff summary (Codex-style).
+    CodexStyle,
+    /// Replace the entire context with a single summary user message.
+    LegacySingleSummary,
+}
 
 /// Shared state for a running agent session.
 ///
@@ -338,8 +346,22 @@ impl Agent {
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
 
-        // Persist this turn's new user message before building the LLM request.
-        // `runtime.context` may already contain restored conversation history.
+        // Codex-style pre-turn: compact *old* history before appending this
+        // turn's user message, reserving space for the incoming prompt so we
+        // do not overflow immediately after push.
+        let incoming_chars = user_turn_message
+            .as_ref()
+            .map(estimate_message_size)
+            .unwrap_or(0);
+        if should_auto_compact(
+            self.runtime.last_token_total,
+            self.model_context_window(),
+            estimate_context_size(&self.runtime.context),
+            incoming_chars,
+        ) {
+            self.emit_update(AgentUpdate::Info("[auto compact]".into()));
+            self.compact_history(None).await?;
+        }
         if let Some(message) = user_turn_message {
             self.push_message(message).await?;
         }
@@ -361,18 +383,20 @@ impl Agent {
                 &mut self.runtime.context,
                 self.agent_settings.micro_compact_enabled,
             );
+            // Turn already in context — no incoming reservation.
             if should_auto_compact(
                 self.runtime.last_token_total,
                 self.model_context_window(),
                 estimate_context_size(&self.runtime.context),
+                0,
             ) {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
 
             // Snapshot the complete conversation after micro/auto compaction.
-            // This includes the current user turn plus restored history, or the
-            // replacement summary when compact_history ran above.
+            // Includes the current user turn plus history, or retained users +
+            // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
             let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
@@ -652,14 +676,27 @@ impl Agent {
             .collect()
     }
 
-    // TODO(compact): current strategy is too aggressive — the whole history is
-    // replaced by a single <=2k-token summary. Softer approach: keep the most
-    // recent N turns verbatim and only summarize older messages, instead of
-    // resetting the entire context.
-    // TODO(compact): the summarization input is a crude tail-truncation to 80k
+    // TODO(compact): summarization input is a crude tail-truncation to 80k
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
+        self.compact_history_with_mode(focus, CompactRebuildMode::CodexStyle)
+            .await
+    }
+
+    /// Previous single-summary compaction (entire history → one user message).
+    /// Kept for reference / rollback; production call sites use [`Self::compact_history`].
+    #[allow(dead_code)]
+    pub async fn compact_history_legacy(&mut self, focus: Option<&str>) -> Result<()> {
+        self.compact_history_with_mode(focus, CompactRebuildMode::LegacySingleSummary)
+            .await
+    }
+
+    async fn compact_history_with_mode(
+        &mut self,
+        focus: Option<&str>,
+        mode: CompactRebuildMode,
+    ) -> Result<()> {
         let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
         let transcript_path = write_transcript(&tact_path, &self.runtime.context)?;
         self.emit_update(AgentUpdate::Info(format!(
@@ -772,8 +809,8 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         let _ = self
             .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
             .await;
-        // After compaction the context is replaced with a summary, so
-        // future messages start a new message-id window.
+        // After compaction the context is replaced, so future messages start a
+        // new message-id window.
         self.runtime.first_message_db_id = 0;
         self.runtime.last_message_db_id = 0;
         self.runtime.llm_call_last_message_id = 0;
@@ -798,7 +835,14 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 full_summary.push_str(&format!("- {path}\n"));
             }
         }
-        self.runtime.context = compacted_context(full_summary);
+
+        self.runtime.context = match mode {
+            CompactRebuildMode::CodexStyle => {
+                let retained = collect_user_messages(&self.runtime.context);
+                build_compacted_history(&retained, full_summary, KEEP_USER_MESSAGE_CHARS)
+            }
+            CompactRebuildMode::LegacySingleSummary => compacted_context(full_summary),
+        };
         // Reset so the next should_auto_compact check reflects the new small
         // context (via char estimate / next main-loop TokenUsage), not the
         // pre-compact or summarizer-prompt totals.
