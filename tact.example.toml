@@ -68,7 +68,8 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
-# Model context window in tokens (auto-compaction + TUI usage meter; default: 200000)
+# Model context window in tokens (must exceed max_tokens when nonzero;
+# auto-compaction + TUI usage meter; default: 200000)
 # model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)

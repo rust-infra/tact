@@ -8,8 +8,14 @@ use harness::{
 use tact::permission::PermissionMode;
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::StopReason;
-use tact_llm::{LlmError, MockClient, ProviderKind};
-use tact_protocol::AgentUpdate;
+use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind};
+use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
+    updates.iter().any(
+        |update| matches!(update, AgentUpdate::Error(error) if error.to_string().contains(needle)),
+    )
+}
 
 fn tiny_context_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
@@ -21,7 +27,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
-            model_context_window: 500,
+            model_context_window: 100_000,
             max_tokens: 8192,
             thinking_budget: 0,
             snapshot_max_items: 80,
@@ -51,19 +57,25 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
 async fn context_limit_triggers_auto_compact() {
     let big_content = "x".repeat(3000);
 
-    let mock = MockClient::new(vec![
+    let mock = MockClient::with_usage(vec![
         (
             vec![read_file_tool_use("read1", "big.txt")],
             Some(StopReason::ToolUse),
+            TokenUsageInfo {
+                total: 85_000,
+                ..TokenUsageInfo::default()
+            },
         ),
         (
             // This turn is consumed by compact_history's create_message call.
             vec![text_block("Summary of previous conversation.")],
             Some(StopReason::EndTurn),
+            TokenUsageInfo::default(),
         ),
         (
             vec![text_block("Done after compact.")],
             Some(StopReason::EndTurn),
+            TokenUsageInfo::default(),
         ),
     ]);
 
@@ -103,7 +115,7 @@ async fn context_limit_triggers_auto_compact() {
 
 #[tokio::test]
 async fn prompt_too_long_recovery_compacts_and_retries() {
-    let mock = MockClient::with_responder(move |_request, idx| {
+    let mock = MockClient::with_responder(move |request, idx| {
         match idx {
             0 => Err(LlmError::Other("prompt is too long".to_string())),
             // compact_history's create_message consumes this turn.
@@ -113,28 +125,146 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
                 None,
             )),
             // Retry after compaction.
-            _ => Ok((
-                vec![text_block("Recovered from long prompt.")],
-                Some(StopReason::EndTurn),
-                None,
-            )),
+            _ => {
+                assert!(
+                    request.messages.iter().any(|message| matches!(
+                        &message.content,
+                        MessageContent::Blocks { content }
+                            if content.iter().any(|block| matches!(
+                                block,
+                                ContentBlock::Text { text } if text == "recover"
+                            ))
+                    )),
+                    "compacted request should retain the UI block prompt: {:?}",
+                    request.messages
+                );
+                Ok((
+                    vec![text_block("Recovered from long prompt.")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ))
+            }
         }
     });
 
-    let (updates, _work_dir) = run_single_task_with_config(
-        mock,
-        "recover",
-        PermissionMode::Auto,
-        tiny_context_config(),
-        |_| {},
-    )
-    .await;
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 200_000;
+    let (updates, _work_dir) =
+        run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
 
     assert!(
         updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("compact"))),
         "expected compact recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Recovered from long prompt"));
+}
+
+#[tokio::test]
+async fn compact_summary_retries_transient_transport_error() {
+    let mock = MockClient::with_responder(|_request, idx| match idx {
+        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        1 => Err(LlmError::Other(
+            "service temporarily unavailable".to_string(),
+        )),
+        2 => Ok((
+            vec![text_block("Summary after retry.")],
+            Some(StopReason::EndTurn),
+            None,
+        )),
+        _ => Ok((
+            vec![text_block("Recovered after summary retry.")],
+            Some(StopReason::EndTurn),
+            None,
+        )),
+    });
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 200_000;
+    let (updates, _) =
+        run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
+
+    assert!(updates.iter().any(
+        |update| matches!(update, AgentUpdate::Info(message) if message.contains("compact retry"))
+    ));
+    assert!(task_completed_with(
+        &updates,
+        "Recovered after summary retry"
+    ));
+}
+
+#[tokio::test]
+async fn compact_summary_rejects_empty_text_response() {
+    let mock = MockClient::with_responder(|_request, idx| match idx {
+        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        _ => Ok((Vec::new(), Some(StopReason::EndTurn), None)),
+    });
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 200_000;
+    let (updates, _) =
+        run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
+
+    assert!(error_contains(
+        &updates,
+        "summary response contained no text"
+    ));
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, AgentUpdate::TaskComplete(_)))
+    );
+}
+
+#[tokio::test]
+async fn compact_summary_rejects_truncated_response() {
+    let mock = MockClient::with_responder(|_request, idx| match idx {
+        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        _ => Ok((
+            vec![text_block("partial summary")],
+            Some(StopReason::MaxTokens),
+            None,
+        )),
+    });
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 200_000;
+    let (updates, _) =
+        run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
+
+    assert!(error_contains(&updates, "invalid stop reason: MaxTokens"));
+}
+
+#[tokio::test]
+async fn compact_summary_request_is_window_aware_for_oversized_turn() {
+    let task = "x".repeat(100_000);
+    let mock = MockClient::with_responder(|request, idx| match idx {
+        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        1 => {
+            let prompt = serde_json::to_string(&request.messages).unwrap();
+            assert_eq!(request.max_tokens, 2_000);
+            assert!(
+                prompt.chars().count() < 100_000,
+                "summary prompt was not bounded"
+            );
+            Ok((
+                vec![text_block("Bounded summary.")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        }
+        _ => Ok((
+            vec![text_block("Recovered from oversized turn.")],
+            Some(StopReason::EndTurn),
+            None,
+        )),
+    });
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 35_000;
+    config.agent.max_tokens = 2_000;
+    let (updates, _) =
+        run_single_task_with_config(mock, &task, PermissionMode::Auto, config, |_| {}).await;
+
+    assert!(task_completed_with(
+        &updates,
+        "Recovered from oversized turn"
+    ));
 }
 
 #[tokio::test]

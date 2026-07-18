@@ -52,6 +52,31 @@ async fn parallel_read_files_both_succeed() {
 }
 
 #[tokio::test]
+async fn large_non_bash_output_is_persisted() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![read_file_tool_use("read_big", "big.txt")],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Large read handled.")], StopReason::EndTurn),
+    ]);
+    let (updates, work_dir) =
+        run_single_task_with_setup(mock, "read big", PermissionMode::Auto, |dir| {
+            write_workspace_file(dir, "big.txt", &"x".repeat(30_001));
+        })
+        .await;
+
+    assert!(updates.iter().any(|update| matches!(
+        update,
+        AgentUpdate::StepFinished { tool_id, result, .. }
+            if tool_id == "read_big"
+                && matches!(result.status, StepStatus::Success)
+                && result.message.contains("<persisted-output>")
+    )));
+    assert!(work_dir.join(".claude/tool-results/read_big.txt").exists());
+}
+
+#[tokio::test]
 async fn plan_mode_blocks_write_file() {
     let mock = MockClient::new(vec![
         mock_turn(

@@ -218,6 +218,14 @@ pub(super) fn resolve_config(
         .or(toml_cfg.agent.model_context_window)
         .unwrap_or(200_000);
 
+    if model_context_window != 0
+        && !usize::try_from(max_tokens).is_ok_and(|max_tokens| max_tokens < model_context_window)
+    {
+        anyhow::bail!(
+            "invalid token limits: llm.max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
+        );
+    }
+
     let notifications_enabled = if args.no_notifications {
         false
     } else {
@@ -730,5 +738,105 @@ model_context_window = 128000
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.model_context_window, 128_000);
+    }
+
+    #[test]
+    fn max_tokens_equal_to_model_context_window_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "invalid token limits: llm.max_tokens (8000) must be less than agent.model_context_window (8000)"
+        );
+    }
+
+    #[test]
+    fn resolved_cli_max_tokens_above_model_context_window_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 1000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.max_tokens = Some(9000);
+
+        let err = resolve_config(&args, &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("llm.max_tokens (9000)"));
+        assert!(err.contains("agent.model_context_window (8000)"));
+    }
+
+    #[test]
+    fn max_tokens_below_model_context_window_is_valid() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 7999
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 7999);
+        assert_eq!(resolved.agent.model_context_window, 8000);
+    }
+
+    #[test]
+    fn zero_model_context_window_skips_max_tokens_validation() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 32000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 0
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 32_000);
+        assert_eq!(resolved.agent.model_context_window, 0);
     }
 }
