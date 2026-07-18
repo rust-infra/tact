@@ -167,6 +167,14 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 
+After merging CLI and TOML values, configuration fails fast when a nonzero
+`model_context_window` is less than or equal to `max_tokens`: the output
+reservation must leave room for input. A zero window keeps the existing
+"disabled/unknown window" behavior and skips this validation. `thinking_budget`
+is not added separately because providers map it differently (a thinking
+configuration or reasoning-effort band), rather than exposing one portable
+extra-output reservation.
+
 CLI-only overrides:
 
 - `--no-notifications` forces notifications off.

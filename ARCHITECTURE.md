@@ -344,8 +344,8 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 When the conversation approaches the model context window (`agent.model_context_window`, default **200_000 tokens**), the agent compacts history:
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
-2. If `should_auto_compact` fires (`last_token_total >= model_context_window`, or a coarse cold-start char estimate vs the same window), `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, replaces in-memory context with a single summary message, and **`replace_session_messages`** syncs SQLite so resumed sessions match the compacted history.
-3. Large `bash` outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context.
+2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
+3. Large successful native and MCP outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 

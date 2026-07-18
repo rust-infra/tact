@@ -40,14 +40,14 @@ Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再
 
 | 层级 | 机制 | 成本 | 时机 | 从*上下文*中失去什么 |
 |------|------|------|------|----------------------|
-| 1 | `persist_large_output` | 免费（磁盘 I/O） | 每次 `bash` 结果 > 30,000 字符 | 完整 stdout（磁盘保留 + 预览） |
+| 1 | `persist_large_output` | 免费（磁盘 I/O） | 任意成功的原生或 MCP 结果 > 30,000 字符 | 完整输出（磁盘保留 + 预览） |
 | 2 | `micro_compact` | 免费 | 每个 LLM 回合开始 | 旧 tool-result 正文（留下 stub） |
-| 3 | `compact_history` | 一次额外 LLM 调用 | 超限、prompt-too-long、或 `compact` 工具 | 整段历史（换成摘要；完整 JSONL 在磁盘） |
+| 3 | `compact_history` | 一次额外 LLM 调用 | 80% 阈值、prompt-too-long、或 `compact` 工具 | Assistant/工具历史（保留近期真实 user + 摘要；完整 JSONL 在磁盘） |
 
 ```mermaid
 flowchart TB
     subgraph L1["Level 1 — 溢出单条结果"]
-        Bash[bash 返回] --> Big{> 30k 字符?}
+        Bash[成功的工具返回] --> Big{> 30k 字符?}
         Big -->|yes| Disk1["写入 .claude/tool-results/id.txt"]
         Disk1 --> Env["替换为 &lt;persisted-output&gt;"]
         Big -->|no| Keep[保留全文]
@@ -64,7 +64,7 @@ flowchart TB
         Manual[compact 工具] --> CH
         CH --> Disk2[JSONL transcript]
         CH --> Sum[LLM 摘要 ≤ 2k tokens]
-        Sum --> One[context ← 单条 user 消息]
+        Sum --> One[context ← 近期 user + 摘要]
     end
 
     L1 -.->|防止洪泛| L2
@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop 迭代]) --> Cancel{已取消?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>或字符估算超限}
+    MC --> Size{should_auto_compact?<br/>tokens 或估算 ≥ window 的 80%}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -187,28 +187,31 @@ Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工
 
 ```text
 last_token_total > 0
-  && last_token_total + approx_chars_as_tokens(incoming_turn_chars) >= model_context_window
-  || estimated_chars + incoming_turn_chars > model_context_window
+  && last_token_total + estimate_message_tokens(incoming_turn) >= model_context_window 的 80%
+  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) >= model_context_window 的 80%
 ```
 
-- **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_chars = estimate(user_turn)`），再 `push` 本轮原文。
-- **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_chars = 0`。
+OR 两侧都与同一 **token** 窗口比较。序列化内容中的 ASCII 按约 4 字符一个 token 估算，非 ASCII 则保守地按每字符一个 token 计算。
 
-摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。旧单消息路径保留为 `compact_history_legacy`。
+- **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_tokens = estimate(user_turn)`），再 `push` 本轮原文。
+- **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_tokens = 0`。
+
+摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。纯文本 turn 和基于 block 的 UI turn 都属于真实 user；只含工具结果的 block 消息和旧 summary 会被排除。保留用户消息的预算为 `min(20k 估算 token, window - 最大输出 - estimate(system + tools + summary) - 20% 余量)`。block turn 在预算内原样保留；超大 block turn 退化为文本尾部，纯图片则变成省略占位符，绝不截断 base64。旧单消息路径保留为 `compact_history_legacy`。
 
 ```rust
-pub fn estimate_context_size(messages: &[Message]) -> usize {
-    serde_json::to_string(messages)
-        .map(|serialized| serialized.chars().count())
-        .unwrap_or_default()
+pub fn estimate_context_tokens(messages: &[Message]) -> usize {
+    match serde_json::to_string(messages) {
+        Ok(serialized) => approx_text_tokens(&serialized),
+        Err(_) => usize::MAX / 2, // 宁可触发 compact，也不低估
+    }
 }
 ```
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window?}
+    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window 的 80%?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Est["estimate + incoming 字符<br/>> model_context_window?"]
+    Tok -->|no| Est["估算 context + incoming tokens<br/>≥ window 的 80%?"]
     Est -->|yes| Auto
     Est -->|no| Call[LLM 调用]
 ```
@@ -230,19 +233,19 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Loop as agent_loop
+    participant AgentLoop as agent_loop
     participant CH as compact_history
     participant Disk as filesystem
     participant LLM as create_message
     participant Store as SessionStore
 
-    Loop->>CH: compact_history(focus?)
-    CH->>Disk: write_transcript → .claude/transcripts/transcript_&lt;ts&gt;.jsonl
-    CH-->>Loop: Info "[transcript saved: …]"
-    CH->>CH: 从末尾取消息直到 ~80k 序列化字符<br/>（至少保留 1 条）
+    AgentLoop->>CH: compact_history(focus?)
+    CH->>Disk: 写入 .claude/transcripts/transcript_ts.jsonl
+    CH-->>AgentLoop: Info "[transcript saved: …]"
+    CH->>CH: 在 20k token 上限内选择近期消息
     CH->>CH: 组装摘要 prompt + 可选 focus + recent_files
-    CH->>LLM: create_message (max_tokens=2000, 无 thinking)
-    LLM-->>CH: text summary blocks
+    CH->>LLM: 按窗口预算 create_message
+    LLM-->>CH: 校验为完整、非空的文本摘要
     CH->>CH: 重置 message-id 窗口 (first/last/llm_call ids = 0)
     CH->>CH: 向摘要追加 "Recently accessed files…"
     CH->>CH: context = build_compacted_history(users + summary)
@@ -252,23 +255,23 @@ sequenceDiagram
 
 ### 步骤说明
 
-**1. Transcript 落盘** — `write_transcript` 创建 `.claude/transcripts/transcript_<unix_secs>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回；摘要消息里**不会**自动告知模型该路径（§11 缺口）。
+**1. Transcript 落盘** — `write_transcript` 原子创建唯一的 `.claude/transcripts/transcript_<unix_nanos>_<collision>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回；摘要消息里**不会**自动告知模型该路径（§11 缺口）。
 
-**2. 近期窗口选择** — 从 `context` **末尾**向前累加，直到约 **80,000** 序列化字符；即使单条就超预算也至少保留一条。更早回合只靠 transcript + 摘要能推断的内容存活。
+**2. 近期窗口选择** — 从 `context` **末尾**向前，在模型窗口预算与 **20,000 估算 token 上限**内累加。超大消息转成合法的纯文本视图，图片变成省略占位符，不会切断 base64；无法容纳时不强塞消息。更早回合只靠 transcript + 摘要能推断的内容存活。
 
 ```mermaid
 flowchart LR
     subgraph Context["完整 context（旧 → 新）"]
         Old[… 早期回合 …]
         Mid[中间]
-        New[近期 ≤ ~80k 字符]
+        New[近期 ≤ 20k 估算 token]
     end
     Old -.->|不送给摘要器| X[省略]
     Mid -.->|不送| X
     New -->|序列化进 prompt| SumLLM[摘要 LLM]
 ```
 
-**3. 摘要调用** — 一次新的非流式 `create_message`（max 2,000 tokens，无 tools、无 thinking），要求模型保留：
+**3. 摘要调用** — 一次新的非流式 `create_message`（最多 2,000 输出 tokens、无 tools、无 thinking）；选择输入前先预留输出与 10% 安全余量。瞬时传输错误最多退避重试三次；`MaxTokens`、拒绝/其它异常终止原因和空文本都会被拒绝，旧 context 不会被替换。摘要要求模型保留：
 
 1. 当前目标与已完成工作  
 2. 关键发现、决策、架构洞见  
@@ -331,18 +334,18 @@ flowchart TD
     Use1 --> Use2[追加到最终摘要消息]
 ```
 
-`remember_recent_file` 仅由工具调度里成功的 **`read_file`** 喂入 — 「失忆保险」，让历史消失后 agent 仍能重开刚看过的文件。写文件 / patch **目前不追踪**（§11）。
+`remember_recent_file` 仅由最终状态成功的 `read_file`、`batch_read`、`write_file`、`edit_file` 与非 dry-run `apply_patch` 喂入，去重保留最近五个路径，作为「失忆保险」。
 
 ### 压缩前后对比
 
-`compact_history` 最直观的效果，是把一条**多角色、多轮次**的消息序列，整体塌缩成**单条 user 消息**。下面用一个具体例子走一遍。
+`compact_history` 最直观的效果，是移除 assistant / 工具历史，同时保留近期真实 user turn，并追加一条交接摘要。下面用一个具体例子走一遍。
 
 #### 压缩前：`self.runtime.context`（`Vec<Message>`）
 
 随任务不断增长的完整对话，典型形态（角色 / 内容混合）：
 
 ```text
-[0] User      "帮我给 compact 模块加个 70% 提前触发"
+[0] User      "帮我给 compact 模块加个 80% 提前触发"
 [1] Assistant  推理 + tool_use(read_file compact.rs)
 [2] User       ToolResult(compact.rs 全文，~5k 字符)
 [3] Assistant  tool_use(read_file agent/mod.rs)
@@ -359,14 +362,15 @@ flowchart TD
 
 #### 压缩后：`self.runtime.context`
 
-只剩 **1 条 user 消息**（`compacted_context`，见 `crates/tact/src/compact.rs`）：
+预算内的近期真实 user turn 会保留，最后追加交接摘要：
 
 ```text
-[0] User  "This conversation was compacted so the agent can continue working.
+[0] User  "帮我给 compact 模块加个 80% 提前触发"
+[1] User  "This conversation was compacted so the agent can continue working.
 
            <LLM 摘要，按 6 点组织：>
-           1. 当前目标：给 compact 模块加 70% 提前触发
-           2. 关键发现：should_auto_compact 现等 tokens>=window 才触发
+           1. 当前目标：给 compact 模块加 80% 提前触发
+           2. 关键发现：should_auto_compact 同时使用实际与估算 token
            3. 涉及文件：crates/tact/src/compact.rs（should_auto_compact）、
               crates/tact/src/agent/mod.rs（compact_history）
            4. 剩余工作：补单元测试、跑 cargo test
@@ -384,11 +388,11 @@ flowchart TD
 
 | 维度 | 压缩前 | 压缩后 |
 |------|--------|--------|
-| 消息条数 | N 条 | **1 条** |
-| 角色结构 | User / Assistant / ToolResult 交替 | 单条 **User** |
+| 消息条数 | N 条 | 近期真实 user + **1 条摘要** |
+| 角色结构 | User / Assistant / ToolResult 交替 | 仅 **User** turn |
 | `tool_use` / `ToolResult` | 完整保留 | **全部丢弃**（只在磁盘 transcript） |
 | 推理 / thinking | 保留 | 丢弃（摘要器不产 thinking） |
-| 体积 | 可达数十万字符 | 摘要 ≤ 2k tokens + 文件清单 |
+| 体积 | 可达数十万字符 | 预算内 user + 摘要 ≤ 2k 输出 tokens + 文件清单 |
 | 原始细节 | 直接可读 | 靠 `recent_files` 提示重新 `read_file` 找回 |
 | 落盘 transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
 
@@ -406,7 +410,7 @@ flowchart TD
 | `compact_state.last_summary` | 旧值 / `None` | 本次摘要文本 |
 | `stats.compactions` | `k` | `k + 1` |
 
-SQLite 侧同步：`replace_persisted_context` 用这条单消息重写 `messages` 表，保证**重开会话不会复活**压缩前的行。
+SQLite 侧同步：`replace_persisted_context` 用重建后的 context 重写 `messages` 表，保证**重开会话不会复活**压缩前的行。
 
 ```mermaid
 flowchart LR
@@ -420,7 +424,7 @@ flowchart LR
     end
 
     subgraph After["压缩后 context"]
-        A0["单条 User<br/>摘要 + recent_files"]
+        A0["近期真实 User<br/>+ 摘要 + recent_files"]
     end
 
     subgraph Disk["磁盘（非上下文）"]
@@ -431,7 +435,7 @@ flowchart LR
     Before -->|LLM 摘要| A0
 ```
 
-**一句话：** 压缩后模型看到的不再是「对话」，而是它自己写的一份**交接备忘录** + 一份「要用就自己重读」的文件清单；完整历史退居磁盘。
+**一句话：** 压缩后模型看到近期 user 意图、它自己写的**交接备忘录**与文件清单；assistant / 工具细节退居磁盘。
 
 ---
 
@@ -443,20 +447,20 @@ flowchart LR
 sequenceDiagram
     autonumber
     participant Model
-    participant Loop as agent_loop
+    participant AgentLoop as agent_loop
     participant Dispatch as execute_tool_call
     participant Tool as compact tool fn
     participant CH as compact_history
 
-    Model->>Loop: assistant message 含 tool_use name=compact
-    Loop->>Dispatch: execute_tool_call
+    Model->>AgentLoop: assistant message 含 tool_use name=compact
+    AgentLoop->>Dispatch: execute_tool_call
     Dispatch->>Tool: call compact(focus?)
     Tool-->>Dispatch: "Compacting conversation…"
     Note over Dispatch: set manual_compact = Some(focus)
-    Dispatch-->>Loop: tool_result blocks + flag
-    Loop->>Loop: push tool_result user message + persist
-    Loop->>CH: compact_history(Some(focus))
-    Note over CH: 真正改写发生在这里<br/>（结果追加前 context 保持 API 合法）
+    Dispatch-->>AgentLoop: tool_result blocks + flag
+    AgentLoop->>AgentLoop: push tool_result user message + persist
+    AgentLoop->>CH: compact_history(Some(focus))
+    Note over CH: 工具结果追加后在这里真正改写 context
 ```
 
 工具函数几乎是空操作的原因：在工具调用*内部*改写 `runtime.context` 会让对话卡在半空（assistant `tool_use` 没有匹配 result，或摘要只写了一半）。Dispatch 模式先保证线协议合法，再跑 Level 3。可选 `focus` 引导摘要器必须保留的内容。
@@ -465,7 +469,7 @@ sequenceDiagram
 
 ## 7. 大输出溢出（`persist_large_output`）
 
-与历史压缩无关：单条过大的工具结果不得以全文进入 context。原生 `bash` 调用后，dispatch 会应用：
+与历史压缩无关：单条过大的工具结果不得以全文进入 context。每个成功的原生或 MCP 调用都会应用：
 
 ```rust
 persist_large_output(&tact_path, tool_use_id, &output)
@@ -478,7 +482,7 @@ persist_large_output(&tact_path, tool_use_id, &output)
 
 ```mermaid
 flowchart TD
-    Out[bash 输出字符串] --> Th{字符数 > 30_000?}
+    Out[成功的工具输出] --> Th{字符数 > 30_000?}
     Th -->|no| Full[原样返回]
     Th -->|yes| Write["fs::write .claude/tool-results/&lt;tool_use_id&gt;.txt"]
     Write --> Prev["取前 2_000 字符"]
@@ -496,13 +500,13 @@ Preview:
 </persisted-output>
 ```
 
-今天这条路径**只作用于 `bash`**。其它啰嗦工具（`search_code`、MCP …）仍返回全文，可能单轮洪泛（§11）。
+若落盘失败，该工具步骤会转为失败，而不会把已经丢失全文的结果报告为成功。
 
 ### 为什么需要 `<persisted-output>` 标签
 
 标签是**给模型看的，不是给运行时解析的** — 代码库里没有反向匹配它们。它们把整块标成**系统生成的信封**，让 LLM 能分辨：
 
-- “Full output saved to …” / “Preview:” 是框架元数据，不是 bash stdout  
+- “Full output saved to …” / “Preview:” 是框架元数据，不是工具输出
 - 本轮结果是刻意落盘（不是静默截断垃圾）  
 - 全文可通过路径上的 `read_file` 找回  
 
@@ -519,7 +523,7 @@ flowchart TB
     end
 
     subgraph Spill["persist_large_output 信封"]
-        S1[本轮超大 bash stdout]
+        S1[本轮超大工具输出]
         S2["&lt;persisted-output&gt; 路径 + 预览"]
         S1 --> S2
     end
@@ -540,7 +544,7 @@ flowchart TB
 flowchart TB
     WD["&lt;workdir&gt;"]
     WD --> Claude[".claude/"]
-    Claude --> TR["transcripts/<br/>transcript_&lt;unix_ts&gt;.jsonl"]
+    Claude --> TR["transcripts/<br/>transcript_&lt;unix_nanos&gt;_&lt;n&gt;.jsonl"]
     Claude --> OR["tool-results/<br/>&lt;tool_use_id&gt;.txt"]
     WD --> Tact[".tact/tact.db"]
     Tact --> Msg["messages 表<br/>（完整压缩时重写）"]
@@ -549,10 +553,10 @@ flowchart TB
 | 路径 | 写入方 | 内容 |
 |------|--------|------|
 | `.claude/transcripts/transcript_<ts>.jsonl` | `write_transcript` | 压缩前完整对话 |
-| `.claude/tool-results/<id>.txt` | `persist_large_output` | 超大 bash stdout 全文 |
-| `.tact/tact.db` messages | `replace_session_messages` | 压缩后的单消息 context |
+| `.claude/tool-results/<id>.txt` | `persist_large_output` | 超大原生/MCP 输出全文 |
+| `.tact/tact.db` messages | `replace_session_messages` | 压缩后的保留 user + 摘要 context |
 
-两类溢出目录都**不会自动清理**（§11）。
+每次写入后，每个溢出目录最多保留修改时间最新的 100 个文件；更旧的普通文件会被删除。
 
 ---
 
@@ -560,7 +564,7 @@ flowchart TB
 
 | 设置 | 默认 | 作用 |
 |------|------|------|
-| `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：自动压缩触发阈值 + TUI 用量条 |
+| `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：80% 时自动压缩 + TUI 用量条；非零时必须大于 `max_tokens` |
 | `agent.micro_compact_enabled`（`--no-micro-compact`） | `true` | 启用每轮 stub |
 
 经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
@@ -571,9 +575,9 @@ flowchart TB
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_size`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
+| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_tokens`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
 | `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history` / `compact_history_legacy`；`remember_recent_file`；`replace_persisted_context` |
-| `crates/tact/src/agent/tool_dispatch.rs` | `bash` 上的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
+| `crates/tact/src/agent/tool_dispatch.rs` | 原生/MCP 结果的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
 | `crates/tact/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
 | `crates/tact/src/recovery.rs` | Prompt-too-long 分类 → 压缩 |
 | `crates/tact/src/consts.rs` | `transcript_dir()`、`tool_results_dir()` |
@@ -597,14 +601,10 @@ flowchart LR
 
 | 缺口 | 细节 |
 |------|------|
-| 冷启动 / 工具后字符估算 | 字符估算对比 **token** 窗口（粗粒度；TODO 换调用前 token 估算）。有用量时仍 OR 字符估算，以覆盖 tool result 追加后的膨胀 |
+| 冷启动 / 工具后 token 估算 | ASCII 按约 4 字符/token、非 ASCII 按 1 字符/token 的保守估算；有实际用量时仍 OR 此估算，以覆盖 tool result 追加后的膨胀 |
 | 简易用量百分比 | 用量条为 `used / model_context_window`（尚无 Codex 12K baseline / effective-window 算法） |
-| 摘要无防护 | 压缩 LLM 调用无重试；烂摘要会静默拖垮会话 |
-| 只摘要最近 ~80k | 早期回合在 transcript 里；替换消息未告知模型该路径 |
-| 溢出仅限 `bash` | 其它工具 / MCP 仍可单轮洪泛 |
-| 溢出物堆积 | `.claude/transcripts/` 与 `tool-results/` 永不清理 |
+| 只摘要近期 20k 估算 token | 早期回合在 transcript 里；替换消息未告知模型该路径 |
 | Stub 阈值固定 | 12 / 120 / 30k 是编译期常量 |
-| `recent_files` 仅读 | `write_file` / `apply_patch` 路径未被记住 |
 
 ---
 

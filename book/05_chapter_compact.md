@@ -40,14 +40,14 @@ Tact’s answer is **progressive defense**: free local stubs first, then one pai
 
 | Level | Mechanism | Cost | When | What is lost from *context* |
 |-------|-----------|------|------|-----------------------------|
-| 1 | `persist_large_output` | Free (disk I/O) | Every `bash` result > 30,000 chars | Full stdout (kept on disk + preview) |
+| 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars | Full output (kept on disk + preview) |
 | 2 | `micro_compact` | Free | Start of every LLM turn | Old tool-result bodies (stub left behind) |
-| 3 | `compact_history` | One extra LLM call | Size over limit, prompt-too-long, or `compact` tool | Entire history (replaced by summary; full JSONL on disk) |
+| 3 | `compact_history` | One extra LLM call | 80% threshold, prompt-too-long, or `compact` tool | Assistant/tool history (recent real users + summary remain; full JSONL on disk) |
 
 ```mermaid
 flowchart TB
     subgraph L1["Level 1 — spill one result"]
-        Bash[bash tool returns] --> Big{> 30k chars?}
+        Bash[successful tool returns] --> Big{> 30k chars?}
         Big -->|yes| Disk1["write .claude/tool-results/id.txt"]
         Disk1 --> Env["replace with &lt;persisted-output&gt;"]
         Big -->|no| Keep[keep full output]
@@ -64,7 +64,7 @@ flowchart TB
         Manual[compact tool] --> CH
         CH --> Disk2[JSONL transcript]
         CH --> Sum[LLM summary ≤ 2k tokens]
-        Sum --> One[context ← one user message]
+        Sum --> One[context ← recent users + summary]
     end
 
     L1 -.->|prevents floods| L2
@@ -86,7 +86,7 @@ flowchart TD
     Start([agent_loop iteration]) --> Cancel{cancelled?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{should_auto_compact?<br/>tokens ≥ window<br/>or char estimate over}
+    MC --> Size{should_auto_compact?<br/>tokens or estimate ≥ 80% window}
     Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
     Auto --> Build
     Size -->|no| Build[build CreateMessageParams]
@@ -187,28 +187,31 @@ The shared threshold is **`agent.model_context_window`** — the model context w
 
 ```text
 last_token_total > 0
-  && last_token_total + approx_chars_as_tokens(incoming_turn_chars) >= model_context_window
-  || estimated_chars + incoming_turn_chars > model_context_window
+  && last_token_total + estimate_message_tokens(incoming_turn) >= 80% of model_context_window
+  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) >= 80% of model_context_window
 ```
 
-- **Entry (`agent_loop`)**: compact **old** history first with `incoming_turn_chars = estimate(user_turn)`, then `push` the turn verbatim.
-- **Loop / recovery / manual**: turn already in context → `incoming_turn_chars = 0`.
+Both sides of the OR compare against the same **token** window. Serialized content is estimated by counting ASCII at roughly four characters per token and non-ASCII conservatively at one character per token.
 
-Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. Legacy single-summary path remains as `compact_history_legacy`.
+- **Entry (`agent_loop`)**: compact **old** history first with `incoming_turn_tokens = estimate(user_turn)`, then `push` the turn verbatim.
+- **Loop / recovery / manual**: turn already in context → `incoming_turn_tokens = 0`.
+
+Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. Both plain-text turns and block-based UI turns are real users; tool-result-only block messages and prior summaries are excluded. The retained-user budget is `min(20k estimated tokens, window - max output - estimate(system + tools + summary) - 20% headroom)`. A block turn is kept verbatim when it fits; an oversized block turn falls back to its text tail, or an omission marker when it contains only images. Base64 is never sliced. Legacy single-summary path remains as `compact_history_legacy`.
 
 ```rust
-pub fn estimate_context_size(messages: &[Message]) -> usize {
-    serde_json::to_string(messages)
-        .map(|serialized| serialized.chars().count())
-        .unwrap_or_default()
+pub fn estimate_context_tokens(messages: &[Message]) -> usize {
+    match serde_json::to_string(messages) {
+        Ok(serialized) => approx_text_tokens(&serialized),
+        Err(_) => usize::MAX / 2, // prefer compact over underestimating
+    }
 }
 ```
 
 ```mermaid
 flowchart TD
-    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window?}
+    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ 80% window?}
     Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Est["estimate + incoming chars<br/>> model_context_window?"]
+    Tok -->|no| Est["estimated context + incoming tokens<br/>≥ 80% window?"]
     Est -->|yes| Auto
     Est -->|no| Call[LLM call]
 ```
@@ -230,19 +233,19 @@ After compaction, `last_token_total` is **reset to 0** (the summarizer call's us
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Loop as agent_loop
+    participant AgentLoop as agent_loop
     participant CH as compact_history
     participant Disk as filesystem
     participant LLM as create_message
     participant Store as SessionStore
 
-    Loop->>CH: compact_history(focus?)
-    CH->>Disk: write_transcript → .claude/transcripts/transcript_&lt;ts&gt;.jsonl
-    CH-->>Loop: Info "[transcript saved: …]"
-    CH->>CH: take messages from end until ~80k serialized chars<br/>(keep ≥ 1 message)
+    AgentLoop->>CH: compact_history(focus?)
+    CH->>Disk: write transcript to .claude/transcripts/transcript_ts.jsonl
+    CH-->>AgentLoop: Info "[transcript saved: …]"
+    CH->>CH: select recent messages within a 20k-token cap
     CH->>CH: build summarize prompt + optional focus + recent_files
-    CH->>LLM: create_message (max_tokens=2000, no thinking)
-    LLM-->>CH: text summary blocks
+    CH->>LLM: create_message with window-aware input/output budgets
+    LLM-->>CH: validated complete non-empty text summary
     CH->>CH: reset message-id window (first/last/llm_call ids = 0)
     CH->>CH: append "Recently accessed files…" to summary
     CH->>CH: context = build_compacted_history(users + summary)
@@ -252,23 +255,23 @@ sequenceDiagram
 
 ### Step details
 
-**1. Transcript spill** — `write_transcript` creates `.claude/transcripts/transcript_<unix_secs>.jsonl`, one JSON message per line. TUI shows `[transcript saved: …]`. Full history is recoverable offline; the model is **not** automatically pointed at this path in the summary message (gap in §11).
+**1. Transcript spill** — `write_transcript` atomically creates a unique `.claude/transcripts/transcript_<unix_nanos>_<collision>.jsonl`, one JSON message per line. TUI shows `[transcript saved: …]`. Full history is recoverable offline; the model is **not** automatically pointed at this path in the summary message (gap in §11).
 
-**2. Recent-window selection** — walk `context` **from the end**, accumulate until ~**80,000** serialized chars; always keep at least one message even if it alone exceeds the budget. Earlier turns survive only via transcript + whatever the summary can infer.
+**2. Recent-window selection** — walk `context` **from the end** within both the model-window budget and a **20,000 estimated-token cap**. An oversized message is converted to a valid text-only view; images become omission markers, so base64 is never cut. No message is forced in when it cannot fit. Earlier turns survive only via transcript + whatever the summary can infer.
 
 ```mermaid
 flowchart LR
     subgraph Context["Full context (oldest → newest)"]
         Old[… early turns …]
         Mid[middle]
-        New[recent ≤ ~80k chars]
+        New[recent ≤ 20k estimated tokens]
     end
     Old -.->|not sent to summarizer| X[omitted]
     Mid -.->|not sent| X
     New -->|serialized into prompt| SumLLM[summarization LLM]
 ```
 
-**3. Summarization call** — a fresh non-streaming `create_message` (max 2,000 tokens, no tools, no thinking) asks the model to preserve:
+**3. Summarization call** — a fresh non-streaming `create_message` (at most 2,000 output tokens, no tools, no thinking) reserves output and 10% safety headroom before selecting input. Transient transport failures get up to three retries with backoff. `MaxTokens`, refusal/other abnormal stop reasons, and empty text are rejected without replacing the old context. The prompt asks the model to preserve:
 
 1. Current goal and accomplishments  
 2. Findings, decisions, architectural insights  
@@ -331,18 +334,18 @@ flowchart TD
     Use1 --> Use2[appended to final summary message]
 ```
 
-`remember_recent_file` is fed only from successful **`read_file`** in the tool dispatcher — “amnesia insurance” so the agent can re-open what it was looking at after history vanishes. Writes / patches are **not** tracked today (§11).
+`remember_recent_file` is fed only by successful final tool results for `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch`. It keeps the last five deduplicated paths as “amnesia insurance.”
 
 ### Before / After Comparison
 
-The most visible effect of `compact_history` is collapsing a **multi-role, multi-turn** message sequence into a **single user message**. Let’s walk through a concrete example.
+The most visible effect of `compact_history` is removing assistant/tool history while preserving recent real user turns and appending one handoff summary. Let’s walk through a concrete example.
 
 #### Before: `self.runtime.context` (`Vec<Message>`)
 
 The full conversation grows with the task — a mix of roles and content:
 
 ```text
-[0] User      "Add an early 70% trigger to the compact module"
+[0] User      "Add an early 80% trigger to the compact module"
 [1] Assistant  reasoning + tool_use(read_file compact.rs)
 [2] User       ToolResult(full compact.rs, ~5k chars)
 [3] Assistant  tool_use(read_file agent/mod.rs)
@@ -360,14 +363,15 @@ Characteristics: complete `tool_use` / `ToolResult` pairs, per-step reasoning, a
 
 #### After: `self.runtime.context`
 
-Only **1 user message** remains (`compacted_context`, see `crates/tact/src/compact.rs`):
+Recent real user turns remain within budget, followed by the handoff summary:
 
 ```text
-[0] User  "This conversation was compacted so the agent can continue working.
+[0] User  "Add an early 80% trigger to the compact module"
+[1] User  "This conversation was compacted so the agent can continue working.
 
            <LLM summary, organized around the 6 points:>
-           1. Current goal: add an early 70% trigger to the compact module
-           2. Key finding: should_auto_compact currently waits for tokens>=window
+           1. Current goal: add an early 80% trigger to the compact module
+           2. Key finding: should_auto_compact uses reported and estimated tokens
            3. Files involved: crates/tact/src/compact.rs (should_auto_compact),
               crates/tact/src/agent/mod.rs (compact_history)
            4. Remaining work: add unit tests, run cargo test
@@ -385,11 +389,11 @@ Every `tool_use` / `ToolResult` / reasoning block from `[1]`–`[N]` is **no lon
 
 | Dimension | Before | After |
 |-----------|--------|-------|
-| Message count | N messages | **1 message** |
-| Role structure | User / Assistant / ToolResult interleaved | Single **User** |
+| Message count | N messages | Recent real users + **1 summary** |
+| Role structure | User / Assistant / ToolResult interleaved | **User** turns only |
 | `tool_use` / `ToolResult` | Fully retained | **All dropped** (disk transcript only) |
 | Reasoning / thinking | Retained | Dropped (summarizer produces no thinking) |
-| Size | Up to hundreds of thousands of chars | Summary ≤ 2k tokens + file list |
+| Size | Up to hundreds of thousands of chars | Budgeted users + summary ≤ 2k output tokens + file list |
 | Raw details | Directly readable | Recoverable via `recent_files` hints + `read_file` |
 | Disk transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
 
@@ -407,7 +411,7 @@ Besides `context` itself, `compact_history` also resets the message-id window an
 | `compact_state.last_summary` | old value / `None` | this summary text |
 | `stats.compactions` | `k` | `k + 1` |
 
-SQLite stays in sync: `replace_persisted_context` rewrites the `messages` table with this single message, guaranteeing that **reopening the session cannot resurrect** pre-compaction rows.
+SQLite stays in sync: `replace_persisted_context` rewrites the `messages` table with the rebuilt context, guaranteeing that **reopening the session cannot resurrect** pre-compaction rows.
 
 ```mermaid
 flowchart LR
@@ -421,7 +425,7 @@ flowchart LR
     end
 
     subgraph After["context after"]
-        A0["single User<br/>summary + recent_files"]
+        A0["recent real Users<br/>+ summary + recent_files"]
     end
 
     subgraph Disk["disk (not in context)"]
@@ -432,7 +436,7 @@ flowchart LR
     Before -->|LLM summary| A0
 ```
 
-**In one sentence:** after compaction the model no longer sees a “conversation” — it sees a **handover memo it wrote itself**, plus a “re-read it yourself if you need it” file list; the full history retreats to disk.
+**In one sentence:** after compaction the model sees recent user intent plus a **handover memo it wrote itself** and a file list; assistant/tool detail retreats to disk.
 
 ---
 
@@ -444,20 +448,20 @@ The model can request compaction via `compact` (`crates/tact/src/tool/compact.rs
 sequenceDiagram
     autonumber
     participant Model
-    participant Loop as agent_loop
+    participant AgentLoop as agent_loop
     participant Dispatch as execute_tool_call
     participant Tool as compact tool fn
     participant CH as compact_history
 
-    Model->>Loop: assistant message with tool_use name=compact
-    Loop->>Dispatch: execute_tool_call
+    Model->>AgentLoop: assistant message with tool_use name=compact
+    AgentLoop->>Dispatch: execute_tool_call
     Dispatch->>Tool: call compact(focus?)
     Tool-->>Dispatch: "Compacting conversation…"
     Note over Dispatch: set manual_compact = Some(focus)
-    Dispatch-->>Loop: tool_result blocks + flag
-    Loop->>Loop: push tool_result user message + persist
-    Loop->>CH: compact_history(Some(focus))
-    Note over CH: real rewrite happens here<br/>(context stays API-valid until results are appended)
+    Dispatch-->>AgentLoop: tool_result blocks + flag
+    AgentLoop->>AgentLoop: push tool_result user message + persist
+    AgentLoop->>CH: compact_history(Some(focus))
+    Note over CH: real rewrite happens here after results are appended
 ```
 
 Why the tool body is nearly a no-op: rewriting `runtime.context` **inside** a tool call would leave the conversation mid-flight (assistant `tool_use` without matching results, or a half-applied summary). The dispatcher pattern keeps the wire protocol valid, then runs Level 3 afterward. Optional `focus` steers what the summarizer must keep.
@@ -466,7 +470,7 @@ Why the tool body is nearly a no-op: rewriting `runtime.context` **inside** a to
 
 ## 7. Large Output Spill (`persist_large_output`)
 
-Independent of history compaction, a **single** oversized tool result must not enter the context at full size. After a native `bash` call, dispatch applies:
+Independent of history compaction, a **single** oversized tool result must not enter the context at full size. Dispatch applies this to every successful native and MCP call:
 
 ```rust
 persist_large_output(&tact_path, tool_use_id, &output)
@@ -479,7 +483,7 @@ persist_large_output(&tact_path, tool_use_id, &output)
 
 ```mermaid
 flowchart TD
-    Out[bash output string] --> Th{chars > 30_000?}
+    Out[successful tool output] --> Th{chars > 30_000?}
     Th -->|no| Full[return unchanged]
     Th -->|yes| Write["fs::write .claude/tool-results/&lt;tool_use_id&gt;.txt"]
     Write --> Prev["take first 2_000 chars"]
@@ -497,13 +501,13 @@ Preview:
 </persisted-output>
 ```
 
-Today this path is applied **only to `bash`**. Other verbose tools (`search_code`, MCP, …) still return full output and can flood a turn (§11).
+Persistence failure changes the tool step to failed instead of reporting a successful result whose full output was lost.
 
 ### Why `<persisted-output>` tags
 
 The tags are **for the model, not for runtime parsing** — nothing in the codebase matches them back out. They mark the whole block as a **system-generated envelope**, so the LLM can tell:
 
-- “Full output saved to …” / “Preview:” are framework metadata, not bash stdout
+- “Full output saved to …” / “Preview:” are framework metadata, not tool output
 - this turn’s result was intentionally spilled (not silent truncation)
 - full text is recoverable via `read_file` on the path
 
@@ -520,7 +524,7 @@ flowchart TB
     end
 
     subgraph Spill["persist_large_output envelope"]
-        S1[This turn's huge bash stdout]
+        S1[This turn's huge tool output]
         S2["&lt;persisted-output&gt; path + preview"]
         S1 --> S2
     end
@@ -541,7 +545,7 @@ Compaction spills two kinds of artifacts under the workdir (via `TactPath`):
 flowchart TB
     WD["&lt;workdir&gt;"]
     WD --> Claude[".claude/"]
-    Claude --> TR["transcripts/<br/>transcript_&lt;unix_ts&gt;.jsonl"]
+    Claude --> TR["transcripts/<br/>transcript_&lt;unix_nanos&gt;_&lt;n&gt;.jsonl"]
     Claude --> OR["tool-results/<br/>&lt;tool_use_id&gt;.txt"]
     WD --> Tact[".tact/tact.db"]
     Tact --> Msg["messages table<br/>(rewritten on full compact)"]
@@ -550,10 +554,10 @@ flowchart TB
 | Path | Writer | Contents |
 |------|--------|----------|
 | `.claude/transcripts/transcript_<ts>.jsonl` | `write_transcript` | Full pre-compact conversation |
-| `.claude/tool-results/<id>.txt` | `persist_large_output` | Full oversized bash stdout |
-| `.tact/tact.db` messages | `replace_session_messages` | Post-compact single-message context |
+| `.claude/tool-results/<id>.txt` | `persist_large_output` | Full oversized native/MCP output |
+| `.tact/tact.db` messages | `replace_session_messages` | Post-compact retained-users + summary context |
 
-Neither spill directory is pruned automatically (§11).
+After each write, each spill directory keeps at most the 100 newest files; older regular files are removed by modification time.
 
 ---
 
@@ -561,7 +565,7 @@ Neither spill directory is pruned automatically (§11).
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.model_context_window` (`--model-context-window`) | 200,000 | Token window: auto-compact trigger + TUI usage meter |
+| `agent.model_context_window` (`--model-context-window`) | 200,000 | Token window: auto-compact at 80% + TUI usage meter; when nonzero it must exceed `max_tokens` |
 | `agent.micro_compact_enabled` (`--no-micro-compact`) | `true` | Enables the per-turn stub pass |
 
 Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > default). Compile-time constants (`KEEP_RECENT_TOOL_RESULTS`, `PERSIST_THRESHOLD`, …) are **not** configurable yet.
@@ -572,9 +576,9 @@ Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > defau
 
 | File | Role |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_size`, `collect_user_messages`, `build_compacted_history`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
+| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_tokens`, `collect_user_messages`, `build_compacted_history`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
 | `crates/tact/src/agent/mod.rs` | Loop triggers; `compact_history` / `compact_history_legacy`; `remember_recent_file`; `replace_persisted_context` |
-| `crates/tact/src/agent/tool_dispatch.rs` | `persist_large_output` on `bash`; `manual_compact` flag; recent-file tracking |
+| `crates/tact/src/agent/tool_dispatch.rs` | `persist_large_output` for native/MCP results; `manual_compact` flag; recent-file tracking |
 | `crates/tact/src/tool/compact.rs` | `compact` tool stub + `focus` |
 | `crates/tact/src/recovery.rs` | Prompt-too-long classification → compaction |
 | `crates/tact/src/consts.rs` | `transcript_dir()`, `tool_results_dir()` |
@@ -598,14 +602,10 @@ flowchart LR
 
 | Gap | Detail |
 |-----|--------|
-| Cold-start / post-tool char estimate | Char estimate vs **token** window (coarse; TODO replace with pre-call token estimate). Still OR'd with token total when usage exists, to cover growth after tool results are appended |
+| Cold-start / post-tool token estimate | ASCII uses ~4 chars/token and non-ASCII uses a conservative 1 char/token. Still OR'd with reported token total to cover growth after tool results are appended |
 | Simple usage % | Meter is `used / model_context_window` (no Codex 12K baseline / effective-window math yet) |
-| Summarization unguarded | Compaction LLM call has no retry; bad summary silently degrades the session |
-| Only last ~80k summarized | Early turns live in transcript; model is not told that path in the replacement message |
-| Spill limited to `bash` | Other tools / MCP can still flood one turn |
-| Spills accumulate | `.claude/transcripts/` and `tool-results/` never pruned |
+| Only recent 20k estimated tokens summarized | Early turns live in transcript; model is not told that path in the replacement message |
 | Fixed stub thresholds | 12 / 120 / 30k are compile-time constants |
-| `recent_files` = reads only | `write_file` / `apply_patch` paths are not remembered |
 
 ---
 

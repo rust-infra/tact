@@ -6,9 +6,9 @@ tact implements **three-tier progressive compaction**:
 
 | Tier | Trigger | Target | Strategy |
 |------|---------|--------|----------|
-| Tier 1: Large Output Persist | Single `bash` output > 30K chars | One tool result | Write to disk, keep `<persisted-output>` preview |
+| Tier 1: Large Output Persist | Any successful native/MCP output > 30K chars | One tool result | Write to disk, keep `<persisted-output>` preview |
 | Tier 2: Micro Compaction | Before each LLM call | Old tool results | Stub (keep last 12; only if > 120 chars) |
-| Tier 3: Full Compaction | `last_token_total >= model_context_window` (default 200K tokens; cold-start char fallback), prompt-too-long, or `compact` tool | Entire conversation | JSONL transcript + LLM summary → single user message |
+| Tier 3: Full Compaction | Reported/estimated input reaches 80% of the window, prompt-too-long, or `compact` tool | Conversation history | JSONL transcript + LLM summary → retained real users + handoff |
 
 ```mermaid
 flowchart TB
@@ -19,8 +19,8 @@ flowchart TB
     Prompt -->|prompt too long| CH
     Prompt -->|compact tool| CH
     CH --> Transcript[JSONL under .claude/transcripts/]
-    CH --> Sum[summarize ~80k recent chars]
-    Sum --> Replace[context ← one summary message]
+    CH --> Sum[summarize up to 20k estimated tokens]
+    Sum --> Replace[context ← recent users + summary]
     Replace --> Prompt
 ```
 
@@ -28,7 +28,7 @@ flowchart TB
 
 ## Tier 1: Large Output Persist
 
-**Trigger**: `bash` tool result exceeds `PERSIST_THRESHOLD` (30,000 characters).
+**Trigger**: any successful native or MCP tool result exceeds `PERSIST_THRESHOLD` (30,000 characters).
 
 **Process**:
 1. Full output → `.claude/tool-results/{tool_use_id}.txt`
@@ -49,7 +49,7 @@ Preview:
 | `PERSIST_THRESHOLD` | 30,000 | `compact.rs` |
 | `PREVIEW_CHARS` | 2,000 | `compact.rs` |
 
-Only **`bash`** is spilled today.
+Each artifact directory retains at most the 100 newest files after a write.
 
 ---
 
@@ -78,22 +78,22 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 **Triggers** (any of):
 - After micro_compact, `should_auto_compact`:
-  - **Primary:** `last_token_total >= agent.model_context_window` (tokens; default **200,000**; CLI `--model-context-window` / TOML)
-  - **Cold start:** when no usage yet, `estimate_context_size` (chars) vs the same window number — coarse; TODO
+  - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
+  - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
 - Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery.md))
 - Manual `compact` tool (after tool results are appended)
 
 ### Steps
 
-1. **`write_transcript`** → `.claude/transcripts/transcript_{unix_ts}.jsonl`
-2. **Recent window** — from the end of context until ~80,000 serialized chars (keep ≥ 1 message)
-3. **Summarize** — `create_message`, `max_tokens=2000`, preserve goals / findings / files / next steps / constraints / errors; optional `focus` + `recent_files`
-4. **Replace** — `compacted_context(summary)` plus appended recent-files list
-5. **`replace_session_messages`** — SQLite matches the new single-message context; message-id window reset
+1. **`write_transcript`** (async) → unique `.claude/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
+2. **Recent window** — select from the tail within the model budget and a 20k estimated-token cap; oversized messages become valid text-only views and images become omission markers
+3. **Summarize** — window-aware `create_message`, at most 2k output tokens, with output/headroom reserved; transient failures retry up to three times; abnormal stop reasons and empty summaries fail without replacing context
+4. **Replace** — Codex-style `[recent real User…] + [SUMMARY_PREFIX + handoff]` (legacy: `compacted_context`); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
+5. **`replace_session_messages`** — SQLite matches the new context; message-id window reset; `last_token_total = 0`
 
 ### Recent files
 
-`CompactState.recent_files`: last 5 successful `read_file` paths (dedupe, LRU). Injected into the summarizer prompt and the final summary. Writes/patches are not tracked.
+`CompactState.recent_files`: last 5 paths from successful `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
 
 ---
 
@@ -101,12 +101,12 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger + TUI usage meter |
+| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger at 80% + TUI usage meter; nonzero values must exceed `max_tokens` |
 | `agent.micro_compact_enabled` | `true` | Tier-2 stub pass (`--no-micro-compact` disables) |
 
 Breaking rename from `context_limit_chars` / `--context-limit-chars` — **no silent alias**.
 
-Compile-time: 12 / 120 / 30k / 2k / 80k are not configurable yet.
+Compile-time: 12 / 120 / 30k / 2k / 20k summary-input and retained-user tokens / 100 artifacts are not configurable yet.
 
 ---
 
@@ -120,6 +120,6 @@ If a tool result was compacted and you need the details, re-run the relevant too
 
 ## Gaps (short)
 
-- Cold-start char estimate vs token window; simple `used/window` meter (no Codex baseline); summarization has no retry; spill is bash-only; transcripts/tool-results never pruned; `recent_files` is read-only.
+- Cold-start token estimation remains heuristic (ASCII ~4 chars/token, non-ASCII 1 char/token); the TUI still uses a simple `used/window` meter without Codex baseline/effective-window math; fixed thresholds are compile-time constants.
 
 See the book chapter for diagrams and loop ordering.

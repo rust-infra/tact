@@ -161,6 +161,11 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, … 
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 
+合并 CLI 与 TOML 值后，若非零 `model_context_window` 小于或等于
+`max_tokens`，配置会立即报错：输出预留必须给输入留下空间。窗口为零时保留现有的
+“禁用/未知窗口”语义，并跳过该校验。`thinking_budget` 不单独累加，因为各 provider
+会将其映射为 thinking 配置或 reasoning-effort 档位，而不是统一、可移植的额外输出预留。
+
 仅 CLI 覆盖：
 
 - `--no-notifications` 强制关闭通知。
