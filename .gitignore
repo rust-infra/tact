@@ -16,3 +16,4 @@ tmp/
 crates/tui/agent_log_*.txt
 *.jpeg
 
+docs/superpowers/
