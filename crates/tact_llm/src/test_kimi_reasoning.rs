@@ -22,7 +22,7 @@
 //! `KIMI_MODEL` (default `kimi-k2.5`, or `kimi-for-coding` when base URL
 //! is `api.kimi.com/coding`).
 //!
-//!   cargo test -p tact_llm kimi_reasoning -- --nocapture
+//!   cargo test -p tact_llm kimi_reasoning -- --ignored --nocapture
 
 use serde_json::{Map, Value, json};
 
@@ -173,6 +173,7 @@ fn count_reasoning(messages: &[Value]) -> usize {
 
 /// Scenario 1+2: plain multi-turn with and without echoing `reasoning_content`.
 #[tokio::test]
+#[ignore = "hits a real LLM endpoint and requires KIMI_API_KEY"]
 async fn kimi_reasoning_plain_multiturn_echo_optional() {
     let Some((api_key, base_url, model)) = skip_unless_api_key() else {
         return;
@@ -259,6 +260,7 @@ async fn kimi_reasoning_plain_multiturn_echo_optional() {
 
 /// Scenario 3+4: tool-call turns with and without echoing `reasoning_content`.
 #[tokio::test]
+#[ignore = "hits a real LLM endpoint and requires KIMI_API_KEY"]
 async fn kimi_reasoning_tool_call_echo_required_or_not() {
     let Some((api_key, base_url, model)) = skip_unless_api_key() else {
         return;
@@ -388,6 +390,7 @@ async fn kimi_reasoning_tool_call_echo_required_or_not() {
 
 /// Scenario 5: after two tool rounds, keep only the latest assistant's thinking.
 #[tokio::test]
+#[ignore = "hits a real LLM endpoint and requires KIMI_API_KEY"]
 async fn kimi_reasoning_tool_call_echo_latest_only() {
     let Some((api_key, base_url, model)) = skip_unless_api_key() else {
         return;

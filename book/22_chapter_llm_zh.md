@@ -6,7 +6,7 @@
 
 本层配置在 [Ch 21 配置](./21_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 18 Agent Main Loop](./18_chapter_agent_loop.md)）。
 
-实现：`crates/tact_llm/src/`（`lib.rs`、`content.rs`、`request.rs`、`stop_reason.rs`、`anthropic.rs`、`openai.rs`、`convert.rs`）。
+实现：`crates/tact_llm/src/`（`lib.rs`、`client.rs`、`provider.rs`、`types.rs`、`content.rs`、`anthropic/`、`openai/`、`deepseek/`、`kimi/`、`convert.rs`）。
 
 ---
 
@@ -63,7 +63,7 @@ pub struct ProviderInfo {
 // crates/tact/src/config/mod.rs
 pub fn install(config: ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
-    SETTINGS.set(config).expect("...");
+    *SETTINGS.write().expect("tact config lock poisoned") = Some(config);
 }
 ```
 
@@ -71,10 +71,10 @@ pub fn install(config: ResolvedConfig) {
 
 ```rust
 let mut client = tact_llm::get_llm_client()?;
-client.set_user_id(&session_id);   // per-session KV cache 隔离
+client.set_user_id(&session_id);   // DeepSeek per-session KV cache 隔离
 ```
 
-`build_client()` 校验非空 `api_key`，按 `ProviderKind` match：Anthropic → `LlmProvider::Anthropic`；OpenAi / DeepSeek / Kimi → `LlmProvider::OpenAi`（OpenAI 兼容 adapter）。
+`build_client()` 校验非空 `api_key`，按 `ProviderKind` match：Anthropic → `LlmProvider::Anthropic`；OpenAi → `LlmProvider::OpenAi`；DeepSeek → `LlmProvider::DeepSeek`；Kimi → `LlmProvider::Kimi`。后三者共享 OpenAI 兼容 transport，但使用不同 body hook。
 
 ```mermaid
 sequenceDiagram
@@ -82,7 +82,7 @@ sequenceDiagram
     participant Init as config::init
     participant Resolve as resolve_config
     participant Install as config::install
-    participant Once as SETTINGS / PROVIDER OnceLock
+    participant State as SETTINGS / PROVIDER RwLock
     participant LlmInit as tact_llm::init_provider
     participant Get as get_llm_client
     participant Build as build_client
@@ -92,12 +92,12 @@ sequenceDiagram
     Resolve-->>Init: ResolvedConfig
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
-    LlmInit->>Once: set ProviderInfo
-    Install->>Once: set ResolvedConfig
-    Note over Once: RwLock；`/model` 可能仅更新 model
-    Get->>Once: clone ProviderInfo snapshot
+    LlmInit->>State: set ProviderInfo
+    Install->>State: set ResolvedConfig
+    Note over State: `/model` 可能仅更新 model
+    Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
-    Build-->>Provider: Anthropic 或 OpenAi adapter
+    Build-->>Provider: 专用 provider adapter
 ```
 
 Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 对 mid-session 模型切换（`set_model`）可变。
@@ -111,11 +111,11 @@ Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `Provi
 | 函数 | 用途 |
 |------|------|
 | `is_kimi()` | `provider == Kimi`，**或** base URL / model 含 moonshot/kimi |
-| `is_kimi_k2x()` | K2.x 家族 — 驱动 config 中 **32k max_tokens** 与 **900k context** 默认 |
+| `is_kimi_k2x()` | K2.x 家族 — 驱动 **32k max_tokens** 默认值与 Kimi thinking wire shape |
 | `is_kimi_k27()` | K2.7-code / `kimi-for-coding` / `api.kimi.com/coding` |
 | `is_deepseek()` | `provider == DeepSeek`，**或** URL/model 含 deepseek |
 
-因此 `provider = openai` + Moonshot 兼容 `base_url` 在 thinking 注入与余额轮询上仍按 Kimi 行为；更推荐专用 `[llm.providers.kimi]` 条目。用于 config resolve、TUI 余额轮询与 `convert.rs` 请求塑形。
+因此 `provider = openai` + Moonshot 兼容 `base_url` 在 thinking 注入上仍按 Kimi 行为。余额轮询仅对官方 HTTPS `api.moonshot.cn` / `api.moonshot.ai` 主机启用；自定义代理绝不会把凭据转发给 Moonshot。更推荐专用 `[llm.providers.kimi]` 条目。
 
 ---
 
@@ -148,7 +148,7 @@ pub trait LlmClient: Send + Sync {
 
 ### StopReason（与 provider 无关）
 
-`StopReason` 由 `tact_llm` 拥有（`stop_reason.rs`）— **不**从 Anthropic SDK re-export。Adapter 在边界将 provider 原生字符串规范化，agent 循环从不匹配原始 API 值：
+`StopReason` 由 `tact_llm` 拥有（`types.rs`）— **不**从 Anthropic SDK re-export。Adapter 在边界将 provider 原生字符串规范化，agent 循环从不匹配原始 API 值：
 
 ```rust
 pub enum StopReason {
@@ -229,7 +229,7 @@ sequenceDiagram
 
 ## 5. Anthropic Adapter
 
-`anthropic.rs` 使用直接 HTTP + SSE（`reqwest-eventsource`），而非 SDK 流式 client，以便将新 `stop_reason` 值映射到 Tact 自有 [`StopReason`](../crates/tact_llm/src/stop_reason.rs)，无需等待 Anthropic SDK enum。
+`anthropic/mod.rs` 使用直接 HTTP + SSE（`reqwest-eventsource`），而非 SDK 流式 client，以便将新 `stop_reason` 值映射到 Tact 自有 [`StopReason`](../crates/tact_llm/src/types.rs)，无需等待 Anthropic SDK enum。
 
 流式路径：
 
@@ -239,21 +239,21 @@ sequenceDiagram
 4. 发出 `AgentUpdate::ModelInfo`（模型名与生成限制）。
 5. 聚合最终 blocks、`StopReason` 与 `TokenUsageInfo`。
 
-`set_user_id` 向请求体注入 `metadata.user_id` — DeepSeek 的 Anthropic 兼容端点用于 KV cache 作用域。
+Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
 
 ---
 
 ## 6. OpenAI 兼容 Adapter
 
-`openai.rs` 面向 Chat Completions，带自定义 deserializer，因 `async-openai`（0.40.x）未在流式 delta 上暴露 `reasoning_content`。
+`openai/mod.rs` 提供共享 Chat Completions HTTP/SSE transport。专用的 `deepseek/mod.rs`、`kimi/mod.rs` 与 `openai/multi_model.rs` adapter 在公共请求转换后选择 provider 特定 body hook。
 
 值得注意的行为：
 
-- **SSE 解析** via `reqwest-eventsource`（正确处理 `\n\n` / `\r\n\r\n`）。
+- **SSE 解析** via `eventsource-stream`（正确处理 `\n\n` / `\r\n\r\n`）。
 - **`reasoning_content` 字段**映射到 `ThinkingChunk::{Started, Delta, Finished}`（合成生命周期），供 DeepSeek/Kimi 推理模型使用。
 - **Tool call deltas** 按流事件中 `index` 重组。
 - **`StreamUsage`** 捕获 prompt/completion tokens、cache hit/miss（DeepSeek）与 `reasoning_tokens`。
-- **`set_user_id`** 向 JSON 体添加 `"user_id"` 供 OpenAI 兼容 cache 隔离。
+- **`set_user_id`** 仅在选中的 body hook 为 DeepSeek 时向 JSON 体添加 `"user_id"`。
 
 `convert.rs` 从共享 `CreateMessageParams` 构建 provider 特定请求 JSON（Tact 内部全程使用 Anthropic message 形状）。
 
@@ -267,15 +267,15 @@ sequenceDiagram
 
 **空 assistant 清理：** 因 thinking block 在面向非 Kimi OpenAI 兼容 API 时被丢弃，仅含 thinking（或截断后仅剩 orphan tool calls）的 assistant turn 会序列化为 `{ "role": "assistant", "content": null, "tool_calls": null }` 并被 400 拒绝。`convert.rs` 中 `sanitize_assistant_messages` 对这类消息打 stub 并在每次请求剥离 orphan `tool_calls`。完整上下文见 [错误恢复](./06_chapter_recovery.md)。
 
-**Thinking / reasoning 注入（`inject_thinking_param`）：** 内部请求始终携带 Anthropic 形 `Thinking { budget_tokens }`。Adapter 将其改写为各 wire 协议：
+**Thinking / reasoning 注入：** 内部请求始终携带 Anthropic 形 `Thinking { budget_tokens }`。Provider body hook 将其改写为各 wire 协议：
 
 | Provider | thinking 设置时 | Wire 字段 |
 |----------|-----------------|-----------|
 | Anthropic | 始终（原生 Messages 类型） | `thinking: { type, budget_tokens }` |
-| Kimi K2.5 | 模型启发式 | `thinking: { type: "enabled" }` |
-| Kimi K2.6 | 模型启发式 | `thinking: { type: "enabled", keep: "all" }` |
+| Kimi K2.5 | budget > 0 | `thinking: { type: "enabled" }`；否则 `disabled` |
+| Kimi K2.6 | budget > 0 | `thinking: { type: "enabled", keep: "all" }`；否则 `disabled` |
 | Kimi K2.7 / coding | 跳过 | *（服务端始终开启 thinking）* |
-| DeepSeek | 若 `request.thinking` 且 budget > 0 | `reasoning_effort`（与 OpenAI 同 Chat Completions 路径；无 `budget_tokens`） |
+| DeepSeek | budget > 0 | `thinking: { type: "enabled" }` + `reasoning_effort: high\|max`；否则 `thinking: disabled` |
 | OpenAI（原生） | 若 `request.thinking` 且 budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget`（`low` / `medium` / `high`）— **非** Anthropic `thinking.budget_tokens` |
 
 `ModelCallParams.reasoning_effort` 为 TUI 镜像该 budget→effort 映射。Config 仍仅暴露 `thinking_budget`；尚无独立 `reasoning_effort` TOML 键。
@@ -301,16 +301,16 @@ Agent 在每次成功流后通过 `persist_llm_call` 持久化 token 用量（[C
 
 ## 8. Session `user_id`
 
-`agent_loop` 开始时：
+在 `Agent::with_session` 绑定 session 时：
 
 ```rust
-self.client.set_user_id(session_id);
+self.runtime.client.set_user_id(&session_id);
 ```
 
 | Adapter | 注入位置 |
 |---------|----------|
-| OpenAI 兼容 | 请求 JSON 顶层 `"user_id"` |
-| Anthropic | `metadata.user_id` |
+| DeepSeek（包括 OpenAI adapter 的启发式选择） | 请求 JSON 顶层 `"user_id"` |
+| Anthropic / Kimi / 原生 OpenAI | 不注入 |
 
 意图：DeepSeek（及兼容代理）上 per-session KV cache 隔离，减少跨 session cache 污染。
 
@@ -324,43 +324,44 @@ self.client.set_user_id(session_id);
 | `query_kimi_balance()` | `GET .../v1/users/me/balance` on `api.moonshot.cn` 或 `api.moonshot.ai` | 同上 |
 | `query_kimi_code_usage()` | `GET .../v1/usages` on `api.kimi.com/coding` | Kimi Code 订阅配额 |
 
-`query_*_balance()` 返回 `tact_protocol::BalanceInfo` 为 `AgentUpdate::Balance`。Kimi Code 用量返回 `UsageQuotaInfo` 为 `AgentUpdate::UsageQuota`。
+`query_*_balance()` 返回 `tact_protocol::BalanceInfo`，并通过独立 account channel 路由为 `AccountUpdate::Balance`。Kimi Code 用量返回 `UsageQuotaInfo` 为 `AccountUpdate::UsageQuota`。
 
-**Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AgentUpdate::UsageQuota`（`week` + `5h` 窗口）。
+**Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AccountUpdate::UsageQuota`（`week` + `5h` 窗口）。
 
-**TUI timer：** `run_tui` 接受 `balance_polling_enabled`（在 `interactive.rs` 中由 `is_deepseek()` / `is_kimi_balance_supported()` / `is_kimi_usage_supported()` 设置）。
+**凭据边界：** Kimi 余额轮询仅在 `base_url` 使用 HTTPS 且主机精确为 `api.moonshot.cn` 或 `api.moonshot.ai` 时启用。自定义 OpenAI 兼容代理视为不支持，代理 API key 绝不会发送到官方 Moonshot 余额端点。
 
-仅当上述辅助函数之一为 true 时调用（`crates/tact-ui/src/interactive.rs`）。
+**轮询：** `interactive.rs` 仅在 `account::is_supported()` 为 true 时执行一次启动查询并启动 `account::spawn_poller`。`/balance` 命令通过 command driver 复用同一 `query_once` 路径。
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Timer as TUI timer
+    participant Poller as account poller
     participant Cmd as UserCommand::QueryBalance
-    participant TUI as TUI loop
+    participant Service as account::query_once
+    participant TUI as TUI account receiver
     participant DeepSeek as query_deepseek_balance
     participant Kimi as query_kimi_balance
     participant API as Provider API
-    participant Update as AgentUpdate::Balance
+    participant Update as AccountUpdate
 
     alt 周期刷新
-        Timer->>TUI: 触发余额检查
+        Poller->>Service: 周期查询
     else 用户命令
-        Cmd->>TUI: /balance
+        Cmd->>Service: query_once()
     end
     alt DeepSeek provider
-        TUI->>DeepSeek: query_deepseek_balance()
+        Service->>DeepSeek: query_deepseek_balance()
         DeepSeek->>API: GET /user/balance
         API-->>DeepSeek: BalanceInfo
         DeepSeek-->>TUI: BalanceInfo
     else Kimi provider
-        TUI->>Kimi: query_kimi_balance()
+        Service->>Kimi: query_kimi_balance()
         Kimi->>API: GET /users/me/balance
         API-->>Kimi: BalanceInfo
         Kimi-->>TUI: BalanceInfo
     end
-    TUI->>Update: AgentUpdate::Balance(info)
-    Update-->>TUI: handle_agent_update 渲染余额
+    Service->>Update: Balance / UsageQuota
+    Update-->>TUI: 渲染账户数据
 ```
 
 余额检查在 `Agent::agent_loop` 外；TUI 拥有 timer 与命令路径，再通过常规 update handler 渲染 provider 特定结果。
@@ -371,15 +372,16 @@ sequenceDiagram
 
 | 文件 | 角色 |
 |------|------|
-| `tact_llm/src/provider_kind.rs` | `ProviderKind` enum（`FromStr` / `Display` / defaults） |
-| `tact_llm/src/stop_reason.rs` | 与 provider 无关的 `StopReason` + `from_anthropic` / `from_openai` |
+| `tact_llm/src/types.rs` | `ProviderKind`、请求类型及 provider 无关的 `StopReason` |
 | `tact_llm/src/content.rs` | 自有 `ContentBlock`、`Message`、`ContentBlockDelta`、`StreamUsage` 等 |
-| `tact_llm/src/request.rs` | 自有 `CreateMessageParams`、`Thinking`、`Tool`、`ToolChoice` 等 |
-| `tact_llm/src/lib.rs` | `ProviderInfo`、`LlmClient`、`LlmProvider`、init/get 辅助、余额 API |
-| `tact_llm/src/anthropic.rs` | Messages API 流式 + 非流式 |
-| `tact_llm/src/openai.rs` | Chat Completions SSE、`reasoning_effort` / thinking 注入、tool deltas |
+| `tact_llm/src/client.rs` | `LlmClient`、专用 `LlmProvider` variant、session user-id 路由 |
+| `tact_llm/src/provider.rs` | `ProviderInfo`、provider 初始化、client 构建、检测辅助 |
+| `tact_llm/src/account.rs` | DeepSeek 余额与 Kimi 余额/额度查询 |
+| `tact_llm/src/anthropic/mod.rs` | Messages API 流式 + 非流式 |
+| `tact_llm/src/openai/` | 共享 Chat Completions transport/body 组装与实时 hook 选择 |
+| `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider 特定 thinking 与历史 hook |
 | `tact_llm/src/convert.rs` | 请求翻译、Image → `image_url`、Kimi thinking blocks |
-| `crates/tact/src/agent/mod.rs` | `stream_message` 包装、循环开始时 `set_user_id` |
+| `crates/tact/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
 | `crates/tact/src/compact.rs` | 摘要用 `create_message` |
 
 ---
@@ -391,23 +393,23 @@ sequenceDiagram
 | **仅四个命名 provider** | `ProviderKind` / `FromStr` 拒绝未知名；通用 OpenAI 代理须用 `provider = "openai"` |
 | **Adapter 内无重试** | 传输重试/退避在 agent 恢复中，不在 `tact_llm` |
 | **无 Anthropic SDK 依赖** | 对话、请求、stop、stream-delta、错误类型均由 `tact_llm` 拥有；Anthropic 仅通过自定义 HTTP + SSE |
-| **每次 `get_llm_client()` 重建 adapter** | 每次调用新 adapter 实例；`set_user_id` 变更 `Agent` 持有的副本 |
+| **每次 `get_llm_client()` 重建 adapter** | 每次调用新 adapter 实例；DeepSeek 下 `set_user_id` 变更 `Agent` 持有的副本 |
 | **无 vision 能力门控** | 附加图片始终作为 multimodal part 发送；纯文本模型/代理可能对 `image_url` 返回 400 |
 
 ### 协议兼容缺口（内部 Anthropic 形 → wire）
 
-`tact_llm` 拥有 [`CreateMessageParams`](../crates/tact_llm/src/request.rs)（serde 用相同 Anthropic *wire 形*，但不再是 SDK 类型）。各 adapter 须翻译字段；若干 OpenAI 原生差异**尚未**处理：
+`tact_llm` 拥有 [`CreateMessageParams`](../crates/tact_llm/src/types.rs)（serde 用相同 Anthropic *wire 形*，但不再是 SDK 类型）。各 adapter 须翻译字段；若干 OpenAI 原生差异**尚未**处理：
 
 | 内部 / 意图 | Anthropic | DeepSeek / Kimi（OpenAI-compat） | 原生 OpenAI Chat Completions | 状态 |
 |-------------|-----------|----------------------------------|------------------------------|------|
-| 启用扩展 thinking | `thinking.budget_tokens`（内部） | Anthropic：`thinking.budget_tokens`；DeepSeek/Kimi：`thinking.type`（±effort/keep） | OpenAI：`reasoning_effort` | OK — `inject_thinking_param` 按 API wire 形映射 |
-| Thinking budget 旋钮 | `thinking_budget` config | 映射到 `budget_tokens` | `reasoning_effort_from_budget` 档位 | OK（档位在 `openai.rs`；无专用 TOML 键） |
+| 启用扩展 thinking | `thinking.budget_tokens`（内部） | Anthropic：`thinking.budget_tokens`；DeepSeek/Kimi hook：`thinking.type`（±effort/keep） | OpenAI：`reasoning_effort` | OK — body hook 按 API wire 形映射 |
+| Thinking budget 旋钮 | `thinking_budget` config | 映射到 `budget_tokens` | `reasoning_effort_from_budget` 档位 | OK（档位在 `openai/mod.rs`；无专用 TOML 键） |
 | 最大输出 | `max_tokens` | `max_tokens` | o 系列常要 `max_completion_tokens`；部分拒绝 `max_tokens` | 未重映射 |
 | System prompt | 顶层 `system` | 首条 `role: system` 消息 | 同上；部分推理模型偏好 `developer` | 始终 `system` |
 | Tool 定义 | `tools`（Anthropic schema） | `tools` + `type: function` | 同上现代 tools API | OK（`convert.rs`） |
 | Stop / finish reason | `stop_reason` 字符串 | `finish_reason` 字符串 | `finish_reason`（+ legacy `function_call`） | OK（`StopReason::from_*`） |
 | Refusal 详情 | `stop_details` | n/a | n/a | 未解析 |
-| Cache / user 作用域 | `metadata.user_id` | 顶层 `user_id` | 忽略或含义不同 | DeepSeek OK；别处无害 |
+| Cache / user 作用域 | 不发送 | DeepSeek：顶层 `user_id`；Kimi：不发送 | 不发送 | 仅 DeepSeek |
 | Stream usage | event usage | `stream_options.include_usage` | 同上 | OK |
 | Vision parts | `image` + base64 source | `image_url` data URL | `image_url` | vision 模型 OK；无能力门控 |
 | Temperature / top_p | 可选 | 可选 | 许多推理模型拒绝非默认采样 | 盲目透传 |

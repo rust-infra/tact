@@ -97,28 +97,30 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
 
 /// Derive Kimi balance API URL from the configured OpenAI-compatible base URL.
 ///
-/// Returns `None` for Kimi Code (`api.kimi.com/coding`), which has no balance REST endpoint.
+/// Returns `None` unless the URL targets an official Moonshot API host.
 fn kimi_balance_url_from_base_url(base_url: &str) -> Option<String> {
-    if base_url.contains("kimi.com/coding") {
+    if base_url.is_empty() {
+        return Some("https://api.moonshot.cn/v1/users/me/balance".to_string());
+    }
+
+    let parsed = reqwest::Url::parse(base_url).ok()?;
+    if parsed.scheme() != "https" {
         return None;
     }
-
-    let trimmed = base_url.trim_end_matches('/');
-
-    if base_url.contains("api.moonshot.cn") || base_url.contains("api.moonshot.ai") {
-        let api_base = if trimmed.ends_with("/v1") {
-            trimmed.to_string()
-        } else {
-            format!("{trimmed}/v1")
-        };
-        return Some(format!("{api_base}/users/me/balance"));
+    match parsed.host_str()? {
+        "api.moonshot.cn" => Some("https://api.moonshot.cn/v1/users/me/balance".to_string()),
+        "api.moonshot.ai" => Some("https://api.moonshot.ai/v1/users/me/balance".to_string()),
+        _ => None,
     }
-
-    Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
 }
 
 fn kimi_balance_currency(base_url: &str) -> &'static str {
-    if base_url.contains("api.moonshot.ai") {
+    if reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
+        == Some("api.moonshot.ai")
+    {
         "USD"
     } else {
         "CNY"
@@ -165,7 +167,7 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
     let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
 
     let balance_url = kimi_balance_url_from_base_url(&base_url).ok_or_else(|| {
-        anyhow::anyhow!("Kimi Code endpoint (api.kimi.com/coding) does not expose a balance API")
+        anyhow::anyhow!("Kimi balance API is only available for official Moonshot API endpoints")
     })?;
     let currency = kimi_balance_currency(&base_url);
 
@@ -408,6 +410,18 @@ mod tests {
         );
         assert_eq!(
             kimi_balance_url_from_base_url("https://api.kimi.com/coding/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://proxy.example.com/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.cn.attacker.example/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("http://api.moonshot.cn/v1"),
             None
         );
         assert_eq!(

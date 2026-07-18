@@ -147,7 +147,16 @@ impl ProviderInfo {
 
     /// Returns true when Kimi balance queries are supported for the configured endpoint.
     pub fn is_kimi_balance_supported(&self) -> bool {
-        self.is_kimi() && !self.is_kimi_coding()
+        if !self.is_kimi() || self.is_kimi_coding() {
+            return false;
+        }
+        if self.base_url.is_empty() {
+            return self.provider == ProviderKind::Kimi;
+        }
+        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
+            url.scheme() == "https"
+                && matches!(url.host_str(), Some("api.moonshot.cn" | "api.moonshot.ai"))
+        })
     }
 
     /// Returns true when Kimi Code usage quota queries are supported.
@@ -410,6 +419,15 @@ mod tests {
         assert!(!cn.is_kimi_coding());
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
+
+        let proxy_balance = provider_info(
+            ProviderKind::Kimi,
+            "",
+            "https://proxy.example.com/v1",
+            "kimi-k2.5",
+        );
+        assert!(!proxy_balance.is_kimi_balance_supported());
+        assert!(!proxy_balance.is_account_query_supported());
 
         // kimi-for-coding behind a custom proxy is still Kimi Code:
         // no balance API, usage quota supported.
