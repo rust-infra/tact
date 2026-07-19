@@ -6,6 +6,28 @@ use ratatui::text::Line;
 use ratatui::widgets::ScrollbarState;
 
 impl App {
+    /// Whether the rendered log viewport currently sits at its visual bottom.
+    ///
+    /// `u16::MAX` is only a pre-render bottom sentinel: `render_log_panel`
+    /// clamps it to a real logical offset. Tool progress therefore needs to
+    /// recognize both representations before it grows placeholder rows.
+    pub(crate) fn is_log_pinned_to_bottom(&self) -> bool {
+        if self.log_scroll.offset == u16::MAX {
+            return true;
+        }
+        if self.log_scroll.visible_indices_ver != self.messages.len()
+            || self.log_scroll.visual_cache_ver != self.messages.len()
+            || self.log_scroll.visual_start_cache.is_empty()
+        {
+            return false;
+        }
+        let max_offset = crate::render::effective_max_logical_scroll(
+            &self.log_scroll.visual_start_cache,
+            self.log_scroll.height as usize,
+        );
+        self.log_scroll.offset as usize >= max_offset
+    }
+
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
         idx < self.messages.len()
     }

@@ -177,15 +177,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let total_visual = *app.log_scroll.visual_start_cache.last().unwrap_or(&0);
     // Max logical offset: the last logical row whose start visual line still leaves
     // `visible_height` rows of content below it (binary search on prefix sums).
-    let effective_max_logical = if total_visual <= visible_height {
-        0
-    } else {
-        let target = total_visual - visible_height;
-        app.log_scroll
-            .visual_start_cache
-            .binary_search(&target)
-            .unwrap_or_else(|idx| idx.saturating_sub(1))
-    };
+    let effective_max_logical =
+        effective_max_logical_scroll(&app.log_scroll.visual_start_cache, visible_height);
     let max_scroll = effective_max_logical as u16;
     if app.log_scroll.offset > max_scroll {
         app.log_scroll.offset = max_scroll;
@@ -528,6 +521,24 @@ fn resolve_visual_scroll(
         .copied()
         .unwrap_or(max_visual_scroll)
         .min(max_visual_scroll)
+}
+
+/// Return the greatest logical offset that keeps the visual viewport in range.
+///
+/// The offset is stored in logical rows while the viewport is measured in visual
+/// rows, so the bottom position must be found through the prefix-sum cache.
+pub(crate) fn effective_max_logical_scroll(
+    visual_start_cache: &[usize],
+    visible_height: usize,
+) -> usize {
+    let total_visual = *visual_start_cache.last().unwrap_or(&0);
+    if total_visual <= visible_height {
+        return 0;
+    }
+    let target = total_visual - visible_height;
+    visual_start_cache
+        .binary_search(&target)
+        .unwrap_or_else(|idx| idx.saturating_sub(1))
 }
 
 /// Render an animated loading spinner at the loading placeholder position.

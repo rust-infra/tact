@@ -260,7 +260,7 @@ impl App {
         else {
             return;
         };
-        let was_pinned = self.log_scroll.offset == u16::MAX;
+        let was_pinned = self.is_log_pinned_to_bottom();
         self.tools.active[pos].live_output.push_chunks(chunks);
         if self.tools.active[pos].live_output.logical_line_count() == 0 {
             return;
@@ -562,6 +562,7 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
+    use crate::render::test_harness::render_log_panel_text;
     use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -657,6 +658,31 @@ mod lifecycle_tests {
         });
 
         assert_eq!(app.log_scroll.offset, 3);
+    }
+
+    #[test]
+    fn progress_keeps_bottom_pinned_log_on_live_output_growth() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+
+        let _ = render_log_panel_text(&mut app, 80, 4);
+        assert_ne!(
+            app.log_scroll.offset,
+            u16::MAX,
+            "render clamps the bottom sentinel"
+        );
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+        });
+
+        assert_eq!(app.log_scroll.offset, u16::MAX);
+        let rendered = render_log_panel_text(&mut app, 80, 4);
+        assert!(
+            rendered.contains("live line"),
+            "bottom-pinned viewport should follow the live Bash output, got:\n{rendered}"
+        );
     }
 
     #[test]
