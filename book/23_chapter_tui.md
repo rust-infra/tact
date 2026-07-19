@@ -315,7 +315,7 @@ pub(crate) trait Renderable {
 
 Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_area` for click-outside-to-close, and show `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` hints. `diff_popup` lazy-loads full content via `cached_content` — no file I/O inside hot `render()` paths.
 
-The tool/file detail popup additionally supports left-button text selection. Mouse hits map to byte offsets in the original tool content, so line numbers, diff gutters, borders, and other display-only prefixes are excluded. The selection survives popup scrolling; dragging above or below the body clamps to the first or last visible source boundary without auto-scrolling. Thinking and code detail popups keep their existing mouse behavior.
+The tool/file detail popup additionally supports left-button text selection. Mouse hits map each rendered extended grapheme cluster to byte offsets in the original tool content, so combining and emoji sequences remain indivisible while line numbers, diff gutters, borders, and other display-only prefixes are excluded. The selection survives popup scrolling; dragging above or below the body clamps to the first or last visible source boundary without auto-scrolling. Thinking and code detail popups keep their existing mouse behavior.
 
 ### 6.9 Performance
 

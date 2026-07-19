@@ -111,14 +111,14 @@ Expected: all focused tests pass; existing full-content behavior remains green.
 - Test: unit tests in `crates/tui/src/render/popups/diff_popup.rs`
 
 **Interfaces:**
-- Produces: `PopupTextHit { start: usize, end: usize }`, where the range is the source scalar under a screen cell and may be empty for an empty line
+- Produces: `PopupTextHit { start: usize, end: usize }`, where the range is the complete source grapheme under a screen cell and may be empty for an empty line
 - Produces: `PopupHitRow { screen_y, text_x, line_start, line_end, cells }`
 - Produces: `MouseState::diff_popup_hit_rows: Vec<PopupHitRow>` and `diff_popup_body_area: Rect`
 - Consumes: `DiffPopup::selection` from Task 1
 
 - [ ] **Step 1: Write failing geometry tests**
 
-Add pure tests for a row builder/hit resolver. Cover ASCII, `界`, combining/zero-width scalars, empty rows, columns before text, columns after text, a numbered line with green gutter, and a wrapped unified-diff line. The key assertions are that every returned offset is a UTF-8 boundary and prefix columns clamp to the line start.
+Add pure tests for a row builder/hit resolver. Cover ASCII, `界`, combining and emoji graphemes, empty rows, columns before text, columns after text, a numbered line with green gutter, and a wrapped unified-diff line. The key assertions are that every returned offset is a UTF-8 boundary, every occupied cell maps the complete grapheme byte range, and prefix columns clamp to the line start.
 
 ```rust
 #[test]
@@ -139,9 +139,9 @@ Expected: compilation fails because popup hit rows do not exist.
 
 - [ ] **Step 3: Implement explicit visible rows and hit maps**
 
-Build source lines once with byte start/end offsets. For each visible source line, construct display cells with `UnicodeWidthChar::width`, preserving the existing plain/file line numbers, optional gutter, syntax styles, and unified-diff colors. Explicitly split wrapped diff rows to the available body width and render pre-laid-out rows without a second implicit `Paragraph` wrap. Save only the currently visible hit rows in `MouseState` after rendering.
+Build source lines once with byte start/end offsets. For each visible source line, construct display graphemes with `unicode-segmentation` and `ratatui::buffer::CellWidth`, preserving the existing plain/file line numbers, optional gutter, syntax styles, and unified-diff colors. An indivisible grapheme uses the style of its first scalar. Explicitly split wrapped diff rows only at grapheme boundaries to the available body width and render pre-laid-out rows without a second implicit `Paragraph` wrap. Save only the currently visible hit rows in `MouseState` after rendering.
 
-The hit resolver must return the complete byte span of the scalar under the pointer. Columns before selectable text return an empty hit at `line_start`; columns to the right return an empty hit at the represented row end.
+The hit resolver must return the complete byte span of the grapheme under the pointer. Columns before selectable text return an empty hit at `line_start`; columns to the right return an empty hit at the represented row end.
 
 - [ ] **Step 4: Write failing render-highlight tests**
 
@@ -174,11 +174,11 @@ Expected: hit-map and highlight tests pass; existing popup snapshots/text assert
 **Interfaces:**
 - Consumes: `MouseState::diff_popup_hit_rows` from Task 2
 - Produces: tool-popup-specific down/drag/up routing
-- Produces: drag origin state sufficient to include the scalar at both ends of forward and backward drags
+- Produces: drag origin state sufficient to include the grapheme at both ends of forward and backward drags
 
 - [ ] **Step 1: Write failing mouse-routing tests**
 
-Add tests in `handlers/mouse.rs` that seed a rendered popup hit map and send Crossterm down/drag/up events. Assert down starts an empty selection, a forward drag includes both endpoint scalars, a backward drag normalizes to the same text, mouse up stops later drags, scrolling preserves the range, and popup interaction does not create a log selection.
+Add tests in `handlers/mouse.rs` that seed a rendered popup hit map and send Crossterm down/drag/up events. Assert down starts an empty selection, a forward drag includes both endpoint graphemes, a backward drag normalizes to the same text, mouse up stops later drags, scrolling preserves the range, and popup interaction does not create a log selection.
 
 ```rust
 handle_mouse_event(&mut app, mouse_down(text_x, row));
@@ -194,7 +194,7 @@ Expected: new selection assertions fail because overlay clicks are only consumed
 
 - [ ] **Step 3: Implement overlay-first mouse routing**
 
-Before panel hit handling, route left down/drag/up to the active tool popup. On down, store the source scalar span as the drag origin and set a collapsed selection. On drag right, select `origin.start..current.end`; on drag left, select `origin.end..current.start`. Clamp vertical out-of-body drags to the first/last visible hit boundary. On up, stop popup dragging. Preserve current outside-click close behavior and wheel routing.
+Before panel hit handling, route left down/drag/up to the active tool popup. On down, store the source grapheme span as the drag origin and set a collapsed selection. On drag right, select `origin.start..current.end`; on drag left, select `origin.end..current.start`. Clamp vertical out-of-body drags to the first/last visible hit boundary. On up, stop popup dragging. Preserve current outside-click close behavior and wheel routing.
 
 - [ ] **Step 4: Update synchronized documentation**
 

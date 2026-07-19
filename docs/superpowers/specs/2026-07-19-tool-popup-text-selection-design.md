@@ -67,11 +67,12 @@ Clicking or beginning a drag in those columns clamps to the source line start.
 The right side of a displayed row clamps to that row's represented source end.
 The popup border, title, footer, and scrollbar do not start a selection.
 
-The mapping walks Unicode scalar values using terminal display width. A click
-on either cell of a wide character resolves to a valid boundary consistently;
-zero-width code points remain attached to their neighboring source position.
-The mapping uses byte offsets only after calculating display columns, avoiding
-invalid string slicing.
+The mapping walks extended grapheme clusters and uses Ratatui's terminal cell
+width calculation. Every occupied cell maps to the complete source byte range
+of its grapheme, so wide characters, combining sequences, emoji variation
+selectors, modifiers, and ZWJ sequences remain indivisible for hit testing and
+selection styling. The mapping uses byte offsets only after calculating display
+columns, avoiding invalid string slicing.
 
 Existing display semantics remain unchanged: plain/file views keep their line
 numbers and optional green gutter, unified diffs retain their native colors,
@@ -119,8 +120,8 @@ a preview of the actual copied text.
 Focused unit and render tests cover:
 
 - forward and backward range normalization;
-- display-column mapping with ASCII, wide Unicode, empty lines, line numbers,
-  diff gutter, and wrapped rows;
+- display-column mapping with ASCII, wide Unicode, combining and emoji
+  graphemes, empty lines, line numbers, diff gutter, and wrapped rows;
 - mouse down, drag, and up routing while a tool popup is active;
 - selections surviving popup scroll;
 - `y` copying only a non-empty selection and retaining full-content fallback;
