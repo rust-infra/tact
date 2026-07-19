@@ -141,6 +141,8 @@ notifications_enabled = true
 theme = "retro"   # retro | brutal | nord | dark | auto ...
 
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+bash_timeout_secs = 1800
 brave_search_api_key = "bsk-..."   # optional, for web_search
 ```
 
@@ -192,6 +194,12 @@ Multi-turn conversation loop with built-in context management: auto-compaction w
 | **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events` |
 | **Scheduling** | `cron_create`, `cron_list`, `cron_delete` |
 | **Interaction** | `ask_user`, `plan_approval`, `shutdown_request`, `shutdown_response` |
+
+In the interactive TUI, a running `bash` tool shows a bounded five-line live
+tail. stdout and stderr are merged in the order Tact observes their pipe reads,
+with stderr styled as warning text. Tact does not add a PTY, rewrite commands,
+or bypass buffering owned by the command or pipeline. Headless mode remains
+final-result-only.
 
 ### 🔐 Three Permission Modes
 
@@ -387,6 +395,7 @@ theme = "retro"                  # or "auto"
 # vision_image.jpeg_quality = 80
 
 [tools]
+bash_timeout_secs = 1800          # wall-clock seconds; 0 disables timeout
 brave_search_api_key = "bsk-..."
 ```
 

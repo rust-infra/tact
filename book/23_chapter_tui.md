@@ -55,7 +55,7 @@ Theme comes from `config::settings().ui.theme` (default `"retro"`).
 
 ### Headless (`tact-ui headless "prompt"`)
 
-`run_headless` in `crates/tact-ui/src/headless.rs`. Runs a single `agent_loop` without TUI, prints final text to stdout, sends a desktop notification. Uses config-driven permission mode — same as interactive mode.
+`run_headless` in `crates/tact-ui/src/headless.rs`. Runs a single `agent_loop` without TUI, prints final text to stdout, sends a desktop notification. Tool progress remains final-result-only because there is no live card. Uses config-driven permission mode — same as interactive mode.
 
 ---
 
@@ -92,6 +92,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `StreamChunk` | Append to active assistant text cell |
 | `ThinkingChunk` | Thinking card / preview |
 | `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | Tool timeline ([Ch 11](./11_chapter_task.md)) |
+| `ToolProgress` | Update the matching active tool's fixed five-line live tail |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
 | `TokenUsage` | Status bar counters |
 | `ModelInfo` | Model name / limits display |
@@ -390,8 +391,8 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 
 `handle_agent_update` (`widgets/state/app/agent.rs`) is the sole writer of log rows from agent events. Every update sets `dirty = true`. Two global gates run before the match arm:
 
-1. **Thinking gate** — content-producing updates *except* `ThinkingChunk` / `TokenUsage` / `ModelInfo` call `flush_and_close_thinking()` as a safety net if a thinking region is still open. Prefer explicit `ThinkingChunk::Finished` from producers.
-2. **Loading gate** — most updates call `remove_loading_placeholder()`. Metadata-only updates (`TokenUsage`, `ModelInfo`) skip removal. Legacy `PlanGenerated` handler also skips removal, but the agent never emits it — the loading row path is inactive.
+1. **Thinking gate** — content-producing updates *except* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `ToolProgress` call `flush_and_close_thinking()` as a safety net if a thinking region is still open. Prefer explicit `ThinkingChunk::Finished` from producers.
+2. **Loading gate** — most updates call `remove_loading_placeholder()`. Informational or metadata-like updates (`TokenUsage`, `ModelInfo`, `ToolProgress`) skip removal. Legacy `PlanGenerated` handler also skips removal, but the agent never emits it — the loading row path is inactive.
 
 **Active agent path:** `StepAdded` updates the plan panel only (no log row). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
 
@@ -404,6 +405,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
 | **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream; first step transitions `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
+| **`ToolProgress`** | Mutate matching `ActiveToolBlock.live_output`; first output resizes once | Does not close thinking/loading; ignores unknown or late IDs; preserves scroll intent |
 | **`StepFinished`** | Resize placeholders → `ToolBlock` | Flushes stream; plan step output updated |
 | **`StepFailed`** | Finalize tool card *or* system error line | Status → `Idle` |
 | **`RequestSelect`** | *(none)* | Opens select popup |
@@ -490,7 +492,7 @@ Tool placeholder rows and code placeholder rows **are** visible individually in 
 
 **Bottom pinning (`resolve_visual_scroll`):** when offset is at the maximum, the viewport pins to `total_visual − visible_height` rather than using `visual_start_cache[offset]`. This prevents a tall tool detail card at the bottom from leaving its last rows unreachable when the preceding row is a long wrapped paragraph (see unit tests in `log.rs`).
 
-**Manual scroll:** mouse wheel and `j`/`k` in normal mode adjust logical offset by one. When the user scrolls up, new streaming content does not force offset unless an update explicitly sets `u16::MAX` (streaming chunks always do — so live tasks re-follow the tail unless the user keeps scrolling away each frame).
+**Manual scroll:** mouse wheel and `j`/`k` in normal mode adjust logical offset by one. A `ToolProgress` update preserves an explicit numeric offset, while `u16::MAX` remains pinned to the bottom as the active card changes. Assistant `StreamChunk` updates still request bottom-following.
 
 **Cache persistence:** after each draw, `visual_start_cache` is copied to `log_scroll.visual_start` for mouse hit testing outside the render function (click row → visual → logical mapping in `lib.rs`).
 
@@ -520,7 +522,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). A collapsed-thinking prefix (`↑ 3/8 blocks hidden ↑`) prepends the first line when `total > 3`. Left gutter `indent_cols` comes from `RawMessageType`.
 
-**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration; completed blocks read from `tools.blocks`.
+**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. The first visible `bash` output expands the card once to five stable rows; later chunks update the tail in place. stdout uses normal text, stderr uses warning color, and double-click opens the popup with up to 50,000 buffered characters. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
 
 **Why overlays for thinking/code?** Collapsed thinking needs a bordered card spanning multiple logical rows without rewriting `messages[]`. Code blocks similarly replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior — keeping hot `render()` free of markdown re-parse.
 

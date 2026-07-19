@@ -107,5 +107,7 @@ theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 # Tools
 # ---------------------------------------------------------------------------
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+# bash_timeout_secs = 1800
 # Brave Search API key for web_search (falls back to DuckDuckGo if unset)
 # brave_search_api_key = "bsk-..."

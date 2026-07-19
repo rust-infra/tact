@@ -131,6 +131,54 @@ async fn bash_echo_returns_success() {
 }
 
 #[tokio::test]
+async fn bash_streams_progress_before_step_finished() {
+    let command =
+        "printf 'out-1\\n'; sleep 0.1; printf 'err-1\\n' >&2; sleep 0.1; printf 'out-2\\n'";
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![bash_tool_use("bash_stream", command)],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Streaming done.")], StopReason::EndTurn),
+    ]);
+
+    let (updates, _) = run_single_task(mock, "stream", PermissionMode::Auto).await;
+    let progress_idx = updates
+        .iter()
+        .position(|update| {
+            matches!(
+                update,
+                AgentUpdate::ToolProgress { tool_id, .. } if tool_id == "bash_stream"
+            )
+        })
+        .expect("expected bash progress");
+    let finish_idx = first_index(&updates, |update| {
+        matches!(
+            update,
+            AgentUpdate::StepFinished { tool_id, .. } if tool_id == "bash_stream"
+        )
+    })
+    .expect("expected bash finish");
+    let progress_text = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::ToolProgress { tool_id, chunks } if tool_id == "bash_stream" => Some(
+                chunks
+                    .iter()
+                    .map(|chunk| chunk.text.as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect::<String>();
+
+    assert!(progress_idx < finish_idx);
+    assert!(progress_text.contains("out-1"));
+    assert!(progress_text.contains("err-1"));
+    assert!(progress_text.contains("out-2"));
+}
+
+#[tokio::test]
 async fn read_then_write_chain() {
     let mock = MockClient::new(vec![
         mock_turn(

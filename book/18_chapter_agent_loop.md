@@ -101,7 +101,12 @@ After a successful stream, the assistant message is appended to `runtime.context
 
 `StopReason` is owned by `tact_llm` ([`stop_reason.rs`](../crates/tact_llm/src/stop_reason.rs)), not the Anthropic SDK. Adapters map provider-native strings (`end_turn`, `finish_reason=length`, …) into this enum; `model_context_window_exceeded` maps to `MaxTokens`.
 
-**Cancellation:** `cancel_flag` is checked at the top of each iteration and again before tool execution. When set, the loop returns `Ok(())` after emitting `AgentUpdate::Info("Cancelled by user")`. A new `SubmitTask` clears `cancel_flag` before calling `agent_loop` again.
+**Cancellation:** `cancel_flag` is checked at the top of each iteration and
+again before tool execution. The same `Arc<AtomicBool>` is carried into
+`ToolContext`, so an in-flight `bash` command observes cancellation, terminates
+its child process group on Unix, and flushes already-read output before the
+agent loop returns. The driver emits `TaskCancelled` only after that return. A
+new `SubmitTask` clears `cancel_flag` before calling `agent_loop` again.
 
 ---
 
@@ -112,7 +117,10 @@ After a successful stream, the assistant message is appended to `runtime.context
 - `TaskComplete` → `notify_task_complete` ([Ch 17](./17_chapter_notify.md))
 - `StepFailed` → `notify_step_failed`
 
-Most lifecycle events (`StepAdded`, `StepStarted`, `StepFinished`, `RequestSelect`, etc.) originate from `execute_tool_call` in `tool_dispatch.rs`.
+Most lifecycle events (`StepAdded`, `StepStarted`, `StepFinished`,
+`RequestSelect`, etc.) originate from `execute_tool_call` in `tool_dispatch.rs`.
+In-flight tools may emit informational `ToolProgress` between `StepStarted` and
+the terminal `StepFinished` / `StepFailed`; it does not itself signal completion.
 
 ---
 

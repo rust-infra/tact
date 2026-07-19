@@ -220,10 +220,17 @@ pub struct ToolContext {
     pub cron_scheduler: SharedCronScheduler,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
+    pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub bash_timeout_secs: u64,
 }
 ```
 
-It contains only the business dependencies tools need to execute. It does not include:
+It contains the business dependencies and per-invocation execution controls
+tools need. `for_invocation(tool_id)` binds progress to one call; the shared
+cancellation flag and resolved bash timeout allow an in-flight command to stop
+promptly. It still does not include:
 
 - LLM client
 - Conversation context

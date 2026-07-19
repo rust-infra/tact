@@ -7,6 +7,7 @@ use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
 use tact_protocol::{
     AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
+    ToolOutputBuffer, ToolOutputChunk,
 };
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
@@ -44,7 +45,8 @@ impl App {
         match &update {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
-            | AgentUpdate::ModelInfo(_) => {}
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolProgress { .. } => {}
             _ => {
                 self.flush_and_close_thinking();
             }
@@ -53,7 +55,9 @@ impl App {
         // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
         // should NOT remove the placeholder since they don't produce visible content.
         match &update {
-            AgentUpdate::TokenUsage(_) | AgentUpdate::ModelInfo(_) => {
+            AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolProgress { .. } => {
                 // Metadata only, no content: keep the loading placeholder.
             }
             _ => {
@@ -176,6 +180,9 @@ impl App {
                     }
                 }
             }
+            AgentUpdate::ToolProgress { tool_id, chunks } => {
+                self.on_tool_progress(&tool_id, &chunks)
+            }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
         }
         // Unified tail scroll state refresh, covering cases where helpers like
@@ -238,9 +245,52 @@ impl App {
             phys_idx,
             tool_id,
             output,
+            live_output: ToolOutputBuffer::new(50_000),
             started_at: Instant::now(),
         });
         self.refresh_tool_log_scroll();
+    }
+
+    fn on_tool_progress(&mut self, tool_id: &str, chunks: &[ToolOutputChunk]) {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|active| active.tool_id == tool_id)
+        else {
+            return;
+        };
+        let was_pinned = self.log_scroll.offset == u16::MAX;
+        self.tools.active[pos].live_output.push_chunks(chunks);
+        if self.tools.active[pos].live_output.logical_line_count() == 0 {
+            return;
+        }
+
+        let active = &self.tools.active[pos];
+        let phys_idx = active.phys_idx;
+        let old_rows = active.output.visual_rows(false);
+        let tool_name = active.output.tool_name.clone();
+        let arg_summary = active.output.arg_summary.clone();
+        let arg_full = active.output.arg_full.clone();
+        let live_output = active.live_output.clone();
+        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let msgs = self.msgs();
+        let output = ToolWidget::new(&self.theme, &msgs)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(step_idx)
+            .with_phase(ToolPhase::Running)
+            .with_duration_us(0)
+            .with_live_output(&live_output)
+            .build();
+        let new_rows = output.visual_rows(false);
+        self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
+        self.tools.active[pos].output = output;
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        if was_pinned {
+            self.log_scroll.offset = u16::MAX;
+        }
     }
 
     fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
@@ -517,7 +567,7 @@ mod lifecycle_tests {
     use std::path::PathBuf;
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
-        ThinkingChunk,
+        ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -537,6 +587,133 @@ mod lifecycle_tests {
             String::new(),
             Vec::new(),
         )
+    }
+
+    fn seed_running_bash(app: &mut App, tool_id: &str) {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run command",
+            "bash",
+            tool_id,
+            HashMap::from([("command".to_string(), "long-command".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: tool_id.to_string(),
+            tool_name: "bash".into(),
+            arg_summary: "long-command".into(),
+            arg_full: "long-command".into(),
+        });
+    }
+
+    #[test]
+    fn progress_expands_once_to_five_output_rows() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        let initial_rows = app.tools.active[0].output.visual_rows(false);
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("one\n")],
+        });
+        let live_rows = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("two\nthree\n")],
+        });
+
+        assert!(live_rows > initial_rows);
+        assert_eq!(app.tools.active[0].output.visual_rows(false), live_rows);
+        assert_eq!(app.tools.active[0].output.detail_preview.len(), 5);
+    }
+
+    #[test]
+    fn progress_does_not_repin_scrolled_log() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.log_scroll.offset = 3;
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("line\n")],
+        });
+
+        assert_eq!(app.log_scroll.offset, 3);
+    }
+
+    #[test]
+    fn progress_keeps_open_thinking_and_ignores_unknown_tool_ids() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "still thinking".into(),
+        )));
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "unknown".into(),
+            chunks: vec![ToolOutputChunk::stdout("ignored\n")],
+        });
+
+        assert!(!app.thinking.buffer.is_empty());
+        assert_eq!(app.tools.active[0].output.visual_rows(false), 2);
+    }
+
+    #[test]
+    fn active_bash_popup_uses_buffered_output() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+        });
+        let phys_idx = app.tools.active[0].phys_idx;
+
+        app.open_diff_popup(phys_idx);
+
+        let content = app
+            .tools
+            .popup
+            .as_ref()
+            .and_then(|popup| popup.inline_content.as_deref())
+            .unwrap_or_default();
+        assert!(content.contains("live line"), "popup content: {content}");
+    }
+
+    #[test]
+    fn completed_bash_collapses_live_card_and_ignores_late_progress() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+        });
+        let live_rows = app.tools.active[0].output.visual_rows(false);
+
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "long-command".into(),
+                arg_full: Some("long-command".into()),
+                status: StepStatus::Success,
+                message: "live line".into(),
+                detail: Some("live line\n".into()),
+                duration_us: Some(100),
+                permission_label: None,
+            },
+        });
+        let completed_rows = app.tools.blocks[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("late\n")],
+        });
+
+        assert!(completed_rows < live_rows);
+        assert!(app.tools.active.is_empty());
+        assert_eq!(
+            app.tools.blocks[0].output.detail_full.as_deref(),
+            Some("live line\n")
+        );
     }
 
     #[test]

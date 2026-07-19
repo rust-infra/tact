@@ -17,6 +17,7 @@ dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
+libc = { workspace = true }
 reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
 rmcp = { workspace = true }

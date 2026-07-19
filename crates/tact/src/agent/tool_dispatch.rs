@@ -68,7 +68,8 @@ async fn run_native_tool(
     name: &str,
     input: &serde_json::Value,
 ) -> ExecResult {
-    match tools.call(ctx, name, input.clone()).await {
+    let call_ctx = ctx.for_invocation(tool_use_id);
+    match tools.call(&call_ctx, name, input.clone()).await {
         Ok(output) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match persist_large_output(&tact_path, tool_use_id, &output).await {

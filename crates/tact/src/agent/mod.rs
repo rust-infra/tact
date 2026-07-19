@@ -117,7 +117,7 @@ pub struct Agent {
 impl Agent {
     pub fn new(
         client: LlmProvider,
-        tool_context: ToolContext,
+        mut tool_context: ToolContext,
         tools: ToolRouter,
         mcp_router: MCPToolRouter,
         permission_manager: PermissionManager,
@@ -128,6 +128,8 @@ impl Agent {
             .into_iter()
             .chain(mcp_router.all_tools())
             .collect();
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tool_context.cancel_flag = cancel_flag.clone();
         Self {
             runtime: AgentRuntime {
                 client,
@@ -137,7 +139,7 @@ impl Agent {
                 permission_manager,
                 stats: SessionStats::default(),
                 ui_tx: None,
-                cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                cancel_flag,
                 session_store: None,
                 session_id: None,
                 first_message_db_id: 0,
@@ -1335,6 +1337,7 @@ mod tests {
                 },
                 tools: crate::config::ToolSettings {
                     brave_search_api_key: None,
+                    bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                 },
                 permission_mode: None,
                 tokio_console: false,

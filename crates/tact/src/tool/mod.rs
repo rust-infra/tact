@@ -54,6 +54,7 @@ mod load_skill;
 mod lsp_tool;
 mod memory;
 mod path;
+mod progress;
 mod read_file;
 mod registry;
 mod search_code;
@@ -114,6 +115,17 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub bash_timeout_secs: u64,
+}
+
+impl ToolContext {
+    pub fn for_invocation(&self, tool_id: &str) -> Self {
+        let mut context = self.clone();
+        context.progress_reporter = ToolProgressReporter::new(tool_id, self.ui_tx.clone());
+        context
+    }
 }
 
 #[async_trait]
@@ -199,6 +211,7 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 }
 
 pub use path::{safe_path, safe_path_allow_missing};
+pub use progress::ToolProgressReporter;
 
 #[cfg(test)]
 mod tests {

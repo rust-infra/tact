@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod biz;
+pub mod tool_output;
 
 pub use agent::{
     AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, ThinkingChunk,
@@ -15,6 +16,9 @@ pub use agent::{
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
+};
+pub use tool_output::{
+    ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };
 
 /// Format a byte count using human-readable units: B, KB, MB, GB.

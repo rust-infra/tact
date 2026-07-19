@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::text::Line;
+use tact_protocol::ToolOutputBuffer;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
 #[derive(Default)]
@@ -20,6 +21,7 @@ pub(crate) struct ActiveToolBlock {
     pub phys_idx: usize,
     pub tool_id: String,
     pub output: ToolRenderOutput,
+    pub live_output: ToolOutputBuffer,
     pub started_at: Instant,
 }
 

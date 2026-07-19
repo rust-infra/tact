@@ -87,10 +87,16 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub bash_timeout_secs: u64,
 }
 ```
 
-在 `tui.rs` 中构建一次，每次 tool call 克隆。文件工具相对 `work_dir` 解析路径。可选 `ui_tx` 用于进度更新（例如大 `write_file`）。
+由 UI 入口构建一次，每次 tool call 克隆。文件工具相对 `work_dir` 解析路径。
+`for_invocation(tool_id)` 为本次调用绑定新的 `ToolProgressReporter`；
+`cancel_flag` 与 agent runtime 共享，`bash_timeout_secs` 携带 resolved 墙钟时限。
+当 `ui_tx` 缺失或已关闭时，reporter 为 no-op。
 
 ---
 
@@ -198,7 +204,19 @@ let exec = if is_mcp {
 };
 ```
 
-`run_native_tool` 调用 `tools.call(ctx, name, input)`。特例：`bash` 输出超出上下文限制时，可能经 `persist_large_output` 溢出到 `.claude/tool-results/{tool_use_id}.txt`。
+`run_native_tool` 先调用 `ctx.for_invocation(tool_use_id)`，再调用
+`tools.call(ctx, name, input)`。特例：`bash` 输出超出上下文限制时，可能经
+`persist_large_output` 溢出到 `.claude/tool-results/{tool_use_id}.txt`。
+
+`bash` 用两个并发 Tokio reader 读取 pipe stdout/stderr。Aggregator 按观察到的
+到达顺序合并 chunk、增量解码 UTF-8，并发送有界进度批次（首批立即发送，随后
+至少间隔 50 ms，每批最多 4 KiB）。最终规范化 capture 独立限制为 50,000 字符。
+Tact 只能显示命令实际写入 pipe 的字节；不会添加 PTY、注入 `stdbuf` 或改写
+pipeline 来绕过应用缓冲。
+
+墙钟超时默认 1,800 秒；`[tools].bash_timeout_secs = 0` 禁用超时。超时或取消
+在 Unix 终止 shell process group；在非 Unix 终止 child 并 abort 本地 pipe reader，
+避免继承的 handle 让调用一直等待。两条路径都会排空已入队输出，并在返回前 flush 进度。
 
 权限与 hooks 在 Phase 1 运行，**早于** `ToolRouter::call`——见 [权限模型](./10_chapter_permission.md)（英文）与 [Agent 生命周期钩子](./09_chapter_hook_zh.md)。
 
@@ -210,7 +228,7 @@ let exec = if is_mcp {
 |------|--------|------|
 | `read_file.rs`, `write_file.rs`, `edit_file.rs` | 文件 I/O | 路径安全 |
 | `batch_read.rs` | 批量操作 | 并行多文件读 |
-| `bash.rs` | `bash` | Shell + `validate_shell_command` |
+| `bash.rs` | `bash` | 校验 shell；流式 pipe、超时、process-group 取消 |
 | `search_code.rs` | `search_code` | Ripgrep 包装 |
 | `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory.md)（英文） |
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |

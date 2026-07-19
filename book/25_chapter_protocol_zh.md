@@ -37,6 +37,7 @@ graph LR
 pub enum AgentUpdate {
     StepAdded(PlanStep),
     StepStarted { idx, tool_id, tool_name, arg_summary, arg_full },
+    ToolProgress { tool_id, chunks: Vec<ToolOutputChunk> },
     StepFinished { idx, tool_id, result: StepResult },
     StepFailed { idx, tool_id, error },
     TaskComplete(String),
@@ -60,6 +61,10 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` 是生命周期 enum：生产者发出 `Started`、零或多个 `Delta` 片段，然后 `Finished`。仅暴露 `reasoning_content` delta 的 OpenAI 兼容 adapter 在流周围合成 `Started` / `Finished`。
+
+`ToolOutputChunk` 携带增量解码文本与 `ToolOutputStream`（`Stdout`、
+`Stderr` 或 `Other`）。一个 chunk batch 保留 aggregator 观察到的跨 stream 顺序。
+`ToolProgress` 是信息性的：不表示成功或失败；TUI 忽略未知或迟到的 `tool_id`。
 
 ### `UserCommand`
 
@@ -100,6 +105,7 @@ stateDiagram-v2
     direction LR
     [*] --> Planned: StepAdded
     Planned --> Running: StepStarted
+    Running --> Running: ToolProgress *
     Running --> Succeeded: StepFinished
     Running --> Failed: StepFailed
     Succeeded --> [*]
@@ -132,6 +138,7 @@ stateDiagram-v2
 |------|---------------|--------------|----------|
 | Planned | `StepAdded(PlanStep)` | pre-flight | 追加到 `plan.steps`；`ensure_executing_status` |
 | Running | `StepStarted { … }` | pre-flight | 推送 `ActiveToolBlock`；更新 `current_step` |
+| Progress | `ToolProgress { tool_id, chunks }` | in-flight tool | 仅更新匹配 active block；保留 thinking/loading gate 与 scroll 意图 |
 | Succeeded | `StepFinished { result }` | post-flight | `finalize_tool_block`；设置 `plan.steps[idx].output` |
 | Failed | `StepFailed { error }` | permission / hooks / execution | 失败 tool card 或系统消息；`Status → Idle` |
 
@@ -145,10 +152,14 @@ stateDiagram-v2
 StepAdded
   → StepStarted { arg_summary, arg_full }
   → RequestSelect?          （仅 permission Ask）
+  → ToolProgress*           （执行开始后；信息性）
   → StepFinished | StepFailed
 ```
 
 独立工具可在波次层面交错，但每个 `tool_id` 保持此序列。
+对于 `bash`，首个 progress batch 可立即发送；常规 batch 至少间隔 50 ms、最多
+4 KiB，并在终态事件前 final flush。共享 output buffer 移除 ANSI CSI/OSC、应用
+carriage-return 替换、保留 stream identity 供样式使用，并将 detail 限制为 50,000 字符。
 
 ---
 
@@ -222,6 +233,7 @@ flowchart LR
         RS[RequestSelect]
         SA2[StepAdded after Executing]
         SS[StepStarted]
+        TP[ToolProgress]
         SF[StepFinished]
     end
 
@@ -246,6 +258,7 @@ flowchart LR
 |---------------|---------------------|------|
 | `StepAdded`（首个） | `Planning → Executing` | `ensure_executing_status` |
 | `StepStarted` | `Executing`（更新 `current_step`） | 可有多个并发 `ActiveToolBlock`s |
+| `ToolProgress` | 无 status 变化 | 一个 active `tool_id` 的信息性 live output |
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer 冻结 |
 | `RequestSelect` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission.md) |
 | `TaskComplete` | `→ Done`（2s → `Idle`） | 由 driver 发出，非 `agent_loop` |

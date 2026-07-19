@@ -135,6 +135,8 @@ theme = "retro"
 # vision_image.jpeg_quality = 80
 
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+bash_timeout_secs = 1800
 brave_search_api_key = "bsk-..."
 ```
 
@@ -160,6 +162,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
 | `ui.theme` | `"retro"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
@@ -207,6 +210,10 @@ tact-ui headless "Summarize this repo"
 ```
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
+
+`tools.bash_timeout_secs` is TOML-only in v1. Resolution preserves `0` as
+"disabled" and otherwise carries the value through `ToolSettings` into each
+`ToolContext`; there is no CLI flag for it.
 
 ---
 

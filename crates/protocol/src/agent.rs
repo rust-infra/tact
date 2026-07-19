@@ -11,6 +11,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+use crate::tool_output::ToolOutputChunk;
+
 /// Execution status of a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepStatus {
@@ -104,6 +106,11 @@ pub enum AgentUpdate {
         idx: usize,
         tool_id: String,
         error: String,
+    },
+    /// Incremental text produced while a tool invocation is still running.
+    ToolProgress {
+        tool_id: String,
+        chunks: Vec<ToolOutputChunk>,
     },
     /// The entire task is complete
     TaskComplete(String),

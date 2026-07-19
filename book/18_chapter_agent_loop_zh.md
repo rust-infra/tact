@@ -102,7 +102,11 @@ Stats（`SessionStats`）累积 prompt/response/thinking 大小和 LLM 调用时
 
 `StopReason` 由 `tact_llm` 拥有（[`stop_reason.rs`](../crates/tact_llm/src/stop_reason.rs)），不是 Anthropic SDK。适配器将 provider 原生字符串（`end_turn`、`finish_reason=length` 等）映射到此 enum；`model_context_window_exceeded` 映射到 `MaxTokens`。
 
-**取消：** 每次迭代顶部以及工具执行前检查 `cancel_flag`。设置时，循环在发出 `AgentUpdate::Info("Cancelled by user")` 后返回 `Ok(())`。新的 `SubmitTask` 在再次调用 `agent_loop` 前清除 `cancel_flag`。
+**取消：** 每次迭代顶部以及工具执行前检查 `cancel_flag`。同一个
+`Arc<AtomicBool>` 也传入 `ToolContext`，因此执行中的 `bash` 会观察到取消，在
+Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出。Driver
+仅在该返回之后发出 `TaskCancelled`。新的 `SubmitTask` 在再次调用 `agent_loop`
+前清除 `cancel_flag`。
 
 ---
 
@@ -113,7 +117,10 @@ Stats（`SessionStats`）累积 prompt/response/thinking 大小和 LLM 调用时
 - `TaskComplete` → `notify_task_complete`（[第 17 章](./17_chapter_notify_zh.md)）
 - `StepFailed` → `notify_step_failed`
 
-大多数生命周期事件（`StepAdded`、`StepStarted`、`StepFinished`、`RequestSelect` 等）来自 `tool_dispatch.rs` 中的 `execute_tool_call`。
+大多数生命周期事件（`StepAdded`、`StepStarted`、`StepFinished`、
+`RequestSelect` 等）来自 `tool_dispatch.rs` 中的 `execute_tool_call`。执行中的工具
+可在 `StepStarted` 与终态 `StepFinished` / `StepFailed` 之间发出信息性的
+`ToolProgress`；它本身不表示完成。
 
 ---
 

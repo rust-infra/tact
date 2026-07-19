@@ -86,10 +86,17 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub bash_timeout_secs: u64,
 }
 ```
 
-Built once in `tui.rs` and cloned per tool call. File tools resolve paths relative to `work_dir`. Optional `ui_tx` enables progress updates (e.g. large `write_file`).
+Built once by the UI entry point and cloned per tool call. File tools resolve
+paths relative to `work_dir`. `for_invocation(tool_id)` binds a fresh
+`ToolProgressReporter` to that call, while `cancel_flag` is shared with the
+agent runtime and `bash_timeout_secs` carries the resolved wall-clock limit.
+The reporter is a no-op when `ui_tx` is absent or closed.
 
 ---
 
@@ -197,7 +204,23 @@ let exec = if is_mcp {
 };
 ```
 
-`run_native_tool` calls `tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to `.claude/tool-results/{tool_use_id}.txt` via `persist_large_output` when output exceeds context limits.
+`run_native_tool` first calls `ctx.for_invocation(tool_use_id)`, then
+`tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to
+`.claude/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
+exceeds context limits.
+
+`bash` uses concurrent Tokio readers for piped stdout and stderr. An aggregator
+merges chunks in observed arrival order, incrementally decodes UTF-8, and sends
+bounded progress batches (first batch immediately, then at least 50 ms apart,
+at most 4 KiB each). The final normalized capture is independently capped at
+50,000 characters. Tact only displays bytes the command emits: it does not add
+a PTY, inject `stdbuf`, or rewrite pipelines to bypass application buffering.
+
+The wall-clock timeout defaults to 1,800 seconds; `[tools].bash_timeout_secs =
+0` disables it. Timeout or cancellation kills the shell process group on Unix.
+On non-Unix it kills the child and aborts the local pipe readers so inherited
+handles cannot keep the call open. Both paths drain already-queued output and
+flush progress before returning.
 
 Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Permission Model](./10_chapter_permission.md) and [Agent Lifecycle Hooks](./09_chapter_hook.md).
 
@@ -209,7 +232,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 |--------|--------------|-------|
 | `read_file.rs`, `write_file.rs`, `edit_file.rs` | file I/O | Path-safe |
 | `batch_read.rs` | batch ops | Parallel multi-file read |
-| `bash.rs` | `bash` | Shell + `validate_shell_command` |
+| `bash.rs` | `bash` | Validated shell; streamed pipes, timeout, process-group cancellation |
 | `search_code.rs` | `search_code` | Ripgrep wrapper |
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |

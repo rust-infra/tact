@@ -149,6 +149,10 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
+    let bash_timeout_secs = toml_cfg
+        .tools
+        .bash_timeout_secs
+        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
     let permission_mode = args
         .permission_mode
@@ -179,6 +183,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         tools: ToolSettings {
             brave_search_api_key,
+            bash_timeout_secs,
         },
         permission_mode,
         tokio_console: args.tokio_console,
@@ -265,6 +270,10 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
+    let bash_timeout_secs = toml_cfg
+        .tools
+        .bash_timeout_secs
+        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
     let permission_mode = args
         .permission_mode
@@ -289,6 +298,7 @@ pub(super) fn resolve_config(
         },
         tools: ToolSettings {
             brave_search_api_key,
+            bash_timeout_secs,
         },
         permission_mode,
         tokio_console: args.tokio_console,
@@ -412,6 +422,16 @@ jpeg_quality = 0
         let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
+    }
+
+    #[test]
+    fn bash_timeout_defaults_to_thirty_minutes_and_zero_is_preserved() {
+        let default = resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None);
+        assert_eq!(default.tools.bash_timeout_secs, 1_800);
+
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
+        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None);
+        assert_eq!(disabled.tools.bash_timeout_secs, 0);
     }
 
     #[test]

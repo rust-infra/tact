@@ -4,7 +4,9 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use tact_protocol::{StepResult, StepStatus};
+use tact_protocol::{
+    StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+};
 
 use crate::{i18n::Messages, theme::Theme};
 
@@ -225,7 +227,7 @@ pub struct ToolRenderOutput {
     pub arg_full: String,
     pub layout: ToolLayout,
     pub detail_title: Option<String>,
-    pub detail_preview: Vec<String>,
+    pub detail_preview: Vec<ToolOutputLine>,
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
@@ -262,6 +264,9 @@ pub struct ToolWidget<'a> {
     msgs: &'a Messages,
     max_detail_lines: usize,
     preview_lines: usize,
+    detail_lines: Option<Vec<ToolOutputLine>>,
+    detail_total_lines: Option<usize>,
+    live_detail: bool,
 }
 
 impl<'a> ToolWidget<'a> {
@@ -280,6 +285,9 @@ impl<'a> ToolWidget<'a> {
             msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
+            detail_lines: None,
+            detail_total_lines: None,
+            live_detail: false,
         }
     }
 
@@ -314,6 +322,19 @@ impl<'a> ToolWidget<'a> {
 
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
+        let mut lines = output.preview_lines(5);
+        if !lines.is_empty() {
+            lines.resize_with(5, ToolOutputLine::default);
+        }
+        self.detail = Some(output.detail_text());
+        self.detail_lines = Some(lines);
+        self.detail_total_lines = Some(output.logical_line_count());
+        self.preview_lines = 5;
+        self.live_detail = true;
         self
     }
 
@@ -378,6 +399,9 @@ impl<'a> ToolWidget<'a> {
             msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
+            detail_lines: None,
+            detail_total_lines: None,
+            live_detail: false,
         }
     }
 
@@ -442,13 +466,18 @@ impl<'a> ToolWidget<'a> {
             };
         }
 
-        let total_lines = detail.lines().count();
+        let total_lines = self
+            .detail_total_lines
+            .unwrap_or_else(|| detail.lines().count());
         let preview_cap = if matches!(self.phase, ToolPhase::Failed) {
             ERROR_PREVIEW_LINES
         } else {
             self.preview_lines
         };
-        let preview_count = total_lines.min(preview_cap);
+        let preview_count = self
+            .detail_lines
+            .as_ref()
+            .map_or_else(|| total_lines.min(preview_cap), Vec::len);
         ToolLayout {
             visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
@@ -464,12 +493,21 @@ impl<'a> ToolWidget<'a> {
         );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
-            let lines: Vec<String> = detail
-                .lines()
-                .take(self.max_detail_lines)
-                .map(str::to_string)
-                .collect();
-            let total = detail.lines().count();
+            let lines: Vec<ToolOutputLine> = self.detail_lines.clone().unwrap_or_else(|| {
+                detail
+                    .lines()
+                    .take(self.max_detail_lines)
+                    .map(|line| ToolOutputLine {
+                        spans: vec![ToolOutputSpan {
+                            stream: ToolOutputStream::Other,
+                            text: line.to_string(),
+                        }],
+                    })
+                    .collect()
+            });
+            let total = self
+                .detail_total_lines
+                .unwrap_or_else(|| detail.lines().count());
             let preview = lines.iter().take(layout.preview_lines).cloned().collect();
             (Some(self.detail_card_title(total)), preview, total)
         } else {
@@ -478,7 +516,9 @@ impl<'a> ToolWidget<'a> {
 
         let title_raw = self.title_text();
         let has_detail_card = layout.has_detail_card;
-        let card_bottom = if matches!(self.phase, ToolPhase::Failed) {
+        let card_bottom = if self.live_detail {
+            self.msgs.tool_live_output_bottom.to_string()
+        } else if matches!(self.phase, ToolPhase::Failed) {
             self.msgs.tool_error_card_bottom.to_string()
         } else {
             self.msgs.diff_card_bottom.to_string()
@@ -530,6 +570,10 @@ impl<'a> ToolWidget<'a> {
         if matches!(self.phase, ToolPhase::Failed) {
             return true;
         }
+        if self.live_detail {
+            return matches!(display_kind(&self.tool_name), ToolDisplayKind::Command)
+                && matches!(self.phase, ToolPhase::Running);
+        }
         matches!(
             display_kind(&self.tool_name),
             ToolDisplayKind::FileWrite
@@ -540,6 +584,12 @@ impl<'a> ToolWidget<'a> {
     }
 
     fn detail_card_title(&self, total_lines: usize) -> String {
+        if self.live_detail {
+            return self
+                .msgs
+                .tool_live_output_title_tmpl
+                .replace("{}", &total_lines.to_string());
+        }
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
         }
@@ -582,6 +632,36 @@ mod tests {
             .with_phase(ToolPhase::Running);
 
         assert_eq!(widget.title_text(), "bash (echo hello)");
+    }
+
+    #[test]
+    fn running_bash_live_output_builds_fixed_five_line_preview() {
+        let (theme, msgs) = fixture();
+        let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
+        live.push_chunks(&[
+            tact_protocol::ToolOutputChunk::stdout("building\n"),
+            tact_protocol::ToolOutputChunk::stderr("warning\n"),
+        ]);
+
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("bash")
+            .with_phase(ToolPhase::Running)
+            .with_live_output(&live)
+            .build();
+
+        assert!(output.layout.has_detail_card);
+        assert_eq!(output.detail_preview.len(), 5);
+        assert!(
+            output
+                .detail_title
+                .as_deref()
+                .unwrap()
+                .contains("Live output")
+        );
+        assert_eq!(
+            output.detail_preview[1].spans[0].stream,
+            tact_protocol::ToolOutputStream::Stderr
+        );
     }
 
     #[test]
@@ -642,8 +722,8 @@ mod tests {
         assert!(output.layout.has_detail_card);
         assert_eq!(output.layout.preview_lines, 1);
         assert_eq!(
-            output.detail_preview,
-            vec!["hook blocked execution".to_string()]
+            output.detail_preview[0].plain_text(),
+            "hook blocked execution"
         );
     }
 
@@ -824,7 +904,7 @@ mod tests {
                 .unwrap()
                 .contains("src/lib.rs")
         );
-        assert_eq!(output.detail_preview, vec!["new line one".to_string()]);
+        assert_eq!(output.detail_preview[0].plain_text(), "new line one");
     }
 
     #[test]

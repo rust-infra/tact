@@ -109,6 +109,9 @@ async fn run_interactive_locked(
         teammate_manager,
         worktree_manager,
         ui_tx: Some(agent_tx.clone()),
+        progress_reporter: tact::tool::ToolProgressReporter::default(),
+        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
     };
 
     let history_store = session_store.clone();

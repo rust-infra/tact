@@ -4163,6 +4163,7 @@ dependencies = [
  "derive_builder",
  "futures-util",
  "globset",
+ "libc",
  "reqwest",
  "reqwest-eventsource",
  "rmcp",

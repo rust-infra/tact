@@ -239,6 +239,7 @@ mod tests {
             },
             tools: tact::config::ToolSettings {
                 brave_search_api_key: None,
+                bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
             },
             permission_mode: None,
             tokio_console: false,

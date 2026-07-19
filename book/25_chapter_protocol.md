@@ -36,6 +36,7 @@ All three use `tokio::sync::mpsc::unbounded_channel`. `RequestSelect` embeds a `
 pub enum AgentUpdate {
     StepAdded(PlanStep),
     StepStarted { idx, tool_id, tool_name, arg_summary, arg_full },
+    ToolProgress { tool_id, chunks: Vec<ToolOutputChunk> },
     StepFinished { idx, tool_id, result: StepResult },
     StepFailed { idx, tool_id, error },
     TaskComplete(String),
@@ -59,6 +60,12 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` is a lifecycle enum: producers emit `Started`, zero or more `Delta` fragments, then `Finished`. OpenAI-compatible adapters that only expose `reasoning_content` deltas synthesize `Started` / `Finished` around the stream.
+
+`ToolOutputChunk` carries incrementally decoded text plus a
+`ToolOutputStream` (`Stdout`, `Stderr`, or `Other`). A chunk batch preserves the
+aggregator-observed order across streams. `ToolProgress` is informational: it
+does not indicate success or failure, and unknown or late `tool_id` values are
+ignored by the TUI.
 
 ### `UserCommand`
 
@@ -99,6 +106,7 @@ stateDiagram-v2
     direction LR
     [*] --> Planned: StepAdded
     Planned --> Running: StepStarted
+    Running --> Running: ToolProgress *
     Running --> Succeeded: StepFinished
     Running --> Failed: StepFailed
     Succeeded --> [*]
@@ -131,6 +139,7 @@ stateDiagram-v2
 |-------|---------------|---------------|------------|
 | Planned | `StepAdded(PlanStep)` | pre-flight | Append to `plan.steps`; `ensure_executing_status` |
 | Running | `StepStarted { … }` | pre-flight | Push `ActiveToolBlock`; update `current_step` |
+| Progress | `ToolProgress { tool_id, chunks }` | in-flight tool | Update only the matching active block; preserve thinking/loading gates and scroll intent |
 | Succeeded | `StepFinished { result }` | post-flight | `finalize_tool_block`; set `plan.steps[idx].output` |
 | Failed | `StepFailed { error }` | permission / hooks / execution | Failed tool card or system message; `Status → Idle` |
 
@@ -144,10 +153,16 @@ Parallel tools in one turn each run the sequence above. `StepFinished` is emitte
 StepAdded
   → StepStarted { arg_summary, arg_full }
   → RequestSelect?          (permission Ask only)
+  → ToolProgress*           (after execution starts; informational)
   → StepFinished | StepFailed
 ```
 
 Independent tools may interleave at the wave level, but each `tool_id` keeps this sequence.
+For `bash`, the first progress batch may be immediate; regular batches are at
+least 50 ms apart and at most 4 KiB, with a final flush before the terminal
+event. The shared output buffer strips ANSI CSI/OSC, applies carriage-return
+replacement, retains stream identity for styling, and caps detail at 50,000
+characters.
 
 ---
 
@@ -221,6 +236,7 @@ flowchart LR
         RS[RequestSelect]
         SA2[StepAdded after Executing]
         SS[StepStarted]
+        TP[ToolProgress]
         SF[StepFinished]
     end
 
@@ -245,6 +261,7 @@ flowchart LR
 |---------------|---------------------|-------|
 | `StepAdded` (first) | `Planning → Executing` | `ensure_executing_status` |
 | `StepStarted` | `Executing` (update `current_step`) | May have multiple concurrent `ActiveToolBlock`s |
+| `ToolProgress` | No status change | Informational live output for one active `tool_id` |
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer frozen |
 | `RequestSelect` | `InputMode::Select` (Status stays `Executing`) | See [Ch 10](./10_chapter_permission.md) |
 | `TaskComplete` | `→ Done` (2s → `Idle`) | Emitted by driver, not `agent_loop` |

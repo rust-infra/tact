@@ -161,7 +161,7 @@ async fn cancel_during_task_does_not_emit_task_complete() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (vec![bash_tool_use("sleep 2")], Some(StopReason::ToolUse)),
+        (vec![bash_tool_use("sleep 30")], Some(StopReason::ToolUse)),
         (
             vec![text_block("Should not complete.")],
             Some(StopReason::EndTurn),
@@ -181,9 +181,9 @@ async fn cancel_during_task_does_not_emit_task_complete() {
     user_cmd_tx.send(UserCommand::Cancel).unwrap();
     drop(user_cmd_tx);
 
-    tokio::time::timeout(Duration::from_secs(5), driver)
+    tokio::time::timeout(Duration::from_secs(2), driver)
         .await
-        .expect("driver should finish after bash sleep")
+        .expect("driver should cancel bash promptly")
         .unwrap();
 
     let updates = collect_updates_after(agent_rx).await;

@@ -119,6 +119,9 @@ pub struct VisionImageTomlConfig {
 pub struct ToolsTomlConfig {
     /// Brave Search API key for the web_search tool.
     pub brave_search_api_key: Option<String>,
+
+    /// Bash wall-clock timeout in seconds. Zero disables the timeout.
+    pub bash_timeout_secs: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +183,11 @@ pub struct UiSettings {
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
     pub brave_search_api_key: Option<String>,
+    pub bash_timeout_secs: u64,
+}
+
+impl ToolSettings {
+    pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 1_800;
 }
 
 #[derive(Debug, Clone)]

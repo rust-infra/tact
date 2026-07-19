@@ -133,6 +133,8 @@ theme = "retro"
 # vision_image.jpeg_quality = 80
 
 [tools]
+# Bash 墙钟超时秒数（默认 1800；0 表示禁用）
+bash_timeout_secs = 1800
 brave_search_api_key = "bsk-..."
 ```
 
@@ -154,6 +156,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, … 
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `ui.theme` | `"retro"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
@@ -198,6 +201,9 @@ tact-ui headless "Summarize this repo"
 ```
 
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
+
+`tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”
+语义，否则经 `ToolSettings` 将该值传到每个 `ToolContext`；没有对应 CLI flag。
 
 ---
 
