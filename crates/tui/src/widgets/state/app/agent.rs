@@ -731,7 +731,7 @@ mod lifecycle_tests {
         assert!(app.tools.active.is_empty());
         assert_eq!(
             app.tools.blocks[0].output.detail_full.as_deref(),
-            Some("live line\n")
+            Some("$ long-command\n\nlive line\n")
         );
     }
 

@@ -413,11 +413,7 @@ impl App {
                     file_path: None,
                     git_diff_path: None,
                     workspace_dir: None,
-                    inline_content: Some(if full_arg.is_empty() {
-                        content
-                    } else {
-                        format!("$ {full_arg}\n\n{content}")
-                    }),
+                    inline_content: Some(content),
                     lang: "bash".to_string(),
                     use_diff_gutter: false,
                     is_diff: false,
@@ -550,8 +546,12 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::render::test_harness::make_app;
-    use crate::widgets::state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection};
+    use crate::widgets::{
+        state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection},
+        tool_widget::{ToolPhase, ToolWidget},
+    };
     use ratatui::layout::Rect;
+    use tact_protocol::{StepResult, StepStatus};
 
     fn inline_popup(content: &str) -> DiffPopup {
         DiffPopup {
@@ -619,5 +619,30 @@ mod tests {
         popup.selection = Some(PopupTextSelection::new(0, 5));
 
         assert_eq!(popup.copy_content(), Some("first".into()));
+    }
+
+    #[test]
+    fn bash_popup_and_card_share_the_same_total_line_count() {
+        let app = make_app();
+        let result = StepResult {
+            tool: "bash".into(),
+            arg_summary: "echo start".into(),
+            arg_full: Some("echo start\necho done".into()),
+            status: StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("output one\noutput two".into()),
+            duration_us: Some(1),
+            permission_label: None,
+        };
+        let msgs = app.msgs();
+        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)
+            .with_phase(ToolPhase::Success)
+            .build();
+        let popup = app.popup_from_tool_output(&output).expect("bash popup");
+
+        assert_eq!(
+            output.detail_total_lines,
+            popup.inline_content.unwrap().lines().count()
+        );
     }
 }

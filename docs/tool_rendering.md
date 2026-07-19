@@ -180,7 +180,7 @@ Shown only when **phase is Success** and tool kind is:
 | `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
 | `Generic` | others | No card (title + meta only) |
 
-Completed preview: default 1 line inside the card; overflow row when total > preview. Full text remains in `detail_full` for the popup.
+Completed preview: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the preview/total counter and popup use the same content.
 
 Running `bash` cards add no detail until the first visible output. They then
 grow from one to three rows, titled `Live output (N lines)`; later progress
@@ -243,7 +243,7 @@ File: `widgets/state/tool_state.rs` + `render/popups/diff_popup.rs`
 | `use_diff_gutter` | Green `+` prefix for file writes |
 | `title` | Modal header — for bash, `bash (<full command>)` even when the log title was truncated |
 
-For `bash` / `run_command` / `shell`, popup content is prefixed with `$ <full command>` before the captured output. This is the primary place to read untruncated arguments.
+For `bash` / `run_command` / `shell`, the cached detail contains `$ <full command>` followed by the captured output. The card's preview/total counter, popup, and copy operation therefore share one content source; the popup is the primary place to read untruncated arguments.
 
 An active `bash` card also opens this popup using its buffered output so far.
 The live detail buffer is capped at 50,000 characters and marks omitted text;

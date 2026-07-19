@@ -46,10 +46,10 @@ impl ThinkingCell {
             title: format!(
                 " {spinner}{}",
                 msgs.thinking_card_title
-                    .replacen("{}", &visible.to_string(), 1)
+                    .replacen("{}", &total.to_string(), 1)
                     .replacen(
                         "{}",
-                        if visible == 1 {
+                        if total == 1 {
                             ""
                         } else {
                             msgs.thinking_card_title_pl
@@ -70,16 +70,25 @@ impl ThinkingCell {
     }
 
     pub(crate) fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
+        let total = block.content.lines().count().max(1);
         Self {
             lines: vec![block.summary.clone()],
             title: msgs
                 .thinking_card_title
-                .replacen("{}", "1", 1)
-                .replacen("{}", "", 1),
+                .replacen("{}", &total.to_string(), 1)
+                .replacen(
+                    "{}",
+                    if total == 1 {
+                        ""
+                    } else {
+                        msgs.thinking_card_title_pl
+                    },
+                    1,
+                ),
             bottom: msgs
                 .thinking_card_bottom
                 .replacen("{}", "1", 1)
-                .replacen("{}", &block.content.lines().count().max(1).to_string(), 1)
+                .replacen("{}", &total.to_string(), 1)
                 .replacen("{}", &format_elapsed(block.elapsed), 1),
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
@@ -240,6 +249,7 @@ mod tests {
         let text = render_text(&four);
         assert!(text.contains("two") && text.contains("four"), "{text}");
         assert!(!text.contains("one"), "{text}");
+        assert!(text.contains("Thinking (4 lines)"), "{text}");
     }
 
     #[test]
@@ -256,6 +266,7 @@ mod tests {
         let text = render_text(&ThinkingCell::completed(&block, &theme, &msgs));
         assert!(text.contains("last"), "{text}");
         assert!(!text.contains("first"), "{text}");
+        assert!(text.contains("Thinking (2 lines)"), "{text}");
     }
 
     #[test]

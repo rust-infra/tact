@@ -328,9 +328,11 @@ impl<'a> ToolWidget<'a> {
 
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
         let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
-        self.detail = Some(output.detail_text());
+        let detail = command_detail(&self.tool_name, &self.arg_full, &output.detail_text());
+        let total_lines = detail.lines().count();
+        self.detail = Some(detail);
         self.detail_lines = Some(lines);
-        self.detail_total_lines = Some(output.logical_line_count());
+        self.detail_total_lines = Some(total_lines);
         self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
         self.live_detail = true;
         self
@@ -366,11 +368,22 @@ impl<'a> ToolWidget<'a> {
         let ask_user_label = (!failed && result.tool == "ask_user")
             .then(|| compact_ask_user_meta(&result.message))
             .flatten();
+        let arg_full = result
+            .arg_full
+            .clone()
+            .unwrap_or_else(|| result.arg_summary.clone());
         let detail = result.detail.clone().or_else(|| {
             if failed && !result.message.is_empty() {
                 Some(result.message.clone())
             } else {
                 None
+            }
+        });
+        let detail = detail.map(|detail| {
+            if failed {
+                detail
+            } else {
+                command_detail(&result.tool, &arg_full, &detail)
             }
         });
         let permission_label = match (result.permission_label.clone(), ask_user_label) {
@@ -383,10 +396,7 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
-            arg_full: result
-                .arg_full
-                .clone()
-                .unwrap_or_else(|| result.arg_summary.clone()),
+            arg_full,
             step_index: None,
             phase: ToolPhase::from_status(&result.status),
             detail,
@@ -506,7 +516,18 @@ impl<'a> ToolWidget<'a> {
             let total = self
                 .detail_total_lines
                 .unwrap_or_else(|| detail.lines().count());
-            let preview = lines.iter().take(layout.preview_lines).cloned().collect();
+            let preview = if matches!(display_kind(&self.tool_name), ToolDisplayKind::Command) {
+                let mut tail: Vec<_> = lines
+                    .iter()
+                    .rev()
+                    .take(layout.preview_lines)
+                    .cloned()
+                    .collect();
+                tail.reverse();
+                tail
+            } else {
+                lines.iter().take(layout.preview_lines).cloned().collect()
+            };
             (Some(self.detail_card_title(total)), preview, total)
         } else {
             (None, Vec::new(), 0)
@@ -604,6 +625,13 @@ impl<'a> ToolWidget<'a> {
             ToolDisplayKind::Generic => format!("{} output", self.tool_name),
         }
     }
+}
+
+fn command_detail(tool_name: &str, full_arg: &str, detail: &str) -> String {
+    if !matches!(display_kind(tool_name), ToolDisplayKind::Command) || full_arg.is_empty() {
+        return detail.to_string();
+    }
+    format!("$ {full_arg}\n\n{detail}")
 }
 
 #[cfg(test)]
