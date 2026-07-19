@@ -202,6 +202,67 @@ fn diff_popup_selection_reverses_wide_scalar_and_maps_both_columns() {
     assert_eq!(row.cells[1].end, 4);
 }
 
+fn assert_diff_popup_grapheme_selection(
+    text: &str,
+    grapheme: &str,
+    grapheme_end: usize,
+    following_end: usize,
+) {
+    let mut app = make_app();
+    seed_diff_popup(&mut app);
+    let popup = app.tools.popup.as_mut().expect("popup");
+    popup.inline_content = Some(text.into());
+    popup.lang.clear();
+
+    let _terminal = render_main_area_terminal(&mut app, 100, 30);
+    let row = &app.mouse.diff_popup_hit_rows[0];
+    let grapheme_hit = row.hit(row.text_x + 1);
+    assert_eq!(
+        grapheme_hit,
+        crate::widgets::state::PopupTextHit::new(1, grapheme_end)
+    );
+    assert_eq!(row.hit(row.text_x + 2), grapheme_hit);
+    assert_eq!(
+        row.hit(row.text_x + 3),
+        crate::widgets::state::PopupTextHit::new(grapheme_end, following_end)
+    );
+
+    app.tools.popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(
+        grapheme_hit.start,
+        grapheme_hit.end,
+    ));
+    assert_eq!(
+        app.tools
+            .popup
+            .as_ref()
+            .expect("popup")
+            .copy_content()
+            .as_deref(),
+        Some(grapheme)
+    );
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let row = &app.mouse.diff_popup_hit_rows[0];
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(row.text_x + 1, row.screen_y)].symbol(), grapheme);
+    assert!(
+        buffer[(row.text_x + 1, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert_eq!(buffer[(row.text_x + 3, row.screen_y)].symbol(), "b");
+}
+
+#[test]
+fn diff_popup_selects_and_highlights_complete_emoji_presentation_grapheme() {
+    assert_diff_popup_grapheme_selection("a⌨️b", "⌨️", 7, 8);
+}
+
+#[test]
+fn diff_popup_selects_and_highlights_complete_zwj_emoji_grapheme() {
+    assert_diff_popup_grapheme_selection("a👩‍💻b", "👩‍💻", 12, 13);
+}
+
 #[test]
 fn diff_popup_selection_highlights_visible_scrolled_row() {
     let mut app = make_app();

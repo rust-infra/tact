@@ -111,6 +111,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
 }
 
 fn handle_diff_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
+    app.mouse.diff_popup_drag_origin = None;
     let inside_popup = point_in_rect(mouse.column, mouse.row, app.mouse.diff_popup_area);
     app.close_overlay_on_outside_click(mouse.column, mouse.row);
     if !inside_popup || !point_in_rect(mouse.column, mouse.row, app.mouse.diff_popup_body_area) {
@@ -472,31 +473,19 @@ mod tests {
     }
 
     #[test]
-    fn popup_mouse_down_on_left_border_preserves_selection_and_drag_state() {
-        let mut app = app_with_selectable_tool_popup();
-        let selection = Some(PopupTextSelection::new(1, 4));
-        let drag_origin = Some(PopupTextHit::new(1, 2));
-        app.tools.popup.as_mut().unwrap().selection = selection;
-        app.mouse.diff_popup_drag_origin = drag_origin;
+    fn popup_chrome_mouse_down_clears_stale_drag_without_changing_selection() {
+        for (column, row) in [(5, 6), (10, 5), (28, 6)] {
+            let mut app = app_with_selectable_tool_popup();
+            let selection = Some(PopupTextSelection::new(1, 4));
+            app.tools.popup.as_mut().unwrap().selection = selection;
+            app.mouse.diff_popup_drag_origin = Some(PopupTextHit::new(1, 2));
 
-        handle_mouse_event(&mut app, mouse_down(5, 6));
+            handle_mouse_event(&mut app, mouse_down(column, row));
+            handle_mouse_event(&mut app, mouse_drag(14, 7));
 
-        assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
-        assert_eq!(app.mouse.diff_popup_drag_origin, drag_origin);
-    }
-
-    #[test]
-    fn popup_mouse_down_on_scrollbar_preserves_selection_and_drag_state() {
-        let mut app = app_with_selectable_tool_popup();
-        let selection = Some(PopupTextSelection::new(1, 4));
-        let drag_origin = Some(PopupTextHit::new(1, 2));
-        app.tools.popup.as_mut().unwrap().selection = selection;
-        app.mouse.diff_popup_drag_origin = drag_origin;
-
-        handle_mouse_event(&mut app, mouse_down(28, 6));
-
-        assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
-        assert_eq!(app.mouse.diff_popup_drag_origin, drag_origin);
+            assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
+            assert!(app.mouse.diff_popup_drag_origin.is_none());
+        }
     }
 
     #[test]

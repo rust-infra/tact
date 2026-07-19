@@ -1,12 +1,13 @@
 use crate::widgets::state::{App, PopupHitRow, PopupTextHit};
 use ratatui::{
     Frame,
+    buffer::CellWidth,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy)]
 struct SourceLine<'a> {
@@ -15,9 +16,9 @@ struct SourceLine<'a> {
     end: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DisplayScalar {
-    ch: char,
+#[derive(Debug, Clone)]
+struct DisplayGrapheme {
+    symbol: String,
     hit: PopupTextHit,
     style: Style,
 }
@@ -26,7 +27,7 @@ struct DisplayScalar {
 struct DisplayRow {
     line_start: usize,
     line_end: usize,
-    scalars: Vec<DisplayScalar>,
+    graphemes: Vec<DisplayGrapheme>,
     cells: Vec<PopupTextHit>,
 }
 
@@ -50,18 +51,19 @@ impl DisplayRow {
         let mut content = String::new();
         let mut style = None;
 
-        for scalar in &self.scalars {
-            let scalar_selected = selection.is_some_and(|range| hit_intersects(scalar.hit, range));
-            let scalar_style = if scalar_selected {
-                scalar.style.add_modifier(Modifier::REVERSED)
+        for grapheme in &self.graphemes {
+            let grapheme_selected =
+                selection.is_some_and(|range| hit_intersects(grapheme.hit, range));
+            let grapheme_style = if grapheme_selected {
+                grapheme.style.add_modifier(Modifier::REVERSED)
             } else {
-                scalar.style
+                grapheme.style
             };
-            if let Some(current) = style.filter(|current| *current != scalar_style) {
+            if let Some(current) = style.filter(|current| *current != grapheme_style) {
                 spans.push(Span::styled(std::mem::take(&mut content), current));
             }
-            style = Some(scalar_style);
-            content.push(scalar.ch);
+            style = Some(grapheme_style);
+            content.push_str(&grapheme.symbol);
         }
         if let Some(style) = style {
             spans.push(Span::styled(content, style));
@@ -137,33 +139,38 @@ fn layout_display_rows(
     wrap: bool,
 ) -> Vec<DisplayRow> {
     let mut rows = Vec::new();
-    let mut scalars = Vec::new();
+    let mut graphemes = Vec::new();
     let mut cells = Vec::new();
     let mut row_start = line_start;
     let mut row_end = line_start;
     let mut row_width = 0;
 
     let push_row = |rows: &mut Vec<DisplayRow>,
-                    scalars: &mut Vec<DisplayScalar>,
+                    graphemes: &mut Vec<DisplayGrapheme>,
                     cells: &mut Vec<PopupTextHit>,
                     line_start,
                     line_end| {
         rows.push(DisplayRow {
             line_start,
             line_end,
-            scalars: std::mem::take(scalars),
+            graphemes: std::mem::take(graphemes),
             cells: std::mem::take(cells),
         });
     };
 
-    for (scalar_index, (relative_start, ch)) in text.char_indices().enumerate() {
+    let mut scalar_index = 0;
+    for (relative_start, symbol) in text.grapheme_indices(true) {
         let start = line_start + relative_start;
-        let end = start + ch.len_utf8();
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let end = start + symbol.len();
+        let width = if symbol.contains(char::is_control) {
+            0
+        } else {
+            usize::from(symbol.cell_width())
+        };
 
         if width > 0 && row_width + width > max_width {
-            if wrap && !scalars.is_empty() {
-                push_row(&mut rows, &mut scalars, &mut cells, row_start, row_end);
+            if wrap && !graphemes.is_empty() {
+                push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
                 row_start = start;
                 row_width = 0;
             } else if !wrap {
@@ -172,6 +179,7 @@ fn layout_display_rows(
         }
 
         let style = styles.get(scalar_index).copied().unwrap_or_default();
+        scalar_index += symbol.chars().count();
         if width == 0 {
             if let Some(previous_hit) = cells.last().copied() {
                 for cell in cells.iter_mut().rev() {
@@ -180,16 +188,16 @@ fn layout_display_rows(
                     }
                     cell.end = end;
                 }
-                if let Some(previous_scalar) = scalars
+                if let Some(previous_grapheme) = graphemes
                     .iter_mut()
                     .rev()
-                    .find(|scalar| scalar.hit == previous_hit)
+                    .find(|grapheme| grapheme.hit == previous_hit)
                 {
-                    previous_scalar.hit.end = end;
+                    previous_grapheme.hit.end = end;
                 }
             }
-            scalars.push(DisplayScalar {
-                ch,
+            graphemes.push(DisplayGrapheme {
+                symbol: symbol.to_owned(),
                 hit: PopupTextHit::new(start, end),
                 style,
             });
@@ -198,19 +206,25 @@ fn layout_display_rows(
         }
 
         let hit_start = if cells.is_empty() {
-            scalars.first().map_or(start, |scalar| scalar.hit.start)
+            graphemes
+                .first()
+                .map_or(start, |grapheme| grapheme.hit.start)
         } else {
             start
         };
         let hit = PopupTextHit::new(hit_start, end);
-        scalars.push(DisplayScalar { ch, hit, style });
+        graphemes.push(DisplayGrapheme {
+            symbol: symbol.to_owned(),
+            hit,
+            style,
+        });
         cells.extend(std::iter::repeat_n(hit, width));
         row_width += width;
         row_end = end;
     }
 
-    if !scalars.is_empty() || rows.is_empty() {
-        push_row(&mut rows, &mut scalars, &mut cells, row_start, row_end);
+    if !graphemes.is_empty() || rows.is_empty() {
+        push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
     }
     rows
 }
@@ -601,6 +615,28 @@ mod tests {
     }
 
     #[test]
+    fn hit_map_treats_emoji_presentation_sequence_as_one_grapheme() {
+        let text = "a⌨️b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(7), PopupTextHit::new(7, 8));
+    }
+
+    #[test]
+    fn hit_map_treats_zwj_emoji_sequence_as_one_grapheme() {
+        let text = "a👩‍💻b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(7), PopupTextHit::new(12, 13));
+    }
+
+    #[test]
     fn hit_map_merges_trailing_zero_width_sequence_into_previous_cell() {
         let text = "a\u{0301}\u{0327}界z";
         let row = test_hit_rows(text, 4, 3, 20, false).remove(0);
@@ -666,5 +702,50 @@ mod tests {
         assert_eq!(rows[1].hit(3), PopupTextHit::new(23, 26));
         assert_eq!(rows[1].hit(4), PopupTextHit::new(26, 27));
         assert_eq!(rows[1].hit(6), PopupTextHit::empty(28));
+    }
+
+    #[test]
+    fn hit_map_wraps_only_between_extended_grapheme_clusters() {
+        let rows = test_hit_rows("a👩‍💻b", 20, 2, 3, true);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].line_start, 20);
+        assert_eq!(rows[0].line_end, 32);
+        assert_eq!(rows[0].hit(2), PopupTextHit::new(20, 21));
+        assert_eq!(rows[0].hit(3), PopupTextHit::new(21, 32));
+        assert_eq!(rows[0].hit(4), PopupTextHit::new(21, 32));
+        assert_eq!(rows[1].line_start, 32);
+        assert_eq!(rows[1].hit(2), PopupTextHit::new(32, 33));
+    }
+
+    #[test]
+    fn styled_span_layout_truncates_at_aggregate_grapheme_width() {
+        let red = Style::default().fg(ratatui::style::Color::Red);
+        let blue = Style::default().fg(ratatui::style::Color::Blue);
+        let green = Style::default().fg(ratatui::style::Color::Green);
+        let line = Line::from(vec![
+            Span::styled("ab", red),
+            Span::styled("👩‍💻", blue),
+            Span::styled("c", green),
+        ]);
+        let styles = scalar_styles(Some(&line), Style::default(), 7);
+
+        let display = layout_display_rows("ab👩‍💻c", 10, &styles, 4, false).remove(0);
+        let spans = display.spans(None);
+
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "ab👩‍💻"
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].style, red);
+        assert_eq!(spans[1].style, blue);
+        assert_eq!(display.cells.len(), 4);
+        assert_eq!(display.cells[2], PopupTextHit::new(12, 23));
+        assert_eq!(display.cells[3], PopupTextHit::new(12, 23));
+        assert_eq!(display.line_end, 23);
     }
 }
