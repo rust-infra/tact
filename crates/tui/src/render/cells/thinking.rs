@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
@@ -15,15 +15,13 @@ use crate::{
     widgets::state::{ActiveThinkingBlock, ThinkingBlock},
 };
 
-pub(crate) const THINKING_HEADER_ROWS: usize = 1;
-
 pub(crate) fn thinking_visual_rows(body_lines: usize) -> usize {
-    THINKING_HEADER_ROWS + 1 + body_lines.clamp(1, 3) + 1
+    let card_rows = 1 + body_lines.clamp(1, 3) + 1;
+    card_rows + 2
 }
 
 pub(crate) struct ThinkingCell {
     lines: Vec<String>,
-    elapsed: Duration,
     title: String,
     bottom: String,
     fg: ratatui::style::Color,
@@ -42,9 +40,9 @@ impl ThinkingCell {
         let lines = block.display_tail();
         let visible = lines.len().clamp(1, 3);
         let total = block.content.lines().count().max(1);
+        let elapsed = block.started_at.elapsed();
         Self {
             lines,
-            elapsed: block.started_at.elapsed(),
             title: format!(
                 " {spinner}{}",
                 msgs.thinking_card_title
@@ -63,7 +61,7 @@ impl ThinkingCell {
                 .thinking_card_bottom
                 .replacen("{}", &visible.to_string(), 1)
                 .replacen("{}", &total.to_string(), 1)
-                .replacen("{}", "streaming", 1),
+                .replacen("{}", &format_elapsed(elapsed), 1),
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
@@ -74,7 +72,6 @@ impl ThinkingCell {
     pub(crate) fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
         Self {
             lines: vec![block.summary.clone()],
-            elapsed: block.elapsed,
             title: msgs
                 .thinking_card_title
                 .replacen("{}", "1", 1)
@@ -116,16 +113,6 @@ impl ThinkingCell {
             })
             .collect()
     }
-
-    fn header(&self) -> Line<'static> {
-        Line::from(Span::styled(
-            format!("{} | {}", self.title.trim(), format_elapsed(self.elapsed)),
-            Style::default()
-                .fg(self.accent)
-                .bg(self.bg)
-                .add_modifier(Modifier::BOLD),
-        ))
-    }
 }
 
 impl Renderable for ThinkingCell {
@@ -143,24 +130,22 @@ impl Renderable for ThinkingCell {
             return;
         }
 
-        if skip_lines == 0 {
-            Paragraph::new(self.header())
-                .style(Style::default().bg(self.bg))
-                .render(Rect::new(area.x, area.y, area.width, 1), buf);
-        }
-
         let body_lines = self.body_lines();
         let card_total = body_lines + 2;
-        let card_skip = skip_lines.saturating_sub(THINKING_HEADER_ROWS);
+        let card_skip = skip_lines.saturating_sub(1);
         if card_skip >= card_total {
             return;
         }
-        let y_offset = THINKING_HEADER_ROWS.saturating_sub(skip_lines) as u16;
+        let card_offset = usize::from(skip_lines == 0);
+        let remaining_height = area.height.saturating_sub(card_offset as u16);
+        if remaining_height == 0 {
+            return;
+        }
         let card_area = Rect::new(
             area.x,
-            area.y + y_offset,
+            area.y + card_offset as u16,
             area.width,
-            area.height.saturating_sub(y_offset),
+            remaining_height.min((card_total - card_skip) as u16),
         );
         if card_area.height == 0 {
             return;
@@ -231,6 +216,15 @@ mod tests {
         buffer_text(terminal.backend().buffer())
     }
 
+    fn render_in_viewport(cell: &ThinkingCell, height: u16) -> String {
+        let backend = TestBackend::new(80, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        buffer_text(terminal.backend().buffer())
+    }
+
     #[test]
     fn active_thinking_cell_stops_growing_after_three_lines() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
@@ -257,10 +251,52 @@ mod tests {
             content: "first\nlast".into(),
             summary: "last".into(),
             cached_markdown: Vec::new(),
-            elapsed: Duration::ZERO,
+            elapsed: std::time::Duration::ZERO,
         };
         let text = render_text(&ThinkingCell::completed(&block, &theme, &msgs));
         assert!(text.contains("last"), "{text}");
         assert!(!text.contains("first"), "{text}");
+    }
+
+    #[test]
+    fn thinking_cell_is_one_card_and_does_not_extend_to_viewport_bottom() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let mut active = ActiveThinkingBlock::new(0, std::time::Instant::now());
+        active.push_delta("reasoning\n");
+        let cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
+
+        let text = render_in_viewport(&cell, 12);
+        assert_eq!(text.matches("Thinking (1 line)").count(), 1, "{text}");
+        assert!(
+            text.lines()
+                .nth(cell.height(80) as usize)
+                .is_some_and(|line| line.trim().is_empty()),
+            "thinking card must stop at its own height, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn thinking_cell_leaves_blank_rows_before_and_after_the_card() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let mut active = ActiveThinkingBlock::new(0, std::time::Instant::now());
+        active.push_delta("reasoning\n");
+        let cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
+
+        let text = render_text(&cell);
+        let rows: Vec<_> = text.lines().collect();
+        assert!(
+            rows.first().is_some_and(|line| line.trim().is_empty()),
+            "{text}"
+        );
+        assert!(
+            rows.last().is_some_and(|line| line.trim().is_empty()),
+            "{text}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Thinking (1 line)")),
+            "{text}"
+        );
     }
 }

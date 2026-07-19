@@ -13,6 +13,7 @@ use crate::{i18n::Messages, theme::Theme};
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
 const ERROR_PREVIEW_LINES: usize = 5;
+const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -326,14 +327,11 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
-        let mut lines = output.preview_lines(5);
-        if !lines.is_empty() {
-            lines.resize_with(5, ToolOutputLine::default);
-        }
+        let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
         self.detail = Some(output.detail_text());
         self.detail_lines = Some(lines);
         self.detail_total_lines = Some(output.logical_line_count());
-        self.preview_lines = 5;
+        self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
         self.live_detail = true;
         self
     }
@@ -635,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn running_bash_live_output_builds_fixed_five_line_preview() {
+    fn running_bash_live_output_uses_available_lines_up_to_three() {
         let (theme, msgs) = fixture();
         let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
         live.push_chunks(&[
@@ -650,7 +648,7 @@ mod tests {
             .build();
 
         assert!(output.layout.has_detail_card);
-        assert_eq!(output.detail_preview.len(), 5);
+        assert_eq!(output.detail_preview.len(), 2);
         assert!(
             output
                 .detail_title

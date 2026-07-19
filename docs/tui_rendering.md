@@ -173,7 +173,7 @@ Completed code cards remain overlays; thinking and tool cards are direct log cel
 
 | Card Type | File | Description |
 |---|---|---|
-| Thinking card | `cells/thinking.rs` | Direct live card: 1→3 line tail, then one-line completion summary |
+| Thinking card | `cells/thinking.rs` | Direct live card with one blank row before and after: 1→3 line tail, then one-line completion summary |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
@@ -234,7 +234,7 @@ The basic log rendering unit, supporting:
 
 ### Card Cells
 
-- `thinking.rs`: direct card with a 1→3 line streaming tail and one-line completed summary
+- `thinking.rs`: direct card separated from adjacent log content by one blank row on each side, with a 1→3 line streaming tail and one-line completed summary
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
 

@@ -92,7 +92,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `StreamChunk` | Append to active assistant text cell |
 | `ThinkingChunk` | Thinking card / preview |
 | `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | Tool timeline ([Ch 11](./11_chapter_task.md)) |
-| `ToolProgress` | Update the matching active tool's fixed five-line live tail |
+| `ToolProgress` | Update the matching active tool's 1→3 line live tail |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
 | `TokenUsage` | Status bar counters |
 | `ModelInfo` | Model name / limits display |
@@ -278,7 +278,7 @@ pub(crate) trait Renderable {
 |------|------|-------|
 | `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card: 1→3 line tail, then one-line completion summary |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
@@ -372,7 +372,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
 | **System / info** | Colored prefix lines (`✓`, `⚠`, `▶`, plan text, …) via `add_system_message` | `classify_system_message` picks `SysTool` vs `LLM` for indent |
-| **Thinking card** | Placeholder rows (`LLMThinking`) | One `ThinkingCell`; active tail grows from 1 to 3 lines and completion shows one summary line |
+| **Thinking card** | Placeholder rows (`LLMThinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, and completion shows one summary line |
 | **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
@@ -401,7 +401,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | `AgentUpdate` | Physical rows inserted / updated | Side effects |
 |---------------|----------------------------------|--------------|
 | **`StreamChunk`** | Completed lines → `append_msg` (`LLM`); incomplete tail stays in `stream.buffer` | Auto-scroll; code/table/paragraph sub-parsers; safety-closes thinking if still open |
-| **`ThinkingChunk::Started`** | Placeholder rows for a one-line `ThinkingCell` | Opens active thinking card |
+| **`ThinkingChunk::Started`** | Placeholder rows for a one-line `ThinkingCell` plus leading/trailing blank rows | Opens active thinking card |
 | **`ThinkingChunk::Delta`** | Mutates active card buffer; placeholder range grows only 1→2→3 body lines | Auto-scroll; opens card if `Started` was missed |
 | **`ThinkingChunk::Finished`** | Same placeholder becomes completed `ThinkingBlock` with one summary row | Closes active card |
 | **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
@@ -490,7 +490,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 |-----------|-------|---------------|--------------|
 | **TextCell** | Inline | Wrapped line count from cache | Word select / line select |
 | **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` |
-| **ThinkingCell** | Inline | Active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
+| **ThinkingCell** | Inline | One blank row on each side; active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual row (dynamic dashes) | — |
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
@@ -498,7 +498,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from `RawMessageType`.
 
-**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. The first visible `bash` output expands the card once to five stable rows; later chunks update the tail in place. stdout uses normal text, stderr uses warning color, and double-click opens the popup with up to 50,000 buffered characters. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
+**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color, and double-click opens the popup with up to 50,000 buffered characters. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
 
 **Why code remains an overlay:** code blocks replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior. Thinking instead follows the direct `Renderable` model used by tool cards, so its live tail and completion summary have one rendering owner.
 

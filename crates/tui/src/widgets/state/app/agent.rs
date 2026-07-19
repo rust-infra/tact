@@ -606,7 +606,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn progress_expands_once_to_five_output_rows() {
+    fn bash_live_output_grows_to_three_rows_then_keeps_a_three_line_tail() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
         let initial_rows = app.tools.active[0].output.visual_rows(false);
@@ -615,15 +615,34 @@ mod lifecycle_tests {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\n")],
         });
-        let live_rows = app.tools.active[0].output.visual_rows(false);
+        let one_row = app.tools.active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
-            chunks: vec![ToolOutputChunk::stdout("two\nthree\n")],
+            chunks: vec![ToolOutputChunk::stdout("two\n")],
+        });
+        let two_rows = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("three\n")],
+        });
+        let three_rows = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("four\n")],
         });
 
-        assert!(live_rows > initial_rows);
-        assert_eq!(app.tools.active[0].output.visual_rows(false), live_rows);
-        assert_eq!(app.tools.active[0].output.detail_preview.len(), 5);
+        assert!(initial_rows < one_row && one_row < two_rows && two_rows < three_rows);
+        assert_eq!(app.tools.active[0].output.visual_rows(false), three_rows);
+        assert_eq!(app.tools.active[0].output.detail_preview.len(), 3);
+        assert_eq!(
+            app.tools.active[0]
+                .output
+                .detail_preview
+                .iter()
+                .map(|line| line.plain_text())
+                .collect::<Vec<_>>(),
+            ["two", "three", "four"]
+        );
     }
 
     #[test]
@@ -684,7 +703,7 @@ mod lifecycle_tests {
         seed_running_bash(&mut app, "b1");
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
-            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+            chunks: vec![ToolOutputChunk::stdout("one\ntwo\nthree\nfour\n")],
         });
         let live_rows = app.tools.active[0].output.visual_rows(false);
 
