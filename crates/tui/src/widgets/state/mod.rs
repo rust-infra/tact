@@ -26,7 +26,7 @@ pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use log_scroll::LogScroll;
-pub(crate) use mouse_state::{LogSelection, MouseState, TextPosition};
+pub(crate) use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
 pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;

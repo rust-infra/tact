@@ -2,9 +2,10 @@
 
 use super::test_harness::{make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, RawMessageType, ThinkingBlock, ThinkingPopup,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
+    ThinkingBlock, ThinkingPopup,
 };
-use ratatui::text::Line;
+use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 use std::time::Duration;
 
 fn seed_diff_popup(app: &mut App) {
@@ -22,6 +23,15 @@ fn seed_diff_popup(app: &mut App) {
         cached_content: None,
         highlighted_lines: Vec::new(),
     });
+}
+
+fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::render_main_area(frame, frame.area(), app))
+        .expect("draw");
+    terminal
 }
 
 fn seed_code_popup(app: &mut App) {
@@ -130,6 +140,87 @@ fn main_area_diff_popup_renders_inline_content() {
     assert!(
         text.contains("render_test") || text.contains("assert!(true)"),
         "diff popup should show inline tool output, got:\n{text}"
+    );
+}
+
+#[test]
+fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
+    let mut app = make_app();
+    seed_diff_popup(&mut app);
+    let popup = app.tools.popup.as_mut().expect("popup");
+    popup.inline_content = Some("alpha\nbeta".into());
+    popup.lang.clear();
+    popup.use_diff_gutter = true;
+    popup.selection = Some(PopupTextSelection::new(0, 5));
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let row = &app.mouse.diff_popup_hit_rows[0];
+    let buffer = terminal.backend().buffer();
+
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(row.text_x - 2, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(app.mouse.diff_popup_body_area.x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+}
+
+#[test]
+fn diff_popup_selection_reverses_wide_scalar_and_maps_both_columns() {
+    let mut app = make_app();
+    seed_diff_popup(&mut app);
+    let popup = app.tools.popup.as_mut().expect("popup");
+    popup.inline_content = Some("a界z".into());
+    popup.lang.clear();
+    popup.selection = Some(PopupTextSelection::new(1, 4));
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let row = &app.mouse.diff_popup_hit_rows[0];
+    let buffer = terminal.backend().buffer();
+
+    assert!(
+        buffer[(row.text_x + 1, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(row.text_x + 3, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert_eq!(row.cells[1], row.cells[2]);
+    assert_eq!(row.cells[1].start, 1);
+    assert_eq!(row.cells[1].end, 4);
+}
+
+#[test]
+fn diff_popup_selection_highlights_visible_scrolled_row() {
+    let mut app = make_app();
+    seed_diff_popup(&mut app);
+    let popup = app.tools.popup.as_mut().expect("popup");
+    popup.inline_content = Some("zero\none\ntwo".into());
+    popup.lang.clear();
+    popup.scroll = 1;
+    popup.selection = Some(PopupTextSelection::new(5, 8));
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let row = &app.mouse.diff_popup_hit_rows[0];
+    let buffer = terminal.backend().buffer();
+
+    assert_eq!(row.line_start, 5);
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
     );
 }
 
