@@ -1,6 +1,8 @@
 //! Mouse handling extracted from the main event loop for testability.
 
-use crate::widgets::state::{App, FocusedPanel, LogSelection, TextPosition};
+use crate::widgets::state::{
+    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition,
+};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,13 +26,31 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
 
 /// Dispatch a mouse event (scroll, click, drag, resize).
 pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
-    let hit = panel_hit(app, mouse.column, mouse.row);
     match mouse.kind {
-        MouseEventKind::ScrollUp => handle_mouse_scroll_up(app, hit),
-        MouseEventKind::ScrollDown => handle_mouse_scroll_down(app, hit),
-        MouseEventKind::Down(MouseButton::Left) => handle_mouse_down(app, mouse, hit),
-        MouseEventKind::Drag(MouseButton::Left) => handle_mouse_drag(app, mouse, hit),
+        MouseEventKind::ScrollUp => {
+            let hit = panel_hit(app, mouse.column, mouse.row);
+            handle_mouse_scroll_up(app, hit);
+        }
+        MouseEventKind::ScrollDown => {
+            let hit = panel_hit(app, mouse.column, mouse.row);
+            handle_mouse_scroll_down(app, hit);
+        }
+        MouseEventKind::Down(MouseButton::Left) if app.tools.popup.is_some() => {
+            handle_diff_popup_mouse_down(app, mouse);
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            let hit = panel_hit(app, mouse.column, mouse.row);
+            handle_mouse_down(app, mouse, hit);
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.tools.popup.is_some() => {
+            handle_diff_popup_mouse_drag(app, mouse);
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let hit = panel_hit(app, mouse.column, mouse.row);
+            handle_mouse_drag(app, mouse, hit);
+        }
         MouseEventKind::Up(MouseButton::Left) => {
+            app.mouse.diff_popup_drag_origin = None;
             app.mouse.dragging_log = false;
             app.mouse.dragging_plan = false;
             end_panel_resize(app);
@@ -88,6 +108,46 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             app.mouse.dragging_plan = true;
         }
     }
+}
+
+fn handle_diff_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
+    app.mouse.diff_popup_drag_origin = None;
+    let inside_popup = point_in_rect(mouse.column, mouse.row, app.mouse.diff_popup_area);
+    app.close_overlay_on_outside_click(mouse.column, mouse.row);
+    if !inside_popup {
+        return;
+    }
+
+    let Some(origin) = diff_popup_text_hit(app, mouse.column, mouse.row, false) else {
+        return;
+    };
+    if let Some(popup) = app.tools.popup.as_mut() {
+        popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
+        app.mouse.diff_popup_drag_origin = Some(origin);
+    }
+}
+
+fn diff_popup_text_hit(
+    app: &App,
+    column: u16,
+    row: u16,
+    clamp_vertical: bool,
+) -> Option<PopupTextHit> {
+    let first = app.mouse.diff_popup_hit_rows.first()?;
+    let last = app.mouse.diff_popup_hit_rows.last()?;
+    let body = app.mouse.diff_popup_body_area;
+
+    if row < body.y {
+        return clamp_vertical.then(|| PopupTextHit::empty(first.line_start));
+    }
+    if row >= body.y.saturating_add(body.height) {
+        return clamp_vertical.then(|| PopupTextHit::empty(last.line_end));
+    }
+    app.mouse
+        .diff_popup_hit_rows
+        .iter()
+        .find(|hit_row| hit_row.screen_y == row)
+        .map(|hit_row| hit_row.hit(column))
 }
 
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
@@ -225,6 +285,23 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     }
 }
 
+fn handle_diff_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
+    let Some(origin) = app.mouse.diff_popup_drag_origin else {
+        return;
+    };
+    let Some(current) = diff_popup_text_hit(app, mouse.column, mouse.row, true) else {
+        return;
+    };
+    let selection = if current.start >= origin.start {
+        PopupTextSelection::new(origin.start, current.end)
+    } else {
+        PopupTextSelection::new(origin.end, current.start)
+    };
+    if let Some(popup) = app.tools.popup.as_mut() {
+        popup.selection = Some(selection);
+    }
+}
+
 /// Begin dragging the Plan/Log divider to resize panels.
 pub(crate) fn begin_panel_resize(app: &mut App) {
     app.mouse.is_resizing_panel = true;
@@ -295,10 +372,181 @@ pub(crate) fn handle_tool_block_click(
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
-    use crate::widgets::state::DiffPopup;
+    use crate::widgets::state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection};
     use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
+    use crossterm::event::KeyModifiers;
+    use ratatui::layout::Rect;
     use std::collections::HashMap;
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn mouse_down(column: u16, row: u16) -> MouseEvent {
+        mouse_event(MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    fn mouse_drag(column: u16, row: u16) -> MouseEvent {
+        mouse_event(MouseEventKind::Drag(MouseButton::Left), column, row)
+    }
+
+    fn mouse_up(column: u16, row: u16) -> MouseEvent {
+        mouse_event(MouseEventKind::Up(MouseButton::Left), column, row)
+    }
+
+    fn popup_hit_row(screen_y: u16, text_x: u16, line_start: usize, text: &str) -> PopupHitRow {
+        let cells = text
+            .char_indices()
+            .map(|(offset, ch)| {
+                PopupTextHit::new(line_start + offset, line_start + offset + ch.len_utf8())
+            })
+            .collect();
+        PopupHitRow {
+            screen_y,
+            text_x,
+            line_start,
+            line_end: line_start + text.len(),
+            cells,
+        }
+    }
+
+    fn app_with_selectable_tool_popup() -> App {
+        let mut app = make_app();
+        app.add_system_message("under the popup".into());
+        app.mouse.log_area = Rect::new(0, 0, 40, 20);
+        app.mouse.diff_popup_area = Rect::new(5, 5, 24, 8);
+        app.mouse.diff_popup_body_area = Rect::new(6, 6, 22, 5);
+        app.mouse.diff_popup_hit_rows = vec![
+            popup_hit_row(6, 10, 0, "alpha"),
+            popup_hit_row(7, 10, 6, "omega"),
+        ];
+        app.tools.popup = Some(DiffPopup {
+            title: "tool output".into(),
+            file_path: None,
+            git_diff_path: None,
+            workspace_dir: None,
+            inline_content: Some("alpha\nomega".into()),
+            lang: String::new(),
+            use_diff_gutter: false,
+            is_diff: false,
+            scroll: 0,
+            selection: None,
+            cached_content: Some("alpha\nomega".into()),
+            highlighted_lines: Vec::new(),
+        });
+        app
+    }
+
+    #[test]
+    fn popup_mouse_down_starts_empty_selection_without_selecting_log() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+
+        assert_eq!(
+            app.tools.popup.as_ref().unwrap().selection,
+            Some(PopupTextSelection::new(0, 0))
+        );
+        assert!(app.mouse.log_selection.is_none());
+    }
+
+    #[test]
+    fn popup_forward_drag_includes_both_endpoint_scalars() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+        handle_mouse_event(&mut app, mouse_drag(14, 6));
+
+        assert_eq!(
+            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn popup_backward_drag_includes_both_endpoint_scalars() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(14, 6));
+        handle_mouse_event(&mut app, mouse_drag(10, 6));
+
+        assert_eq!(
+            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn popup_mouse_up_stops_future_drag_updates() {
+        let mut app = app_with_selectable_tool_popup();
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+        handle_mouse_event(&mut app, mouse_drag(14, 6));
+        handle_mouse_event(&mut app, mouse_up(14, 6));
+
+        handle_mouse_event(&mut app, mouse_drag(14, 7));
+
+        assert_eq!(
+            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn popup_scroll_preserves_selection() {
+        let mut app = app_with_selectable_tool_popup();
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+        handle_mouse_event(&mut app, mouse_drag(14, 6));
+        let selection = app.tools.popup.as_ref().unwrap().selection;
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 10, 6));
+
+        let popup = app.tools.popup.as_ref().unwrap();
+        assert_eq!(popup.scroll, 1);
+        assert_eq!(selection, Some(PopupTextSelection::new(0, 5)));
+        assert_eq!(popup.selection, selection);
+    }
+
+    #[test]
+    fn popup_drag_above_body_clamps_to_first_visible_boundary_without_scrolling() {
+        let mut app = app_with_selectable_tool_popup();
+        handle_mouse_event(&mut app, mouse_down(14, 7));
+
+        handle_mouse_event(&mut app, mouse_drag(14, 5));
+
+        let popup = app.tools.popup.as_ref().unwrap();
+        assert_eq!(popup.selection, Some(PopupTextSelection::new(11, 0)));
+        assert_eq!(popup.copy_content().as_deref(), Some("alpha\nomega"));
+        assert_eq!(popup.scroll, 0);
+    }
+
+    #[test]
+    fn popup_drag_below_body_clamps_to_last_visible_boundary_without_scrolling() {
+        let mut app = app_with_selectable_tool_popup();
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+
+        handle_mouse_event(&mut app, mouse_drag(10, 11));
+
+        let popup = app.tools.popup.as_ref().unwrap();
+        assert_eq!(popup.selection, Some(PopupTextSelection::new(0, 11)));
+        assert_eq!(popup.copy_content().as_deref(), Some("alpha\nomega"));
+        assert_eq!(popup.scroll, 0);
+    }
+
+    #[test]
+    fn outside_click_still_closes_tool_popup() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(0, 0));
+
+        assert!(app.tools.popup.is_none());
+        assert!(app.mouse.log_selection.is_none());
+    }
 
     #[test]
     fn scroll_up_in_log_decrements_offset() {

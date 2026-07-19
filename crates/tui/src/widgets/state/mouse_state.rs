@@ -130,6 +130,8 @@ pub(crate) struct MouseState {
     pub(crate) diff_popup_body_area: Rect,
     /// Hit maps for rows currently visible in the diff popup body.
     pub(crate) diff_popup_hit_rows: Vec<PopupHitRow>,
+    /// Source scalar where the active diff-popup drag began.
+    pub(crate) diff_popup_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.
