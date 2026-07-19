@@ -41,7 +41,7 @@ Add tests beside `PopupTextSelection` that assert forward and backward ranges no
 fn popup_selection_normalizes_backward_utf8_range() {
     let text = "a界z";
     let selection = PopupTextSelection::new(text.len(), 1);
-    assert_eq!(selection.normalized_non_empty(text), Some(1..4));
+    assert_eq!(selection.normalized_non_empty(text), Some(1..5));
 }
 
 #[test]
