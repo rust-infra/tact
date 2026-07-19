@@ -467,6 +467,10 @@ impl App {
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools.popup = None;
+        self.mouse.diff_popup_area = Rect::default();
+        self.mouse.diff_popup_body_area = Rect::default();
+        self.mouse.diff_popup_hit_rows.clear();
+        self.mouse.diff_popup_drag_origin = None;
     }
 
     /// Copy the popup content to the clipboard.
@@ -532,7 +536,9 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::widgets::state::{DiffPopup, PopupTextSelection};
+    use crate::render::test_harness::make_app;
+    use crate::widgets::state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection};
+    use ratatui::layout::Rect;
 
     fn inline_popup(content: &str) -> DiffPopup {
         DiffPopup {
@@ -549,6 +555,31 @@ mod tests {
             cached_content: None,
             highlighted_lines: Vec::new(),
         }
+    }
+
+    #[test]
+    fn close_diff_popup_clears_mouse_state_before_reopen() {
+        let mut app = make_app();
+        app.tools.popup = Some(inline_popup("old"));
+        app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse.diff_popup_body_area = Rect::new(6, 6, 18, 7);
+        app.mouse.diff_popup_hit_rows = vec![PopupHitRow {
+            screen_y: 6,
+            text_x: 10,
+            line_start: 0,
+            line_end: 3,
+            cells: vec![PopupTextHit::new(0, 1)],
+        }];
+        app.mouse.diff_popup_drag_origin = Some(PopupTextHit::new(0, 1));
+
+        app.close_diff_popup();
+        app.tools.popup = Some(inline_popup("new"));
+
+        assert_eq!(app.mouse.diff_popup_area, Rect::default());
+        assert_eq!(app.mouse.diff_popup_body_area, Rect::default());
+        assert!(app.mouse.diff_popup_hit_rows.is_empty());
+        assert!(app.mouse.diff_popup_drag_origin.is_none());
+        assert!(app.tools.popup.as_ref().unwrap().selection.is_none());
     }
 
     #[test]

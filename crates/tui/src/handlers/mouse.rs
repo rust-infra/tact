@@ -111,10 +111,9 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
 }
 
 fn handle_diff_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
-    app.mouse.diff_popup_drag_origin = None;
     let inside_popup = point_in_rect(mouse.column, mouse.row, app.mouse.diff_popup_area);
     app.close_overlay_on_outside_click(mouse.column, mouse.row);
-    if !inside_popup {
+    if !inside_popup || !point_in_rect(mouse.column, mouse.row, app.mouse.diff_popup_body_area) {
         return;
     }
 
@@ -292,7 +291,7 @@ fn handle_diff_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
     let Some(current) = diff_popup_text_hit(app, mouse.column, mouse.row, true) else {
         return;
     };
-    let selection = if current.start >= origin.start {
+    let selection = if current.end > origin.start {
         PopupTextSelection::new(origin.start, current.end)
     } else {
         PopupTextSelection::new(origin.end, current.start)
@@ -457,6 +456,50 @@ mod tests {
     }
 
     #[test]
+    fn popup_mouse_down_in_body_prefix_starts_selection() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(9, 6));
+
+        assert_eq!(
+            app.tools.popup.as_ref().unwrap().selection,
+            Some(PopupTextSelection::new(0, 0))
+        );
+        assert_eq!(
+            app.mouse.diff_popup_drag_origin,
+            Some(PopupTextHit::empty(0))
+        );
+    }
+
+    #[test]
+    fn popup_mouse_down_on_left_border_preserves_selection_and_drag_state() {
+        let mut app = app_with_selectable_tool_popup();
+        let selection = Some(PopupTextSelection::new(1, 4));
+        let drag_origin = Some(PopupTextHit::new(1, 2));
+        app.tools.popup.as_mut().unwrap().selection = selection;
+        app.mouse.diff_popup_drag_origin = drag_origin;
+
+        handle_mouse_event(&mut app, mouse_down(5, 6));
+
+        assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
+        assert_eq!(app.mouse.diff_popup_drag_origin, drag_origin);
+    }
+
+    #[test]
+    fn popup_mouse_down_on_scrollbar_preserves_selection_and_drag_state() {
+        let mut app = app_with_selectable_tool_popup();
+        let selection = Some(PopupTextSelection::new(1, 4));
+        let drag_origin = Some(PopupTextHit::new(1, 2));
+        app.tools.popup.as_mut().unwrap().selection = selection;
+        app.mouse.diff_popup_drag_origin = drag_origin;
+
+        handle_mouse_event(&mut app, mouse_down(28, 6));
+
+        assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
+        assert_eq!(app.mouse.diff_popup_drag_origin, drag_origin);
+    }
+
+    #[test]
     fn popup_forward_drag_includes_both_endpoint_scalars() {
         let mut app = app_with_selectable_tool_popup();
 
@@ -480,6 +523,18 @@ mod tests {
             app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn popup_drag_from_first_scalar_into_prefix_includes_origin_scalar() {
+        let mut app = app_with_selectable_tool_popup();
+
+        handle_mouse_event(&mut app, mouse_down(10, 6));
+        handle_mouse_event(&mut app, mouse_drag(9, 6));
+
+        let popup = app.tools.popup.as_ref().unwrap();
+        assert_eq!(popup.selection, Some(PopupTextSelection::new(1, 0)));
+        assert_eq!(popup.copy_content().as_deref(), Some("a"));
     }
 
     #[test]
