@@ -87,6 +87,7 @@ mod tests {
             use_diff_gutter: false,
             is_diff: false,
             scroll: 0,
+            selection: None,
             cached_content: None,
             highlighted_lines: Vec::new(),
         });

@@ -326,6 +326,7 @@ impl App {
                 use_diff_gutter: false,
                 is_diff: false,
                 scroll: 0,
+                selection: None,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             });
@@ -355,6 +356,7 @@ impl App {
                 use_diff_gutter: output.use_diff_gutter,
                 is_diff: false,
                 scroll: 0,
+                selection: None,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             }),
@@ -374,6 +376,7 @@ impl App {
                     use_diff_gutter: false,
                     is_diff: true,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -406,6 +409,7 @@ impl App {
                     use_diff_gutter: false,
                     is_diff: false,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -425,6 +429,7 @@ impl App {
                     use_diff_gutter: false,
                     is_diff: false,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -470,20 +475,24 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        let text = if let Some(content) = &popup.cached_content {
-            content.clone()
+        let text = if popup.cached_content.is_some() {
+            match popup.copy_content() {
+                Some(content) => content,
+                None => return,
+            }
         } else if let Some(path) = &popup.file_path {
             match std::fs::read_to_string(path) {
-                Ok(content) => content,
+                Ok(content) => popup.copy_content_from(&content),
                 Err(e) => {
                     self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
                     return;
                 }
             }
-        } else if let Some(content) = &popup.inline_content {
-            content.clone()
         } else {
-            return;
+            match popup.copy_content() {
+                Some(content) => content,
+                None => return,
+            }
         };
         self.copy_text(&text);
     }
@@ -519,4 +528,52 @@ impl App {
 
 fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::widgets::state::{DiffPopup, PopupTextSelection};
+
+    fn inline_popup(content: &str) -> DiffPopup {
+        DiffPopup {
+            title: "test".into(),
+            file_path: None,
+            git_diff_path: None,
+            workspace_dir: None,
+            inline_content: Some(content.into()),
+            lang: String::new(),
+            use_diff_gutter: false,
+            is_diff: false,
+            scroll: 0,
+            selection: None,
+            cached_content: None,
+            highlighted_lines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn popup_copy_content_prefers_non_empty_selection() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.cached_content = Some("first\nsecond".into());
+        popup.selection = Some(PopupTextSelection::new(6, 12));
+
+        assert_eq!(popup.copy_content(), Some("second".into()));
+    }
+
+    #[test]
+    fn popup_copy_content_uses_all_content_for_empty_selection() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.cached_content = Some("first\nsecond".into());
+        popup.selection = Some(PopupTextSelection::new(2, 2));
+
+        assert_eq!(popup.copy_content(), Some("first\nsecond".into()));
+    }
+
+    #[test]
+    fn popup_copy_content_returns_raw_content_without_presentation_prefixes() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.selection = Some(PopupTextSelection::new(0, 5));
+
+        assert_eq!(popup.copy_content(), Some("first".into()));
+    }
 }

@@ -33,6 +33,46 @@ pub(crate) struct ToolBlock {
     pub output: ToolRenderOutput,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PopupTextSelection {
+    pub(crate) anchor: usize,
+    pub(crate) active: usize,
+}
+
+impl PopupTextSelection {
+    pub(crate) fn new(anchor: usize, active: usize) -> Self {
+        Self { anchor, active }
+    }
+
+    pub(crate) fn normalized_non_empty(&self, content: &str) -> Option<std::ops::Range<usize>> {
+        let mut start = self.anchor.min(self.active).min(content.len());
+        let mut end = self.anchor.max(self.active).min(content.len());
+        while start > 0 && !content.is_char_boundary(start) {
+            start -= 1;
+        }
+        while end > 0 && !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        (start < end).then_some(start..end)
+    }
+}
+
+impl DiffPopup {
+    pub(crate) fn copy_content(&self) -> Option<String> {
+        self.cached_content
+            .as_deref()
+            .or(self.inline_content.as_deref())
+            .map(|content| self.copy_content_from(content))
+    }
+
+    pub(crate) fn copy_content_from(&self, content: &str) -> String {
+        self.selection
+            .and_then(|selection| selection.normalized_non_empty(content))
+            .map(|range| content[range].to_string())
+            .unwrap_or_else(|| content.to_string())
+    }
+}
+
 /// Popup preview state for tool detail (file content or command output).
 #[derive(Debug, Clone)]
 pub(crate) struct DiffPopup {
@@ -50,6 +90,46 @@ pub(crate) struct DiffPopup {
     /// Content is a unified diff (git diff output); render -/+ lines natively.
     pub is_diff: bool,
     pub scroll: u16,
+    pub selection: Option<PopupTextSelection>,
     pub cached_content: Option<String>,
     pub highlighted_lines: Vec<Line<'static>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PopupTextSelection;
+
+    #[test]
+    fn popup_selection_normalizes_forward_and_backward_utf8_ranges() {
+        let text = "a界z";
+        let forward = PopupTextSelection::new(1, text.len());
+        let backward = PopupTextSelection::new(text.len(), 1);
+
+        assert_eq!(forward.normalized_non_empty(text), Some(1..5));
+        assert_eq!(backward.normalized_non_empty(text), Some(1..5));
+    }
+
+    #[test]
+    fn popup_selection_ignores_empty_range() {
+        assert_eq!(
+            PopupTextSelection::new(2, 2).normalized_non_empty("text"),
+            None
+        );
+    }
+
+    #[test]
+    fn popup_selection_clamps_offsets_to_content_length() {
+        assert_eq!(
+            PopupTextSelection::new(0, usize::MAX).normalized_non_empty("text"),
+            Some(0..4)
+        );
+    }
+
+    #[test]
+    fn popup_selection_floors_multibyte_offsets_to_character_boundaries() {
+        assert_eq!(
+            PopupTextSelection::new(4, 2).normalized_non_empty("a界z"),
+            Some(1..4)
+        );
+    }
 }

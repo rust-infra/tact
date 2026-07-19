@@ -18,6 +18,7 @@ fn seed_diff_popup(app: &mut App) {
         use_diff_gutter: false,
         is_diff: false,
         scroll: 0,
+        selection: None,
         cached_content: None,
         highlighted_lines: Vec::new(),
     });
@@ -365,6 +366,7 @@ fn diff_popup_renders_unified_diff_markers() {
         use_diff_gutter: false,
         is_diff: true,
         scroll: 0,
+        selection: None,
         cached_content: None,
         highlighted_lines: Vec::new(),
     });
@@ -415,6 +417,7 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
         use_diff_gutter: false,
         is_diff: false,
         scroll: 0,
+        selection: None,
         cached_content: None,
         highlighted_lines: Vec::new(),
     });
