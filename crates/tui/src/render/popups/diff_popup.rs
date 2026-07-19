@@ -171,8 +171,38 @@ fn layout_display_rows(
             }
         }
 
-        let hit = PopupTextHit::new(start, end);
         let style = styles.get(scalar_index).copied().unwrap_or_default();
+        if width == 0 {
+            if let Some(previous_hit) = cells.last().copied() {
+                for cell in cells.iter_mut().rev() {
+                    if *cell != previous_hit {
+                        break;
+                    }
+                    cell.end = end;
+                }
+                if let Some(previous_scalar) = scalars
+                    .iter_mut()
+                    .rev()
+                    .find(|scalar| scalar.hit == previous_hit)
+                {
+                    previous_scalar.hit.end = end;
+                }
+            }
+            scalars.push(DisplayScalar {
+                ch,
+                hit: PopupTextHit::new(start, end),
+                style,
+            });
+            row_end = end;
+            continue;
+        }
+
+        let hit_start = if cells.is_empty() {
+            scalars.first().map_or(start, |scalar| scalar.hit.start)
+        } else {
+            start
+        };
+        let hit = PopupTextHit::new(hit_start, end);
         scalars.push(DisplayScalar { ch, hit, style });
         cells.extend(std::iter::repeat_n(hit, width));
         row_width += width;
@@ -571,17 +601,33 @@ mod tests {
     }
 
     #[test]
-    fn hit_map_skips_zero_width_scalars_without_losing_utf8_boundaries() {
-        let text = "a\u{0301}界z";
+    fn hit_map_merges_trailing_zero_width_sequence_into_previous_cell() {
+        let text = "a\u{0301}\u{0327}界z";
         let row = test_hit_rows(text, 4, 3, 20, false).remove(0);
 
-        assert_eq!(row.hit(3), PopupTextHit::new(4, 5));
-        assert_eq!(row.hit(4), PopupTextHit::new(7, 10));
-        assert_eq!(row.hit(5), PopupTextHit::new(7, 10));
-        assert_eq!(row.hit(6), PopupTextHit::new(10, 11));
+        assert_eq!(row.hit(3), PopupTextHit::new(4, 9));
+        assert_eq!(row.hit(4), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(5), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(12, 13));
         for hit in &row.cells {
             assert!(text.is_char_boundary(hit.start - 4));
             assert!(text.is_char_boundary(hit.end - 4));
+        }
+    }
+
+    #[test]
+    fn hit_map_merges_leading_zero_width_sequence_into_first_cell() {
+        let text = "\u{0301}\u{0327}a界";
+        let row = test_hit_rows(text, 10, 5, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::empty(10));
+        assert_eq!(row.hit(5), PopupTextHit::new(10, 15));
+        assert_eq!(row.hit(6), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(7), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(8), PopupTextHit::empty(18));
+        for hit in &row.cells {
+            assert!(text.is_char_boundary(hit.start - 10));
+            assert!(text.is_char_boundary(hit.end - 10));
         }
     }
 
