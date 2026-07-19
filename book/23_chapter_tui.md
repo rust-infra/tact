@@ -309,7 +309,7 @@ pub(crate) trait Renderable {
 | Select | `RequestSelect` permission / agent choice | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
-| Thinking detail | double-click thinking card | `popups/thinking_popup.rs` |
+| Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
 | Tool/file detail | double-click tool card | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
 

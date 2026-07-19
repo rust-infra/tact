@@ -362,6 +362,35 @@ fn active_thinking_popup_preserves_blank_lines() {
 }
 
 #[test]
+fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
+    let mut app = make_app();
+    app.thinking.blocks.push(ThinkingBlock {
+        phys_idx: 0,
+        content: "1. first item\n2. second item".into(),
+        summary: "second item".into(),
+        cached_markdown: vec![Line::from("1. first item"), Line::from("2. second item")],
+        elapsed: Duration::ZERO,
+    });
+    app.thinking.popup = Some(ThinkingPopup {
+        phys_idx: 0,
+        title: "Thinking".into(),
+        scroll: 0,
+    });
+
+    let text = render_thinking_popup_text(&mut app, 100, 30);
+    let first = text.lines().position(|line| line.contains("1. first item"));
+    let second = text
+        .lines()
+        .position(|line| line.contains("2. second item"));
+    assert!(
+        second
+            .zip(first)
+            .is_some_and(|(second, first)| second >= first + 2),
+        "ordered thinking items should have a blank row between them, got:\n{text}"
+    );
+}
+
+#[test]
 fn full_frame_done_status_renders_in_status_bar() {
     use tact_protocol::AgentUpdate;
 

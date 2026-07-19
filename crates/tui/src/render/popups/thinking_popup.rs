@@ -7,6 +7,36 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
 
+fn is_ordered_list_item(line: &Line<'_>) -> bool {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let trimmed = text.trim_start();
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    digits > 0
+        && trimmed
+            .as_bytes()
+            .get(digits)
+            .is_some_and(|byte| *byte == b'.')
+        && trimmed
+            .as_bytes()
+            .get(digits + 1)
+            .is_some_and(u8::is_ascii_whitespace)
+}
+
+fn separate_ordered_list_items(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mut spaced = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        spaced.push(line.clone());
+        if is_ordered_list_item(line) && lines.get(index + 1).is_some_and(is_ordered_list_item) {
+            spaced.push(Line::default());
+        }
+    }
+    spaced
+}
+
 pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = match app.thinking.popup.clone() {
         Some(p) => p,
@@ -34,6 +64,7 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
     } else {
         return;
     };
+    let styled_lines = separate_ordered_list_items(styled_lines);
     let total = styled_lines.len();
     if total == 0 {
         return;

@@ -264,7 +264,7 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Skill slash style | `slash_style.rs` | Accent+bold skill token, theme.fg args — used by `input.rs` and user lines in `log.rs` |
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
-| Thinking detail | `thinking_popup.rs` | View full thinking content |
+| Thinking detail | `thinking_popup.rs` | View full thinking content; adjacent ordered-list items are separated by blank rows |
 | File detail | `diff_popup.rs` | Full tool output, file diff, or inline bash/command text |
 | Code detail | `code_popup.rs` | View full code block |
 
