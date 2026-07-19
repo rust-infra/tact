@@ -8,17 +8,32 @@ use ratatui::{
 };
 
 pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    let popup = match &app.thinking.popup {
+    let popup = match app.thinking.popup.clone() {
         Some(p) => p,
         None => return,
     };
-    let block = &app.thinking.blocks[popup.block_idx];
-    let raw_total = block.end_idx.saturating_sub(block.title_idx);
-    if raw_total == 0 {
+    let (styled_lines, raw_total) = if let Some(active) = app
+        .thinking
+        .active
+        .as_ref()
+        .filter(|active| active.phys_idx == popup.phys_idx)
+    {
+        let lines = active
+            .content
+            .lines()
+            .map(|line| Line::from(line.to_string()))
+            .collect::<Vec<_>>();
+        (lines, active.content.lines().count())
+    } else if let Some(block) = app
+        .thinking
+        .blocks
+        .iter()
+        .find(|block| block.phys_idx == popup.phys_idx)
+    {
+        (block.cached_markdown.clone(), block.content.lines().count())
+    } else {
         return;
-    }
-
-    let styled_lines = &block.cached_markdown;
+    };
     let total = styled_lines.len();
     if total == 0 {
         return;

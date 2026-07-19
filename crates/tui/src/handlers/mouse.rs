@@ -177,26 +177,24 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.mouse.last_click_time = Some(now);
     app.mouse.last_click_pos = Some(pos);
 
-    let Some(phys_idx) = app.visible_message_index(line_idx) else {
+    let Some(_phys_idx) = app.visible_message_index(line_idx) else {
         return;
     };
 
-    let card_hit = app.thinking.blocks.iter().position(|b| {
-        app.phys_to_logical_fast(b.title_idx)
-            .zip(app.phys_to_logical_fast(b.end_idx + 1))
-            .is_some_and(|(tl, bl)| line_idx >= tl && line_idx < bl)
-    });
-    if let Some(card_idx) = card_hit {
+    let thinking_hit = app
+        .find_thinking_at_logical(line_idx)
+        .map(|(thinking_phys, _, _)| thinking_phys);
+    if let Some(thinking_phys) = thinking_hit {
         if app.mouse.click_count == 1 {
-            app.mouse.last_click_card = Some(card_idx);
+            app.mouse.last_click_card = Some(thinking_phys);
             app.mouse.log_selection = None;
             app.mouse.dragging_log = false;
-        } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(card_idx) {
-            let block = &app.thinking.blocks[card_idx];
-            app.open_thinking_popup(block.title_idx);
+        } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys) {
+            app.open_thinking_popup(thinking_phys);
         } else if app.mouse.click_count >= 3 {
             handle_log_triple_click(app, line_idx, false);
         }
+        return;
     } else {
         app.mouse.last_click_card = None;
     }
@@ -232,12 +230,6 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     }
 
     app.mouse.last_click_code = None;
-    let thinking_title = app.thinking.blocks.iter().any(|b| b.title_idx == phys_idx);
-    if thinking_title {
-        app.open_thinking_popup(phys_idx);
-        return;
-    }
-
     if app.mouse.click_count == 2 {
         if let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
             && let Some((ws, we)) = app.find_word_bounds(line_idx, byte)

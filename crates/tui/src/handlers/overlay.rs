@@ -63,7 +63,7 @@ mod tests {
         use crate::widgets::state::InputMode;
         let mut app = make_app();
         app.thinking.popup = Some(ThinkingPopup {
-            block_idx: 0,
+            phys_idx: 0,
             title: "t".into(),
             scroll: 0,
         });
@@ -99,7 +99,7 @@ mod tests {
     fn j_scrolls_thinking_popup() {
         let mut app = make_app();
         app.thinking.popup = Some(ThinkingPopup {
-            block_idx: 0,
+            phys_idx: 0,
             title: "t".into(),
             scroll: 0,
         });

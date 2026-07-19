@@ -174,6 +174,19 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
 }
 
 #[test]
+fn active_thinking_card_renders_a_three_line_tail_without_source_rows() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "one\ntwo\nthree\nfour\n".into(),
+    )));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(text.contains("two") && text.contains("four"), "{text}");
+    assert!(!text.contains("│ one"), "{text}");
+    assert!(!text.contains("one\n"), "{text}");
+}
+
+#[test]
 fn log_sys_tool_message_uses_extra_indent() {
     let mut app = make_app();
     app.append_msg(

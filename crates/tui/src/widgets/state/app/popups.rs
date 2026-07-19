@@ -183,19 +183,22 @@ impl App {
         );
     }
 
-    /// Open the thinking popup, locating the block by its title line index.
-    pub(crate) fn open_thinking_popup(&mut self, title_idx: usize) {
-        if let Some((bi, block)) = self
+    /// Open the thinking popup for active or completed content at `phys_idx`.
+    pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
+        let exists = self
             .thinking
-            .blocks
-            .iter()
-            .enumerate()
-            .find(|(_, b)| b.title_idx == title_idx)
-        {
-            let title = self.raw_messages[block.title_idx].clone();
+            .active
+            .as_ref()
+            .is_some_and(|active| active.phys_idx == phys_idx)
+            || self
+                .thinking
+                .blocks
+                .iter()
+                .any(|block| block.phys_idx == phys_idx);
+        if exists {
             self.thinking.popup = Some(ThinkingPopup {
-                block_idx: bi,
-                title,
+                phys_idx,
+                title: self.msgs().thinking_title.to_string(),
                 scroll: 0,
             });
         }
@@ -273,16 +276,26 @@ impl App {
 
     /// Copy the full content of the current thinking popup to the clipboard.
     pub(crate) fn copy_thinking_popup(&mut self) {
-        let popup = match &self.thinking.popup {
-            Some(p) => p,
-            None => return,
-        };
-        let block = &self.thinking.blocks[popup.block_idx];
-        if block.cached_preview.is_empty() {
+        let Some(text) = self.thinking_popup_content() else {
             return;
-        }
-        let text = block.cached_preview.join("\n");
+        };
         self.copy_text(&text);
+    }
+
+    pub(crate) fn thinking_popup_content(&self) -> Option<String> {
+        let phys_idx = self.thinking.popup.as_ref()?.phys_idx;
+        self.thinking
+            .active
+            .as_ref()
+            .filter(|active| active.phys_idx == phys_idx)
+            .map(|active| active.content.clone())
+            .or_else(|| {
+                self.thinking
+                    .blocks
+                    .iter()
+                    .find(|block| block.phys_idx == phys_idx)
+                    .map(|block| block.content.clone())
+            })
     }
 
     /// Find tool render output whose block starts at `phys_idx`.

@@ -136,8 +136,8 @@ impl TestApp {
         self.0.close_code_popup();
     }
 
-    pub fn open_thinking_popup(&mut self, title_idx: usize) -> bool {
-        self.0.open_thinking_popup(title_idx);
+    pub fn open_thinking_popup(&mut self, phys_idx: usize) -> bool {
+        self.0.open_thinking_popup(phys_idx);
         self.0.thinking.popup.is_some()
     }
 

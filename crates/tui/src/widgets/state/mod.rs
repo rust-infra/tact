@@ -32,7 +32,7 @@ pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
-pub(crate) use thinking_state::{ThinkingBlock, ThinkingPopup, ThinkingState};
+pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
 pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
 
 // ========== Basic Types ==========

@@ -374,15 +374,17 @@ fn thinking_popup_scroll_shows_later_lines() {
         .collect();
     app.raw_messages.push("Thinking".into());
     app.thinking.blocks.push(ThinkingBlock {
-        title_idx: 0,
-        end_idx: 11,
-        scroll_offset: 0,
-        cached_preview: vec!["reason-1".into()],
+        phys_idx: 0,
+        content: (1..=12)
+            .map(|n| format!("reason-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        summary: "reason-12".into(),
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
     });
     app.thinking.popup = Some(ThinkingPopup {
-        block_idx: 0,
+        phys_idx: 0,
         title: "Thinking".into(),
         scroll: 6,
     });

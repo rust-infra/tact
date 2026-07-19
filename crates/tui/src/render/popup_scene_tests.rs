@@ -1,6 +1,6 @@
 //! Render tests for overlay popups (palette, slash, diff, code, thinking, file picker).
 
-use super::test_harness::{make_app, render_app_text, render_main_area_text};
+use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
     ThinkingBlock, ThinkingPopup,
@@ -34,6 +34,17 @@ fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Terminal
     terminal
 }
 
+fn render_thinking_popup_text(app: &mut App, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::popups::thinking_popup::render_thinking_popup(frame, frame.area(), app)
+        })
+        .expect("draw");
+    buffer_text(terminal.backend().buffer())
+}
+
 fn seed_code_popup(app: &mut App) {
     app.code_blocks.push(CodeBlock {
         start_idx: 0,
@@ -52,15 +63,14 @@ fn seed_code_popup(app: &mut App) {
 fn seed_thinking_popup(app: &mut App) {
     app.raw_messages.push("Thinking title".into());
     app.thinking.blocks.push(ThinkingBlock {
-        title_idx: 0,
-        end_idx: 1,
-        scroll_offset: 0,
-        cached_preview: vec!["Deep reasoning line".into()],
+        phys_idx: 0,
+        content: "Deep reasoning line".into(),
+        summary: "Deep reasoning line".into(),
         cached_markdown: vec![Line::from("Deep reasoning line")],
         elapsed: Duration::from_millis(10),
     });
     app.thinking.popup = Some(ThinkingPopup {
-        block_idx: 0,
+        phys_idx: 0,
         title: "Thinking title".into(),
         scroll: 0,
     });
@@ -308,6 +318,46 @@ fn main_area_thinking_popup_renders_reasoning() {
     assert!(
         text.contains("Deep reasoning") || text.contains("Thinking"),
         "thinking popup should show reasoning content, got:\n{text}"
+    );
+}
+
+#[test]
+fn active_thinking_popup_uses_buffered_content() {
+    use tact_protocol::{AgentUpdate, ThinkingChunk};
+
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "draft reasoning".into(),
+    )));
+    let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+    app.open_thinking_popup(phys_idx);
+
+    assert_eq!(
+        app.thinking_popup_content(),
+        Some("draft reasoning".to_string())
+    );
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(text.contains("draft reasoning"), "{text}");
+}
+
+#[test]
+fn active_thinking_popup_preserves_blank_lines() {
+    use tact_protocol::{AgentUpdate, ThinkingChunk};
+
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "first line\n\nlast line".into(),
+    )));
+    let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+    app.open_thinking_popup(phys_idx);
+
+    let text = render_thinking_popup_text(&mut app, 100, 30);
+    let first = text.lines().position(|line| line.contains("first line"));
+    let last = text.lines().position(|line| line.contains("last line"));
+    assert!(
+        last.zip(first)
+            .is_some_and(|(last, first)| last >= first + 2),
+        "thinking popup should retain the blank content line, got:\n{text}"
     );
 }
 

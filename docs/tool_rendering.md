@@ -15,7 +15,7 @@ For the broader rendering pipeline see [`tui_rendering.md`](./tui_rendering.md).
 | Live elapsed while running | `started_at: Instant` + 10ms dirty tick when `active` is non-empty |
 | Scroll / clip / hit-test correctness | Placeholder rows in `messages[]` + `LogColumnRenderer` |
 | Readable args without log clutter | Truncated summary in plan + log title; full args in popup / `StepResult.arg_full` |
-| Visual separation | One blank line before tool blocks and after thinking blocks |
+| Visual separation | One blank line before tool blocks after normal content |
 | Permission choice visible once | `StepResult.permission_label` on meta row; select popup uses `log_confirm = false` |
 
 ---
@@ -206,7 +206,7 @@ Placeholder strategy (`visibility.rs::push_tool_placeholder_rows`):
 - On finish, `resize_tool_placeholder_rows` grows or shrinks the range if final layout differs from running layout.
 - On first live output, resize once for the five-row card. Preserve numeric scroll offsets; a bottom-pinned viewport remains pinned.
 
-Thinking blocks insert one trailing blank line on close; the next tool block reuses that gap instead of adding a second separator.
+Thinking is a separate direct card pipeline. Completion changes its existing placeholder range into a one-line summary and does not insert a trailing blank line.
 
 ---
 

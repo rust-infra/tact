@@ -1,4 +1,4 @@
-use crate::render::cells::tool::ToolCell;
+use crate::render::cells::{thinking::ThinkingCell, tool::ToolCell};
 use crate::render::util::wrap_line;
 use crate::widgets::state::App;
 use ratatui::{
@@ -46,7 +46,6 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // let visible_height = app.log_scroll.height as usize;
     // let end_visual = (visual_scroll + visible_height).min(total_visual);
     // // ② 覆盖层裁剪 —— thinking/diff/code cards 也用它
-    // render_thinking_cards(frame, area, app, visual_scroll, visible_height);
     // saturating_sub` 防的是极端情况：如果 `area.height < 2`（面板被缩到极小），不会 panic，直接归零。
     app.log_scroll.height = area.height.saturating_sub(2);
     let visible_height = app.log_scroll.height as usize;
@@ -312,6 +311,41 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         // is no longer in the loop range, but subsequent placeholder rows
         // still belong to the same ToolBlock.
         if let Some(phys) = phys_idx {
+            if let Some((thinking_phys, _thinking_logical, thinking_rows)) =
+                app.find_thinking_at_logical(logical_i)
+            {
+                let rows_before = phys.saturating_sub(thinking_phys);
+                let vis_start = if rows_before > 0 && rows_before <= logical_i {
+                    vs_cache[logical_i - rows_before]
+                } else {
+                    vs_cache[logical_i]
+                };
+                let msgs = app.msgs();
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
+                    as usize)
+                    % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
+                if let Some(active) = app
+                    .thinking
+                    .active
+                    .as_ref()
+                    .filter(|active| active.phys_idx == thinking_phys)
+                {
+                    renderer.push(
+                        vis_start,
+                        ThinkingCell::active(active, spinner, &app.theme, &msgs),
+                    );
+                } else if let Some(block) = app
+                    .thinking
+                    .blocks
+                    .iter()
+                    .find(|block| block.phys_idx == thinking_phys)
+                {
+                    renderer.push(vis_start, ThinkingCell::completed(block, &app.theme, &msgs));
+                }
+                logical_i += thinking_rows - rows_before;
+                continue;
+            }
+
             let tool_match = app
                 .tools
                 .active
@@ -387,16 +421,13 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             .map(|p| app.raw_messages[p].clone())
             .unwrap_or_default();
 
-        // Thinking blocks with >3 hidden lines get a "↑ N/M blocks hidden ↑" prefix.
-        let prefix = phys_idx.and_then(|phys| app.thinking_collapse_prefix(phys));
-
         let indent_cols = phys_idx.map(|p| app.nested_log_indent(p)).unwrap_or(0);
 
         let cell = super::cells::text::TextCell::new(
             cached_lines,
             raw_text,
             selection_range,
-            prefix,
+            None,
             indent_cols,
             log_fg,
         );
@@ -429,17 +460,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     frame.render_widget(renderer, inner);
 
-    // Overlays (thinking / code cards) share the same visual viewport.
-    // Diff cards are now handled as ToolCells in LogColumnRenderer (Phase 3).
-    //
-    // ```text
-    //  ┌─ Log panel ─────────────────┐
-    //  │  TextCell rows (base layer) │
-    //  │  + thinking card overlay    │  each layer clips with
-    //  │  + code card overlay        │  (visual_scroll, visible_height)
-    //  └─────────────────────────────┘
-    super::cells::thinking::render_thinking_cards(frame, area, app, visual_scroll, visible_height);
-
+    // Code cards remain viewport-clipped overlays. Thinking cards are direct
+    // cells in the Phase 3 renderer above.
     super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
 
     // Loading spinner overlay on the loading placeholder row (if present).

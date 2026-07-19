@@ -170,7 +170,7 @@ impl App {
                     }
                     ThinkingChunk::Delta(text) => {
                         // Started may be missing on older producers — open on first delta.
-                        if !self.thinking.title_added {
+                        if self.thinking.active.is_none() {
                             self.begin_thinking_block();
                         }
                         self.append_thinking_delta(&text);
@@ -653,7 +653,7 @@ mod lifecycle_tests {
             chunks: vec![ToolOutputChunk::stdout("ignored\n")],
         });
 
-        assert!(!app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_some());
         assert_eq!(app.tools.active[0].output.visual_rows(false), 2);
     }
 
@@ -971,9 +971,9 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "reasoning line".into(),
         )));
-        assert!(!app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
-        assert!(app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_none());
     }
 
     #[test]
@@ -1093,10 +1093,24 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "part2".into(),
         )));
-        assert!(app.thinking.buffer.contains("part1"));
-        assert!(app.thinking.buffer.contains("part2"));
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part1")
+        );
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part2")
+        );
         app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
-        assert!(app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_none());
     }
 
     #[test]
@@ -1107,8 +1121,7 @@ mod lifecycle_tests {
             "done thinking\n".into(),
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.buffer.is_empty());
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert!(!app.thinking.blocks.is_empty());
     }
 
@@ -1127,8 +1140,15 @@ mod lifecycle_tests {
             total: 3,
             ..Default::default()
         }));
-        assert!(app.thinking.active_start.is_some());
-        assert!(app.thinking.buffer.contains("still thinking"));
+        assert!(app.thinking.active.is_some());
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("still thinking")
+        );
     }
 
     #[test]
@@ -1136,12 +1156,11 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        assert!(app.thinking.active_start.is_some());
+        assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert!(app.thinking.blocks.is_empty());
         assert_eq!(app.raw_messages.len(), before);
-        assert!(!app.thinking.title_added);
     }
 
     #[test]
@@ -1154,7 +1173,40 @@ mod lifecycle_tests {
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.blocks.is_empty());
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert_eq!(app.raw_messages.len(), before);
+    }
+
+    #[test]
+    fn thinking_finished_keeps_the_existing_placeholder_index() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "done thinking\n".into(),
+        )));
+        let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+        assert_eq!(app.thinking.blocks[0].phys_idx, phys_idx);
+        assert!(app.thinking.active.is_none());
+    }
+
+    #[test]
+    fn missing_thinking_started_creates_one_placeholder_not_source_rows() {
+        let mut app = make_app();
+        let before = app.raw_messages.len();
+
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "first\nsecond".into(),
+        )));
+
+        assert_eq!(
+            app.raw_messages.len(),
+            before + crate::render::cells::thinking::thinking_visual_rows(2)
+        );
+        assert_eq!(
+            app.thinking.active.as_ref().unwrap().display_tail().len(),
+            2
+        );
     }
 }

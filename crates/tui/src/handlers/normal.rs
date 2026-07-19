@@ -155,23 +155,14 @@ pub(crate) fn handle_normal_mode(
             // Open the most recently visible thinking card popup
             if app.thinking.popup.is_some() {
                 app.close_thinking_popup();
-            } else if !app.thinking.blocks.is_empty() {
-                // Find the block whose title_idx is closest to (and not exceeding) the current scroll position; otherwise take the newest
-                let logical_offset = app.log_scroll.offset as usize;
-                let best = app
-                    .thinking
-                    .blocks
-                    .iter()
-                    .rfind(|b| {
-                        app.phys_to_logical_fast(b.title_idx)
-                            .map(|l| l <= logical_offset)
-                            .unwrap_or(false)
-                    })
-                    .or_else(|| app.thinking.blocks.last());
-                if let Some(block) = best {
-                    let title_idx = block.title_idx;
-                    app.open_thinking_popup(title_idx);
-                }
+            } else if let Some(phys_idx) = app
+                .thinking
+                .active
+                .as_ref()
+                .map(|active| active.phys_idx)
+                .or_else(|| app.thinking.blocks.last().map(|block| block.phys_idx))
+            {
+                app.open_thinking_popup(phys_idx);
             }
         }
         KeyCode::Char('q') => {

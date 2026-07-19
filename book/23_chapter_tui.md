@@ -251,10 +251,10 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 
 Pipeline phases in `render_log_panel`:
 
-1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `messages.len()` changes (some rows hidden, e.g. collapsed thinking internals).
+1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `messages.len()` changes; direct-card placeholder rows remain addressable for scroll and hit testing.
 2. **Phase 1** — `wrap_line` → `visual_cache` + `visual_start_cache` when width or message count changes.
 3. **Phase 2** — Map `log_scroll.offset` to a visual viewport (`visual_scroll`, clip height).
-4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, thinking/diff/code overlays; only cells intersecting the viewport are drawn.
+4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 
@@ -278,7 +278,7 @@ pub(crate) trait Renderable {
 |------|------|-------|
 | `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
-| Thinking overlay | `cells/thinking.rs` | Collapsed thinking card (up to 3 preview lines) |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card: 1→3 line tail, then one-line completion summary |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
@@ -362,7 +362,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | Type | Typical content | Indent (`log_indent`) |
 |------|-----------------|----------------------|
 | `LLM` | User messages, assistant markdown, task-end separators | 0 |
-| `LLMThinking` | Thinking title, `│ …` content lines, isolation blanks | `LOG_THINKING_INDENT` |
+| `LLMThinking` | Blank placeholder rows reserved for one direct thinking card | `LOG_THINKING_INDENT` |
 | `SysTool` | Plan steps, tool placeholders, loading spinner row | `LOG_TOOL_INDENT` |
 
 **Row categories** (by how they are created, not by a dedicated enum):
@@ -372,7 +372,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
 | **System / info** | Colored prefix lines (`✓`, `⚠`, `▶`, plan text, …) via `add_system_message` | `classify_system_message` picks `SysTool` vs `LLM` for indent |
-| **Thinking internals** | Gray italic `│ …` lines under a title row | Collapsed to ≤3 visible rows after block closes; see [§6.14](#614-visibility-rules) |
+| **Thinking card** | Placeholder rows (`LLMThinking`) | One `ThinkingCell`; active tail grows from 1 to 3 lines and completion shows one summary line |
 | **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
@@ -382,7 +382,7 @@ Several **overlay registries** hold metadata keyed by physical index — they do
 
 | Registry | Key | Used for |
 |----------|-----|----------|
-| `thinking.blocks[]` | `title_idx`, `end_idx` | Collapsed card + thinking popup |
+| `thinking.active` / `thinking.blocks[]` | `phys_idx` | Active/completed direct card + thinking popup |
 | `tools.active[]` / `tools.blocks[]` | `phys_idx` | Running / completed tool cards |
 | `code_blocks[]` | `start_idx`, `end_idx` | Syntax-tinted code card |
 | `stream.buffer` | (not in `messages[]` yet) | Extra *logical* row while tokens stream |
@@ -401,9 +401,9 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | `AgentUpdate` | Physical rows inserted / updated | Side effects |
 |---------------|----------------------------------|--------------|
 | **`StreamChunk`** | Completed lines → `append_msg` (`LLM`); incomplete tail stays in `stream.buffer` | Auto-scroll; code/table/paragraph sub-parsers; safety-closes thinking if still open |
-| **`ThinkingChunk::Started`** | Blank + title row (`LLMThinking`) | Opens active thinking region |
-| **`ThinkingChunk::Delta`** | Each `\n`: `│ …` line (`LLMThinking`); opens region if `Started` was missed | Auto-scroll |
-| **`ThinkingChunk::Finished`** | Flush leftover buffer; collapse into `ThinkingBlock` | Closes active region |
+| **`ThinkingChunk::Started`** | Placeholder rows for a one-line `ThinkingCell` | Opens active thinking card |
+| **`ThinkingChunk::Delta`** | Mutates active card buffer; placeholder range grows only 1→2→3 body lines | Auto-scroll; opens card if `Started` was missed |
+| **`ThinkingChunk::Finished`** | Same placeholder becomes completed `ThinkingBlock` with one summary row | Closes active card |
 | **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
 | **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream; first step transitions `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
@@ -432,7 +432,7 @@ Three buffers can hold text that is not yet a permanent log row:
 | Buffer | Owner | Becomes physical rows when… |
 |--------|-------|----------------------------|
 | `stream.buffer` | `StreamState` | A `\n` completes a line (→ paragraph/table/code path) or `flush_stream_pending()` runs |
-| `thinking.buffer` | `ThinkingState` | A `\n` arrives during `ThinkingChunk::Delta`, or flush on `Finished` / safety-close |
+| `thinking.active` | `ThinkingState` | Immediately reserved as direct-card placeholder rows; deltas mutate its buffer rather than adding source rows |
 | `stream.paragraph` / `table_buffer` / `code_block_buffer` | `StreamState` | Blank line, fence close, or flush |
 
 **Active vs completed assistant text:**
@@ -442,45 +442,19 @@ While tokens arrive, the tail of the current assistant reply lives in `stream.bu
 **Thinking block lifecycle:**
 
 ```text
-ThinkingChunk::Started →  blank + title row, active_start set
-ThinkingChunk::Delta   →  append │ content rows, active_end updated
-ThinkingChunk::Finished→  flush thinking.buffer, close_active_thinking_block()
-                          →  push ThinkingBlock { title_idx, end_idx, scroll_offset, … }
+ThinkingChunk::Started →  reserve direct-card placeholder rows at phys_idx
+ThinkingChunk::Delta   →  append active content; render 1→2→3 line tail
+ThinkingChunk::Finished→  finalize same phys_idx as ThinkingBlock { summary, content, markdown }
 StreamChunk / Step*    →  safety-close if Finished was missed
 TokenUsage / ModelInfo →  do not close thinking
 ```
-On close, only the last three content lines remain *visible* (`scroll_offset = total − 3` when `total > 3`); earlier lines stay in `messages[]` but are filtered by `is_message_visible`. A purple **thinking card overlay** (`render_thinking_cards`) draws the collapsed preview on top of the visible slice.
+The active card body grows from one to three logical lines and then keeps the latest three-line tail. On close it changes in place to a one-line summary; complete content remains in state for the detail popup and copy command.
 
 **Final persistence:** `TaskComplete` calls `flush_stream_pending()` then `add_task_end_separator()`. The summary string in the update is saved to `task_history` only — the UI assumes `StreamChunk` already displayed the assistant's final text. Setting `log_scroll.offset = u16::MAX` pins the viewport to the bottom (clamped in render).
 
 ### 6.14 Visibility rules
 
-`is_message_visible(phys_idx)` (`widgets/state/app/visibility.rs`) implements thinking collapse:
-
-```text
-Physical rows for one thinking block:
-
-  [blank]     title_idx          ← always visible (title + card chrome)
-  [title]     "🧠 Thinking…"
-  [+1]        "│ line 1"         ← hidden when scroll_offset > 0
-  …
-  [end_idx]   "│ line N"         ← only 3 lines in [scroll_offset, scroll_offset+3) visible
-  [blank]     end_idx + 1        ← trailing separator, visible
-```
-
-For each closed `ThinkingBlock`, content rows where `title_idx < idx ≤ end_idx` are visible only if their relative index falls in `[scroll_offset, scroll_offset + 3)`.
-
-**Example** — 8 thinking content lines, default collapse:
-
-| Physical | Content | Visible? | Logical index |
-|----------|---------|----------|---------------|
-| 10 | (blank) | yes | 5 |
-| 11 | title | yes | 6 |
-| 12–16 | lines 1–5 | **no** | — |
-| 17–19 | lines 6–8 | yes | 7–9 |
-| 20 | (blank) | yes | 10 |
-
-Tool placeholder rows and code placeholder rows **are** visible individually in Phase 0, but Phase 3 replaces the entire placeholder *range* with one `ToolCell` (or an overlay for code). Empty `spans` rows and the task-end sentinel participate in logical counting but produce minimal visual height.
+Thinking, tool, and code placeholder rows remain visible individually in Phase 0 so logical-to-physical mapping remains stable. Phase 3 replaces a thinking or tool placeholder range with one direct cell; code retains its overlay. Thinking has no hidden source rows or special `is_message_visible` collapse rule.
 
 `total_log_lines()` skips invisible physical indices, keeping logical numbering aligned with what the user sees.
 
@@ -505,10 +479,10 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 ```text
 ┌─ Log panel ──────────────────────────────┐
 │  Layer 1: LogColumnRenderer (inline)      │
-│    TextCell │ ToolCell │ TaskEndSeparator │
+│    TextCell │ ToolCell │ ThinkingCell     │
 │    MessageSeparator (category gaps)         │
 │  Layer 2: frame overlays (same viewport)    │
-│    thinking cards │ code cards │ spinner   │
+│    code cards │ spinner                     │
 └───────────────────────────────────────────┘
 ```
 
@@ -516,17 +490,17 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 |-----------|-------|---------------|--------------|
 | **TextCell** | Inline | Wrapped line count from cache | Word select / line select |
 | **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` |
+| **ThinkingCell** | Inline | Active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual row (dynamic dashes) | — |
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
-| **Thinking card** | Overlay | Spans title through trailing blank logical rows | Opens `thinking_popup` |
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
 | **Loading spinner** | Overlay | 1 row at `loading_idx` if set | — (usually inactive — see `PlanGenerated` legacy) |
 
-**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). A collapsed-thinking prefix (`↑ 3/8 blocks hidden ↑`) prepends the first line when `total > 3`. Left gutter `indent_cols` comes from `RawMessageType`.
+**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from `RawMessageType`.
 
 **ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. The first visible `bash` output expands the card once to five stable rows; later chunks update the tail in place. stdout uses normal text, stderr uses warning color, and double-click opens the popup with up to 50,000 buffered characters. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
 
-**Why overlays for thinking/code?** Collapsed thinking needs a bordered card spanning multiple logical rows without rewriting `messages[]`. Code blocks similarly replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior — keeping hot `render()` free of markdown re-parse.
+**Why code remains an overlay:** code blocks replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior. Thinking instead follows the direct `Renderable` model used by tool cards, so its live tail and completion summary have one rendering owner.
 
 Diff previews for file-write tools are now folded into `ToolCell` detail cards; the legacy `DiffBlock` overlay path is mostly migrated ([§11 Gaps](#11-current-gaps)).
 
