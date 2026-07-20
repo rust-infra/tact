@@ -168,7 +168,7 @@ pub fn spawn_unavailable_worker(
     })
 }
 
-fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
+pub(crate) fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
     let marketplaces = MarketplaceService::new(home.clone());
     match request {
         PluginRequest::Install {
