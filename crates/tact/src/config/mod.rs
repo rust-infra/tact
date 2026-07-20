@@ -14,7 +14,7 @@ mod persist;
 mod resolve;
 mod types;
 
-pub use cli::{CliArgs, CliCommand};
+pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, PluginSubcommand};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
@@ -102,7 +102,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
     let args = CliArgs::parse();
     let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
 
-    if args.list_sessions {
+    if args.list_sessions || matches!(args.command, Some(CliCommand::Plugin { .. })) {
         install_without_llm(resolve::resolve_non_llm_settings(
             &args,
             &toml_cfg,

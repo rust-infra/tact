@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tact::config::cli::{MarketplaceSubcommand, PluginSubcommand};
+use tact::config::{MarketplaceSubcommand, PluginSubcommand};
 use tact::consts::PluginHome;
 use tact::plugin::{PluginRequest, PluginResult, execute_request};
 
