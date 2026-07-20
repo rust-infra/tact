@@ -103,7 +103,7 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Min(3),
+            Constraint::Min(1),
             Constraint::Length(input_height),
             Constraint::Length(bottom_height),
         ])

@@ -204,7 +204,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])
@@ -223,7 +223,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])
