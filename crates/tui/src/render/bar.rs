@@ -5,6 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Spinner animation frames for typing/loading indicator.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -15,6 +16,28 @@ const PROGRESS_BAR_WIDTH: u16 = 15;
 fn format_mm_ss(total_secs: i64) -> String {
     let secs = total_secs.max(0);
     format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+fn append_account_suffix(prefix: &str, account: &str, width: u16) -> String {
+    let available = width as usize;
+    let account_width = UnicodeWidthStr::width(account);
+    if account_width >= available {
+        return account.chars().take(available).collect();
+    }
+
+    let separator = " │ ";
+    let prefix_width = available.saturating_sub(account_width + separator.len());
+    let mut truncated = String::new();
+    let mut used = 0;
+    for ch in prefix.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > prefix_width {
+            break;
+        }
+        truncated.push(ch);
+        used += ch_width;
+    }
+    format!("{truncated}{separator}{account}")
 }
 
 const USAGE_BAR_WIDTH: u16 = 10;
@@ -257,8 +280,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             .replacen("{}", &app.workspace_dir, 1)
             .replacen("{}", branch, 1);
         if let Some(account) = format_account_suffix(app) {
-            top_text.push_str(" │ ");
-            top_text.push_str(&account);
+            top_text = append_account_suffix(&top_text, &account, area.width);
         }
         // Placeholder "--" before the first LLM call reports cache data.
         let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
