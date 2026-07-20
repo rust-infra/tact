@@ -5,6 +5,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
+use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
     AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
     ToolOutputBuffer, ToolOutputChunk,
@@ -13,6 +14,90 @@ use tact_protocol::{
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
+const MAX_PLUGIN_FAILURE_DETAIL_CHARS: usize = 512;
+
+fn sanitize_plugin_failure_detail(detail: &str) -> String {
+    let mut sanitized: String = detail
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
+        .collect();
+
+    if sanitized.chars().count() > MAX_PLUGIN_FAILURE_DETAIL_CHARS {
+        sanitized = sanitized
+            .chars()
+            .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS)
+            .collect();
+        sanitized.push_str("...");
+    }
+
+    sanitized
+}
+
+fn replace_two(template: &str, first: &str, second: &str) -> String {
+    template.replacen("{}", first, 1).replacen("{}", second, 1)
+}
+
+fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult) -> String {
+    match result {
+        PluginResult::Installed {
+            plugin,
+            marketplace,
+        } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
+        PluginResult::ListedInstalled { plugins } if plugins.is_empty() => {
+            messages.plugin_list_empty.to_owned()
+        }
+        PluginResult::ListedInstalled { plugins } => messages.plugin_list_tmpl.replace(
+            "{}",
+            &plugins
+                .iter()
+                .map(|plugin| format!("{}:{}", plugin.marketplace, plugin.id))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        PluginResult::Reloaded { count } => messages
+            .plugin_reloaded_tmpl
+            .replace("{}", &count.to_string()),
+        PluginResult::MarketplaceAdded { marketplace } => {
+            messages.marketplace_added_tmpl.replace("{}", marketplace)
+        }
+        PluginResult::ListedMarketplaces { marketplaces } => {
+            messages.marketplace_list_tmpl.replace(
+                "{}",
+                &marketplaces
+                    .iter()
+                    .map(|marketplace| {
+                        format!("{}: {}", marketplace.name, marketplace.source.git_url())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+        PluginResult::MarketplaceUpdated { marketplace, count } => replace_two(
+            messages.marketplace_updated_tmpl,
+            marketplace,
+            &count.to_string(),
+        ),
+        PluginResult::MarketplaceRemoved { marketplace } => {
+            messages.marketplace_removed_tmpl.replace("{}", marketplace)
+        }
+    }
+}
+
+fn plugin_operation_label(
+    messages: &crate::i18n::Messages,
+    operation: &PluginOperation,
+) -> &'static str {
+    match operation {
+        PluginOperation::Install { .. } => messages.plugin_operation_install,
+        PluginOperation::List => messages.plugin_operation_list,
+        PluginOperation::Reload => messages.plugin_operation_reload,
+        PluginOperation::MarketplaceAdd => messages.plugin_operation_marketplace_add,
+        PluginOperation::MarketplaceList => messages.plugin_operation_marketplace_list,
+        PluginOperation::MarketplaceUpdate { .. } => messages.plugin_operation_marketplace_update,
+        PluginOperation::MarketplaceRemove { .. } => messages.plugin_operation_marketplace_remove,
+    }
+}
 
 fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     if !tool_id.is_empty()
@@ -532,6 +617,32 @@ impl App {
         }
     }
 
+    /// Displays a completed plugin operation from the isolated worker.
+    pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
+        self.dirty = true;
+        match event {
+            PluginEvent::Succeeded {
+                result,
+                refresh_skills,
+            } => {
+                self.add_system_message(format_plugin_result(&self.msgs(), &result));
+                if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
+                    self.add_system_message(
+                        self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
+                    );
+                }
+            }
+            PluginEvent::Failed { operation, detail } => {
+                let detail = sanitize_plugin_failure_detail(&detail);
+                self.add_system_message(replace_two(
+                    self.msgs().plugin_operation_failed_tmpl,
+                    plugin_operation_label(&self.msgs(), &operation),
+                    &detail,
+                ));
+            }
+        }
+    }
+
     /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
     pub(crate) fn maybe_expire_done_status(&mut self) {
         if let Status::Done = self.status
@@ -562,10 +673,13 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
+    use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::render::test_harness::render_log_panel_text;
     use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
+    use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
         ThinkingChunk, ToolOutputChunk,
@@ -574,11 +688,15 @@ mod lifecycle_tests {
 
     fn make_app() -> App {
         let (_agent_tx, agent_rx) = unbounded_channel();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
         App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             PathBuf::from("."),
             Vec::new(),
@@ -588,6 +706,173 @@ mod lifecycle_tests {
             String::new(),
             Vec::new(),
         )
+    }
+
+    fn write_skill(work_dir: &std::path::Path, name: &str) {
+        let skill_dir = work_dir.join(".claude/skills").join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\n\n{name} body"),
+        )
+        .unwrap();
+    }
+
+    fn app_with_registry(work_dir: &std::path::Path) -> App {
+        write_skill(work_dir, "existing");
+        let mut app = make_app();
+        app.work_dir = work_dir.to_path_buf();
+        app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
+            tact::skill::get_skill_registry(work_dir).unwrap(),
+        ));
+        app
+    }
+
+    #[test]
+    fn non_refreshing_plugin_success_preserves_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::ListedInstalled {
+                plugins: Vec::new(),
+            },
+            refresh_skills: false,
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(!registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn failed_plugin_event_preserves_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
+            detail: "technical detail".into(),
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(!registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn refreshing_plugin_success_reloads_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: true,
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn plugin_success_message_uses_chinese_templates() {
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: false,
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message == "已安装插件 demo（来自 fixture）")
+        );
+    }
+
+    #[test]
+    fn plugin_success_message_uses_english_templates() {
+        let mut app = make_app();
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: false,
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message == "installed plugin demo from fixture")
+        );
+    }
+
+    #[test]
+    fn plugin_failure_message_uses_chinese_template_with_detail() {
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            detail: "network timeout".into(),
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message == "安装插件失败：network timeout")
+        );
+    }
+
+    #[test]
+    fn plugin_failure_message_sanitizes_and_bounds_technical_detail() {
+        let mut app = make_app();
+        let detail = format!(
+            "\u{1b}[31mnetwork\nerror\r\n\u{7}{}",
+            "雪".repeat(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
+        );
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            detail,
+        });
+
+        let message = app
+            .raw_messages
+            .iter()
+            .find(|message| message.starts_with("install plugin failed: "))
+            .unwrap();
+        let sanitized_detail = message.strip_prefix("install plugin failed: ").unwrap();
+        assert!(!sanitized_detail.chars().any(char::is_control));
+        assert!(sanitized_detail.starts_with(" [31mnetwork error  "));
+        assert!(sanitized_detail.ends_with("..."));
+        assert_eq!(
+            sanitized_detail.chars().count(),
+            MAX_PLUGIN_FAILURE_DETAIL_CHARS + 3
+        );
+        assert!(sanitized_detail.contains('雪'));
     }
 
     fn seed_running_bash(app: &mut App, tool_id: &str) {

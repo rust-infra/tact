@@ -215,6 +215,19 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 - **Skills** — `SKILL.md` playbooks under `~/.tact/skills/` and `.claude/skills/` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
+### 🧩 Plugin Marketplace
+
+Tact installs skill-only plugins natively; it does not require the Claude Code CLI. The built-in `claude-plugins-official` marketplace is available in every installation:
+
+```text
+/plugin install superpowers@claude-plugins-official
+/superpowers:brainstorming
+```
+
+Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`. `/plugin marketplace list`, `/plugin list`, and `/plugin reload` show marketplaces, installed plugins, and refresh discovered plugin skills.
+
+Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
+
 ### 👥 Sub-agents & Team
 
 Spawn isolated sub-agents for parallel work. Coordinate via message-passing inboxes. Each sub-agent gets a sandboxed toolset (bash + file R/W). Use `plan_approval` / `shutdown_request` protocols for structured handoffs.
@@ -442,7 +455,6 @@ crates/
 - [ ] Llama / Ollama support for fully local operation
 - [ ] VS Code extension (bridge to TUI)
 - [ ] Multi-user team server
-- [ ] Plugin marketplace
 
 ---
 

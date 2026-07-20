@@ -6,6 +6,33 @@ use std::path::{Path, PathBuf};
 /// `model_context_window` as a character submit limit.
 pub const MAX_INPUT_CHARS: usize = 500_000;
 
+/// Home-directory paths used by the plugin marketplace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHome {
+    pub root: PathBuf,
+    pub marketplaces: PathBuf,
+    pub cache: PathBuf,
+}
+
+impl PluginHome {
+    /// Resolves the plugin marketplace directories under the current user's home.
+    #[must_use]
+    pub fn from_environment() -> Option<Self> {
+        std::env::var_os("HOME").map(|home| Self::from_home(Path::new(&home)))
+    }
+
+    /// Resolves the plugin marketplace directories under `home`.
+    #[must_use]
+    pub fn from_home(home: &Path) -> Self {
+        let root = home.join(".tact").join("plugins");
+        Self {
+            marketplaces: root.join("marketplaces"),
+            cache: root.join("cache"),
+            root,
+        }
+    }
+}
+
 /// Returns true when `char_count` exceeds [`MAX_INPUT_CHARS`].
 #[inline]
 pub fn exceeds_input_char_limit(char_count: usize) -> bool {

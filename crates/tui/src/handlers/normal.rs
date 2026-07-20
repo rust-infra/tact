@@ -254,10 +254,14 @@ mod tests {
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
         let mut app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
@@ -288,10 +292,14 @@ mod tests {
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
         let mut app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),

@@ -437,11 +437,11 @@ pub(crate) fn handle_insert_mode(
             app.input_history.saved.clear();
             app.save_undo();
             // Deactivate slash command popup if the character is not valid for
-            // a command name (letters, digits, '-', '_', '/' are allowed).
+            // a command name (letters, digits, '-', '_', '/', ':' are allowed).
             // Also reset selection when typing updates the query.
             if app.slash_command.active {
                 app.slash_command.selected = 0;
-                if !c.is_alphanumeric() && c != '-' && c != '_' && c != '/' {
+                if !c.is_alphanumeric() && c != '-' && c != '_' && c != '/' && c != ':' {
                     app.slash_command.active = false;
                 }
             }
@@ -562,11 +562,15 @@ mod tests {
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
         drop(agent_tx);
         let app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
@@ -853,6 +857,45 @@ mod tests {
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "popup Enter on skill must not SubmitTask"
+        );
+    }
+
+    #[test]
+    fn plugin_skill_autocomplete_accepts_namespace_colon() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.skills_data = vec![SkillEntry {
+            name: "demo:review".into(),
+            description: "Demo review skill".into(),
+            body: "Review it.".into(),
+        }];
+
+        for c in "/demo:".chars() {
+            handle_insert_mode(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &user_cmd_tx,
+            );
+        }
+
+        let commands = app.palette_commands();
+        let refs: Vec<(&str, &str)> = commands
+            .iter()
+            .map(|(command, description)| (command.as_str(), description.as_str()))
+            .collect();
+        let matches = app.slash_command.matched_commands(
+            &app.input,
+            app.input_cursor,
+            &refs,
+            &super::skill_name_set(&app),
+        );
+        assert!(app.slash_command.active);
+        assert!(
+            matches
+                .iter()
+                .any(|(_, (name, _), _)| *name == "demo:review")
         );
     }
 

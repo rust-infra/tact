@@ -32,7 +32,10 @@ use serde::Deserialize;
 use tracing::warn;
 use walkdir::WalkDir;
 
-use crate::consts::TactPath;
+use crate::{
+    consts::{PluginHome, TactPath},
+    plugin::{PluginSkillRoot, PluginStore},
+};
 
 pub struct SkillManifest {
     pub name: String,
@@ -66,6 +69,10 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
     let dirs = TactPath::new(workdir.as_ref()).skill_search_dirs();
     let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
+    if let Some(plugin_home) = PluginHome::from_environment() {
+        let plugin_roots = PluginStore::new(plugin_home).installed_skill_roots()?;
+        registry.load_plugin_skills(&plugin_roots)?;
+    }
     Ok(registry)
 }
 
@@ -104,7 +111,47 @@ impl SkillRegistry {
         Ok(())
     }
 
+    fn load_plugin_skills(&mut self, plugin_roots: &[PluginSkillRoot]) -> Result<()> {
+        for root in plugin_roots {
+            self.load_direct_plugin_skills(&root.skills_dir, &root.plugin_id)?;
+        }
+
+        Ok(())
+    }
+
+    fn load_direct_plugin_skills(&mut self, skills_dir: &Path, plugin_id: &str) -> Result<()> {
+        if !skills_dir.is_dir() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(skills_dir)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warn!("skipping plugin skill directory entry: {error}");
+                    continue;
+                }
+            };
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let skill = entry.path().join("SKILL.md");
+            if skill.is_file() {
+                self.load_skill_file(&skill, Some(plugin_id));
+            }
+        }
+        Ok(())
+    }
+
     fn load_skills_from_dir(&mut self, skills_dir: &Path) -> Result<()> {
+        self.load_skills_from_dir_with_namespace(skills_dir, None)
+    }
+
+    fn load_skills_from_dir_with_namespace(
+        &mut self,
+        skills_dir: &Path,
+        namespace: Option<&str>,
+    ) -> Result<()> {
         if !skills_dir.exists() {
             return Ok(());
         }
@@ -121,41 +168,46 @@ impl SkillRegistry {
             .filter(|entry| entry.file_type().is_file())
             .filter(|entry| entry.file_name().to_str() == Some("SKILL.md"))
         {
-            let path = entry.path();
-
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("can't read skill file {}: {e}", path.display());
-                    continue;
-                }
-            };
-
-            let (meta, body) = parse_frontmatter(&content);
-            let fallback_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let name = meta.name.unwrap_or(fallback_name);
-            let description = meta
-                .description
-                .unwrap_or_else(|| "No description".to_string());
-
-            let document = SkillDocument {
-                manifest: SkillManifest {
-                    name: name.clone(),
-                    description,
-                    path: path.to_path_buf(),
-                },
-                body,
-            };
-
-            self.skills.insert(name, document);
+            self.load_skill_file(entry.path(), namespace);
         }
 
         Ok(())
+    }
+
+    fn load_skill_file(&mut self, path: &Path, namespace: Option<&str>) {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("can't read skill file {}: {e}", path.display());
+                return;
+            }
+        };
+
+        let (meta, body) = parse_frontmatter(&content);
+        let fallback_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let local_name = meta.name.unwrap_or(fallback_name);
+        let name = namespace
+            .map(|plugin_id| format!("{plugin_id}:{local_name}"))
+            .unwrap_or(local_name);
+        let description = meta
+            .description
+            .unwrap_or_else(|| "No description".to_string());
+
+        let document = SkillDocument {
+            manifest: SkillManifest {
+                name: name.clone(),
+                description,
+                path: path.to_path_buf(),
+            },
+            body,
+        };
+
+        self.skills.insert(name, document);
     }
 
     /// List available skills with name + description (metadata only).
@@ -243,6 +295,7 @@ fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::PluginSkillRoot;
     use tempfile::tempdir;
 
     #[test]
@@ -273,6 +326,82 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
         )
         .unwrap();
+    }
+
+    fn registry_with_plugins(plugins: &[(&str, &str)]) -> SkillRegistry {
+        let dir = tempdir().unwrap();
+        let mut roots = Vec::with_capacity(plugins.len());
+
+        for (plugin_id, skill_name) in plugins {
+            let skills_dir = dir.path().join(plugin_id).join("skills");
+            write_skill(&skills_dir, skill_name, "Plugin skill", "plugin body");
+            roots.push(PluginSkillRoot {
+                plugin_id: (*plugin_id).to_owned(),
+                skills_dir,
+            });
+        }
+
+        let mut registry = SkillRegistry::new([]);
+        registry.load_plugin_skills(&roots).unwrap();
+        registry
+    }
+
+    #[test]
+    fn plugin_skills_are_namespaced_and_do_not_collide() {
+        let registry = registry_with_plugins(&[("alpha", "review"), ("beta", "review")]);
+
+        assert!(registry.skills().contains_key("alpha:review"));
+        assert!(registry.skills().contains_key("beta:review"));
+    }
+
+    #[test]
+    fn plugin_skills_only_load_direct_skill_children() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join("plugin/skills");
+        write_skill(&skills_dir, "direct", "Direct plugin skill", "direct body");
+        write_skill(
+            &skills_dir.join("nested"),
+            "hidden",
+            "Nested plugin skill",
+            "nested body",
+        );
+        let mut registry = SkillRegistry::new([]);
+
+        registry
+            .load_plugin_skills(&[PluginSkillRoot {
+                plugin_id: "plugin".into(),
+                skills_dir,
+            }])
+            .unwrap();
+
+        assert!(registry.skills().contains_key("plugin:direct"));
+        assert!(!registry.skills().contains_key("plugin:hidden"));
+    }
+
+    #[test]
+    fn standalone_skill_keeps_its_unqualified_name() {
+        let dir = tempdir().unwrap();
+        let standalone_dir = dir.path().join("standalone");
+        write_skill(
+            &standalone_dir,
+            "review",
+            "Standalone skill",
+            "standalone body",
+        );
+
+        let mut registry = SkillRegistry::new([standalone_dir]);
+        registry.load_skills().unwrap();
+        let plugin_skills_dir = dir.path().join("plugin/skills");
+        write_skill(&plugin_skills_dir, "review", "Plugin skill", "plugin body");
+        registry
+            .load_plugin_skills(&[PluginSkillRoot {
+                plugin_id: "alpha".to_owned(),
+                skills_dir: plugin_skills_dir,
+            }])
+            .unwrap();
+
+        assert!(registry.skills().contains_key("review"));
+        assert!(registry.skills().contains_key("alpha:review"));
     }
 
     #[test]

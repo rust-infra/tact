@@ -9,6 +9,7 @@ use crate::widgets::state::{
     StreamState, ThinkingState, ToolState,
 };
 use std::path::PathBuf;
+use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -18,6 +19,8 @@ impl App {
     pub(crate) fn new(
         agent_rx: UnboundedReceiver<AgentUpdate>,
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+        plugin_rx: UnboundedReceiver<PluginEvent>,
+        plugin_tx: UnboundedSender<PluginRequest>,
         user_cmd_tx: UnboundedSender<UserCommand>,
         work_dir: PathBuf,
         input_history_entries: Vec<String>,
@@ -64,6 +67,8 @@ impl App {
             status: Status::Idle,
             agent_rx,
             account_rx,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             task_history: Vec::new(),
             theme: Theme::from(theme_name),
