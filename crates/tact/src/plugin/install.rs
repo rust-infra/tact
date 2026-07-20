@@ -51,8 +51,7 @@ impl PluginInstaller {
         validate_marketplace_name(marketplace_id)?;
         let catalog = match self.marketplace_service.catalog(marketplace_id) {
             Ok(catalog) => catalog,
-            Err(_) => tokio::runtime::Handle::current()
-                .block_on(self.marketplace_service.update_marketplace(marketplace_id))?,
+            Err(_) => super::block_on_async(self.marketplace_service.update_marketplace(marketplace_id))?,
         };
         let plugin = catalog.plugins.get(plugin_id).with_context(|| {
             format!("unknown plugin {plugin_id} in marketplace {marketplace_id}")
@@ -281,10 +280,14 @@ fn copy_git_tree(
     let repository = Repository::open(repository_root)?;
     let commit = repository.revparse_single(revision)?.peel_to_commit()?;
     let tree = commit.tree()?;
-    let entry = tree
-        .get_path(source)
-        .with_context(|| format!("plugin source is absent from revision {revision}"))?;
-    let source_tree = entry.to_object(&repository)?.peel_to_tree()?;
+    let source_tree = if source == Path::new(".") {
+        tree
+    } else {
+        let entry = tree
+            .get_path(source)
+            .with_context(|| format!("plugin source is absent from revision {revision}"))?;
+        entry.to_object(&repository)?.peel_to_tree()?
+    };
     copy_git_tree_entries(&repository, &source_tree, destination)
 }
 

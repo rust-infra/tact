@@ -168,7 +168,7 @@ pub fn spawn_unavailable_worker(
     })
 }
 
-pub(crate) fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
+pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
     let marketplaces = MarketplaceService::new(home.clone());
     match request {
         PluginRequest::Install {
@@ -192,8 +192,9 @@ pub(crate) fn execute_request(home: PluginHome, request: PluginRequest) -> Resul
             })
         }
         PluginRequest::MarketplaceAdd { source } => {
-            let marketplace = tokio::runtime::Handle::current()
-                .block_on(marketplaces.add_catalog_source(MarketplaceSource::parse(&source)?))?;
+            let marketplace = block_on_async(
+                marketplaces.add_catalog_source(MarketplaceSource::parse(&source)?),
+            )?;
             Ok(PluginResult::MarketplaceAdded { marketplace })
         }
         PluginRequest::MarketplaceList => {
@@ -203,8 +204,7 @@ pub(crate) fn execute_request(home: PluginHome, request: PluginRequest) -> Resul
             })
         }
         PluginRequest::MarketplaceUpdate { name } => {
-            let catalog = tokio::runtime::Handle::current()
-                .block_on(marketplaces.update_marketplace(&name))
+            let catalog = block_on_async(marketplaces.update_marketplace(&name))
                 .with_context(|| format!("failed to update marketplace {name}"))?;
             Ok(PluginResult::MarketplaceUpdated {
                 marketplace: name,
@@ -215,6 +215,22 @@ pub(crate) fn execute_request(home: PluginHome, request: PluginRequest) -> Resul
             marketplaces.remove_source(&name)?;
             Ok(PluginResult::MarketplaceRemoved { marketplace: name })
         }
+    }
+}
+
+/// Runs an async future from a synchronous context, handling both
+/// when a tokio runtime is active and when it isn't.
+pub(crate) fn block_on_async<F: std::future::Future<Output = T>, T>(future: F) -> T {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Already inside a tokio runtime: temporarily leave it with block_in_place.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(future)
+        })
+    } else {
+        // Not inside a tokio runtime: create a fresh one.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(future)
     }
 }
 

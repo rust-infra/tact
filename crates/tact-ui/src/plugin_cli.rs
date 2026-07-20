@@ -8,59 +8,49 @@ pub async fn run_plugin_cli(command: PluginSubcommand) -> Result<()> {
     let home = PluginHome::from_environment()
         .expect("HOME must be set for plugin operations");
 
-    match command {
-        PluginSubcommand::List => {
-            let result = execute_request(home, PluginRequest::List)?;
-            print_result(&result);
+    let result = tokio::task::spawn_blocking(move || {
+        let (request, no_block_on) = build_request(command)?;
+        if no_block_on {
+            execute_request(home, request)
+        } else {
+            execute_request(home, request)
         }
+    })
+    .await??;
+
+    print_result(&result);
+    Ok(())
+}
+
+/// Build a PluginRequest from the CLI subcommand.
+/// Returns (request, _) where the second element is unused but kept for
+/// potential future optimization.
+fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
+    match command {
+        PluginSubcommand::List => Ok((PluginRequest::List, true)),
         PluginSubcommand::Install { spec } => {
-            // Parse "<name>@<marketplace>" format
             let (plugin, marketplace) = spec
                 .split_once('@')
                 .map(|(p, m)| (p.to_owned(), m.to_owned()))
                 .unwrap_or_else(|| {
-                    // Treat bare name as name@claude-plugins-official
                     (spec.clone(), "claude-plugins-official".to_owned())
                 });
-            let result = execute_request(
-                home,
-                PluginRequest::Install {
-                    plugin,
-                    marketplace,
-                },
-            )?;
-            print_result(&result);
+            Ok((PluginRequest::Install { plugin, marketplace }, false))
         }
-        PluginSubcommand::Reload => {
-            let result = execute_request(home, PluginRequest::Reload)?;
-            print_result(&result);
-        }
+        PluginSubcommand::Reload => Ok((PluginRequest::Reload, true)),
         PluginSubcommand::Marketplace { command } => match command {
             MarketplaceSubcommand::Add { source } => {
-                let result = execute_request(home, PluginRequest::MarketplaceAdd { source })?;
-                print_result(&result);
+                Ok((PluginRequest::MarketplaceAdd { source }, false))
             }
-            MarketplaceSubcommand::List => {
-                let result = execute_request(home, PluginRequest::MarketplaceList)?;
-                print_result(&result);
-            }
+            MarketplaceSubcommand::List => Ok((PluginRequest::MarketplaceList, true)),
             MarketplaceSubcommand::Update { name } => {
-                let result = execute_request(
-                    home,
-                    PluginRequest::MarketplaceUpdate { name },
-                )?;
-                print_result(&result);
+                Ok((PluginRequest::MarketplaceUpdate { name }, false))
             }
             MarketplaceSubcommand::Remove { name } => {
-                let result = execute_request(
-                    home,
-                    PluginRequest::MarketplaceRemove { name },
-                )?;
-                print_result(&result);
+                Ok((PluginRequest::MarketplaceRemove { name }, true))
             }
         },
     }
-    Ok(())
 }
 
 fn print_result(result: &PluginResult) {
