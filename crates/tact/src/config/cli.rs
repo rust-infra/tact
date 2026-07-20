@@ -96,4 +96,48 @@ pub enum CliCommand {
         /// The task prompt to execute
         prompt: String,
     },
+    /// Manage plugins and marketplaces
+    Plugin {
+        #[command(subcommand)]
+        command: PluginSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginSubcommand {
+    /// List installed plugins
+    List,
+    /// Install a plugin from a marketplace (format: <name>@<marketplace>)
+    Install {
+        /// Plugin spec, e.g. "my-plugin@claude-plugins-official"
+        spec: String,
+    },
+    /// Reload all installed plugins
+    Reload,
+    /// Manage marketplace sources
+    Marketplace {
+        #[command(subcommand)]
+        command: MarketplaceSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MarketplaceSubcommand {
+    /// Add a marketplace from a Git URL or GitHub shorthand
+    Add {
+        /// Marketplace source URL or GitHub owner/repo shorthand
+        source: String,
+    },
+    /// List all registered marketplaces
+    List,
+    /// Update (re-fetch) a marketplace catalog
+    Update {
+        /// Marketplace name to update
+        name: String,
+    },
+    /// Remove a marketplace (cannot remove the built-in one)
+    Remove {
+        /// Marketplace name to remove
+        name: String,
+    },
 }
