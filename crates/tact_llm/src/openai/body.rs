@@ -19,13 +19,17 @@ pub trait OpenAiBodyHook: Send + Sync {
     fn inject(&self, body: &mut Value, ctx: &BodyHookCtx<'_>);
 }
 
-/// OpenAI hook: `reasoning_effort` (`low` / `medium` / `high`) from budget.
+/// OpenAI hook: explicit `reasoning_effort`, falling back to budget bands.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StandardOpenAiBodyHook;
 
 impl OpenAiBodyHook for StandardOpenAiBodyHook {
     fn inject(&self, body: &mut Value, ctx: &BodyHookCtx<'_>) {
-        crate::inject::inject_openai_reasoning_effort(body, ctx.request);
+        crate::inject::inject_openai_reasoning_effort(
+            body,
+            ctx.request,
+            ctx.provider.reasoning_effort,
+        );
     }
 }
 
@@ -97,6 +101,8 @@ pub(crate) mod test_util {
     pub(crate) fn provider(kind: ProviderKind, model: &str, base_url: &str) -> ProviderInfo {
         ProviderInfo {
             provider: kind,
+            protocol: crate::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: String::new(),
             base_url: base_url.to_string(),
             model: model.to_string(),
@@ -136,5 +142,17 @@ mod tests {
         let mut body = empty_body();
         StandardOpenAiBodyHook.inject(&mut body, &ctx(&request, &provider, &[]));
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn openai_hook_prefers_explicit_reasoning_effort() {
+        let request = sample_request_with_thinking();
+        let mut provider = provider(ProviderKind::OpenAi, "gpt-5", "https://api.openai.com/v1");
+        provider.reasoning_effort = Some(crate::OpenAiReasoningEffort::Max);
+        let mut body = empty_body();
+
+        StandardOpenAiBodyHook.inject(&mut body, &ctx(&request, &provider, &[]));
+
+        assert_eq!(body["reasoning_effort"], "max");
     }
 }

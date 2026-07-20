@@ -28,6 +28,7 @@ impl From<String> for MessageError {
 pub enum LlmError {
     Anthropic(MessageError),
     OpenAi(async_openai::error::OpenAIError),
+    OpenAiResponses(async_openai_responses::error::OpenAIError),
     Other(String),
 }
 
@@ -36,6 +37,7 @@ impl fmt::Display for LlmError {
         match self {
             LlmError::Anthropic(e) => write!(f, "Anthropic error: {e}"),
             LlmError::OpenAi(e) => write!(f, "OpenAI error: {e}"),
+            LlmError::OpenAiResponses(e) => write!(f, "OpenAI Responses error: {e}"),
             LlmError::Other(s) => write!(f, "LLM error: {s}"),
         }
     }
@@ -52,5 +54,11 @@ impl From<MessageError> for LlmError {
 impl From<async_openai::error::OpenAIError> for LlmError {
     fn from(e: async_openai::error::OpenAIError) -> Self {
         LlmError::OpenAi(e)
+    }
+}
+
+impl From<async_openai_responses::error::OpenAIError> for LlmError {
+    fn from(e: async_openai_responses::error::OpenAIError) -> Self {
+        LlmError::OpenAiResponses(e)
     }
 }

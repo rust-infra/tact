@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tact_llm::{ProviderInfo, ProviderKind};
+use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
 /// Top-level TOML config (`tact.toml` or `.tact/config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -47,6 +47,10 @@ pub struct ProviderEntryToml {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub thinking_budget: Option<usize>,
+    /// OpenAI wire protocol (`chat_completions` or `responses`).
+    pub protocol: Option<String>,
+    /// Optional OpenAI reasoning effort override.
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Candidate models for the `/model` picker (optional).
     pub models: Vec<String>,
 }
@@ -131,6 +135,8 @@ pub struct ToolsTomlConfig {
 #[derive(Debug, Clone)]
 pub struct LlmSettings {
     pub provider: ProviderKind,
+    pub protocol: OpenAiProtocol,
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
@@ -145,6 +151,8 @@ impl LlmSettings {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             provider: self.provider,
+            protocol: self.protocol,
+            reasoning_effort: self.reasoning_effort,
         }
     }
 }

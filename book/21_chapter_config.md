@@ -88,6 +88,8 @@ Explicit `--config /path/to/file.toml` bypasses the search list.
 | `api_key` / `model` | CLI → entry (required) |
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
+| `protocol` | entry → `chat_completions` default |
+| `reasoning_effort` | OpenAI entry → `thinking_budget` compatibility mapping |
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
@@ -111,6 +113,12 @@ model = "kimi-k2.5"
 models = ["kimi-k2.5", "kimi-for-coding"]   # optional; used by TUI /model picker
 # base_url defaults to https://api.moonshot.cn/v1
 # max_tokens = 64000       # optional per-provider override
+
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"    # chat_completions (default) | responses
+reasoning_effort = "high" # none | minimal | low | medium | high | xhigh | max
 
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
@@ -145,7 +153,17 @@ provider only). Empty/absent → `/model` prints a hint instead of opening the
 picker. Choosing a model applies immediately; you can optionally write it back
 to this provider’s `model` field in the loaded config file.
 
-Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, … }`
+Optional `protocol` defaults to `chat_completions`. `responses` is valid only
+for the `openai` provider; configuration resolution rejects it for Anthropic,
+DeepSeek, or Kimi. There is no CLI override for this field.
+
+Optional `reasoning_effort` is also OpenAI-only and accepts `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, or `max`. Availability is model-dependent.
+An explicit value is forwarded unchanged and overrides the compatibility
+mapping from `thinking_budget`; when omitted, the existing `low` / `medium` /
+`high` budget bands remain in effect. There is no CLI override for this field.
+
+Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, … }`
 for the hot path. See `types.rs` for serde structs and unit tests.
 
 ---

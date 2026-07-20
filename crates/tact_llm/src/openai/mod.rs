@@ -12,6 +12,7 @@
 pub mod body;
 pub(crate) mod compat;
 pub mod multi_model;
+pub mod responses;
 
 pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
 pub use multi_model::OpenAiMultiModelAdapter;
@@ -257,12 +258,15 @@ struct StreamCompletionTokensDetails {
 /// - `10_001..=32_000` → `medium`
 /// - `> 32_000` → `high`
 pub fn reasoning_effort_from_budget(budget_tokens: usize) -> Option<&'static str> {
-    match budget_tokens {
-        0 => None,
-        1..=10_000 => Some("low"),
-        10_001..=32_000 => Some("medium"),
-        _ => Some("high"),
-    }
+    crate::effective_reasoning_effort(None, budget_tokens).map(crate::OpenAiReasoningEffort::as_str)
+}
+
+/// Resolve the current provider's explicit effort or the legacy budget bands.
+pub fn current_reasoning_effort_from_budget(budget_tokens: usize) -> Option<&'static str> {
+    crate::read_provider(|provider| {
+        crate::effective_reasoning_effort(provider.reasoning_effort, budget_tokens)
+            .map(crate::OpenAiReasoningEffort::as_str)
+    })
 }
 
 fn tool_use_block_from_parts(

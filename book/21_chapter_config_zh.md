@@ -88,6 +88,8 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 | `api_key` / `model` | CLI → 条目（必填） |
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
+| `protocol` | 条目 → 默认 `chat_completions` |
+| `reasoning_effort` | OpenAI 条目 → `thinking_budget` 兼容映射 |
 
 必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。未知 map 键或缺失活跃条目会在 resolve 时报错。
 
@@ -109,6 +111,12 @@ model = "kimi-k2.5"
 models = ["kimi-k2.5", "kimi-for-coding"]   # 可选；TUI /model 选择器使用
 # base_url 默认为 https://api.moonshot.cn/v1
 # max_tokens = 64000       # 可选 per-provider 覆盖
+
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"    # chat_completions（默认）| responses
+reasoning_effort = "high" # none | minimal | low | medium | high | xhigh | max
 
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
@@ -140,7 +148,14 @@ brave_search_api_key = "bsk-..."
 
 可选 `models` 是 TUI `/model` slash 命令的候选列表（仅限同一 provider）。为空/缺失 → `/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
 
-Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, … }` 供热路径使用。serde 结构与单元测试见 `types.rs`。
+可选 `protocol` 默认为 `chat_completions`。`responses` 仅对 `openai` provider 有效；配置 resolve 会拒绝 Anthropic、DeepSeek 或 Kimi 使用该值。此字段没有 CLI override。
+
+可选 `reasoning_effort` 同样仅对 OpenAI 有效，接受 `none`、`minimal`、
+`low`、`medium`、`high`、`xhigh` 或 `max`；具体可用值取决于模型。显式值会
+原样发送并覆盖 `thinking_budget` 的兼容映射；省略时仍使用现有的 `low` /
+`medium` / `high` budget 档位。此字段没有 CLI override。
+
+Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, … }` 供热路径使用。serde 结构与单元测试见 `types.rs`。
 
 ---
 

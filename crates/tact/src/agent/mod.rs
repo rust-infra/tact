@@ -430,7 +430,8 @@ impl Agent {
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
                 reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                    tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                    tact_llm::current_reasoning_effort_from_budget(t.budget_tokens)
+                        .map(str::to_string)
                 }),
                 extra_body: request
                     .thinking
@@ -799,7 +800,7 @@ impl Agent {
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
             reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
             }),
             extra_body: request
                 .thinking
@@ -1312,6 +1313,8 @@ mod tests {
             let config = crate::config::ResolvedConfig {
                 llm: crate::config::LlmSettings {
                     provider: ProviderKind::OpenAi,
+                    protocol: tact_llm::OpenAiProtocol::default(),
+                    reasoning_effort: None,
                     api_key: String::new(),
                     base_url: String::new(),
                     model: "mock-model".to_string(),

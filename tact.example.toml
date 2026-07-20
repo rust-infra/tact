@@ -39,7 +39,11 @@ base_url = "https://api.anthropic.com"
 [llm.providers.openai]
 api_key = "sk-..."
 model = "gpt-4o"
+protocol = "responses"
+# reasoning_effort = "high" # none|minimal|low|medium|high|xhigh|max
 # base_url defaults to https://api.openai.com/v1
+# Omit protocol or set "chat_completions" for OpenAI-compatible proxies.
+# Omit reasoning_effort to keep the thinking_budget low/medium/high mapping.
 
 [llm.providers.deepseek]
 api_key = "sk-..."

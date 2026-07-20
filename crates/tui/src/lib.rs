@@ -133,9 +133,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.status_bar.model_max_tokens = model_max_tokens;
     if model_thinking_budget > 0 {
         app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
-        app.status_bar.model_reasoning_effort =
-            tact_llm::reasoning_effort_from_budget(model_thinking_budget).map(str::to_string);
     }
+    app.status_bar.model_reasoning_effort =
+        tact_llm::current_reasoning_effort_from_budget(model_thinking_budget).map(str::to_string);
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());

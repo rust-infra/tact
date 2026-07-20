@@ -214,6 +214,8 @@ mod tests {
         tact::config::install_or_override(tact::config::ResolvedConfig {
             llm: tact::config::LlmSettings {
                 provider: ProviderKind::Kimi,
+                protocol: tact_llm::OpenAiProtocol::default(),
+                reasoning_effort: None,
                 api_key: "sk-test".into(),
                 base_url: "https://api.moonshot.cn/v1".into(),
                 model: current.into(),
@@ -247,6 +249,8 @@ mod tests {
         });
         tact_llm::init_provider(ProviderInfo {
             provider: ProviderKind::Kimi,
+            protocol: tact_llm::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: "sk-test".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             model: current.into(),

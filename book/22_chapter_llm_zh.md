@@ -19,19 +19,22 @@ flowchart TB
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
     LP --> OpenAi[OpenAiAdapter]
+    LP --> Responses[OpenAiResponsesAdapter]
     Anthropic --> API1[Messages API SSE]
     OpenAi --> API2[Chat Completions SSE]
+    Responses --> API3[Responses API SSE]
     Agent[Agent::stream_message] --> LlmClient[LlmClient trait]
     LlmClient --> LP
     LlmClient --> TUI[AgentUpdate on ui_tx]
 ```
 
-两个 adapter 家族共享同一 trait：
+三个 adapter 家族共享同一 trait：
 
 | Adapter | Providers | HTTP API |
 |---------|-----------|----------|
 | `AnthropicAdapter` | `anthropic` | Anthropic Messages（`/messages`） |
 | `OpenAiAdapter` | `openai`、`deepseek`、`kimi` | OpenAI 兼容 Chat Completions |
+| `OpenAiResponsesAdapter` | 配置 `protocol = "responses"` 的 `openai` | OpenAI Responses（`/responses`） |
 
 DeepSeek 与 Kimi 复用 `OpenAiAdapter`，默认 base URL 来自 config resolve。
 
@@ -47,11 +50,17 @@ pub enum ProviderKind {
     Kimi,
 }
 
+pub enum OpenAiProtocol {
+    ChatCompletions,
+    Responses,
+}
+
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
     pub provider: ProviderKind,
+    pub protocol: OpenAiProtocol,
 }
 ```
 
@@ -74,7 +83,7 @@ let mut client = tact_llm::get_llm_client()?;
 client.set_user_id(&session_id);   // DeepSeek per-session KV cache 隔离
 ```
 
-`build_client()` 校验非空 `api_key`，按 `ProviderKind` match：Anthropic → `LlmProvider::Anthropic`；OpenAi → `LlmProvider::OpenAi`；DeepSeek → `LlmProvider::DeepSeek`；Kimi → `LlmProvider::Kimi`。后三者共享 OpenAI 兼容 transport，但使用不同 body hook。
+`build_client()` 校验非空 `api_key` 并按 `ProviderKind` match。Anthropic、DeepSeek 与 Kimi 选择各自专用 variant。OpenAI 再按 `protocol` match：`chat_completions` 选择 `LlmProvider::OpenAi`，`responses` 选择 `LlmProvider::OpenAiResponses`。协议默认 `chat_completions`；非 OpenAI provider 配置 `responses` 会被拒绝。
 
 ```mermaid
 sequenceDiagram
@@ -243,7 +252,9 @@ Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
 
 ---
 
-## 6. OpenAI 兼容 Adapter
+## 6. OpenAI API 与兼容 Adapter
+
+### 6.1 Chat Completions 与兼容 provider
 
 `openai/mod.rs` 提供共享 Chat Completions HTTP/SSE transport。专用的 `deepseek/mod.rs`、`kimi/mod.rs` 与 `openai/multi_model.rs` adapter 在公共请求转换后选择 provider 特定 body hook。
 
@@ -267,6 +278,30 @@ Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
 
 **空 assistant 清理：** 因 thinking block 在面向非 Kimi OpenAI 兼容 API 时被丢弃，仅含 thinking（或截断后仅剩 orphan tool calls）的 assistant turn 会序列化为 `{ "role": "assistant", "content": null, "tool_calls": null }` 并被 400 拒绝。`convert.rs` 中 `sanitize_assistant_messages` 对这类消息打 stub 并在每次请求剥离 orphan `tool_calls`。完整上下文见 [错误恢复](./06_chapter_recovery.md)。
 
+### 6.2 Responses API
+
+OpenAI provider entry 需要显式 opt-in：
+
+```toml
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"
+reasoning_effort = "high"
+```
+
+`openai/responses/` 通过依赖别名使用 `async-openai` 0.41.1；现有 Chat Completions 类型保留在 0.20，使 Kimi 与 DeepSeek 的非标准 wire 形不发生变化。Adapter 在同一个 provider 无关 contract 后实现流式 `stream_message` 与非流式 `create_message`。该别名启用 SDK 的 `byot` 扩展：请求仍从 SDK 类型构建，最终 JSON dispatch 可以发送 SDK enum 尚未暴露的当前 `max` effort；Response 与 stream event 继续使用 SDK 类型。
+
+Tact 继续拥有 conversation。每次请求以 `store: false` 发送完整规范化历史；不使用 Conversations 或 `previous_response_id`。转换覆盖 system instructions、用户/assistant 文本、图片 data URL、function call、function output、function tools、tool choice、采样字段，以及 `max_tokens → max_output_tokens`。`top_k` 与 stop sequences 因 Responses 请求类型无对应字段而省略。
+
+Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 转为 `ContentBlock::Thinking`：summary 文本存入 `thinking`，`signature` 保存一个带版本的 opaque envelope，其中包含完整 reasoning item 与相关 `fc_*` function-call item id。下一次请求由该 envelope 重建原始 `rs_*` / `fc_*` identity；没有 encrypted payload 的 thinking block 仅用于显示，不发送回 API。
+
+流式 delta 仅驱动实时 UI。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。这样避免 delta 与 terminal event 中同一内容重复。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
+
+此 adapter 不支持：server-hosted tools、background responses、Conversations、`previous_response_id` 与 Responses compaction endpoint。
+
+### 6.3 共享 thinking 配置
+
 **Thinking / reasoning 注入：** 内部请求始终携带 Anthropic 形 `Thinking { budget_tokens }`。Provider body hook 将其改写为各 wire 协议：
 
 | Provider | thinking 设置时 | Wire 字段 |
@@ -276,9 +311,15 @@ Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
 | Kimi K2.6 | budget > 0 | `thinking: { type: "enabled", keep: "all" }`；否则 `disabled` |
 | Kimi K2.7 / coding | 跳过 | *（服务端始终开启 thinking）* |
 | DeepSeek | budget > 0 | `thinking: { type: "enabled" }` + `reasoning_effort: high\|max`；否则 `thinking: disabled` |
-| OpenAI（原生） | 若 `request.thinking` 且 budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget`（`low` / `medium` / `high`）— **非** Anthropic `thinking.budget_tokens` |
+| OpenAI Chat Completions | 配置显式 effort 或 budget > 0 | `reasoning_effort: none\|minimal\|low\|medium\|high\|xhigh\|max` |
+| OpenAI Responses | 配置显式 effort 或 budget > 0 | `reasoning: { effort: none\|minimal\|low\|medium\|high\|xhigh\|max, summary: auto }` |
 
-`ModelCallParams.reasoning_effort` 为 TUI 镜像该 budget→effort 映射。Config 仍仅暴露 `thinking_budget`；尚无独立 `reasoning_effort` TOML 键。
+OpenAI 可在 provider 条目配置 `reasoning_effort`；显式值原样发送，并优先于
+`thinking_budget`。省略时保留旧档位：零值不发送该字段，`1..=10_000` 映射
+`low`，`10_001..=32_000` 映射 `medium`，更大 budget 映射 `high`。Tact 不为
+`xhigh` 或 `max` 虚构 budget 阈值。`ModelCallParams.reasoning_effort` 向 TUI
+报告实际值。具体支持取决于模型，参见
+[OpenAI reasoning 指南](https://developers.openai.com/api/docs/guides/reasoning)。
 
 ---
 
@@ -372,13 +413,13 @@ sequenceDiagram
 
 | 文件 | 角色 |
 |------|------|
-| `tact_llm/src/types.rs` | `ProviderKind`、请求类型及 provider 无关的 `StopReason` |
+| `tact_llm/src/types.rs` | `ProviderKind`、`OpenAiProtocol`、请求类型及 provider 无关的 `StopReason` |
 | `tact_llm/src/content.rs` | 自有 `ContentBlock`、`Message`、`ContentBlockDelta`、`StreamUsage` 等 |
 | `tact_llm/src/client.rs` | `LlmClient`、专用 `LlmProvider` variant、session user-id 路由 |
 | `tact_llm/src/provider.rs` | `ProviderInfo`、provider 初始化、client 构建、检测辅助 |
 | `tact_llm/src/account.rs` | DeepSeek 余额与 Kimi 余额/额度查询 |
 | `tact_llm/src/anthropic/mod.rs` | Messages API 流式 + 非流式 |
-| `tact_llm/src/openai/` | 共享 Chat Completions transport/body 组装与实时 hook 选择 |
+| `tact_llm/src/openai/` | Chat Completions transport/hooks，以及隔离的 Responses converter、normalizer 与 stream state |
 | `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider 特定 thinking 与历史 hook |
 | `tact_llm/src/convert.rs` | 请求翻译、Image → `image_url`、Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
@@ -395,15 +436,16 @@ sequenceDiagram
 | **无 Anthropic SDK 依赖** | 对话、请求、stop、stream-delta、错误类型均由 `tact_llm` 拥有；Anthropic 仅通过自定义 HTTP + SSE |
 | **每次 `get_llm_client()` 重建 adapter** | 每次调用新 adapter 实例；DeepSeek 下 `set_user_id` 变更 `Agent` 持有的副本 |
 | **无 vision 能力门控** | 附加图片始终作为 multimodal part 发送；纯文本模型/代理可能对 `image_url` 返回 400 |
+| **Responses 仅核心子集** | 无 Conversations、`previous_response_id`、hosted tools、background mode 或 Responses compaction endpoint |
 
 ### 协议兼容缺口（内部 Anthropic 形 → wire）
 
-`tact_llm` 拥有 [`CreateMessageParams`](../crates/tact_llm/src/types.rs)（serde 用相同 Anthropic *wire 形*，但不再是 SDK 类型）。各 adapter 须翻译字段；若干 OpenAI 原生差异**尚未**处理：
+`tact_llm` 拥有 [`CreateMessageParams`](../crates/tact_llm/src/types.rs)（serde 用相同 Anthropic *wire 形*，但不再是 SDK 类型）。各 adapter 须翻译字段。下表描述 Chat Completions 路径；Responses 映射见 §6.2。若干 Chat Completions 差异**尚未**处理：
 
 | 内部 / 意图 | Anthropic | DeepSeek / Kimi（OpenAI-compat） | 原生 OpenAI Chat Completions | 状态 |
 |-------------|-----------|----------------------------------|------------------------------|------|
 | 启用扩展 thinking | `thinking.budget_tokens`（内部） | Anthropic：`thinking.budget_tokens`；DeepSeek/Kimi hook：`thinking.type`（±effort/keep） | OpenAI：`reasoning_effort` | OK — body hook 按 API wire 形映射 |
-| Thinking budget 旋钮 | `thinking_budget` config | 映射到 `budget_tokens` | `reasoning_effort_from_budget` 档位 | OK（档位在 `openai/mod.rs`；无专用 TOML 键） |
+| Thinking / effort 旋钮 | `thinking_budget` 加可选 OpenAI `reasoning_effort` | 映射到 `budget_tokens` | 显式 effort，否则 `reasoning_effort_from_budget` 档位 | OK（显式 effort 优先） |
 | 最大输出 | `max_tokens` | `max_tokens` | o 系列常要 `max_completion_tokens`；部分拒绝 `max_tokens` | 未重映射 |
 | System prompt | 顶层 `system` | 首条 `role: system` 消息 | 同上；部分推理模型偏好 `developer` | 始终 `system` |
 | Tool 定义 | `tools`（Anthropic schema） | `tools` + `type: function` | 同上现代 tools API | OK（`convert.rs`） |

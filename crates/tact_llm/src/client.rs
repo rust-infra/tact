@@ -55,6 +55,7 @@ pub trait LlmClient: Send + Sync {
 pub enum LlmProvider {
     Anthropic(anthropic::AnthropicAdapter),
     OpenAi(openai::OpenAiMultiModelAdapter),
+    OpenAiResponses(openai::responses::OpenAiResponsesAdapter),
     DeepSeek(deepseek::DeepSeekAdapter),
     Kimi(kimi::KimiAdapter),
     /// Mock provider for integration tests. Returns predetermined responses.
@@ -79,6 +80,7 @@ impl LlmClient for LlmProvider {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, ui_tx).await,
             LlmProvider::OpenAi(o) => o.stream_message(request, ui_tx).await,
+            LlmProvider::OpenAiResponses(o) => o.stream_message(request, ui_tx).await,
             LlmProvider::DeepSeek(d) => d.stream_message(request, ui_tx).await,
             LlmProvider::Kimi(k) => k.stream_message(request, ui_tx).await,
             LlmProvider::Mock(m) => m.stream_message(request, ui_tx).await,
@@ -100,6 +102,7 @@ impl LlmClient for LlmProvider {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request).await,
             LlmProvider::OpenAi(o) => o.create_message(request).await,
+            LlmProvider::OpenAiResponses(o) => o.create_message(request).await,
             LlmProvider::DeepSeek(d) => d.create_message(request).await,
             LlmProvider::Kimi(k) => k.create_message(request).await,
             LlmProvider::Mock(m) => m.create_message(request).await,
@@ -117,7 +120,10 @@ impl LlmProvider {
         match self {
             LlmProvider::OpenAi(o) => o.set_user_id(user_id.to_string()),
             LlmProvider::DeepSeek(d) => d.set_user_id(user_id.to_string()),
-            LlmProvider::Anthropic(_) | LlmProvider::Kimi(_) | LlmProvider::Mock(_) => {}
+            LlmProvider::Anthropic(_)
+            | LlmProvider::OpenAiResponses(_)
+            | LlmProvider::Kimi(_)
+            | LlmProvider::Mock(_) => {}
         }
     }
 }

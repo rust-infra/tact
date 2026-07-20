@@ -18,6 +18,7 @@ license = "MIT"
 anyhow = "1.0"
 arboard = "3"
 async-openai = "0.20"
+async-openai-responses = { package = "async-openai", version = "0.41.1", features = ["responses", "byot"] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }

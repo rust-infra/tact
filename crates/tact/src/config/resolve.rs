@@ -4,7 +4,7 @@ use super::types::{
     AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
     VisionImageSettings,
 };
-use tact_llm::ProviderKind;
+use tact_llm::{OpenAiProtocol, ProviderKind};
 
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     let compress = toml_cfg
@@ -96,8 +96,24 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
             )
         })?;
 
+    let protocol = entry
+        .protocol
+        .as_deref()
+        .unwrap_or(OpenAiProtocol::default().as_str())
+        .parse::<OpenAiProtocol>()
+        .map_err(anyhow::Error::msg)?;
+    if protocol == OpenAiProtocol::Responses && provider != ProviderKind::OpenAi {
+        anyhow::bail!("protocol 'responses' is only supported for provider 'openai'");
+    }
+    let reasoning_effort = entry.reasoning_effort;
+    if reasoning_effort.is_some() && provider != ProviderKind::OpenAi {
+        anyhow::bail!("reasoning_effort is only supported for provider 'openai'");
+    }
+
     Ok(LlmSettings {
         provider,
+        protocol,
+        reasoning_effort,
         api_key,
         base_url,
         model,
@@ -162,6 +178,8 @@ pub(super) fn resolve_non_llm_settings(
     ResolvedConfig {
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
@@ -353,6 +371,10 @@ model = "gpt-4o"
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
+        assert_eq!(
+            resolved.llm.protocol,
+            tact_llm::OpenAiProtocol::ChatCompletions
+        );
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
@@ -374,6 +396,108 @@ model = "gpt-4o"
             resolved.agent.instruction_sources,
             InstructionSources::default()
         );
+    }
+
+    #[test]
+    fn resolve_openai_responses_protocol() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::Responses);
+    }
+
+    #[test]
+    fn resolve_openai_reasoning_effort() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+reasoning_effort = "max"
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Max)
+        );
+    }
+
+    #[test]
+    fn reject_reasoning_effort_for_non_openai_provider() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+reasoning_effort = "max"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reasoning_effort is only supported for provider 'openai'"));
+    }
+
+    #[test]
+    fn reject_unknown_openai_reasoning_effort() {
+        let error = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+reasoning_effort = "extreme"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown variant `extreme`"));
+    }
+
+    #[test]
+    fn reject_responses_protocol_for_non_openai_provider() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only supported for provider 'openai'"));
     }
 
     #[test]

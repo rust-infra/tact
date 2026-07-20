@@ -20,6 +20,111 @@ pub enum ProviderKind {
     Kimi,
 }
 
+/// Wire protocol used by an OpenAI provider entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiProtocol {
+    /// OpenAI-compatible Chat Completions (`/chat/completions`).
+    #[default]
+    ChatCompletions,
+    /// OpenAI Responses API (`/responses`).
+    Responses,
+}
+
+/// Reasoning effort forwarded to OpenAI reasoning models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenAiReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl OpenAiReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl FromStr for OpenAiReasoningEffort {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => Err(format!(
+                "unknown OpenAI reasoning effort '{other}'; expected none|minimal|low|medium|high|xhigh|max"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for OpenAiReasoningEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Resolve an explicit OpenAI effort or fall back to the legacy token bands.
+pub fn effective_reasoning_effort(
+    configured: Option<OpenAiReasoningEffort>,
+    budget_tokens: usize,
+) -> Option<OpenAiReasoningEffort> {
+    configured.or(match budget_tokens {
+        0 => None,
+        1..=10_000 => Some(OpenAiReasoningEffort::Low),
+        10_001..=32_000 => Some(OpenAiReasoningEffort::Medium),
+        _ => Some(OpenAiReasoningEffort::High),
+    })
+}
+
+impl OpenAiProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+}
+
+impl FromStr for OpenAiProtocol {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "chat_completions" => Ok(Self::ChatCompletions),
+            "responses" => Ok(Self::Responses),
+            other => Err(format!(
+                "unknown OpenAI protocol '{other}'; expected chat_completions|responses"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for OpenAiProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl ProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -371,5 +476,48 @@ mod tests {
         assert!(ProviderKind::OpenAi.is_openai_compatible());
         assert!(ProviderKind::DeepSeek.is_openai_compatible());
         assert!(ProviderKind::Kimi.is_openai_compatible());
+    }
+
+    #[test]
+    fn openai_protocol_from_str_round_trip_and_default() {
+        for protocol in [OpenAiProtocol::ChatCompletions, OpenAiProtocol::Responses] {
+            assert_eq!(
+                OpenAiProtocol::from_str(protocol.as_str()).unwrap(),
+                protocol
+            );
+            assert_eq!(protocol.to_string(), protocol.as_str());
+        }
+        assert_eq!(OpenAiProtocol::default(), OpenAiProtocol::ChatCompletions);
+    }
+
+    #[test]
+    fn openai_protocol_from_str_rejects_unknown() {
+        let error = OpenAiProtocol::from_str("response").unwrap_err();
+        assert!(error.contains("chat_completions|responses"));
+    }
+
+    #[test]
+    fn openai_reasoning_effort_from_str_round_trips_all_values() {
+        for raw in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let effort = OpenAiReasoningEffort::from_str(raw).unwrap();
+            assert_eq!(effort.as_str(), raw);
+            assert_eq!(effort.to_string(), raw);
+            assert_eq!(serde_json::to_value(effort).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn openai_reasoning_effort_rejects_unknown_and_overrides_budget() {
+        let error = OpenAiReasoningEffort::from_str("extreme").unwrap_err();
+        assert!(error.contains("none|minimal|low|medium|high|xhigh|max"));
+        assert_eq!(
+            effective_reasoning_effort(Some(OpenAiReasoningEffort::Max), 1),
+            Some(OpenAiReasoningEffort::Max)
+        );
+        assert_eq!(effective_reasoning_effort(None, 0), None);
+        assert_eq!(
+            effective_reasoning_effort(None, 32_001),
+            Some(OpenAiReasoningEffort::High)
+        );
     }
 }

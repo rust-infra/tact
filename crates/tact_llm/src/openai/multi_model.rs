@@ -105,6 +105,8 @@ mod tests {
         // flavor.
         crate::init_provider(ProviderInfo {
             provider: ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),

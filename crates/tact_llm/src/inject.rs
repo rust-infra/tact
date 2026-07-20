@@ -37,11 +37,18 @@ pub(crate) fn thinking_budget_enabled(request: &CreateMessageParams) -> Option<u
 }
 
 /// OpenAI-style bands: `low` / `medium` / `high`.
-pub(crate) fn inject_openai_reasoning_effort(body: &mut Value, request: &CreateMessageParams) {
+pub(crate) fn inject_openai_reasoning_effort(
+    body: &mut Value,
+    request: &CreateMessageParams,
+    configured: Option<crate::OpenAiReasoningEffort>,
+) {
     let Some(thinking) = &request.thinking else {
+        if let Some(effort) = configured {
+            body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
+        }
         return;
     };
-    if let Some(effort) = reasoning_effort_from_budget(thinking.budget_tokens) {
-        body["reasoning_effort"] = Value::String(effort.to_owned());
+    if let Some(effort) = crate::effective_reasoning_effort(configured, thinking.budget_tokens) {
+        body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
     }
 }

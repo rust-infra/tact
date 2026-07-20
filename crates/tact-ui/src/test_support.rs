@@ -25,6 +25,8 @@ fn default_test_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
         llm: tact::config::LlmSettings {
             provider: ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: String::new(),
             base_url: String::new(),
             model: "mock-model".to_string(),

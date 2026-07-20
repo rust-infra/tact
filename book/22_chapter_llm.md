@@ -18,19 +18,22 @@ flowchart TB
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
     LP --> OpenAi[OpenAiAdapter]
+    LP --> Responses[OpenAiResponsesAdapter]
     Anthropic --> API1[Messages API SSE]
     OpenAi --> API2[Chat Completions SSE]
+    Responses --> API3[Responses API SSE]
     Agent[Agent::stream_message] --> LlmClient[LlmClient trait]
     LlmClient --> LP
     LlmClient --> TUI[AgentUpdate on ui_tx]
 ```
 
-Two adapter families share one trait:
+Three adapter families share one trait:
 
 | Adapter | Providers | HTTP API |
 |---------|-----------|----------|
 | `AnthropicAdapter` | `anthropic` | Anthropic Messages (`/messages`) |
 | `OpenAiAdapter` | `openai`, `deepseek`, `kimi` | OpenAI-compatible Chat Completions |
+| `OpenAiResponsesAdapter` | `openai` with `protocol = "responses"` | OpenAI Responses (`/responses`) |
 
 DeepSeek and Kimi reuse `OpenAiAdapter` with different default base URLs from config resolution.
 
@@ -46,11 +49,17 @@ pub enum ProviderKind {
     Kimi,
 }
 
+pub enum OpenAiProtocol {
+    ChatCompletions,
+    Responses,
+}
+
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
     pub provider: ProviderKind,
+    pub protocol: OpenAiProtocol,
 }
 ```
 
@@ -78,10 +87,11 @@ let mut client = tact_llm::get_llm_client()?;
 client.set_user_id(&session_id);   // DeepSeek per-session KV cache isolation
 ```
 
-`build_client()` validates non-empty `api_key` and matches on `ProviderKind`:
-Anthropic → `LlmProvider::Anthropic`; OpenAi → `LlmProvider::OpenAi`;
-DeepSeek → `LlmProvider::DeepSeek`; Kimi → `LlmProvider::Kimi`. The latter
-three share the OpenAI-compatible transport but apply distinct body hooks.
+`build_client()` validates non-empty `api_key` and matches on `ProviderKind`.
+Anthropic, DeepSeek, and Kimi select their dedicated variants. OpenAI then
+matches `protocol`: `chat_completions` selects `LlmProvider::OpenAi`, while
+`responses` selects `LlmProvider::OpenAiResponses`. The protocol defaults to
+`chat_completions`; `responses` is rejected for non-OpenAI providers.
 
 ```mermaid
 sequenceDiagram
@@ -254,7 +264,9 @@ The Anthropic adapter does not attach the session `user_id` to request metadata.
 
 ---
 
-## 6. OpenAI-Compatible Adapter
+## 6. OpenAI APIs and Compatible Adapters
+
+### 6.1 Chat Completions and compatible providers
 
 `openai/mod.rs` provides the shared Chat Completions HTTP/SSE transport. Dedicated `deepseek/mod.rs`, `kimi/mod.rs`, and `openai/multi_model.rs` adapters select provider-specific body hooks after the common request conversion.
 
@@ -278,6 +290,54 @@ Notable behaviors:
 
 **Empty assistant sanitization:** because thinking blocks are dropped when targeting non-Kimi OpenAI-compatible APIs, an assistant turn that contains only thinking (or only orphaned tool calls after truncation) would serialize as `{ "role": "assistant", "content": null, "tool_calls": null }` and be rejected with 400. `sanitize_assistant_messages` in `convert.rs` stubs such messages and strips orphaned `tool_calls` on every request. See [Error Recovery](./06_chapter_recovery.md) for the full context.
 
+### 6.2 Responses API
+
+An OpenAI provider entry opts in explicitly:
+
+```toml
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"
+reasoning_effort = "high"
+```
+
+`openai/responses/` uses `async-openai` 0.41.1 through a dependency alias;
+the existing Chat Completions types remain on 0.20 so the non-standard Kimi
+and DeepSeek wire shapes do not change. The adapter implements both
+`stream_message` and non-streaming `create_message` behind the same
+provider-independent contract. The alias enables the SDK's `byot` extension:
+request construction still starts from SDK types, while final JSON dispatch
+allows the current `max` effort value that the SDK enum does not yet expose.
+Responses and stream events remain SDK-typed.
+
+Tact remains the conversation owner. Every request sends the full normalized
+history with `store: false`; it does not use Conversations or
+`previous_response_id`. Conversion maps system instructions, user/assistant
+text, image data URLs, function calls, function outputs, function tools,
+tool choice, sampling fields, and `max_tokens → max_output_tokens`.
+`top_k` and stop sequences are omitted because the Responses request type has
+no matching fields.
+
+Responses requests include `reasoning.encrypted_content`. A returned reasoning
+item becomes `ContentBlock::Thinking`: summary text is stored in `thinking`,
+while `signature` stores a versioned opaque envelope containing the complete
+reasoning item and related `fc_*` function-call item ids. The next request
+reconstructs the original `rs_*` / `fc_*` identities; a thinking block without
+an encrypted payload is display-only and is not sent back.
+
+Streaming deltas drive only live UI updates. Reasoning summary/text deltas map
+to `ThinkingChunk`, visible output/refusal deltas map to `StreamChunk`, and the
+terminal `response.completed` / `response.incomplete` object is authoritative
+for final blocks, tool calls, usage, and stop reason. This avoids duplicating
+content found in both delta and terminal events. Input/cache/output/reasoning
+token counts map to the existing `TokenUsageInfo` fields.
+
+Unsupported in this adapter: server-hosted tools, background responses,
+Conversations, `previous_response_id`, and the Responses compaction endpoint.
+
+### 6.3 Shared thinking configuration
+
 **Thinking / reasoning injection:** the internal request always carries Anthropic-shaped `Thinking { budget_tokens }`. Provider body hooks rewrite that into each wire protocol:
 
 | Provider | When thinking is set | Wire field |
@@ -287,9 +347,16 @@ Notable behaviors:
 | Kimi K2.6 | budget > 0 | `thinking: { type: "enabled", keep: "all" }`; otherwise `disabled` |
 | Kimi K2.7 / coding | skipped | *(thinking always on server-side)* |
 | DeepSeek | budget > 0 | `thinking: { type: "enabled" }` + `reasoning_effort: high\|max`; otherwise `thinking: disabled` |
-| OpenAI (native) | if `request.thinking` and budget > 0 | `reasoning_effort` via `reasoning_effort_from_budget` (`low` / `medium` / `high`) — **not** Anthropic `thinking.budget_tokens` |
+| OpenAI Chat Completions | explicit effort or budget > 0 | `reasoning_effort: none\|minimal\|low\|medium\|high\|xhigh\|max` |
+| OpenAI Responses | explicit effort or budget > 0 | `reasoning: { effort: none\|minimal\|low\|medium\|high\|xhigh\|max, summary: auto }` |
 
-`ModelCallParams.reasoning_effort` mirrors that budget→effort mapping for the TUI. Config still exposes `thinking_budget` only; there is no separate `reasoning_effort` TOML key yet.
+OpenAI's optional per-provider `reasoning_effort` is forwarded unchanged and
+takes precedence over `thinking_budget`. When absent, the legacy bands remain:
+zero omits the field, `1..=10_000` maps to `low`, `10_001..=32_000` to
+`medium`, and larger budgets to `high`. Tact deliberately does not invent
+budget thresholds for `xhigh` or `max`. `ModelCallParams.reasoning_effort`
+reports the effective value to the TUI. Exact support is model-dependent; see
+the [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning).
 
 ---
 
@@ -388,13 +455,13 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 
 | File | Role |
 |------|------|
-| `tact_llm/src/types.rs` | `ProviderKind`, request types, and provider-agnostic `StopReason` |
+| `tact_llm/src/types.rs` | `ProviderKind`, `OpenAiProtocol`, request types, and provider-agnostic `StopReason` |
 | `tact_llm/src/content.rs` | Owned `ContentBlock`, `Message`, `ContentBlockDelta`, `StreamUsage`, … |
 | `tact_llm/src/client.rs` | `LlmClient`, dedicated `LlmProvider` variants, session user-id routing |
 | `tact_llm/src/provider.rs` | `ProviderInfo`, provider initialization, client construction, detection helpers |
 | `tact_llm/src/account.rs` | DeepSeek balance and Kimi balance/quota queries |
 | `tact_llm/src/anthropic/mod.rs` | Messages API streaming + non-streaming |
-| `tact_llm/src/openai/` | Shared Chat Completions transport/body assembly and live hook selection |
+| `tact_llm/src/openai/` | Chat Completions transport/hooks plus the isolated Responses converter, normalizer, and stream state |
 | `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider-specific thinking and history hooks |
 | `tact_llm/src/convert.rs` | Request translation, Image → `image_url`, Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` in `with_session` |
@@ -411,15 +478,16 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **No Anthropic SDK dependency** | Conversation, request, stop, stream-delta, and error types are all owned by `tact_llm`; Anthropic is spoken via custom HTTP + SSE only |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; for DeepSeek, `set_user_id` mutates the copy held on `Agent` |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
+| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, background mode, or Responses compaction endpoint |
 
 ### Protocol compatibility gaps (internal Anthropic shape → wire)
 
-`tact_llm` owns [`CreateMessageParams`](../crates/tact_llm/src/types.rs) (same Anthropic *wire shape* for serde, but no longer the SDK type). Each adapter must translate fields; several OpenAI-native differences are **not** handled yet:
+`tact_llm` owns [`CreateMessageParams`](../crates/tact_llm/src/types.rs) (same Anthropic *wire shape* for serde, but no longer the SDK type). Each adapter must translate fields. The table below describes the Chat Completions path; Responses mappings are documented in §6.2. Several Chat Completions differences are **not** handled yet:
 
 | Internal / intent | Anthropic | DeepSeek / Kimi (OpenAI-compat) | Native OpenAI Chat Completions | Status |
 |-------------------|-----------|----------------------------------|--------------------------------|--------|
 | Enable extended thinking | `thinking.budget_tokens` (internal) | Anthropic: `thinking.budget_tokens`; DeepSeek/Kimi hooks: `thinking.type` (±effort/keep) | OpenAI: `reasoning_effort` | OK — body hooks map by API wire shape |
-| Thinking budget knob | `thinking_budget` config | mapped to `budget_tokens` | `reasoning_effort_from_budget` bands | OK (bands in `openai/mod.rs`; no dedicated TOML key) |
+| Thinking / effort knob | `thinking_budget` plus optional OpenAI `reasoning_effort` | mapped to `budget_tokens` | explicit effort, otherwise `reasoning_effort_from_budget` bands | OK (explicit effort wins) |
 | Max output | `max_tokens` | `max_tokens` | o-series often want `max_completion_tokens`; some reject `max_tokens` | not remapped |
 | System prompt | top-level `system` | first `role: system` message | same; some reasoning models prefer `developer` | always `system` |
 | Tool definitions | `tools` (Anthropic schema) | `tools` + `type: function` | same modern tools API | OK (`convert.rs`) |

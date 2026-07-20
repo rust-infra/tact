@@ -7,7 +7,7 @@ use crate::client::LlmProvider;
 use crate::deepseek;
 use crate::kimi;
 use crate::openai;
-use crate::types::ProviderKind;
+use crate::types::{OpenAiProtocol, OpenAiReasoningEffort, ProviderKind};
 
 /// Holds private LLM configuration information.
 #[derive(Debug, Clone)]
@@ -16,6 +16,8 @@ pub struct ProviderInfo {
     pub base_url: String,
     pub model: String,
     pub provider: ProviderKind,
+    pub protocol: OpenAiProtocol,
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
 }
 
 impl Default for ProviderInfo {
@@ -25,6 +27,8 @@ impl Default for ProviderInfo {
             base_url: String::new(),
             model: String::new(),
             provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            reasoning_effort: None,
         }
     }
 }
@@ -36,7 +40,10 @@ impl ProviderInfo {
             ProviderKind::Anthropic => self.build_anthropic(),
             ProviderKind::DeepSeek => self.build_deepseek(),
             ProviderKind::Kimi => self.build_kimi(),
-            ProviderKind::OpenAi => self.build_openai_compatible(),
+            ProviderKind::OpenAi => match self.protocol {
+                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
+                OpenAiProtocol::Responses => self.build_openai_responses(),
+            },
         }
     }
 
@@ -78,6 +85,30 @@ impl ProviderInfo {
         Ok(LlmProvider::OpenAi(openai::OpenAiMultiModelAdapter::new(
             adapter,
         )))
+    }
+
+    /// Build the official OpenAI Responses API client.
+    fn build_openai_responses(&self) -> anyhow::Result<LlmProvider> {
+        if self.api_key.is_empty() {
+            anyhow::bail!("api_key not configured for provider '{}'", self.provider);
+        }
+        let base_url = if self.base_url.is_empty() {
+            self.provider
+                .default_base_url()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
+                })?
+        } else {
+            self.base_url.clone()
+        };
+        Ok(LlmProvider::OpenAiResponses(
+            openai::responses::OpenAiResponsesAdapter::new(
+                self.api_key.clone(),
+                base_url,
+                self.reasoning_effort,
+            ),
+        ))
     }
 
     fn openai_compatible_config(&self) -> anyhow::Result<openai::CompatibleConfig> {
@@ -299,6 +330,8 @@ mod tests {
     ) -> ProviderInfo {
         ProviderInfo {
             provider,
+            protocol: OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),
@@ -318,6 +351,18 @@ mod tests {
         assert!(result.is_ok());
         let LlmProvider::OpenAi(adapter) = result.unwrap() else {
             panic!("expected OpenAi adapter for openai");
+        };
+        assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn openai_responses_protocol_builds_responses_adapter() {
+        let mut p = provider_info(ProviderKind::OpenAi, "sk-test", "", "gpt-5");
+        p.protocol = OpenAiProtocol::Responses;
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAiResponses(adapter) = result.unwrap() else {
+            panic!("expected OpenAI Responses adapter");
         };
         assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
     }
