@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::tool_state::PopupTextSelection;
+
 /// Streaming thinking content anchored at one shared-log placeholder row.
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveThinkingBlock {
@@ -91,6 +93,19 @@ pub(crate) struct ThinkingPopup {
     pub title: String,
     /// Popup internal scroll offset (line number, relative to the first thinking content line).
     pub scroll: u16,
+    /// Byte selection into `selection_text`.
+    pub selection: Option<PopupTextSelection>,
+    /// Plain text currently presented as selectable Thinking content.
+    pub selection_text: String,
+}
+
+impl ThinkingPopup {
+    pub(crate) fn copy_content(&self, full_content: &str) -> String {
+        self.selection
+            .and_then(|selection| selection.normalized_non_empty(&self.selection_text))
+            .map(|range| self.selection_text[range].to_string())
+            .unwrap_or_else(|| full_content.to_string())
+    }
 }
 
 #[cfg(test)]

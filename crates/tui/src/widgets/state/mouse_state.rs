@@ -126,12 +126,12 @@ pub(crate) struct MouseState {
     pub(crate) thinking_popup_area: Rect,
     /// diff popup area (used to determine if click is inside the popup).
     pub(crate) diff_popup_area: Rect,
-    /// Selectable body area inside the diff popup border.
-    pub(crate) diff_popup_body_area: Rect,
-    /// Hit maps for rows currently visible in the diff popup body.
-    pub(crate) diff_popup_hit_rows: Vec<PopupHitRow>,
-    /// Source grapheme where the active diff-popup drag began.
-    pub(crate) diff_popup_drag_origin: Option<PopupTextHit>,
+    /// Selectable body area inside the active text popup border.
+    pub(crate) popup_text_body_area: Rect,
+    /// Hit maps for rows currently visible in the active text popup body.
+    pub(crate) popup_text_hit_rows: Vec<PopupHitRow>,
+    /// Source grapheme where the active text-popup drag began.
+    pub(crate) popup_text_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.

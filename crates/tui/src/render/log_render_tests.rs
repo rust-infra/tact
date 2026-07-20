@@ -57,6 +57,20 @@ fn line_index_of(rendered: &str, needle: &str) -> Option<usize> {
     rendered.lines().position(|line| line.contains(needle))
 }
 
+fn buffer_column_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let suffix: String = (x..buffer.area.width)
+                .map(|col| buffer[(col, y)].symbol())
+                .collect();
+            if suffix.starts_with(needle) {
+                return Some(x);
+            }
+        }
+    }
+    None
+}
+
 // ── P0: selection, scroll ───────────────────────────────────────────────────
 
 #[test]
@@ -140,6 +154,32 @@ fn log_mixed_categories_render_user_and_assistant() {
     assert!(
         assistant_line > user_line,
         "assistant message should render after user message (user={user_line}, assistant={assistant_line})"
+    );
+}
+
+#[test]
+fn log_assistant_reply_aligns_with_thinking_indent() {
+    let mut app = make_app();
+    app.add_user_message("user task".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "thinking reference".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.add_system_message("final assistant reply".into());
+
+    let terminal = render_log_panel_terminal(&mut app, 80, 20);
+    let buffer = terminal.backend().buffer();
+    let thinking_x = buffer_column_of(buffer, "thinking reference").expect("thinking line");
+    let assistant_x = buffer_column_of(buffer, "final assistant reply").expect("assistant line");
+    let user_x = buffer_column_of(buffer, "💬").expect("user line");
+
+    assert_eq!(
+        assistant_x, thinking_x,
+        "normal assistant replies should align with Thinking body text"
+    );
+    assert!(
+        user_x < assistant_x,
+        "user messages should stay left of the indented assistant reply"
     );
 }
 

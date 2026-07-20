@@ -35,6 +35,11 @@ fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Terminal
 }
 
 fn render_thinking_popup_text(app: &mut App, width: u16, height: u16) -> String {
+    let terminal = render_thinking_popup_terminal(app, width, height);
+    buffer_text(terminal.backend().buffer())
+}
+
+fn render_thinking_popup_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
@@ -42,7 +47,7 @@ fn render_thinking_popup_text(app: &mut App, width: u16, height: u16) -> String 
             super::popups::thinking_popup::render_thinking_popup(frame, frame.area(), app)
         })
         .expect("draw");
-    buffer_text(terminal.backend().buffer())
+    terminal
 }
 
 fn seed_code_popup(app: &mut App) {
@@ -73,6 +78,8 @@ fn seed_thinking_popup(app: &mut App) {
         phys_idx: 0,
         title: "Thinking title".into(),
         scroll: 0,
+        selection: None,
+        selection_text: String::new(),
     });
 }
 
@@ -164,7 +171,7 @@ fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
     popup.selection = Some(PopupTextSelection::new(0, 5));
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let row = &app.mouse.diff_popup_hit_rows[0];
+    let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
     assert!(
@@ -178,7 +185,7 @@ fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
             .contains(Modifier::REVERSED)
     );
     assert!(
-        !buffer[(app.mouse.diff_popup_body_area.x, row.screen_y)]
+        !buffer[(app.mouse.popup_text_body_area.x, row.screen_y)]
             .modifier
             .contains(Modifier::REVERSED)
     );
@@ -194,7 +201,7 @@ fn diff_popup_selection_reverses_wide_scalar_and_maps_both_columns() {
     popup.selection = Some(PopupTextSelection::new(1, 4));
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let row = &app.mouse.diff_popup_hit_rows[0];
+    let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
     assert!(
@@ -225,7 +232,7 @@ fn assert_diff_popup_grapheme_selection(
     popup.lang.clear();
 
     let _terminal = render_main_area_terminal(&mut app, 100, 30);
-    let row = &app.mouse.diff_popup_hit_rows[0];
+    let row = &app.mouse.popup_text_hit_rows[0];
     let grapheme_hit = row.hit(row.text_x + 1);
     assert_eq!(
         grapheme_hit,
@@ -252,7 +259,7 @@ fn assert_diff_popup_grapheme_selection(
     );
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let row = &app.mouse.diff_popup_hit_rows[0];
+    let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer[(row.text_x + 1, row.screen_y)].symbol(), grapheme);
     assert!(
@@ -284,7 +291,7 @@ fn diff_popup_selection_highlights_visible_scrolled_row() {
     popup.selection = Some(PopupTextSelection::new(5, 8));
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let row = &app.mouse.diff_popup_hit_rows[0];
+    let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
     assert_eq!(row.line_start, 5);
@@ -375,6 +382,8 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 0,
+        selection: None,
+        selection_text: String::new(),
     });
 
     let text = render_thinking_popup_text(&mut app, 100, 30);
@@ -388,6 +397,64 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
             .is_some_and(|(second, first)| second >= first + 2),
         "ordered thinking items should have a blank row between them, got:\n{text}"
     );
+}
+
+#[test]
+fn thinking_popup_selection_reverses_selected_body_text_only() {
+    let mut app = make_app();
+    seed_thinking_popup(&mut app);
+    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    block.content = "alpha\nbeta".into();
+    block.cached_markdown = vec![Line::from("alpha"), Line::from("beta")];
+    app.thinking.popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(0, 5));
+
+    let terminal = render_thinking_popup_terminal(&mut app, 100, 30);
+    let row = &app.mouse.popup_text_hit_rows[0];
+    let buffer = terminal.backend().buffer();
+
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(app.mouse.thinking_popup_area.x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+}
+
+#[test]
+fn thinking_popup_selection_maps_zwj_emoji_as_one_grapheme() {
+    let mut app = make_app();
+    seed_thinking_popup(&mut app);
+    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    block.content = "a👩‍💻b".into();
+    block.cached_markdown = vec![Line::from("a👩‍💻b")];
+
+    let _terminal = render_thinking_popup_terminal(&mut app, 100, 30);
+    let row = &app.mouse.popup_text_hit_rows[0];
+    let hit = row.hit(row.text_x + 1);
+
+    assert_eq!(hit, crate::widgets::state::PopupTextHit::new(1, 12));
+    assert_eq!(row.hit(row.text_x + 2), hit);
+}
+
+#[test]
+fn thinking_popup_selection_text_matches_visible_markdown_text() {
+    let mut app = make_app();
+    seed_thinking_popup(&mut app);
+    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    block.content = "**bold reasoning**".into();
+    block.cached_markdown = vec![Line::from("bold reasoning")];
+    let full_content = block.content.clone();
+
+    let _terminal = render_thinking_popup_terminal(&mut app, 100, 30);
+    let popup = app.thinking.popup.as_mut().expect("thinking popup");
+    popup.selection = Some(PopupTextSelection::new(0, 4));
+
+    assert_eq!(popup.selection_text, "bold reasoning");
+    assert_eq!(popup.copy_content(&full_content), "bold");
 }
 
 #[test]

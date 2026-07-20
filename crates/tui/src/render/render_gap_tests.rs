@@ -387,6 +387,8 @@ fn thinking_popup_scroll_shows_later_lines() {
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 6,
+        selection: None,
+        selection_text: String::new(),
     });
 
     let text = render_main_area_text(&mut app, 100, 16);

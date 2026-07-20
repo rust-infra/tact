@@ -34,11 +34,20 @@ impl App {
 
     /// Left indent columns for nested log content at this physical row.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        self.raw_message_types
+        let msg_type = self
+            .raw_message_types
             .get(phys)
             .copied()
-            .unwrap_or(RawMessageType::LLM)
-            .log_indent()
+            .unwrap_or(RawMessageType::LLM);
+        if msg_type == RawMessageType::LLM
+            && !crate::render::is_user_message_line(&self.raw_messages, phys)
+        {
+            // Match the text inside a Thinking card: its two-column gutter plus
+            // the card's left border.
+            crate::render::util::LOG_THINKING_INDENT + 1
+        } else {
+            msg_type.log_indent()
+        }
     }
 
     /// Map a logical line number to the physical index in messages.

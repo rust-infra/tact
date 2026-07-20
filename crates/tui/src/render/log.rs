@@ -414,7 +414,11 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             .map(|p| app.raw_messages[p].clone())
             .unwrap_or_default();
 
-        let indent_cols = phys_idx.map(|p| app.nested_log_indent(p)).unwrap_or(0);
+        let indent_cols = phys_idx
+            .map(|p| app.nested_log_indent(p))
+            // The last row is an in-progress assistant response, not a stored
+            // physical message, so apply the same reply indent directly.
+            .unwrap_or(super::util::LOG_THINKING_INDENT + 1);
 
         let cell = super::cells::text::TextCell::new(
             cached_lines,

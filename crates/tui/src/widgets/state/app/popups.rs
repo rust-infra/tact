@@ -200,6 +200,8 @@ impl App {
                 phys_idx,
                 title: self.msgs().thinking_title.to_string(),
                 scroll: 0,
+                selection: None,
+                selection_text: String::new(),
             });
         }
     }
@@ -207,6 +209,10 @@ impl App {
     /// Close the thinking popup.
     pub(crate) fn close_thinking_popup(&mut self) {
         self.thinking.popup = None;
+        self.mouse.thinking_popup_area = Rect::default();
+        self.mouse.popup_text_body_area = Rect::default();
+        self.mouse.popup_text_hit_rows.clear();
+        self.mouse.popup_text_drag_origin = None;
     }
 
     /// Find the code block containing the given logical line number.
@@ -276,9 +282,13 @@ impl App {
 
     /// Copy the full content of the current thinking popup to the clipboard.
     pub(crate) fn copy_thinking_popup(&mut self) {
-        let Some(text) = self.thinking_popup_content() else {
+        let Some(full_content) = self.thinking_popup_content() else {
             return;
         };
+        let Some(popup) = self.thinking.popup.as_ref() else {
+            return;
+        };
+        let text = popup.copy_content(&full_content);
         self.copy_text(&text);
     }
 
@@ -477,9 +487,9 @@ impl App {
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools.popup = None;
         self.mouse.diff_popup_area = Rect::default();
-        self.mouse.diff_popup_body_area = Rect::default();
-        self.mouse.diff_popup_hit_rows.clear();
-        self.mouse.diff_popup_drag_origin = None;
+        self.mouse.popup_text_body_area = Rect::default();
+        self.mouse.popup_text_hit_rows.clear();
+        self.mouse.popup_text_drag_origin = None;
     }
 
     /// Copy the popup content to the clipboard.
@@ -547,7 +557,7 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 mod tests {
     use crate::render::test_harness::make_app;
     use crate::widgets::{
-        state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection},
+        state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
         tool_widget::{ToolPhase, ToolWidget},
     };
     use ratatui::layout::Rect;
@@ -575,23 +585,23 @@ mod tests {
         let mut app = make_app();
         app.tools.popup = Some(inline_popup("old"));
         app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
-        app.mouse.diff_popup_body_area = Rect::new(6, 6, 18, 7);
-        app.mouse.diff_popup_hit_rows = vec![PopupHitRow {
+        app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
+        app.mouse.popup_text_hit_rows = vec![PopupHitRow {
             screen_y: 6,
             text_x: 10,
             line_start: 0,
             line_end: 3,
             cells: vec![PopupTextHit::new(0, 1)],
         }];
-        app.mouse.diff_popup_drag_origin = Some(PopupTextHit::new(0, 1));
+        app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(0, 1));
 
         app.close_diff_popup();
         app.tools.popup = Some(inline_popup("new"));
 
         assert_eq!(app.mouse.diff_popup_area, Rect::default());
-        assert_eq!(app.mouse.diff_popup_body_area, Rect::default());
-        assert!(app.mouse.diff_popup_hit_rows.is_empty());
-        assert!(app.mouse.diff_popup_drag_origin.is_none());
+        assert_eq!(app.mouse.popup_text_body_area, Rect::default());
+        assert!(app.mouse.popup_text_hit_rows.is_empty());
+        assert!(app.mouse.popup_text_drag_origin.is_none());
         assert!(app.tools.popup.as_ref().unwrap().selection.is_none());
     }
 
@@ -619,6 +629,54 @@ mod tests {
         popup.selection = Some(PopupTextSelection::new(0, 5));
 
         assert_eq!(popup.copy_content(), Some("first".into()));
+    }
+
+    fn thinking_popup(selection: Option<PopupTextSelection>) -> ThinkingPopup {
+        ThinkingPopup {
+            phys_idx: 0,
+            title: "thinking".into(),
+            scroll: 0,
+            selection,
+            selection_text: "first\nsecond".into(),
+        }
+    }
+
+    #[test]
+    fn thinking_popup_copy_content_prefers_non_empty_selection() {
+        let popup = thinking_popup(Some(PopupTextSelection::new(6, 12)));
+
+        assert_eq!(popup.copy_content("raw **reasoning**"), "second");
+    }
+
+    #[test]
+    fn thinking_popup_copy_content_uses_full_reasoning_for_empty_selection() {
+        let popup = thinking_popup(Some(PopupTextSelection::new(2, 2)));
+
+        assert_eq!(popup.copy_content("raw **reasoning**"), "raw **reasoning**");
+    }
+
+    #[test]
+    fn close_thinking_popup_clears_selectable_mouse_state() {
+        let mut app = make_app();
+        app.thinking.popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
+        app.mouse.thinking_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
+        app.mouse.popup_text_hit_rows = vec![PopupHitRow {
+            screen_y: 6,
+            text_x: 6,
+            line_start: 0,
+            line_end: 5,
+            cells: vec![PopupTextHit::new(0, 1)],
+        }];
+        app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(0, 1));
+
+        app.close_thinking_popup();
+
+        assert!(app.thinking.popup.is_none());
+        assert_eq!(app.mouse.thinking_popup_area, Rect::default());
+        assert_eq!(app.mouse.popup_text_body_area, Rect::default());
+        assert!(app.mouse.popup_text_hit_rows.is_empty());
+        assert!(app.mouse.popup_text_drag_origin.is_none());
     }
 
     #[test]

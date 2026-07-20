@@ -66,6 +66,8 @@ mod tests {
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
+            selection: None,
+            selection_text: String::new(),
         });
         app.input_mode = InputMode::Select;
         assert!(
@@ -102,6 +104,8 @@ mod tests {
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
+            selection: None,
+            selection_text: String::new(),
         });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Char('j'))));
         assert_eq!(app.thinking.popup.as_ref().unwrap().scroll, 1);
