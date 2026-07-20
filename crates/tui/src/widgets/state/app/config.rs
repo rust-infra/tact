@@ -75,6 +75,7 @@ impl App {
             "lang" => msgs.cmd_lang.to_string(),
             "skills" => msgs.cmd_skills.to_string(),
             "skill-reload" => msgs.cmd_skill_reload.to_string(),
+            "plugin" => msgs.cmd_plugin.to_string(),
             _ => cmd.to_string(),
         }
     }

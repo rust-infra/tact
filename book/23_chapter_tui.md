@@ -27,15 +27,17 @@ sequenceDiagram
     Cmd->>TUI: AgentUpdate::TaskComplete
 ```
 
-Three unbounded MPSC channels bridge the agent task, account service, and the TUI task:
+Five unbounded MPSC channel pairs bridge the agent task, account service, plugin worker, and the TUI task:
 
 | Channel | Type | Direction |
 |---------|------|-----------|
 | `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI |
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → agent driver (`tui.rs`) |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account service → TUI |
+| `plugin_tx` / `plugin_request_rx` | `PluginRequest` | TUI → plugin worker |
+| `plugin_event_tx` / `plugin_rx` | `PluginEvent` | Plugin worker → TUI |
 
-Defined in `tact_protocol`. See [Ch 25](./25_chapter_protocol.md) for message semantics.
+`AgentUpdate`, `UserCommand`, and `AccountUpdate` are defined in `tact_protocol`. `PluginRequest` and `PluginEvent` are defined in `tact::plugin`; `tact-ui` starts the worker and the TUI drains plugin events before rendering.
 
 ---
 
@@ -576,6 +578,7 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 | `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (bare `$ARGUMENTS` substituted, else Claude-style `ARGUMENTS:` appended when args present) |
 | Palette Enter on a skill | Insert mode with `/name ` prefilled (undo checkpoint preserved) |
 | `/skill-reload` | Rescan roots into shared registry (TUI + agent), invalidate visual cache |
+| `/plugin …` | Queue install, list, reload, and marketplace operations; successful install/reload refreshes shared skills |
 
 Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 

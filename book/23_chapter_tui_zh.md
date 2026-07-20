@@ -28,15 +28,17 @@ sequenceDiagram
     Cmd->>TUI: AgentUpdate::TaskComplete
 ```
 
-三个 unbounded MPSC channel 连接 agent task、account service 与 TUI task：
+五组 unbounded MPSC channel 连接 agent task、account service、plugin worker 与 TUI task：
 
 | Channel | 类型 | 方向 |
 |---------|------|------|
 | `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI |
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → agent driver（`tui.rs`） |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account service → TUI |
+| `plugin_tx` / `plugin_request_rx` | `PluginRequest` | TUI → plugin worker |
+| `plugin_event_tx` / `plugin_rx` | `PluginEvent` | Plugin worker → TUI |
 
-定义在 `tact_protocol`。消息语义见 [Ch 25](./25_chapter_protocol_zh.md)。
+`AgentUpdate`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
 ---
 
@@ -580,6 +582,7 @@ sequenceDiagram
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |
 | `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
+| `/plugin …` | 排队安装、列出、重载及 marketplace 操作；成功的 install/reload 刷新共享 skills |
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
 

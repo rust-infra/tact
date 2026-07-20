@@ -30,6 +30,7 @@ graph TB
         L["workdir/skills/*/SKILL.md 旧版"]
         U["~/.tact/skills/*/SKILL.md"]
         P["workdir/.claude/skills/*/SKILL.md"]
+        I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
 
     subgraph Startup["会话启动"]
@@ -37,6 +38,7 @@ graph TB
         SR[SkillRegistry.load_skills]
         TP --> SR
         Disk --> SR
+        I --> SR
     end
 
     subgraph Prompt["每个任务"]
@@ -74,8 +76,9 @@ graph TB
 | Legacy | `<workdir>/skills/` | 向后兼容；仍会扫描 |
 | User | `~/.tact/skills/` | 跨项目的个人 skills |
 | Project | `<workdir>/.claude/skills/` | 团队/仓库 skills（规范路径） |
+| Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | 已安装插件的 playbook |
 
-加载顺序：legacy → user → project。**同名时后者覆盖**（project 覆盖 user/legacy）。
+加载顺序：legacy → user → project → 已安装插件。**同名的独立 skill 以后者覆盖**（project 覆盖 user/legacy）。已安装插件的 skill 始终使用 `plugin:skill` 名称，因此不能替换独立 skill。
 
 ---
 
@@ -145,7 +148,9 @@ description: Comprehensive Rust coding guidelines
 - 匹配文件名恰好为 `SKILL.md` 的文件
 - 插入以 skill 名称为 key 的 `HashMap<String, SkillDocument>`
 
-重名：后扫描的根**覆盖**先前的——无警告。同一根内，后遍历到的条目也会覆盖。
+随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。
+
+重名的独立 skill：后扫描的根**覆盖**先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件 skill 位于独立的 `plugin:skill` 命名空间中。
 
 ---
 
@@ -206,6 +211,11 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 已发现的 skills 出现在 Insert 模式 `/` 弹出菜单与 Normal 模式命令面板中，形式为 `/{name}`，附 frontmatter 描述。内置斜杠命令**优先于**同名 skill（冲突的 skill 不会出现在 skill 列表中）。
 
+| Skill 类型 | 注册表名称 | Slash 调用 |
+|------------|------------|------------|
+| 独立 skill | `skill` | `/skill` |
+| 已安装插件 | `plugin:skill` | `/plugin:skill` |
+
 | 步骤 | 行为 |
 |------|------|
 | 斜杠弹出菜单对 **skill** 按 Enter | 仅自动补全为 `/name `（同 Tab） |
@@ -224,6 +234,8 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 4. 共享的 `submit_user_task` 与正常 Enter 提交一样驱动 Planning / 用户气泡 / 历史。
 
 `/skill-reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
+
+成功的 `/plugin install <plugin>@<marketplace>` 与 `/plugin reload` 会在 worker 完成后执行相同的共享刷新。失败操作保持 registry 不变。插件提供的名称可包含 `:`（例如 `/superpowers:brainstorming`），刷新后仍按普通 slash skill 调用。
 
 高亮：`/skill-name` 使用 accent+bold；尾随参数使用主题前景色（`render/slash_style.rs`），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。
 

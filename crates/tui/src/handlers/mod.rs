@@ -5,6 +5,7 @@ mod mouse;
 mod normal;
 mod overlay;
 mod palette;
+mod plugin;
 mod select;
 mod skills;
 
@@ -304,7 +305,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skill-reload" => {
-            match reload_skills(app) {
+            match refresh_skills(app) {
                 Ok(count) => {
                     let msg = app
                         .msgs()
@@ -322,6 +323,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "plugin" => plugin::handle_plugin_command(app),
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to abort.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
@@ -413,7 +415,7 @@ fn skills_table_rows(description: &str) -> Vec<String> {
         if line.is_empty() || line == "(no skills available)" {
             continue;
         }
-        if let Some((name, desc)) = line.split_once(':') {
+        if let Some((name, desc)) = line.split_once(": ") {
             rows.push(format!("| {} | {} |", name.trim(), desc.trim()));
         } else {
             rows.push(format!("| {line} |  |"));
@@ -423,7 +425,7 @@ fn skills_table_rows(description: &str) -> Vec<String> {
 }
 
 /// Reload skills from disk into the shared registry (agent + TUI).
-fn reload_skills(app: &mut App) -> Result<usize, String> {
+pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
     let mut reg = tact::skill::lock_skills(&app.skill_registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
     *reg = tact::skill::get_skill_registry(&app.work_dir).map_err(|e| e.to_string())?;
@@ -453,11 +455,15 @@ mod tests {
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
         drop(agent_tx);
         let app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
@@ -504,6 +510,12 @@ mod tests {
         assert_eq!(rows[1], "|-------|-------------|");
         assert_eq!(rows[2], "| code-reviewer | 代码审查专家 |");
         assert_eq!(rows[3], "| demo-test | 测试 skill 加载功能 |");
+    }
+
+    #[test]
+    fn skills_table_rows_preserves_namespaced_skill_name() {
+        let rows = skills_table_rows("- plugin:skill: Plugin-provided skill");
+        assert_eq!(rows[2], "| plugin:skill | Plugin-provided skill |");
     }
 
     #[test]

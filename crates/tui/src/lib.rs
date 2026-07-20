@@ -46,6 +46,7 @@ use ratatui::{
 };
 use std::path::PathBuf;
 use std::{io, time::Duration};
+use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
@@ -61,6 +62,8 @@ pub(crate) fn should_repaint(app: &App) -> bool {
 pub struct TuiConfig {
     pub agent_rx: UnboundedReceiver<AgentUpdate>,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+    pub plugin_rx: UnboundedReceiver<PluginEvent>,
+    pub plugin_tx: UnboundedSender<PluginRequest>,
     pub user_cmd_tx: UnboundedSender<UserCommand>,
     pub work_dir: PathBuf,
     pub input_history_entries: Vec<String>,
@@ -85,6 +88,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
         account_rx,
+        plugin_rx,
+        plugin_tx,
         user_cmd_tx,
         work_dir,
         input_history_entries,
@@ -116,6 +121,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let mut app = App::new(
         agent_rx,
         account_rx,
+        plugin_rx,
+        plugin_tx,
         user_cmd_tx.clone(),
         work_dir,
         input_history_entries,
@@ -174,6 +181,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         for update in account_updates {
             app.handle_account_update(update);
         }
+        while let Ok(event) = app.plugin_rx.try_recv() {
+            app.handle_plugin_event(event);
+        }
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -194,7 +204,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])
@@ -213,7 +223,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])

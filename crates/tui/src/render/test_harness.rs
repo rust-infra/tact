@@ -22,10 +22,14 @@ use tokio::sync::mpsc::unbounded_channel;
 pub fn make_app() -> App {
     let (_agent_tx, agent_rx) = unbounded_channel();
     let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
+    let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+    let (_plugin_event_tx, plugin_rx) = unbounded_channel();
     let (history_tx, _history_rx) = unbounded_channel();
     App::new(
         agent_rx,
         None,
+        plugin_rx,
+        plugin_tx,
         user_cmd_tx,
         PathBuf::from("."),
         Vec::new(),
@@ -99,7 +103,7 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Min(3),
+            Constraint::Min(1),
             Constraint::Length(input_height),
             Constraint::Length(bottom_height),
         ])

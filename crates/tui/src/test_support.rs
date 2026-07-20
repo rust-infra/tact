@@ -25,10 +25,14 @@ impl TestApp {
     pub fn new_in_dir(work_dir: PathBuf) -> Self {
         let (_agent_tx, agent_rx) = unbounded_channel();
         let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
         Self(App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             work_dir,
             Vec::new(),

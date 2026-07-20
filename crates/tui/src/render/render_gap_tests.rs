@@ -8,6 +8,17 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
+#[test]
+fn full_frame_keeps_bottom_bar_visible_when_terminal_is_short() {
+    let mut app = make_app();
+    let text = render_app_text(&mut app, 120, 8);
+
+    assert!(
+        text.contains("Focus:"),
+        "bottom bar should remain visible: {text}"
+    );
+}
+
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
     app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(

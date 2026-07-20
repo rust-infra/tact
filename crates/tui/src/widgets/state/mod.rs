@@ -2,6 +2,10 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use ratatui::text::Line;
 use std::path::PathBuf;
+use tact::{
+    plugin::{PluginEvent, PluginRequest},
+    skill::SharedSkillRegistry,
+};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -58,6 +62,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("history", "Show task history"),
     ("skills", "List available skills"),
     ("skill-reload", "Reload skills from disk"),
+    ("plugin", "Manage plugins and marketplaces"),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
 ];
@@ -160,6 +165,8 @@ pub struct App {
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+    pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
+    pub(crate) plugin_tx: UnboundedSender<PluginRequest>,
     pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
@@ -227,7 +234,7 @@ pub struct App {
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
     /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
-    pub(crate) skill_registry: tact::skill::SharedSkillRegistry,
+    pub(crate) skill_registry: SharedSkillRegistry,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

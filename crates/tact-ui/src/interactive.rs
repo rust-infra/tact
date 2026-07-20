@@ -96,7 +96,15 @@ async fn run_interactive_locked(
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (account_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _plugin_worker = match tact::consts::PluginHome::from_environment() {
+        Some(plugin_home) => {
+            tact::plugin::spawn_worker(plugin_home, plugin_request_rx, plugin_event_tx)
+        }
+        None => tact::plugin::spawn_unavailable_worker(plugin_request_rx, plugin_event_tx),
+    };
 
     let tools = toolset();
     let tool_context = ToolContext {
@@ -151,6 +159,8 @@ async fn run_interactive_locked(
         tui::run_tui(tui::TuiConfig {
             agent_rx,
             account_rx,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             work_dir: tui_work_dir,
             input_history_entries: input_history,
