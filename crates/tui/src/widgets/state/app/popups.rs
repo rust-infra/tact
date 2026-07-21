@@ -34,7 +34,10 @@ impl App {
 
     /// True when thinking / tool-diff / code overlay popup is open.
     pub(crate) fn has_overlay_popup(&self) -> bool {
-        self.thinking.popup.is_some() || self.tools.popup.is_some() || self.code_popup.is_some()
+        self.thinking.popup.is_some()
+            || self.tools.popup.is_some()
+            || self.code_popup.is_some()
+            || self.system_prompt_popup.is_some()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -43,6 +46,8 @@ impl App {
         } else if let Some(p) = self.tools.popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.code_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.system_prompt_popup.as_mut() {
             Some(&mut p.scroll)
         } else {
             None
@@ -68,6 +73,8 @@ impl App {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
+        } else if self.system_prompt_popup.is_some() {
+            self.system_prompt_popup = None;
         }
     }
 

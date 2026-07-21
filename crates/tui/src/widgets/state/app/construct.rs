@@ -99,6 +99,7 @@ impl App {
             tools: ToolState::default(),
             code_blocks: Vec::new(),
             code_popup: None,
+            system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
             account: AccountState::default(),
@@ -107,6 +108,7 @@ impl App {
             skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
                 tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
             )),
+            session_store: None,
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,

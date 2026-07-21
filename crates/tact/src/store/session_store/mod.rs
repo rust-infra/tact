@@ -90,6 +90,9 @@ pub trait SessionStore: Send + Sync {
         request_body: Option<&[u8]>,
     ) -> Result<()>;
 
+    /// Load the serialized request body from the most recent LLM call.
+    async fn load_latest_request_body(&self, session_id: &str) -> Result<Option<Vec<u8>>>;
+
     /// Attach a serialized tool-schedule summary (JSON) to the most recent
     /// token-usage row for `last_message_id` — the LLM call whose tool calls
     /// were just scheduled. Links scheduling strategy to token usage for later

@@ -19,7 +19,7 @@ pub(crate) use select::handle_select_mode;
 
 use crate::render::render_md::format_table;
 use crate::widgets::state::log_messages::classify_system_message;
-use crate::widgets::state::{App, Status};
+use crate::widgets::state::{App, InputMode, SelectKind, Status};
 use chrono::Local;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -253,6 +253,23 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "model" => {
             crate::handlers::select::start_model_picker(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        "view-system-prompt" => {
+            app.select.set_local(
+                "View system prompt".to_string(),
+                vec![
+                    "Raw template".to_string(),
+                    "Assembled current prompt".to_string(),
+                ],
+                0,
+                false,
+            );
+            app.select_kind = SelectKind::ViewSystemPrompt;
+            app.input_mode = InputMode::Select;
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,

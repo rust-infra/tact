@@ -7,6 +7,7 @@
 mod handlers;
 mod i18n;
 mod render;
+pub(crate) mod system_prompt;
 mod theme;
 mod theme_detection;
 
@@ -79,7 +80,8 @@ pub struct TuiConfig {
     pub model_thinking_budget: usize,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
-    /// Shared with the agent `ToolContext` so `/skill-reload` updates both sides.
+    /// Shared session store used to inspect persisted request payloads.
+    pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
 }
 
@@ -103,6 +105,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
         skill_registry,
+        session_store,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -133,6 +136,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
     app.skill_registry = skill_registry;
+    app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
     // Seed the bottom bar from config so model/token info renders at startup;
     // the first ModelInfo/TokenUsage updates will overwrite these.

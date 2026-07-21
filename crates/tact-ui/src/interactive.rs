@@ -132,7 +132,7 @@ async fn run_interactive_locked(
         AgentSystemPrompt::Dynamic,
     )
     .with_ui_channel(agent_tx)
-    .with_session(session_id.clone(), session_store);
+    .with_session(session_id.clone(), session_store.clone());
 
     let (history_save_tx, mut history_save_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();
@@ -165,6 +165,7 @@ async fn run_interactive_locked(
             work_dir: tui_work_dir,
             input_history_entries: input_history,
             session_id,
+            session_store,
             history_save_tx,
             theme,
             model_context_window,

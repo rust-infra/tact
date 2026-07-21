@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 use crate::theme::Theme;
+use pulldown_cmark::{Event, Options as MarkdownOptions, Parser};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -57,7 +60,8 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
     let options = tui_markdown::Options::new(TuiStyleSheet::new(*theme));
-    let tui_text = tui_markdown::from_str_with_options(text, &options);
+    let safe_text = escape_task_list_markers(text);
+    let tui_text = tui_markdown::from_str_with_options(safe_text.as_ref(), &options);
     let mut styled_lines: Vec<Line<'static>> = tui_text
         .lines
         .into_iter()
@@ -81,6 +85,40 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
 
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
     (styled_lines, raw_lines)
+}
+
+/// Work around tui-markdown 0.3.x panicking on task markers in loose lists.
+fn escape_task_list_markers(text: &str) -> Cow<'_, str> {
+    if !text.contains("[ ]") && !text.contains("[x]") && !text.contains("[X]") {
+        return Cow::Borrowed(text);
+    }
+
+    let mut options = MarkdownOptions::empty();
+    options.insert(MarkdownOptions::ENABLE_STRIKETHROUGH);
+    options.insert(MarkdownOptions::ENABLE_TASKLISTS);
+    options.insert(MarkdownOptions::ENABLE_HEADING_ATTRIBUTES);
+    options.insert(MarkdownOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    options.insert(MarkdownOptions::ENABLE_SUPERSCRIPT);
+    options.insert(MarkdownOptions::ENABLE_SUBSCRIPT);
+    let marker_starts: Vec<usize> = Parser::new_ext(text, options)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, Event::TaskListMarker(_)).then_some(range.start)
+        })
+        .collect();
+    if marker_starts.is_empty() {
+        return Cow::Borrowed(text);
+    }
+
+    let mut escaped = String::with_capacity(text.len() + marker_starts.len());
+    let mut copied_until = 0;
+    for marker_start in marker_starts {
+        escaped.push_str(&text[copied_until..marker_start]);
+        escaped.push('\\');
+        copied_until = marker_start;
+    }
+    escaped.push_str(&text[copied_until..]);
+    Cow::Owned(escaped)
 }
 
 fn apply_code_background(lines: &mut [Line<'static>], raw: &[String], theme: &Theme) {
@@ -297,6 +335,27 @@ mod tests {
         assert!(joined.contains("Title"), "heading: {joined}");
         assert!(joined.contains("item one"), "list: {joined}");
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn render_markdown_task_lists_without_panicking() {
+        let md = "- context\n\n- [ ] pending\n- [x] complete\n1. [X] ordered";
+
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let joined = raw.join("\n");
+
+        assert!(joined.contains("[ ] pending"), "{joined}");
+        assert!(joined.contains("[x] complete"), "{joined}");
+        assert!(joined.contains("[X] ordered"), "{joined}");
+    }
+
+    #[test]
+    fn render_markdown_preserves_task_marker_inside_fenced_code() {
+        let md = "```markdown\n- [ ] literal example\n```";
+
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+
+        assert!(raw.join("\n").contains("- [ ] literal example"));
     }
 
     #[test]

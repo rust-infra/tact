@@ -55,6 +55,7 @@ pub(crate) enum InputMode {
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
     ("model", "Switch model for current provider"),
+    ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
     ("cancel", "Cancel current task"),
     ("quit", "Quit application"),
@@ -89,6 +90,8 @@ pub(crate) enum SelectKind {
     ModelPick,
     /// Optional "Save to config?" after a model switch.
     PersistModel { model: String },
+    /// Prompt source selection for `/view-system-prompt`.
+    ViewSystemPrompt,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -125,6 +128,13 @@ pub(crate) struct CodeBlock {
 pub(crate) struct CodePopup {
     pub block_idx: usize,
     pub lang: String,
+    pub scroll: u16,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SystemPromptPopup {
+    pub title: String,
+    pub rendered: Vec<ratatui::text::Line<'static>>,
     pub scroll: u16,
 }
 
@@ -216,6 +226,7 @@ pub struct App {
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
+    pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
     /// Distinguishes agent permission selects from `/model` UX.
@@ -235,6 +246,8 @@ pub struct App {
     pub(crate) skills_data: Vec<SkillEntry>,
     /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
     pub(crate) skill_registry: SharedSkillRegistry,
+    /// Shared session store used to inspect persisted request payloads.
+    pub(crate) session_store: Option<tact::store::DynSessionStore>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

@@ -40,7 +40,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         app.input_mode = InputMode::Normal;
                     }
                     // Multi is only opened for agent ask_user; local flows stay single-select.
-                    SelectKind::ModelPick | SelectKind::PersistModel { .. } => {
+                    SelectKind::ModelPick
+                    | SelectKind::PersistModel { .. }
+                    | SelectKind::ViewSystemPrompt => {
                         app.input_mode = InputMode::Normal;
                     }
                 }
@@ -61,6 +63,40 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         let msgs = app.msgs();
                         app.add_system_message(msgs.selected_tmpl.replace("{}", &chosen));
                     }
+                    app.input_mode = InputMode::Normal;
+                }
+                SelectKind::ViewSystemPrompt => {
+                    let content = if idx == 0 {
+                        Some((
+                            "Raw system prompt template",
+                            include_str!("../../../tact/src/prompt/system_prompt_template.md")
+                                .to_string(),
+                        ))
+                    } else {
+                        app.session_store.as_ref().and_then(|store| {
+                            tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(store.load_latest_request_body(&app.session_id))
+                            })
+                            .ok()
+                            .flatten()
+                            .and_then(|body| {
+                                crate::system_prompt::extract_system_prompt(&body).ok()
+                            })
+                            .map(|content| ("Assembled current system prompt", content))
+                        })
+                    };
+                    let (title, content) = content.unwrap_or_else(|| (
+                        "Assembled current system prompt",
+                        "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
+                    ));
+                    let (rendered, _) =
+                        crate::render::render_md::render_markdown_tui(&content, &app.theme);
+                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
+                        title: title.to_string(),
+                        rendered,
+                        scroll: 0,
+                    });
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::ModelPick => {
