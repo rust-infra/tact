@@ -520,7 +520,10 @@ impl Agent {
                 if succeeded {
                     pending_recent_files.extend(recent_file_paths(&prep_name, &prep_input));
                 }
-                if prep_name == "compact" {
+                // Only a successful compact tool should rewrite history; a
+                // failed invocation (bad args, hook block, etc.) must leave
+                // the conversation intact so the model can recover next turn.
+                if prep_name == "compact" && succeeded {
                     manual_compact = prep_input
                         .get("focus")
                         .and_then(|value| value.as_str())
