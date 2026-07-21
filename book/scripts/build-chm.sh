@@ -62,12 +62,16 @@ convert_md() {
 }
 
 convert_md "${BOOK}/index.md" "index.html"
+if [[ -f "${BOOK}/index_zh.md" ]]; then
+  convert_md "${BOOK}/index_zh.md" "index_zh.html"
+fi
 
 if [[ -f "${BOOK}/mindmap.png" ]]; then
   cp "${BOOK}/mindmap.png" "${HTML}/mindmap.png"
 fi
 convert_md "${BOOK}/mindmap.md" "mindmap-overview.html"
 
+# English + Chinese chapters: NN_chapter_<slug>.md and NN_chapter_<slug>_zh.md
 for ch in "${BOOK}"/[0-9][0-9]_chapter_*.md; do
   [[ -f "$ch" ]] || continue
   base="$(basename "${ch}" .md)"
@@ -116,7 +120,10 @@ EOF
 
   emit_group_close() { printf '  </UL>\n'; }
 
-  emit_entry "Home" "index.html"
+  emit_entry "Home (English)" "index.html"
+  if [[ -f "${HTML}/index_zh.html" ]]; then
+    emit_entry "首页（中文）" "index_zh.html"
+  fi
 
   emit_group_open "Mind Map"
   emit_entry "Mind Map (interactive)" "mindmap.html"
@@ -169,6 +176,25 @@ EOF
   chapter_entry "24" "Testing Strategy" "24_chapter_testing"
   chapter_entry "25" "Agent–TUI Protocol" "25_chapter_protocol"
   emit_group_close
+
+  # Auto-discover Chinese chapter translations (*_zh.md)
+  zh_files=()
+  for ch in "${BOOK}"/[0-9][0-9]_chapter_*_zh.md; do
+    [[ -f "$ch" ]] || continue
+    zh_files+=("$ch")
+  done
+  if ((${#zh_files[@]} > 0)); then
+    emit_group_open "中文译本 / Chinese"
+    for ch in "${zh_files[@]}"; do
+      base="$(basename "${ch}" .md)"
+      # 05_chapter_compact_zh → Ch 05 — compact (中文)
+      num="${base%%_chapter_*}"
+      slug="${base#*_chapter_}"
+      slug="${slug%_zh}"
+      emit_entry "Ch ${num} — ${slug}（中文）" "${base}.html"
+    done
+    emit_group_close
+  fi
 
   cat <<'EOF'
 </UL>

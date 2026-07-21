@@ -1,42 +1,84 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
-/// Thinking state: manages reasoning content buffer, title markers, active/completed blocks, and popups.
-#[derive(Default)]
-pub(crate) struct ThinkingState {
-    /// Reasoning content buffer.
-    pub(crate) buffer: String,
-    /// Whether the title has been added.
-    pub(crate) title_added: bool,
-    /// Active block start position.
-    pub(crate) active_start: Option<usize>,
-    /// Active block end position.
-    pub(crate) active_end: Option<usize>,
-    /// Reasoning block list.
-    pub(crate) blocks: Vec<ThinkingBlock>,
-    /// Popup state.
-    pub(crate) popup: Option<ThinkingPopup>,
-    /// When the current thinking block started streaming.
-    pub(crate) thinking_start: Option<Instant>,
+use super::tool_state::PopupTextSelection;
+
+/// Streaming thinking content anchored at one shared-log placeholder row.
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveThinkingBlock {
+    pub(crate) phys_idx: usize,
+    pub(crate) content: String,
+    pending_line: String,
+    completed_tail: VecDeque<String>,
+    pub(crate) started_at: Instant,
 }
 
-/// A completed Thinking block's range in messages and its scroll state.
-/// After completion, only the last 3 lines are shown by default; scroll_offset controls the visible window start row.
-// messages[] 布局（一个已完成 thinking block 的物理索引范围）:
+impl ActiveThinkingBlock {
+    const MAX_TAIL_LINES: usize = 3;
 
-// [blank_idx]   ""                              ← 隔离空行
-// [title_idx]   "🧠 Thinking (8 lines)…"        ← title_idx
-// [title_idx+1] "│ Let me analyze…"              ← 思考内容行 1
-//   ...
-// [end_idx]     "│ Solution: use B…"             ← end_idx ← 最后一行
-// [end_idx+1]   ""                              ← 隔离空行（close 时插入）
+    pub(crate) fn new(phys_idx: usize, started_at: Instant) -> Self {
+        Self {
+            phys_idx,
+            content: String::new(),
+            pending_line: String::new(),
+            completed_tail: VecDeque::new(),
+            started_at,
+        }
+    }
+
+    pub(crate) fn push_delta(&mut self, delta: &str) {
+        self.content.push_str(delta);
+        self.pending_line.push_str(delta);
+
+        while let Some(newline) = self.pending_line.find('\n') {
+            let line = self.pending_line[..newline].to_string();
+            self.pending_line.drain(..=newline);
+            self.completed_tail.push_back(line);
+            if self.completed_tail.len() > Self::MAX_TAIL_LINES {
+                self.completed_tail.pop_front();
+            }
+        }
+    }
+
+    pub(crate) fn display_tail(&self) -> Vec<String> {
+        let mut tail: Vec<_> = self.completed_tail.iter().cloned().collect();
+        if !self.pending_line.is_empty() {
+            tail.push(self.pending_line.clone());
+        }
+        if tail.len() > Self::MAX_TAIL_LINES {
+            tail.drain(..tail.len() - Self::MAX_TAIL_LINES);
+        }
+        tail
+    }
+
+    pub(crate) fn body_line_count(&self) -> usize {
+        self.display_tail().len().clamp(1, Self::MAX_TAIL_LINES)
+    }
+
+    pub(crate) fn is_blank(&self) -> bool {
+        self.content.trim().is_empty()
+    }
+}
+
+/// Thinking state: one active direct card, completed cards, and the detail popup.
+#[derive(Default)]
+pub(crate) struct ThinkingState {
+    /// Reasoning card currently receiving streaming deltas.
+    pub(crate) active: Option<ActiveThinkingBlock>,
+    /// Completed reasoning cards, retained for rendering and detail popups.
+    pub(crate) blocks: Vec<ThinkingBlock>,
+    /// Detail popup state.
+    pub(crate) popup: Option<ThinkingPopup>,
+}
+
+/// A completed reasoning card anchored at one shared-log placeholder row.
 #[derive(Debug, Clone)]
 pub(crate) struct ThinkingBlock {
-    pub title_idx: usize,
-    pub end_idx: usize,
-    /// Current visible window start row offset (relative to title_idx+1), auto-scrolls to bottom by default.
-    pub scroll_offset: usize,
-    /// Cached plain text lines ("│ " prefix stripped), used for card preview and copy.
-    pub(crate) cached_preview: Vec<String>,
+    pub(crate) phys_idx: usize,
+    pub(crate) content: String,
+    pub(crate) summary: String,
     /// Cached Markdown rendered lines, used for popup display, avoiding per-frame re-rendering.
     pub(crate) cached_markdown: Vec<ratatui::text::Line<'static>>,
     /// Duration of the thinking phase.
@@ -46,8 +88,49 @@ pub(crate) struct ThinkingBlock {
 /// Thinking popup state.
 #[derive(Debug, Clone)]
 pub(crate) struct ThinkingPopup {
-    pub block_idx: usize,
+    /// Stable shared-log placeholder index for active or completed content.
+    pub phys_idx: usize,
     pub title: String,
     /// Popup internal scroll offset (line number, relative to the first thinking content line).
     pub scroll: u16,
+    /// Byte selection into `selection_text`.
+    pub selection: Option<PopupTextSelection>,
+    /// Plain text currently presented as selectable Thinking content.
+    pub selection_text: String,
+}
+
+impl ThinkingPopup {
+    pub(crate) fn copy_content(&self, full_content: &str) -> String {
+        self.selection
+            .and_then(|selection| selection.normalized_non_empty(&self.selection_text))
+            .map(|range| self.selection_text[range].to_string())
+            .unwrap_or_else(|| full_content.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_thinking_tail_grows_then_keeps_latest_three_lines() {
+        let mut active = ActiveThinkingBlock::new(8, Instant::now());
+        active.push_delta("one\ntwo\nthree\nfour\n");
+
+        assert_eq!(
+            active.display_tail(),
+            vec!["two".to_string(), "three".to_string(), "four".to_string()]
+        );
+    }
+
+    #[test]
+    fn active_thinking_tail_includes_unterminated_fragment() {
+        let mut active = ActiveThinkingBlock::new(8, Instant::now());
+        active.push_delta("one\ntwo");
+
+        assert_eq!(
+            active.display_tail(),
+            vec!["one".to_string(), "two".to_string()]
+        );
+    }
 }

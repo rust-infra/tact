@@ -1,32 +1,39 @@
 # Context Compaction
 
-This document details tact's context compaction mechanism, including three tiers of compaction strategy and their configuration parameters.
+Companion notes for tuning and quick reference. For the full interactive walkthrough (diagrams, loop ordering, envelope vs stub), see **[book/05_chapter_compact.md](../book/05_chapter_compact.md)** ([中文](../book/05_chapter_compact_zh.md)).
 
----
-
-## Overview
-
-LLMs have limited context windows, and longer contexts result in slower responses and higher costs. When an agent runs long tasks, conversation history grows continuously and must be compacted to preserve usable context space.
-
-tact implements a **three-tier progressive compaction**:
+tact implements **three-tier progressive compaction**:
 
 | Tier | Trigger | Target | Strategy |
 |------|---------|--------|----------|
-| Tier 1: Large Output Persist | Single tool output > 30K chars | Single tool result | Write to disk, keep preview |
-| Tier 2: Micro Compaction | Before each LLM call | Old tool results | Replace with placeholder (keep last 12) |
-| Tier 3: Full Compaction | Context > 500K chars | Entire conversation | Archive + LLM summary → reset context |
+| Tier 1: Large Output Persist | Any successful native/MCP output > 30K chars | One tool result | Write to disk, keep `<persisted-output>` preview |
+| Tier 2: Micro Compaction | Before each LLM call | Old tool results | Stub (keep last 12; only if > 120 chars) |
+| Tier 3: Full Compaction | Reported/estimated input reaches 80% of the window, prompt-too-long, or `compact` tool | Conversation history | JSONL transcript + LLM summary → retained real users + handoff |
+
+```mermaid
+flowchart TB
+    Turn([each agent_loop turn]) --> MC[micro_compact]
+    MC --> Est{should_auto_compact?}
+    Est -->|no| Prompt[LLM]
+    Est -->|yes| CH[compact_history]
+    Prompt -->|prompt too long| CH
+    Prompt -->|compact tool| CH
+    CH --> Transcript[JSONL under .claude/transcripts/]
+    CH --> Sum[summarize up to 20k estimated tokens]
+    Sum --> Replace[context ← recent users + summary]
+    Replace --> Prompt
+```
 
 ---
 
 ## Tier 1: Large Output Persist
 
-**Trigger**: A single tool call result exceeds `PERSIST_THRESHOLD` (30,000 characters).
+**Trigger**: any successful native or MCP tool result exceeds `PERSIST_THRESHOLD` (30,000 characters).
 
 **Process**:
-1. Full output written to `.claude/tool-results/{tool_use_id}.txt`
-2. Tool result in context replaced with a preview of `PREVIEW_CHARS` (2,000 characters) + file path
+1. Full output → `.claude/tool-results/{tool_use_id}.txt`
+2. Context keeps a tagged envelope with path + first `PREVIEW_CHARS` (2,000) characters
 
-**Replacement format**:
 ```xml
 <persisted-output>
 Full output saved to: .claude/tool-results/abc123.txt
@@ -35,170 +42,84 @@ Preview:
 </persisted-output>
 ```
 
-### Related Constants
+**Why the tags**: For the model, not runtime parsing. Marks a system envelope so metadata is not mistaken for stdout; full text is recoverable via `read_file`. Distinct from the micro-compact stub (older history), which uses `[Earlier tool result compacted. …]`.
 
-| Constant | Default | Location | Description |
-|----------|---------|----------|-------------|
-| `PERSIST_THRESHOLD` | 30,000 | `compact.rs:26` | Char threshold to trigger persistence |
-| `PREVIEW_CHARS` | 2,000 | `compact.rs:28` | Preview chars kept in replacement text |
-| `OUTPUT_DIR` | `.claude/tool-results` | `compact.rs:29` | Directory for large output files |
+| Constant | Default | Location |
+|----------|---------|----------|
+| `PERSIST_THRESHOLD` | 30,000 | `compact.rs` |
+| `PREVIEW_CHARS` | 2,000 | `compact.rs` |
+
+Each artifact directory retains at most the 100 newest files after a write.
 
 ---
 
 ## Tier 2: Micro Compaction
 
-**Trigger**: Before each LLM request in the agent loop iteration, via `micro_compact()`.
+**Trigger**: Start of each `agent_loop` iteration when `agent.micro_compact_enabled` is true.
 
-**Process**:
-1. Scan all `tool_result` blocks in user messages
-2. Keep the last `KEEP_RECENT_TOOL_RESULTS` (12) results intact
-3. For older tool results exceeding 120 characters, replace with a placeholder
+1. Collect all `ToolResult` blocks (user messages), chronological order  
+2. Keep the last `KEEP_RECENT_TOOL_RESULTS` (12) intact  
+3. Older results with **> 120** characters → stub  
 
-**Placeholder text**:
 ```
 [Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]
 ```
 
-**Design intent**:
-- Short results (≤120 chars, e.g., error messages, confirmations) are kept — they have high information density and low space cost
-- Long results are compacted, but the agent can re-run tools to recover original data
-- The most recent 12 results are preserved to avoid interrupting the current workflow
+Short results stay (high density, low cost). Assistant / thinking / user text are never stubbed.
 
-### Related Constants
-
-| Constant | Default | Location | Description |
-|----------|---------|----------|-------------|
-| `KEEP_RECENT_TOOL_RESULTS` | 12 | `compact.rs:23` | Number of recent tool results kept |
-| `COMPACTED_TOOL_RESULT` | see above | `compact.rs:31` | Placeholder text for compacted results |
+| Constant | Default |
+|----------|---------|
+| `KEEP_RECENT_TOOL_RESULTS` | 12 |
+| Stub length threshold | 120 chars |
 
 ---
 
 ## Tier 3: Full Compaction
 
-**Trigger**: After micro compaction, if serialized context still exceeds the `context_limit()` threshold.
+**Triggers** (any of):
+- After micro_compact, `should_auto_compact`:
+  - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
+  - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
+- Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery.md))
+- Manual `compact` tool (after tool results are appended)
 
-### Context Size Limit
+### Steps
 
-```
-Default: 500,000 characters (~125K tokens)
-Environment override: TACT_CONTEXT_LIMIT_CHARS
-```
+1. **`write_transcript`** (async) → unique `.claude/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
+2. **Recent window** — select from the tail within the model budget and a 20k estimated-token cap; oversized messages become valid text-only views and images become omission markers
+3. **Summarize** — window-aware `create_message`, at most 2k output tokens, with output/headroom reserved; transient failures retry up to three times; abnormal stop reasons and empty summaries fail without replacing context
+4. **Replace** — Codex-style `[recent real User…] + [SUMMARY_PREFIX + handoff]` (legacy: `compacted_context`); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
+5. **`replace_session_messages`** — SQLite matches the new context; message-id window reset; `last_token_total = 0`
 
-Adjust via environment variable:
-```bash
-export TACT_CONTEXT_LIMIT_CHARS=1000000  # ~250K tokens
-```
+### Recent files
 
-**Process**:
-
-### Step 1: Save Full Transcript
-
-Serialize the complete conversation history as a JSONL file to `.claude/transcripts/transcript_{timestamp}.jsonl`.
-
-### Step 2: Select Recent Messages
-
-Traverse conversation history from the end backward, collecting recent messages (up to 80,000 characters), **keeping at least one**. This ensures the summary LLM receives the most relevant context, not the earliest history.
-
-### Step 3: Generate Summary
-
-Send selected messages as context to the LLM (max_tokens=2000), asking it to preserve:
-
-1. **Current goal and work completed**
-2. **Key findings, decisions, and architectural insights**
-3. **Files read or modified** (with key code structures: types, signatures, APIs)
-4. **Remaining work and next steps**
-5. **User constraints and preferences**
-6. **Errors encountered and their causes**
-
-If the user specifies a `focus`, it's appended to the prompt.
-
-If `recent_files` is not empty (last 5 files accessed via `read_file`), they're injected into the prompt.
-
-### Step 4: Inject Recent Files
-
-At the end of the LLM-generated summary, append the recently accessed file list to help the agent recover context after "amnesia":
-
-```
-Recently accessed files (re-read if you need their contents):
-- crates/tact-ui/src/interactive.rs
-- src/lib.rs
-```
-
-### Step 5: Replace Context
-
-The entire conversation history is replaced with a single user message:
-
-```
-This conversation was compacted so the agent can continue working.
-
-[LLM-generated summary]
-
-Recently accessed files (re-read if you need their contents):
-- [file list]
-```
-
-`compact_state.has_compacted` is set to `true`, and `last_summary` stores the current summary.
-
-### Related Constants
-
-| Constant | Default | Location | Description |
-|----------|---------|----------|-------------|
-| `context_limit()` | 500,000 | `lib.rs:74` | Char threshold triggering full compaction |
-| `TRANSCRIPT_DIR` | `.claude/transcripts` | `compact.rs:29` | Transcript output directory |
-| Summary prompt max_tokens | 2,000 | `lib.rs:775` | Max tokens for summary LLM call |
-| Recent message selection cap | 80,000 chars | `lib.rs:732` | Context size for summary LLM |
+`CompactState.recent_files`: last 5 paths from successful `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
 
 ---
 
-## Recent File Tracking
+## Configuration
 
-`CompactState.recent_files` tracks file paths recently accessed by the agent via the `read_file` tool (max 5).
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger at 80% + TUI usage meter; nonzero values must exceed `max_tokens` |
+| `agent.micro_compact_enabled` | `true` | Tier-2 stub pass (`--no-micro-compact` disables) |
 
-**Update logic** (`remember_recent_file`):
-- If file already exists in list, remove old entry first (dedup)
-- Append file to end of list
-- If > 5 entries, remove oldest (FIFO)
+Breaking rename from `context_limit_chars` / `--context-limit-chars` — **no silent alias**.
 
-**Usage**:
-- Listed in the full compaction summary prompt, hinting at which files are the current focus
-- Injected into the final summary to help agent quickly locate key files after context reset
+Compile-time: 12 / 120 / 30k / 2k / 20k summary-input and retained-user tokens / 100 artifacts are not configurable yet.
 
 ---
 
-## Data Flow Overview
+## Integration with System Prompt
 
 ```
-Agent Loop — each iteration
-│
-├─ micro_compact()                         [Tier 2]
-│   └─ Replace old tool results (keep last 12)
-│
-├─ estimate_context_size() > limit?        [Tier 3 trigger check]
-│   ├─ No → continue
-│   └─ Yes → compact_history():
-│       ├─ write_transcript()              → .claude/transcripts/*.jsonl
-│       ├─ Select recent messages (≤80K chars)
-│       ├─ LLM generates summary
-│       ├─ Inject recent_files
-│       └─ context = compacted_context(summary)
-│
-└─ LLM call
-    │
-    └─ Tool execution → intercept
-        ├─ read_file → remember_recent_file(path)
-        └─ persist_large_output()          [Tier 1]
-            ├─ Output ≤30K chars → no change
-            └─ Output >30K chars → write disk + return preview
+If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)
 ```
 
 ---
 
-## Integration with Agent System Prompt
+## Gaps (short)
 
-Compacted placeholders instruct the agent: "compacted tool results can be recovered by re-running the relevant tool." The system prompt includes corresponding guidance:
+- Cold-start token estimation remains heuristic (ASCII ~4 chars/token, non-ASCII 1 char/token); the TUI still uses a simple `used/window` meter without Codex baseline/effective-window math; fixed thresholds are compile-time constants.
 
-```
-- If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)
-```
-
-This ensures the agent can proactively recover needed data via `read_file` or other tools when encountering compacted tool results.
+See the book chapter for diagrams and loop ordering.

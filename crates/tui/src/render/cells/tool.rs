@@ -14,6 +14,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
+use tact_protocol::{ToolOutputLine, ToolOutputStream};
 
 use crate::{
     i18n::Messages,
@@ -38,7 +39,7 @@ pub(crate) struct ToolCell {
     has_detail_card: bool,
     use_diff_gutter: bool,
     detail_title: Option<String>,
-    detail_preview: Vec<String>,
+    detail_preview: Vec<ToolOutputLine>,
     detail_total_lines: usize,
     card_bottom: String,
     tool_phase_running: &'static str,
@@ -151,25 +152,43 @@ impl ToolCell {
         let text_style = Style::default().fg(self.fg).bg(self.bg);
         let plus_style = Style::default().fg(self.success).bg(self.bg);
 
+        let visible_line_count = self.detail_total_lines.min(self.detail_preview.len());
+        let first_line_number = self
+            .detail_total_lines
+            .saturating_sub(visible_line_count)
+            .saturating_add(1);
         let lines: Vec<Line<'static>> = self
             .detail_preview
             .iter()
             .enumerate()
             .map(|(i, line)| {
-                let num = format!("{:>nw$}", i + 1, nw = num_width);
-                let trimmed: String = line.chars().take(code_width).collect();
-                if self.use_diff_gutter {
-                    Line::from(vec![
-                        Span::styled(format!(" {} ", num), num_style),
-                        Span::styled("+ ", plus_style),
-                        Span::styled(trimmed, text_style),
-                    ])
+                let num = if i < visible_line_count {
+                    format!("{:>nw$}", first_line_number + i, nw = num_width)
                 } else {
-                    Line::from(vec![
-                        Span::styled(format!(" {} ", num), num_style),
-                        Span::styled(trimmed, text_style),
-                    ])
+                    " ".repeat(num_width)
+                };
+                let mut spans = Vec::with_capacity(line.spans.len() + 2);
+                if self.use_diff_gutter {
+                    spans.push(Span::styled(format!(" {} ", num), num_style));
+                    spans.push(Span::styled("+ ", plus_style));
+                } else {
+                    spans.push(Span::styled(format!(" {} ", num), num_style));
                 }
+                let mut remaining = code_width;
+                for output_span in &line.spans {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let text: String = output_span.text.chars().take(remaining).collect();
+                    remaining = remaining.saturating_sub(text.chars().count());
+                    let style = if output_span.stream == ToolOutputStream::Stderr {
+                        Style::default().fg(self.warning).bg(self.bg)
+                    } else {
+                        text_style
+                    };
+                    spans.push(Span::styled(text, style));
+                }
+                Line::from(spans)
             })
             .collect();
 
@@ -433,14 +452,20 @@ impl Renderable for ToolCell {
 mod tests {
     use super::*;
     use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, ToolLayout, ToolPhase, tool_visual_rows};
+    use tact_protocol::ToolOutputSpan;
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
     /// `has_card` controls whether the card is present; `preview_count` sets
     /// how many preview lines are stored; `total` is the real file line count.
     fn make_output(has_card: bool, preview_count: usize, total: usize) -> ToolRenderOutput {
-        let preview: Vec<String> = (1..=preview_count)
-            .map(|i| format!("line-{i:02}"))
+        let preview: Vec<ToolOutputLine> = (1..=preview_count)
+            .map(|i| ToolOutputLine {
+                spans: vec![ToolOutputSpan {
+                    stream: ToolOutputStream::Other,
+                    text: format!("line-{i:02}"),
+                }],
+            })
             .collect();
         ToolRenderOutput {
             title_line: Line::from("Write  src/main.rs"),
@@ -636,5 +661,36 @@ mod tests {
         let bottom = cell.card_bottom_text();
         assert!(bottom.contains("3/10 lines"));
         assert!(bottom.contains("Double-click for full code"));
+    }
+
+    #[test]
+    fn stderr_preview_uses_warning_color() {
+        let mut output = make_output(true, 2, 2);
+        output.detail_preview = vec![
+            ToolOutputLine {
+                spans: vec![ToolOutputSpan {
+                    stream: ToolOutputStream::Stdout,
+                    text: "normal".into(),
+                }],
+            },
+            ToolOutputLine {
+                spans: vec![ToolOutputSpan {
+                    stream: ToolOutputStream::Stderr,
+                    text: "warning".into(),
+                }],
+            },
+        ];
+        let cell = tool_cell(output);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+
+        cell.render(area, &mut buf);
+
+        let warning_cell = (0..area.width)
+            .flat_map(|x| (0..area.height).map(move |y| (x, y)))
+            .map(|pos| &buf[pos])
+            .find(|cell| cell.symbol() == "w")
+            .expect("warning text should render");
+        assert_eq!(warning_cell.fg, Color::Yellow);
     }
 }

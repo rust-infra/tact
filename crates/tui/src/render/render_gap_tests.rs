@@ -8,6 +8,17 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
+#[test]
+fn full_frame_keeps_bottom_bar_visible_when_terminal_is_short() {
+    let mut app = make_app();
+    let text = render_app_text(&mut app, 120, 8);
+
+    assert!(
+        text.contains("Focus:"),
+        "bottom bar should remain visible: {text}"
+    );
+}
+
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
     app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
@@ -154,6 +165,43 @@ fn log_renders_streamed_code_block_card() {
     assert!(
         text.contains("rust") || text.contains("code_card_test"),
         "inline code card should render in log, got:\n{text}"
+    );
+}
+
+#[test]
+fn flush_consumes_closing_fence_without_trailing_newline() {
+    // Stream ends with ``` and no final \n — the close fence stays in stream.buffer.
+    // Flush must treat it as a close, not re-render it as leaked ``` lines.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "已提交。\n\n```text\nCommit: abc\n```\n\n当前状态：\n\n```text\na\nb\nc\n```".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    assert_eq!(
+        app.code_blocks.len(),
+        2,
+        "both fenced blocks should become cards"
+    );
+    let leaked: Vec<_> = app
+        .raw_messages
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            let t = r.trim();
+            t == "```" || t.starts_with("```")
+        })
+        .map(|(i, r)| (i, r.as_str()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "closing fence without trailing newline must not leak into raw_messages: {leaked:?}"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 32);
+    assert!(
+        text.contains("Commit: abc") && (text.contains("当前状态") || text.contains("a")),
+        "cards/content should still render, got:\n{text}"
     );
 }
 
@@ -374,17 +422,21 @@ fn thinking_popup_scroll_shows_later_lines() {
         .collect();
     app.raw_messages.push("Thinking".into());
     app.thinking.blocks.push(ThinkingBlock {
-        title_idx: 0,
-        end_idx: 11,
-        scroll_offset: 0,
-        cached_preview: vec!["reason-1".into()],
+        phys_idx: 0,
+        content: (1..=12)
+            .map(|n| format!("reason-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        summary: "reason-12".into(),
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
     });
     app.thinking.popup = Some(ThinkingPopup {
-        block_idx: 0,
+        phys_idx: 0,
         title: "Thinking".into(),
         scroll: 6,
+        selection: None,
+        selection_text: String::new(),
     });
 
     let text = render_main_area_text(&mut app, 100, 16);

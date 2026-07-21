@@ -2,6 +2,7 @@
 
 pub mod driver;
 pub mod headless_session;
+pub mod plugin_cli;
 pub mod session_lock;
 pub mod sessions;
 pub mod test_support;

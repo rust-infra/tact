@@ -76,6 +76,10 @@ pub(crate) fn style_input_skill_line(
 }
 
 /// Style a user log line built from `user_msg_prefix` / `user_msg_cont` templates.
+///
+/// For skill invocations (`/skill-name`), the first-line prefix is changed from `💬`
+/// (user chat bubble) to `⚡` (lightning bolt — "running a command") with `warning`
+/// color to make plugin slash commands visually distinct from regular user messages.
 pub(crate) fn style_user_skill_line(
     raw: &str,
     skill_names: &HashSet<&str>,
@@ -95,15 +99,28 @@ pub(crate) fn style_user_skill_line(
     };
 
     let (skill, args) = split_skill_slash(payload, skill_names)?;
-    let mut spans = vec![
-        Span::styled(lead.to_string(), Style::default().fg(theme.success)),
-        Span::styled(
-            skill.to_string(),
+    let mut spans = Vec::with_capacity(3);
+
+    // First line of a skill invocation: use ⚡ prefix with warning color to stand out.
+    if lead.contains('💬') {
+        spans.push(Span::styled(
+            "⚡ ".to_string(),
             Style::default()
-                .fg(theme.accent)
+                .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
-        ),
-    ];
+        ));
+    } else {
+        spans.push(Span::styled(
+            lead.to_string(),
+            Style::default().fg(theme.success),
+        ));
+    }
+    spans.push(Span::styled(
+        skill.to_string(),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ));
     if !args.is_empty() {
         spans.push(Span::styled(
             args.to_string(),
@@ -170,8 +187,26 @@ mod tests {
         let theme = Theme::from(ThemeName::Japanese);
         let names: HashSet<&str> = ["demo"].into_iter().collect();
         let line = style_user_skill_line("💬 /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
-        assert_eq!(line.spans[0].content.as_ref(), "💬 ");
+        assert_eq!(line.spans[0].content.as_ref(), "⚡ ");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(theme.warning),
+            "skill prefix should use warning color"
+        );
         assert_eq!(line.spans[1].content.as_ref(), "/demo");
         assert_eq!(line.spans[2].content.as_ref(), " hi");
+    }
+
+    #[test]
+    fn style_continuation_skill_line_uses_original_lead() {
+        let theme = Theme::from(ThemeName::Japanese);
+        let names: HashSet<&str> = ["demo"].into_iter().collect();
+        let line = style_user_skill_line("  /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
+        assert_eq!(line.spans[0].content.as_ref(), "  ");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(theme.success),
+            "continuation lead should keep success color"
+        );
     }
 }

@@ -107,7 +107,7 @@ pub(crate) fn classify_system_message(raw: &str) -> RawMessageType {
 impl RawMessageType {
     pub(crate) fn log_indent(self) -> u16 {
         match self {
-            Self::LLM => 0,
+            Self::LLM => LOG_THINKING_INDENT,
             Self::LLMThinking => LOG_THINKING_INDENT,
             Self::SysTool => LOG_TOOL_INDENT,
         }

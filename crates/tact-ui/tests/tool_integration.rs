@@ -52,6 +52,31 @@ async fn parallel_read_files_both_succeed() {
 }
 
 #[tokio::test]
+async fn large_non_bash_output_is_persisted() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![read_file_tool_use("read_big", "big.txt")],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Large read handled.")], StopReason::EndTurn),
+    ]);
+    let (updates, work_dir) =
+        run_single_task_with_setup(mock, "read big", PermissionMode::Auto, |dir| {
+            write_workspace_file(dir, "big.txt", &"x".repeat(30_001));
+        })
+        .await;
+
+    assert!(updates.iter().any(|update| matches!(
+        update,
+        AgentUpdate::StepFinished { tool_id, result, .. }
+            if tool_id == "read_big"
+                && matches!(result.status, StepStatus::Success)
+                && result.message.contains("<persisted-output>")
+    )));
+    assert!(work_dir.join(".claude/tool-results/read_big.txt").exists());
+}
+
+#[tokio::test]
 async fn plan_mode_blocks_write_file() {
     let mock = MockClient::new(vec![
         mock_turn(
@@ -103,6 +128,54 @@ async fn bash_echo_returns_success() {
         }),
         "expected successful bash StepFinished, got: {updates:?}"
     );
+}
+
+#[tokio::test]
+async fn bash_streams_progress_before_step_finished() {
+    let command =
+        "printf 'out-1\\n'; sleep 0.1; printf 'err-1\\n' >&2; sleep 0.1; printf 'out-2\\n'";
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![bash_tool_use("bash_stream", command)],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Streaming done.")], StopReason::EndTurn),
+    ]);
+
+    let (updates, _) = run_single_task(mock, "stream", PermissionMode::Auto).await;
+    let progress_idx = updates
+        .iter()
+        .position(|update| {
+            matches!(
+                update,
+                AgentUpdate::ToolProgress { tool_id, .. } if tool_id == "bash_stream"
+            )
+        })
+        .expect("expected bash progress");
+    let finish_idx = first_index(&updates, |update| {
+        matches!(
+            update,
+            AgentUpdate::StepFinished { tool_id, .. } if tool_id == "bash_stream"
+        )
+    })
+    .expect("expected bash finish");
+    let progress_text = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::ToolProgress { tool_id, chunks } if tool_id == "bash_stream" => Some(
+                chunks
+                    .iter()
+                    .map(|chunk| chunk.text.as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect::<String>();
+
+    assert!(progress_idx < finish_idx);
+    assert!(progress_text.contains("out-1"));
+    assert!(progress_text.contains("err-1"));
+    assert!(progress_text.contains("out-2"));
 }
 
 #[tokio::test]

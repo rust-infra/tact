@@ -104,9 +104,10 @@ pub(crate) fn render_code_cards(
             });
 
         let card_area = Rect::new(
-            area.x + 1,
+            area.x + 1 + crate::render::util::LOG_THINKING_INDENT,
             area.y + 1 + y_top,
-            area.width.saturating_sub(2),
+            area.width
+                .saturating_sub(2 + crate::render::util::LOG_THINKING_INDENT),
             y_bot - y_top,
         );
         frame.render_widget(Clear, card_area);
@@ -169,6 +170,36 @@ mod overlay_tests {
         assert!(
             text.contains("overlay_test"),
             "code overlay should render code body text, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn code_card_starts_at_the_thinking_indent() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StreamChunk(
+            "```rust\nfn alignment_test() {}\n```\n".into(),
+        ));
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
+
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_code_cards(frame, area, &app, 0, area.height as usize);
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let border_x = (0..buffer.area.height)
+            .find_map(|y| {
+                (0..buffer.area.width).find(|&x| matches!(buffer[(x, y)].symbol(), "╭" | "┌"))
+            })
+            .expect("code card top-left border");
+        assert_eq!(
+            border_x,
+            crate::render::util::LOG_THINKING_INDENT + 1,
+            "code card should align with the Thinking card inside the log border"
         );
     }
 }

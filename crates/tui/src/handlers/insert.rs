@@ -48,8 +48,11 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
         return false;
     };
     // Skills autocomplete; built-ins execute. Built-in names never appear as skills
-    // in the palette list, but keep the guard if data drifts.
-    if is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd) {
+    // in the palette list, but keep the guard if data drifts. Arg-taking built-ins
+    // (e.g. /plugin list) also autocomplete so the user can type the subcommand.
+    if (is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd))
+        || super::command_needs_args(cmd)
+    {
         return apply_selected_slash_command(app);
     }
     app.slash_command.active = false;
@@ -101,12 +104,11 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         let display = app.input.clone();
-        let limit = app.context_limit_chars;
-        if display.chars().count() > limit {
+        if tact::consts::exceeds_input_char_limit(display.chars().count()) {
             let msg = app
                 .msgs()
                 .input_too_long_tmpl
-                .replace("{}", &limit.to_string());
+                .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
             app.add_system_message(msg);
             return;
         }
@@ -438,11 +440,11 @@ pub(crate) fn handle_insert_mode(
             app.input_history.saved.clear();
             app.save_undo();
             // Deactivate slash command popup if the character is not valid for
-            // a command name (letters, digits, '-', '_', '/' are allowed).
+            // a command name (letters, digits, '-', '_', '/', ':' are allowed).
             // Also reset selection when typing updates the query.
             if app.slash_command.active {
                 app.slash_command.selected = 0;
-                if !c.is_alphanumeric() && c != '-' && c != '_' && c != '/' {
+                if !c.is_alphanumeric() && c != '-' && c != '_' && c != '/' && c != ':' {
                     app.slash_command.active = false;
                 }
             }
@@ -563,11 +565,15 @@ mod tests {
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
         drop(agent_tx);
         let app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
@@ -748,11 +754,36 @@ mod tests {
     }
 
     #[test]
-    fn submit_rejected_when_input_exceeds_char_limit() {
+    fn submit_not_rejected_when_model_context_window_is_tiny() {
+        // Input length guard must not use model_context_window as a char limit.
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
-        app.context_limit_chars = 5;
+        app.model_context_window = 5;
         app.input = "hello world".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        let cmd = user_cmd_rx
+            .try_recv()
+            .expect("expected short input to submit even when model_context_window is tiny");
+        match cmd {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "hello world"),
+            other => panic!("expected SubmitTask, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn submit_rejected_when_input_exceeds_char_limit() {
+        // model_context_window must NOT control the insert-path char limit.
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.model_context_window = 200_000;
+        app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
         app.input_cursor = app.input.chars().count();
 
         handle_insert_mode(
@@ -763,11 +794,17 @@ mod tests {
 
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected long input not to submit task"
+            "expected oversize input not to dispatch UserCommand"
         );
         assert!(
-            !app.messages.is_empty(),
-            "expected a system message about input length"
+            app.raw_messages.iter().any(|m| m.contains("too long")
+                || m.contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
+            "expected a system message indicating input is too long"
+        );
+        assert_eq!(
+            app.input.chars().count(),
+            tact::consts::MAX_INPUT_CHARS + 1,
+            "expected oversize input to remain uncleared"
         );
     }
 
@@ -823,6 +860,78 @@ mod tests {
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "popup Enter on skill must not SubmitTask"
+        );
+    }
+
+    #[test]
+    fn slash_popup_enter_on_plugin_autocompletes_for_subcommand() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        // Partial query as when picking from the slash palette.
+        app.input = "/pl".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(
+            app.input, "/plugin ",
+            "Enter on /plugin should leave `/plugin ` so the user can type list/reload"
+        );
+        assert_eq!(app.input_cursor, "/plugin ".len());
+        assert!(!app.slash_command.active);
+        assert!(
+            !app.raw_messages
+                .iter()
+                .any(|m| m.starts_with("Usage: /plugin")),
+            "must not run bare /plugin yet: {:?}",
+            app.raw_messages
+        );
+        assert!(user_cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn plugin_skill_autocomplete_accepts_namespace_colon() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.skills_data = vec![SkillEntry {
+            name: "demo:review".into(),
+            description: "Demo review skill".into(),
+            body: "Review it.".into(),
+        }];
+
+        for c in "/demo:".chars() {
+            handle_insert_mode(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &user_cmd_tx,
+            );
+        }
+
+        let commands = app.palette_commands();
+        let refs: Vec<(&str, &str)> = commands
+            .iter()
+            .map(|(command, description)| (command.as_str(), description.as_str()))
+            .collect();
+        let matches = app.slash_command.matched_commands(
+            &app.input,
+            app.input_cursor,
+            &refs,
+            &super::skill_name_set(&app),
+        );
+        assert!(app.slash_command.active);
+        assert!(
+            matches
+                .iter()
+                .any(|(_, (name, _), _)| *name == "demo:review")
         );
     }
 

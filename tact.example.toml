@@ -39,7 +39,11 @@ base_url = "https://api.anthropic.com"
 [llm.providers.openai]
 api_key = "sk-..."
 model = "gpt-4o"
+protocol = "responses"
+# reasoning_effort = "high" # none|minimal|low|medium|high|xhigh|max
 # base_url defaults to https://api.openai.com/v1
+# Omit protocol or set "chat_completions" for OpenAI-compatible proxies.
+# Omit reasoning_effort to keep the thinking_budget low/medium/high mapping.
 
 [llm.providers.deepseek]
 api_key = "sk-..."
@@ -68,8 +72,9 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
-# Soft context limit in characters before auto-compaction (default: 500000)
-# context_limit_chars = 500000
+# Model context window in tokens (must exceed max_tokens when nonzero;
+# auto-compaction + TUI usage meter; default: 200000)
+# model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)
 # snapshot_max_items = 80
@@ -106,5 +111,7 @@ theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 # Tools
 # ---------------------------------------------------------------------------
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+# bash_timeout_secs = 1800
 # Brave Search API key for web_search (falls back to DuckDuckGo if unset)
 # brave_search_api_key = "bsk-..."

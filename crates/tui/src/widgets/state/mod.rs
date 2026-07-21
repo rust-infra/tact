@@ -2,6 +2,10 @@ use crate::i18n::Language;
 use crate::theme::Theme;
 use ratatui::text::Line;
 use std::path::PathBuf;
+use tact::{
+    plugin::{PluginEvent, PluginRequest},
+    skill::SharedSkillRegistry,
+};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -26,14 +30,14 @@ pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use log_scroll::LogScroll;
-pub(crate) use mouse_state::{LogSelection, MouseState, TextPosition};
+pub(crate) use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
 pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
-pub(crate) use thinking_state::{ThinkingBlock, ThinkingPopup, ThinkingState};
-pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, ToolBlock, ToolState};
+pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
+pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
 
 // ========== Basic Types ==========
 
@@ -51,6 +55,7 @@ pub(crate) enum InputMode {
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
     ("model", "Switch model for current provider"),
+    ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
     ("cancel", "Cancel current task"),
     ("quit", "Quit application"),
@@ -58,6 +63,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("history", "Show task history"),
     ("skills", "List available skills"),
     ("skill-reload", "Reload skills from disk"),
+    ("plugin", "Manage plugins and marketplaces"),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
 ];
@@ -84,6 +90,8 @@ pub(crate) enum SelectKind {
     ModelPick,
     /// Optional "Save to config?" after a model switch.
     PersistModel { model: String },
+    /// Prompt source selection for `/view-system-prompt`.
+    ViewSystemPrompt,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -123,6 +131,13 @@ pub(crate) struct CodePopup {
     pub scroll: u16,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SystemPromptPopup {
+    pub title: String,
+    pub rendered: Vec<ratatui::text::Line<'static>>,
+    pub scroll: u16,
+}
+
 // ========== Execution State ==========
 
 /// Current agent execution state, driving the status bar and UI feedback.
@@ -151,8 +166,8 @@ pub struct App {
     pub(crate) input_cursor: usize,
     pub(crate) input_scroll: u16,
     pub(crate) cmd_line: String,
-    /// Maximum allowed input length (from agent config `context_limit_chars`).
-    pub(crate) context_limit_chars: usize,
+    /// Model context window in tokens (from agent config `model_context_window`).
+    pub(crate) model_context_window: usize,
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) raw_message_types: Vec<RawMessageType>,
@@ -160,6 +175,8 @@ pub struct App {
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+    pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
+    pub(crate) plugin_tx: UnboundedSender<PluginRequest>,
     pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
@@ -209,6 +226,7 @@ pub struct App {
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
+    pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
     /// Distinguishes agent permission selects from `/model` UX.
@@ -227,7 +245,9 @@ pub struct App {
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
     /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
-    pub(crate) skill_registry: tact::skill::SharedSkillRegistry,
+    pub(crate) skill_registry: SharedSkillRegistry,
+    /// Shared session store used to inspect persisted request payloads.
+    pub(crate) session_store: Option<tact::store::DynSessionStore>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

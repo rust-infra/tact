@@ -28,8 +28,18 @@ async fn main() -> anyhow::Result<()> {
     let lock_registry = SessionLockRegistry::new();
     lock_registry.spawn_exit_listener();
 
-    if let Some(CliCommand::Headless { prompt }) = args.command.take() {
-        return run_headless(args, prompt, tact_path, session_store, lock_registry).await;
+    match args.command.take() {
+        Some(CliCommand::Headless { prompt }) => {
+            return run_headless(args, prompt, tact_path, session_store, lock_registry).await;
+        }
+        Some(CliCommand::Plugin { command }) => {
+            if let Err(e) = tact_ui::plugin_cli::run_plugin_cli(command).await {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
     run_interactive(args, tact_path, session_store, lock_registry).await

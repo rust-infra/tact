@@ -173,10 +173,17 @@ pub struct ToolContext {
     pub cron_scheduler: SharedCronScheduler,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
+    pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub bash_timeout_secs: u64,
 }
 ```
 
-Runtime policy such as permissions, recovery, hooks, and model context stays outside `ToolContext`.
+`for_invocation(tool_id)` binds progress to one call. The shared cancellation
+flag and resolved bash timeout let an in-flight command stop promptly. Broader
+runtime policy such as permissions, recovery, hooks, and model context stays
+outside `ToolContext`.
 
 ## Native Tools
 

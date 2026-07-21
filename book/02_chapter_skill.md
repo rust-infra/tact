@@ -1,4 +1,5 @@
 # Skill Registry
+> Language: [English](./02_chapter_skill.md) · [中文](./02_chapter_skill_zh.md)
 
 This chapter explains how Tact loads **custom instruction files** (skills) from disk: scanning `SKILL.md` files, exposing summaries in the system prompt, loading full bodies on demand through the `load_skill` tool, and invoking them from the TUI via slash commands.
 
@@ -16,7 +17,7 @@ A skill is a Markdown document that teaches the agent how to perform a specializ
 | On demand (`load_skill` tool) | Full body wrapped in `<skill>` XML tags (tool result) |
 | TUI slash `/skill-name` | Same `<skill>` wrap injected into the **user task** on invoke (see [§7](#7-tui-slash-invocation) and [TUI](./23_chapter_tui.md)) |
 
-Summaries at startup; full content when the model calls `load_skill` or the user invokes a skill via slash.
+Summaries at startup; full content when the model calls `load_skill` or the user invokes a skill via slash. The Responses adapter adds a more restrictive skill-loading policy; see [LLM Provider Layer](./22_chapter_llm.md#62-responses-api).
 
 ---
 
@@ -28,6 +29,7 @@ graph TB
         L["workdir/skills/*/SKILL.md legacy"]
         U["~/.tact/skills/*/SKILL.md"]
         P["workdir/.claude/skills/*/SKILL.md"]
+        I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
 
     subgraph Startup["Session startup"]
@@ -35,6 +37,7 @@ graph TB
         SR[SkillRegistry.load_skills]
         TP --> SR
         Disk --> SR
+        I --> SR
     end
 
     subgraph Prompt["Each task"]
@@ -72,8 +75,9 @@ Discovery roots (Claude Code–compatible project path, plus tact user path and 
 | Legacy | `<workdir>/skills/` | Backward compatible; still scanned |
 | User | `~/.tact/skills/` | Personal skills across projects |
 | Project | `<workdir>/.claude/skills/` | Team / repo skills (canonical) |
+| Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | Installed plugin playbooks |
 
-Load order: legacy → user → project. **Same name: later wins** (project overrides user/legacy).
+Load order: legacy → user → project → installed plugins. **Same standalone name: later wins** (project overrides user/legacy). Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
 
 ---
 
@@ -143,7 +147,9 @@ The open Agent Skills spec does **not** define argument placeholders. Tact’s T
 - Matches files named exactly `SKILL.md`
 - Inserts into `HashMap<String, SkillDocument>` keyed by skill name
 
-Duplicate names: later roots **overwrite** earlier ones — no warning. Within a single root, later walk entries also overwrite.
+`get_skill_registry()` then loads validated installed plugin roots after the project roots, prefixing each local skill name with its plugin ID (`plugin:skill`).
+
+Duplicate standalone names: later roots **overwrite** earlier ones — no warning. Within a single root, later walk entries also overwrite. Plugin skills occupy their own `plugin:skill` namespace.
 
 ---
 
@@ -204,6 +210,11 @@ Shared across main agent, sub-agents, and the interactive TUI (so `/skill-reload
 
 Discovered skills appear in the Insert-mode `/` popup and Normal-mode command palette as `/{name}` with the frontmatter description. Built-in slash commands **win** over a same-named skill (colliding skills are omitted from the skill list).
 
+| Skill kind | Registry name | Slash invocation |
+|------------|---------------|------------------|
+| Standalone | `skill` | `/skill` |
+| Installed plugin | `plugin:skill` | `/plugin:skill` |
+
 | Step | Behavior |
 |------|----------|
 | Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) |
@@ -222,6 +233,8 @@ Discovered skills appear in the Insert-mode `/` popup and Normal-mode command pa
 4. Shared `submit_user_task` drives Planning / user bubble / history the same as a normal Enter submit.
 
 `/skill-reload` rescans skill roots into the **shared** `Arc<Mutex<SkillRegistry>>` used by both the TUI and the agent `ToolContext`, refreshes the TUI `SkillEntry` list, and bumps visual cache. The next task’s system prompt skill summary (and `load_skill`) therefore see the new registry without restarting.
+
+Successful `/plugin install <plugin>@<marketplace>` and `/plugin reload` operations perform the same shared refresh after their worker completes. Failed operations leave the registry unchanged. Plugin-provided names may contain `:` (for example `/superpowers:brainstorming`) and remain ordinary slash skills after refresh.
 
 Highlighting: `/skill-name` uses accent+bold; trailing args use theme foreground (`render/slash_style.rs`), in both the input box and user log lines. Names that collide with built-in commands are omitted from highlighting (same as the palette).
 

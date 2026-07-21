@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tact_llm::{ProviderInfo, ProviderKind};
+use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
 /// Top-level TOML config (`tact.toml` or `.tact/config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -47,6 +47,10 @@ pub struct ProviderEntryToml {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub thinking_budget: Option<usize>,
+    /// OpenAI wire protocol (`chat_completions` or `responses`).
+    pub protocol: Option<String>,
+    /// Optional OpenAI reasoning effort override.
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Candidate models for the `/model` picker (optional).
     pub models: Vec<String>,
 }
@@ -69,8 +73,8 @@ impl Default for PermissionTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AgentTomlConfig {
-    /// Maximum context size in characters (for auto-compaction)
-    pub context_limit_chars: Option<usize>,
+    /// Model context window in tokens (auto-compaction + TUI usage meter).
+    pub model_context_window: Option<usize>,
 
     /// Enable desktop notifications (default: true)
     pub notifications_enabled: Option<bool>,
@@ -119,6 +123,9 @@ pub struct VisionImageTomlConfig {
 pub struct ToolsTomlConfig {
     /// Brave Search API key for the web_search tool.
     pub brave_search_api_key: Option<String>,
+
+    /// Bash wall-clock timeout in seconds. Zero disables the timeout.
+    pub bash_timeout_secs: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +135,8 @@ pub struct ToolsTomlConfig {
 #[derive(Debug, Clone)]
 pub struct LlmSettings {
     pub provider: ProviderKind,
+    pub protocol: OpenAiProtocol,
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
@@ -142,6 +151,8 @@ impl LlmSettings {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             provider: self.provider,
+            protocol: self.protocol,
+            reasoning_effort: self.reasoning_effort,
         }
     }
 }
@@ -150,7 +161,7 @@ impl LlmSettings {
 pub struct AgentSettings {
     pub max_tokens: u32,
     pub thinking_budget: usize,
-    pub context_limit_chars: usize,
+    pub model_context_window: usize,
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
@@ -180,6 +191,11 @@ pub struct UiSettings {
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
     pub brave_search_api_key: Option<String>,
+    pub bash_timeout_secs: u64,
+}
+
+impl ToolSettings {
+    pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 1_800;
 }
 
 #[derive(Debug, Clone)]
@@ -226,7 +242,7 @@ base_url = "https://proxy.example.com/v1"
 mode = "auto"
 
 [agent]
-context_limit_chars = 500000
+model_context_window = 500000
 snapshot_max_items = 120
 micro_compact_enabled = false
 
@@ -249,7 +265,7 @@ brave_search_api_key = "bsk-test"
         assert!(openai.base_url.is_some());
         assert!(openai.models.is_empty());
         assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
-        assert_eq!(cfg.agent.context_limit_chars, Some(500000));
+        assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));

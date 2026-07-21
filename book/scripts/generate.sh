@@ -6,6 +6,7 @@
 #
 # Examples:
 #   ./book/scripts/generate.sh mcp --all
+#   ./book/scripts/generate.sh compact_zh --all   # Chinese: *_chapter_compact_zh.md
 #   ./book/scripts/generate.sh mcp --marp
 #   OPENAI_API_KEY=sk-... ./book/scripts/generate.sh mcp --tts
 #

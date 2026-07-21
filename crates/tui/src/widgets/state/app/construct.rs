@@ -9,6 +9,7 @@ use crate::widgets::state::{
     StreamState, ThinkingState, ToolState,
 };
 use std::path::PathBuf;
+use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -18,6 +19,8 @@ impl App {
     pub(crate) fn new(
         agent_rx: UnboundedReceiver<AgentUpdate>,
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+        plugin_rx: UnboundedReceiver<PluginEvent>,
+        plugin_tx: UnboundedSender<PluginRequest>,
         user_cmd_tx: UnboundedSender<UserCommand>,
         work_dir: PathBuf,
         input_history_entries: Vec<String>,
@@ -56,7 +59,7 @@ impl App {
             input_cursor: 0,
             input_scroll: 0,
             cmd_line: String::new(),
-            context_limit_chars: 500_000,
+            model_context_window: 200_000,
             messages: Vec::new(),
             raw_messages: Vec::new(),
             raw_message_types: Vec::new(),
@@ -64,6 +67,8 @@ impl App {
             status: Status::Idle,
             agent_rx,
             account_rx,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             task_history: Vec::new(),
             theme: Theme::from(theme_name),
@@ -94,6 +99,7 @@ impl App {
             tools: ToolState::default(),
             code_blocks: Vec::new(),
             code_popup: None,
+            system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
             account: AccountState::default(),
@@ -102,6 +108,7 @@ impl App {
             skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
                 tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
             )),
+            session_store: None,
             spinner_frame: 0,
             loading_idx: None,
             panel_split_ratio: 0.20,

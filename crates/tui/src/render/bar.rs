@@ -5,6 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Spinner animation frames for typing/loading indicator.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -15,6 +16,28 @@ const PROGRESS_BAR_WIDTH: u16 = 15;
 fn format_mm_ss(total_secs: i64) -> String {
     let secs = total_secs.max(0);
     format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+fn append_account_suffix(prefix: &str, account: &str, width: u16) -> String {
+    let available = width as usize;
+    let account_width = UnicodeWidthStr::width(account);
+    if account_width >= available {
+        return account.chars().take(available).collect();
+    }
+
+    let separator = " │ ";
+    let prefix_width = available.saturating_sub(account_width + separator.len());
+    let mut truncated = String::new();
+    let mut used = 0;
+    for ch in prefix.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > prefix_width {
+            break;
+        }
+        truncated.push(ch);
+        used += ch_width;
+    }
+    format!("{truncated}{separator}{account}")
 }
 
 const USAGE_BAR_WIDTH: u16 = 10;
@@ -47,6 +70,49 @@ fn render_usage_bar(pct: f64) -> String {
     }
     bar.push(']');
     bar
+}
+
+/// Compact token count for status display (`590`, `12.5K`, `200K`).
+fn format_tokens_compact(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        let k = n as f64 / 1_000.0;
+        if (k * 10.0).round() % 10.0 == 0.0 {
+            format!("{:.0}K", k)
+        } else {
+            format!("{:.1}K", k)
+        }
+    } else {
+        let m = n as f64 / 1_000_000.0;
+        if (m * 10.0).round() % 10.0 == 0.0 {
+            format!("{:.0}M", m)
+        } else {
+            format!("{:.1}M", m)
+        }
+    }
+}
+
+/// Context usage vs model_context_window.
+///
+/// TODO: align closer to Codex (12K baseline / effective window %).
+/// For now: last_token_usage.total_tokens / model_context_window.
+fn context_usage_pct(used: u32, window: usize) -> u8 {
+    if window == 0 {
+        0
+    } else {
+        ((used as u128) * 100 / window as u128).min(100) as u8
+    }
+}
+
+fn format_context_meter(used: u32, window: usize) -> String {
+    let pct = context_usage_pct(used, window);
+    let bar = render_usage_bar(pct as f64);
+    format!(
+        "{bar} {pct}% │ {}/{}",
+        format_tokens_compact(used as u64),
+        format_tokens_compact(window as u64)
+    )
 }
 
 /// Render a text-based progress bar like `[█████░░░░░] 50%`
@@ -139,18 +205,14 @@ fn format_account_suffix(app: &App) -> Option<String> {
     None
 }
 
-/// Render the bottom bar, showing focused panel, shortcut hints, working directory, Git branch,
-/// Model info, token stats, task elapsed time, TUI uptime, and account balance.
+/// Render the bottom bar, showing focused panel, task elapsed time, TUI uptime, working
+/// directory, Git branch, model info, token stats, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
     let msgs = app.msgs();
     let focus = match app.focused_panel {
         FocusedPanel::Plan => msgs.bottom_focus_log_plan,
         FocusedPanel::Log => msgs.bottom_focus_log,
-    };
-    let _tips = match app.focused_panel {
-        FocusedPanel::Log => msgs.bottom_tips_log,
-        FocusedPanel::Plan => msgs.bottom_tips_plan,
     };
     let branch = if app.status_bar.git_branch.is_empty() {
         msgs.bottom_branch_unknown
@@ -165,7 +227,11 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             info.push_str(&format!(" | max={}", app.status_bar.model_max_tokens));
         }
         if let Some(budget) = app.status_bar.model_thinking_budget {
-            info.push_str(&format!(" | think={budget}"));
+            if let Some(effort) = app.status_bar.model_reasoning_effort.as_deref() {
+                info.push_str(&format!(" | think={budget} ({effort})"));
+            } else {
+                info.push_str(&format!(" | think={budget}"));
+            }
         }
         info
     };
@@ -209,49 +275,31 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         let mut top_text = msgs
             .bottom_top_tmpl
             .replacen("{}", focus, 1)
-            //.replacen("{}", tips, 1)
+            .replacen("{}", &elapsed, 1)
+            .replacen("{}", &uptime, 1)
             .replacen("{}", &app.workspace_dir, 1)
             .replacen("{}", branch, 1);
         if let Some(account) = format_account_suffix(app) {
-            top_text.push_str(" │ ");
-            top_text.push_str(&account);
+            top_text = append_account_suffix(&top_text, &account, area.width);
         }
-        let cache_str = if app.status_bar.token_total > 0
-            || app.status_bar.token_cache_hit > 0
-            || app.status_bar.token_cache_miss > 0
-            || app.status_bar.token_reasoning > 0
-        {
-            let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
-            let hit_pct = app
-                .status_bar
-                .token_cache_hit
-                .saturating_mul(100)
-                .checked_div(cache_total)
-                .unwrap_or(0);
-            let miss_pct = app
-                .status_bar
-                .token_cache_miss
-                .saturating_mul(100)
-                .checked_div(cache_total)
-                .unwrap_or(0);
-            msgs.bottom_cache_tmpl
-                .replacen("{}", &app.status_bar.token_cache_hit.to_string(), 1)
-                .replacen("{}", &hit_pct.to_string(), 1)
-                .replacen("{}", &app.status_bar.token_cache_miss.to_string(), 1)
-                .replacen("{}", &miss_pct.to_string(), 1)
-                .replacen("{}", &app.status_bar.token_reasoning.to_string(), 1)
-        } else {
-            String::new()
-        };
+        // Placeholder "--" before the first LLM call reports cache data.
+        let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
+        let hit_pct_str = app
+            .status_bar
+            .token_cache_hit
+            .saturating_mul(100)
+            .checked_div(cache_total)
+            .map_or("--".to_string(), |pct| pct.to_string());
+        let cache_str = msgs.bottom_cache_tmpl.replacen("{}", &hit_pct_str, 1);
+        let meter = format_context_meter(app.status_bar.token_total, app.model_context_window);
         let mid_text = msgs
             .bottom_mid_tmpl
             .replacen("{}", &model, 1)
+            .replacen("{}", &meter, 1)
             .replacen("{}", &app.status_bar.token_total.to_string(), 1)
             .replacen("{}", &app.status_bar.token_prompt.to_string(), 1)
             .replacen("{}", &app.status_bar.token_completion.to_string(), 1)
-            .replacen("{}", &cache_str, 1)
-            .replacen("{}", &elapsed, 1)
-            .replacen("{}", &uptime, 1);
+            .replacen("{}", &cache_str, 1);
         let style = Style::default()
             .bg(app.theme.bottom_bar_bg)
             .fg(app.theme.bottom_bar_fg);
@@ -447,5 +495,118 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         assert!(!buffer_text(terminal.backend().buffer()).trim().is_empty());
+    }
+
+    #[test]
+    fn bottom_bar_shows_context_usage_meter_on_row_2() {
+        let mut app = make_app();
+        app.model_context_window = 200_000;
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.token_total = 590;
+        app.status_bar.token_prompt = 400;
+        app.status_bar.token_completion = 190;
+
+        let backend = TestBackend::new(160, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 160, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.len() >= 2, "expected 2 rows, got:\n{text}");
+        let row2 = lines[1];
+        assert!(
+            row2.contains("mock-model") && row2.contains("590/200K") && row2.contains("%"),
+            "row 2 should show model + meter + ratio, got:\n{row2}"
+        );
+        assert!(
+            row2.contains('[') && row2.contains(']'),
+            "row 2 should include progress bar brackets, got:\n{row2}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_shows_elapsed_and_uptime_on_row_1() {
+        let mut app = make_app();
+        app.last_prompt_elapsed_secs = Some(65); // 01:05
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.token_total = 42;
+        app.workspace_dir = "/tmp/tact-ws".into();
+        app.status_bar.git_branch = "main".into();
+
+        let backend = TestBackend::new(140, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 140, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "bottom bar should render two rows, got:\n{text}"
+        );
+        let row1 = lines[0];
+        let row2 = lines[1];
+        assert!(
+            row1.contains("Elapsed:01:05") && row1.contains("Up:"),
+            "elapsed and uptime should be on row 1, got:\n{row1}"
+        );
+        assert!(
+            row1.contains("/tmp/tact-ws") && row1.contains("main"),
+            "cwd and branch should remain on row 1, got:\n{row1}"
+        );
+        assert!(
+            !row2.contains("Elapsed:") && !row2.contains("Up:"),
+            "elapsed/uptime must not appear on row 2, got:\n{row2}"
+        );
+        assert!(
+            row2.contains("Tok:42"),
+            "token stats should stay on row 2, got:\n{row2}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_shows_reasoning_effort_with_thinking_budget() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_thinking_budget = Some(32_000);
+        app.status_bar.model_reasoning_effort = Some("high".into());
+        let backend = TestBackend::new(120, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("think=32000 (high)"),
+            "bottom bar should show budget and effort, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_preserves_thinking_budget_when_effort_is_unavailable() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_thinking_budget = Some(32_000);
+        let backend = TestBackend::new(120, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("think=32000"),
+            "bottom bar should preserve the budget display, got:\n{text}"
+        );
+        assert!(
+            !text.contains("think=32000 ("),
+            "bottom bar should omit a missing effort, got:\n{text}"
+        );
     }
 }

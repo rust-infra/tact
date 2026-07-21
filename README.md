@@ -132,7 +132,7 @@ base_url = "https://api.anthropic.com"  # required for anthropic
 mode = "default"   # "default" | "plan" | "auto"
 
 [agent]
-context_limit_chars = 500000
+model_context_window = 200000
 snapshot_max_items = 80
 micro_compact_enabled = true
 notifications_enabled = true
@@ -141,6 +141,8 @@ notifications_enabled = true
 theme = "retro"   # retro | brutal | nord | dark | auto ...
 
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+bash_timeout_secs = 1800
 brave_search_api_key = "bsk-..."   # optional, for web_search
 ```
 
@@ -151,7 +153,7 @@ Optional agent settings (config file or CLI):
 | Setting | CLI flag | Default | Description |
 |---|---|---|---|
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
-| `context_limit_chars` | `--context-limit-chars` | `500000` | Soft context limit before auto-compaction |
+| `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (auto-compact + TUI usage meter) |
 | `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
 
 ### 3. Run
@@ -193,6 +195,12 @@ Multi-turn conversation loop with built-in context management: auto-compaction w
 | **Scheduling** | `cron_create`, `cron_list`, `cron_delete` |
 | **Interaction** | `ask_user`, `plan_approval`, `shutdown_request`, `shutdown_response` |
 
+In the interactive TUI, a running `bash` tool shows a bounded five-line live
+tail. stdout and stderr are merged in the order Tact observes their pipe reads,
+with stderr styled as warning text. Tact does not add a PTY, rewrite commands,
+or bypass buffering owned by the command or pipeline. Headless mode remains
+final-result-only.
+
 ### 🔐 Three Permission Modes
 
 ```
@@ -206,6 +214,19 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
 - **Skills** — `SKILL.md` playbooks under `~/.tact/skills/` and `.claude/skills/` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
+
+### 🧩 Plugin Marketplace
+
+Tact installs skill-only plugins natively; it does not require the Claude Code CLI. The built-in `claude-plugins-official` marketplace is available in every installation:
+
+```text
+/plugin install superpowers@claude-plugins-official
+/superpowers:brainstorming
+```
+
+Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`. `/plugin marketplace list`, `/plugin list`, and `/plugin reload` show marketplaces, installed plugins, and refresh discovered plugin skills.
+
+Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
 
 ### 👥 Sub-agents & Team
 
@@ -374,7 +395,7 @@ thinking_budget = 32000
 mode = "default"                 # "default" | "plan" | "auto"
 
 [agent]
-context_limit_chars = 500000     # auto-compact threshold
+model_context_window = 200000     # tokens; auto-compact + TUI meter
 snapshot_max_items = 80
 micro_compact_enabled = true
 notifications_enabled = true
@@ -387,6 +408,7 @@ theme = "retro"                  # or "auto"
 # vision_image.jpeg_quality = 80
 
 [tools]
+bash_timeout_secs = 1800          # wall-clock seconds; 0 disables timeout
 brave_search_api_key = "bsk-..."
 ```
 
@@ -433,7 +455,6 @@ crates/
 - [ ] Llama / Ollama support for fully local operation
 - [ ] VS Code extension (bridge to TUI)
 - [ ] Multi-user team server
-- [ ] Plugin marketplace
 
 ---
 

@@ -63,9 +63,11 @@ mod tests {
         use crate::widgets::state::InputMode;
         let mut app = make_app();
         app.thinking.popup = Some(ThinkingPopup {
-            block_idx: 0,
+            phys_idx: 0,
             title: "t".into(),
             scroll: 0,
+            selection: None,
+            selection_text: String::new(),
         });
         app.input_mode = InputMode::Select;
         assert!(
@@ -87,6 +89,7 @@ mod tests {
             use_diff_gutter: false,
             is_diff: false,
             scroll: 0,
+            selection: None,
             cached_content: None,
             highlighted_lines: Vec::new(),
         });
@@ -98,9 +101,11 @@ mod tests {
     fn j_scrolls_thinking_popup() {
         let mut app = make_app();
         app.thinking.popup = Some(ThinkingPopup {
-            block_idx: 0,
+            phys_idx: 0,
             title: "t".into(),
             scroll: 0,
+            selection: None,
+            selection_text: String::new(),
         });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Char('j'))));
         assert_eq!(app.thinking.popup.as_ref().unwrap().scroll, 1);

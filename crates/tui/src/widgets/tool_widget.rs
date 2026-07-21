@@ -4,13 +4,16 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use tact_protocol::{StepResult, StepStatus};
+use tact_protocol::{
+    StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+};
 
 use crate::{i18n::Messages, theme::Theme};
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
 const ERROR_PREVIEW_LINES: usize = 5;
+const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -225,7 +228,7 @@ pub struct ToolRenderOutput {
     pub arg_full: String,
     pub layout: ToolLayout,
     pub detail_title: Option<String>,
-    pub detail_preview: Vec<String>,
+    pub detail_preview: Vec<ToolOutputLine>,
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
@@ -262,6 +265,9 @@ pub struct ToolWidget<'a> {
     msgs: &'a Messages,
     max_detail_lines: usize,
     preview_lines: usize,
+    detail_lines: Option<Vec<ToolOutputLine>>,
+    detail_total_lines: Option<usize>,
+    live_detail: bool,
 }
 
 impl<'a> ToolWidget<'a> {
@@ -280,6 +286,9 @@ impl<'a> ToolWidget<'a> {
             msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
+            detail_lines: None,
+            detail_total_lines: None,
+            live_detail: false,
         }
     }
 
@@ -317,6 +326,20 @@ impl<'a> ToolWidget<'a> {
         self
     }
 
+    pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
+        let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
+        // Popup/detail_full keep `$ <command>` for consistency with completed
+        // cards, but the live title/footer/line numbers must count only the
+        // streamed output — the preview itself never includes that prefix.
+        let detail = command_detail(&self.tool_name, &self.arg_full, &output.detail_text());
+        self.detail = Some(detail);
+        self.detail_lines = Some(lines);
+        self.detail_total_lines = Some(output.logical_line_count());
+        self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
+        self.live_detail = true;
+        self
+    }
+
     pub fn with_duration_us(mut self, duration_us: u64) -> Self {
         self.duration_us = Some(duration_us);
         self
@@ -347,11 +370,22 @@ impl<'a> ToolWidget<'a> {
         let ask_user_label = (!failed && result.tool == "ask_user")
             .then(|| compact_ask_user_meta(&result.message))
             .flatten();
+        let arg_full = result
+            .arg_full
+            .clone()
+            .unwrap_or_else(|| result.arg_summary.clone());
         let detail = result.detail.clone().or_else(|| {
             if failed && !result.message.is_empty() {
                 Some(result.message.clone())
             } else {
                 None
+            }
+        });
+        let detail = detail.map(|detail| {
+            if failed {
+                detail
+            } else {
+                command_detail(&result.tool, &arg_full, &detail)
             }
         });
         let permission_label = match (result.permission_label.clone(), ask_user_label) {
@@ -364,10 +398,7 @@ impl<'a> ToolWidget<'a> {
         Self {
             tool_name: result.tool.clone(),
             arg_summary: result.arg_summary.clone(),
-            arg_full: result
-                .arg_full
-                .clone()
-                .unwrap_or_else(|| result.arg_summary.clone()),
+            arg_full,
             step_index: None,
             phase: ToolPhase::from_status(&result.status),
             detail,
@@ -378,6 +409,9 @@ impl<'a> ToolWidget<'a> {
             msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
+            detail_lines: None,
+            detail_total_lines: None,
+            live_detail: false,
         }
     }
 
@@ -442,13 +476,18 @@ impl<'a> ToolWidget<'a> {
             };
         }
 
-        let total_lines = detail.lines().count();
+        let total_lines = self
+            .detail_total_lines
+            .unwrap_or_else(|| detail.lines().count());
         let preview_cap = if matches!(self.phase, ToolPhase::Failed) {
             ERROR_PREVIEW_LINES
         } else {
             self.preview_lines
         };
-        let preview_count = total_lines.min(preview_cap);
+        let preview_count = self
+            .detail_lines
+            .as_ref()
+            .map_or_else(|| total_lines.min(preview_cap), Vec::len);
         ToolLayout {
             visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
@@ -464,13 +503,33 @@ impl<'a> ToolWidget<'a> {
         );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
-            let lines: Vec<String> = detail
-                .lines()
-                .take(self.max_detail_lines)
-                .map(str::to_string)
-                .collect();
-            let total = detail.lines().count();
-            let preview = lines.iter().take(layout.preview_lines).cloned().collect();
+            let lines: Vec<ToolOutputLine> = self.detail_lines.clone().unwrap_or_else(|| {
+                detail
+                    .lines()
+                    .take(self.max_detail_lines)
+                    .map(|line| ToolOutputLine {
+                        spans: vec![ToolOutputSpan {
+                            stream: ToolOutputStream::Other,
+                            text: line.to_string(),
+                        }],
+                    })
+                    .collect()
+            });
+            let total = self
+                .detail_total_lines
+                .unwrap_or_else(|| detail.lines().count());
+            let preview = if matches!(display_kind(&self.tool_name), ToolDisplayKind::Command) {
+                let mut tail: Vec<_> = lines
+                    .iter()
+                    .rev()
+                    .take(layout.preview_lines)
+                    .cloned()
+                    .collect();
+                tail.reverse();
+                tail
+            } else {
+                lines.iter().take(layout.preview_lines).cloned().collect()
+            };
             (Some(self.detail_card_title(total)), preview, total)
         } else {
             (None, Vec::new(), 0)
@@ -478,7 +537,9 @@ impl<'a> ToolWidget<'a> {
 
         let title_raw = self.title_text();
         let has_detail_card = layout.has_detail_card;
-        let card_bottom = if matches!(self.phase, ToolPhase::Failed) {
+        let card_bottom = if self.live_detail {
+            self.msgs.tool_live_output_bottom.to_string()
+        } else if matches!(self.phase, ToolPhase::Failed) {
             self.msgs.tool_error_card_bottom.to_string()
         } else {
             self.msgs.diff_card_bottom.to_string()
@@ -530,6 +591,10 @@ impl<'a> ToolWidget<'a> {
         if matches!(self.phase, ToolPhase::Failed) {
             return true;
         }
+        if self.live_detail {
+            return matches!(display_kind(&self.tool_name), ToolDisplayKind::Command)
+                && matches!(self.phase, ToolPhase::Running);
+        }
         matches!(
             display_kind(&self.tool_name),
             ToolDisplayKind::FileWrite
@@ -540,6 +605,12 @@ impl<'a> ToolWidget<'a> {
     }
 
     fn detail_card_title(&self, total_lines: usize) -> String {
+        if self.live_detail {
+            return self
+                .msgs
+                .tool_live_output_title_tmpl
+                .replace("{}", &total_lines.to_string());
+        }
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
         }
@@ -556,6 +627,13 @@ impl<'a> ToolWidget<'a> {
             ToolDisplayKind::Generic => format!("{} output", self.tool_name),
         }
     }
+}
+
+fn command_detail(tool_name: &str, full_arg: &str, detail: &str) -> String {
+    if !matches!(display_kind(tool_name), ToolDisplayKind::Command) || full_arg.is_empty() {
+        return detail.to_string();
+    }
+    format!("$ {full_arg}\n\n{detail}")
 }
 
 #[cfg(test)]
@@ -582,6 +660,68 @@ mod tests {
             .with_phase(ToolPhase::Running);
 
         assert_eq!(widget.title_text(), "bash (echo hello)");
+    }
+
+    #[test]
+    fn running_bash_live_output_uses_available_lines_up_to_three() {
+        let (theme, msgs) = fixture();
+        let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
+        live.push_chunks(&[
+            tact_protocol::ToolOutputChunk::stdout("building\n"),
+            tact_protocol::ToolOutputChunk::stderr("warning\n"),
+        ]);
+
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("bash")
+            .with_phase(ToolPhase::Running)
+            .with_live_output(&live)
+            .build();
+
+        assert!(output.layout.has_detail_card);
+        assert_eq!(output.detail_preview.len(), 2);
+        assert!(
+            output
+                .detail_title
+                .as_deref()
+                .unwrap()
+                .contains("Live output")
+        );
+        assert_eq!(
+            output.detail_preview[1].spans[0].stream,
+            tact_protocol::ToolOutputStream::Stderr
+        );
+    }
+
+    #[test]
+    fn live_output_total_excludes_command_prefix_but_popup_keeps_it() {
+        let (theme, msgs) = fixture();
+        let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
+        live.push_chunks(&[tact_protocol::ToolOutputChunk::stdout(
+            "[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n",
+        )]);
+
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("bash")
+            .with_arg_full("git commit -m \"chore: cargo fmt\"")
+            .with_phase(ToolPhase::Running)
+            .with_live_output(&live)
+            .build();
+
+        assert_eq!(
+            output.detail_total_lines, 2,
+            "live card count must match streamed output lines, not $ command prefix"
+        );
+        assert_eq!(output.detail_preview.len(), 2);
+        assert_eq!(
+            output.detail_title.as_deref(),
+            Some("Live output (2 lines)")
+        );
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some(
+                "$ git commit -m \"chore: cargo fmt\"\n\n[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n"
+            )
+        );
     }
 
     #[test]
@@ -642,8 +782,8 @@ mod tests {
         assert!(output.layout.has_detail_card);
         assert_eq!(output.layout.preview_lines, 1);
         assert_eq!(
-            output.detail_preview,
-            vec!["hook blocked execution".to_string()]
+            output.detail_preview[0].plain_text(),
+            "hook blocked execution"
         );
     }
 
@@ -824,7 +964,7 @@ mod tests {
                 .unwrap()
                 .contains("src/lib.rs")
         );
-        assert_eq!(output.detail_preview, vec!["new line one".to_string()]);
+        assert_eq!(output.detail_preview[0].plain_text(), "new line one");
     }
 
     #[test]

@@ -1,5 +1,44 @@
 use ratatui::layout::Rect;
 
+/// Source byte range represented by one popup screen cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PopupTextHit {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+impl PopupTextHit {
+    pub(crate) fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    pub(crate) fn empty(offset: usize) -> Self {
+        Self::new(offset, offset)
+    }
+}
+
+/// Hit-test data for one visible row in the tool popup body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PopupHitRow {
+    pub(crate) screen_y: u16,
+    pub(crate) text_x: u16,
+    pub(crate) line_start: usize,
+    pub(crate) line_end: usize,
+    pub(crate) cells: Vec<PopupTextHit>,
+}
+
+impl PopupHitRow {
+    pub(crate) fn hit(&self, screen_x: u16) -> PopupTextHit {
+        if screen_x < self.text_x {
+            return PopupTextHit::empty(self.line_start);
+        }
+        self.cells
+            .get(usize::from(screen_x - self.text_x))
+            .copied()
+            .unwrap_or_else(|| PopupTextHit::empty(self.line_end))
+    }
+}
+
 /// A position within a specific physical log message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TextPosition {
@@ -87,6 +126,12 @@ pub(crate) struct MouseState {
     pub(crate) thinking_popup_area: Rect,
     /// diff popup area (used to determine if click is inside the popup).
     pub(crate) diff_popup_area: Rect,
+    /// Selectable body area inside the active text popup border.
+    pub(crate) popup_text_body_area: Rect,
+    /// Hit maps for rows currently visible in the active text popup body.
+    pub(crate) popup_text_hit_rows: Vec<PopupHitRow>,
+    /// Source grapheme where the active text-popup drag began.
+    pub(crate) popup_text_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.

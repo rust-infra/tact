@@ -1,4 +1,5 @@
 # Team Coordination
+> Language: [English](./14_chapter_team.md) · [中文](./14_chapter_team_zh.md)
 
 This chapter explains Tact's **multi-agent team primitives**: a persistent roster of named teammates and a file-backed inbox system supporting point-to-point messages, broadcasts, and structured protocol requests (plan approval, shutdown). The implementation lives in `crates/tact/src/team.rs` with tool wrappers in `crates/tact/src/tool/team.rs`.
 

@@ -185,6 +185,9 @@ sequenceDiagram
                         TUI -->> Agent: user choice
                     end
                     Agent ->> TR: call native or MCP tool
+                    opt Native tool reports progress (bash first)
+                        TR -->> TUI: ToolProgress { tool_id, chunks } *
+                    end
                     TR ->> PATH: resolve_safe_path (file tools)
                     TR -->> Agent: output
                     Agent ->> Hook: PostToolUse hook
@@ -209,6 +212,7 @@ Key `AgentUpdate` variants used today:
 | `NeedApproval(...)` | **Deprecated (0.19.0).** TUI handler retained; agent uses `RequestSelect` instead. |
 | `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
+| `ToolProgress { tool_id, chunks }` | Informational ordered stdout/stderr progress for an active tool. It does not close thinking/loading gates or finalize the step; unknown or late IDs are ignored. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
 | `StepFailed(usize, tool_id, String)` | Step failed with error message. |
 | `RequestSelect { prompt, options, respond }` | Ask the user to pick an option. |
@@ -341,11 +345,13 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 
 ## 6. Context Compaction
 
-When the conversation approaches the context limit (`agent.context_limit_chars`, default 500_000 characters), the agent compacts history:
+When the conversation approaches the model context window (`agent.model_context_window`, default **200_000 tokens**), the agent compacts history:
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
-2. If still over the limit, `compact_history()` writes the full transcript to `<workdir>/.claude/transcripts/transcript_<ts>.jsonl`, asks the LLM to summarize recent messages, replaces in-memory context with a single summary message, and **`replace_session_messages`** syncs SQLite so resumed sessions match the compacted history.
-3. Large `bash` outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context.
+2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
+3. Large successful native and MCP outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
+
+The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 
 Recovery mechanisms inside `agent_loop()`:
 
@@ -634,7 +640,7 @@ If you are reading older branches or notes, the following major evolutions have 
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
-- **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, permission labels on `StepResult`, truncated args in title with `arg_full` in popups, spacing gaps before tools/thinking.
+- **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, and a fixed five-row live tail for active `bash` calls. Progress is keyed by `tool_id`; stderr uses warning styling, active output opens in the detail popup, and updates preserve bottom pinning or an explicit numeric scroll offset.
 - **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
 - **Session store** — SQLite at `<workdir>/.tact/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.

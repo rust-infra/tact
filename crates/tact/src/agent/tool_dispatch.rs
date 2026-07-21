@@ -68,18 +68,19 @@ async fn run_native_tool(
     name: &str,
     input: &serde_json::Value,
 ) -> ExecResult {
-    match tools.call(ctx, name, input.clone()).await {
+    let call_ctx = ctx.for_invocation(tool_use_id);
+    match tools.call(&call_ctx, name, input.clone()).await {
         Ok(output) => {
-            let content = if name == "bash" {
-                let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-                persist_large_output(&tact_path, tool_use_id, &output)
-                    .unwrap_or_else(|e| format!("Error persisting large output: {}", e))
-            } else {
-                output
-            };
-            ExecResult {
-                content,
-                status: StepStatus::Success,
+            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
+            match persist_large_output(&tact_path, tool_use_id, &output).await {
+                Ok(content) => ExecResult {
+                    content,
+                    status: StepStatus::Success,
+                },
+                Err(error) => ExecResult {
+                    content: format!("Error persisting large output: {error}"),
+                    status: StepStatus::Failed,
+                },
             }
         }
         Err(e) => ExecResult {
@@ -93,18 +94,65 @@ async fn run_native_tool(
 /// can execute concurrently within the same wave.
 async fn run_mcp_tool(
     mcp_router: &MCPToolRouter,
+    ctx: &ToolContext,
+    tool_use_id: &str,
     name: &str,
     input: &serde_json::Value,
 ) -> ExecResult {
     match mcp_router.call(name, input.clone()).await {
-        Ok(output) => ExecResult {
-            content: output,
-            status: StepStatus::Success,
-        },
+        Ok(output) => {
+            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
+            match persist_large_output(&tact_path, tool_use_id, &output).await {
+                Ok(content) => ExecResult {
+                    content,
+                    status: StepStatus::Success,
+                },
+                Err(error) => ExecResult {
+                    content: format!("Error persisting large MCP output: {error}"),
+                    status: StepStatus::Failed,
+                },
+            }
+        }
         Err(e) => ExecResult {
             content: format!("Error invoking MCP tool {}: {}", name, e),
             status: StepStatus::Failed,
         },
+    }
+}
+
+fn recent_file_paths(name: &str, input: &serde_json::Value) -> Vec<String> {
+    match name {
+        "read_file" | "write_file" | "edit_file" => input
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(|path| vec![path.to_string()])
+            .unwrap_or_default(),
+        "batch_read" => input
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect(),
+        "apply_patch"
+            if !input
+                .get("dry_run")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            input
+                .get("patch")
+                .and_then(serde_json::Value::as_str)
+                .into_iter()
+                .flat_map(str::lines)
+                .filter_map(|line| line.strip_prefix("+++ "))
+                .map(str::trim)
+                .filter(|path| *path != "/dev/null")
+                .map(|path| path.strip_prefix("b/").unwrap_or(path).to_string())
+                .collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -405,7 +453,7 @@ impl Agent {
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     let exec = if is_mcp {
-                        run_mcp_tool(mcp, &prep.name, &prep.input).await
+                        run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
                     } else {
                         run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await
                     };
@@ -453,6 +501,7 @@ impl Agent {
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
                 let detail =
                     step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
+                let succeeded = matches!(final_status, StepStatus::Success);
                 self.emit_update(AgentUpdate::StepFinished {
                     idx: prep_step_idx,
                     tool_id: prep_id,
@@ -467,10 +516,8 @@ impl Agent {
                         permission_label: prep_permission_label,
                     },
                 });
-                if prep_name == "read_file"
-                    && let Some(path) = prep_input.get("path").and_then(|value| value.as_str())
-                {
-                    pending_recent_files.push(path.to_string());
+                if succeeded {
+                    pending_recent_files.extend(recent_file_paths(&prep_name, &prep_input));
                 }
                 if prep_name == "compact" {
                     manual_compact = prep_input
@@ -526,7 +573,7 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{step_result_detail, tool_arg_summary};
+    use super::{recent_file_paths, step_result_detail, tool_arg_summary};
     use tact_protocol::StepStatus;
 
     #[test]
@@ -569,6 +616,35 @@ mod tests {
             &StepStatus::Success,
         );
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn recent_file_paths_cover_reads_writes_edits_batches_and_patches() {
+        assert_eq!(
+            recent_file_paths("write_file", &serde_json::json!({"path": "src/a.rs"})),
+            ["src/a.rs"]
+        );
+        assert_eq!(
+            recent_file_paths(
+                "batch_read",
+                &serde_json::json!({"files": [{"path": "a"}, {"path": "b"}]})
+            ),
+            ["a", "b"]
+        );
+        assert_eq!(
+            recent_file_paths(
+                "apply_patch",
+                &serde_json::json!({"patch": "--- a/a.rs\n+++ b/a.rs\n--- /dev/null\n+++ b/b.rs"})
+            ),
+            ["a.rs", "b.rs"]
+        );
+        assert!(
+            recent_file_paths(
+                "apply_patch",
+                &serde_json::json!({"patch": "+++ b/a.rs", "dry_run": true})
+            )
+            .is_empty()
+        );
     }
 
     #[test]

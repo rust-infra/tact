@@ -115,8 +115,16 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 Always **2 rows**:
 
-- **Row 1**: focus panel hint, working directory, Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
-- **Row 2**: current model, max tokens, thinking budget; token statistics (prompt / completion / cache hit / reasoning); **Cost** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime)
+- **Row 1**: focus panel hint; **Elapsed** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime); working directory; Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
+- **Row 2**: model (with optional `max=` / `think=`); context usage meter `[bar] pct% │ used/window`; token statistics (`📊 Tok:…` prompt / completion / cache / reasoning)
+
+  Example shape:
+
+  ```text
+  {model} │ [████░░░░░░] {pct}% │ {used}/{window} │ 📊 Tok:…
+  ```
+
+  Meter denominator is `agent.model_context_window` (tokens); numerator is last `TokenUsageInfo.total` (`status_bar.token_total`). Before the first usage update, shows `0%` / `0/{window}`.
 
 ---
 
@@ -144,7 +152,7 @@ The log panel is the most complex rendering component. Its core flow is:
 
 ### 6.1 Visibility Index (`visible_indices`)
 
-- Some physical message rows may be hidden (e.g., detailed thinking content, code block placeholders).
+- Some physical message rows are placeholders for direct cards (thinking, tool, and code output).
 - Maintains `visible_indices`: logical row → physical row.
 - Maintains `phys_to_logical_cache`: physical row → logical row.
 
@@ -161,12 +169,11 @@ The log panel is the most complex rendering component. Its core flow is:
 
 ### 6.4 Card Overlays
 
-Three card types are overlaid on the log panel:
+Completed code cards remain overlays; thinking and tool cards are direct log cells:
 
 | Card Type | File | Description |
 |---|---|---|
-| Thinking card | `cells/thinking.rs` | Collapsed thinking block, up to 3 preview lines |
-| Diff card | `cells/diff.rs` | File write preview with line numbers and `+` prefix |
+| Thinking card | `cells/thinking.rs` | Direct live card with one blank row before and after: 1→3 line tail, then one-line completion summary; title and footer report the full line count |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
@@ -188,7 +195,7 @@ Key types:
 
 `StepAdded` updates the **plan panel only** (`description` = `tool (arg_summary)`); it no longer inserts a separate log line. The log block appears on `StepStarted`. Untruncated args are available in the detail popup via `StepResult.arg_full`.
 
-One blank line separates tool blocks from preceding content (`ensure_gap_before_tools`) and from closed thinking blocks.
+One blank line separates tool blocks from preceding normal content (`ensure_gap_before_tools`). Thinking completion changes its existing card in place and does not add a separator.
 
 Indent: tool blocks use `LOG_TOOL_BLOCK_INDENT` (8 columns) in `render/util.rs`.
 
@@ -223,12 +230,11 @@ The basic log rendering unit, supporting:
 
 - Pre-wrapping cache
 - Mouse / word selection (inverted color via `selection_range`)
-- Thinking block collapsed indicator prefix
 - Left gutter indent columns
 
 ### Card Cells
 
-- `thinking.rs`: purple-tinted border, shows up to 3 recent thinking lines
+- `thinking.rs`: direct card separated from adjacent log content by one blank row on each side, with a 1→3 line streaming tail and one-line completed summary; its title and footer use the full line count
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
 
@@ -258,7 +264,7 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Skill slash style | `slash_style.rs` | Accent+bold skill token, theme.fg args — used by `input.rs` and user lines in `log.rs` |
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |
-| Thinking detail | `thinking_popup.rs` | View full thinking content |
+| Thinking detail | `thinking_popup.rs` | View full thinking content; adjacent ordered-list items are separated by blank rows |
 | File detail | `diff_popup.rs` | Full tool output, file diff, or inline bash/command text |
 | Code detail | `code_popup.rs` | View full code block |
 

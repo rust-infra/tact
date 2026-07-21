@@ -37,33 +37,24 @@ pub struct AnthropicAdapter {
     api_key: String,
     base_url: String,
     api_version: String,
-    /// Optional user identifier sent in the `metadata` body field.
-    ///
-    /// DeepSeek's Anthropic-compatible endpoint uses `metadata.user_id`
-    /// for KV cache isolation: requests with the same `user_id` within a
-    /// session share the KV cache, improving cache hit rate and reducing
-    /// latency / cost.  Session IDs (UUIDs) are natural candidates.
-    user_id: Option<String>,
+    client: reqwest::Client,
 }
 
 impl AnthropicAdapter {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_secs(120))
+            .build()
+            .expect("failed to build reqwest client");
         Self {
             api_key: api_key.into(),
             base_url: base_url.into(),
             api_version: "2023-06-01".to_string(),
-            user_id: None,
+            client,
         }
     }
 
-    /// Set the `user_id` that will be injected into every outgoing request
-    /// body as `metadata.user_id`.
-    pub fn set_user_id(&mut self, user_id: String) {
-        self.user_id = Some(user_id);
-    }
-
-    /// Serialize the request, set the `stream` flag, and inject `metadata.user_id`
-    /// if one was configured via [`set_user_id`].
+    /// Serialize the request and set the `stream` flag.
     fn prepare_body(
         &self,
         request: &CreateMessageParams,
@@ -72,13 +63,6 @@ impl AnthropicAdapter {
         let mut body = serde_json::to_value(request)
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(stream);
-        if let Some(ref uid) = self.user_id {
-            if let Some(meta) = body["metadata"].as_object_mut() {
-                meta.insert("user_id".to_string(), serde_json::json!(uid));
-            } else {
-                body["metadata"] = serde_json::json!({"user_id": uid});
-            }
-        }
         Ok(body)
     }
 
@@ -190,13 +174,9 @@ impl LlmClient for AnthropicAdapter {
 
         let body = self.prepare_body(request, true)?;
 
-        let client = reqwest::Client::builder()
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
-
         let json_body = serde_json::to_vec(&body).unwrap();
-        let mut event_source = client
+        let mut event_source = self
+            .client
             .post(self.messages_url())
             .headers(self.headers())
             .json(&body)
@@ -249,7 +229,7 @@ impl LlmClient for AnthropicAdapter {
                                         .as_ref()
                                         .map(|t| t.budget_tokens as u32),
                                     reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                                        crate::reasoning_effort_from_budget(t.budget_tokens)
+                                        crate::current_reasoning_effort_from_budget(t.budget_tokens)
                                             .map(str::to_string)
                                     }),
                                     extra_body: request
@@ -453,12 +433,8 @@ impl LlmClient for AnthropicAdapter {
 
         let json_body = serde_json::to_vec(&body).unwrap();
 
-        let client = reqwest::Client::builder()
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
-
-        let response = client
+        let response = self
+            .client
             .post(self.messages_url())
             .headers(self.headers())
             .json(&body)

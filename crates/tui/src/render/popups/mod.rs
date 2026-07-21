@@ -5,7 +5,9 @@ pub(crate) mod file_picker;
 pub(crate) mod help;
 pub(crate) mod history;
 pub(crate) mod select;
+pub(crate) mod selectable_text;
 pub(crate) mod slash_command;
+pub(crate) mod system_prompt_popup;
 pub(crate) mod thinking_popup;
 
 use ratatui::{

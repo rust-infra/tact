@@ -13,14 +13,17 @@ use tact_llm::{
 
 use crate::ToolSpec;
 use crate::compact::{
-    CompactState, compacted_context, estimate_context_size, micro_compact, write_transcript,
+    CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
+    compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
+    estimate_message_tokens, micro_compact, recent_messages_for_summary,
+    retained_user_message_token_budget, should_auto_compact, write_transcript,
 };
 use crate::config::AgentSettings;
 use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
 use crate::mcp::MCPToolRouter;
 use crate::memory::MEMORY_GUIDANCE;
 use crate::permission::PermissionManager;
-use crate::prompt::SystemPrompt;
+use crate::prompt::{SystemPrompt, responses_prompt_template};
 use crate::recovery::{
     CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
     is_prompt_too_long_error, is_transient_transport_error,
@@ -30,6 +33,26 @@ use crate::store::DynSessionStore;
 use crate::tool::{ToolContext, ToolRouter};
 use tact_llm::{LlmClient, LlmProvider};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+enum CompactRebuildMode {
+    /// Retain recent real user messages + handoff summary (Codex-style).
+    CodexStyle,
+    /// Replace the entire context with a single summary user message.
+    LegacySingleSummary,
+}
+
+const COMPACT_SUMMARY_MAX_TOKENS: u32 = 2_000;
+const COMPACT_SUMMARY_OUTPUT_PERCENT: usize = 20;
+const COMPACT_SUMMARY_HEADROOM_PERCENT: usize = 10;
+const COMPACT_SUMMARY_INSTRUCTIONS: &str = "Summarize this coding-agent conversation so work can continue.\n\
+Preserve:\n\
+1. The current goal and what has been accomplished\n\
+2. Important findings, decisions, and architectural insights\n\
+3. Files read or changed (with key code structures like types, signatures, APIs if relevant)\n\
+4. Remaining work and next steps\n\
+5. User constraints and preferences\n\
+6. Any errors encountered and their causes\n\
+Be compact but concrete. Preserve exact file paths, function names, and type signatures when they are important for continuing the work.";
 
 /// Shared state for a running agent session.
 ///
@@ -45,6 +68,7 @@ pub struct AgentRuntime {
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
+    /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
     pub session_id: Option<String>,
     /// DB row id of the first message persisted for the current LLM-call window.
     pub first_message_db_id: i64,
@@ -60,6 +84,8 @@ pub struct AgentRuntime {
     pub cached_claude_md: Option<String>,
     /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
     pub cached_agents_md: Option<String>,
+    /// Total tokens from the most recent LLM usage report (`0` = none yet).
+    pub last_token_total: u32,
 }
 
 /// How the agent builds its system prompt.
@@ -91,7 +117,7 @@ pub struct Agent {
 impl Agent {
     pub fn new(
         client: LlmProvider,
-        tool_context: ToolContext,
+        mut tool_context: ToolContext,
         tools: ToolRouter,
         mcp_router: MCPToolRouter,
         permission_manager: PermissionManager,
@@ -102,6 +128,8 @@ impl Agent {
             .into_iter()
             .chain(mcp_router.all_tools())
             .collect();
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tool_context.cancel_flag = cancel_flag.clone();
         Self {
             runtime: AgentRuntime {
                 client,
@@ -111,7 +139,7 @@ impl Agent {
                 permission_manager,
                 stats: SessionStats::default(),
                 ui_tx: None,
-                cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                cancel_flag,
                 session_store: None,
                 session_id: None,
                 first_message_db_id: 0,
@@ -120,6 +148,7 @@ impl Agent {
                 cached_dir_snapshot: None,
                 cached_claude_md: None,
                 cached_agents_md: None,
+                last_token_total: 0,
             },
             tool_context,
             tools,
@@ -138,8 +167,8 @@ impl Agent {
         self
     }
 
-    fn context_limit(&self) -> usize {
-        self.agent_settings.context_limit_chars
+    fn model_context_window(&self) -> usize {
+        self.agent_settings.model_context_window
     }
 
     fn max_tokens(&self) -> u32 {
@@ -164,9 +193,14 @@ impl Agent {
         self
     }
 
-    pub fn with_session(mut self, session_id: Option<String>, store: DynSessionStore) -> Self {
+    /// Attach a session store with a fully initialized session id.
+    ///
+    /// Callers must create/resolve the id and persist the session row before
+    /// this (startup path). Also wires DeepSeek `user_id` for KV cache isolation.
+    pub fn with_session(mut self, session_id: String, store: DynSessionStore) -> Self {
+        self.runtime.client.set_user_id(&session_id);
         self.runtime.session_store = Some(store);
-        self.runtime.session_id = session_id;
+        self.runtime.session_id = Some(session_id);
         self
     }
 
@@ -193,20 +227,22 @@ impl Agent {
         }
     }
 
+    /// Load persisted history into an empty context.
+    ///
+    /// Session id and store must already be set via [`Self::with_session`];
+    /// this does not allocate a new id.
     pub async fn ensure_session(&mut self) -> Result<String> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(self.runtime.session_id.clone().unwrap_or_default());
         };
 
-        let session_id = match self.runtime.session_id.as_ref() {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => {
-                let id = uuid::Uuid::new_v4().to_string();
-                self.runtime.session_id = Some(id.clone());
-                id
-            }
-        };
+        let session_id = self
+            .runtime
+            .session_id
+            .clone()
+            .context("session_id must be set via with_session before ensure_session")?;
 
+        // Idempotent: startup normally created the row already.
         let root_dir = self.tool_context.work_dir.display().to_string();
         store.ensure_session_row(&session_id, &root_dir).await?;
 
@@ -320,27 +356,36 @@ impl Agent {
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
-    pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Result<()> {
+    pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
 
-        // Ensure a session exists and optionally restore history.
-        let session_id = self.ensure_session().await?;
-        // Wire the session_id as the DeepSeek `user_id` for KV cache isolation.
-        self.runtime.client.set_user_id(&session_id);
+        // Restore history if the startup path left context empty.
+        self.ensure_session().await?;
 
-        // If history is empty, add the initial user message so it is persisted.
-        if self.runtime.context.is_empty() {
-            if let Some(msg) = initial_user_message {
-                self.push_message(msg).await?;
-            }
-        } else if let Some(msg) = initial_user_message {
-            self.push_message(msg).await?;
+        // Codex-style pre-turn: compact *old* history before appending this
+        // turn's user message, reserving space for the incoming prompt so we
+        // do not overflow immediately after push.
+        let incoming_tokens = user_turn_message
+            .as_ref()
+            .map(estimate_message_tokens)
+            .unwrap_or(0);
+        if should_auto_compact(
+            self.runtime.last_token_total,
+            self.model_context_window(),
+            estimate_context_tokens(&self.runtime.context),
+            incoming_tokens,
+        ) {
+            self.emit_update(AgentUpdate::Info("[auto compact]".into()));
+            self.compact_history(None).await?;
+        }
+        if let Some(message) = user_turn_message {
+            self.push_message(message).await?;
         }
 
         // Build the system prompt once per task. Memory saved mid-task takes
         // effect on the next task; stable sections stay before DYNAMIC_BOUNDARY
         // so the prefix KV-cache holds across turns and tasks.
-        let system = self.build_system_prompt()?;
+        let system_prompt = self.build_system_prompt()?;
         loop {
             if self
                 .runtime
@@ -354,17 +399,28 @@ impl Agent {
                 &mut self.runtime.context,
                 self.agent_settings.micro_compact_enabled,
             );
-            if estimate_context_size(&self.runtime.context) > self.context_limit() {
+            // Turn already in context — no incoming reservation.
+            if should_auto_compact(
+                self.runtime.last_token_total,
+                self.model_context_window(),
+                estimate_context_tokens(&self.runtime.context),
+                0,
+            ) {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
             }
+
+            // Snapshot the complete conversation after micro/auto compaction.
+            // Includes the current user turn plus history, or retained users +
+            // summary when compact_history ran above.
+            let conversation_messages = self.runtime.context.clone();
             let model_name = crate::get_model();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
-                messages: self.runtime.context.clone(),
+                messages: conversation_messages,
                 max_tokens: self.max_tokens(),
             })
-            .with_system(&system)
+            .with_system(&system_prompt)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
             .with_thinking(self.thinking_config());
@@ -374,7 +430,8 @@ impl Agent {
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
                 reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                    tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                    tact_llm::current_reasoning_effort_from_budget(t.budget_tokens)
+                        .map(str::to_string)
                 }),
                 extra_body: request
                     .thinking
@@ -449,6 +506,7 @@ impl Agent {
 
             if let Some(ref usage) = token_usage {
                 self.runtime.stats.record_token_usage(usage);
+                self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
             let _ = self
@@ -635,66 +693,106 @@ impl Agent {
             .collect()
     }
 
+    // TODO(compact): summarization input is a crude tail-truncation to 80k
+    // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
+    // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
+        self.compact_history_with_mode(focus, CompactRebuildMode::CodexStyle)
+            .await
+    }
+
+    /// Previous single-summary compaction (entire history → one user message).
+    /// Kept for reference / rollback; production call sites use [`Self::compact_history`].
+    #[allow(dead_code)]
+    pub async fn compact_history_legacy(&mut self, focus: Option<&str>) -> Result<()> {
+        self.compact_history_with_mode(focus, CompactRebuildMode::LegacySingleSummary)
+            .await
+    }
+
+    async fn compact_history_with_mode(
+        &mut self,
+        focus: Option<&str>,
+        mode: CompactRebuildMode,
+    ) -> Result<()> {
         let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
-        let transcript_path = write_transcript(&tact_path, &self.runtime.context)?;
+        let transcript_path = write_transcript(&tact_path, &self.runtime.context).await?;
         self.emit_update(AgentUpdate::Info(format!(
             "[transcript saved: {}]",
             transcript_path.display()
         )));
 
-        // Prefer recent messages (rather than earliest), since recent context matters most for continuing work
-        let truncated = if self.runtime.context.is_empty() {
-            String::new()
+        let model_context_window = self.model_context_window();
+        let summary_max_tokens = if model_context_window == 0 {
+            COMPACT_SUMMARY_MAX_TOKENS
         } else {
-            let mut recent_messages: Vec<&Message> = Vec::new();
-            let mut char_count = 0;
-            for msg in self.runtime.context.iter().rev() {
-                let msg_json = serde_json::to_string(msg).unwrap_or_default();
-                let msg_chars = msg_json.chars().count();
-                // Keep at least one message, even if it's long
-                if char_count + msg_chars > 80_000 && !recent_messages.is_empty() {
-                    break;
-                }
-                char_count += msg_chars;
-                recent_messages.push(msg);
-            }
-            recent_messages.reverse();
-            serde_json::to_string(&recent_messages)
-                .context("failed to serialize recent messages")?
+            u32::try_from(
+                model_context_window
+                    .saturating_mul(COMPACT_SUMMARY_OUTPUT_PERCENT)
+                    .div_ceil(100)
+                    .min(COMPACT_SUMMARY_MAX_TOKENS as usize)
+                    .max(1),
+            )
+            .context("summary output token budget does not fit u32")?
         };
-        let mut prompt = format!(
-            "Summarize this coding-agent conversation so work can continue.\n\
-Preserve:\n\
-1. The current goal and what has been accomplished\n\
-2. Important findings, decisions, and architectural insights\n\
-3. Files read or changed (with key code structures like types, signatures, APIs if relevant)\n\
-4. Remaining work and next steps\n\
-5. User constraints and preferences\n\
-6. Any errors encountered and their causes\n\
-Be compact but concrete. Preserve exact file paths, function names, and type signatures when they are important for continuing the work.\n\n\
-{truncated}"
-        );
+        let summary_input_limit = if model_context_window == 0 {
+            crate::compact::KEEP_USER_MESSAGE_TOKENS
+        } else {
+            let headroom = model_context_window
+                .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
+                .div_ceil(100);
+            model_context_window
+                .saturating_sub(summary_max_tokens as usize)
+                .saturating_sub(headroom)
+        };
+        let mut prompt = COMPACT_SUMMARY_INSTRUCTIONS.to_string();
+        if approx_text_tokens(&prompt) > summary_input_limit {
+            anyhow::bail!(
+                "model context window {model_context_window} is too small for the compaction summary request"
+            );
+        }
         if let Some(focus) = focus.filter(|value| !value.trim().is_empty()) {
-            prompt.push_str(&format!("\n\nFocus to preserve next: {focus}"));
+            let addition = format!("\n\nFocus to preserve next: {focus}");
+            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
+                <= summary_input_limit
+            {
+                prompt.push_str(&addition);
+            }
         }
         if !self.runtime.compact_state.recent_files.is_empty() {
-            let recent = self
-                .runtime
-                .compact_state
-                .recent_files
-                .iter()
-                .map(|path| format!("- {path}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            prompt.push_str(&format!("\n\nRecent files to reopen if needed:\n{recent}"));
+            let mut heading_added = false;
+            for path in &self.runtime.compact_state.recent_files {
+                let addition = if heading_added {
+                    format!("\n- {path}")
+                } else {
+                    format!("\n\nRecent files to reopen if needed:\n- {path}")
+                };
+                if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
+                    > summary_input_limit
+                {
+                    break;
+                }
+                prompt.push_str(&addition);
+                heading_added = true;
+            }
         }
+        let history_budget = summary_input_limit
+            .saturating_sub(approx_text_tokens(&prompt))
+            .saturating_sub(1)
+            .min(crate::compact::KEEP_USER_MESSAGE_TOKENS);
+        let recent_messages = recent_messages_for_summary(&self.runtime.context, history_budget)?;
+        if recent_messages != "[]" {
+            prompt.push_str("\n\n");
+            prompt.push_str(&recent_messages);
+        }
+        debug_assert!(
+            model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
+        );
 
         let model_name = crate::get_model();
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
-            max_tokens: 2000,
+            max_tokens: summary_max_tokens,
         });
 
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
@@ -702,7 +800,7 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
             reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                tact_llm::reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
             }),
             extra_body: request
                 .thinking
@@ -717,12 +815,27 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
-        let (blocks, _stop_reason, token_usage, request_body) = self
-            .runtime
-            .client
-            .create_message(&request)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut retry_attempt = 0;
+        let (blocks, stop_reason, token_usage, request_body) = loop {
+            match self.runtime.client.create_message(&request).await {
+                Ok(response) => break response,
+                Err(error) => {
+                    let error_text = error.to_string();
+                    if retry_attempt >= MAX_RECOVERY_ATTEMPTS
+                        || !is_transient_transport_error(&error_text.to_lowercase())
+                    {
+                        return Err(anyhow::Error::from(error));
+                    }
+                    retry_attempt = retry_attempt.saturating_add(1);
+                    let delay = backoff_delay(retry_attempt.saturating_sub(1));
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[compact retry {retry_attempt}/{MAX_RECOVERY_ATTEMPTS}] retrying in {:.1}s",
+                        delay.as_secs_f64()
+                    )));
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        };
 
         // ── Stats: after compaction LLM call ──
         self.runtime
@@ -741,15 +854,19 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
         if let Some(ref usage) = token_usage {
             self.runtime.stats.record_token_usage(usage);
+            // Do NOT assign usage.total to last_token_total: that figure is for
+            // the summarization request (large history prompt), not the size of
+            // the replacement context below.
         }
         let _ = self
             .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
             .await;
-        // After compaction the context is replaced with a summary, so
-        // future messages start a new message-id window.
-        self.runtime.first_message_db_id = 0;
-        self.runtime.last_message_db_id = 0;
-        self.runtime.llm_call_last_message_id = 0;
+        match stop_reason {
+            None | Some(StopReason::EndTurn) => {}
+            Some(reason) => {
+                anyhow::bail!("compaction summary ended with invalid stop reason: {reason:?}")
+            }
+        }
         let summary = blocks
             .iter()
             .filter_map(|block| match block {
@@ -758,12 +875,13 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
             })
             .collect::<Vec<_>>()
             .join("\n");
-
-        self.runtime.compact_state.has_compacted = true;
-        self.runtime.compact_state.last_summary = Some(summary.clone());
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            anyhow::bail!("compaction summary response contained no text")
+        }
 
         // Inject recently accessed file list into summary, helping the agent recover context after amnesia
-        let mut full_summary = summary;
+        let mut full_summary = summary.clone();
         if !self.runtime.compact_state.recent_files.is_empty() {
             full_summary
                 .push_str("\n\nRecently accessed files (re-read if you need their contents):\n");
@@ -771,8 +889,71 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
                 full_summary.push_str(&format!("- {path}\n"));
             }
         }
-        self.runtime.context = compacted_context(full_summary);
-        self.replace_persisted_context().await?;
+
+        let rebuilt_context = match mode {
+            CompactRebuildMode::CodexStyle => {
+                let retained = collect_user_messages(&self.runtime.context);
+                let system_prompt_tokens = approx_text_tokens(&self.build_system_prompt()?);
+                let tool_specs_tokens = approx_text_tokens(
+                    &serde_json::to_string(&self.all_tool_specs())
+                        .context("failed to serialize tool specs for compact budget")?,
+                );
+                let summary_only = compacted_context(full_summary.clone());
+                let non_retained_input_tokens = system_prompt_tokens
+                    .saturating_add(tool_specs_tokens)
+                    .saturating_add(estimate_context_tokens(&summary_only));
+                let mut retained_tokens = retained_user_message_token_budget(
+                    self.model_context_window(),
+                    self.max_tokens() as usize,
+                    non_retained_input_tokens,
+                );
+                let mut rebuilt =
+                    build_compacted_history(&retained, full_summary.clone(), retained_tokens);
+                if model_context_window > 0 {
+                    let headroom = compact_rebuild_headroom_tokens(model_context_window);
+                    loop {
+                        let total = system_prompt_tokens
+                            .saturating_add(tool_specs_tokens)
+                            .saturating_add(estimate_context_tokens(&rebuilt))
+                            .saturating_add(self.max_tokens() as usize)
+                            .saturating_add(headroom);
+                        if total <= model_context_window {
+                            break;
+                        }
+                        if retained_tokens == 0 {
+                            anyhow::bail!(
+                                "compacted request cannot fit model context window {model_context_window}"
+                            );
+                        }
+                        retained_tokens = retained_tokens
+                            .saturating_sub(total.saturating_sub(model_context_window).max(1));
+                        rebuilt = build_compacted_history(
+                            &retained,
+                            full_summary.clone(),
+                            retained_tokens,
+                        );
+                    }
+                }
+                rebuilt
+            }
+            CompactRebuildMode::LegacySingleSummary => compacted_context(full_summary),
+        };
+        let previous_context = std::mem::replace(&mut self.runtime.context, rebuilt_context);
+        if let Err(error) = self.replace_persisted_context().await {
+            self.runtime.context = previous_context;
+            return Err(error);
+        }
+        // Context and persistence now agree, so future messages start a new
+        // message-id window and compaction state can be committed.
+        self.runtime.first_message_db_id = 0;
+        self.runtime.last_message_db_id = 0;
+        self.runtime.llm_call_last_message_id = 0;
+        self.runtime.compact_state.has_compacted = true;
+        self.runtime.compact_state.last_summary = Some(summary);
+        // Reset so the next should_auto_compact check reflects the new small
+        // context (via token estimate / next main-loop TokenUsage), not the
+        // pre-compact or summarizer-prompt totals.
+        self.runtime.last_token_total = 0;
         self.runtime.stats.compactions += 1;
         Ok(())
     }
@@ -798,7 +979,11 @@ Be compact but concrete. Preserve exact file paths, function names, and type sig
         }
 
         let workdir = &self.tool_context.work_dir;
-        let prompt = SystemPrompt::builder()
+        let mut prompt_builder = SystemPrompt::builder();
+        if matches!(&self.runtime.client, LlmProvider::OpenAiResponses(_)) {
+            prompt_builder.template(responses_prompt_template());
+        }
+        let prompt = prompt_builder
             .role(format!(
                 "You are a coding agent operating in {}.",
                 workdir.display()
@@ -1132,13 +1317,15 @@ mod tests {
             let config = crate::config::ResolvedConfig {
                 llm: crate::config::LlmSettings {
                     provider: ProviderKind::OpenAi,
+                    protocol: tact_llm::OpenAiProtocol::default(),
+                    reasoning_effort: None,
                     api_key: String::new(),
                     base_url: String::new(),
                     model: "mock-model".to_string(),
                     models: Vec::new(),
                 },
                 agent: crate::config::AgentSettings {
-                    context_limit_chars: 500_000,
+                    model_context_window: 500_000,
                     max_tokens: 8192,
                     thinking_budget: 0,
                     snapshot_max_items: 80,
@@ -1157,6 +1344,7 @@ mod tests {
                 },
                 tools: crate::config::ToolSettings {
                     brave_search_api_key: None,
+                    bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                 },
                 permission_mode: None,
                 tokio_console: false,
@@ -1184,7 +1372,7 @@ mod tests {
         .unwrap();
 
         let tiny = crate::config::AgentSettings {
-            context_limit_chars: 500,
+            model_context_window: 500,
             max_tokens: 1024,
             thinking_budget: 0,
             snapshot_max_items: 10,
@@ -1206,15 +1394,15 @@ mod tests {
         #[cfg(feature = "test-support")]
         {
             let mut big = crate::config::settings();
-            big.agent.context_limit_chars = 900_000;
+            big.agent.model_context_window = 900_000;
             crate::config::install_or_override(big);
         }
 
-        assert_eq!(agent.context_limit(), 500);
+        assert_eq!(agent.model_context_window(), 500);
         assert_eq!(agent.max_tokens(), 1024);
         assert_eq!(
-            agent.agent_settings.context_limit_chars,
-            tiny.context_limit_chars
+            agent.agent_settings.model_context_window,
+            tiny.model_context_window
         );
     }
 

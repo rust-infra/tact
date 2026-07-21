@@ -1,4 +1,5 @@
 # Configuration
+> Language: [English](./21_chapter_config.md) · [中文](./21_chapter_config_zh.md)
 
 This chapter describes how Tact loads, merges, and installs runtime settings before any agent work begins. Configuration is the **bootstrap layer** that wires LLM credentials, agent limits, UI theme, tool keys, and permission mode into a process-global `ResolvedConfig`.
 
@@ -87,6 +88,8 @@ Explicit `--config /path/to/file.toml` bypasses the search list.
 | `api_key` / `model` | CLI → entry (required) |
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
+| `protocol` | entry → `chat_completions` default |
+| `reasoning_effort` | OpenAI entry → `thinking_budget` compatibility mapping |
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
@@ -111,6 +114,12 @@ models = ["kimi-k2.5", "kimi-for-coding"]   # optional; used by TUI /model picke
 # base_url defaults to https://api.moonshot.cn/v1
 # max_tokens = 64000       # optional per-provider override
 
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"    # chat_completions (default) | responses
+reasoning_effort = "high" # none | minimal | low | medium | high | xhigh | max
+
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
@@ -120,7 +129,7 @@ base_url = "https://api.anthropic.com"   # required for anthropic
 mode = "default"           # default | plan | auto
 
 [agent]
-context_limit_chars = 900000
+model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
@@ -134,6 +143,8 @@ theme = "retro"
 # vision_image.jpeg_quality = 80
 
 [tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+bash_timeout_secs = 1800
 brave_search_api_key = "bsk-..."
 ```
 
@@ -142,7 +153,17 @@ provider only). Empty/absent → `/model` prints a hint instead of opening the
 picker. Choosing a model applies immediately; you can optionally write it back
 to this provider’s `model` field in the loaded config file.
 
-Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, … }`
+Optional `protocol` defaults to `chat_completions`. `responses` is valid only
+for the `openai` provider; configuration resolution rejects it for Anthropic,
+DeepSeek, or Kimi. There is no CLI override for this field.
+
+Optional `reasoning_effort` is also OpenAI-only and accepts `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, or `max`. Availability is model-dependent.
+An explicit value is forwarded unchanged and overrides the compatibility
+mapping from `thinking_budget`; when omitted, the existing `low` / `medium` /
+`high` budget bands remain in effect. There is no CLI override for this field.
+
+Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, … }`
 for the hot path. See `types.rs` for serde structs and unit tests.
 
 ---
@@ -155,16 +176,25 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 |---------|---------|-------------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `context_limit_chars` | 500_000 | 900_000 |
+| `model_context_window` | 200_000 | — (tokens; global, not per-model) |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
 | `ui.theme` | `"retro"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
 | `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
+
+After merging CLI and TOML values, configuration fails fast when a nonzero
+`model_context_window` is less than or equal to `max_tokens`: the output
+reservation must leave room for input. A zero window keeps the existing
+"disabled/unknown window" behavior and skips this validation. `thinking_budget`
+is not added separately because providers map it differently (a thinking
+configuration or reasoning-effort band), rather than exposing one portable
+extra-output reservation.
 
 CLI-only overrides:
 
@@ -184,7 +214,7 @@ CLI-only overrides:
 | `--model`, `--api-key`, `--base-url` | override that entry’s fields |
 | `--max-tokens`, `--thinking-budget` | CLI → entry → `[llm]` global → defaults |
 | `-m` / `--permission-mode` | `[permission].mode` |
-| `--context-limit-chars`, `--snapshot-max-items` | `[agent]` |
+| `--model-context-window`, `--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
@@ -198,6 +228,10 @@ tact-ui headless "Summarize this repo"
 ```
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
+
+`tools.bash_timeout_secs` is TOML-only in v1. Resolution preserves `0` as
+"disabled" and otherwise carries the value through `ToolSettings` into each
+`ToolContext`; there is no CLI flag for it.
 
 ---
 
@@ -213,7 +247,9 @@ let theme = config::settings().ui.theme.clone();
 
 `settings()` panics if `init()` was not called — intentional fail-fast for miswired binaries.
 
-Agent loop reads `context_limit_chars`, `max_tokens`, and `thinking_budget` from `settings()` when building each LLM request ([Ch 18](./18_chapter_agent_loop.md)).
+Agent loop reads `model_context_window`, `max_tokens`, and `thinking_budget` from `settings()` when building each LLM request ([Ch 18](./18_chapter_agent_loop.md)).
+
+**Breaking rename:** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window` (tokens, default 200_000). There is **no silent alias** for the old TOML key — update existing configs.
 
 ---
 

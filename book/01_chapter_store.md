@@ -1,4 +1,5 @@
 # Store and Persistence
+> Language: [English](./01_chapter_store.md) · [中文](./01_chapter_store_zh.md)
 
 This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.claude/` and the separate SQLite session database. Together they hold conversation history, domain state (tasks, cron, teammates, …), and observability data.
 

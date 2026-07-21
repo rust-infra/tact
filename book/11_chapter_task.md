@@ -1,4 +1,5 @@
 # Tasks and Tool Scheduling
+> Language: [English](./11_chapter_task.md) · [中文](./11_chapter_task_zh.md)
 
 This chapter walks through what happens after the LLM decides to act: how Tact turns a set of `ToolUse` blocks into executed commands, results, and the next conversation turn.
 

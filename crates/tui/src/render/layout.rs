@@ -48,6 +48,9 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.tools.popup.is_some() {
         super::popups::diff_popup::render_diff_popup(frame, area, app);
     }
+    if app.system_prompt_popup.is_some() {
+        super::popups::system_prompt_popup::render_system_prompt_popup(frame, area, app);
+    }
     if app.code_popup.is_some() {
         super::popups::code_popup::render_code_popup(frame, area, app);
     }

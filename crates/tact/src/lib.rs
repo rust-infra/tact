@@ -31,6 +31,7 @@ pub mod mcp;
 pub mod memory;
 pub mod notifications;
 pub mod permission;
+pub mod plugin;
 pub mod prompt;
 pub mod recovery;
 pub(crate) mod shell;

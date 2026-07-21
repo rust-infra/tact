@@ -594,6 +594,19 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(())
     }
 
+    async fn load_latest_request_body(&self, session_id: &str) -> Result<Option<Vec<u8>>> {
+        let row = sqlx::query(
+            "SELECT request_body FROM token_usages WHERE session_id = ? AND request_body IS NOT NULL ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load latest request body")?;
+        row.map(|row| row.try_get("request_body"))
+            .transpose()
+            .map_err(Into::into)
+    }
+
     async fn record_tool_schedule(
         &self,
         session_id: &str,

@@ -24,6 +24,7 @@ fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
         "model" => "🧠",
         "skills" => "📋",
         "skill-reload" => "🔄",
+        "plugin" => "🧩",
         _ => "⚡",
     }
 }
@@ -35,7 +36,7 @@ fn cmd_category(cmd: &str, is_skill: bool) -> &'static str {
     }
     match cmd {
         "save" | "cancel" | "quit" => "  Actions",
-        "help" | "history" | "skills" | "skill-reload" => "  Tools",
+        "help" | "history" | "skills" | "skill-reload" | "plugin" => "  Tools",
         "theme" | "lang" | "balance" | "model" => "  Settings",
         _ => "",
     }

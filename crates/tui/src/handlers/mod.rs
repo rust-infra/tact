@@ -5,6 +5,7 @@ mod mouse;
 mod normal;
 mod overlay;
 mod palette;
+mod plugin;
 mod select;
 mod skills;
 
@@ -18,7 +19,7 @@ pub(crate) use select::handle_select_mode;
 
 use crate::render::render_md::format_table;
 use crate::widgets::state::log_messages::classify_system_message;
-use crate::widgets::state::{App, Status};
+use crate::widgets::state::{App, InputMode, SelectKind, Status};
 use chrono::Local;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -228,6 +229,12 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
         .any(|(name, _)| *name == cmd)
 }
 
+/// Built-ins that take a subcommand / arguments: Enter should autocomplete
+/// `/{cmd} ` into the insert box instead of executing immediately.
+pub(crate) fn command_needs_args(cmd: &str) -> bool {
+    matches!(cmd, "plugin")
+}
+
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
     // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
     if !is_builtin_palette_command(cmd)
@@ -246,6 +253,23 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "model" => {
             crate::handlers::select::start_model_picker(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        "view-system-prompt" => {
+            app.select.set_local(
+                "View system prompt".to_string(),
+                vec![
+                    "Raw template".to_string(),
+                    "Assembled current prompt".to_string(),
+                ],
+                0,
+                false,
+            );
+            app.select_kind = SelectKind::ViewSystemPrompt;
+            app.input_mode = InputMode::Select;
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -304,7 +328,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skill-reload" => {
-            match reload_skills(app) {
+            match refresh_skills(app) {
                 Ok(count) => {
                     let msg = app
                         .msgs()
@@ -322,6 +346,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "plugin" => plugin::handle_plugin_command(app),
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to abort.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
@@ -413,7 +438,7 @@ fn skills_table_rows(description: &str) -> Vec<String> {
         if line.is_empty() || line == "(no skills available)" {
             continue;
         }
-        if let Some((name, desc)) = line.split_once(':') {
+        if let Some((name, desc)) = line.split_once(": ") {
             rows.push(format!("| {} | {} |", name.trim(), desc.trim()));
         } else {
             rows.push(format!("| {line} |  |"));
@@ -423,7 +448,7 @@ fn skills_table_rows(description: &str) -> Vec<String> {
 }
 
 /// Reload skills from disk into the shared registry (agent + TUI).
-fn reload_skills(app: &mut App) -> Result<usize, String> {
+pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
     let mut reg = tact::skill::lock_skills(&app.skill_registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
     *reg = tact::skill::get_skill_registry(&app.work_dir).map_err(|e| e.to_string())?;
@@ -453,11 +478,15 @@ mod tests {
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
         drop(agent_tx);
         let app = App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx.clone(),
             PathBuf::from("."),
             Vec::new(),
@@ -504,6 +533,12 @@ mod tests {
         assert_eq!(rows[1], "|-------|-------------|");
         assert_eq!(rows[2], "| code-reviewer | 代码审查专家 |");
         assert_eq!(rows[3], "| demo-test | 测试 skill 加载功能 |");
+    }
+
+    #[test]
+    fn skills_table_rows_preserves_namespaced_skill_name() {
+        let rows = skills_table_rows("- plugin:skill: Plugin-provided skill");
+        assert_eq!(rows[2], "| plugin:skill | Plugin-provided skill |");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 # Background Tasks
+> Language: [English](./13_chapter_background.md) · [中文](./13_chapter_background_zh.md)
 
 This chapter explains Tact's **asynchronous shell execution**: the `background_run` tool starts a command on a `tokio::spawn` task and returns immediately; `check_background` polls status later. Every task is persisted to disk, so results survive polling order — but not process restarts (see §5). The implementation lives in `crates/tact/src/background.rs` with tool wrappers in `crates/tact/src/tool/background_run.rs`.
 

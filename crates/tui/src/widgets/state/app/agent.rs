@@ -5,13 +5,90 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
+use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
     AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
+    ToolOutputBuffer, ToolOutputChunk,
 };
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
+const MAX_PLUGIN_FAILURE_DETAIL_CHARS: usize = 512;
+
+fn sanitize_plugin_failure_detail(detail: &str) -> String {
+    let mut sanitized: String = detail
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
+        .collect();
+
+    if sanitized.chars().count() > MAX_PLUGIN_FAILURE_DETAIL_CHARS {
+        sanitized = sanitized
+            .chars()
+            .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS)
+            .collect();
+        sanitized.push_str("...");
+    }
+
+    sanitized
+}
+
+fn replace_two(template: &str, first: &str, second: &str) -> String {
+    template.replacen("{}", first, 1).replacen("{}", second, 1)
+}
+
+fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult) -> String {
+    match result {
+        PluginResult::Installed {
+            plugin,
+            marketplace,
+        } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
+        // Rendered as a titled table by `App::show_plugin_list`; plain fallback only.
+        PluginResult::ListedInstalled { .. } => messages.plugin_list_empty.to_owned(),
+        PluginResult::Reloaded { count } => messages
+            .plugin_reloaded_tmpl
+            .replace("{}", &count.to_string()),
+        PluginResult::MarketplaceAdded { marketplace } => {
+            messages.marketplace_added_tmpl.replace("{}", marketplace)
+        }
+        PluginResult::ListedMarketplaces { marketplaces } => {
+            messages.marketplace_list_tmpl.replace(
+                "{}",
+                &marketplaces
+                    .iter()
+                    .map(|marketplace| {
+                        format!("{}: {}", marketplace.name, marketplace.source.git_url())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+        PluginResult::MarketplaceUpdated { marketplace, count } => replace_two(
+            messages.marketplace_updated_tmpl,
+            marketplace,
+            &count.to_string(),
+        ),
+        PluginResult::MarketplaceRemoved { marketplace } => {
+            messages.marketplace_removed_tmpl.replace("{}", marketplace)
+        }
+    }
+}
+
+fn plugin_operation_label(
+    messages: &crate::i18n::Messages,
+    operation: &PluginOperation,
+) -> &'static str {
+    match operation {
+        PluginOperation::Install { .. } => messages.plugin_operation_install,
+        PluginOperation::List => messages.plugin_operation_list,
+        PluginOperation::Reload => messages.plugin_operation_reload,
+        PluginOperation::MarketplaceAdd => messages.plugin_operation_marketplace_add,
+        PluginOperation::MarketplaceList => messages.plugin_operation_marketplace_list,
+        PluginOperation::MarketplaceUpdate { .. } => messages.plugin_operation_marketplace_update,
+        PluginOperation::MarketplaceRemove { .. } => messages.plugin_operation_marketplace_remove,
+    }
+}
 
 fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     if !tool_id.is_empty()
@@ -44,7 +121,8 @@ impl App {
         match &update {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
-            | AgentUpdate::ModelInfo(_) => {}
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolProgress { .. } => {}
             _ => {
                 self.flush_and_close_thinking();
             }
@@ -53,7 +131,9 @@ impl App {
         // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
         // should NOT remove the placeholder since they don't produce visible content.
         match &update {
-            AgentUpdate::TokenUsage(_) | AgentUpdate::ModelInfo(_) => {
+            AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolProgress { .. } => {
                 // Metadata only, no content: keep the loading placeholder.
             }
             _ => {
@@ -98,6 +178,18 @@ impl App {
                 self.task_done_time = Some(chrono::Local::now());
                 // TODO Add task stats block
             }
+            AgentUpdate::TaskCancelled => {
+                // Cancel exits without TaskComplete; must leave Planning/Executing
+                // or Enter keeps flashing input_busy_msg.
+                self.flush_stream_pending();
+                self.add_task_end_separator();
+                if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+                    self.log_scroll.offset = u16::MAX;
+                }
+                self.status = Status::Idle;
+                self.freeze_last_prompt_cost();
+                self.task_done_time = None;
+            }
             // Error handling
             AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
                 // Fatal error: flush leftover streaming lines
@@ -121,6 +213,7 @@ impl App {
                 self.status_bar.model_name = params.model;
                 self.status_bar.model_max_tokens = params.max_tokens;
                 self.status_bar.model_thinking_budget = params.thinking_budget;
+                self.status_bar.model_reasoning_effort = params.reasoning_effort;
             }
             // Add system message
             AgentUpdate::Info(msg) => {
@@ -153,7 +246,7 @@ impl App {
                     }
                     ThinkingChunk::Delta(text) => {
                         // Started may be missing on older producers — open on first delta.
-                        if !self.thinking.title_added {
+                        if self.thinking.active.is_none() {
                             self.begin_thinking_block();
                         }
                         self.append_thinking_delta(&text);
@@ -162,6 +255,9 @@ impl App {
                         self.flush_and_close_thinking();
                     }
                 }
+            }
+            AgentUpdate::ToolProgress { tool_id, chunks } => {
+                self.on_tool_progress(&tool_id, &chunks)
             }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
         }
@@ -225,9 +321,52 @@ impl App {
             phys_idx,
             tool_id,
             output,
+            live_output: ToolOutputBuffer::new(50_000),
             started_at: Instant::now(),
         });
         self.refresh_tool_log_scroll();
+    }
+
+    fn on_tool_progress(&mut self, tool_id: &str, chunks: &[ToolOutputChunk]) {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|active| active.tool_id == tool_id)
+        else {
+            return;
+        };
+        let was_pinned = self.is_log_pinned_to_bottom();
+        self.tools.active[pos].live_output.push_chunks(chunks);
+        if self.tools.active[pos].live_output.logical_line_count() == 0 {
+            return;
+        }
+
+        let active = &self.tools.active[pos];
+        let phys_idx = active.phys_idx;
+        let old_rows = active.output.visual_rows(false);
+        let tool_name = active.output.tool_name.clone();
+        let arg_summary = active.output.arg_summary.clone();
+        let arg_full = active.output.arg_full.clone();
+        let live_output = active.live_output.clone();
+        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let msgs = self.msgs();
+        let output = ToolWidget::new(&self.theme, &msgs)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(step_idx)
+            .with_phase(ToolPhase::Running)
+            .with_duration_us(0)
+            .with_live_output(&live_output)
+            .build();
+        let new_rows = output.visual_rows(false);
+        self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
+        self.tools.active[pos].output = output;
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        if was_pinned {
+            self.log_scroll.offset = u16::MAX;
+        }
     }
 
     fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
@@ -274,6 +413,7 @@ impl App {
     }
 
     fn apply_stream_chunk(&mut self, text: String) {
+        self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
         // Thinking region is closed by the safety gate above when still open.
         self.stream.buffer.push_str(&text);
@@ -469,6 +609,87 @@ impl App {
         }
     }
 
+    /// Renders `/plugin list` as a titled table block (same style as `/skills`).
+    fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
+        use crate::widgets::state::log_messages::classify_system_message;
+
+        self.add_new_line();
+
+        let msgs = self.msgs();
+        let title = msgs
+            .plugin_list_title_tmpl
+            .replace("{}", &plugins.len().to_string());
+        let title_ty = classify_system_message(&title);
+        self.append_msg(
+            Line::from(Span::styled(
+                title.clone(),
+                Style::default().fg(self.theme.accent),
+            )),
+            title,
+            title_ty,
+        );
+        self.add_new_line();
+
+        if plugins.is_empty() {
+            let empty = msgs.plugin_list_empty;
+            self.append_msg(
+                Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
+                empty.to_string(),
+                classify_system_message(empty),
+            );
+        } else {
+            let mut rows = vec![
+                msgs.plugin_list_header.to_string(),
+                "|---|---|---|".to_string(),
+            ];
+            rows.extend(plugins.iter().map(|plugin| {
+                format!(
+                    "| {} | {} | {} |",
+                    plugin.id, plugin.marketplace, plugin.skill_count
+                )
+            }));
+            let (styled, raw) = format_table(&rows, &self.theme);
+            let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
+            self.extend_msgs(styled, raw, ty);
+        }
+
+        self.add_new_line();
+
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+    }
+
+    /// Displays a completed plugin operation from the isolated worker.
+    pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
+        self.dirty = true;
+        match event {
+            PluginEvent::Succeeded {
+                result,
+                refresh_skills,
+            } => {
+                if let PluginResult::ListedInstalled { plugins } = &result {
+                    self.show_plugin_list(plugins);
+                } else {
+                    self.add_system_message(format_plugin_result(&self.msgs(), &result));
+                }
+                if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
+                    self.add_system_message(
+                        self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
+                    );
+                }
+            }
+            PluginEvent::Failed { operation, detail } => {
+                let detail = sanitize_plugin_failure_detail(&detail);
+                self.add_system_message(replace_two(
+                    self.msgs().plugin_operation_failed_tmpl,
+                    plugin_operation_label(&self.msgs(), &operation),
+                    &detail,
+                ));
+            }
+        }
+    }
+
     /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
     pub(crate) fn maybe_expire_done_status(&mut self) {
         if let Status::Done = self.status
@@ -499,22 +720,30 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
+    use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
+    use crate::render::test_harness::render_log_panel_text;
     use crate::widgets::state::{App, Status};
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
+    use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
-        ThinkingChunk,
+        ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_app() -> App {
         let (_agent_tx, agent_rx) = unbounded_channel();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
         App::new(
             agent_rx,
             None,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             PathBuf::from("."),
             Vec::new(),
@@ -524,6 +753,380 @@ mod lifecycle_tests {
             String::new(),
             Vec::new(),
         )
+    }
+
+    fn write_skill(work_dir: &std::path::Path, name: &str) {
+        let skill_dir = work_dir.join(".claude/skills").join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\n\n{name} body"),
+        )
+        .unwrap();
+    }
+
+    fn app_with_registry(work_dir: &std::path::Path) -> App {
+        write_skill(work_dir, "existing");
+        let mut app = make_app();
+        app.work_dir = work_dir.to_path_buf();
+        app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
+            tact::skill::get_skill_registry(work_dir).unwrap(),
+        ));
+        app
+    }
+
+    #[test]
+    fn non_refreshing_plugin_success_preserves_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::ListedInstalled {
+                plugins: Vec::new(),
+            },
+            refresh_skills: false,
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(!registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn failed_plugin_event_preserves_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
+            detail: "technical detail".into(),
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(!registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn refreshing_plugin_success_reloads_the_registry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_registry(temp_dir.path());
+        write_skill(temp_dir.path(), "new");
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: true,
+        });
+
+        let registry = tact::skill::lock_skills(&app.skill_registry);
+        assert!(registry.skills().contains_key("existing"));
+        assert!(registry.skills().contains_key("new"));
+    }
+
+    #[test]
+    fn plugin_success_message_uses_chinese_templates() {
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: false,
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("已安装插件 demo（来自 fixture）"))
+        );
+    }
+
+    #[test]
+    fn plugin_success_message_uses_english_templates() {
+        let mut app = make_app();
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            refresh_skills: false,
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("Installed plugin demo from fixture"))
+        );
+    }
+
+    #[test]
+    fn plugin_list_renders_titled_table() {
+        let mut app = make_app();
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::ListedInstalled {
+                plugins: vec![tact::plugin::InstalledPlugin {
+                    id: "superpowers".into(),
+                    marketplace: "superpowers-dev".into(),
+                    revision: "abc123".into(),
+                    cache_path: std::path::PathBuf::new(),
+                    skill_count: 12,
+                }],
+            },
+            refresh_skills: false,
+        });
+
+        let joined = app.raw_messages.join("\n");
+        assert!(
+            joined.contains("Installed plugins (1)"),
+            "expected titled block, got:\n{joined}"
+        );
+        assert!(
+            joined.contains("superpowers") && joined.contains("superpowers-dev"),
+            "table should show plugin and marketplace, got:\n{joined}"
+        );
+        assert!(
+            joined.contains("12"),
+            "table should show skill count, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("installed plugins:"),
+            "old flat message must be gone, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn plugin_failure_message_uses_chinese_template_with_detail() {
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            detail: "network timeout".into(),
+        });
+
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message == "安装插件失败：network timeout")
+        );
+    }
+
+    #[test]
+    fn plugin_failure_message_sanitizes_and_bounds_technical_detail() {
+        let mut app = make_app();
+        let detail = format!(
+            "\u{1b}[31mnetwork\nerror\r\n\u{7}{}",
+            "雪".repeat(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
+        );
+
+        app.handle_plugin_event(PluginEvent::Failed {
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
+            detail,
+        });
+
+        let message = app
+            .raw_messages
+            .iter()
+            .find(|message| message.starts_with("install plugin failed: "))
+            .unwrap();
+        let sanitized_detail = message.strip_prefix("install plugin failed: ").unwrap();
+        assert!(!sanitized_detail.chars().any(char::is_control));
+        assert!(sanitized_detail.starts_with(" [31mnetwork error  "));
+        assert!(sanitized_detail.ends_with("..."));
+        assert_eq!(
+            sanitized_detail.chars().count(),
+            MAX_PLUGIN_FAILURE_DETAIL_CHARS + 3
+        );
+        assert!(sanitized_detail.contains('雪'));
+    }
+
+    fn seed_running_bash(app: &mut App, tool_id: &str) {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run command",
+            "bash",
+            tool_id,
+            HashMap::from([("command".to_string(), "long-command".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: tool_id.to_string(),
+            tool_name: "bash".into(),
+            arg_summary: "long-command".into(),
+            arg_full: "long-command".into(),
+        });
+    }
+
+    #[test]
+    fn bash_live_output_grows_to_three_rows_then_keeps_a_three_line_tail() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        let initial_rows = app.tools.active[0].output.visual_rows(false);
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("one\n")],
+        });
+        let one_row = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("two\n")],
+        });
+        let two_rows = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("three\n")],
+        });
+        let three_rows = app.tools.active[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("four\n")],
+        });
+
+        assert!(initial_rows < one_row && one_row < two_rows && two_rows < three_rows);
+        assert_eq!(app.tools.active[0].output.visual_rows(false), three_rows);
+        assert_eq!(app.tools.active[0].output.detail_preview.len(), 3);
+        assert_eq!(
+            app.tools.active[0]
+                .output
+                .detail_preview
+                .iter()
+                .map(|line| line.plain_text())
+                .collect::<Vec<_>>(),
+            ["two", "three", "four"]
+        );
+    }
+
+    #[test]
+    fn progress_does_not_repin_scrolled_log() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.log_scroll.offset = 3;
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("line\n")],
+        });
+
+        assert_eq!(app.log_scroll.offset, 3);
+    }
+
+    #[test]
+    fn progress_keeps_bottom_pinned_log_on_live_output_growth() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+
+        let _ = render_log_panel_text(&mut app, 80, 4);
+        assert_ne!(
+            app.log_scroll.offset,
+            u16::MAX,
+            "render clamps the bottom sentinel"
+        );
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+        });
+
+        assert_eq!(app.log_scroll.offset, u16::MAX);
+        let rendered = render_log_panel_text(&mut app, 80, 4);
+        assert!(
+            rendered.contains("live line"),
+            "bottom-pinned viewport should follow the live Bash output, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn progress_keeps_open_thinking_and_ignores_unknown_tool_ids() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "still thinking".into(),
+        )));
+
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "unknown".into(),
+            chunks: vec![ToolOutputChunk::stdout("ignored\n")],
+        });
+
+        assert!(app.thinking.active.is_some());
+        assert_eq!(app.tools.active[0].output.visual_rows(false), 2);
+    }
+
+    #[test]
+    fn active_bash_popup_uses_buffered_output() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("live line\n")],
+        });
+        let phys_idx = app.tools.active[0].phys_idx;
+
+        app.open_diff_popup(phys_idx);
+
+        let content = app
+            .tools
+            .popup
+            .as_ref()
+            .and_then(|popup| popup.inline_content.as_deref())
+            .unwrap_or_default();
+        assert!(content.contains("live line"), "popup content: {content}");
+    }
+
+    #[test]
+    fn completed_bash_collapses_live_card_and_ignores_late_progress() {
+        let mut app = make_app();
+        seed_running_bash(&mut app, "b1");
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("one\ntwo\nthree\nfour\n")],
+        });
+        let live_rows = app.tools.active[0].output.visual_rows(false);
+
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "long-command".into(),
+                arg_full: Some("long-command".into()),
+                status: StepStatus::Success,
+                message: "live line".into(),
+                detail: Some("live line\n".into()),
+                duration_us: Some(100),
+                permission_label: None,
+            },
+        });
+        let completed_rows = app.tools.blocks[0].output.visual_rows(false);
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "b1".into(),
+            chunks: vec![ToolOutputChunk::stdout("late\n")],
+        });
+
+        assert!(completed_rows < live_rows);
+        assert!(app.tools.active.is_empty());
+        assert_eq!(
+            app.tools.blocks[0].output.detail_full.as_deref(),
+            Some("$ long-command\n\nlive line\n")
+        );
     }
 
     #[test]
@@ -724,6 +1327,17 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn task_cancelled_clears_busy_status_to_idle() {
+        let mut app = make_app();
+        app.status = Status::Planning;
+        app.handle_agent_update(AgentUpdate::TaskCancelled);
+        assert!(
+            matches!(app.status, Status::Idle),
+            "TaskCancelled must clear Planning/Executing so new prompts can submit"
+        );
+    }
+
+    #[test]
     fn stream_chunk_then_task_complete_reaches_done() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::StreamChunk("Streaming answer.".into()));
@@ -770,9 +1384,9 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "reasoning line".into(),
         )));
-        assert!(!app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
-        assert!(app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_none());
     }
 
     #[test]
@@ -783,12 +1397,17 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
             model: "mock-model".into(),
             max_tokens: 4096,
-            thinking_budget: Some(0),
-            reasoning_effort: None,
+            thinking_budget: Some(32_000),
+            reasoning_effort: Some("high".into()),
             extra_body: None,
         }));
         assert_eq!(app.status_bar.model_name, "mock-model");
         assert_eq!(app.status_bar.model_max_tokens, 4096);
+        assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
+        assert_eq!(
+            app.status_bar.model_reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 
     #[test]
@@ -887,10 +1506,24 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "part2".into(),
         )));
-        assert!(app.thinking.buffer.contains("part1"));
-        assert!(app.thinking.buffer.contains("part2"));
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part1")
+        );
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part2")
+        );
         app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
-        assert!(app.thinking.buffer.is_empty());
+        assert!(app.thinking.active.is_none());
     }
 
     #[test]
@@ -901,8 +1534,7 @@ mod lifecycle_tests {
             "done thinking\n".into(),
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.buffer.is_empty());
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert!(!app.thinking.blocks.is_empty());
     }
 
@@ -921,8 +1553,15 @@ mod lifecycle_tests {
             total: 3,
             ..Default::default()
         }));
-        assert!(app.thinking.active_start.is_some());
-        assert!(app.thinking.buffer.contains("still thinking"));
+        assert!(app.thinking.active.is_some());
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("still thinking")
+        );
     }
 
     #[test]
@@ -930,12 +1569,11 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        assert!(app.thinking.active_start.is_some());
+        assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert!(app.thinking.blocks.is_empty());
         assert_eq!(app.raw_messages.len(), before);
-        assert!(!app.thinking.title_added);
     }
 
     #[test]
@@ -948,7 +1586,40 @@ mod lifecycle_tests {
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.blocks.is_empty());
-        assert!(app.thinking.active_start.is_none());
+        assert!(app.thinking.active.is_none());
         assert_eq!(app.raw_messages.len(), before);
+    }
+
+    #[test]
+    fn thinking_finished_keeps_the_existing_placeholder_index() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "done thinking\n".into(),
+        )));
+        let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+        assert_eq!(app.thinking.blocks[0].phys_idx, phys_idx);
+        assert!(app.thinking.active.is_none());
+    }
+
+    #[test]
+    fn missing_thinking_started_creates_one_placeholder_not_source_rows() {
+        let mut app = make_app();
+        let before = app.raw_messages.len();
+
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "first\nsecond".into(),
+        )));
+
+        assert_eq!(
+            app.raw_messages.len(),
+            before + crate::render::cells::thinking::thinking_visual_rows(2)
+        );
+        assert_eq!(
+            app.thinking.active.as_ref().unwrap().display_tail().len(),
+            2
+        );
     }
 }

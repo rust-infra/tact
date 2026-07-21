@@ -7,12 +7,13 @@
 .claude
 .deepseek
 .openai
+.superpowers/
 .tact/
 skills
 .qoder/
 .worktrees/
-AGENTS.md
 tmp/
 crates/tui/agent_log_*.txt
 *.jpeg
 
+docs/superpowers/

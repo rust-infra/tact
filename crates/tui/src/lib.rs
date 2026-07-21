@@ -7,6 +7,7 @@
 mod handlers;
 mod i18n;
 mod render;
+pub(crate) mod system_prompt;
 mod theme;
 mod theme_detection;
 
@@ -46,6 +47,7 @@ use ratatui::{
 };
 use std::path::PathBuf;
 use std::{io, time::Duration};
+use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
@@ -61,16 +63,25 @@ pub(crate) fn should_repaint(app: &App) -> bool {
 pub struct TuiConfig {
     pub agent_rx: UnboundedReceiver<AgentUpdate>,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
+    pub plugin_rx: UnboundedReceiver<PluginEvent>,
+    pub plugin_tx: UnboundedSender<PluginRequest>,
     pub user_cmd_tx: UnboundedSender<UserCommand>,
     pub work_dir: PathBuf,
     pub input_history_entries: Vec<String>,
     pub session_id: String,
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
-    pub context_limit_chars: usize,
+    pub model_context_window: usize,
+    /// Configured model name, shown in the bottom bar before the first LLM call.
+    pub model_name: String,
+    /// Configured max_tokens per LLM call (0 = hide).
+    pub model_max_tokens: u32,
+    /// Configured thinking budget in tokens (0 = hide).
+    pub model_thinking_budget: usize,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
-    /// Shared with the agent `ToolContext` so `/skill-reload` updates both sides.
+    /// Shared session store used to inspect persisted request payloads.
+    pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
 }
 
@@ -79,16 +90,22 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
         account_rx,
+        plugin_rx,
+        plugin_tx,
         user_cmd_tx,
         work_dir,
         input_history_entries,
         session_id,
         history_save_tx,
         theme,
-        context_limit_chars,
+        model_context_window,
+        model_name,
+        model_max_tokens,
+        model_thinking_budget,
         skills_description,
         skills_data,
         skill_registry,
+        session_store,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -107,6 +124,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let mut app = App::new(
         agent_rx,
         account_rx,
+        plugin_rx,
+        plugin_tx,
         user_cmd_tx.clone(),
         work_dir,
         input_history_entries,
@@ -117,7 +136,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
     app.skill_registry = skill_registry;
-    app.context_limit_chars = context_limit_chars;
+    app.session_store = Some(session_store);
+    app.model_context_window = model_context_window;
+    // Seed the bottom bar from config so model/token info renders at startup;
+    // the first ModelInfo/TokenUsage updates will overwrite these.
+    app.status_bar.model_name = model_name;
+    app.status_bar.model_max_tokens = model_max_tokens;
+    if model_thinking_budget > 0 {
+        app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
+    }
+    app.status_bar.model_reasoning_effort =
+        tact_llm::current_reasoning_effort_from_budget(model_thinking_budget).map(str::to_string);
     app.add_startup_logo();
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());
@@ -156,6 +185,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         for update in account_updates {
             app.handle_account_update(update);
         }
+        while let Ok(event) = app.plugin_rx.try_recv() {
+            app.handle_plugin_event(event);
+        }
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -176,7 +208,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])
@@ -195,7 +227,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Min(3),
+                        Constraint::Min(1),
                         Constraint::Length(input_height),
                         Constraint::Length(bottom_height),
                     ])

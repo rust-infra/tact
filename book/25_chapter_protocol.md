@@ -1,4 +1,5 @@
 # Agent–TUI Protocol
+> Language: [English](./25_chapter_protocol.md) · [中文](./25_chapter_protocol_zh.md)
 
 This chapter documents the `tact_protocol` crate: message types exchanged between the agent runtime and the terminal UI, and how each `AgentUpdate` variant drives state transitions on both sides.
 
@@ -35,9 +36,12 @@ All three use `tokio::sync::mpsc::unbounded_channel`. `RequestSelect` embeds a `
 pub enum AgentUpdate {
     StepAdded(PlanStep),
     StepStarted { idx, tool_id, tool_name, arg_summary, arg_full },
+    ToolProgress { tool_id, chunks: Vec<ToolOutputChunk> },
     StepFinished { idx, tool_id, result: StepResult },
     StepFailed { idx, tool_id, error },
     TaskComplete(String),
+    /// Cancelled mid-task — TUI must leave Planning/Executing
+    TaskCancelled,
     Error(AgentErrorKind),
     TokenUsage(TokenUsageInfo),
     ModelInfo(ModelCallParams),
@@ -56,6 +60,12 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` is a lifecycle enum: producers emit `Started`, zero or more `Delta` fragments, then `Finished`. OpenAI-compatible adapters that only expose `reasoning_content` deltas synthesize `Started` / `Finished` around the stream.
+
+`ToolOutputChunk` carries incrementally decoded text plus a
+`ToolOutputStream` (`Stdout`, `Stderr`, or `Other`). A chunk batch preserves the
+aggregator-observed order across streams. `ToolProgress` is informational: it
+does not indicate success or failure, and unknown or late `tool_id` values are
+ignored by the TUI.
 
 ### `UserCommand`
 
@@ -96,6 +106,7 @@ stateDiagram-v2
     direction LR
     [*] --> Planned: StepAdded
     Planned --> Running: StepStarted
+    Running --> Running: ToolProgress *
     Running --> Succeeded: StepFinished
     Running --> Failed: StepFailed
     Succeeded --> [*]
@@ -128,6 +139,7 @@ stateDiagram-v2
 |-------|---------------|---------------|------------|
 | Planned | `StepAdded(PlanStep)` | pre-flight | Append to `plan.steps`; `ensure_executing_status` |
 | Running | `StepStarted { … }` | pre-flight | Push `ActiveToolBlock`; update `current_step` |
+| Progress | `ToolProgress { tool_id, chunks }` | in-flight tool | Update only the matching active block; preserve thinking/loading gates and scroll intent |
 | Succeeded | `StepFinished { result }` | post-flight | `finalize_tool_block`; set `plan.steps[idx].output` |
 | Failed | `StepFailed { error }` | permission / hooks / execution | Failed tool card or system message; `Status → Idle` |
 
@@ -141,10 +153,16 @@ Parallel tools in one turn each run the sequence above. `StepFinished` is emitte
 StepAdded
   → StepStarted { arg_summary, arg_full }
   → RequestSelect?          (permission Ask only)
+  → ToolProgress*           (after execution starts; informational)
   → StepFinished | StepFailed
 ```
 
 Independent tools may interleave at the wave level, but each `tool_id` keeps this sequence.
+For `bash`, the first progress batch may be immediate; regular batches are at
+least 50 ms apart and at most 4 KiB, with a final flush before the terminal
+event. The shared output buffer strips ANSI CSI/OSC, applies carriage-return
+replacement, retains stream identity for styling, and caps detail at 50,000
+characters.
 
 ---
 
@@ -185,8 +203,8 @@ stateDiagram-v2
 
     note right of Executing
         UserCommand::Cancel sets cancel_flag
-        and emits Info only — Status unchanged,
-        no TaskComplete.
+        and emits Info — Status stays busy until
+        TaskCancelled returns to Idle.
     end note
 ```
 
@@ -196,11 +214,12 @@ stateDiagram-v2
 | `Planning` | `Executing` | First `AgentUpdate::StepAdded` | `ensure_executing_status`; `total` from plan length |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | Updates `current_step`; may have concurrent `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | Sets `task_done_time`; freezes cost timer |
+| `Planning` / `Executing` | `Idle` | `TaskCancelled` | Driver after cancelled `agent_loop`; frees input |
 | `Executing` | `Idle` | `StepFailed` or `Error(Other)` | Freezes cost timer |
 | `Done` | `Idle` | 2 s after `task_done_time` | Main loop calls `maybe_expire_done_status` |
-| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel` | `Info("Cancelling…")` only; loop exits without `TaskComplete` |
+| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel` | `Info("Cancelling…")` + set `cancel_flag`; later `TaskCancelled` |
 
-`TaskComplete` is sent by `crates/tact-ui/src/driver.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false ([Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)).
+`TaskComplete` is sent by `crates/tact-ui/src/driver.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false ([Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)). Cancelled runs emit `TaskCancelled` instead.
 
 ### 4.2 `AgentUpdate` → `Status` mapping
 
@@ -217,12 +236,14 @@ flowchart LR
         RS[RequestSelect]
         SA2[StepAdded after Executing]
         SS[StepStarted]
+        TP[ToolProgress]
         SF[StepFinished]
     end
 
     subgraph transitions["Status transitions"]
         SA1[StepAdded first] -->|Planning → Executing| EX[Executing]
         TKC[TaskComplete] -->|→ Done| DN[Done]
+        TKX[TaskCancelled] -->|→ Idle| ID0[Idle]
         SFL[StepFailed] -->|→ Idle| ID1[Idle]
         ER[Error Other] -->|→ Idle| ID2[Idle]
         DN -->|2s| ID3[Idle]
@@ -230,6 +251,8 @@ flowchart LR
 
     P[Planning] --> SA1
     EX --> TKC
+    EX --> TKX
+    P --> TKX
     EX --> SFL
     EX --> ER
 ```
@@ -238,9 +261,11 @@ flowchart LR
 |---------------|---------------------|-------|
 | `StepAdded` (first) | `Planning → Executing` | `ensure_executing_status` |
 | `StepStarted` | `Executing` (update `current_step`) | May have multiple concurrent `ActiveToolBlock`s |
+| `ToolProgress` | No status change | Informational live output for one active `tool_id` |
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer frozen |
 | `RequestSelect` | `InputMode::Select` (Status stays `Executing`) | See [Ch 10](./10_chapter_permission.md) |
 | `TaskComplete` | `→ Done` (2s → `Idle`) | Emitted by driver, not `agent_loop` |
+| `TaskCancelled` | `→ Idle` | Emitted by driver after cancelled loop; unblocks new prompts |
 | `TokenUsage` / `ModelInfo` | No status change | Metadata-only; status bar update |
 | `StreamChunk` / `ThinkingChunk` / `Info` | No status change | Log / stream only |
 
@@ -289,7 +314,7 @@ stateDiagram-v2
 
 | Category | Variants | TUI side effects |
 |----------|----------|------------------|
-| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `Error`, `RequestSelect` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
+| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `TaskCancelled`, `Error`, `RequestSelect` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
 | **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder; **do not** close an open thinking region |
 | **Request–response** | `RequestSelect { respond }` | Blocks on user choice via oneshot channel |
 
@@ -312,7 +337,7 @@ flowchart TB
     subgraph driver["tact-ui driver"]
         ST[SubmitTask] --> AL[agent_loop]
         AL -->|Ok + !cancel| TC[emit TaskComplete]
-        AL -->|cancel_flag| X[no TaskComplete]
+        AL -->|cancel_flag| XC[emit TaskCancelled]
         CN[Cancel] --> CF[set cancel_flag + Info]
     end
 
@@ -328,7 +353,7 @@ flowchart TB
 | Command | TUI precondition | Handler effect |
 |---------|------------------|----------------|
 | `SubmitTask(text)` | Enter in Insert mode → `Status::Planning` | `build_user_message` → `agent_loop` |
-| `Cancel` | `/cancel` or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits without `TaskComplete` |
+| `Cancel` | `/cancel` or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits; driver emits `TaskCancelled` → `Idle` |
 | `QueryBalance` | `/balance` or palette | `account::query_once()` → `AccountUpdate` channel |
 
 ---

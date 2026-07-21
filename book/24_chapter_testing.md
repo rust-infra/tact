@@ -1,4 +1,5 @@
 # Testing Strategy
+> Language: [English](./24_chapter_testing.md) · [中文](./24_chapter_testing_zh.md)
 
 Tact uses layered integration tests: **agent runtime** (`tact`), **headless UI driver** (`tact-ui`), and **TUI render** (`tui`). All run without a real LLM or terminal.
 

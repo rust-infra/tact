@@ -25,13 +25,15 @@ fn default_test_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
         llm: tact::config::LlmSettings {
             provider: ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: String::new(),
             base_url: String::new(),
             model: "mock-model".to_string(),
             models: Vec::new(),
         },
         agent: tact::config::AgentSettings {
-            context_limit_chars: 500_000,
+            model_context_window: 500_000,
             max_tokens: 8192,
             thinking_budget: 0,
             snapshot_max_items: 80,
@@ -50,6 +52,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
         },
         tools: tact::config::ToolSettings {
             brave_search_api_key: None,
+            bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         },
         permission_mode: None,
         tokio_console: false,
@@ -197,7 +200,7 @@ pub async fn build_test_agent_with_session(
         AgentSystemPrompt::Static("You are a test agent.".to_string()),
     )
     .with_agent_settings(agent_settings)
-    .with_session(Some(session_id.clone()), session_store.clone());
+    .with_session(session_id.clone(), session_store.clone());
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }

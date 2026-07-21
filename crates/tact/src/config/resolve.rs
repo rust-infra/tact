@@ -4,7 +4,7 @@ use super::types::{
     AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
     VisionImageSettings,
 };
-use tact_llm::ProviderKind;
+use tact_llm::{OpenAiProtocol, ProviderKind};
 
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     let compress = toml_cfg
@@ -96,8 +96,24 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
             )
         })?;
 
+    let protocol = entry
+        .protocol
+        .as_deref()
+        .unwrap_or(OpenAiProtocol::default().as_str())
+        .parse::<OpenAiProtocol>()
+        .map_err(anyhow::Error::msg)?;
+    if protocol == OpenAiProtocol::Responses && provider != ProviderKind::OpenAi {
+        anyhow::bail!("protocol 'responses' is only supported for provider 'openai'");
+    }
+    let reasoning_effort = entry.reasoning_effort;
+    if reasoning_effort.is_some() && provider != ProviderKind::OpenAi {
+        anyhow::bail!("reasoning_effort is only supported for provider 'openai'");
+    }
+
     Ok(LlmSettings {
         provider,
+        protocol,
+        reasoning_effort,
         api_key,
         base_url,
         model,
@@ -149,6 +165,10 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
+    let bash_timeout_secs = toml_cfg
+        .tools
+        .bash_timeout_secs
+        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
     let permission_mode = args
         .permission_mode
@@ -158,6 +178,8 @@ pub(super) fn resolve_non_llm_settings(
     ResolvedConfig {
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
@@ -166,7 +188,7 @@ pub(super) fn resolve_non_llm_settings(
         agent: AgentSettings {
             max_tokens: 8_000,
             thinking_budget: 32_000,
-            context_limit_chars: 500_000,
+            model_context_window: 200_000,
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
@@ -179,6 +201,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         tools: ToolSettings {
             brave_search_api_key,
+            bash_timeout_secs,
         },
         permission_mode,
         tokio_console: args.tokio_console,
@@ -213,16 +236,18 @@ pub(super) fn resolve_config(
         .or(toml_cfg.llm.thinking_budget)
         .unwrap_or(32_000);
 
-    let context_limit_chars = args
-        .context_limit_chars
-        .or(toml_cfg.agent.context_limit_chars)
-        .unwrap_or_else(|| {
-            if provider_info.is_kimi_k2x() {
-                900_000
-            } else {
-                500_000
-            }
-        });
+    let model_context_window = args
+        .model_context_window
+        .or(toml_cfg.agent.model_context_window)
+        .unwrap_or(200_000);
+
+    if model_context_window != 0
+        && !usize::try_from(max_tokens).is_ok_and(|max_tokens| max_tokens < model_context_window)
+    {
+        anyhow::bail!(
+            "invalid token limits: llm.max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
+        );
+    }
 
     let notifications_enabled = if args.no_notifications {
         false
@@ -263,6 +288,10 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
+    let bash_timeout_secs = toml_cfg
+        .tools
+        .bash_timeout_secs
+        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
     let permission_mode = args
         .permission_mode
@@ -274,7 +303,7 @@ pub(super) fn resolve_config(
         agent: AgentSettings {
             max_tokens,
             thinking_budget,
-            context_limit_chars,
+            model_context_window,
             notifications_enabled,
             snapshot_max_items,
             micro_compact_enabled,
@@ -287,6 +316,7 @@ pub(super) fn resolve_config(
         },
         tools: ToolSettings {
             brave_search_api_key,
+            bash_timeout_secs,
         },
         permission_mode,
         tokio_console: args.tokio_console,
@@ -315,7 +345,7 @@ mod tests {
             resume_last: false,
             list_sessions: false,
             notifications: None,
-            context_limit_chars: None,
+            model_context_window: None,
             theme: None,
             snapshot_max_items: None,
             no_micro_compact: false,
@@ -341,6 +371,10 @@ model = "gpt-4o"
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
+        assert_eq!(
+            resolved.llm.protocol,
+            tact_llm::OpenAiProtocol::ChatCompletions
+        );
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
@@ -362,6 +396,108 @@ model = "gpt-4o"
             resolved.agent.instruction_sources,
             InstructionSources::default()
         );
+    }
+
+    #[test]
+    fn resolve_openai_responses_protocol() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::Responses);
+    }
+
+    #[test]
+    fn resolve_openai_reasoning_effort() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+reasoning_effort = "max"
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Max)
+        );
+    }
+
+    #[test]
+    fn reject_reasoning_effort_for_non_openai_provider() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+reasoning_effort = "max"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reasoning_effort is only supported for provider 'openai'"));
+    }
+
+    #[test]
+    fn reject_unknown_openai_reasoning_effort() {
+        let error = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+reasoning_effort = "extreme"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown variant `extreme`"));
+    }
+
+    #[test]
+    fn reject_responses_protocol_for_non_openai_provider() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "deepseek"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only supported for provider 'openai'"));
     }
 
     #[test]
@@ -410,6 +546,16 @@ jpeg_quality = 0
         let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
+    }
+
+    #[test]
+    fn bash_timeout_defaults_to_thirty_minutes_and_zero_is_preserved() {
+        let default = resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None);
+        assert_eq!(default.tools.bash_timeout_secs, 1_800);
+
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
+        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None);
+        assert_eq!(disabled.tools.bash_timeout_secs, 0);
     }
 
     #[test]
@@ -699,5 +845,142 @@ api_key = "sk-test"
         let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None);
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_context_window_defaults_to_200k() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 200_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 128000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 128_000);
+    }
+
+    #[test]
+    fn max_tokens_equal_to_model_context_window_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "invalid token limits: llm.max_tokens (8000) must be less than agent.model_context_window (8000)"
+        );
+    }
+
+    #[test]
+    fn resolved_cli_max_tokens_above_model_context_window_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 1000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.max_tokens = Some(9000);
+
+        let err = resolve_config(&args, &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("llm.max_tokens (9000)"));
+        assert!(err.contains("agent.model_context_window (8000)"));
+    }
+
+    #[test]
+    fn max_tokens_below_model_context_window_is_valid() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 7999
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 8000
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 7999);
+        assert_eq!(resolved.agent.model_context_window, 8000);
+    }
+
+    #[test]
+    fn zero_model_context_window_skips_max_tokens_validation() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 32000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model_context_window = 0
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 32_000);
+        assert_eq!(resolved.agent.model_context_window, 0);
     }
 }

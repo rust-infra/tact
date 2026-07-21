@@ -1,4 +1,5 @@
 # Cron Scheduling
+> Language: [English](./16_chapter_cron.md) · [中文](./16_chapter_cron_zh.md)
 
 This chapter explains how Tact lets the agent **register scheduled prompts**: cron expressions, prompt text, and metadata persisted under `.claude/cron/`. The model can create, list, and delete these records through native tools; the storage layer is wired into every main-agent session via `ToolContext`.
 

@@ -2,41 +2,56 @@ use crate::render::render_md::{format_table, render_markdown_tui};
 use crate::render::util::visual_pos_to_byte_offset;
 use crate::widgets::state::*;
 use crate::widgets::tool_widget::ToolRenderOutput;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::ScrollbarState;
-use std::time::Instant;
-use unicode_width::UnicodeWidthStr;
 
 impl App {
-    pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
-        // messages[] 布局（一个已完成 thinking block 的物理索引范围）:
-
-        // [blank_idx]   ""                              ← 隔离空行
-        // [title_idx]   "🧠 Thinking (8 lines)…"        ← title_idx
-        // [title_idx+1] "│ Let me analyze…"              ← 思考内容行 1
-        //   ...
-        // [end_idx]     "│ Solution: use B…"             ← end_idx ← 最后一行
-        // [end_idx+1]   ""                              ← 隔离空行（close 时插入）
-        for block in &self.thinking.blocks {
-            if idx > block.title_idx && idx <= block.end_idx {
-                let total = block.end_idx.saturating_sub(block.title_idx);
-                let visible_start = block.scroll_offset.min(total.saturating_sub(1));
-                let visible_end = (block.scroll_offset + 3).min(total);
-                let relative = idx.saturating_sub(block.title_idx + 1);
-                return relative >= visible_start && relative < visible_end;
-            }
+    /// Whether the rendered log viewport currently sits at its visual bottom.
+    ///
+    /// `u16::MAX` is only a pre-render bottom sentinel: `render_log_panel`
+    /// clamps it to a real logical offset. Tool progress therefore needs to
+    /// recognize both representations before it grows placeholder rows.
+    pub(crate) fn is_log_pinned_to_bottom(&self) -> bool {
+        if self.log_scroll.offset == u16::MAX {
+            return true;
         }
-        true
+        if self.log_scroll.visible_indices_ver != self.messages.len()
+            || self.log_scroll.visual_cache_ver != self.messages.len()
+            || self.log_scroll.visual_start_cache.is_empty()
+        {
+            return false;
+        }
+        let max_offset = crate::render::effective_max_logical_scroll(
+            &self.log_scroll.visual_start_cache,
+            self.log_scroll.height as usize,
+        );
+        self.log_scroll.offset as usize >= max_offset
+    }
+
+    pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
+        idx < self.messages.len()
     }
 
     /// Left indent columns for nested log content at this physical row.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        self.raw_message_types
+        let msg_type = self
+            .raw_message_types
             .get(phys)
             .copied()
-            .unwrap_or(RawMessageType::LLM)
-            .log_indent()
+            .unwrap_or(RawMessageType::LLM);
+        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+            return 0;
+        }
+        // LLM assistant replies: align body text with the text inside a Thinking
+        // card.  The thinking component renders inside an area indented by
+        // LOG_THINKING_INDENT (2), then draws a left border, so its content
+        // starts at column 3 (indent) + 1 (border) = 4 relative to the log
+        // panel's inner area.  Using LOG_THINKING_INDENT + 1 keeps the
+        // assistant reply at the same visual position.
+        if msg_type == RawMessageType::LLM {
+            return crate::render::util::LOG_THINKING_INDENT + 1;
+        }
+        msg_type.log_indent()
     }
 
     /// Map a logical line number to the physical index in messages.
@@ -102,25 +117,6 @@ impl App {
         }
     }
 
-    /// Collapse indicator shown on thinking titles with more than 3 hidden lines.
-    pub(crate) fn thinking_collapse_prefix(&self, phys_idx: usize) -> Option<String> {
-        let block = self
-            .thinking
-            .blocks
-            .iter()
-            .find(|block| block.title_idx == phys_idx)?;
-        let total = block.end_idx.saturating_sub(block.title_idx);
-        if total <= 3 {
-            return None;
-        }
-        Some(
-            self.msgs()
-                .scroll_indicator_tmpl
-                .replacen("{}", &total.min(3).to_string(), 1)
-                .replacen("{}", &total.to_string(), 1),
-        )
-    }
-
     /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
     /// Returns (phys_idx, byte_offset) or None if the position is not inside a physical message.
     pub(crate) fn byte_offset_from_log_position(
@@ -135,12 +131,7 @@ impl App {
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
         let indent = self.nested_log_indent(phys_idx) as usize;
-        let prefix_width = self
-            .thinking_collapse_prefix(phys_idx)
-            .as_deref()
-            .map(UnicodeWidthStr::width)
-            .unwrap_or(0);
-        let text_col = col.saturating_sub(indent).saturating_sub(prefix_width);
+        let text_col = col.saturating_sub(indent);
         let byte_offset =
             visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
         Some((phys_idx, byte_offset))
@@ -182,6 +173,35 @@ impl App {
             }
         }
         None
+    }
+
+    /// Find an active or completed thinking card containing a logical log row.
+    pub(crate) fn find_thinking_at_logical(
+        &self,
+        line_idx: usize,
+    ) -> Option<(usize, usize, usize)> {
+        let find = |phys_idx: usize, rows: usize| {
+            let logical_start = self.phys_to_logical_fast(phys_idx)?;
+            (line_idx >= logical_start && line_idx < logical_start + rows).then_some((
+                phys_idx,
+                logical_start,
+                rows,
+            ))
+        };
+        if let Some(active) = self.thinking.active.as_ref()
+            && let Some(found) = find(
+                active.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+            )
+        {
+            return Some(found);
+        }
+        self.thinking.blocks.iter().find_map(|block| {
+            find(
+                block.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(1),
+            )
+        })
     }
 
     /// Map a visual line number (mouse click row) back to a logical line number.
@@ -243,151 +263,76 @@ impl App {
         parts.join("\n")
     }
 
-    /// Close the currently active thinking block, adding it to thinking_blocks
-    /// and showing only the last 3 lines by default.
-    ///
-    /// If the block was opened (`Started`) but never received content, the title
-    /// and isolation blank are removed so an empty lifecycle leaves no UI residue.
+    /// Finalize the active thinking card at its existing placeholder row.
     pub(crate) fn close_active_thinking_block(&mut self) {
-        if let Some(blank_idx) = self.thinking.active_start.take() {
-            let end = self.thinking.active_end.unwrap_or(blank_idx);
-            self.thinking.active_end = None;
-            self.thinking.title_added = false;
-            // blank_idx is the isolation blank line above the title (inserted in ThinkingChunk)
-            // title at blank_idx+1, thinking content lines at blank_idx+2..=end
-            let title_idx = blank_idx + 1;
-            if end > title_idx {
-                // Insert a blank line at the end as visual separator (isolation line above already inserted during streaming)
-                self.insert_msg(
-                    end + 1,
-                    Line::from(""),
-                    String::new(),
-                    RawMessageType::LLMThinking,
-                );
-
-                let end_idx = end; // Not affected by insert since insert happens after end
-                let total = end_idx.saturating_sub(title_idx);
-                let scroll_offset = total.saturating_sub(3);
-
-                // Pre-render Markdown and cache preview text, avoiding per-frame re-rendering for popups/cards
-                let mut preview_lines = Vec::with_capacity(total);
-                let mut raw_content = String::new();
-                for i in 1..=total {
-                    let phys_idx = title_idx + i;
-                    if phys_idx < self.raw_messages.len() {
-                        let line = &self.raw_messages[phys_idx];
-                        let stripped = line.strip_prefix("│ ").unwrap_or(line);
-                        preview_lines.push(stripped.to_string());
-                        raw_content.push_str(stripped);
-                        raw_content.push('\n');
-                    }
-                }
-                let (styled_lines, _) = render_markdown_tui(&raw_content, &self.theme);
-
-                let elapsed = self
-                    .thinking
-                    .thinking_start
-                    .take()
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-
-                self.thinking.blocks.push(ThinkingBlock {
-                    title_idx,
-                    end_idx,
-                    scroll_offset,
-                    cached_preview: preview_lines,
-                    cached_markdown: styled_lines,
-                    elapsed,
-                });
-            } else {
-                // No content lines: drop the blank + title placeholder rows.
-                let remove_end = title_idx.saturating_add(1).min(self.messages.len());
-                if blank_idx < remove_end {
-                    self.drain_msgs(blank_idx..remove_end);
-                }
-                self.thinking.thinking_start = None;
+        let Some(active) = self.thinking.active.take() else {
+            return;
+        };
+        let old_rows =
+            crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
+        if active.is_blank() {
+            let end = active.phys_idx.saturating_add(old_rows);
+            if active.phys_idx < self.messages.len() && end <= self.messages.len() {
+                self.drain_msgs(active.phys_idx..end);
+                self.shift_phys_indices_from(end, -(old_rows as isize));
             }
-        }
-    }
-
-    /// Open a new thinking block: blank isolation line + title row.
-    pub(crate) fn begin_thinking_block(&mut self) {
-        if self.thinking.title_added {
             return;
         }
-        let msgs = self.msgs();
-        let title_style = Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::ITALIC)
-            .bg(Color::Rgb(35, 35, 45));
-        // Insert a blank isolation line before the title to establish visual
-        // separation before collapsing
-        self.append_blank(RawMessageType::LLMThinking);
-        let separator_idx = self.messages.len() - 1;
 
-        self.append_msg(
-            Line::from(Span::styled(msgs.thinking_title.to_string(), title_style)),
-            msgs.thinking_title.to_string(),
-            RawMessageType::LLMThinking,
-        );
-        self.thinking.title_added = true;
-        self.thinking.active_start = Some(separator_idx);
-        self.thinking.thinking_start = Some(Instant::now());
+        let summary = active
+            .content
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_string();
+        let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
+        let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
+        self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
+        self.thinking.blocks.push(ThinkingBlock {
+            phys_idx: active.phys_idx,
+            content: active.content,
+            summary,
+            cached_markdown,
+            elapsed: active.started_at.elapsed(),
+        });
     }
 
-    /// Append a thinking text delta with line-level buffering.
-    pub(crate) fn append_thinking_delta(&mut self, text: &str) {
-        self.thinking.buffer.push_str(text);
-        let msgs = self.msgs();
-        let style = Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::ITALIC)
-            .bg(Color::Rgb(35, 35, 45));
-        while let Some(idx) = self.thinking.buffer.find('\n') {
-            let line = self.thinking.buffer[..idx].to_string();
-            self.thinking.buffer = self.thinking.buffer[idx + 1..].to_string();
-            let text = if line.is_empty() {
-                String::new()
-            } else {
-                msgs.thinking_line_prefix.replace("{}", &line).to_string()
-            };
-            self.append_msg(
-                Line::from(Span::styled(text.clone(), style)),
-                text,
-                RawMessageType::LLMThinking,
-            );
-            self.thinking.active_end = Some(self.messages.len() - 1);
+    /// Open a new thinking card at one shared-log placeholder row.
+    pub(crate) fn begin_thinking_block(&mut self) {
+        if self.thinking.active.is_some() {
+            return;
         }
-
-        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        // u16::MAX is correctly clipped by render_log_panel based on visual line count
-        self.log_scroll.offset = u16::MAX;
+        let phys_idx = self.push_thinking_placeholder_rows(1);
+        self.thinking.active = Some(ActiveThinkingBlock::new(
+            phys_idx,
+            std::time::Instant::now(),
+        ));
     }
 
-    /// Flush leftover lines in the thinking buffer and close the currently active thinking block.
-    /// Does nothing if there is no active thinking block.
+    /// Append a thinking delta without creating source rows in the shared log.
+    pub(crate) fn append_thinking_delta(&mut self, text: &str) {
+        let resize = if let Some(active) = self.thinking.active.as_mut() {
+            let old_rows =
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
+            active.push_delta(text);
+            Some((
+                active.phys_idx,
+                old_rows,
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+            ))
+        } else {
+            None
+        };
+        if let Some((phys_idx, old_rows, new_rows)) = resize {
+            self.resize_thinking_placeholder_rows(phys_idx, old_rows, new_rows);
+            self.refresh_thinking_log_scroll();
+        }
+    }
+
+    /// Close active thinking on an explicit finish or compatibility fallback.
     pub(crate) fn flush_and_close_thinking(&mut self) {
-        if self.thinking.active_start.is_some() {
-            if !self.thinking.buffer.is_empty() {
-                let style = Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::ITALIC)
-                    .bg(Color::Rgb(35, 35, 45));
-                let flush_text = if self.thinking.buffer.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("│ {}", self.thinking.buffer)
-                };
-                if !flush_text.is_empty() {
-                    self.append_msg(
-                        Line::from(Span::styled(flush_text.clone(), style)),
-                        flush_text,
-                        RawMessageType::LLMThinking,
-                    );
-                    self.thinking.active_end = Some(self.messages.len() - 1);
-                }
-                self.thinking.buffer.clear();
-            }
+        if self.thinking.active.is_some() {
             self.close_active_thinking_block();
         }
     }
@@ -417,6 +362,16 @@ impl App {
             return;
         }
         self.append_blank(RawMessageType::LLM);
+    }
+
+    /// Blank line before assistant stream content when it follows a user message.
+    pub(crate) fn ensure_gap_after_user_message(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+            self.append_blank(RawMessageType::LLM);
+        }
     }
 
     /// Blank line before a tool block when it follows normal content.
@@ -455,6 +410,17 @@ impl App {
         // Flush incomplete code block (interrupted stream)
         if self.stream.code_block {
             const MAX_CODE_PREVIEW: usize = 30;
+            // Line-oriented streaming only consumes text after `\n`. A final
+            // closing fence (or last content line) may still sit in `buffer`
+            // without a trailing newline — fold it in before building the card.
+            let pending = std::mem::take(&mut self.stream.buffer);
+            let pending_trim = pending.trim();
+            if pending_trim == "```" {
+                // Proper close fence without `\n` — discard, do not add to content.
+            } else if !pending.is_empty() {
+                self.stream.code_block_buffer.push(pending);
+            }
+
             let lang = std::mem::take(&mut self.stream.code_block_lang);
             let code_lines = std::mem::take(&mut self.stream.code_block_buffer);
 
@@ -498,27 +464,6 @@ impl App {
             let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
         }
-        // Flush leftover thinking lines and close thinking block
-        if !self.thinking.buffer.is_empty() {
-            let style = Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::ITALIC)
-                .bg(Color::Rgb(35, 35, 45));
-            let text = if self.thinking.buffer.trim().is_empty() {
-                String::new()
-            } else {
-                format!("│ {}", self.thinking.buffer)
-            };
-            if !text.is_empty() {
-                self.append_msg(
-                    Line::from(Span::styled(text.clone(), style)),
-                    text,
-                    RawMessageType::LLMThinking,
-                );
-            }
-            self.thinking.buffer.clear();
-            self.thinking.active_end = Some(self.messages.len() - 1);
-        }
         self.close_active_thinking_block();
         if self.stream.buffer.is_empty() {
             return;
@@ -554,20 +499,14 @@ impl App {
                     }
                 }
                 for block in &mut self.thinking.blocks {
-                    if block.title_idx > idx {
-                        block.title_idx -= 1;
-                        block.end_idx -= 1;
+                    if block.phys_idx > idx {
+                        block.phys_idx -= 1;
                     }
                 }
-                if let Some(ref mut start) = self.thinking.active_start
-                    && *start > idx
+                if let Some(active) = self.thinking.active.as_mut()
+                    && active.phys_idx > idx
                 {
-                    *start -= 1;
-                }
-                if let Some(ref mut end) = self.thinking.active_end
-                    && *end > idx
-                {
-                    *end -= 1;
+                    active.phys_idx -= 1;
                 }
                 if let Some(ref mut start) = self.stream.code_block_start_idx
                     && *start > idx
@@ -603,6 +542,44 @@ impl App {
         phys_idx
     }
 
+    pub(crate) fn push_thinking_placeholder_rows(&mut self, body_lines: usize) -> usize {
+        let phys_idx = self.messages.len();
+        for _ in 0..crate::render::cells::thinking::thinking_visual_rows(body_lines) {
+            self.append_blank(RawMessageType::LLMThinking);
+        }
+        phys_idx
+    }
+
+    pub(crate) fn resize_thinking_placeholder_rows(
+        &mut self,
+        phys_idx: usize,
+        old_rows: usize,
+        new_rows: usize,
+    ) {
+        if new_rows > old_rows {
+            let insert_at = phys_idx + old_rows;
+            for _ in 0..(new_rows - old_rows) {
+                self.insert_msg(
+                    insert_at,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::LLMThinking,
+                );
+            }
+            self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
+        } else if new_rows < old_rows {
+            self.drain_msgs(phys_idx + new_rows..phys_idx + old_rows);
+            self.shift_phys_indices_from(phys_idx + new_rows, -((old_rows - new_rows) as isize));
+        }
+    }
+
+    pub(crate) fn refresh_thinking_log_scroll(&mut self) {
+        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+    }
+
     fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
         if delta == 0 {
             return;
@@ -625,20 +602,14 @@ impl App {
             }
         }
         for block in &mut self.thinking.blocks {
-            if block.title_idx >= at {
-                block.title_idx = (block.title_idx as isize + delta).max(0) as usize;
-                block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
+            if block.phys_idx >= at {
+                block.phys_idx = (block.phys_idx as isize + delta).max(0) as usize;
             }
         }
-        if let Some(ref mut start) = self.thinking.active_start
-            && *start >= at
+        if let Some(active) = self.thinking.active.as_mut()
+            && active.phys_idx >= at
         {
-            *start = (*start as isize + delta).max(0) as usize;
-        }
-        if let Some(ref mut end) = self.thinking.active_end
-            && *end >= at
-        {
-            *end = (*end as isize + delta).max(0) as usize;
+            active.phys_idx = (active.phys_idx as isize + delta).max(0) as usize;
         }
         if let Some(ref mut idx) = self.loading_idx
             && *idx >= at

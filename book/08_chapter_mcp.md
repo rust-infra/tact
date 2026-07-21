@@ -1,4 +1,5 @@
 # MCP Protocol and Agent Integration
+> Language: [English](./08_chapter_mcp.md) · [中文](./08_chapter_mcp_zh.md)
 
 This tutorial walks through [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) from first principles to the concrete implementation in Tact—how an agent connects to external tools end to end.
 

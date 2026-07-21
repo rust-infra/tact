@@ -34,7 +34,10 @@ impl App {
 
     /// True when thinking / tool-diff / code overlay popup is open.
     pub(crate) fn has_overlay_popup(&self) -> bool {
-        self.thinking.popup.is_some() || self.tools.popup.is_some() || self.code_popup.is_some()
+        self.thinking.popup.is_some()
+            || self.tools.popup.is_some()
+            || self.code_popup.is_some()
+            || self.system_prompt_popup.is_some()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -43,6 +46,8 @@ impl App {
         } else if let Some(p) = self.tools.popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.code_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.system_prompt_popup.as_mut() {
             Some(&mut p.scroll)
         } else {
             None
@@ -68,6 +73,8 @@ impl App {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
+        } else if self.system_prompt_popup.is_some() {
+            self.system_prompt_popup = None;
         }
     }
 
@@ -183,20 +190,25 @@ impl App {
         );
     }
 
-    /// Open the thinking popup, locating the block by its title line index.
-    pub(crate) fn open_thinking_popup(&mut self, title_idx: usize) {
-        if let Some((bi, block)) = self
+    /// Open the thinking popup for active or completed content at `phys_idx`.
+    pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
+        let exists = self
             .thinking
-            .blocks
-            .iter()
-            .enumerate()
-            .find(|(_, b)| b.title_idx == title_idx)
-        {
-            let title = self.raw_messages[block.title_idx].clone();
+            .active
+            .as_ref()
+            .is_some_and(|active| active.phys_idx == phys_idx)
+            || self
+                .thinking
+                .blocks
+                .iter()
+                .any(|block| block.phys_idx == phys_idx);
+        if exists {
             self.thinking.popup = Some(ThinkingPopup {
-                block_idx: bi,
-                title,
+                phys_idx,
+                title: self.msgs().thinking_title.to_string(),
                 scroll: 0,
+                selection: None,
+                selection_text: String::new(),
             });
         }
     }
@@ -204,6 +216,10 @@ impl App {
     /// Close the thinking popup.
     pub(crate) fn close_thinking_popup(&mut self) {
         self.thinking.popup = None;
+        self.mouse.thinking_popup_area = Rect::default();
+        self.mouse.popup_text_body_area = Rect::default();
+        self.mouse.popup_text_hit_rows.clear();
+        self.mouse.popup_text_drag_origin = None;
     }
 
     /// Find the code block containing the given logical line number.
@@ -273,16 +289,30 @@ impl App {
 
     /// Copy the full content of the current thinking popup to the clipboard.
     pub(crate) fn copy_thinking_popup(&mut self) {
-        let popup = match &self.thinking.popup {
-            Some(p) => p,
-            None => return,
-        };
-        let block = &self.thinking.blocks[popup.block_idx];
-        if block.cached_preview.is_empty() {
+        let Some(full_content) = self.thinking_popup_content() else {
             return;
-        }
-        let text = block.cached_preview.join("\n");
+        };
+        let Some(popup) = self.thinking.popup.as_ref() else {
+            return;
+        };
+        let text = popup.copy_content(&full_content);
         self.copy_text(&text);
+    }
+
+    pub(crate) fn thinking_popup_content(&self) -> Option<String> {
+        let phys_idx = self.thinking.popup.as_ref()?.phys_idx;
+        self.thinking
+            .active
+            .as_ref()
+            .filter(|active| active.phys_idx == phys_idx)
+            .map(|active| active.content.clone())
+            .or_else(|| {
+                self.thinking
+                    .blocks
+                    .iter()
+                    .find(|block| block.phys_idx == phys_idx)
+                    .map(|block| block.content.clone())
+            })
     }
 
     /// Find tool render output whose block starts at `phys_idx`.
@@ -326,6 +356,7 @@ impl App {
                 use_diff_gutter: false,
                 is_diff: false,
                 scroll: 0,
+                selection: None,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             });
@@ -355,6 +386,7 @@ impl App {
                 use_diff_gutter: output.use_diff_gutter,
                 is_diff: false,
                 scroll: 0,
+                selection: None,
                 cached_content: None,
                 highlighted_lines: Vec::new(),
             }),
@@ -374,6 +406,7 @@ impl App {
                     use_diff_gutter: false,
                     is_diff: true,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -397,15 +430,12 @@ impl App {
                     file_path: None,
                     git_diff_path: None,
                     workspace_dir: None,
-                    inline_content: Some(if full_arg.is_empty() {
-                        content
-                    } else {
-                        format!("$ {full_arg}\n\n{content}")
-                    }),
+                    inline_content: Some(content),
                     lang: "bash".to_string(),
                     use_diff_gutter: false,
                     is_diff: false,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -425,6 +455,7 @@ impl App {
                     use_diff_gutter: false,
                     is_diff: false,
                     scroll: 0,
+                    selection: None,
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
@@ -462,6 +493,10 @@ impl App {
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools.popup = None;
+        self.mouse.diff_popup_area = Rect::default();
+        self.mouse.popup_text_body_area = Rect::default();
+        self.mouse.popup_text_hit_rows.clear();
+        self.mouse.popup_text_drag_origin = None;
     }
 
     /// Copy the popup content to the clipboard.
@@ -470,20 +505,24 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        let text = if let Some(content) = &popup.cached_content {
-            content.clone()
+        let text = if popup.cached_content.is_some() {
+            match popup.copy_content() {
+                Some(content) => content,
+                None => return,
+            }
         } else if let Some(path) = &popup.file_path {
             match std::fs::read_to_string(path) {
-                Ok(content) => content,
+                Ok(content) => popup.copy_content_from(&content),
                 Err(e) => {
                     self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
                     return;
                 }
             }
-        } else if let Some(content) = &popup.inline_content {
-            content.clone()
         } else {
-            return;
+            match popup.copy_content() {
+                Some(content) => content,
+                None => return,
+            }
         };
         self.copy_text(&text);
     }
@@ -519,4 +558,156 @@ impl App {
 
 fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::render::test_harness::make_app;
+    use crate::widgets::{
+        state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
+        tool_widget::{ToolPhase, ToolWidget},
+    };
+    use ratatui::layout::Rect;
+    use tact_protocol::{StepResult, StepStatus};
+
+    fn inline_popup(content: &str) -> DiffPopup {
+        DiffPopup {
+            title: "test".into(),
+            file_path: None,
+            git_diff_path: None,
+            workspace_dir: None,
+            inline_content: Some(content.into()),
+            lang: String::new(),
+            use_diff_gutter: false,
+            is_diff: false,
+            scroll: 0,
+            selection: None,
+            cached_content: None,
+            highlighted_lines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn close_diff_popup_clears_mouse_state_before_reopen() {
+        let mut app = make_app();
+        app.tools.popup = Some(inline_popup("old"));
+        app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
+        app.mouse.popup_text_hit_rows = vec![PopupHitRow {
+            screen_y: 6,
+            text_x: 10,
+            line_start: 0,
+            line_end: 3,
+            cells: vec![PopupTextHit::new(0, 1)],
+        }];
+        app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(0, 1));
+
+        app.close_diff_popup();
+        app.tools.popup = Some(inline_popup("new"));
+
+        assert_eq!(app.mouse.diff_popup_area, Rect::default());
+        assert_eq!(app.mouse.popup_text_body_area, Rect::default());
+        assert!(app.mouse.popup_text_hit_rows.is_empty());
+        assert!(app.mouse.popup_text_drag_origin.is_none());
+        assert!(app.tools.popup.as_ref().unwrap().selection.is_none());
+    }
+
+    #[test]
+    fn popup_copy_content_prefers_non_empty_selection() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.cached_content = Some("first\nsecond".into());
+        popup.selection = Some(PopupTextSelection::new(6, 12));
+
+        assert_eq!(popup.copy_content(), Some("second".into()));
+    }
+
+    #[test]
+    fn popup_copy_content_uses_all_content_for_empty_selection() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.cached_content = Some("first\nsecond".into());
+        popup.selection = Some(PopupTextSelection::new(2, 2));
+
+        assert_eq!(popup.copy_content(), Some("first\nsecond".into()));
+    }
+
+    #[test]
+    fn popup_copy_content_returns_raw_content_without_presentation_prefixes() {
+        let mut popup = inline_popup("first\nsecond");
+        popup.selection = Some(PopupTextSelection::new(0, 5));
+
+        assert_eq!(popup.copy_content(), Some("first".into()));
+    }
+
+    fn thinking_popup(selection: Option<PopupTextSelection>) -> ThinkingPopup {
+        ThinkingPopup {
+            phys_idx: 0,
+            title: "thinking".into(),
+            scroll: 0,
+            selection,
+            selection_text: "first\nsecond".into(),
+        }
+    }
+
+    #[test]
+    fn thinking_popup_copy_content_prefers_non_empty_selection() {
+        let popup = thinking_popup(Some(PopupTextSelection::new(6, 12)));
+
+        assert_eq!(popup.copy_content("raw **reasoning**"), "second");
+    }
+
+    #[test]
+    fn thinking_popup_copy_content_uses_full_reasoning_for_empty_selection() {
+        let popup = thinking_popup(Some(PopupTextSelection::new(2, 2)));
+
+        assert_eq!(popup.copy_content("raw **reasoning**"), "raw **reasoning**");
+    }
+
+    #[test]
+    fn close_thinking_popup_clears_selectable_mouse_state() {
+        let mut app = make_app();
+        app.thinking.popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
+        app.mouse.thinking_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
+        app.mouse.popup_text_hit_rows = vec![PopupHitRow {
+            screen_y: 6,
+            text_x: 6,
+            line_start: 0,
+            line_end: 5,
+            cells: vec![PopupTextHit::new(0, 1)],
+        }];
+        app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(0, 1));
+
+        app.close_thinking_popup();
+
+        assert!(app.thinking.popup.is_none());
+        assert_eq!(app.mouse.thinking_popup_area, Rect::default());
+        assert_eq!(app.mouse.popup_text_body_area, Rect::default());
+        assert!(app.mouse.popup_text_hit_rows.is_empty());
+        assert!(app.mouse.popup_text_drag_origin.is_none());
+    }
+
+    #[test]
+    fn bash_popup_and_card_share_the_same_total_line_count() {
+        let app = make_app();
+        let result = StepResult {
+            tool: "bash".into(),
+            arg_summary: "echo start".into(),
+            arg_full: Some("echo start\necho done".into()),
+            status: StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("output one\noutput two".into()),
+            duration_us: Some(1),
+            permission_label: None,
+        };
+        let msgs = app.msgs();
+        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)
+            .with_phase(ToolPhase::Success)
+            .build();
+        let popup = app.popup_from_tool_output(&output).expect("bash popup");
+
+        assert_eq!(
+            output.detail_total_lines,
+            popup.inline_content.unwrap().lines().count()
+        );
+    }
 }

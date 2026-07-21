@@ -37,18 +37,40 @@ pub async fn run_headless(
 
     let root_dir = tact_path.workdir().display().to_string();
     let session_id = if let Some(ref id) = args.session {
-        Some(id.clone())
+        id.clone()
     } else if args.resume_last {
         let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions.into_iter().next().map(|s| s.id)
+        sessions
+            .into_iter()
+            .next()
+            .map(|s| s.id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     } else {
-        None
+        uuid::Uuid::new_v4().to_string()
     };
 
-    if let Some(ref sid) = session_id {
-        eprintln!("[session: {sid}]");
-    }
+    session_store
+        .ensure_session_row(&session_id, &root_dir)
+        .await?;
+    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
+    lock_registry.register(session_lock.clone()).await;
+    session_store.touch_session(&session_id, &root_dir).await?;
 
+    eprintln!("[session: {session_id}]");
+
+    let run_result = run_headless_locked(args, prompt, tact_path, session_store, session_id).await;
+
+    session_lock.release().await?;
+    run_result
+}
+
+async fn run_headless_locked(
+    _args: CliArgs,
+    prompt: String,
+    tact_path: TactPath,
+    session_store: DynSessionStore,
+    session_id: String,
+) -> anyhow::Result<()> {
     let client = get_llm_client()?;
     let mode = permission_mode_from_config();
     let permission_manager = PermissionManager::try_new(mode)?;
@@ -79,6 +101,9 @@ pub async fn run_headless(
         teammate_manager,
         worktree_manager,
         ui_tx: None,
+        progress_reporter: tact::tool::ToolProgressReporter::default(),
+        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
     };
 
     let mut agent = Agent::new(
@@ -89,39 +114,25 @@ pub async fn run_headless(
         permission_manager,
         AgentSystemPrompt::Dynamic,
     )
-    .with_session(session_id, session_store.clone());
+    .with_session(session_id.clone(), session_store);
 
-    let sid = agent.ensure_session().await?;
+    // Restore any prior messages for resumed sessions.
+    agent.ensure_session().await?;
 
-    let session_lock = {
-        let lock = SessionLockGuard::acquire(session_store.clone(), &sid).await?;
-        lock_registry.register(lock.clone()).await;
-        session_store.touch_session(&sid, &root_dir).await?;
-        Some(lock)
-    };
+    let prompt_message = build_user_message(&prompt, &work_dir).await;
+    agent.agent_loop(Some(prompt_message)).await?;
 
-    let run_result = async {
-        let prompt_message = build_user_message(&prompt, &work_dir).await;
-        agent.agent_loop(Some(prompt_message)).await?;
+    eprintln!("[session id: {session_id}]");
+    eprintln!("{}", agent.runtime.stats.summary());
 
-        eprintln!("[session id: {sid}]");
-        eprintln!("{}", agent.runtime.stats.summary());
+    if let Some(final_content) = agent.runtime.context.last() {
+        let text = extract_text(&final_content.content);
+        println!("{text}");
 
-        if let Some(final_content) = agent.runtime.context.last() {
-            let text = extract_text(&final_content.content);
-            println!("{text}");
-
-            let summary = text.chars().take(200).collect::<String>();
-            let _ = tact::notifications::notify_task_complete(&summary);
-        }
-
-        agent.shutdown_mcp().await;
-        Ok::<(), anyhow::Error>(())
+        let summary = text.chars().take(200).collect::<String>();
+        let _ = tact::notifications::notify_task_complete(&summary);
     }
-    .await;
 
-    if let Some(lock) = session_lock {
-        lock.release().await?;
-    }
-    run_result
+    agent.shutdown_mcp().await;
+    Ok(())
 }

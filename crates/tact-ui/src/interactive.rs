@@ -96,7 +96,15 @@ async fn run_interactive_locked(
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (account_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _plugin_worker = match tact::consts::PluginHome::from_environment() {
+        Some(plugin_home) => {
+            tact::plugin::spawn_worker(plugin_home, plugin_request_rx, plugin_event_tx)
+        }
+        None => tact::plugin::spawn_unavailable_worker(plugin_request_rx, plugin_event_tx),
+    };
 
     let tools = toolset();
     let tool_context = ToolContext {
@@ -109,6 +117,9 @@ async fn run_interactive_locked(
         teammate_manager,
         worktree_manager,
         ui_tx: Some(agent_tx.clone()),
+        progress_reporter: tact::tool::ToolProgressReporter::default(),
+        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
     };
 
     let history_store = session_store.clone();
@@ -121,7 +132,7 @@ async fn run_interactive_locked(
         AgentSystemPrompt::Dynamic,
     )
     .with_ui_channel(agent_tx)
-    .with_session(Some(session_id.clone()), session_store);
+    .with_session(session_id.clone(), session_store.clone());
 
     let (history_save_tx, mut history_save_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();
@@ -134,7 +145,10 @@ async fn run_interactive_locked(
     });
 
     let theme = tact::config::settings().ui.theme.clone();
-    let context_limit_chars = tact::config::settings().agent.context_limit_chars;
+    let model_context_window = tact::config::settings().agent.model_context_window;
+    let model_name = tact::get_model();
+    let model_max_tokens = tact::config::settings().agent.max_tokens;
+    let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
@@ -145,13 +159,19 @@ async fn run_interactive_locked(
         tui::run_tui(tui::TuiConfig {
             agent_rx,
             account_rx,
+            plugin_rx,
+            plugin_tx,
             user_cmd_tx,
             work_dir: tui_work_dir,
             input_history_entries: input_history,
             session_id,
+            session_store,
             history_save_tx,
             theme,
-            context_limit_chars,
+            model_context_window,
+            model_name,
+            model_max_tokens,
+            model_thinking_budget,
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()
@@ -198,7 +218,7 @@ async fn run_interactive_locked(
     tui_handle.await??;
     let agent = driver.await.expect("command driver task panicked");
 
-    if let Some(ref sid) = agent.runtime.session_id {
+    if let Some(sid) = agent.runtime.session_id.as_ref() {
         eprintln!("[session id: {sid}]");
     }
 

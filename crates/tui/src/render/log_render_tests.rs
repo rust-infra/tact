@@ -57,6 +57,20 @@ fn line_index_of(rendered: &str, needle: &str) -> Option<usize> {
     rendered.lines().position(|line| line.contains(needle))
 }
 
+fn buffer_column_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let suffix: String = (x..buffer.area.width)
+                .map(|col| buffer[(col, y)].symbol())
+                .collect();
+            if suffix.starts_with(needle) {
+                return Some(x);
+            }
+        }
+    }
+    None
+}
+
 // ── P0: selection, scroll ───────────────────────────────────────────────────
 
 #[test]
@@ -138,8 +152,34 @@ fn log_mixed_categories_render_user_and_assistant() {
     let user_line = line_index_of(&text, "user task").expect("user line");
     let assistant_line = line_index_of(&text, "assistant reply").expect("assistant line");
     assert!(
-        assistant_line > user_line,
-        "assistant message should render after user message (user={user_line}, assistant={assistant_line})"
+        assistant_line >= user_line + 2,
+        "assistant message should have a blank line after the user message (user={user_line}, assistant={assistant_line})"
+    );
+}
+
+#[test]
+fn log_assistant_reply_aligns_with_thinking_indent() {
+    let mut app = make_app();
+    app.add_user_message("user task".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "thinking reference".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.add_system_message("final assistant reply".into());
+
+    let terminal = render_log_panel_terminal(&mut app, 80, 20);
+    let buffer = terminal.backend().buffer();
+    let thinking_x = buffer_column_of(buffer, "thinking reference").expect("thinking line");
+    let assistant_x = buffer_column_of(buffer, "final assistant reply").expect("assistant line");
+    let user_x = buffer_column_of(buffer, "💬").expect("user line");
+
+    assert_eq!(
+        assistant_x, thinking_x,
+        "normal assistant replies should align with Thinking body text"
+    );
+    assert!(
+        user_x < assistant_x,
+        "user messages should stay left of the indented assistant reply"
     );
 }
 
@@ -171,6 +211,19 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
         text.contains('↕') || text.contains("Thinking"),
         "collapsed thinking block with >3 lines should show scroll indicator or title, got:\n{text}"
     );
+}
+
+#[test]
+fn active_thinking_card_renders_a_three_line_tail_without_source_rows() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "one\ntwo\nthree\nfour\n".into(),
+    )));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(text.contains("two") && text.contains("four"), "{text}");
+    assert!(!text.contains("│ one"), "{text}");
+    assert!(!text.contains("one\n"), "{text}");
 }
 
 #[test]
@@ -305,14 +358,14 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     app.log_scroll.offset = placeholder_logical as u16;
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("bash") && mid.contains("Command output (25 lines)"),
+        mid.contains("bash") && mid.contains("Command output (27 lines)"),
         "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
     app.log_scroll.offset = u16::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("Command output (25 lines)") && bottom.contains("1/25"),
+        bottom.contains("Command output (27 lines)") && bottom.contains("1/27"),
         "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
 }

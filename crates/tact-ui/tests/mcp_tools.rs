@@ -100,6 +100,49 @@ async fn agent_routes_mcp_tool_through_mock_server() {
 }
 
 #[tokio::test]
+async fn large_mcp_output_is_persisted() {
+    let echo = echo_tool();
+    let service = MockMcpService::new(vec![echo.clone()], |_params| {
+        Ok(CallToolResult::success(vec![Content::text(
+            "x".repeat(30_001),
+        )]))
+    });
+    let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
+    let mut router = MCPToolRouter::new();
+    router.register_client(client);
+    let mock = MockClient::new(vec![
+        (
+            vec![mcp_echo_tool_use("mcp_big", "large")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![ContentBlock::Text {
+                text: "done".to_string(),
+            }],
+            Some(StopReason::EndTurn),
+        ),
+    ]);
+
+    let (updates, work_dir) = run_single_task_with_mcp(
+        mock,
+        "call large MCP tool",
+        tact::permission::PermissionMode::Auto,
+        None,
+        router,
+    )
+    .await;
+
+    assert!(updates.iter().any(|update| matches!(
+        update,
+        AgentUpdate::StepFinished { tool_id, result, .. }
+            if tool_id == "mcp_big"
+                && matches!(result.status, StepStatus::Success)
+                && result.message.contains("<persisted-output>")
+    )));
+    assert!(work_dir.join(".claude/tool-results/mcp_big.txt").exists());
+}
+
+#[tokio::test]
 async fn mcp_tool_error_is_reported_as_step_failure() {
     let echo = echo_tool();
     let service = MockMcpService::new(vec![echo.clone()], |_params| {

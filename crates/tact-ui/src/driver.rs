@@ -121,6 +121,18 @@ async fn handle_user_command_with_account(
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
 
             let task_message = build_user_message(&task, image_work_dir).await;
+
+            // DeepSeek V4 and other text-only models reject `image_url` parts.
+            // Reject images early rather than sending a broken request to the API.
+            if task_message.has_images() && !tact_llm::supports_vision() {
+                let model = tact_llm::get_provider().model;
+                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                    "Image attachments are not supported by {model}. \
+                     The current model does not accept image input."
+                ))));
+                return;
+            }
+
             match agent.agent_loop(Some(task_message)).await {
                 Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
                     if let Some(last) = agent.runtime.context.last() {
@@ -128,7 +140,11 @@ async fn handle_user_command_with_account(
                         agent.emit_update(AgentUpdate::TaskComplete(text));
                     }
                 }
-                Ok(()) => {}
+                Ok(()) => {
+                    // Cancelled: clear TUI busy state (Planning/Executing) so
+                    // the next prompt is not blocked behind input_busy_msg.
+                    agent.emit_update(AgentUpdate::TaskCancelled);
+                }
                 Err(e) => {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                 }

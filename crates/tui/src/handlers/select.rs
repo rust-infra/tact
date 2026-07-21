@@ -40,7 +40,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         app.input_mode = InputMode::Normal;
                     }
                     // Multi is only opened for agent ask_user; local flows stay single-select.
-                    SelectKind::ModelPick | SelectKind::PersistModel { .. } => {
+                    SelectKind::ModelPick
+                    | SelectKind::PersistModel { .. }
+                    | SelectKind::ViewSystemPrompt => {
                         app.input_mode = InputMode::Normal;
                     }
                 }
@@ -61,6 +63,40 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         let msgs = app.msgs();
                         app.add_system_message(msgs.selected_tmpl.replace("{}", &chosen));
                     }
+                    app.input_mode = InputMode::Normal;
+                }
+                SelectKind::ViewSystemPrompt => {
+                    let content = if idx == 0 {
+                        Some((
+                            "Raw system prompt template",
+                            include_str!("../../../tact/src/prompt/system_prompt_template.md")
+                                .to_string(),
+                        ))
+                    } else {
+                        app.session_store.as_ref().and_then(|store| {
+                            tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(store.load_latest_request_body(&app.session_id))
+                            })
+                            .ok()
+                            .flatten()
+                            .and_then(|body| {
+                                crate::system_prompt::extract_system_prompt(&body).ok()
+                            })
+                            .map(|content| ("Assembled current system prompt", content))
+                        })
+                    };
+                    let (title, content) = content.unwrap_or_else(|| (
+                        "Assembled current system prompt",
+                        "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
+                    ));
+                    let (rendered, _) =
+                        crate::render::render_md::render_markdown_tui(&content, &app.theme);
+                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
+                        title: title.to_string(),
+                        rendered,
+                        scroll: 0,
+                    });
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::ModelPick => {
@@ -214,6 +250,8 @@ mod tests {
         tact::config::install_or_override(tact::config::ResolvedConfig {
             llm: tact::config::LlmSettings {
                 provider: ProviderKind::Kimi,
+                protocol: tact_llm::OpenAiProtocol::default(),
+                reasoning_effort: None,
                 api_key: "sk-test".into(),
                 base_url: "https://api.moonshot.cn/v1".into(),
                 model: current.into(),
@@ -222,7 +260,7 @@ mod tests {
             agent: tact::config::AgentSettings {
                 max_tokens: 8000,
                 thinking_budget: 0,
-                context_limit_chars: 500_000,
+                model_context_window: 500_000,
                 notifications_enabled: false,
                 snapshot_max_items: 80,
                 micro_compact_enabled: true,
@@ -239,6 +277,7 @@ mod tests {
             },
             tools: tact::config::ToolSettings {
                 brave_search_api_key: None,
+                bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
             },
             permission_mode: None,
             tokio_console: false,
@@ -246,6 +285,8 @@ mod tests {
         });
         tact_llm::init_provider(ProviderInfo {
             provider: ProviderKind::Kimi,
+            protocol: tact_llm::OpenAiProtocol::default(),
+            reasoning_effort: None,
             api_key: "sk-test".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             model: current.into(),

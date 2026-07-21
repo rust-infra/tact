@@ -1,10 +1,11 @@
+use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
 use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
 /// Infer a language label from the file extension.
@@ -149,35 +150,33 @@ fn render_popup_chrome(
 
     let code_bg = app.theme.code_block_bg();
 
-    let para = Paragraph::new(body)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(app.theme.block_border_type())
-                .border_style(Style::default().fg(app.theme.code_card_border()))
-                .title(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(app.theme.code_card_title_fg())
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .title_bottom(Line::from(vec![
-                    Span::styled(
-                        app.msgs().popup_copy_hint,
-                        Style::default().fg(app.theme.accent),
-                    ),
-                    Span::styled(
-                        app.msgs().popup_scroll_hint,
-                        Style::default().fg(app.theme.accent),
-                    ),
-                    Span::styled(
-                        app.msgs().popup_close_hint,
-                        Style::default().fg(app.theme.accent),
-                    ),
-                ]))
-                .style(Style::default().bg(code_bg)),
-        )
-        .wrap(Wrap { trim: false });
+    let para = Paragraph::new(body).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(app.theme.block_border_type())
+            .border_style(Style::default().fg(app.theme.code_card_border()))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(app.theme.code_card_title_fg())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::from(vec![
+                Span::styled(
+                    app.msgs().popup_copy_hint,
+                    Style::default().fg(app.theme.accent),
+                ),
+                Span::styled(
+                    app.msgs().popup_scroll_hint,
+                    Style::default().fg(app.theme.accent),
+                ),
+                Span::styled(
+                    app.msgs().popup_close_hint,
+                    Style::default().fg(app.theme.accent),
+                ),
+            ]))
+            .style(Style::default().bg(code_bg)),
+    );
 
     frame.render_widget(para, popup_area);
     popup_area
@@ -187,6 +186,13 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let code_bg = app.theme.code_block_bg();
     let code_fg = app.theme.code_block_fg();
     let line_num_fg = app.theme.muted_fg();
+    let popup_area = super::centered_popup_area(area);
+    let body_area = Rect::new(
+        popup_area.x.saturating_add(1),
+        popup_area.y.saturating_add(1),
+        popup_area.width.saturating_sub(2),
+        popup_area.height.saturating_sub(3),
+    );
 
     let snapshot = {
         let popup = match app.tools.popup.as_mut() {
@@ -203,6 +209,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
             popup.use_diff_gutter,
             popup.is_diff,
             popup.scroll,
+            popup.selection,
             popup.highlighted_lines.clone(),
         )
     };
@@ -216,6 +223,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         use_diff_gutter,
         is_diff,
         scroll,
+        selection,
         highlighted_lines,
     ) = snapshot;
 
@@ -233,14 +241,16 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )));
         let popup_area = render_popup_chrome(frame, area, app, &popup_title, body);
         app.mouse.diff_popup_area = popup_area;
+        app.mouse.popup_text_body_area = body_area;
+        app.mouse.popup_text_hit_rows.clear();
         return;
     };
 
-    let total = content.lines().count().max(1);
-    let content_height = {
-        let popup_area = super::centered_popup_area(area);
-        popup_area.height.saturating_sub(3) as usize
-    };
+    let source_lines = source_lines(content);
+    let selection = selection.and_then(|selection| selection.normalized_non_empty(content));
+    let total = source_lines.len();
+    let content_height = body_area.height as usize;
+    let body_width = body_area.width as usize;
     let max_scroll = total.saturating_sub(1);
     let scroll = (scroll as usize).min(max_scroll);
 
@@ -252,8 +262,8 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         format!(" {} ({} lines, {}) ", popup_title, total, lang)
     };
 
-    let visible_end = (scroll + content_height).min(total);
     let mut text = Text::default();
+    let mut hit_rows = Vec::new();
 
     if is_diff {
         // ── native git diff rendering ────────────────────────────────────
@@ -263,9 +273,9 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         let diff_header = app.theme.muted_fg(); // ---/+++ file headers
         let diff_context = code_fg; // context lines (starting with space)
 
-        for i in scroll..visible_end {
-            let raw = content.lines().nth(i).unwrap_or("");
-            let prefix = raw.chars().next().unwrap_or(' ');
+        'source: for source in source_lines.iter().skip(scroll) {
+            debug_assert_eq!(source.end, source.start + source.text.len());
+            let prefix = source.text.chars().next().unwrap_or(' ');
 
             let (fg, line_style) = match prefix {
                 '@' => (diff_hunk, Modifier::BOLD),
@@ -275,59 +285,54 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
                 _ => (diff_header, Modifier::empty()),
             };
 
-            let span = Span::styled(
-                raw.to_string(),
-                Style::default().fg(fg).bg(code_bg).add_modifier(line_style),
-            );
-            text.push_line(Line::from(span));
+            let style = Style::default().fg(fg).bg(code_bg).add_modifier(line_style);
+            let styles = vec![style; source.text.chars().count()];
+            for display in layout_display_rows(source.text, source.start, &styles, body_width, true)
+            {
+                if hit_rows.len() >= content_height {
+                    break 'source;
+                }
+                let screen_y = body_area.y.saturating_add(hit_rows.len() as u16);
+                hit_rows.push(display.hit_row(screen_y, body_area.x));
+                text.push_line(Line::from(display.spans(selection.as_ref())));
+            }
         }
     } else {
         // ── plain code rendering with line numbers ───────────────────────
         let num_width = (total + 1).to_string().len().max(3);
         let gutter_cols = usize::from(use_diff_gutter) * 2;
-        let code_width = {
-            let popup_area = super::centered_popup_area(area);
-            (popup_area.width as usize).saturating_sub(6 + num_width + gutter_cols)
-        };
+        let prefix_width = num_width + 2 + gutter_cols;
+        let code_width = body_width.saturating_sub(prefix_width + 2);
         let num_style = Style::default().fg(line_num_fg).bg(code_bg);
         let plus_style = Style::default().fg(app.theme.success).bg(code_bg);
+        let fallback_style = Style::default().fg(code_fg).bg(code_bg);
 
-        for i in scroll..visible_end {
+        for (i, source) in source_lines
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(content_height)
+        {
+            debug_assert_eq!(source.end, source.start + source.text.len());
             let num = format!("{:>nw$}", i + 1, nw = num_width);
-
-            let content_line: Line<'static> = if i < highlighted_lines.len() {
-                let hl_spans: Vec<Span<'static>> = highlighted_lines[i]
-                    .spans
-                    .iter()
-                    .map(|s| {
-                        if s.content.chars().count() <= code_width {
-                            Span::styled(s.content.clone().into_owned(), s.style)
-                        } else {
-                            Span::styled(
-                                s.content.chars().take(code_width).collect::<String>(),
-                                s.style,
-                            )
-                        }
-                    })
-                    .collect();
-                Line::from(hl_spans)
-            } else {
-                let raw: String = content
-                    .lines()
-                    .nth(i)
-                    .unwrap_or("")
-                    .chars()
-                    .take(code_width)
-                    .collect();
-                Line::from(Span::styled(raw, Style::default().fg(code_fg).bg(code_bg)))
-            };
-
+            let styles = scalar_styles(
+                highlighted_lines.get(i),
+                fallback_style,
+                source.text.chars().count(),
+            );
+            let display =
+                layout_display_rows(source.text, source.start, &styles, code_width, false)
+                    .remove(0);
             let mut spans = vec![Span::styled(format!(" {} ", num), num_style)];
             if use_diff_gutter {
                 spans.push(Span::styled("+ ", plus_style));
             }
-            spans.extend(content_line.spans);
+            spans.extend(display.spans(selection.as_ref()));
             text.push_line(Line::from(spans));
+
+            let screen_y = body_area.y.saturating_add(hit_rows.len() as u16);
+            let text_x = body_area.x.saturating_add(prefix_width as u16);
+            hit_rows.push(display.hit_row(screen_y, text_x));
         }
     }
 
@@ -341,8 +346,185 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
     app.mouse.diff_popup_area = popup_area;
+    app.mouse.popup_text_body_area = body_area;
+    app.mouse.popup_text_hit_rows = hit_rows;
 }
 
 pub(crate) fn popup_lang_for_path(path: &str) -> String {
     lang_from_path(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::state::PopupTextHit;
+
+    fn test_hit_rows(
+        text: &str,
+        line_start: usize,
+        text_x: u16,
+        max_width: usize,
+        wrap: bool,
+    ) -> Vec<crate::widgets::state::PopupHitRow> {
+        layout_display_rows(text, line_start, &[], max_width, wrap)
+            .into_iter()
+            .enumerate()
+            .map(|(row, display)| display.hit_row(row as u16, text_x))
+            .collect()
+    }
+
+    #[test]
+    fn hit_map_resolves_ascii_cells_and_clamps_outside_text() {
+        let row = test_hit_rows("abc", 5, 7, 20, false).remove(0);
+
+        assert_eq!(row.hit(6), PopupTextHit::empty(5));
+        assert_eq!(row.hit(7), PopupTextHit::new(5, 6));
+        assert_eq!(row.hit(8), PopupTextHit::new(6, 7));
+        assert_eq!(row.hit(9), PopupTextHit::new(7, 8));
+        assert_eq!(row.hit(10), PopupTextHit::empty(8));
+    }
+
+    #[test]
+    fn hit_map_repeats_wide_scalar_span_for_each_screen_cell() {
+        let row = test_hit_rows("界x", 10, 8, 20, false).remove(0);
+
+        assert_eq!(row.hit(8), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(9), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(10), PopupTextHit::new(13, 14));
+    }
+
+    #[test]
+    fn hit_map_treats_emoji_presentation_sequence_as_one_grapheme() {
+        let text = "a⌨️b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(7), PopupTextHit::new(7, 8));
+    }
+
+    #[test]
+    fn hit_map_treats_zwj_emoji_sequence_as_one_grapheme() {
+        let text = "a👩‍💻b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(7), PopupTextHit::new(12, 13));
+    }
+
+    #[test]
+    fn hit_map_merges_trailing_zero_width_sequence_into_previous_cell() {
+        let text = "a\u{0301}\u{0327}界z";
+        let row = test_hit_rows(text, 4, 3, 20, false).remove(0);
+
+        assert_eq!(row.hit(3), PopupTextHit::new(4, 9));
+        assert_eq!(row.hit(4), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(5), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(12, 13));
+        for hit in &row.cells {
+            assert!(text.is_char_boundary(hit.start - 4));
+            assert!(text.is_char_boundary(hit.end - 4));
+        }
+    }
+
+    #[test]
+    fn hit_map_merges_leading_zero_width_sequence_into_first_cell() {
+        let text = "\u{0301}\u{0327}a界";
+        let row = test_hit_rows(text, 10, 5, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::empty(10));
+        assert_eq!(row.hit(5), PopupTextHit::new(10, 15));
+        assert_eq!(row.hit(6), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(7), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(8), PopupTextHit::empty(18));
+        for hit in &row.cells {
+            assert!(text.is_char_boundary(hit.start - 10));
+            assert!(text.is_char_boundary(hit.end - 10));
+        }
+    }
+
+    #[test]
+    fn hit_map_empty_row_clamps_to_its_source_offset() {
+        let row = test_hit_rows("", 12, 5, 20, false).remove(0);
+
+        assert!(row.cells.is_empty());
+        assert_eq!(row.hit(4), PopupTextHit::empty(12));
+        assert_eq!(row.hit(5), PopupTextHit::empty(12));
+        assert_eq!(row.hit(50), PopupTextHit::empty(12));
+    }
+
+    #[test]
+    fn hit_map_excludes_number_and_diff_gutter() {
+        let row = test_hit_rows("界x", 10, 8, 20, false).remove(0);
+
+        assert_eq!(row.hit(7), PopupTextHit::empty(10));
+        assert_eq!(row.hit(8), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(9), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(10), PopupTextHit::new(13, 14));
+    }
+
+    #[test]
+    fn hit_map_wraps_unified_diff_rows_at_display_width() {
+        let rows = test_hit_rows("+ab界cd", 20, 2, 4, true);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].line_start, 20);
+        assert_eq!(rows[0].line_end, 23);
+        assert_eq!(rows[0].hit(4), PopupTextHit::new(22, 23));
+        assert_eq!(rows[0].hit(5), PopupTextHit::empty(23));
+        assert_eq!(rows[1].line_start, 23);
+        assert_eq!(rows[1].line_end, 28);
+        assert_eq!(rows[1].hit(2), PopupTextHit::new(23, 26));
+        assert_eq!(rows[1].hit(3), PopupTextHit::new(23, 26));
+        assert_eq!(rows[1].hit(4), PopupTextHit::new(26, 27));
+        assert_eq!(rows[1].hit(6), PopupTextHit::empty(28));
+    }
+
+    #[test]
+    fn hit_map_wraps_only_between_extended_grapheme_clusters() {
+        let rows = test_hit_rows("a👩‍💻b", 20, 2, 3, true);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].line_start, 20);
+        assert_eq!(rows[0].line_end, 32);
+        assert_eq!(rows[0].hit(2), PopupTextHit::new(20, 21));
+        assert_eq!(rows[0].hit(3), PopupTextHit::new(21, 32));
+        assert_eq!(rows[0].hit(4), PopupTextHit::new(21, 32));
+        assert_eq!(rows[1].line_start, 32);
+        assert_eq!(rows[1].hit(2), PopupTextHit::new(32, 33));
+    }
+
+    #[test]
+    fn styled_span_layout_truncates_at_aggregate_grapheme_width() {
+        let red = Style::default().fg(ratatui::style::Color::Red);
+        let blue = Style::default().fg(ratatui::style::Color::Blue);
+        let green = Style::default().fg(ratatui::style::Color::Green);
+        let line = Line::from(vec![
+            Span::styled("ab", red),
+            Span::styled("👩‍💻", blue),
+            Span::styled("c", green),
+        ]);
+        let styles = scalar_styles(Some(&line), Style::default(), 7);
+
+        let display = layout_display_rows("ab👩‍💻c", 10, &styles, 4, false).remove(0);
+        let spans = display.spans(None);
+
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "ab👩‍💻"
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].style, red);
+        assert_eq!(spans[1].style, blue);
+        assert_eq!(display.cells.len(), 4);
+        assert_eq!(display.cells[2], PopupTextHit::new(12, 23));
+        assert_eq!(display.cells[3], PopupTextHit::new(12, 23));
+        assert_eq!(display.line_end, 23);
+    }
 }

@@ -15,7 +15,7 @@ For the broader rendering pipeline see [`tui_rendering.md`](./tui_rendering.md).
 | Live elapsed while running | `started_at: Instant` + 10ms dirty tick when `active` is non-empty |
 | Scroll / clip / hit-test correctness | Placeholder rows in `messages[]` + `LogColumnRenderer` |
 | Readable args without log clutter | Truncated summary in plan + log title; full args in popup / `StepResult.arg_full` |
-| Visual separation | One blank line before tool blocks and after thinking blocks |
+| Visual separation | One blank line before tool blocks after normal content |
 | Permission choice visible once | `StepResult.permission_label` on meta row; select popup uses `log_confirm = false` |
 
 ---
@@ -35,6 +35,8 @@ sequenceDiagram
     Note over TUI: ensure_gap_before_tools(); ToolWidget.build() → placeholder rows → active.push()
 
     Agent->>Agent: permission + hooks + execute()
+    Agent->>TUI: ToolProgress { tool_id, chunks } *
+    Note over TUI: update matching ActiveToolBlock.live_output in place
     Agent->>TUI: StepFinished(idx, tool_id, StepResult)
     Note over TUI: finalize_tool_block() → resize placeholders → blocks.push()
 
@@ -50,6 +52,7 @@ sequenceDiagram
 | `execute_tool_call()` | Increments step index; emits `StepAdded` then `StepStarted` |
 | `StepAdded.description` | `tool (arg_summary)` — e.g. `bash (git status --short)`; also stored in `PlanStep.args` |
 | `StepStarted` | Carries `tool_id`, `tool_name`, truncated `arg_summary` from `tool_arg_summary()` |
+| `ToolProgress` | Informational ordered chunks for the matching active `tool_id`; does not finalize the tool or affect thinking/loading gates |
 | Tool execution | Builds `StepResult` with `arg_full`, `message`, `detail`, `duration_us`, `permission_label` |
 | `StepFinished` | TUI finalizes the matching `ActiveToolBlock` by `tool_id` |
 
@@ -82,6 +85,7 @@ pub(crate) struct ActiveToolBlock {
     pub phys_idx: usize,                // first row in messages[]
     pub tool_id: String,                // LLM tool_use id
     pub output: ToolRenderOutput,       // pre-built layout
+    pub live_output: ToolOutputBuffer,  // three-line tail + bounded popup detail
     pub started_at: Instant,
 }
 
@@ -96,6 +100,7 @@ pub(crate) struct ToolBlock {
 | Event | Handler | Effect |
 |---|---|---|
 | `StepStarted` | `agent.rs` | `cancel_active_tool(tool_id)` if restart; `push_tool_placeholder_rows`; `active.push` |
+| `ToolProgress` | `agent.rs` | Update matching `live_output`; visible output grows the card from one to three rows, then keeps a three-line tail; ignore unknown/late IDs |
 | `StepFinished` | `agent.rs` | `ToolWidget::from_step_result().build()` → `finalize_tool_block` |
 | `StepFailed` | `agent.rs` | Rebuild output as `ToolPhase::Failed` or fallback system message |
 | `PlanGenerated` | `agent.rs` | **Legacy handler only** — agent does not emit; would call `cancel_all_active_tools()` |
@@ -175,7 +180,15 @@ Shown only when **phase is Success** and tool kind is:
 | `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
 | `Generic` | others | No card (title + meta only) |
 
-Preview: default 1 line inside the card; overflow row when total > preview. Full text in `detail_full` for popup.
+Completed preview: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the preview/total counter and popup use the same content.
+
+Running `bash` cards add no detail until the first visible output. They then
+grow from one to three rows, titled `Live output (N lines)` where `N` is the
+streamed output line count (not the `$ <command>` prefix). Later progress
+updates a stable three-row tail without changing card height. Popup/`detail_full`
+still prepend `$ <command>` for consistency with completed cards. stdout uses
+normal text styling and stderr spans use the theme warning color. ANSI CSI/OSC
+is removed and carriage return replaces the current logical line.
 
 ---
 
@@ -193,8 +206,9 @@ Placeholder strategy (`visibility.rs::push_tool_placeholder_rows`):
 - Call `ensure_gap_before_tools()` first — inserts one blank line when the previous visible row is normal content.
 - Reserve N blank `SysTool` rows up front so scroll height and mouse mapping stay stable.
 - On finish, `resize_tool_placeholder_rows` grows or shrinks the range if final layout differs from running layout.
+- On live output, resize from one to three preview rows as needed. Preserve numeric scroll offsets; a bottom-pinned viewport remains pinned.
 
-Thinking blocks insert one trailing blank line on close; the next tool block reuses that gap instead of adding a second separator.
+Thinking is a separate direct card pipeline. Completion changes its existing placeholder range into a one-line summary and does not insert a trailing blank line.
 
 ---
 
@@ -231,9 +245,17 @@ File: `widgets/state/tool_state.rs` + `render/popups/diff_popup.rs`
 | `use_diff_gutter` | Green `+` prefix for file writes |
 | `title` | Modal header — for bash, `bash (<full command>)` even when the log title was truncated |
 
-For `bash` / `run_command` / `shell`, popup content is prefixed with `$ <full command>` before the captured output. This is the primary place to read untruncated arguments.
+For `bash` / `run_command` / `shell`, the cached detail contains `$ <full command>` followed by the captured output. The card's preview/total counter, popup, and copy operation therefore share one content source; the popup is the primary place to read untruncated arguments.
+
+An active `bash` card also opens this popup using its buffered output so far.
+The live detail buffer is capped at 50,000 characters and marks omitted text;
+the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
+
+Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
+
+While a tool detail popup is active, `y` copies its non-empty selection and falls back to the full original content for an empty or absent selection. This mouse-selection behavior is limited to tool detail popups; thinking and code popups are unchanged.
 
 ---
 
@@ -255,9 +277,18 @@ pub struct StepResult {
 
 // AgentUpdate variants (abbreviated)
 StepStarted(usize, String /* tool_id */, String /* tool_name */, String /* arg_summary */),
+ToolProgress { tool_id: String, chunks: Vec<ToolOutputChunk> },
 StepFinished(usize, String /* tool_id */, StepResult),
 StepFailed(usize, String /* tool_id */, String),
 ```
+
+Per-tool order is `StepStarted -> ToolProgress* -> StepFinished | StepFailed`.
+For `bash`, two concurrent pipe readers merge chunks in aggregator-observed
+order. The first batch may be immediate; regular events are at least 50 ms
+apart and carry at most 4 KiB, followed by a final flush. The final capture is
+independent of UI rate limiting and is bounded to 50,000 characters. This only
+shows bytes emitted to the pipes: Tact does not use a PTY, inject `stdbuf`, or
+rewrite commands to bypass application or pipeline buffering.
 
 ---
 
