@@ -410,6 +410,17 @@ impl App {
         // Flush incomplete code block (interrupted stream)
         if self.stream.code_block {
             const MAX_CODE_PREVIEW: usize = 30;
+            // Line-oriented streaming only consumes text after `\n`. A final
+            // closing fence (or last content line) may still sit in `buffer`
+            // without a trailing newline — fold it in before building the card.
+            let pending = std::mem::take(&mut self.stream.buffer);
+            let pending_trim = pending.trim();
+            if pending_trim == "```" {
+                // Proper close fence without `\n` — discard, do not add to content.
+            } else if !pending.is_empty() {
+                self.stream.code_block_buffer.push(pending);
+            }
+
             let lang = std::mem::take(&mut self.stream.code_block_lang);
             let code_lines = std::mem::take(&mut self.stream.code_block_buffer);
 

@@ -168,6 +168,39 @@ fn log_renders_streamed_code_block_card() {
     );
 }
 
+#[test]
+fn flush_consumes_closing_fence_without_trailing_newline() {
+    // Stream ends with ``` and no final \n — the close fence stays in stream.buffer.
+    // Flush must treat it as a close, not re-render it as leaked ``` lines.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "已提交。\n\n```text\nCommit: abc\n```\n\n当前状态：\n\n```text\na\nb\nc\n```".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    assert_eq!(app.code_blocks.len(), 2, "both fenced blocks should become cards");
+    let leaked: Vec<_> = app
+        .raw_messages
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            let t = r.trim();
+            t == "```" || t.starts_with("```")
+        })
+        .map(|(i, r)| (i, r.as_str()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "closing fence without trailing newline must not leak into raw_messages: {leaked:?}"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 32);
+    assert!(
+        text.contains("Commit: abc") && (text.contains("当前状态") || text.contains("a")),
+        "cards/content should still render, got:\n{text}"
+    );
+}
+
 // --- P1: Normal mode, plan states, popup scroll, file picker highlight, focus ---
 
 #[test]
