@@ -328,11 +328,13 @@ impl<'a> ToolWidget<'a> {
 
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
         let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
+        // Popup/detail_full keep `$ <command>` for consistency with completed
+        // cards, but the live title/footer/line numbers must count only the
+        // streamed output — the preview itself never includes that prefix.
         let detail = command_detail(&self.tool_name, &self.arg_full, &output.detail_text());
-        let total_lines = detail.lines().count();
         self.detail = Some(detail);
         self.detail_lines = Some(lines);
-        self.detail_total_lines = Some(total_lines);
+        self.detail_total_lines = Some(output.logical_line_count());
         self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
         self.live_detail = true;
         self
@@ -687,6 +689,38 @@ mod tests {
         assert_eq!(
             output.detail_preview[1].spans[0].stream,
             tact_protocol::ToolOutputStream::Stderr
+        );
+    }
+
+    #[test]
+    fn live_output_total_excludes_command_prefix_but_popup_keeps_it() {
+        let (theme, msgs) = fixture();
+        let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
+        live.push_chunks(&[tact_protocol::ToolOutputChunk::stdout(
+            "[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n",
+        )]);
+
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("bash")
+            .with_arg_full("git commit -m \"chore: cargo fmt\"")
+            .with_phase(ToolPhase::Running)
+            .with_live_output(&live)
+            .build();
+
+        assert_eq!(
+            output.detail_total_lines, 2,
+            "live card count must match streamed output lines, not $ command prefix"
+        );
+        assert_eq!(output.detail_preview.len(), 2);
+        assert_eq!(
+            output.detail_title.as_deref(),
+            Some("Live output (2 lines)")
+        );
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some(
+                "$ git commit -m \"chore: cargo fmt\"\n\n[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n"
+            )
         );
     }
 

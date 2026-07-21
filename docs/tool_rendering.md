@@ -183,10 +183,12 @@ Shown only when **phase is Success** and tool kind is:
 Completed preview: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the preview/total counter and popup use the same content.
 
 Running `bash` cards add no detail until the first visible output. They then
-grow from one to three rows, titled `Live output (N lines)`; later progress
-updates a stable three-row tail without changing card height. stdout uses normal
-text styling and stderr spans use the theme warning color. ANSI CSI/OSC is
-removed and carriage return replaces the current logical line.
+grow from one to three rows, titled `Live output (N lines)` where `N` is the
+streamed output line count (not the `$ <command>` prefix). Later progress
+updates a stable three-row tail without changing card height. Popup/`detail_full`
+still prepend `$ <command>` for consistency with completed cards. stdout uses
+normal text styling and stderr spans use the theme warning color. ANSI CSI/OSC
+is removed and carriage return replaces the current logical line.
 
 ---
 

@@ -8,12 +8,8 @@ pub async fn run_plugin_cli(command: PluginSubcommand) -> Result<()> {
     let home = PluginHome::from_environment().expect("HOME must be set for plugin operations");
 
     let result = tokio::task::spawn_blocking(move || {
-        let (request, no_block_on) = build_request(command)?;
-        if no_block_on {
-            execute_request(home, request)
-        } else {
-            execute_request(home, request)
-        }
+        let (request, _no_block_on) = build_request(command)?;
+        execute_request(home, request)
     })
     .await??;
 

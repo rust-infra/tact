@@ -504,7 +504,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 
 **TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自 `RawMessageType`。
 
-**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色；命令 detail 会保存完整命令及其输出，使 card 计数与 popup 一致。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
+**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 的计数（`Live output (N lines)`）只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
 
 **为何仅 code 用 overlay：** code block 将流式 fence 行换成 blank placeholder，并用预渲染 `styled` cache 绘制 card。Thinking 则采用与 tool card 相同的 direct `Renderable` 模型，因此 live tail 与 completion summary 只有一个渲染所有者。
 
