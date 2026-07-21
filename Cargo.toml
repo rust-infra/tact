@@ -10,8 +10,9 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.19.0"
+version = "1.0.5"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
@@ -31,14 +32,14 @@ dotenvy = "0.15"
 eventsource-stream = "0.2"
 futures-util = "0.3"
 globset = "0.4"
-git2 = { version = "0.20", features = ["vendored-libgit2"] }
+git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 libc = "0.2"
 proc-macro2 = "1.0"
 pulldown-cmark = "0.13"
 quote = "1.0"
 ratatui = "0.30"
 regex = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 reqwest-eventsource = "0.6"
 rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
 schemars = "1.0"

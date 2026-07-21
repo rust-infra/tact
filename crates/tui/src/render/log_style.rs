@@ -1,9 +1,12 @@
-use super::slash_style::style_user_skill_line;
-use crate::theme::Theme;
-use crate::widgets::state::RawMessageType;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use std::collections::HashSet;
+
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+use super::slash_style::style_user_skill_line;
+use crate::{theme::Theme, widgets::state::RawMessageType};
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
 pub(crate) fn is_user_message_line(raw_messages: &[String], phys_idx: usize) -> bool {
@@ -299,10 +302,12 @@ mod tests {
 
     #[test]
     fn heading_style_after_wrap() {
-        use crate::render::render_md::render_markdown_tui;
-        use crate::render::util::wrap_line;
-        use crate::theme::ThemeName;
         use ratatui::style::Modifier;
+
+        use crate::{
+            render::{render_md::render_markdown_tui, util::wrap_line},
+            theme::ThemeName,
+        };
 
         let theme = Theme::from(ThemeName::Dark);
         let (lines, raw) = render_markdown_tui("### Popular exchanges in HK", &theme);

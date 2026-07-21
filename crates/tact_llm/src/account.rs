@@ -1,7 +1,6 @@
 //! Provider account balance / usage queries.
 
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::{sync::LazyLock, time::Duration};
 
 use anyhow::Context;
 

@@ -10,10 +10,8 @@ use harness::{
     step_succeeded, task_completed_with, text_block, token_usage_total,
     wire_permission_responder_with_counter,
 };
-use tact::permission::PermissionMode;
-use tact::tool::test_support::write_workspace_file;
-use tact_llm::StopReason;
-use tact_llm::{LlmError, MockClient};
+use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
+use tact_llm::{LlmError, MockClient, StopReason};
 use tact_protocol::{AgentUpdate, UserCommand};
 
 #[tokio::test]
@@ -74,7 +72,9 @@ async fn mock_timeout_retries_then_succeeds() {
     let (updates, _work_dir) = run_single_task(mock, "retry timeout", PermissionMode::Auto).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Recovery") && msg.contains("backoff"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Recovery") && msg.contains("backoff"))),
         "expected backoff recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Recovered after timeout"));

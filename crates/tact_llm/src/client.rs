@@ -3,12 +3,10 @@
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::anthropic;
-use crate::deepseek;
-use crate::kimi;
-use crate::mock::MockClient;
-use crate::openai;
-use crate::{ContentBlock, CreateMessageParams, LlmError, StopReason};
+use crate::{
+    ContentBlock, CreateMessageParams, LlmError, StopReason, anthropic, deepseek, kimi,
+    mock::MockClient, openai,
+};
 
 /// Serialized JSON request body actually sent to the LLM API (for session debugging).
 pub type LlmRequestBody = Vec<u8>;

@@ -5,10 +5,8 @@ mod harness;
 use harness::{
     bash_tool_use, edit_file_tool_use, mock_turn, run_single_task_with_permission_choice,
 };
-use tact::permission::PermissionMode;
-use tact::tool::test_support::write_workspace_file;
-use tact_llm::MockClient;
-use tact_llm::StopReason;
+use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
+use tact_llm::{MockClient, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus};
 
 #[tokio::test]

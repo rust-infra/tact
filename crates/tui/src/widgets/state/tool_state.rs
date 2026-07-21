@@ -1,8 +1,9 @@
 use std::time::Instant;
 
-use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::text::Line;
 use tact_protocol::ToolOutputBuffer;
+
+use crate::widgets::tool_widget::ToolRenderOutput;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
 #[derive(Default)]

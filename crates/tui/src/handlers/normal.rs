@@ -1,7 +1,8 @@
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
 pub(crate) fn handle_normal_mode(
     app: &mut App,
@@ -178,11 +179,14 @@ pub(crate) fn handle_normal_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
-    use crate::widgets::state::{LogSelection, TextPosition};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
+
+    use super::*;
+    use crate::{
+        render::test_harness::make_app,
+        widgets::state::{LogSelection, TextPosition},
+    };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -248,9 +252,11 @@ mod tests {
 
     #[test]
     fn c_cancels_while_executing() {
-        use crate::widgets::state::Status;
         use std::path::PathBuf;
+
         use tact_protocol::{AgentUpdate, UserCommand};
+
+        use crate::widgets::state::Status;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
@@ -286,9 +292,11 @@ mod tests {
 
     #[test]
     fn c_noop_while_done() {
-        use crate::widgets::state::Status;
         use std::path::PathBuf;
+
         use tact_protocol::{AgentUpdate, UserCommand};
+
+        use crate::widgets::state::Status;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();

@@ -64,8 +64,10 @@ pub(crate) fn assemble_chat_completion_body(
 #[cfg(test)]
 pub(crate) mod test_util {
     use super::*;
-    use crate::types::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderKind, RequiredMessageParams};
+    use crate::{
+        ProviderKind, RequiredMessageParams,
+        types::{Thinking as RequestThinking, ThinkingType},
+    };
 
     pub(crate) fn sample_request_with_thinking() -> CreateMessageParams {
         CreateMessageParams::new(RequiredMessageParams {
@@ -112,10 +114,11 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
-    use super::test_util::*;
-    use super::*;
-    use crate::types::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderKind, RequiredMessageParams};
+    use super::{test_util::*, *};
+    use crate::{
+        ProviderKind, RequiredMessageParams,
+        types::{Thinking as RequestThinking, ThinkingType},
+    };
 
     #[test]
     fn openai_hook_uses_reasoning_effort_bands() {

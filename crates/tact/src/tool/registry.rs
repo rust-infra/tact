@@ -1,31 +1,34 @@
 //! Built-in tool registration for the main agent and sub-agents.
 
-use super::ToolRouter;
-use super::apply_patch::ApplyPatchTool;
-use super::ask_user::AskUserTool;
-use super::background_run::{BackgroundRunTool, CheckBackgroundTool};
-use super::bash::BashTool;
-use super::batch_read::BatchReadTool;
-use super::compact::CompactTool;
-use super::cron::{CronCreateTool, CronDeleteTool, CronListTool};
-use super::edit_file::EditFileTool;
-use super::load_skill::LoadSkillTool;
-use super::lsp_tool::QueryLspTool;
-use super::memory::SaveMemoryTool;
-use super::read_file::ReadFileTool;
-use super::search_code::SearchCodeTool;
-use super::sleep::SleepTool;
-use super::subagent::TaskTool;
-use super::task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
-use super::team::{
-    BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
-    ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
+use super::{
+    ToolRouter,
+    apply_patch::ApplyPatchTool,
+    ask_user::AskUserTool,
+    background_run::{BackgroundRunTool, CheckBackgroundTool},
+    bash::BashTool,
+    batch_read::BatchReadTool,
+    compact::CompactTool,
+    cron::{CronCreateTool, CronDeleteTool, CronListTool},
+    edit_file::EditFileTool,
+    load_skill::LoadSkillTool,
+    lsp_tool::QueryLspTool,
+    memory::SaveMemoryTool,
+    read_file::ReadFileTool,
+    search_code::SearchCodeTool,
+    sleep::SleepTool,
+    subagent::TaskTool,
+    task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
+    team::{
+        BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
+        ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
+    },
+    web::{WebFetchTool, WebSearchTool},
+    worktree::{
+        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool,
+        WorktreeStatusTool,
+    },
+    write_file::WriteFileTool,
 };
-use super::web::{WebFetchTool, WebSearchTool};
-use super::worktree::{
-    WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool, WorktreeStatusTool,
-};
-use super::write_file::WriteFileTool;
 
 /// Assembles the full tool set for the main agent loop.
 pub fn toolset() -> ToolRouter {

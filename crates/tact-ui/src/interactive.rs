@@ -16,12 +16,14 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
-
-use crate::account;
-use crate::driver::run_command_loop_with_account;
-use crate::permission::permission_mode_from_config;
-use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
 use tact_protocol::AccountUpdate;
+
+use crate::{
+    account,
+    driver::run_command_loop_with_account,
+    permission::permission_mode_from_config,
+    session_lock::{SessionLockGuard, SessionLockRegistry},
+};
 
 pub async fn run_interactive(
     args: CliArgs,

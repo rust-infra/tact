@@ -160,9 +160,11 @@ impl FilePicker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     // ─── Pure unit tests (no filesystem) ───────────────────────────────────
 

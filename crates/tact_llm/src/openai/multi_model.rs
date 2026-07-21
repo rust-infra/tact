@@ -5,12 +5,15 @@
 //! between OpenAI / DeepSeek-compatible / Kimi body shapes without rebuilding
 //! the long-lived client.
 
-use crate::hook_select::body_hook_for;
-use crate::openai::body::assemble_chat_completion_body;
-use crate::openai::compat::{create_assembled, stream_assembled};
-use crate::{CreateMessageParams, LlmClient, LlmError};
-
 use super::OpenAiAdapter;
+use crate::{
+    CreateMessageParams, LlmClient, LlmError,
+    hook_select::body_hook_for,
+    openai::{
+        body::assemble_chat_completion_body,
+        compat::{create_assembled, stream_assembled},
+    },
+};
 
 /// OpenAI-labeled client that re-selects body hooks from the live provider.
 ///
@@ -93,9 +96,10 @@ impl LlmClient for OpenAiMultiModelAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::CompatibleConfig;
-    use crate::openai::body::test_util::sample_request_with_thinking;
-    use crate::{ProviderInfo, ProviderKind};
+    use crate::{
+        ProviderInfo, ProviderKind,
+        openai::{CompatibleConfig, body::test_util::sample_request_with_thinking},
+    };
 
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {

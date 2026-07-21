@@ -12,9 +12,10 @@
 //! Dangerous bash patterns (`sudo`, `rm -rf /`) are always classified as
 //! High risk regardless of context.
 
+use std::fmt;
+
 use anyhow::Result;
 use serde_json::Value;
-use std::fmt;
 use strum_macros::{Display, EnumString};
 
 const READ_PREFIXES: &[&str] = &[
@@ -340,18 +341,20 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 /// question UI comes *after* approval.
 pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
     match tool_name {
-        "ask_user" => match tool_input
-            .get("question")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|q| !q.is_empty())
-        {
-            Some(q) => format!(
-                "Allow ask_user? The agent wants to ask you a question.\n{}",
-                truncate_chars(q, 80)
-            ),
-            None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
-        },
+        "ask_user" => {
+            match tool_input
+                .get("question")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+            {
+                Some(q) => format!(
+                    "Allow ask_user? The agent wants to ask you a question.\n{}",
+                    truncate_chars(q, 80)
+                ),
+                None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
+            }
+        }
         "bash" => match tool_input
             .get("command")
             .and_then(|v| v.as_str())

@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,6 +5,8 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
+
+use crate::widgets::state::App;
 
 pub(crate) fn render_system_prompt_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(popup) = app.system_prompt_popup.as_ref() else {

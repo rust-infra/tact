@@ -1,6 +1,9 @@
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
+use super::{Tool, ToolContext, ToolRouter};
 use crate::{
     background::SharedBackgroundManager,
     cron::{CronScheduler, SharedCronScheduler},
@@ -11,8 +14,6 @@ use crate::{
     team::{SharedTeammateManager, TeammateManager},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
-
-use super::{Tool, ToolContext, ToolRouter};
 
 pub async fn run_tool<T: Tool + 'static>(
     context: &ToolContext,

@@ -4,12 +4,15 @@
 // Ported from claurst; LSP server configs are loaded from
 // `~/.tact/lsp_servers.json`.
 
-use crate::lsp::{self, LspManager};
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
+
+use crate::{
+    lsp::{self, LspManager},
+    tool::{ToolContext, safe_path},
+};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LspInput {

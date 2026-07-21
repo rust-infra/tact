@@ -1,6 +1,7 @@
+use tact::plugin::PluginRequest;
+
 use super::CommandExecOutcome;
 use crate::widgets::state::App;
-use tact::plugin::PluginRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PluginUsageError;
@@ -47,13 +48,14 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_plugin_command, parse_plugin_command};
-    use crate::i18n::Language;
-    use crate::widgets::state::App;
     use std::path::PathBuf;
+
     use tact::plugin::PluginRequest;
     use tact_protocol::AgentUpdate;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    use super::{handle_plugin_command, parse_plugin_command};
+    use crate::{i18n::Language, widgets::state::App};
 
     fn make_app() -> (App, UnboundedReceiver<PluginRequest>) {
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();

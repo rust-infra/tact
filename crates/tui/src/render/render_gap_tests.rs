@@ -1,12 +1,15 @@
 //! Render gap tests: P0/P1 coverage for previously untested paths.
 
-use super::plan::render_plan_panel;
-use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
+use std::{collections::HashMap, time::Duration};
+
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use std::collections::HashMap;
-use std::time::Duration;
 use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+
+use super::{
+    plan::render_plan_panel,
+    test_harness::{buffer_text, make_app, render_app_text, render_main_area_text},
+};
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
 #[test]
 fn full_frame_keeps_bottom_bar_visible_when_terminal_is_short() {
@@ -338,8 +341,9 @@ fn diff_popup_scroll_skips_leading_lines() {
 
 #[test]
 fn code_popup_scroll_skips_leading_lines() {
-    use crate::widgets::state::{CodeBlock, CodePopup};
     use ratatui::text::Line;
+
+    use crate::widgets::state::{CodeBlock, CodePopup};
 
     let mut app = make_app();
     let content: String = (1..=15)
@@ -413,8 +417,9 @@ fn narrow_terminal_renders_without_empty_frame() {
 
 #[test]
 fn thinking_popup_scroll_shows_later_lines() {
-    use crate::widgets::state::{ThinkingBlock, ThinkingPopup};
     use ratatui::text::Line;
+
+    use crate::widgets::state::{ThinkingBlock, ThinkingPopup};
 
     let mut app = make_app();
     let markdown: Vec<Line> = (1..=12)

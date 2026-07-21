@@ -45,7 +45,6 @@ pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
 pub use tact_llm::Tool as ToolSpec;
-
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
 /// Returns the model name from the active provider configuration.

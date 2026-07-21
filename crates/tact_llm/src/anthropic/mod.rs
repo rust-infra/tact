@@ -4,15 +4,13 @@
 //! can map new Anthropic `stop_reason` strings into [`crate::StopReason`]
 //! without waiting on upstream SDK enum updates.
 
-use std::error::Error;
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedSender;
-
 use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
     ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, MessageError,
@@ -553,7 +551,7 @@ mod tests {
             signature: String::new(),
         })));
         assert!(!is_thinking_content_block(Some(&ContentBlock::Text {
-            text: "hi".into(),
+            text: "hi".into()
         })));
         assert!(!is_thinking_content_block(None));
     }

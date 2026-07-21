@@ -1,10 +1,13 @@
-use super::cli::CliArgs;
-use super::instruction_sources::InstructionSources;
-use super::types::{
-    AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
-    VisionImageSettings,
-};
 use tact_llm::{OpenAiProtocol, ProviderKind};
+
+use super::{
+    cli::CliArgs,
+    instruction_sources::InstructionSources,
+    types::{
+        AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
+        VisionImageSettings,
+    },
+};
 
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     let compress = toml_cfg
@@ -85,12 +88,8 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .filter(|u| !u.is_empty())
         .ok_or_else(|| anyhow::anyhow!("base_url not configured for provider '{provider}'"))?;
 
-    let model = args
-        .model
-        .clone()
-        .or_else(|| entry.model.clone())
-        .filter(|m| !m.trim().is_empty())
-        .ok_or_else(|| {
+    let model =
+        args.model.clone().or_else(|| entry.model.clone()).filter(|m| !m.trim().is_empty()).ok_or_else(|| {
             anyhow::anyhow!(
                 "model not configured for provider '{provider}'. Set llm.providers.{provider}.model or pass --model"
             )
@@ -327,8 +326,7 @@ pub(super) fn resolve_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::cli::CliArgs;
-    use crate::config::types::TactTomlConfig;
+    use crate::config::{cli::CliArgs, types::TactTomlConfig};
 
     fn empty_cli_args() -> CliArgs {
         CliArgs {

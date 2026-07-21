@@ -9,21 +9,24 @@ mod plugin;
 mod select;
 mod skills;
 
+use chrono::Local;
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::handle_insert_mode;
 pub(crate) use mouse::handle_mouse_event;
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 pub(crate) use select::handle_select_mode;
-
-use crate::render::render_md::format_table;
-use crate::widgets::state::log_messages::classify_system_message;
-use crate::widgets::state::{App, InputMode, SelectKind, Status};
-use chrono::Local;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use tact_protocol::UserCommand;
+
+use crate::{
+    render::render_md::format_table,
+    widgets::state::{App, InputMode, SelectKind, Status, log_messages::classify_system_message},
+};
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -469,11 +472,13 @@ pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_palette_command, skills_table_rows};
-    use crate::widgets::state::{App, Status};
     use std::path::PathBuf;
+
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
+
+    use super::{execute_palette_command, skills_table_rows};
+    use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();

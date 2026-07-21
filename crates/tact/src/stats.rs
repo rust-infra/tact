@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::fmt::Write;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    fmt::Write,
+    time::{Duration, Instant},
+};
 
 use tact_protocol::TokenUsageInfo;
 

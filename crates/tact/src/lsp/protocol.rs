@@ -1,5 +1,7 @@
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::process::{ChildStdin, ChildStdout};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    process::{ChildStdin, ChildStdout},
+};
 
 pub(crate) async fn send_message(
     writer: &mut BufWriter<ChildStdin>,

@@ -4,16 +4,17 @@
 // consume those ids directly, allowing a search -> fetch flow without forcing
 // the model to copy/paste raw URLs.
 
-use super::{http, web_refs};
-use crate::tool::ToolContext;
+use std::fmt::Write as _;
+
 use anyhow::Result;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt::Write as _;
 use tool_refactor_macros::tool;
 use tracing::{debug, warn};
+
+use super::{http, web_refs};
+use crate::tool::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WebSearchInput {

@@ -1,12 +1,17 @@
-use crate::render::cells::{thinking::ThinkingCell, tool::ToolCell};
-use crate::render::util::wrap_line;
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+};
+
+use crate::{
+    render::{
+        cells::{thinking::ThinkingCell, tool::ToolCell},
+        util::wrap_line,
+    },
+    widgets::state::App,
 };
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.

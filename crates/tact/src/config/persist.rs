@@ -49,8 +49,9 @@ pub(super) fn update_provider_model_in_toml(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use super::*;
 
     #[test]
     fn updates_model_under_active_provider_section() {

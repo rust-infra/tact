@@ -4,8 +4,7 @@
 //! - [`CreateMessageParams`] — shared request model (Anthropic Messages shape)
 //! - [`StopReason`] — shared stop signal for the agent loop
 
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -369,9 +368,10 @@ impl StopReason {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::{Message, Role};
-    use std::str::FromStr;
 
     #[test]
     fn builder_sets_optional_fields() {

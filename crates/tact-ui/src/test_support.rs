@@ -1,7 +1,9 @@
 //! Helpers for tact-ui integration tests (mock LLM + channel harness).
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use tact::{
     Agent, AgentSystemPrompt,

@@ -1,7 +1,9 @@
 use anyhow::Result;
-use tact::config::{MarketplaceSubcommand, PluginSubcommand};
-use tact::consts::PluginHome;
-use tact::plugin::{PluginRequest, PluginResult, execute_request};
+use tact::{
+    config::{MarketplaceSubcommand, PluginSubcommand},
+    consts::PluginHome,
+    plugin::{PluginRequest, PluginResult, execute_request},
+};
 
 /// Runs a plugin CLI command and prints the result to stdout.
 pub async fn run_plugin_cli(command: PluginSubcommand) -> Result<()> {

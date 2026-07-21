@@ -1,5 +1,3 @@
-use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -7,6 +5,9 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
+
+use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
+use crate::widgets::state::App;
 
 /// Infer a language label from the file extension.
 fn lang_from_path(path: &str) -> String {

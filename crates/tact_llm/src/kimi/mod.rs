@@ -9,13 +9,15 @@ use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::inject::{inject_reasoning_content, thinking_budget_enabled};
-use crate::openai::body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body};
-use crate::openai::compat::{create_assembled, stream_assembled};
-use crate::openai::{CompatibleConfig, OpenAiAdapter};
 use crate::{
     ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, ProviderInfo,
     ProviderKind, StopReason,
+    inject::{inject_reasoning_content, thinking_budget_enabled},
+    openai::{
+        CompatibleConfig, OpenAiAdapter,
+        body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body},
+        compat::{create_assembled, stream_assembled},
+    },
 };
 
 /// Kimi / Moonshot hook: `thinking` object + historical `reasoning_content`.
@@ -152,8 +154,7 @@ impl LlmClient for KimiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RequiredMessageParams;
-    use crate::openai::body::test_util::*;
+    use crate::{RequiredMessageParams, openai::body::test_util::*};
 
     #[test]
     fn kimi_hook_skips_thinking_for_k27() {

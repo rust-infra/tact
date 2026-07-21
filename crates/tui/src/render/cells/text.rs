@@ -1,10 +1,12 @@
-use crate::render::renderable::Renderable;
-use crate::render::util::wrap_line;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 use unicode_width::UnicodeWidthChar;
+
+use crate::render::{renderable::Renderable, util::wrap_line};
 
 /// Writes a single-line span into the buffer.
 fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
@@ -141,9 +143,10 @@ impl Renderable for TextCell {
 
 #[cfg(test)]
 mod render_tests {
+    use ratatui::style::Color;
+
     use super::*;
     use crate::render::renderable::Renderable;
-    use ratatui::style::Color;
 
     fn sample_cell() -> TextCell {
         TextCell::new(

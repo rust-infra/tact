@@ -6,8 +6,10 @@
 //! details. Instead, the account service emits [`AccountUpdate`] messages on
 //! its own channel and the TUI renders them independently.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use tact_llm::{
     is_account_query_supported, is_deepseek, is_kimi_balance_supported, is_kimi_usage_supported,

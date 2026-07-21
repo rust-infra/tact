@@ -1,9 +1,8 @@
 //! Downscale and re-encode user-attached images before sending to vision models.
 
-use image::codecs::jpeg::JpegEncoder;
-use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView};
 use std::io::Cursor;
+
+use image::{DynamicImage, GenericImageView, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use tact::config::VisionImageSettings;
 
 pub struct PreparedImage {
@@ -99,8 +98,9 @@ pub fn vision_settings_from_config() -> VisionImageSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use image::{ImageBuffer, ImageFormat, Rgb};
+
+    use super::*;
 
     fn solid_png(w: u32, h: u32) -> Vec<u8> {
         let img: ImageBuffer<Rgb<u8>, Vec<u8>> =

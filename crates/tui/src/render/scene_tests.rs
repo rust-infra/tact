@@ -1,13 +1,19 @@
 //! End-to-end render scene tests (TestBackend + full frame layout).
 
-use super::plan::render_plan_panel;
-use super::render_status_bar;
-use super::test_harness::{buffer_text, make_app, render_app_text};
-use crate::handlers::execute_palette_command;
-use crate::widgets::state::{App, HistoryEntry, InputMode, Status};
-use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use std::collections::HashMap;
+
+use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+
+use super::{
+    plan::render_plan_panel,
+    render_status_bar,
+    test_harness::{buffer_text, make_app, render_app_text},
+};
+use crate::{
+    handlers::execute_palette_command,
+    widgets::state::{App, HistoryEntry, InputMode, Status},
+};
 
 fn seed_executing_read_step(app: &mut App) {
     app.plan.visible = true;

@@ -14,6 +14,9 @@ mod persist;
 mod resolve;
 mod types;
 
+use std::sync::RwLock;
+
+use clap::Parser;
 pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, PluginSubcommand};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
@@ -21,10 +24,6 @@ pub use types::{
     ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
     VisionImageSettings, VisionImageTomlConfig,
 };
-
-use std::sync::RwLock;
-
-use clap::Parser;
 
 static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
 

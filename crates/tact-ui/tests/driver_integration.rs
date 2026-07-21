@@ -3,13 +3,14 @@
 use std::time::Duration;
 
 use tact::tool::test_support::write_workspace_file;
-use tact_llm::MockClient;
-use tact_llm::{ContentBlock, StopReason};
+use tact_llm::{ContentBlock, MockClient, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
-use tact_ui::driver::run_command_loop;
-use tact_ui::test_support::{
-    build_test_agent, build_test_agent_with_session, collect_updates_after, install_test_config,
-    user_command_channels,
+use tact_ui::{
+    driver::run_command_loop,
+    test_support::{
+        build_test_agent, build_test_agent_with_session, collect_updates_after,
+        install_test_config, user_command_channels,
+    },
 };
 
 fn text_block(content: &str) -> ContentBlock {

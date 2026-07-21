@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
-use super::client::LspClient;
-use super::config::LspServerConfig;
-use super::diagnostic::{LspDiagnostic, format_diagnostics as format_diagnostic_lines};
-use super::uri::path_to_uri;
+use super::{
+    client::LspClient,
+    config::LspServerConfig,
+    diagnostic::{LspDiagnostic, format_diagnostics as format_diagnostic_lines},
+    uri::path_to_uri,
+};
 
 /// Manages a collection of [`LspClient`] instances, routing file operations
 /// to the correct server based on extension mappings.

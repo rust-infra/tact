@@ -13,12 +13,11 @@ use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
+use self::{convert::create_response, normalize::NormalizedResponse, stream::ResponsesStreamState};
 use crate::{
     ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, OpenAiReasoningEffort,
     StopReason,
 };
-
-use self::{convert::create_response, normalize::NormalizedResponse, stream::ResponsesStreamState};
 
 fn set_default_id(value: &mut Value, default_id: String) {
     let Some(object) = value.as_object_mut() else {

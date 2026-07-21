@@ -11,11 +11,15 @@ use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::inject::{inject_user_id, thinking_budget_enabled};
-use crate::openai::body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body};
-use crate::openai::compat::{create_assembled, stream_assembled};
-use crate::openai::{CompatibleConfig, OpenAiAdapter};
-use crate::{ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason};
+use crate::{
+    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason,
+    inject::{inject_user_id, thinking_budget_enabled},
+    openai::{
+        CompatibleConfig, OpenAiAdapter,
+        body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body},
+        compat::{create_assembled, stream_assembled},
+    },
+};
 
 /// DeepSeek hook (official OpenAI format):
 /// `thinking` + `reasoning_effort` (`high` / `max`) + `user_id`.
@@ -135,9 +139,11 @@ impl LlmClient for DeepSeekAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::body::test_util::*;
-    use crate::types::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderKind, RequiredMessageParams};
+    use crate::{
+        ProviderKind, RequiredMessageParams,
+        openai::body::test_util::*,
+        types::{Thinking as RequestThinking, ThinkingType},
+    };
 
     #[test]
     fn deepseek_hook_pairs_thinking_and_effort() {

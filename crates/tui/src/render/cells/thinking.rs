@@ -212,9 +212,10 @@ fn format_elapsed(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
     use super::*;
     use crate::render::test_harness::buffer_text;
-    use ratatui::{Terminal, backend::TestBackend};
 
     fn render_text(cell: &ThinkingCell) -> String {
         let backend = TestBackend::new(80, cell.height(80));

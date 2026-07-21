@@ -4,9 +4,8 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use tera::Tera;
-
 use derive_builder::Builder;
+use tera::Tera;
 
 #[derive(Clone, Debug, Builder)]
 #[builder(setter(into, strip_option))]

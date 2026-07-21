@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use dashmap::DashMap;
 use serde_json;
-use std::sync::Arc;
 
 use super::uri::uri_to_path;
 

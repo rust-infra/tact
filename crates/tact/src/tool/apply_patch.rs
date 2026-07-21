@@ -3,13 +3,15 @@
 // Parses standard unified diff format (as produced by `git diff` or `diff -u`).
 // Supports dry_run mode which validates the patch without writing any files.
 
-use crate::tool::{ToolContext, safe_path};
+use std::path::PathBuf;
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::path::PathBuf;
 use tool_refactor_macros::tool;
 use tracing::debug;
+
+use crate::tool::{ToolContext, safe_path};
 
 // ---------------------------------------------------------------------------
 // Input

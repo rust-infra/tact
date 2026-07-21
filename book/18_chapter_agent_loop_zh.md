@@ -200,7 +200,7 @@ UserCommand::Cancel => {
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`、三阶段流水线 |
 | `crates/tact-ui/src/interactive.rs` | 在 `SubmitTask` 上 spawn 循环，设置 `TaskComplete` |
 | `crates/tact/src/recovery.rs` | 错误分类与 continuation 消息 |
-| `crates/tact/src/compact.rs` | Turn 前 compact 钩子 |
+| `crates/tact/src/compact/mod.rs` | Turn 前 compact 钩子 |
 | `tact_protocol` | `AgentUpdate`、`UserCommand` 线型类型 |
 
 ---

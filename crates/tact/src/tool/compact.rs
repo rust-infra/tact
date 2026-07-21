@@ -25,9 +25,8 @@ pub async fn compact(_ctx: ToolContext, input: CompactInput) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn compact_without_focus() {

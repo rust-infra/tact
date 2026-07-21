@@ -1,14 +1,22 @@
-use crate::render::render_md::{format_table, is_horizontal_rule, render_markdown_tui};
-use crate::widgets::state::*;
-use crate::widgets::tool_widget::{ToolPhase, ToolWidget};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::ScrollbarState;
 use std::time::Instant;
+
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::ScrollbarState,
+};
 use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
     AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
     ToolOutputBuffer, ToolOutputChunk,
+};
+
+use crate::{
+    render::render_md::{format_table, is_horizontal_rule, render_markdown_tui},
+    widgets::{
+        state::*,
+        tool_widget::{ToolPhase, ToolWidget},
+    },
 };
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
@@ -52,18 +60,8 @@ fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult)
         PluginResult::MarketplaceAdded { marketplace } => {
             messages.marketplace_added_tmpl.replace("{}", marketplace)
         }
-        PluginResult::ListedMarketplaces { marketplaces } => {
-            messages.marketplace_list_tmpl.replace(
-                "{}",
-                &marketplaces
-                    .iter()
-                    .map(|marketplace| {
-                        format!("{}: {}", marketplace.name, marketplace.source.git_url())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        }
+        // Rendered as a titled table by `App::show_marketplace_list`; plain fallback only.
+        PluginResult::ListedMarketplaces { .. } => messages.marketplace_list_empty.to_owned(),
         PluginResult::MarketplaceUpdated { marketplace, count } => replace_two(
             messages.marketplace_updated_tmpl,
             marketplace,
@@ -660,6 +658,61 @@ impl App {
         }
     }
 
+    /// Renders `/plugin marketplace list` as a titled table (one row per marketplace).
+    ///
+    /// Must not go through [`Self::add_system_message`]: a single-newline list would be
+    /// Markdown-soft-broken into one crowded line.
+    fn show_marketplace_list(&mut self, marketplaces: &[tact::plugin::MarketplaceRecord]) {
+        use crate::widgets::state::log_messages::classify_system_message;
+
+        self.add_new_line();
+
+        let msgs = self.msgs();
+        let title = msgs
+            .marketplace_list_title_tmpl
+            .replace("{}", &marketplaces.len().to_string());
+        let title_ty = classify_system_message(&title);
+        self.append_msg(
+            Line::from(Span::styled(
+                title.clone(),
+                Style::default().fg(self.theme.accent),
+            )),
+            title,
+            title_ty,
+        );
+        self.add_new_line();
+
+        if marketplaces.is_empty() {
+            let empty = msgs.marketplace_list_empty;
+            self.append_msg(
+                Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
+                empty.to_string(),
+                classify_system_message(empty),
+            );
+        } else {
+            let mut rows = vec![
+                msgs.marketplace_list_header.to_string(),
+                "|---|---|".to_string(),
+            ];
+            rows.extend(marketplaces.iter().map(|marketplace| {
+                format!(
+                    "| {} | {} |",
+                    marketplace.name,
+                    marketplace.source.git_url()
+                )
+            }));
+            let (styled, raw) = format_table(&rows, &self.theme);
+            let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
+            self.extend_msgs(styled, raw, ty);
+        }
+
+        self.add_new_line();
+
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+    }
+
     /// Displays a completed plugin operation from the isolated worker.
     pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
         self.dirty = true;
@@ -668,10 +721,12 @@ impl App {
                 result,
                 refresh_skills,
             } => {
-                if let PluginResult::ListedInstalled { plugins } = &result {
-                    self.show_plugin_list(plugins);
-                } else {
-                    self.add_system_message(format_plugin_result(&self.msgs(), &result));
+                match &result {
+                    PluginResult::ListedInstalled { plugins } => self.show_plugin_list(plugins),
+                    PluginResult::ListedMarketplaces { marketplaces } => {
+                        self.show_marketplace_list(marketplaces)
+                    }
+                    _ => self.add_system_message(format_plugin_result(&self.msgs(), &result)),
                 }
                 if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
                     self.add_system_message(
@@ -720,18 +775,20 @@ impl App {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
-    use crate::render::test_harness::render_log_panel_text;
-    use crate::widgets::state::{App, Status};
-    use std::collections::HashMap;
-    use std::fs;
-    use std::path::PathBuf;
+    use std::{collections::HashMap, fs, path::PathBuf};
+
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
         ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
+
+    use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
+    use crate::{
+        render::test_harness::render_log_panel_text,
+        widgets::state::{App, Status},
+    };
 
     fn make_app() -> App {
         let (_agent_tx, agent_rx) = unbounded_channel();
@@ -903,6 +960,55 @@ mod lifecycle_tests {
         assert!(
             !joined.contains("installed plugins:"),
             "old flat message must be gone, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn marketplace_list_renders_titled_table_with_separate_rows() {
+        let mut app = make_app();
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::ListedMarketplaces {
+                marketplaces: vec![
+                    tact::plugin::MarketplaceRecord {
+                        name: "claude-plugins-official".into(),
+                        source: tact::plugin::MarketplaceSource::GitUrl(
+                            "https://github.com/anthropics/claude-plugins-official.git".into(),
+                        ),
+                    },
+                    tact::plugin::MarketplaceRecord {
+                        name: "superpowers-dev".into(),
+                        source: tact::plugin::MarketplaceSource::GitUrl(
+                            "https://github.com/obra/superpowers.git".into(),
+                        ),
+                    },
+                ],
+            },
+            refresh_skills: false,
+        });
+
+        let joined = app.raw_messages.join("\n");
+        assert!(
+            joined.contains("Marketplaces (2)"),
+            "expected titled block, got:\n{joined}"
+        );
+        let official_line = app
+            .raw_messages
+            .iter()
+            .find(|line| line.contains("claude-plugins-official"))
+            .expect("official marketplace row");
+        let superpowers_line = app
+            .raw_messages
+            .iter()
+            .find(|line| line.contains("superpowers-dev"))
+            .expect("superpowers marketplace row");
+        assert_ne!(
+            official_line, superpowers_line,
+            "each marketplace must be its own row, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("marketplaces:"),
+            "old crowded one-liner must be gone, got:\n{joined}"
         );
     }
 

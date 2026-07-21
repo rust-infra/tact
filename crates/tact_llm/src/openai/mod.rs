@@ -14,10 +14,8 @@ pub(crate) mod compat;
 pub mod multi_model;
 pub mod responses;
 
-pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
-pub use multi_model::OpenAiMultiModelAdapter;
+use std::{collections::HashMap, time::Duration};
 
-use crate::{ContentBlock, StopReason};
 use async_openai::{
     config::Config,
     types::{
@@ -25,18 +23,18 @@ use async_openai::{
         ChatCompletionToolChoiceOption, Stop,
     },
 };
+pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+pub use multi_model::OpenAiMultiModelAdapter;
 use reqwest::header::{AUTHORIZATION, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
-use serde::Deserialize;
-use serde::Serialize;
-use std::{collections::HashMap, time::Duration};
+use serde::{Deserialize, Serialize};
+use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
-
 use super::LlmError;
+use crate::{ContentBlock, StopReason};
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///

@@ -294,9 +294,10 @@ fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
     use crate::plugin::PluginSkillRoot;
-    use tempfile::tempdir;
 
     #[test]
     fn parses_frontmatter_with_lf_line_endings() {

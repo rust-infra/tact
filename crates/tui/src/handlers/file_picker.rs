@@ -1,5 +1,6 @@
-use crate::widgets::state::{App, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::widgets::state::{App, InputMode};
 
 /// File picker key handling.
 ///
@@ -65,10 +66,12 @@ pub(crate) fn handle_file_picker_mode(app: &mut App, key: KeyEvent) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
     use crate::render::test_harness::{make_app, render_app_text};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::path::PathBuf;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())

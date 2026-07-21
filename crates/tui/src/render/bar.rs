@@ -1,4 +1,3 @@
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -6,6 +5,8 @@ use ratatui::{
     widgets::Paragraph,
 };
 use unicode_width::UnicodeWidthStr;
+
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
 /// Spinner animation frames for typing/loading indicator.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -451,11 +452,13 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod render_tests {
-    use super::super::test_harness::{buffer_text, make_app, render_app_text};
-    use super::render_bottom_bar;
-    use super::render_usage_bar;
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tact_protocol::{BalanceEntry, BalanceInfo};
+
+    use super::{
+        super::test_harness::{buffer_text, make_app, render_app_text},
+        render_bottom_bar, render_usage_bar,
+    };
 
     #[test]
     fn render_usage_bar_scales_to_width() {

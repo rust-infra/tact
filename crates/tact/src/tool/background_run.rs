@@ -35,9 +35,8 @@ pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> 
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn check_background_lists_empty_when_no_tasks() {

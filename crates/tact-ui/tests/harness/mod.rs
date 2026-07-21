@@ -1,19 +1,26 @@
 //! Shared helpers for tact-ui integration tests.
 #![allow(dead_code, unused_imports)]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tact::permission::PermissionMode;
-use tact_llm::MockClient;
-use tact_llm::{ContentBlock, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
-use tact_ui::driver::run_command_loop;
-use tact_ui::test_support::{
-    build_test_agent_with_config, build_test_agent_with_mcp, build_test_agent_with_mode,
-    collect_updates_after, install_test_config, install_test_config_with, user_command_channels,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::task::JoinHandle;
+
+use tact::permission::PermissionMode;
+use tact_llm::{ContentBlock, MockClient, StopReason};
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
+use tact_ui::{
+    driver::run_command_loop,
+    test_support::{
+        build_test_agent_with_config, build_test_agent_with_mcp, build_test_agent_with_mode,
+        collect_updates_after, install_test_config, install_test_config_with,
+        user_command_channels,
+    },
+};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    task::JoinHandle,
+};
 
 pub fn text_block(content: &str) -> ContentBlock {
     ContentBlock::Text {

@@ -3,36 +3,38 @@
 mod tool_dispatch;
 mod tool_schedule;
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::path::Path;
 use tact_llm::{
-    ContentBlock, CreateMessageParams, Message, MessageContent, RequiredMessageParams, Role,
-    StopReason, Thinking, ThinkingType,
+    ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
+    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
-
-use crate::ToolSpec;
-use crate::compact::{
-    CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
-    compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
-    estimate_message_tokens, micro_compact, recent_messages_for_summary,
-    retained_user_message_token_budget, should_auto_compact, write_transcript,
-};
-use crate::config::AgentSettings;
-use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
-use crate::mcp::MCPToolRouter;
-use crate::memory::MEMORY_GUIDANCE;
-use crate::permission::PermissionManager;
-use crate::prompt::{SystemPrompt, responses_prompt_template};
-use crate::recovery::{
-    CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
-    is_prompt_too_long_error, is_transient_transport_error,
-};
-use crate::stats::SessionStats;
-use crate::store::DynSessionStore;
-use crate::tool::{ToolContext, ToolRouter};
-use tact_llm::{LlmClient, LlmProvider};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+use crate::{
+    ToolSpec,
+    compact::{
+        CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
+        compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
+        estimate_message_tokens, micro_compact, recent_messages_for_summary,
+        retained_user_message_token_budget, should_auto_compact, write_transcript,
+    },
+    config::AgentSettings,
+    hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    mcp::MCPToolRouter,
+    memory::MEMORY_GUIDANCE,
+    permission::PermissionManager,
+    prompt::{SystemPrompt, responses_prompt_template},
+    recovery::{
+        CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
+        is_prompt_too_long_error, is_transient_transport_error,
+    },
+    stats::SessionStats,
+    store::DynSessionStore,
+    tool::{ToolContext, ToolRouter},
+};
 
 enum CompactRebuildMode {
     /// Retain recent real user messages + handoff summary (Codex-style).
@@ -1103,8 +1105,7 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         ".DS_Store",
     ];
 
-    use std::cmp::Ordering;
-    use std::collections::BTreeMap;
+    use std::{cmp::Ordering, collections::BTreeMap};
 
     // filter_entry prunes ignored dirs during the walk, not after.
     let mut items: Vec<std::path::PathBuf> = Vec::new();
@@ -1303,11 +1304,13 @@ fn assemble_agents_md_prompt(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Once;
-    use tact_llm::{ContentBlock, Message, Role, StopReason};
-    use tact_llm::{LlmProvider, MockClient, ProviderKind};
 
+    use tact_llm::{
+        ContentBlock, LlmProvider, Message, MockClient, ProviderKind, Role, StopReason,
+    };
+
+    use super::*;
     use crate::tool::test_support::test_context;
 
     static INIT_CONFIG: Once = Once::new();
@@ -1574,8 +1577,9 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_runs_parallel_read_tools() {
         ensure_config();
-        use crate::tool::test_support::{test_context, write_workspace_file};
         use tact_protocol::AgentUpdate;
+
+        use crate::tool::test_support::{test_context, write_workspace_file};
 
         let context = test_context("agent_parallel_reads");
         let work_dir = context.work_dir.clone();
@@ -1646,8 +1650,9 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_plan_mode_denies_write() {
         ensure_config();
-        use crate::tool::test_support::test_context;
         use tact_protocol::AgentUpdate;
+
+        use crate::tool::test_support::test_context;
 
         let context = test_context("agent_plan_deny");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1705,8 +1710,9 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_emits_token_usage_from_mock() {
         ensure_config();
-        use crate::tool::test_support::test_context;
         use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+        use crate::tool::test_support::test_context;
 
         let context = test_context("agent_token_usage");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1763,8 +1769,9 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_serializes_read_before_write_on_same_file() {
         ensure_config();
-        use crate::tool::test_support::{test_context, write_workspace_file};
         use tact_protocol::AgentUpdate;
+
+        use crate::tool::test_support::{test_context, write_workspace_file};
 
         let context = test_context("agent_read_write_serial");
         let work_dir = context.work_dir.clone();

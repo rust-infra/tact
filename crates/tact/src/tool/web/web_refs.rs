@@ -1,10 +1,12 @@
 //! Shared helpers for linking `web_search` results to `web_fetch` via result ids.
 
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::{
+    cell::RefCell,
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    path::PathBuf,
+};
 
 use tracing::warn;
 
@@ -101,8 +103,9 @@ pub(crate) fn resolve_fetch_target(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fmt::Write as _;
+
+    use super::*;
 
     #[derive(serde::Serialize)]
     struct SearchResult {

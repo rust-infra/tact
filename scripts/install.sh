@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install tact-ui on Linux or macOS (build from source, or download a GitHub release when available).
+# Install tact-ui on Linux or macOS (prefer GitHub release, else build from source).
 set -euo pipefail
 
 REPO="${TACT_INSTALL_REPO:-rust-infra/tact}"
@@ -7,6 +7,8 @@ GIT_REF="${TACT_INSTALL_GIT_REF:-main}"
 BINARY_NAME="tact-ui"
 CRATE_PACKAGE="tact-ui"
 DEFAULT_VERSION="0.19.0"
+# Matches workspace.package.rust-version (edition 2024).
+MIN_RUSTC_VERSION="1.85.0"
 
 INSTALL_DIR="${TACT_INSTALL_DIR:-}"
 USE_SYSTEM=0
@@ -21,10 +23,13 @@ Usage: install.sh [OPTIONS]
 
 Install the tact-ui binary on Linux or macOS.
 
+By default the installer downloads a matching GitHub release asset when one
+exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
+
 Options:
   --install-dir DIR   Install to DIR (default: ~/.local/bin)
   --system            Install to /usr/local/bin (may require sudo)
-  --from-source       Build from source (default when no release asset exists)
+  --from-source       Build from source only (skip release download)
   --release           Prefer a GitHub release binary; fall back to source build
   --release-only      Require a GitHub release binary (no source fallback)
   --git-ref REF       Git branch/tag when cloning (default: main)
@@ -80,6 +85,11 @@ esac
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+# True when $1 >= $2 (dotted numeric versions).
+version_ge() {
+  printf '%s\n%s\n' "$2" "$1" | sort -V -C
 }
 
 detect_target_triple() {
@@ -166,18 +176,37 @@ install_macos_deps() {
   fi
 }
 
+rustc_meets_minimum() {
+  command -v rustc >/dev/null 2>&1 || return 1
+  local ver
+  ver="$(rustc -V 2>/dev/null | awk '{print $2}')"
+  [[ -n "$ver" ]] || return 1
+  version_ge "$ver" "$MIN_RUSTC_VERSION"
+}
+
 ensure_rust() {
   [[ "$SKIP_DEPS" -eq 1 ]] && return 0
-  if command -v cargo >/dev/null 2>&1; then
+
+  if rustc_meets_minimum && command -v cargo >/dev/null 2>&1; then
     return 0
   fi
 
-  log "Rust toolchain not found; installing via rustup..."
-  need_cmd curl
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  if command -v rustup >/dev/null 2>&1; then
+    log "Updating stable Rust toolchain (need >= ${MIN_RUSTC_VERSION} for edition 2024)..."
+    rustup toolchain install stable --profile minimal
+    rustup default stable
+  elif ! command -v cargo >/dev/null 2>&1; then
+    log "Rust toolchain not found; installing via rustup (stable >= ${MIN_RUSTC_VERSION})..."
+    need_cmd curl
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  else
+    die "rustc $(rustc -V 2>/dev/null || echo '?') is too old; install Rust >= ${MIN_RUSTC_VERSION} (https://rustup.rs)"
+  fi
+
   # shellcheck disable=SC1091
   [[ -f "${HOME}/.cargo/env" ]] && source "${HOME}/.cargo/env"
   command -v cargo >/dev/null 2>&1 || die "cargo still not found after rustup install"
+  rustc_meets_minimum || die "rustc $(rustc -V) is still below ${MIN_RUSTC_VERSION}; run: rustup update stable"
 }
 
 repo_root() {
@@ -188,7 +217,18 @@ repo_root() {
 resolve_version() {
   local root="$1"
   if [[ -f "${root}/Cargo.toml" ]]; then
-    awk -F'"' '/^version = / { print $2; exit }' "${root}/Cargo.toml"
+    # Prefer [workspace.package] version; fall back to first bare version = "..." line.
+    awk '
+      /^\[workspace\.package\]/ { in_pkg=1; next }
+      /^\[/ { in_pkg=0 }
+      in_pkg && /^version = "/ {
+        gsub(/"/, "", $3); print $3; found=1; exit
+      }
+      END {
+        if (!found) exit 1
+      }
+    ' "${root}/Cargo.toml" \
+      || awk -F'"' '/^version = "/ { print $2; exit }' "${root}/Cargo.toml"
   else
     echo "$DEFAULT_VERSION"
   fi
@@ -226,11 +266,15 @@ try_install_release() {
 
 build_from_source() {
   local root="$1"
-  log "Building ${BINARY_NAME} from source..."
+  local -a cargo_args=(build --release -p "$CRATE_PACKAGE")
+  log "Building ${BINARY_NAME} from source (rustc >= ${MIN_RUSTC_VERSION})..."
   need_cmd cargo
+  if [[ -f "${root}/Cargo.lock" ]]; then
+    cargo_args+=(--locked)
+  fi
   (
     cd "$root"
-    cargo build --release -p "$CRATE_PACKAGE"
+    cargo "${cargo_args[@]}"
   )
   local built="${root}/target/release/${BINARY_NAME}"
   [[ -f "$built" ]] || die "build succeeded but binary missing: ${built}"
@@ -293,14 +337,12 @@ main() {
   install_linux_deps
   install_macos_deps
 
-  if [[ "$FROM_SOURCE" -eq 1 || "$RELEASE_ONLY" -eq 0 ]]; then
-    if [[ "$FROM_SOURCE" -eq 1 ]]; then
-      ensure_rust
-      build_from_source "$src_root"
-      ensure_path
-      log "Done. Run: ${BINARY_NAME} --help"
-      return 0
-    fi
+  if [[ "$FROM_SOURCE" -eq 1 ]]; then
+    ensure_rust
+    build_from_source "$src_root"
+    ensure_path
+    log "Done. Run: ${BINARY_NAME} --help"
+    return 0
   fi
 
   if try_install_release "$version" "$triple"; then

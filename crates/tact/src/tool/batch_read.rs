@@ -3,11 +3,12 @@
 //! All paths are validated before any read begins. Files are read
 //! concurrently via `tokio::spawn` + `join_all`.
 
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
+
+use crate::tool::{ToolContext, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileRead {
@@ -136,9 +137,8 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
 
     #[tokio::test]
     async fn batch_read_rejects_invalid_path_before_reading() {

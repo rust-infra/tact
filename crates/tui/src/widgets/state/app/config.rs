@@ -1,6 +1,8 @@
-use crate::i18n::Messages;
-use crate::theme::{Theme, ThemeName};
-use crate::widgets::state::*;
+use crate::{
+    i18n::Messages,
+    theme::{Theme, ThemeName},
+    widgets::state::*,
+};
 impl App {
     /// Palette commands visible for the current provider configuration,
     /// including dynamic skill commands.
@@ -92,8 +94,7 @@ impl App {
 #[cfg(test)]
 mod tests {
 
-    use crate::render::test_harness::make_app;
-    use crate::theme::ThemeName;
+    use crate::{render::test_harness::make_app, theme::ThemeName};
 
     #[test]
     fn toggle_theme_cycles_from_retro() {

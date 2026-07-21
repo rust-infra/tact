@@ -1,9 +1,11 @@
 //! Headless agent-update loop (mirrors `run_tui` drain logic, no terminal).
 
-use crate::widgets::state::{App, InputMode};
 use std::time::Duration;
+
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedReceiver;
+
+use crate::widgets::state::{App, InputMode};
 
 /// Drain pending updates from `agent_rx`, optionally auto-confirm permission selects.
 pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {

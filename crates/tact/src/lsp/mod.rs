@@ -12,12 +12,12 @@ mod protocol;
 mod symbols;
 mod uri;
 
+use std::sync::{Arc, LazyLock};
+
 pub use client::LspClient;
 pub use config::LspServerConfig;
 pub use diagnostic::{DiagnosticSeverity, LspDiagnostic, format_diagnostics};
 pub use manager::LspManager;
-
-use std::sync::{Arc, LazyLock};
 
 static GLOBAL_LSP_MANAGER: LazyLock<Arc<tokio::sync::Mutex<LspManager>>> =
     LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(LspManager::new())));
@@ -29,13 +29,13 @@ pub fn global_lsp_manager() -> Arc<tokio::sync::Mutex<LspManager>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
-    use super::diagnostic::parse_diagnostic;
-    use super::uri::{path_to_uri, uri_to_path};
     use super::{
-        DiagnosticSeverity, LspDiagnostic, LspManager, LspServerConfig, global_lsp_manager,
+        DiagnosticSeverity, LspDiagnostic, LspManager, LspServerConfig,
+        diagnostic::parse_diagnostic,
+        global_lsp_manager,
+        uri::{path_to_uri, uri_to_path},
     };
 
     fn make_config(name: &str) -> LspServerConfig {

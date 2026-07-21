@@ -1,9 +1,16 @@
-use crate::render::render_md::render_markdown_tui;
-use crate::widgets::state::log_messages::{SystemMsgStyle, classify_system_message};
-use crate::widgets::state::*;
 use chrono::Local;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+use crate::{
+    render::render_md::render_markdown_tui,
+    widgets::state::{
+        log_messages::{SystemMsgStyle, classify_system_message},
+        *,
+    },
+};
 
 impl App {
     pub(crate) fn add_startup_logo(&mut self) {

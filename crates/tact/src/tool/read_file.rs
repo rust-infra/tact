@@ -1,9 +1,10 @@
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::fs;
 use tool_refactor_macros::tool;
+
+use crate::tool::{ToolContext, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadFileInput {
@@ -56,9 +57,8 @@ pub async fn read_file(ctx: ToolContext, input: ReadFileInput) -> Result<String>
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
 
     #[tokio::test]
     async fn read_file_errors_when_file_missing() {

@@ -1,10 +1,13 @@
 //! Syntax highlighting for `/skill-name` [args] in the input box and user log lines.
 
-use crate::theme::Theme;
-use crate::widgets::state::SkillEntry;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use std::collections::HashSet;
+
+use ratatui::{
+    style::{Modifier, Style},
+    text::{Line, Span},
+};
+
+use crate::{theme::Theme, widgets::state::SkillEntry};
 
 /// Split a line that starts with a known skill slash into `(skill_token, rest)`.
 /// `skill_token` includes the leading `/` (e.g. `/demo-test`); `rest` may start with spaces.

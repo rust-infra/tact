@@ -5,10 +5,8 @@ mod harness;
 use harness::{
     bash_tool_use, read_file_tool_use, run_single_task_with_config, task_completed_with, text_block,
 };
-use tact::permission::PermissionMode;
-use tact::tool::test_support::write_workspace_file;
-use tact_llm::StopReason;
-use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind};
+use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
+use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason};
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
 fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
@@ -117,6 +115,82 @@ async fn context_limit_triggers_auto_compact() {
 }
 
 #[tokio::test]
+async fn end_turn_does_not_compact_until_another_model_call_is_needed() {
+    let mock = MockClient::with_usage(vec![(
+        vec![text_block("Finished near the context limit.")],
+        Some(StopReason::EndTurn),
+        TokenUsageInfo {
+            total: 85_000,
+            ..TokenUsageInfo::default()
+        },
+    )]);
+
+    let (updates, _) = run_single_task_with_config(
+        mock,
+        "finish",
+        PermissionMode::Auto,
+        tiny_context_config(),
+        |_| {},
+    )
+    .await;
+
+    assert!(task_completed_with(
+        &updates,
+        "Finished near the context limit"
+    ));
+    assert!(
+        !updates.iter().any(|update| matches!(update, AgentUpdate::Info(message) if message.contains("[auto compact]"))),
+        "terminal response must not trigger an unused compaction call: {updates:?}"
+    );
+}
+
+#[tokio::test]
+async fn failed_compact_tool_does_not_trigger_manual_compaction() {
+    let invalid_compact = ContentBlock::ToolUse {
+        id: "compact1".to_string(),
+        name: "compact".to_string(),
+        input: serde_json::json!({ "focus": 42 }),
+    };
+    let mock = MockClient::with_responder(move |request, idx| match idx {
+        0 => Ok((
+            vec![invalid_compact.clone()],
+            Some(StopReason::ToolUse),
+            None,
+        )),
+        _ => {
+            let prompt = serde_json::to_string(&request.messages).unwrap();
+            if prompt.contains("Summarize this coding-agent conversation") {
+                Ok((Vec::new(), Some(StopReason::EndTurn), None))
+            } else {
+                Ok((
+                    vec![text_block("Continued after rejected compact.")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ))
+            }
+        }
+    });
+
+    let (updates, _) = run_single_task_with_config(
+        mock,
+        "compact",
+        PermissionMode::Auto,
+        tiny_context_config(),
+        |_| {},
+    )
+    .await;
+
+    assert!(task_completed_with(
+        &updates,
+        "Continued after rejected compact"
+    ));
+    assert!(
+        !updates.iter().any(|update| matches!(update, AgentUpdate::Info(message) if message.contains("[manual compact]"))),
+        "failed compact tool must not rewrite conversation history: {updates:?}"
+    );
+}
+
+#[tokio::test]
 async fn prompt_too_long_recovery_compacts_and_retries() {
     let mock = MockClient::with_responder(move |request, idx| {
         match idx {
@@ -156,7 +230,9 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
         run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
 
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("compact"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("compact"))),
         "expected compact recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Recovered from long prompt"));
@@ -300,8 +376,56 @@ async fn max_tokens_with_pending_tools_executes_then_continues() {
         "pending bash tool should still execute, got: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("continue"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("continue"))),
         "expected continuation recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Continued after max_tokens"));
+}
+
+#[tokio::test]
+async fn max_tokens_with_large_pending_tool_result_compacts_before_continuation() {
+    let large_content = "x".repeat(30_000);
+    let mock = MockClient::with_responder(|request, idx| match idx {
+        0 => Ok((
+            vec![read_file_tool_use("read1", "large.txt")],
+            Some(StopReason::MaxTokens),
+            Some(TokenUsageInfo {
+                total: 30_000,
+                ..TokenUsageInfo::default()
+            }),
+        )),
+        1 => {
+            let prompt = serde_json::to_string(&request.messages).unwrap();
+            assert!(
+                prompt.contains("Summarize this coding-agent conversation"),
+                "expected compaction request: {prompt}"
+            );
+            Ok((
+                vec![text_block("Summary before continuation.")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        }
+        _ => Ok((
+            vec![text_block("Continued after compact.")],
+            Some(StopReason::EndTurn),
+            None,
+        )),
+    });
+
+    let mut config = tiny_context_config();
+    config.agent.model_context_window = 35_000;
+    config.agent.max_tokens = 2_000;
+    let (updates, _) = run_single_task_with_config(
+        mock,
+        "truncated read",
+        PermissionMode::Auto,
+        config,
+        |dir| write_workspace_file(dir, "large.txt", &large_content),
+    )
+    .await;
+
+    assert!(task_completed_with(&updates, "Continued after compact"));
 }

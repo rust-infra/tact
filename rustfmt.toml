@@ -1,0 +1,5 @@
+# Rust code formatting configuration for Tact.
+# See https://rust-lang.github.io/rustfmt/ for all options.
+
+# Project-wide settings — match Cargo.toml
+edition = "2024"

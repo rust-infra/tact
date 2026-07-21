@@ -3,17 +3,17 @@ mod marketplace;
 mod model;
 mod store;
 
-use crate::consts::PluginHome;
 use anyhow::{Context, Result};
+pub use install::*;
+pub use marketplace::*;
+pub use model::*;
+pub use store::*;
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 
-pub use install::*;
-pub use marketplace::*;
-pub use model::*;
-pub use store::*;
+use crate::consts::PluginHome;
 
 /// A plugin operation requested by the interactive UI.
 #[derive(Debug, Clone, PartialEq, Eq)]

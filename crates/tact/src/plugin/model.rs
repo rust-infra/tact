@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
-
-use std::path::{Component, Path};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path},
+};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

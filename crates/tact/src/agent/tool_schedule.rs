@@ -14,9 +14,10 @@
 //! `j`) always land in different waves with `wave[i] < wave[j]`, so their
 //! original relative order is preserved while independent calls overlap.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 
 /// The workspace files a tool reads and/or writes, used to decide whether two
 /// tool calls in the same turn may run concurrently.

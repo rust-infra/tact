@@ -5,9 +5,8 @@ use async_openai_responses::types::responses::{
 };
 use tact_protocol::TokenUsageInfo;
 
-use crate::{ContentBlock, LlmError, StopReason};
-
 use super::history;
+use crate::{ContentBlock, LlmError, StopReason};
 
 #[derive(Debug)]
 pub(crate) struct NormalizedResponse {
@@ -171,11 +170,12 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use async_openai_responses::types::responses::Response;
+
     use super::normalize_response;
     use crate::{
         ContentBlock, CreateMessageParams, Message, RequiredMessageParams, Role, StopReason,
     };
-    use async_openai_responses::types::responses::Response;
 
     pub(crate) fn completed_response_json() -> serde_json::Value {
         serde_json::json!({

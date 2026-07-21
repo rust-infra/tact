@@ -1,5 +1,4 @@
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::{buffer::Buffer, layout::Rect};
 
 /// Renderable unit that knows its visual height and how to draw.
 pub(crate) trait Renderable {

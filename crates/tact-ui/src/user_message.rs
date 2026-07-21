@@ -157,10 +157,12 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use tact_llm::MessageContent;
+
     use super::*;
     use crate::test_support::install_test_config;
-    use std::path::PathBuf;
-    use tact_llm::MessageContent;
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tact_tui_test_{}", std::process::id()));
@@ -177,12 +179,14 @@ mod tests {
 
     fn assert_text_contains(block: &ContentBlock, needle: &str) {
         match block {
-            ContentBlock::Text { text } => assert!(
-                text.contains(needle),
-                "expected text block to contain {:?}, got {:?}",
-                needle,
-                text
-            ),
+            ContentBlock::Text { text } => {
+                assert!(
+                    text.contains(needle),
+                    "expected text block to contain {:?}, got {:?}",
+                    needle,
+                    text
+                )
+            }
             _ => panic!("expected text block, got {:?}", block),
         }
     }

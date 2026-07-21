@@ -1,8 +1,9 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
 };
+
+use crate::widgets::state::App;
 
 /// Divider width (in columns) for the draggable panel resize handle.
 const DIVIDER_WIDTH: u16 = 2;
@@ -79,10 +80,12 @@ fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod render_tests {
+    use std::collections::HashMap;
+
+    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
+
     use super::super::test_harness::{buffer_contains, make_app, render_app_text};
     use crate::widgets::state::Status;
-    use std::collections::HashMap;
-    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
 
     #[test]
     fn main_area_renders_tool_and_stream_content() {

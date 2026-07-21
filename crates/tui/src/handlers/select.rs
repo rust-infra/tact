@@ -1,5 +1,6 @@
-use crate::widgets::state::{App, InputMode, SelectKind};
 use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::widgets::state::{App, InputMode, SelectKind};
 
 /// Select popup mode key handling: up/down to navigate, Enter to confirm, Esc to cancel.
 /// Multi-select also uses Space to toggle checkboxes.
@@ -224,10 +225,11 @@ pub(crate) fn start_model_picker(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tact_llm::{ProviderInfo, ProviderKind};
+
+    use super::*;
+    use crate::render::test_harness::make_app;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())

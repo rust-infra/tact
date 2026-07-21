@@ -1,8 +1,9 @@
 //! Shared keyboard handling for scrollable overlay popups
 //! (thinking / tool-diff / code).
 
-use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::widgets::state::App;
 
 /// Handle a key while an overlay popup is open.
 /// Returns `true` if an overlay was active (key is consumed either way).
@@ -43,10 +44,13 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
-    use crate::widgets::state::{CodePopup, DiffPopup, ThinkingPopup};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::{
+        render::test_harness::make_app,
+        widgets::state::{CodePopup, DiffPopup, ThinkingPopup},
+    };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

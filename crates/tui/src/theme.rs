@@ -2,9 +2,9 @@
 // Defines all color schemes supported by the TUI. Each theme specifies background,
 // foreground, accent, warning, error, and other UI element colors.
 
-use ratatui::style::Color;
-use ratatui::widgets::BorderType;
 use std::str::FromStr;
+
+use ratatui::{style::Color, widgets::BorderType};
 
 /// Built-in theme name enum.
 #[derive(Clone, Copy, PartialEq, Debug)]

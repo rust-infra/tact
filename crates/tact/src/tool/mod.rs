@@ -25,22 +25,23 @@
 //! `crates/tool_refactor_macros`) auto-generates the [`Tool`] impl and
 //! JSON schema from an async function signature.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
-use crate::ToolSpec;
-use crate::background::SharedBackgroundManager;
-use crate::cron::SharedCronScheduler;
-use crate::memory::MemoryManager;
-use crate::task::SharedTaskManager;
-use crate::team::SharedTeammateManager;
-use crate::worktree::SharedWorktreeManager;
 use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
+
+use crate::{
+    ToolSpec, background::SharedBackgroundManager, cron::SharedCronScheduler,
+    memory::MemoryManager, task::SharedTaskManager, team::SharedTeammateManager,
+    worktree::SharedWorktreeManager,
+};
 
 mod apply_patch;
 mod ask_user;
@@ -68,8 +69,6 @@ mod web;
 mod worktree;
 mod write_file;
 
-pub use registry::{subagent_toolset, toolset};
-
 #[cfg(test)]
 use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
@@ -86,6 +85,7 @@ use load_skill::LoadSkillTool;
 use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
+pub use registry::{subagent_toolset, toolset};
 #[cfg(test)]
 use search_code::SearchCodeTool;
 #[cfg(test)]
@@ -215,8 +215,10 @@ pub use progress::ToolProgressReporter;
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{install_skill, test_context, write_workspace_file};
-    use super::*;
+    use super::{
+        test_support::{install_skill, test_context, write_workspace_file},
+        *,
+    };
 
     #[derive(serde::Deserialize, JsonSchema)]
     struct EchoInput {

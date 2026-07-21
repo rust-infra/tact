@@ -5,15 +5,16 @@
 // is present but semantic (LLM-based) extraction is not yet wired up — it
 // depends on `claurst_api::AnthropicClient` which is not available in tact.
 
-use super::{http, web_refs};
-use crate::tool::ToolContext;
+use std::{fs, path::PathBuf, time::Duration};
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::path::PathBuf;
-use std::{fs, time::Duration};
 use tool_refactor_macros::tool;
 use tracing::{debug, warn};
+
+use super::{http, web_refs};
+use crate::tool::ToolContext;
 
 const MAX_CONTENT_CHARS: usize = 100_000;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -308,9 +309,8 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::test_context;
-
     use super::*;
+    use crate::tool::test_support::test_context;
 
     #[test]
     fn resolve_requested_url_uses_explicit_url() {

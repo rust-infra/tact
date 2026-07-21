@@ -200,7 +200,7 @@ UserCommand::Cancel => {
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, three-phase pipeline |
 | `crates/tact-ui/src/interactive.rs` | Spawns loop on `SubmitTask`, sets `TaskComplete` |
 | `crates/tact/src/recovery.rs` | Error classification and continuation message |
-| `crates/tact/src/compact.rs` | Pre-turn compaction hooks |
+| `crates/tact/src/compact/mod.rs` | Pre-turn compaction hooks |
 | `tact_protocol` | `AgentUpdate`, `UserCommand` wire types |
 
 ---

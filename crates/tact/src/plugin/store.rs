@@ -6,9 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::consts::PluginHome;
-
 use super::{InstalledState, MarketplaceState};
+use crate::consts::PluginHome;
 
 const MARKETPLACES_FILE: &str = "marketplaces.json";
 const INSTALLED_FILE: &str = "installed.json";

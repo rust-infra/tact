@@ -10,12 +10,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-use crate::consts::PluginHome;
-
 use super::{
     CatalogPlugin, InstalledPlugin, MarketplaceService, PluginSource, PluginStore,
     validate_marketplace_name,
 };
+use crate::consts::PluginHome;
 
 /// Installs marketplace plugins into a revision-locked local cache.
 #[derive(Clone, Debug)]

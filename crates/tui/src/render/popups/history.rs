@@ -1,12 +1,14 @@
-use crate::render::util::truncate_chars_with_ellipsis;
-use crate::widgets::popup_widget::PopupWidget;
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Color, Style},
     text::Span,
     widgets::ListItem,
+};
+
+use crate::{
+    render::util::truncate_chars_with_ellipsis,
+    widgets::{popup_widget::PopupWidget, state::App},
 };
 
 pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {

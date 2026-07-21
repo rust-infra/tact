@@ -18,9 +18,11 @@ use tact::{
 };
 use tact_llm::get_llm_client;
 
-use crate::permission::permission_mode_from_config;
-use crate::session_lock::{SessionLockGuard, SessionLockRegistry};
-use crate::user_message::build_user_message;
+use crate::{
+    permission::permission_mode_from_config,
+    session_lock::{SessionLockGuard, SessionLockRegistry},
+    user_message::build_user_message,
+};
 
 pub async fn run_headless(
     args: CliArgs,

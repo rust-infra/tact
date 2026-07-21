@@ -1,17 +1,26 @@
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use dashmap::DashMap;
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{BufReader, BufWriter};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::{
+    io::{BufReader, BufWriter},
+    process::{Child, ChildStdin, Command},
+    sync::{Mutex, oneshot},
+};
 
-use super::config::LspServerConfig;
-use super::diagnostic::{LspDiagnostic, handle_diagnostics};
-use super::protocol::{read_message, send_message};
-use super::symbols::{collect_symbol, extract_locations};
-use super::uri::path_to_uri;
+use super::{
+    config::LspServerConfig,
+    diagnostic::{LspDiagnostic, handle_diagnostics},
+    protocol::{read_message, send_message},
+    symbols::{collect_symbol, extract_locations},
+    uri::path_to_uri,
+};
 
 type PendingMap = Arc<DashMap<u64, oneshot::Sender<serde_json::Value>>>;
 

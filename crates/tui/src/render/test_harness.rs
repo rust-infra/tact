@@ -2,12 +2,8 @@
 
 #![allow(dead_code)]
 
-use super::{
-    log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
-    render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
-    render_status_bar,
-};
-use crate::widgets::state::{App, InputMode};
+use std::path::PathBuf;
+
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -15,8 +11,14 @@ use ratatui::{
     style::{Color, Modifier},
     widgets::ScrollbarState,
 };
-use std::path::PathBuf;
 use tokio::sync::mpsc::unbounded_channel;
+
+use super::{
+    log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
+    render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
+    render_status_bar,
+};
+use crate::widgets::state::{App, InputMode};
 
 /// Build a minimal `App` for render tests (retro theme, empty log).
 pub fn make_app() -> App {

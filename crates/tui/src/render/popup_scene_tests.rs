@@ -1,12 +1,14 @@
 //! Render tests for overlay popups (palette, slash, diff, code, thinking, file picker).
 
+use std::time::Duration;
+
+use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
+
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
     ThinkingBlock, ThinkingPopup,
 };
-use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use std::time::Duration;
 
 fn seed_diff_popup(app: &mut App) {
     app.tools.popup = Some(DiffPopup {
@@ -520,6 +522,7 @@ fn main_area_system_message_renders_in_log() {
 #[test]
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
+
     use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
@@ -554,8 +557,8 @@ fn main_area_loading_spinner_when_executing() {
 
 #[test]
 fn open_diff_popup_after_edit_file_step_uses_git_diff() {
-    use std::collections::HashMap;
-    use std::process::Command;
+    use std::{collections::HashMap, process::Command};
+
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
@@ -743,8 +746,8 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 
 #[test]
 fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
-    use std::collections::HashMap;
-    use std::process::Command;
+    use std::{collections::HashMap, process::Command};
+
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
@@ -834,6 +837,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
 #[test]
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
+
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
 
     let mut app = make_app();

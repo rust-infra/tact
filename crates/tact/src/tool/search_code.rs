@@ -1,10 +1,11 @@
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::process::Command;
 use tool_refactor_macros::tool;
 use tracing::debug;
+
+use crate::tool::{ToolContext, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchCodeInput {
@@ -132,9 +133,8 @@ async fn run_grep(query: &str, path: &std::path::Path, max_results: usize) -> Re
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
 
     #[tokio::test]
     async fn search_code_reports_no_matches() {

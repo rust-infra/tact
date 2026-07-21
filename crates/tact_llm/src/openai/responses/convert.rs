@@ -6,12 +6,11 @@ use async_openai_responses::types::responses::{
     ToolChoiceOptions, ToolChoiceParam,
 };
 
+use super::history;
 use crate::{
     ContentBlock, CreateMessageParams, LlmError, Message, MessageContent, OpenAiReasoningEffort,
     Role, ToolChoice, effective_reasoning_effort,
 };
-
-use super::history;
 
 fn responses_role(role: Role) -> ResponsesRole {
     match role {

@@ -74,9 +74,8 @@ pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Re
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn worktree_list_empty_by_default() {

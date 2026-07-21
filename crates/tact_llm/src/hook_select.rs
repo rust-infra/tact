@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::deepseek::DeepSeekBodyHook;
-use crate::kimi::KimiBodyHook;
-use crate::openai::{OpenAiBodyHook, StandardOpenAiBodyHook};
-use crate::{LlmError, ProviderInfo, ProviderKind};
+use crate::{
+    LlmError, ProviderInfo, ProviderKind,
+    deepseek::DeepSeekBodyHook,
+    kimi::KimiBodyHook,
+    openai::{OpenAiBodyHook, StandardOpenAiBodyHook},
+};
 
 /// Pick a body hook from the active provider identity / heuristics.
 ///
@@ -39,8 +41,7 @@ pub fn body_hook_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProviderKind;
-    use crate::openai::body::test_util::*;
+    use crate::{ProviderKind, openai::body::test_util::*};
 
     #[test]
     fn body_hook_for_selects_by_kind_and_heuristics() {

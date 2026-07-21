@@ -1,9 +1,8 @@
 use async_openai_responses::types::responses::{Response, ResponseStreamEvent};
 use tact_protocol::{AgentUpdate, ThinkingChunk};
 
-use crate::LlmError;
-
 use super::normalize::{NormalizedResponse, normalize_response};
+use crate::LlmError;
 
 #[derive(Default)]
 pub(crate) struct ResponsesStreamState {
@@ -118,10 +117,11 @@ impl ResponsesStreamState {
 
 #[cfg(test)]
 mod tests {
-    use super::ResponsesStreamState;
-    use crate::ContentBlock;
     use async_openai_responses::types::responses::ResponseStreamEvent;
     use tact_protocol::{AgentUpdate, ThinkingChunk};
+
+    use super::ResponsesStreamState;
+    use crate::ContentBlock;
 
     fn event(value: serde_json::Value) -> ResponseStreamEvent {
         serde_json::from_value(value).unwrap()

@@ -6,9 +6,10 @@
 //! `$ARGUMENTS[N]` is left unchanged. Shared [`submit_user_task`] matches a
 //! normal Insert Enter submit (Planning / log / history).
 
+use tact_protocol::UserCommand;
+
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
-use tact_protocol::UserCommand;
 
 /// Extract args after `/{skill_name}` from the input box (empty if none / partial).
 pub(super) fn skill_args_from_input(input: &str, skill_name: &str) -> String {

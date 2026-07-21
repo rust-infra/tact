@@ -1,12 +1,13 @@
-use crate::tool::{ToolContext, safe_path_allow_missing};
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::time::{Duration, Instant};
 use tact_protocol::{AgentUpdate, format_bytes};
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
+
+use crate::tool::{ToolContext, safe_path_allow_missing};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileInput {
@@ -100,9 +101,8 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn write_file_writes_into_existing_subdirectory() {

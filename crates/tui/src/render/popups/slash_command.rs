@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,6 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem},
 };
+
+use crate::widgets::state::App;
 
 pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &App) {
     let slash = &app.slash_command;

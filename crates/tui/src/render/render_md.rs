@@ -1,10 +1,13 @@
 use std::borrow::Cow;
 
-use crate::theme::Theme;
 use pulldown_cmark::{Event, Options as MarkdownOptions, Parser};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 use unicode_width::UnicodeWidthStr;
+
+use crate::theme::Theme;
 
 /// Theme-aware StyleSheet for tui-markdown.
 #[derive(Clone, Copy, Debug)]

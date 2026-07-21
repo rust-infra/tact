@@ -1,9 +1,12 @@
-use crate::render::render_md::{format_table, render_markdown_tui};
-use crate::render::util::visual_pos_to_byte_offset;
-use crate::widgets::state::*;
-use crate::widgets::tool_widget::ToolRenderOutput;
-use ratatui::text::Line;
-use ratatui::widgets::ScrollbarState;
+use ratatui::{text::Line, widgets::ScrollbarState};
+
+use crate::{
+    render::{
+        render_md::{format_table, render_markdown_tui},
+        util::visual_pos_to_byte_offset,
+    },
+    widgets::{state::*, tool_widget::ToolRenderOutput},
+};
 
 impl App {
     /// Whether the rendered log viewport currently sits at its visual bottom.

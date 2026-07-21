@@ -1,11 +1,11 @@
-use tact::config::{CliCommand, init};
-use tact::consts::TactPath;
-use tact::store::open_sqlite_session_store;
-
-use tact_ui::run_headless;
-use tact_ui::run_interactive;
-use tact_ui::session_lock::SessionLockRegistry;
-use tact_ui::sessions::print_sessions;
+use tact::{
+    config::{CliCommand, init},
+    consts::TactPath,
+    store::open_sqlite_session_store,
+};
+use tact_ui::{
+    run_headless, run_interactive, session_lock::SessionLockRegistry, sessions::print_sessions,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

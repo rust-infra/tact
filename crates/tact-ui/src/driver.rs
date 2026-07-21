@@ -1,15 +1,15 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
-use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::{path::Path, sync::atomic::Ordering};
 
 use tact::{Agent, extract_text};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 
-use crate::account;
-use crate::user_message::build_user_message;
+use crate::{account, user_message::build_user_message};
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
@@ -174,11 +174,10 @@ async fn handle_user_command_with_account(
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use tact_llm::MockClient;
-    use tact_llm::{ContentBlock, StopReason};
+    use tact_llm::{ContentBlock, MockClient, StopReason};
+    use tact_protocol::{AgentUpdate, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
-    use tact_protocol::{AgentUpdate, UserCommand};
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {

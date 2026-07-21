@@ -97,9 +97,8 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::{ToolRouter, test_support::test_context};
-
     use super::*;
+    use crate::tool::{ToolRouter, test_support::test_context};
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {

@@ -6,8 +6,9 @@ use sqlx::{Row, SqlitePool};
 use tact_llm::{Message, MessageContent, Role};
 use tact_protocol::TokenUsageInfo;
 
-use super::process_identity::process_identity;
-use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
+use super::{
+    MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary, process_identity::process_identity,
+};
 
 pub struct SqliteSessionStore {
     pool: SqlitePool,
@@ -250,18 +251,17 @@ impl super::SessionStore for SqliteSessionStore {
             serde_json::to_string(content).context("failed to serialize message content")?;
         let now = Self::now();
 
-        let id = sqlx::query(
-            "INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(role_to_str(role))
-        .bind(content_json)
-        .bind(ordinal)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert message")?
-        .last_insert_rowid();
+        let id =
+            sqlx::query("INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)")
+                .bind(session_id)
+                .bind(role_to_str(role))
+                .bind(content_json)
+                .bind(ordinal)
+                .bind(now)
+                .execute(&self.pool)
+                .await
+                .context("failed to insert message")?
+                .last_insert_rowid();
 
         sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
             .bind(now)
@@ -792,8 +792,7 @@ fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use std::ffi::c_void;
-        use std::ptr;
+        use std::{ffi::c_void, ptr};
 
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
@@ -839,8 +838,7 @@ mod tests {
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
-    use super::super::SessionStore;
-    use super::SqliteSessionStore;
+    use super::{super::SessionStore, SqliteSessionStore};
 
     #[tokio::test]
     async fn test_session_round_trip_and_stats() {

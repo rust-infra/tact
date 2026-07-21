@@ -1,10 +1,8 @@
-use crate::widgets::state::*;
-use crate::widgets::tool_widget::ToolPhase;
 use arboard::Clipboard;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use ratatui::layout::Rect;
-use ratatui::text::Line;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use ratatui::{layout::Rect, text::Line};
+
+use crate::widgets::{state::*, tool_widget::ToolPhase};
 
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
@@ -562,13 +560,16 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::render::test_harness::make_app;
-    use crate::widgets::{
-        state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
-        tool_widget::{ToolPhase, ToolWidget},
-    };
     use ratatui::layout::Rect;
     use tact_protocol::{StepResult, StepStatus};
+
+    use crate::{
+        render::test_harness::make_app,
+        widgets::{
+            state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
+            tool_widget::{ToolPhase, ToolWidget},
+        },
+    };
 
     fn inline_popup(content: &str) -> DiffPopup {
         DiffPopup {

@@ -3,10 +3,6 @@
 //! Prefer [`From`] / [`Into`] for 1:1 mappings. Multi-message expansions (e.g. a
 //! user turn with embedded tool results) stay as free functions.
 
-use crate::{
-    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, Role, StopReason,
-    Tool, ToolChoice, openai::CreateChatCompletionRequest,
-};
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionNamedToolChoice,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
@@ -16,6 +12,11 @@ use async_openai::types::{
     ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionToolChoiceOption,
     ChatCompletionToolType, FinishReason, FunctionCall, FunctionName, FunctionObject, ImageUrl,
     ImageUrlDetail, Role as OpenAiRole,
+};
+
+use crate::{
+    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, Role, StopReason,
+    Tool, ToolChoice, openai::CreateChatCompletionRequest,
 };
 
 impl From<&Tool> for ChatCompletionTool {

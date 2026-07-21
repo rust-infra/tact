@@ -1,17 +1,21 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use crate::i18n::Language;
-use crate::theme::Theme;
-use crate::widgets::state::{
-    AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState,
-    PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status, StatusBarState,
-    StreamState, ThinkingState, ToolState,
-};
 use std::path::PathBuf;
+
 use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+use crate::{
+    i18n::Language,
+    theme::Theme,
+    widgets::state::{
+        AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
+        MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
+        StatusBarState, StreamState, ThinkingState, ToolState,
+    },
+};
 
 impl App {
     /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.

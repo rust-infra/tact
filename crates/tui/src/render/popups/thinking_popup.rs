@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -8,6 +7,7 @@ use ratatui::{
 };
 
 use super::selectable_text::{DisplayRow, layout_display_rows, scalar_styles, source_lines};
+use crate::widgets::state::App;
 
 fn is_ordered_list_item(line: &Line<'_>) -> bool {
     let text: String = line

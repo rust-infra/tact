@@ -450,9 +450,10 @@ impl Renderable for ToolCell {
 
 #[cfg(test)]
 mod tests {
+    use tact_protocol::ToolOutputSpan;
+
     use super::*;
     use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, ToolLayout, ToolPhase, tool_visual_rows};
-    use tact_protocol::ToolOutputSpan;
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///

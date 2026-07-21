@@ -1,7 +1,6 @@
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+
 use super::renderable::Renderable;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::widgets::Widget;
 
 /// Log column layout renderer: arranges and draws Renderable units by visual offset.
 pub(crate) struct LogColumnRenderer<'a> {
@@ -60,8 +59,9 @@ impl Widget for LogColumnRenderer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ratatui::style::Style;
+
+    use super::*;
 
     /// Minimal Renderable emitting `id` repeated across `rows` lines.
     struct StubCell {

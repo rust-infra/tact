@@ -1,12 +1,13 @@
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Widget};
+use ratatui::{
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Widget},
+};
 use unicode_width::UnicodeWidthStr;
 
-use crate::render::util::wrap_line;
-use crate::widgets::state::SelectPopup;
+use crate::{render::util::wrap_line, widgets::state::SelectPopup};
 
 /// Selection popup widget: displays prompt and option list centered, supports keyboard/mouse selection.
 pub struct SelectPopupWidget<'a> {

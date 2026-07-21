@@ -19,10 +19,10 @@ pub(super) use input::render_input_box;
 pub(super) use layout::render_main_area;
 pub(crate) use log::effective_max_logical_scroll;
 pub(crate) use log_style::is_user_message_line;
-pub(super) use popups::command_palette::render_command_palette;
-pub(super) use popups::file_picker::render_file_picker;
-pub(super) use popups::select::render_select_popup;
-pub(super) use popups::slash_command::render_slash_command_popup;
+pub(super) use popups::{
+    command_palette::render_command_palette, file_picker::render_file_picker,
+    select::render_select_popup, slash_command::render_slash_command_popup,
+};
 
 #[cfg(test)]
 mod log_render_tests;

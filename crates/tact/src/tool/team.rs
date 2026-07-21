@@ -112,9 +112,8 @@ pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     async fn spawn(context: &ToolContext, name: &str, role: &str) {
         run_tool(

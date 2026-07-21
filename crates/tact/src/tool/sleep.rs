@@ -4,13 +4,15 @@
 // rate limiting, or waiting for external processes). Unlike `Bash(sleep ...)`,
 // this does not hold a shell process and can run concurrently with other tools.
 
-use crate::tool::ToolContext;
+use std::time::Duration;
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::time::Duration;
 use tool_refactor_macros::tool;
 use tracing::debug;
+
+use crate::tool::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SleepInput {
@@ -41,9 +43,8 @@ pub async fn sleep(_ctx: ToolContext, input: SleepInput) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[test]
     fn capped_sleep_ms_limits_to_five_minutes() {

@@ -173,7 +173,7 @@ if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() 
 |------|------|
 | `crates/tact/src/recovery.rs` | `RecoveryState`、分类器、`backoff_delay`、`CONTINUATION_MESSAGE`、`MAX_RECOVERY_ATTEMPTS` |
 | `crates/tact/src/agent/mod.rs` | `agent_loop` 中的恢复分支；计数器重置；`compact_history` 调用 |
-| `crates/tact/src/compact.rs` | compact 策略使用的压缩原语 |
+| `crates/tact/src/compact/mod.rs` | compact 策略使用的压缩原语 |
 | `docs/state_machines.md` | 含恢复转移的状态机图 |
 
 ---

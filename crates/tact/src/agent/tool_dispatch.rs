@@ -1,18 +1,19 @@
 //! Tool-call dispatch: pre-flight, parallel execution, and result assembly.
 
-use super::Agent;
-
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tact_llm::ContentBlock;
-
-use crate::compact::persist_large_output;
-use crate::hook::{HookControl, ToolResult, ToolUse};
-use crate::invoke_hooks;
-use crate::mcp::MCPToolRouter;
-use crate::permission::{PermissionBehavior, format_permission_prompt};
-use crate::tool::{ToolContext, ToolRouter};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus};
+
+use super::Agent;
+use crate::{
+    compact::persist_large_output,
+    hook::{HookControl, ToolResult, ToolUse},
+    invoke_hooks,
+    mcp::MCPToolRouter,
+    permission::{PermissionBehavior, format_permission_prompt},
+    tool::{ToolContext, ToolRouter},
+};
 
 /// A tool call after phase-1 pre-flight in [`Agent::execute_tool_call`].
 ///
@@ -519,7 +520,10 @@ impl Agent {
                 if succeeded {
                     pending_recent_files.extend(recent_file_paths(&prep_name, &prep_input));
                 }
-                if prep_name == "compact" {
+                // Only a successful compact tool should rewrite history; a
+                // failed invocation (bad args, hook block, etc.) must leave
+                // the conversation intact so the model can recover next turn.
+                if prep_name == "compact" && succeeded {
                     manual_compact = prep_input
                         .get("focus")
                         .and_then(|value| value.as_str())
@@ -573,8 +577,9 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{recent_file_paths, step_result_detail, tool_arg_summary};
     use tact_protocol::StepStatus;
+
+    use super::{recent_file_paths, step_result_detail, tool_arg_summary};
 
     #[test]
     fn tool_detail_content_edit_file_returns_new_text() {

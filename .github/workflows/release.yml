@@ -63,7 +63,13 @@ jobs:
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+            version="$(awk '
+              /^\[workspace\.package\]/ { in_pkg=1; next }
+              /^\[/ { in_pkg=0 }
+              in_pkg && /^version = "/ {
+                gsub(/"/, "", $3); print $3; exit
+              }
+            ' Cargo.toml)"
           fi
 
           target="${{ matrix.target }}"

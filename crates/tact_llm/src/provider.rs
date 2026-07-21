@@ -2,12 +2,12 @@
 
 use std::sync::RwLock;
 
-use crate::anthropic;
-use crate::client::LlmProvider;
-use crate::deepseek;
-use crate::kimi;
-use crate::openai;
-use crate::types::{OpenAiProtocol, OpenAiReasoningEffort, ProviderKind};
+use crate::{
+    anthropic,
+    client::LlmProvider,
+    deepseek, kimi, openai,
+    types::{OpenAiProtocol, OpenAiReasoningEffort, ProviderKind},
+};
 
 /// Holds private LLM configuration information.
 #[derive(Debug, Clone)]
@@ -337,11 +337,14 @@ pub fn supports_vision() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::client::{LlmClient, LlmProvider};
-    use crate::mock::MockClient;
-    use crate::types::{CreateMessageParams, RequiredMessageParams, StopReason};
     use tact_protocol::{AgentUpdate, TokenUsageInfo};
+
+    use super::*;
+    use crate::{
+        client::{LlmClient, LlmProvider},
+        mock::MockClient,
+        types::{CreateMessageParams, RequiredMessageParams, StopReason},
+    };
 
     fn provider_info(
         provider: ProviderKind,
@@ -527,8 +530,9 @@ mod tests {
 
     #[tokio::test]
     async fn mock_stream_emits_token_usage_when_configured() {
-        use crate::ContentBlock;
         use tokio::sync::mpsc::unbounded_channel;
+
+        use crate::ContentBlock;
 
         let usage = TokenUsageInfo {
             prompt: 10,

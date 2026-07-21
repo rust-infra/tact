@@ -1,9 +1,10 @@
+use crossterm::event::{KeyCode, KeyEvent};
+
 use super::{
     command_needs_args, execute_palette_command, is_builtin_palette_command, prev_word_boundary,
     skills::is_skill_command,
 };
 use crate::widgets::state::{App, InputMode};
-use crossterm::event::{KeyCode, KeyEvent};
 
 /// Palette mode key handling: filter the command list and navigate with arrow keys; Enter to execute.
 pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
@@ -86,10 +87,10 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
-    use crate::widgets::state::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::{render::test_harness::make_app, widgets::state::App};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())

@@ -1,9 +1,10 @@
 //! Mouse handling extracted from the main event loop for testability.
 
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
 use crate::widgets::state::{
     App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition,
 };
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MousePanelHit {
@@ -371,16 +372,20 @@ pub(crate) fn handle_tool_block_click(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
-    use crate::widgets::state::{
-        DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup,
-    };
-    use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
+    use std::collections::HashMap;
+
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use std::collections::HashMap;
     use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+
+    use super::*;
+    use crate::{
+        render::test_harness::make_app,
+        widgets::{
+            state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
+            tool_widget::TOOL_HEADER_ROWS,
+        },
+    };
 
     fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
         MouseEvent {

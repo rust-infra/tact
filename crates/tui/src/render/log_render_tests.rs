@@ -1,12 +1,14 @@
 //! Log panel render coverage: P0 interaction, P1 content shapes, P2 chrome/edge cases.
 
+use std::collections::HashMap;
+
+use ratatui::style::Modifier;
+use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+
 use super::test_harness::{
     buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
 use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
-use ratatui::style::Modifier;
-use std::collections::HashMap;
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {

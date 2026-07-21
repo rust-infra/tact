@@ -1,5 +1,3 @@
-use super::slash_style::{skill_name_set, style_input_skill_line};
-use crate::widgets::state::{App, InputMode};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -8,6 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
+
+use super::slash_style::{skill_name_set, style_input_skill_line};
+use crate::widgets::state::{App, InputMode};
 
 /// Render command-line input (Palette mode).
 pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
@@ -121,10 +122,13 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
 
 #[cfg(test)]
 mod render_tests {
-    use super::super::test_harness::{buffer_text, make_app};
-    use super::render_input_box;
-    use crate::widgets::state::SkillEntry;
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+    use super::{
+        super::test_harness::{buffer_text, make_app},
+        render_input_box,
+    };
+    use crate::widgets::state::SkillEntry;
 
     #[test]
     fn input_box_renders_multiline_content() {

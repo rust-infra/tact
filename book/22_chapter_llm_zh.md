@@ -425,7 +425,7 @@ sequenceDiagram
 | `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider 特定 thinking 与历史 hook |
 | `tact_llm/src/convert.rs` | 请求翻译、Image → `image_url`、Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
-| `crates/tact/src/compact.rs` | 摘要用 `create_message` |
+| `crates/tact/src/compact/mod.rs` | 摘要用 `create_message` |
 
 ---
 

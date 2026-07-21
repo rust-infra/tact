@@ -1,14 +1,14 @@
+use crossterm::event::{KeyCode, KeyEvent};
+use tact_protocol::UserCommand;
+use tokio::sync::mpsc::UnboundedSender;
+
 use super::{
     cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
     line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
     skills::{is_skill_command, skill_name_set, submit_user_task},
     start_of_line,
 };
-use crate::widgets::state::App;
-use crate::widgets::state::{InputMode, Status};
-use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
-use tokio::sync::mpsc::UnboundedSender;
+use crate::widgets::state::{App, InputMode, Status};
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
@@ -555,12 +555,14 @@ pub(crate) fn handle_insert_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::handle_insert_mode;
-    use crate::widgets::state::{App, Status};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
+
+    use super::handle_insert_mode;
+    use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();

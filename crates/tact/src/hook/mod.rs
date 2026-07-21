@@ -12,8 +12,9 @@
 //! iterates over registered hooks of a given type and short-circuits on
 //! the first `Block`.
 
-use anyhow::Result;
 use std::pin::Pin;
+
+use anyhow::Result;
 
 use crate::LoopState;
 

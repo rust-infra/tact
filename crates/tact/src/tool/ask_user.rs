@@ -8,13 +8,14 @@
 //!
 //! Headless / no `ui_tx`: return a formatted question string (tests / CI).
 
-use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::AgentUpdate;
 use tool_refactor_macros::tool;
 use tracing::debug;
+
+use crate::tool::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AskUserInput {
@@ -133,11 +134,11 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
     use tact_protocol::AgentUpdate;
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn ask_user_formats_question_headless() {

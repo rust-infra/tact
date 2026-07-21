@@ -12,12 +12,17 @@ tact implements **three-tier progressive compaction**:
 
 ```mermaid
 flowchart TB
-    Turn([each agent_loop turn]) --> MC[micro_compact]
-    MC --> Est{should_auto_compact?}
+    Entry([agent_loop entry]) --> EntryEst{should_auto_compact?<br/>reserve incoming}
+    EntryEst -->|yes| EntryCH[compact_history]
+    EntryCH --> Push[push user turn]
+    EntryEst -->|no| Push
+    Push --> Turn([each loop iteration])
+    Turn --> MC[micro_compact]
+    MC --> Est{should_auto_compact?<br/>incoming = 0}
     Est -->|no| Prompt[LLM]
     Est -->|yes| CH[compact_history]
     Prompt -->|prompt too long| CH
-    Prompt -->|compact tool| CH
+    Prompt -->|successful compact tool| CH
     CH --> Transcript[JSONL under .claude/transcripts/]
     CH --> Sum[summarize up to 20k estimated tokens]
     Sum --> Replace[context ← recent users + summary]
@@ -46,8 +51,8 @@ Preview:
 
 | Constant | Default | Location |
 |----------|---------|----------|
-| `PERSIST_THRESHOLD` | 30,000 | `compact.rs` |
-| `PREVIEW_CHARS` | 2,000 | `compact.rs` |
+| `PERSIST_THRESHOLD` | 30,000 | `compact/mod.rs` |
+| `PREVIEW_CHARS` | 2,000 | `compact/mod.rs` |
 
 Each artifact directory retains at most the 100 newest files after a write.
 
@@ -77,11 +82,12 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 ## Tier 3: Full Compaction
 
 **Triggers** (any of):
-- After micro_compact, `should_auto_compact`:
+- **Entry**: before pushing the user turn, `should_auto_compact` with `incoming_turn` reserved
+- **Each loop iteration**: after `micro_compact`, `should_auto_compact` with `incoming = 0`:
   - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
   - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
 - Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery.md))
-- Manual `compact` tool (after tool results are appended)
+- Successful manual `compact` tool (after tool results are appended; failed invocations do not rewrite history)
 
 ### Steps
 

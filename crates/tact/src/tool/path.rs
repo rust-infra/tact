@@ -42,9 +42,9 @@ fn resolve_safe_path(work_dir: &Path, path: &str, allow_missing: bool) -> Result
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, os::unix::fs as unix_fs};
+
     use super::*;
-    use std::fs;
-    use std::os::unix::fs as unix_fs;
 
     fn setup_workspace() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();

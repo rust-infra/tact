@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,6 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+
+use crate::widgets::state::App;
 
 /// Map language names to plain labels for code card titles.
 fn lang_label(lang: &str) -> String {
@@ -142,10 +143,11 @@ pub(crate) fn render_code_cards(
 
 #[cfg(test)]
 mod overlay_tests {
-    use super::*;
-    use crate::render::test_harness::{buffer_text, make_app};
     use ratatui::{Terminal, backend::TestBackend};
     use tact_protocol::AgentUpdate;
+
+    use super::*;
+    use crate::render::test_harness::{buffer_text, make_app};
 
     #[test]
     fn code_card_overlay_renders_language_and_body() {

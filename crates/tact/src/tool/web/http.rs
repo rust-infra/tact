@@ -1,12 +1,9 @@
 //! Shared HTTP utilities for web tools.
 
-use std::net::IpAddr;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{net::IpAddr, sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
-use reqwest::Url;
-use reqwest::redirect::Policy;
+use reqwest::{Url, redirect::Policy};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

@@ -10,10 +10,8 @@ use harness::{
     task_completed_with, text_block, worktree_create_tool_use, worktree_list_tool_use,
     worktree_status_tool_use,
 };
-use tact::permission::PermissionMode;
-use tact::tool::test_support::write_workspace_file;
-use tact_llm::MockClient;
-use tact_llm::StopReason;
+use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
+use tact_llm::{MockClient, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus};
 
 #[tokio::test]
@@ -161,21 +159,17 @@ async fn load_skill_reads_skill_file() {
         (vec![text_block("Skill loaded.")], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, _work_dir) = run_single_task_with_setup(
-        mock,
-        "load skill",
-        PermissionMode::Auto,
-        |dir| {
+    let (updates, _work_dir) =
+        run_single_task_with_setup(mock, "load skill", PermissionMode::Auto, |dir| {
             let skill_dir = dir.join(".claude/skills").join("rust_style");
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: rust_style\ndescription: Rust style guide\n---\n\nUse Result everywhere.",
-            )
-            .unwrap();
-        },
-    )
-    .await;
+            skill_dir.join("SKILL.md"),
+            "---\nname: rust_style\ndescription: Rust style guide\n---\n\nUse Result everywhere.",
+        )
+        .unwrap();
+        })
+        .await;
 
     assert!(
         updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "skill1" && result.tool == "load_skill" && matches!(result.status, StepStatus::Success))),

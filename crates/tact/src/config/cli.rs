@@ -1,5 +1,6 @@
-use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
 
 /// tact — terminal-first AI coding agent
 #[derive(Parser, Debug)]

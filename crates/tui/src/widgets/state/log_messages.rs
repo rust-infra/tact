@@ -1,7 +1,10 @@
-use crate::render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT};
-use crate::theme::Theme;
-use crate::widgets::state::RawMessageType;
 use ratatui::style::Color;
+
+use crate::{
+    render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT},
+    theme::Theme,
+    widgets::state::RawMessageType,
+};
 
 /// Visual style for prefix-marked system messages in the log panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

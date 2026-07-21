@@ -8,12 +8,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::consts::PluginHome;
-
 use super::{
     MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceRecord, MarketplaceSource, PluginStore,
     validate_marketplace_name,
 };
+use crate::consts::PluginHome;
 
 const MARKETPLACE_FILE: &str = "marketplace.json";
 

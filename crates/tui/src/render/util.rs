@@ -1,6 +1,8 @@
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::{
+    layout::Rect,
+    style::Style,
+    text::{Line, Span},
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Left gutter for thinking blocks inside the log panel.
@@ -162,8 +164,9 @@ pub(crate) fn visual_pos_to_byte_offset(
 
 #[cfg(test)]
 mod wrap_tests {
-    use super::*;
     use ratatui::style::{Color, Modifier, Style};
+
+    use super::*;
 
     #[test]
     fn visual_pos_to_byte_offset_basic() {

@@ -1,15 +1,15 @@
-use crate::i18n::Language;
-use crate::theme::Theme;
-use ratatui::text::Line;
 use std::path::PathBuf;
+
+use ratatui::text::Line;
 use tact::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
+pub(crate) use tact_protocol::PlanStep;
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-pub(crate) use tact_protocol::PlanStep;
+use crate::{i18n::Language, theme::Theme};
 
 pub(crate) mod account;
 pub(crate) mod app;

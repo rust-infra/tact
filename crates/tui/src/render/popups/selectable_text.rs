@@ -1,10 +1,11 @@
-use crate::widgets::state::{PopupHitRow, PopupTextHit};
 use ratatui::{
     buffer::CellWidth,
     style::{Modifier, Style},
     text::{Line, Span},
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::widgets::state::{PopupHitRow, PopupTextHit};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SourceLine<'a> {

@@ -23,8 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::{process::Command, time::timeout};
 
 use crate::store::{CollectionStore, StoreRoot};
 
@@ -203,9 +202,10 @@ impl std::ops::Deref for SharedBackgroundManager {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
     use crate::store::StoreRoot;
-    use tempfile::TempDir;
 
     #[test]
     fn marks_stale_running_tasks_on_startup() {

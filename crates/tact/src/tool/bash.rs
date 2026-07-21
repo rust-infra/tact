@@ -1,18 +1,18 @@
-use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
 
-use crate::shell::validate_shell_command;
-use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
-use tokio::time::{Interval, MissedTickBehavior, interval};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::{Child, Command},
+    sync::mpsc,
+    time::{Interval, MissedTickBehavior, interval},
+};
 use tool_refactor_macros::tool;
+
+use crate::{shell::validate_shell_command, tool::ToolContext};
 
 const READ_BUFFER_BYTES: usize = 4096;
 const PIPE_CHANNEL_CAPACITY: usize = 32;
@@ -406,9 +406,8 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn bash_returns_placeholder_for_empty_output() {

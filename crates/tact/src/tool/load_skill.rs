@@ -1,9 +1,9 @@
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
-use tool_refactor_macros::tool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoadSkillInput {
@@ -21,9 +21,8 @@ pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn load_skill_reports_unknown_skill() {

@@ -9,11 +9,12 @@
 //! - [`compacted_context`]: legacy single-summary replacement context.
 //! - Codex-style rebuild: [`collect_user_messages`] + [`build_compacted_history`].
 
-use anyhow::Context as _;
 use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use anyhow::Context as _;
 use tact_llm::{ContentBlock, Message, MessageContent, Role};
 use tokio::io::AsyncWriteExt;
 
@@ -28,6 +29,7 @@ const PERSIST_THRESHOLD: usize = 30_000;
 /// Number of characters shown in the preview when persisting a large output.
 const PREVIEW_CHARS: usize = 2_000;
 const COMPACTED_TOOL_RESULT: &str = "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+const _: () = assert!(COMPACTED_TOOL_RESULT.len() < 120);
 const OMITTED_IMAGE: &str = "[Earlier image attachment omitted during compaction.]";
 const MAX_COMPACT_ARTIFACTS: usize = 100;
 
@@ -543,6 +545,8 @@ pub(crate) fn should_auto_compact(
 
 #[cfg(test)]
 mod tests {
+    use tact_llm::{ContentBlock, ImageSource, Message, Role};
+
     use super::{
         KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS, OMITTED_IMAGE, SUMMARY_PREFIX,
         approx_text_tokens, build_compacted_history, collect_user_messages,
@@ -550,7 +554,6 @@ mod tests {
         recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
         take_last_tokens, write_transcript,
     };
-    use tact_llm::{ContentBlock, ImageSource, Message, Role};
 
     #[test]
     fn should_auto_compact_uses_last_token_total_when_present() {

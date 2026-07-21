@@ -1,9 +1,10 @@
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::fs;
 use tool_refactor_macros::tool;
+
+use crate::tool::{ToolContext, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditFileInput {
@@ -65,9 +66,8 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
 
     #[tokio::test]
     async fn edit_file_replaces_only_first_match_by_default() {
