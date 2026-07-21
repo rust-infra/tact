@@ -27,7 +27,10 @@ async fn marketplace_list_shows_builtin() {
         command: MarketplaceSubcommand::List,
     })
     .await;
-    assert!(result.is_ok(), "marketplace list should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "marketplace list should succeed: {result:?}"
+    );
 }
 
 #[tokio::test]

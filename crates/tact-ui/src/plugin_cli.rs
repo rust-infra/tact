@@ -5,8 +5,7 @@ use tact::plugin::{PluginRequest, PluginResult, execute_request};
 
 /// Runs a plugin CLI command and prints the result to stdout.
 pub async fn run_plugin_cli(command: PluginSubcommand) -> Result<()> {
-    let home = PluginHome::from_environment()
-        .expect("HOME must be set for plugin operations");
+    let home = PluginHome::from_environment().expect("HOME must be set for plugin operations");
 
     let result = tokio::task::spawn_blocking(move || {
         let (request, no_block_on) = build_request(command)?;
@@ -32,10 +31,14 @@ fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
             let (plugin, marketplace) = spec
                 .split_once('@')
                 .map(|(p, m)| (p.to_owned(), m.to_owned()))
-                .unwrap_or_else(|| {
-                    (spec.clone(), "claude-plugins-official".to_owned())
-                });
-            Ok((PluginRequest::Install { plugin, marketplace }, false))
+                .unwrap_or_else(|| (spec.clone(), "claude-plugins-official".to_owned()));
+            Ok((
+                PluginRequest::Install {
+                    plugin,
+                    marketplace,
+                },
+                false,
+            ))
         }
         PluginSubcommand::Reload => Ok((PluginRequest::Reload, true)),
         PluginSubcommand::Marketplace { command } => match command {
@@ -55,7 +58,10 @@ fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
 
 fn print_result(result: &PluginResult) {
     match result {
-        PluginResult::Installed { plugin, marketplace } => {
+        PluginResult::Installed {
+            plugin,
+            marketplace,
+        } => {
             println!("Installed plugin '{plugin}' from '{marketplace}'");
         }
         PluginResult::ListedInstalled { plugins } if plugins.is_empty() => {

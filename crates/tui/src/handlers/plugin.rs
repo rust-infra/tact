@@ -94,10 +94,7 @@ mod tests {
 
         assert!(outcome.handled);
         assert!(outcome.clear_input);
-        assert!(matches!(
-            requests.try_recv(),
-            Ok(PluginRequest::List)
-        ));
+        assert!(matches!(requests.try_recv(), Ok(PluginRequest::List)));
         assert!(
             app.raw_messages
                 .iter()

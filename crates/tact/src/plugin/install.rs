@@ -51,7 +51,9 @@ impl PluginInstaller {
         validate_marketplace_name(marketplace_id)?;
         let catalog = match self.marketplace_service.catalog(marketplace_id) {
             Ok(catalog) => catalog,
-            Err(_) => super::block_on_async(self.marketplace_service.update_marketplace(marketplace_id))?,
+            Err(_) => {
+                super::block_on_async(self.marketplace_service.update_marketplace(marketplace_id))?
+            }
         };
         let plugin = catalog.plugins.get(plugin_id).with_context(|| {
             format!("unknown plugin {plugin_id} in marketplace {marketplace_id}")

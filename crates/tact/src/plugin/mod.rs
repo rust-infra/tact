@@ -223,10 +223,7 @@ pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<Plugi
 pub(crate) fn block_on_async<F: std::future::Future<Output = T>, T>(future: F) -> T {
     if tokio::runtime::Handle::try_current().is_ok() {
         // Already inside a tokio runtime: temporarily leave it with block_in_place.
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(future)
-        })
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     } else {
         // Not inside a tokio runtime: create a fresh one.
         let rt = tokio::runtime::Runtime::new().unwrap();
