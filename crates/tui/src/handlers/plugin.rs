@@ -16,7 +16,22 @@ pub(crate) fn parse_plugin_command(input: &str) -> Result<PluginRequest, PluginU
 }
 
 pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
-    let bare_plugin = app.input.trim() == "/plugin";
+    let trimmed = app.input.trim();
+    // Bare `/plugin` is not an error — leave `/plugin ` in the insert box so the
+    // user can type list / reload / marketplace list.
+    if trimmed == "/plugin" {
+        app.save_undo();
+        app.input = "/plugin ".into();
+        app.input_cursor = app.input.len();
+        app.flash_msg = Some((
+            app.msgs().plugin_usage.to_owned(),
+            std::time::Instant::now(),
+        ));
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: false,
+        };
+    }
     match parse_plugin_command(&app.input) {
         Ok(request) => match app.plugin_tx.send(request) {
             Ok(()) => app.add_system_message(app.msgs().plugin_request_queued.to_owned()),
@@ -26,9 +41,7 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
     }
     CommandExecOutcome {
         handled: true,
-        // Keep input when the user typed bare `/plugin` so they can
-        // type a subcommand after seeing the usage message.
-        clear_input: !bare_plugin,
+        clear_input: true,
     }
 }
 
@@ -118,20 +131,30 @@ mod tests {
     }
 
     #[test]
-    fn bare_plugin_shows_usage_and_keeps_input() {
+    fn bare_plugin_keeps_input_for_subcommand_without_log_spam() {
         let (mut app, mut requests) = make_app();
         app.input = "/plugin".into();
 
         let outcome = handle_plugin_command(&mut app);
 
         assert!(outcome.handled);
-        // Bare /plugin should keep input so user can type subcommand.
         assert!(!outcome.clear_input);
+        assert_eq!(app.input, "/plugin ");
+        assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(requests.try_recv().is_err());
         assert!(
-            app.raw_messages
+            !app.raw_messages
                 .iter()
-                .any(|message| message.starts_with("Usage: /plugin"))
+                .any(|message| message.starts_with("Usage: /plugin")),
+            "bare /plugin must not spam the log: {:?}",
+            app.raw_messages
+        );
+        assert!(
+            app.flash_msg
+                .as_ref()
+                .is_some_and(|(msg, _)| msg.starts_with("Usage: /plugin")),
+            "expected a flash usage hint, got {:?}",
+            app.flash_msg
         );
     }
 
@@ -146,7 +169,7 @@ mod tests {
         assert!(
             app.raw_messages
                 .iter()
-                .any(|message| message == "插件请求已加入队列"),
+                .any(|message| message.contains("插件请求已加入队列")),
             "plugin feedback should use the selected language: {:?}",
             app.raw_messages
         );

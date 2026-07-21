@@ -48,11 +48,10 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
         return false;
     };
     // Skills autocomplete; built-ins execute. Built-in names never appear as skills
-    // in the palette list, but keep the guard if data drifts.
-    if is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd)
-        // Built-in commands that require sub-command arguments should also
-        // autocomplete so the user can type the subcommand (e.g. /plugin list).
-        || cmd == "plugin"
+    // in the palette list, but keep the guard if data drifts. Arg-taking built-ins
+    // (e.g. /plugin list) also autocomplete so the user can type the subcommand.
+    if (is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd))
+        || super::command_needs_args(cmd)
     {
         return apply_selected_slash_command(app);
     }
@@ -862,6 +861,39 @@ mod tests {
             user_cmd_rx.try_recv().is_err(),
             "popup Enter on skill must not SubmitTask"
         );
+    }
+
+    #[test]
+    fn slash_popup_enter_on_plugin_autocompletes_for_subcommand() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        // Partial query as when picking from the slash palette.
+        app.input = "/pl".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(
+            app.input, "/plugin ",
+            "Enter on /plugin should leave `/plugin ` so the user can type list/reload"
+        );
+        assert_eq!(app.input_cursor, "/plugin ".len());
+        assert!(!app.slash_command.active);
+        assert!(
+            !app.raw_messages
+                .iter()
+                .any(|m| m.starts_with("Usage: /plugin")),
+            "must not run bare /plugin yet: {:?}",
+            app.raw_messages
+        );
+        assert!(user_cmd_rx.try_recv().is_err());
     }
 
     #[test]

@@ -229,6 +229,12 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
         .any(|(name, _)| *name == cmd)
 }
 
+/// Built-ins that take a subcommand / arguments: Enter should autocomplete
+/// `/{cmd} ` into the insert box instead of executing immediately.
+pub(crate) fn command_needs_args(cmd: &str) -> bool {
+    matches!(cmd, "plugin")
+}
+
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
     // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
     if !is_builtin_palette_command(cmd)

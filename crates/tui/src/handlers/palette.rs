@@ -1,5 +1,5 @@
 use super::{
-    execute_palette_command, is_builtin_palette_command, prev_word_boundary,
+    command_needs_args, execute_palette_command, is_builtin_palette_command, prev_word_boundary,
     skills::is_skill_command,
 };
 use crate::widgets::state::{App, InputMode};
@@ -25,9 +25,12 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 let idx = app.palette_selected.min(filtered.len() - 1);
                 let cmd = commands[filtered[idx]].0.clone();
                 app.cmd_line.clear();
-                // Skills: jump to Insert with `/name ` so the user can add args.
+                // Skills and arg-taking built-ins: jump to Insert with `/name `
+                // so the user can add args before a second Enter runs them.
                 // Built-ins win even if a same-named skill exists on disk.
-                if is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd) {
+                if (is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd))
+                    || command_needs_args(&cmd)
+                {
                     app.save_undo();
                     app.input = format!("/{cmd} ");
                     app.input_cursor = app.input.len();
@@ -190,5 +193,29 @@ mod tests {
         assert!(app.show_help, "builtin help should execute");
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_ne!(app.input, "/help ");
+    }
+
+    #[test]
+    fn enter_on_plugin_opens_insert_for_subcommand() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(c, _)| c == "plugin")
+            .expect("plugin command in palette");
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input, "/plugin ");
+        assert_eq!(app.input_cursor, "/plugin ".len());
+        assert!(matches!(app.input_mode, InputMode::Insert));
+        assert!(
+            !app.raw_messages
+                .iter()
+                .any(|m| m.contains("Usage: /plugin") || m.contains("用法")),
+            "must not execute bare /plugin from palette: {:?}",
+            app.raw_messages
+        );
     }
 }

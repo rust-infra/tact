@@ -44,17 +44,8 @@ fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult)
             plugin,
             marketplace,
         } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
-        PluginResult::ListedInstalled { plugins } if plugins.is_empty() => {
-            messages.plugin_list_empty.to_owned()
-        }
-        PluginResult::ListedInstalled { plugins } => messages.plugin_list_tmpl.replace(
-            "{}",
-            &plugins
-                .iter()
-                .map(|plugin| format!("{}:{}", plugin.marketplace, plugin.id))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ),
+        // Rendered as a titled table by `App::show_plugin_list`; plain fallback only.
+        PluginResult::ListedInstalled { .. } => messages.plugin_list_empty.to_owned(),
         PluginResult::Reloaded { count } => messages
             .plugin_reloaded_tmpl
             .replace("{}", &count.to_string()),
@@ -617,6 +608,57 @@ impl App {
         }
     }
 
+    /// Renders `/plugin list` as a titled table block (same style as `/skills`).
+    fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
+        use crate::widgets::state::log_messages::classify_system_message;
+
+        self.add_new_line();
+
+        let msgs = self.msgs();
+        let title = msgs
+            .plugin_list_title_tmpl
+            .replace("{}", &plugins.len().to_string());
+        let title_ty = classify_system_message(&title);
+        self.append_msg(
+            Line::from(Span::styled(
+                title.clone(),
+                Style::default().fg(self.theme.accent),
+            )),
+            title,
+            title_ty,
+        );
+        self.add_new_line();
+
+        if plugins.is_empty() {
+            let empty = msgs.plugin_list_empty;
+            self.append_msg(
+                Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
+                empty.to_string(),
+                classify_system_message(empty),
+            );
+        } else {
+            let mut rows = vec![
+                msgs.plugin_list_header.to_string(),
+                "|---|---|---|".to_string(),
+            ];
+            rows.extend(plugins.iter().map(|plugin| {
+                format!(
+                    "| {} | {} | {} |",
+                    plugin.id, plugin.marketplace, plugin.skill_count
+                )
+            }));
+            let (styled, raw) = format_table(&rows, &self.theme);
+            let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
+            self.extend_msgs(styled, raw, ty);
+        }
+
+        self.add_new_line();
+
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+    }
+
     /// Displays a completed plugin operation from the isolated worker.
     pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
         self.dirty = true;
@@ -625,7 +667,11 @@ impl App {
                 result,
                 refresh_skills,
             } => {
-                self.add_system_message(format_plugin_result(&self.msgs(), &result));
+                if let PluginResult::ListedInstalled { plugins } = &result {
+                    self.show_plugin_list(plugins);
+                } else {
+                    self.add_system_message(format_plugin_result(&self.msgs(), &result));
+                }
                 if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
                     self.add_system_message(
                         self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
@@ -800,7 +846,7 @@ mod lifecycle_tests {
         assert!(
             app.raw_messages
                 .iter()
-                .any(|message| message == "已安装插件 demo（来自 fixture）")
+                .any(|message| message.contains("已安装插件 demo（来自 fixture）"))
         );
     }
 
@@ -819,7 +865,43 @@ mod lifecycle_tests {
         assert!(
             app.raw_messages
                 .iter()
-                .any(|message| message == "installed plugin demo from fixture")
+                .any(|message| message.contains("Installed plugin demo from fixture"))
+        );
+    }
+
+    #[test]
+    fn plugin_list_renders_titled_table() {
+        let mut app = make_app();
+
+        app.handle_plugin_event(PluginEvent::Succeeded {
+            result: PluginResult::ListedInstalled {
+                plugins: vec![tact::plugin::InstalledPlugin {
+                    id: "superpowers".into(),
+                    marketplace: "superpowers-dev".into(),
+                    revision: "abc123".into(),
+                    cache_path: std::path::PathBuf::new(),
+                    skill_count: 12,
+                }],
+            },
+            refresh_skills: false,
+        });
+
+        let joined = app.raw_messages.join("\n");
+        assert!(
+            joined.contains("Installed plugins (1)"),
+            "expected titled block, got:\n{joined}"
+        );
+        assert!(
+            joined.contains("superpowers") && joined.contains("superpowers-dev"),
+            "table should show plugin and marketplace, got:\n{joined}"
+        );
+        assert!(
+            joined.contains("12"),
+            "table should show skill count, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("installed plugins:"),
+            "old flat message must be gone, got:\n{joined}"
         );
     }
 

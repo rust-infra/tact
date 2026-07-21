@@ -39,15 +39,19 @@ impl App {
             .get(phys)
             .copied()
             .unwrap_or(RawMessageType::LLM);
-        if msg_type == RawMessageType::LLM
-            && !crate::render::is_user_message_line(&self.raw_messages, phys)
-        {
-            // Match the text inside a Thinking card: its two-column gutter plus
-            // the card's left border.
-            crate::render::util::LOG_THINKING_INDENT + 1
-        } else {
-            msg_type.log_indent()
+        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+            return 0;
         }
+        // LLM assistant replies: align body text with the text inside a Thinking
+        // card.  The thinking component renders inside an area indented by
+        // LOG_THINKING_INDENT (2), then draws a left border, so its content
+        // starts at column 3 (indent) + 1 (border) = 4 relative to the log
+        // panel's inner area.  Using LOG_THINKING_INDENT + 1 keeps the
+        // assistant reply at the same visual position.
+        if msg_type == RawMessageType::LLM {
+            return crate::render::util::LOG_THINKING_INDENT + 1;
+        }
+        msg_type.log_indent()
     }
 
     /// Map a logical line number to the physical index in messages.
