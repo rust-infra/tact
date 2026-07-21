@@ -178,7 +178,11 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
     ));
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
-    assert_eq!(app.code_blocks.len(), 2, "both fenced blocks should become cards");
+    assert_eq!(
+        app.code_blocks.len(),
+        2,
+        "both fenced blocks should become cards"
+    );
     let leaked: Vec<_> = app
         .raw_messages
         .iter()
