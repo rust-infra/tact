@@ -413,6 +413,7 @@ impl App {
     }
 
     fn apply_stream_chunk(&mut self, text: String) {
+        self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
         // Thinking region is closed by the safety gate above when still open.
         self.stream.buffer.push_str(&text);

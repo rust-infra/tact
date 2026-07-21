@@ -8,6 +8,7 @@ use super::normalize::{NormalizedResponse, normalize_response};
 #[derive(Default)]
 pub(crate) struct ResponsesStreamState {
     thinking_open: bool,
+    output_text: String,
     terminal: Option<Response>,
 }
 
@@ -38,6 +39,7 @@ impl ResponsesStreamState {
         if delta.is_empty() {
             return Vec::new();
         }
+        self.output_text.push_str(&delta);
         let mut updates = Vec::with_capacity(2);
         if self.thinking_open {
             self.thinking_open = false;
@@ -99,7 +101,18 @@ impl ResponsesStreamState {
         let response = self.terminal.ok_or_else(|| {
             LlmError::Other("OpenAI Responses stream ended without a terminal event".into())
         })?;
-        normalize_response(response)
+        let mut normalized = normalize_response(response)?;
+        if !self.output_text.is_empty()
+            && !normalized
+                .blocks
+                .iter()
+                .any(|block| matches!(block, crate::ContentBlock::Text { .. }))
+        {
+            normalized.blocks.push(crate::ContentBlock::Text {
+                text: self.output_text,
+            });
+        }
+        Ok(normalized)
     }
 }
 
@@ -206,6 +219,37 @@ mod tests {
             [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]
         ));
         assert!(state.finish().is_ok());
+    }
+
+    #[test]
+    fn preserves_streamed_text_when_terminal_response_has_no_message_output() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "100 - 200 = -100",
+                "logprobs": []
+            })))
+            .unwrap();
+
+        let mut terminal = super::super::normalize::tests::completed_response_json();
+        terminal["output"] = serde_json::json!([]);
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.completed",
+                "sequence_number": 2,
+                "response": terminal
+            })))
+            .unwrap();
+
+        let normalized = state.finish().unwrap();
+        assert!(normalized.blocks.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text } if text == "100 - 200 = -100")
+        }));
     }
 
     #[test]

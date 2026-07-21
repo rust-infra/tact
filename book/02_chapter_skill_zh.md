@@ -18,7 +18,7 @@ Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规
 | 按需（`load_skill` 工具） | 包在 `<skill>` XML 标签中的全文（工具结果） |
 | TUI 斜杠 `/skill-name` | 调用时在**用户任务**中注入同样的 `<skill>` 包装（见 [§7](#7-tui-斜杠调用) 与 [TUI](./23_chapter_tui_zh.md)） |
 
-启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。
+启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./22_chapter_llm_zh.md#62-responses-api)。
 
 ---
 

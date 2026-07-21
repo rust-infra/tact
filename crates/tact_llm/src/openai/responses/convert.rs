@@ -140,6 +140,50 @@ fn tool_choice(tool_choice: &ToolChoice) -> ToolChoiceParam {
     }
 }
 
+fn normalize_assistant_history_items(body: &mut serde_json::Value) {
+    let Some(input) = body
+        .get_mut("input")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for (index, item) in input.iter_mut().enumerate() {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("message")
+            || item.get("role").and_then(serde_json::Value::as_str) != Some("assistant")
+        {
+            continue;
+        }
+        let Some(content) = item.get_mut("content") else {
+            continue;
+        };
+        let output_content = match content {
+            serde_json::Value::String(text) => vec![serde_json::json!({
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+            })],
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| {
+                    (part.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
+                        .then(|| {
+                            serde_json::json!({
+                                "type": "output_text",
+                                "text": part.get("text").cloned().unwrap_or_default(),
+                                "annotations": [],
+                            })
+                        })
+                })
+                .collect(),
+            _ => continue,
+        };
+        *content = serde_json::Value::Array(output_content);
+        item["id"] = serde_json::Value::String(format!("tact-assistant-history-{index}"));
+        item["status"] = serde_json::Value::String("completed".to_string());
+    }
+}
+
 pub(crate) fn create_response(
     request: &CreateMessageParams,
     configured_effort: Option<OpenAiReasoningEffort>,
@@ -184,6 +228,12 @@ pub(crate) fn create_response(
     }
     if let Some(choice) = &request.tool_choice {
         builder.tool_choice(tool_choice(choice));
+    } else if request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        builder.tool_choice(ToolChoiceOptions::Auto);
     }
     if request.thinking.is_some() || configured_effort.is_some() {
         builder.reasoning(Reasoning {
@@ -197,11 +247,16 @@ pub(crate) fn create_response(
         .map_err(|error| LlmError::Other(format!("build OpenAI Responses request: {error}")))?;
     let mut body = serde_json::to_value(typed_request)
         .map_err(|error| LlmError::Other(format!("serialize OpenAI Responses request: {error}")))?;
+    normalize_assistant_history_items(&mut body);
     let budget_tokens = request
         .thinking
         .as_ref()
         .map_or(0, |thinking| thinking.budget_tokens);
-    if let Some(effort) = effective_reasoning_effort(configured_effort, budget_tokens) {
+    let effort = match configured_effort {
+        Some(effort) => Some(effort),
+        None => effective_reasoning_effort(None, budget_tokens),
+    };
+    if let Some(effort) = effort {
         body["reasoning"]["effort"] = serde_json::Value::String(effort.as_str().to_owned());
     }
     Ok(body)
@@ -371,9 +426,62 @@ mod tests {
     }
 
     #[test]
+    fn defaults_tool_choice_to_auto_when_tools_are_present() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".into(),
+            messages: vec![Message::new_text(Role::User, "run pwd")],
+            max_tokens: 128,
+        })
+        .with_tools(vec![Tool {
+            name: "bash".into(),
+            description: Some("Run a shell command".into()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"]
+            }),
+        }]);
+
+        let body = create_response(&request, None).unwrap();
+
+        assert_eq!(body["tool_choice"], serde_json::json!("auto"));
+    }
+
+    #[test]
     fn serializes_explicit_max_reasoning_effort() {
         let body =
             create_response(&request_with_history(), Some(OpenAiReasoningEffort::Max)).unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
+    }
+
+    #[test]
+    fn explicit_reasoning_effort_wins_over_budget_fallback() {
+        let body =
+            create_response(&request_with_history(), Some(OpenAiReasoningEffort::Low)).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "low");
+    }
+
+    #[test]
+    fn serializes_assistant_history_as_completed_output_message() {
+        let body = create_response(&request_with_history(), None).unwrap();
+        let assistant = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["role"] == "assistant")
+            .expect("assistant history item");
+
+        assert_eq!(assistant["status"], "completed");
+        assert!(
+            assistant["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("tact-assistant-history-"))
+        );
+        assert_eq!(assistant["content"][0]["type"], "output_text");
+        assert_eq!(assistant["content"][0]["text"], "checking");
+        assert_eq!(
+            assistant["content"][0]["annotations"],
+            serde_json::json!([])
+        );
     }
 }

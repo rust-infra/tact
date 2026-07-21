@@ -17,7 +17,7 @@ A skill is a Markdown document that teaches the agent how to perform a specializ
 | On demand (`load_skill` tool) | Full body wrapped in `<skill>` XML tags (tool result) |
 | TUI slash `/skill-name` | Same `<skill>` wrap injected into the **user task** on invoke (see [§7](#7-tui-slash-invocation) and [TUI](./23_chapter_tui.md)) |
 
-Summaries at startup; full content when the model calls `load_skill` or the user invokes a skill via slash.
+Summaries at startup; full content when the model calls `load_skill` or the user invokes a skill via slash. The Responses adapter adds a more restrictive skill-loading policy; see [LLM Provider Layer](./22_chapter_llm.md#62-responses-api).
 
 ---
 

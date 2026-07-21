@@ -326,12 +326,34 @@ reasoning item and related `fc_*` function-call item ids. The next request
 reconstructs the original `rs_*` / `fc_*` identities; a thinking block without
 an encrypted payload is display-only and is not sent back.
 
-Streaming deltas drive only live UI updates. Reasoning summary/text deltas map
-to `ThinkingChunk`, visible output/refusal deltas map to `StreamChunk`, and the
-terminal `response.completed` / `response.incomplete` object is authoritative
-for final blocks, tool calls, usage, and stop reason. This avoids duplicating
-content found in both delta and terminal events. Input/cache/output/reasoning
-token counts map to the existing `TokenUsageInfo` fields.
+Responses uses its own `responses_system_prompt_template.md`, leaving other
+provider templates unchanged. Its skill-loading policy forbids
+`load_skill` for greetings, small talk, and ordinary questions; a skill must be
+explicitly slash-invoked or explicitly requested, and a skill description
+cannot make its own invocation mandatory.
+
+Streaming deltas drive live UI updates and retain visible output text as a
+fallback. Reasoning summary/text deltas map to `ThinkingChunk`, visible
+output/refusal deltas map to `StreamChunk`, and the terminal
+`response.completed` / `response.incomplete` object is authoritative for final
+blocks, tool calls, usage, and stop reason when it includes the completed
+output. Some compatible endpoints omit the final message from that object; in
+that case, already received output text deltas are restored as the final text
+block. This avoids duplicating content found in both delta and terminal events.
+The stream adapter deserializes only the event types it consumes; unrelated or
+newer provider events are ignored. For terminal events from compatible
+endpoints, missing response/output-item IDs receive internal placeholder values
+solely to satisfy the SDK schema; Tact does not treat those placeholders as
+provider identities. Missing terminal-response, output-message, and
+function-call statuses are inferred from the terminal event type. Requests with
+tools explicitly send `tool_choice: "auto"` unless the caller selected another
+policy, avoiding provider-specific defaults that disable tool use. When
+replaying assistant history, Tact serializes text as a completed Responses
+output message (`output_text` with a stable local item ID), rather than an
+assistant `input_text` message; this is required by strict compatible endpoints
+on multi-turn requests.
+Input/cache/output/reasoning token counts map to the existing
+`TokenUsageInfo` fields.
 
 Unsupported in this adapter: server-hosted tools, background responses,
 Conversations, `previous_response_id`, and the Responses compaction endpoint.

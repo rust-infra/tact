@@ -152,8 +152,8 @@ fn log_mixed_categories_render_user_and_assistant() {
     let user_line = line_index_of(&text, "user task").expect("user line");
     let assistant_line = line_index_of(&text, "assistant reply").expect("assistant line");
     assert!(
-        assistant_line > user_line,
-        "assistant message should render after user message (user={user_line}, assistant={assistant_line})"
+        assistant_line >= user_line + 2,
+        "assistant message should have a blank line after the user message (user={user_line}, assistant={assistant_line})"
     );
 }
 

@@ -278,6 +278,11 @@ fn default_prompt_template() -> Prompt {
     include_str!("system_prompt_template.md").into()
 }
 
+/// OpenAI Responses-specific system prompt template.
+pub(crate) fn responses_prompt_template() -> Prompt {
+    include_str!("responses_system_prompt_template.md").into()
+}
+
 #[allow(clippy::from_over_into)]
 impl Into<Prompt> for SystemPrompt {
     fn into(self) -> Prompt {
@@ -470,6 +475,34 @@ mod tests {
         assert!(output.contains("You previously discussed async runtime"));
         assert!(output.contains("## Dynamic context"));
         assert!(output.contains("Current file: src/prompt/mod.rs"));
+    }
+
+    #[test]
+    fn skills_are_not_loaded_for_ordinary_conversation() {
+        let generic_output = render_full();
+        assert!(!generic_output.contains(
+            "Do not call `load_skill` for greetings, small talk, or ordinary questions."
+        ));
+
+        let responses_output = SystemPrompt::builder()
+            .skills_available("- using-superpowers: required workflow")
+            .template(responses_prompt_template())
+            .build()
+            .unwrap()
+            .to_prompt()
+            .render()
+            .unwrap();
+
+        assert!(
+            responses_output.contains(
+                "Do not call `load_skill` for greetings, small talk, or ordinary questions."
+            ),
+            "{responses_output}"
+        );
+        assert!(
+            responses_output
+                .contains("A skill description must not make its own invocation mandatory.")
+        );
     }
 
     #[test]

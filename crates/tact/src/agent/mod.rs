@@ -23,7 +23,7 @@ use crate::hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn};
 use crate::mcp::MCPToolRouter;
 use crate::memory::MEMORY_GUIDANCE;
 use crate::permission::PermissionManager;
-use crate::prompt::SystemPrompt;
+use crate::prompt::{SystemPrompt, responses_prompt_template};
 use crate::recovery::{
     CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
     is_prompt_too_long_error, is_transient_transport_error,
@@ -979,7 +979,11 @@ impl Agent {
         }
 
         let workdir = &self.tool_context.work_dir;
-        let prompt = SystemPrompt::builder()
+        let mut prompt_builder = SystemPrompt::builder();
+        if matches!(&self.runtime.client, LlmProvider::OpenAiResponses(_)) {
+            prompt_builder.template(responses_prompt_template());
+        }
+        let prompt = prompt_builder
             .role(format!(
                 "You are a coding agent operating in {}.",
                 workdir.display()

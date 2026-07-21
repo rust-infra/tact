@@ -364,6 +364,16 @@ impl App {
         self.append_blank(RawMessageType::LLM);
     }
 
+    /// Blank line before assistant stream content when it follows a user message.
+    pub(crate) fn ensure_gap_after_user_message(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+            self.append_blank(RawMessageType::LLM);
+        }
+    }
+
     /// Blank line before a tool block when it follows normal content.
     pub(crate) fn ensure_gap_before_tools(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {
