@@ -19,8 +19,8 @@ use std::{collections::HashMap, time::Duration};
 use async_openai::{
     config::Config,
     types::{
-        ChatCompletionRequestMessage, ChatCompletionResponseFormat, ChatCompletionTool, ChatCompletionToolChoiceOption,
-        Stop,
+        ChatCompletionRequestMessage, ChatCompletionResponseFormat, ChatCompletionTool,
+        ChatCompletionToolChoiceOption, Stop,
     },
 };
 pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
@@ -51,7 +51,9 @@ fn openai_delta_ui_events(
             *thinking_open = true;
             events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
         }
-        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning.to_string())));
+        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            reasoning.to_string(),
+        )));
     }
     if let Some(content) = content.filter(|s| !s.is_empty()) {
         if *thinking_open {
@@ -185,7 +187,9 @@ pub struct StreamOptions {
 }
 
 /// Default streaming options — request token usage in the final chunk.
-pub(crate) const STREAM_OPTIONS_WITH_USAGE: StreamOptions = StreamOptions { include_usage: Some(true) };
+pub(crate) const STREAM_OPTIONS_WITH_USAGE: StreamOptions = StreamOptions {
+    include_usage: Some(true),
+};
 
 /// Top-level SSE chunk from an OpenAI-compatible streaming chat completion.
 #[derive(Debug, Default, Deserialize)]
@@ -263,15 +267,24 @@ pub fn current_reasoning_effort_from_budget(budget_tokens: usize) -> Option<&'st
     })
 }
 
-fn tool_use_block_from_parts(id: Option<String>, name: Option<String>, args: String) -> Option<ContentBlock> {
+fn tool_use_block_from_parts(
+    id: Option<String>,
+    name: Option<String>,
+    args: String,
+) -> Option<ContentBlock> {
     let id = id.filter(|id| !id.is_empty())?;
     let name = name.filter(|name| !name.is_empty())?;
-    let input = serde_json::from_str(&args).unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+    let input = serde_json::from_str(&args)
+        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
     Some(ContentBlock::ToolUse { id, name, input })
 }
 
 fn tool_use_block_from_response(id: &str, name: &str, args: &str) -> Option<ContentBlock> {
-    tool_use_block_from_parts(Some(id.to_string()), Some(name.to_string()), args.to_string())
+    tool_use_block_from_parts(
+        Some(id.to_string()),
+        Some(name.to_string()),
+        args.to_string(),
+    )
 }
 
 // ── Config / Adapter ───────────────────────────────────────────────────
@@ -289,14 +302,22 @@ pub struct CompatibleConfig {
 
 impl CompatibleConfig {
     pub fn new(api_key: impl Into<String>, api_base: impl Into<String>) -> Self {
-        Self { api_base: api_base.into(), api_key: Secret::new(api_key.into()) }
+        Self {
+            api_base: api_base.into(),
+            api_key: Secret::new(api_key.into()),
+        }
     }
 }
 
 impl Config for CompatibleConfig {
     fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("Bearer {}", self.api_key.expose_secret()).parse().unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", self.api_key.expose_secret())
+                .parse()
+                .unwrap(),
+        );
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
         headers.insert(reqwest::header::USER_AGENT, "Claude Code".parse().unwrap());
@@ -361,8 +382,15 @@ impl OpenAiAdapter {
         &self,
         body: &serde_json::Value,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError>
-    {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
@@ -381,7 +409,10 @@ impl OpenAiAdapter {
         // message is surfaced, not just the HTTP status code.
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response.text().await.unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+            let resp_body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
             tracing::debug!(
                 status = %status,
                 response_body = %resp_body,
@@ -413,14 +444,14 @@ impl OpenAiAdapter {
                         "SSE stream failed; logging request body for diagnostics"
                     );
                     return Err(LlmError::Other(format!("SSE error: {e}")));
-                },
+                }
                 Ok(msg) => {
                     if msg.data == "[DONE]" {
                         break;
                     }
 
-                    let chunk: StreamChunk =
-                        serde_json::from_str(&msg.data).map_err(|e| LlmError::Other(format!("JSON parse: {e}")))?;
+                    let chunk: StreamChunk = serde_json::from_str(&msg.data)
+                        .map_err(|e| LlmError::Other(format!("JSON parse: {e}")))?;
 
                     // ── choices ──
                     for choice in &chunk.choices {
@@ -434,11 +465,11 @@ impl OpenAiAdapter {
                             match &event {
                                 AgentUpdate::StreamChunk(content) => {
                                     text_buffer.push_str(content);
-                                },
+                                }
                                 AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning)) => {
                                     reasoning_buffer.push_str(reasoning);
-                                },
-                                _ => {},
+                                }
+                                _ => {}
                             }
                             if let Some(ref tx) = ui_tx {
                                 let _ = tx.send(event);
@@ -455,7 +486,11 @@ impl OpenAiAdapter {
                         for tc in &delta.tool_calls {
                             let idx = tc.index as usize;
                             while tool_call_buffers.len() <= idx {
-                                tool_call_buffers.push(PendingToolCall { id: None, name: None, args: String::new() });
+                                tool_call_buffers.push(PendingToolCall {
+                                    id: None,
+                                    name: None,
+                                    args: String::new(),
+                                });
                             }
                             if let Some(ref id) = tc.id {
                                 tool_call_buffers[idx].id = Some(id.clone());
@@ -482,12 +517,17 @@ impl OpenAiAdapter {
                         if usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
                             let cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
                             let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or(0);
-                            let reasoning =
-                                usage.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens).unwrap_or(0);
+                            let reasoning = usage
+                                .completion_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.reasoning_tokens)
+                                .unwrap_or(0);
                             let info = TokenUsageInfo {
                                 prompt: usage.prompt_tokens,
                                 completion: usage.completion_tokens,
-                                total: usage.total_tokens.unwrap_or(usage.prompt_tokens + usage.completion_tokens),
+                                total: usage
+                                    .total_tokens
+                                    .unwrap_or(usage.prompt_tokens + usage.completion_tokens),
                                 prompt_cache_hit_tokens: cache_hit,
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
@@ -498,7 +538,7 @@ impl OpenAiAdapter {
                             token_usage = Some(info);
                         }
                     }
-                },
+                }
             }
         }
 
@@ -511,7 +551,10 @@ impl OpenAiAdapter {
         // Build response blocks
         let mut response_blocks = Vec::new();
         if !reasoning_buffer.is_empty() {
-            response_blocks.push(ContentBlock::Thinking { thinking: reasoning_buffer, signature: String::new() });
+            response_blocks.push(ContentBlock::Thinking {
+                thinking: reasoning_buffer,
+                signature: String::new(),
+            });
         }
         if !text_buffer.is_empty() {
             response_blocks.push(ContentBlock::Text { text: text_buffer });
@@ -530,8 +573,15 @@ impl OpenAiAdapter {
     pub async fn create_completion(
         &self,
         body: &serde_json::Value,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError>
-    {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
 
         let url = self.config.url("/chat/completions");
@@ -552,7 +602,10 @@ impl OpenAiAdapter {
             return Err(LlmError::Other(format!("HTTP {status}: {resp_body}")));
         }
 
-        let json: serde_json::Value = response.json().await.map_err(|e| LlmError::Other(e.to_string()))?;
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Other(e.to_string()))?;
 
         let choice = json["choices"]
             .as_array()
@@ -566,12 +619,17 @@ impl OpenAiAdapter {
         if let Some(reasoning) = message["reasoning_content"].as_str()
             && !reasoning.is_empty()
         {
-            blocks.push(ContentBlock::Thinking { thinking: reasoning.to_string(), signature: String::new() });
+            blocks.push(ContentBlock::Thinking {
+                thinking: reasoning.to_string(),
+                signature: String::new(),
+            });
         }
 
         // content
         if let Some(content) = message["content"].as_str() {
-            blocks.push(ContentBlock::Text { text: content.to_string() });
+            blocks.push(ContentBlock::Text {
+                text: content.to_string(),
+            });
         }
 
         // tool_calls
@@ -594,9 +652,18 @@ impl OpenAiAdapter {
             TokenUsageInfo {
                 prompt,
                 completion,
-                total: u["total_tokens"].as_u64().map(|n| n as u32).unwrap_or(prompt + completion),
-                prompt_cache_hit_tokens: u["prompt_cache_hit_tokens"].as_u64().map(|n| n as u32).unwrap_or(0),
-                prompt_cache_miss_tokens: u["prompt_cache_miss_tokens"].as_u64().map(|n| n as u32).unwrap_or(0),
+                total: u["total_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(prompt + completion),
+                prompt_cache_hit_tokens: u["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: u["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
                 reasoning_tokens: u["completion_tokens_details"]
                     .get("reasoning_tokens")
                     .and_then(|v| v.as_u64())
@@ -627,11 +694,17 @@ mod tests {
     fn tool_use_block_from_parts_skips_empty_slots() {
         assert!(tool_use_block_from_parts(None, Some("read_file".into()), "{}".into()).is_none());
         assert!(tool_use_block_from_parts(Some("call_1".into()), None, "{}".into()).is_none());
-        assert!(tool_use_block_from_parts(Some("".into()), Some("read_file".into()), "{}".into()).is_none());
+        assert!(
+            tool_use_block_from_parts(Some("".into()), Some("read_file".into()), "{}".into())
+                .is_none()
+        );
 
-        let block =
-            tool_use_block_from_parts(Some("call_1".into()), Some("read_file".into()), r#"{"path":"a.rs"}"#.into())
-                .expect("valid tool call");
+        let block = tool_use_block_from_parts(
+            Some("call_1".into()),
+            Some("read_file".into()),
+            r#"{"path":"a.rs"}"#.into(),
+        )
+        .expect("valid tool call");
         assert!(matches!(block, ContentBlock::ToolUse { .. }));
     }
 
@@ -664,7 +737,10 @@ mod tests {
         ));
         assert!(open);
         let finished = finish_thinking_event(&mut open);
-        assert!(matches!(finished, Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))));
+        assert!(matches!(
+            finished,
+            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+        ));
         assert!(!open);
         assert!(finish_thinking_event(&mut open).is_none());
     }

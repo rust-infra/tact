@@ -19,11 +19,14 @@ use super::{
     subagent::TaskTool,
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
     team::{
-        BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool, ShutdownRequestTool,
-        ShutdownResponseTool, SpawnTeammateTool,
+        BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
+        ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
     },
     web::{WebFetchTool, WebSearchTool},
-    worktree::{WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool, WorktreeStatusTool},
+    worktree::{
+        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool,
+        WorktreeStatusTool,
+    },
     write_file::WriteFileTool,
 };
 

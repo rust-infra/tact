@@ -64,21 +64,25 @@ pub(crate) fn detect_terminal_theme() -> ThemeName {
 /// light/dark mode. Returns `None` if detection fails.
 #[cfg(target_os = "macos")]
 fn detect_macos_appearance() -> Option<ThemeName> {
-    std::process::Command::new("defaults").args(["read", "-g", "AppleInterfaceStyle"]).output().ok().and_then(|o| {
-        if o.status.success() {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.eq_ignore_ascii_case("dark") {
-                Some(ThemeName::Dark)
-            } else if s.eq_ignore_ascii_case("light") {
-                Some(ThemeName::Light)
+    std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.eq_ignore_ascii_case("dark") {
+                    Some(ThemeName::Dark)
+                } else if s.eq_ignore_ascii_case("light") {
+                    Some(ThemeName::Light)
+                } else {
+                    None
+                }
             } else {
-                None
+                // `AppleInterfaceStyle` not set → system uses Light mode
+                Some(ThemeName::Light)
             }
-        } else {
-            // `AppleInterfaceStyle` not set → system uses Light mode
-            Some(ThemeName::Light)
-        }
-    })
+        })
 }
 
 #[cfg(test)]
@@ -135,7 +139,7 @@ mod tests {
         // On macOS this may detect system appearance; just ensure it's valid
         let theme = detect_terminal_theme();
         match theme {
-            ThemeName::Dark | ThemeName::Light | ThemeName::Retro => {},
+            ThemeName::Dark | ThemeName::Light | ThemeName::Retro => {}
             other => panic!("unexpected fallback theme: {other:?}"),
         }
     }
@@ -145,7 +149,7 @@ mod tests {
     fn test_macos_detection_no_panic() {
         let result = detect_macos_appearance();
         match result {
-            None | Some(ThemeName::Dark) | Some(ThemeName::Light) => {},
+            None | Some(ThemeName::Dark) | Some(ThemeName::Light) => {}
             _ => panic!("unexpected macOS detection result"),
         }
     }

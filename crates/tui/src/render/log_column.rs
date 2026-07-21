@@ -14,7 +14,11 @@ pub(crate) struct LogColumnRenderer<'a> {
 
 impl<'a> LogColumnRenderer<'a> {
     pub(crate) fn new() -> Self {
-        LogColumnRenderer { cells: Vec::new(), viewport_top: 0, viewport_height: 0 }
+        LogColumnRenderer {
+            cells: Vec::new(),
+            viewport_top: 0,
+            viewport_height: 0,
+        }
     }
 
     pub(crate) fn with_viewport(mut self, top: usize, height: usize) -> Self {
@@ -120,7 +124,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         r.render(area, &mut buf);
 
-        assert!(!buffer_text(&buf).contains('X'), "cell entirely above viewport must not render");
+        assert!(
+            !buffer_text(&buf).contains('X'),
+            "cell entirely above viewport must not render"
+        );
     }
 
     #[test]
@@ -135,6 +142,9 @@ mod tests {
 
         // Two rows (indices 2,3) remain visible → 'C' appears on first two buffer rows.
         let text = buffer_text(&buf);
-        assert!(text.starts_with("C"), "clipped cell should draw from top: {text}");
+        assert!(
+            text.starts_with("C"),
+            "clipped cell should draw from top: {text}"
+        );
     }
 }

@@ -113,7 +113,12 @@ impl App {
     }
 
     /// Append one log row, keeping `messages`, `raw_messages`, and `raw_message_types` in sync.
-    pub(crate) fn append_msg(&mut self, line_msg: Line<'static>, raw_msg: String, msg_type: RawMessageType) {
+    pub(crate) fn append_msg(
+        &mut self,
+        line_msg: Line<'static>,
+        raw_msg: String,
+        msg_type: RawMessageType,
+    ) {
         self.messages.push(line_msg);
         self.raw_messages.push(raw_msg);
         self.raw_message_types.push(msg_type);
@@ -123,7 +128,12 @@ impl App {
         self.append_msg(Line::from(""), String::new(), msg_type);
     }
 
-    pub(crate) fn extend_msgs(&mut self, lines: Vec<Line<'static>>, raw_lines: Vec<String>, msg_type: RawMessageType) {
+    pub(crate) fn extend_msgs(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        raw_lines: Vec<String>,
+        msg_type: RawMessageType,
+    ) {
         debug_assert_eq!(lines.len(), raw_lines.len());
         for (line, raw) in lines.into_iter().zip(raw_lines) {
             self.append_msg(line, raw, msg_type);
@@ -153,7 +163,8 @@ impl App {
         let n = lines.len();
         self.messages.splice(range.clone(), lines);
         self.raw_messages.splice(range.clone(), raw);
-        self.raw_message_types.splice(range, std::iter::repeat_n(msg_type, n));
+        self.raw_message_types
+            .splice(range, std::iter::repeat_n(msg_type, n));
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
@@ -179,8 +190,16 @@ impl App {
 
     /// Open the thinking popup for active or completed content at `phys_idx`.
     pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
-        let exists = self.thinking.active.as_ref().is_some_and(|active| active.phys_idx == phys_idx)
-            || self.thinking.blocks.iter().any(|block| block.phys_idx == phys_idx);
+        let exists = self
+            .thinking
+            .active
+            .as_ref()
+            .is_some_and(|active| active.phys_idx == phys_idx)
+            || self
+                .thinking
+                .blocks
+                .iter()
+                .any(|block| block.phys_idx == phys_idx);
         if exists {
             self.thinking.popup = Some(ThinkingPopup {
                 phys_idx,
@@ -203,7 +222,10 @@ impl App {
 
     /// Find the code block containing the given logical line number.
     /// Returns (logical_start, logical_end) including the opening and closing ``` markers.
-    pub(crate) fn find_code_block_containing_logical(&self, target_logical: usize) -> Option<(usize, usize)> {
+    pub(crate) fn find_code_block_containing_logical(
+        &self,
+        target_logical: usize,
+    ) -> Option<(usize, usize)> {
         let mut logical = 0;
         let mut block_start: Option<usize> = None;
         for phys_idx in 0..self.raw_messages.len() {
@@ -254,7 +276,11 @@ impl App {
             if raw[start].trim_start().starts_with("```") {
                 // Extract content lines (excluding opening and closing ``` markers)
                 let content: Vec<&str> = raw[start + 1..end].iter().map(|s| s.as_str()).collect();
-                return if content.is_empty() { None } else { Some(content.join("\n")) };
+                return if content.is_empty() {
+                    None
+                } else {
+                    Some(content.join("\n"))
+                };
             }
         }
     }
@@ -279,28 +305,47 @@ impl App {
             .filter(|active| active.phys_idx == phys_idx)
             .map(|active| active.content.clone())
             .or_else(|| {
-                self.thinking.blocks.iter().find(|block| block.phys_idx == phys_idx).map(|block| block.content.clone())
+                self.thinking
+                    .blocks
+                    .iter()
+                    .find(|block| block.phys_idx == phys_idx)
+                    .map(|block| block.content.clone())
             })
     }
 
     /// Find tool render output whose block starts at `phys_idx`.
-    fn tool_output_at(&self, phys_idx: usize) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
+    fn tool_output_at(
+        &self,
+        phys_idx: usize,
+    ) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
         self.tools
             .active
             .iter()
             .find(|a| a.phys_idx == phys_idx)
             .map(|a| &a.output)
-            .or_else(|| self.tools.blocks.iter().find(|b| b.phys_idx == phys_idx).map(|b| &b.output))
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| &b.output)
+            })
     }
 
-    fn popup_from_tool_output(&self, output: &crate::widgets::tool_widget::ToolRenderOutput) -> Option<DiffPopup> {
+    fn popup_from_tool_output(
+        &self,
+        output: &crate::widgets::tool_widget::ToolRenderOutput,
+    ) -> Option<DiffPopup> {
         if !output.layout.has_detail_card {
             return None;
         }
         if output.phase == ToolPhase::Failed {
             let content = output.detail_full.clone()?;
             return Some(DiffPopup {
-                title: output.detail_title.clone().unwrap_or_else(|| output.tool_name.clone()),
+                title: output
+                    .detail_title
+                    .clone()
+                    .unwrap_or_else(|| output.tool_name.clone()),
                 file_path: None,
                 git_diff_path: None,
                 workspace_dir: None,
@@ -316,7 +361,11 @@ impl App {
         }
         match output.tool_name.as_str() {
             "write_file" | "read_file" => Some(DiffPopup {
-                title: if output.arg_full.is_empty() { output.arg_summary.clone() } else { output.arg_full.clone() },
+                title: if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                },
                 file_path: Some(if output.arg_full.is_empty() {
                     output.arg_summary.clone()
                 } else {
@@ -325,11 +374,13 @@ impl App {
                 git_diff_path: None,
                 workspace_dir: None,
                 inline_content: output.detail_full.clone(),
-                lang: crate::render::popups::diff_popup::popup_lang_for_path(if output.arg_full.is_empty() {
-                    &output.arg_summary
-                } else {
-                    &output.arg_full
-                }),
+                lang: crate::render::popups::diff_popup::popup_lang_for_path(
+                    if output.arg_full.is_empty() {
+                        &output.arg_summary
+                    } else {
+                        &output.arg_full
+                    },
+                ),
                 use_diff_gutter: output.use_diff_gutter,
                 is_diff: false,
                 scroll: 0,
@@ -338,8 +389,11 @@ impl App {
                 highlighted_lines: Vec::new(),
             }),
             "edit_file" => {
-                let path =
-                    if output.arg_full.is_empty() { output.arg_summary.clone() } else { output.arg_full.clone() };
+                let path = if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                };
                 Some(DiffPopup {
                     title: path.clone(),
                     file_path: None,
@@ -354,14 +408,20 @@ impl App {
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
-            },
+            }
             "bash" | "shell" | "run_command" => {
                 let content = output.detail_full.clone()?;
-                let full_arg =
-                    if output.arg_full.is_empty() { output.arg_summary.clone() } else { output.arg_full.clone() };
+                let full_arg = if output.arg_full.is_empty() {
+                    output.arg_summary.clone()
+                } else {
+                    output.arg_full.clone()
+                };
                 Some(DiffPopup {
                     title: if full_arg.is_empty() {
-                        output.detail_title.clone().unwrap_or_else(|| "Command output".to_string())
+                        output
+                            .detail_title
+                            .clone()
+                            .unwrap_or_else(|| "Command output".to_string())
                     } else {
                         format!("bash ({full_arg})")
                     },
@@ -377,11 +437,14 @@ impl App {
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
-            },
+            }
             _ => {
                 let content = output.detail_full.clone()?;
                 Some(DiffPopup {
-                    title: output.detail_title.clone().unwrap_or_else(|| output.tool_name.clone()),
+                    title: output
+                        .detail_title
+                        .clone()
+                        .unwrap_or_else(|| output.tool_name.clone()),
                     file_path: None,
                     git_diff_path: None,
                     workspace_dir: None,
@@ -394,7 +457,7 @@ impl App {
                     cached_content: None,
                     highlighted_lines: Vec::new(),
                 })
-            },
+            }
         }
     }
 
@@ -451,7 +514,7 @@ impl App {
                 Err(e) => {
                     self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
                     return;
-                },
+                }
             }
         } else {
             match popup.copy_content() {
@@ -468,7 +531,11 @@ impl App {
     pub(crate) fn open_code_popup(&mut self, block_idx: usize) {
         if block_idx < self.code_blocks.len() {
             let block = &self.code_blocks[block_idx];
-            self.code_popup = Some(CodePopup { block_idx, lang: block.lang.clone(), scroll: 0 });
+            self.code_popup = Some(CodePopup {
+                block_idx,
+                lang: block.lang.clone(),
+                scroll: 0,
+            });
         }
     }
 
@@ -634,9 +701,14 @@ mod tests {
             permission_label: None,
         };
         let msgs = app.msgs();
-        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs).with_phase(ToolPhase::Success).build();
+        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)
+            .with_phase(ToolPhase::Success)
+            .build();
         let popup = app.popup_from_tool_output(&output).expect("bash popup");
 
-        assert_eq!(output.detail_total_lines, popup.inline_content.unwrap().lines().count());
+        assert_eq!(
+            output.detail_total_lines,
+            popup.inline_content.unwrap().lines().count()
+        );
     }
 }

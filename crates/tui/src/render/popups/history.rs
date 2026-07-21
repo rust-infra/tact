@@ -24,7 +24,9 @@ pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
 
             let icon = if entry.summary.contains("✅") || entry.summary.contains("✓") {
                 "✅"
-            } else if entry.summary.contains("❌") || entry.summary.contains("✗") || entry.summary.contains("Error")
+            } else if entry.summary.contains("❌")
+                || entry.summary.contains("✗")
+                || entry.summary.contains("Error")
             {
                 "❌"
             } else {
@@ -33,7 +35,10 @@ pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
 
             let task_preview = truncate_chars_with_ellipsis(&entry.task, 40);
 
-            let mut text = format!(" {} {} [{}] {}", branch, icon, entry.timestamp, task_preview);
+            let mut text = format!(
+                " {} {} [{}] {}",
+                branch, icon, entry.timestamp, task_preview
+            );
             if !entry.summary.is_empty() {
                 text.push_str(" → ");
                 let summary_short = truncate_chars_with_ellipsis(&entry.summary, 30);
@@ -51,6 +56,9 @@ pub(crate) fn render_history_panel(frame: &mut Frame, area: Rect, app: &App) {
             ListItem::new(Span::styled(text, Style::default().fg(line_color)))
         })
         .collect();
-    let widget = PopupWidget::default().with_list(items).with_theme(&app.theme).with_title(app.msgs().history_title);
+    let widget = PopupWidget::default()
+        .with_list(items)
+        .with_theme(&app.theme)
+        .with_title(app.msgs().history_title);
     frame.render_widget(widget, area);
 }

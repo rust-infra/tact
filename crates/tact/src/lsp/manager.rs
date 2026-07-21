@@ -34,7 +34,10 @@ impl LspManager {
     /// Builds the extension-to-server mapping for routing.
     pub fn register_server(&mut self, config: LspServerConfig) {
         for ext in config.extension_to_language.keys() {
-            self.extension_map.entry(ext.to_string()).or_default().push(config.name.clone());
+            self.extension_map
+                .entry(ext.to_string())
+                .or_default()
+                .push(config.name.clone());
         }
         self.configs.push(config);
     }
@@ -102,7 +105,7 @@ impl LspManager {
             Err(e) => {
                 tracing::warn!("Could not read '{}' for LSP didOpen: {}", file_path, e);
                 String::new()
-            },
+            }
         };
 
         client.open_document(&uri, &language_id, &content).await?;
@@ -150,7 +153,9 @@ impl LspManager {
     /// Load LSP server configs from `~/.tact/lsp_servers.json`.
     /// Returns the parsed configs or an empty vec on any error.
     pub fn load_from_default_config() -> Vec<LspServerConfig> {
-        let Some(path) = crate::consts::TactPath::home_tact_dir().map(|d| d.join("lsp_servers.json")) else {
+        let Some(path) =
+            crate::consts::TactPath::home_tact_dir().map(|d| d.join("lsp_servers.json"))
+        else {
             return Vec::new();
         };
         match std::fs::read_to_string(&path) {
@@ -159,7 +164,7 @@ impl LspManager {
                 Err(e) => {
                     tracing::warn!("Failed to parse {}: {}", path.display(), e);
                     Vec::new()
-                },
+                }
             },
             Err(_) => Vec::new(),
         }
@@ -229,7 +234,11 @@ impl LspManager {
     }
 
     /// List document symbols for `file_path`.
-    pub async fn document_symbols(&mut self, file_path: &str, root_dir: &Path) -> anyhow::Result<Vec<String>> {
+    pub async fn document_symbols(
+        &mut self,
+        file_path: &str,
+        root_dir: &Path,
+    ) -> anyhow::Result<Vec<String>> {
         let uri = path_to_uri(file_path);
         let server_name = self
             .server_name_for_file(file_path)
@@ -245,12 +254,18 @@ impl LspManager {
 
     /// Get cached diagnostics for `file_path` across all running servers.
     pub fn get_diagnostics_for_file(&self, file_path: &str) -> Vec<LspDiagnostic> {
-        self.clients.values().flat_map(|c| c.get_diagnostics(file_path)).collect()
+        self.clients
+            .values()
+            .flat_map(|c| c.get_diagnostics(file_path))
+            .collect()
     }
 
     /// Get all cached diagnostics from all running servers.
     pub fn all_diagnostics(&self) -> Vec<LspDiagnostic> {
-        self.clients.values().flat_map(|c| c.all_diagnostics()).collect()
+        self.clients
+            .values()
+            .flat_map(|c| c.all_diagnostics())
+            .collect()
     }
 
     /// Shut down all running servers.

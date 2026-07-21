@@ -64,7 +64,13 @@ fn macos_starttime(pid: u32) -> Option<String> {
     }
 
     unsafe extern "C" {
-        fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut proc_bsdinfo, buffersize: i32) -> i32;
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut proc_bsdinfo,
+            buffersize: i32,
+        ) -> i32;
     }
 
     let mut info: proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -82,7 +88,10 @@ fn macos_starttime(pid: u32) -> Option<String> {
         return None;
     }
 
-    Some(format!("{}.{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
+    Some(format!(
+        "{}.{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
 }
 
 // ── Fallback (non-Linux, non-macOS): ps command ─────────────────
@@ -90,7 +99,10 @@ fn macos_starttime(pid: u32) -> Option<String> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn ps_lstart(pid: u32) -> Option<String> {
     let pid_str = pid.to_string();
-    let output = Command::new("ps").args(["-p", pid_str.as_str(), "-o", "lstart="]).output().ok()?;
+    let output = Command::new("ps")
+        .args(["-p", pid_str.as_str(), "-o", "lstart="])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

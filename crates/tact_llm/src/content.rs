@@ -32,9 +32,16 @@ pub enum ContentBlock {
     #[serde(rename = "image")]
     Image { source: ImageSource },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
     #[serde(rename = "redacted_thinking")]
@@ -60,11 +67,19 @@ pub struct Message {
 
 impl Message {
     pub fn new_text(role: Role, text: impl Into<String>) -> Self {
-        Self { role, content: MessageContent::Text { content: text.into() } }
+        Self {
+            role,
+            content: MessageContent::Text {
+                content: text.into(),
+            },
+        }
     }
 
     pub fn new_blocks(role: Role, blocks: Vec<ContentBlock>) -> Self {
-        Self { role, content: MessageContent::Blocks { content: blocks } }
+        Self {
+            role,
+            content: MessageContent::Blocks { content: blocks },
+        }
     }
 
     /// Returns true if this message contains any `ContentBlock::Image`.
@@ -73,7 +88,9 @@ impl Message {
     pub fn has_images(&self) -> bool {
         match &self.content {
             MessageContent::Text { .. } => false,
-            MessageContent::Blocks { content } => content.iter().any(|b| matches!(b, ContentBlock::Image { .. })),
+            MessageContent::Blocks { content } => content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. })),
         }
     }
 }
@@ -106,8 +123,11 @@ mod tests {
 
     #[test]
     fn content_block_serde_tag() {
-        let block =
-            ContentBlock::ToolUse { id: "1".into(), name: "bash".into(), input: serde_json::json!({"cmd": "ls"}) };
+        let block = ContentBlock::ToolUse {
+            id: "1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"cmd": "ls"}),
+        };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "tool_use");
         assert_eq!(json["name"], "bash");

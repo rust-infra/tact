@@ -25,8 +25,11 @@ pub(crate) fn handle_file_picker_mode(app: &mut App, key: KeyEvent) {
 
             // Compute the path relative to the project root.
             let abs = app.file_picker.current_dir.join(&path);
-            let relative =
-                abs.strip_prefix(&app.file_picker.base_dir).unwrap_or(abs.as_path()).to_string_lossy().to_string();
+            let relative = abs
+                .strip_prefix(&app.file_picker.base_dir)
+                .unwrap_or(abs.as_path())
+                .to_string_lossy()
+                .to_string();
 
             let insert = if relative.chars().any(|c| c.is_whitespace()) {
                 format!("@\"{}\" ", relative)
@@ -38,26 +41,26 @@ pub(crate) fn handle_file_picker_mode(app: &mut App, key: KeyEvent) {
             app.input.insert_str(app.input_cursor, &insert);
             app.input_cursor += insert.len();
             app.input_mode = InputMode::Insert;
-        },
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             app.file_picker.move_down();
-        },
+        }
         KeyCode::Char('k') | KeyCode::Up => {
             app.file_picker.move_up();
-        },
+        }
         KeyCode::Char(c) => {
             app.file_picker.push_query(c);
-        },
+        }
         KeyCode::Backspace => {
             app.file_picker.backspace();
-        },
+        }
         KeyCode::Esc => {
             app.save_undo();
             app.input.insert(app.input_cursor, '@');
             app.input_cursor += '@'.len_utf8();
             app.input_mode = InputMode::Insert;
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -86,7 +89,10 @@ mod tests {
 
         let text = render_app_text(&mut app, 80, 24);
 
-        assert!(text.contains("No options"), "empty file picker should show placeholder, got:\n{text}");
+        assert!(
+            text.contains("No options"),
+            "empty file picker should show placeholder, got:\n{text}"
+        );
     }
 
     #[test]
@@ -256,7 +262,10 @@ mod tests {
 
         let text = render_app_text(&mut app, 80, 24);
 
-        assert!(text.contains("car"), "title should show query, got:\n{text}");
+        assert!(
+            text.contains("car"),
+            "title should show query, got:\n{text}"
+        );
     }
 
     #[test]
@@ -297,6 +306,9 @@ mod tests {
 
         handle_file_picker_mode(&mut app, key(KeyCode::Enter));
 
-        assert!(app.file_picker.query.is_empty(), "query should be cleared after entering a directory");
+        assert!(
+            app.file_picker.query.is_empty(),
+            "query should be cleared after entering a directory"
+        );
     }
 }

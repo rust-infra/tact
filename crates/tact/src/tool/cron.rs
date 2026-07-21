@@ -19,7 +19,8 @@ pub struct CronCreateInput {
 
 #[tool(name = "cron_create", description = "Create a scheduled prompt.")]
 pub async fn cron_create(ctx: ToolContext, input: CronCreateInput) -> Result<String> {
-    ctx.cron_scheduler.create(input.cron, input.prompt, input.recurring, input.durable)
+    ctx.cron_scheduler
+        .create(input.cron, input.prompt, input.recurring, input.durable)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -50,9 +51,14 @@ mod tests {
     async fn cron_delete_errors_for_unknown_id() {
         let context = test_context("cron_delete_errors_for_unknown_id");
 
-        let error = run_tool(&context, CronDeleteTool, "cron_delete", serde_json::json!({ "id": "00000099" }))
-            .await
-            .unwrap_err();
+        let error = run_tool(
+            &context,
+            CronDeleteTool,
+            "cron_delete",
+            serde_json::json!({ "id": "00000099" }),
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.to_string().contains("not found"));
     }
@@ -61,7 +67,9 @@ mod tests {
     async fn cron_list_empty_by_default() {
         let context = test_context("cron_list_empty_by_default");
 
-        let output = run_tool(&context, CronListTool, "cron_list", serde_json::json!({})).await.unwrap();
+        let output = run_tool(&context, CronListTool, "cron_list", serde_json::json!({}))
+            .await
+            .unwrap();
 
         assert_eq!(output, "No scheduled tasks.");
     }

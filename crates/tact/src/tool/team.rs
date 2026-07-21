@@ -31,9 +31,13 @@ pub struct SendMessageInput {
     pub body: String,
 }
 
-#[tool(name = "send_message", description = "Send a message to a teammate inbox.")]
+#[tool(
+    name = "send_message",
+    description = "Send a message to a teammate inbox."
+)]
 pub async fn send_message(ctx: ToolContext, input: SendMessageInput) -> Result<String> {
-    ctx.teammate_manager.send_message(input.from, input.to, input.body)
+    ctx.teammate_manager
+        .send_message(input.from, input.to, input.body)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -42,7 +46,10 @@ pub struct BroadcastInput {
     pub body: String,
 }
 
-#[tool(name = "broadcast", description = "Broadcast a message to all teammates.")]
+#[tool(
+    name = "broadcast",
+    description = "Broadcast a message to all teammates."
+)]
 pub async fn broadcast(ctx: ToolContext, input: BroadcastInput) -> Result<String> {
     ctx.teammate_manager.broadcast(input.from, input.body)
 }
@@ -64,19 +71,43 @@ pub struct ProtocolInput {
     pub body: String,
 }
 
-#[tool(name = "plan_approval", description = "Send a durable plan approval protocol message.")]
+#[tool(
+    name = "plan_approval",
+    description = "Send a durable plan approval protocol message."
+)]
 pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(input.from, input.to, "plan_approval".to_string(), input.body)
+    ctx.teammate_manager.protocol_request(
+        input.from,
+        input.to,
+        "plan_approval".to_string(),
+        input.body,
+    )
 }
 
-#[tool(name = "shutdown_request", description = "Send a shutdown request protocol message.")]
+#[tool(
+    name = "shutdown_request",
+    description = "Send a shutdown request protocol message."
+)]
 pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(input.from, input.to, "shutdown_request".to_string(), input.body)
+    ctx.teammate_manager.protocol_request(
+        input.from,
+        input.to,
+        "shutdown_request".to_string(),
+        input.body,
+    )
 }
 
-#[tool(name = "shutdown_response", description = "Send a shutdown response protocol message.")]
+#[tool(
+    name = "shutdown_response",
+    description = "Send a shutdown response protocol message."
+)]
 pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(input.from, input.to, "shutdown_response".to_string(), input.body)
+    ctx.teammate_manager.protocol_request(
+        input.from,
+        input.to,
+        "shutdown_response".to_string(),
+        input.body,
+    )
 }
 
 #[cfg(test)]
@@ -85,9 +116,14 @@ mod tests {
     use crate::tool::test_support::{run_tool, test_context};
 
     async fn spawn(context: &ToolContext, name: &str, role: &str) {
-        run_tool(context, SpawnTeammateTool, "spawn_teammate", serde_json::json!({ "name": name, "role": role }))
-            .await
-            .unwrap();
+        run_tool(
+            context,
+            SpawnTeammateTool,
+            "spawn_teammate",
+            serde_json::json!({ "name": name, "role": role }),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -126,9 +162,14 @@ mod tests {
         .unwrap();
 
         for teammate in ["alice", "bob"] {
-            let inbox = run_tool(&context, ReadInboxTool, "read_inbox", serde_json::json!({ "owner": teammate }))
-                .await
-                .unwrap();
+            let inbox = run_tool(
+                &context,
+                ReadInboxTool,
+                "read_inbox",
+                serde_json::json!({ "owner": teammate }),
+            )
+            .await
+            .unwrap();
             assert!(inbox.contains("Standup in 5"));
         }
     }
@@ -152,8 +193,14 @@ mod tests {
         .unwrap();
 
         assert!(output.contains("sent protocol request"));
-        let inbox =
-            run_tool(&context, ReadInboxTool, "read_inbox", serde_json::json!({ "owner": "alice" })).await.unwrap();
+        let inbox = run_tool(
+            &context,
+            ReadInboxTool,
+            "read_inbox",
+            serde_json::json!({ "owner": "alice" }),
+        )
+        .await
+        .unwrap();
         assert!(inbox.contains("Approve plan v2"));
         assert!(inbox.contains("plan_approval"));
     }

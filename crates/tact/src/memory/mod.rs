@@ -95,7 +95,10 @@ pub fn get_memory_manager(memory_dir: PathBuf) -> Result<MemoryManager> {
 
 impl MemoryManager {
     pub fn new(memory_dir: PathBuf) -> Self {
-        Self { memory_dir, memories: HashMap::new() }
+        Self {
+            memory_dir,
+            memories: HashMap::new(),
+        }
     }
 
     pub fn load_all(&mut self) -> Result<()> {
@@ -114,17 +117,34 @@ impl MemoryManager {
             .filter(|entry| entry.file_name().to_str() != Some(MEMORY_INDEX_FILE))
         {
             let path = entry.path();
-            let content =
-                std::fs::read_to_string(path).with_context(|| format!("can't read memory file: {}", path.display()))?;
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("can't read memory file: {}", path.display()))?;
             let Some(parsed) = parse_frontmatter(&content)? else {
                 continue;
             };
 
-            let name = parsed.name.unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into());
+            let name = parsed.name.unwrap_or_else(|| {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into()
+            });
             let description = parsed.description.unwrap_or_default();
-            let memory_type = parsed.memory_type.as_deref().unwrap_or("project").parse::<MemoryType>()?;
+            let memory_type = parsed
+                .memory_type
+                .as_deref()
+                .unwrap_or("project")
+                .parse::<MemoryType>()?;
 
-            self.memories.insert(name.clone(), MemoryEntry { name, description, memory_type, content: parsed.content });
+            self.memories.insert(
+                name.clone(),
+                MemoryEntry {
+                    name,
+                    description,
+                    memory_type,
+                    content: parsed.content,
+                },
+            );
         }
 
         Ok(())
@@ -135,11 +155,17 @@ impl MemoryManager {
             return String::new();
         }
 
-        let mut lines = vec!["# Memories (persistent across sessions)".to_string(), String::new()];
+        let mut lines = vec![
+            "# Memories (persistent across sessions)".to_string(),
+            String::new(),
+        ];
 
         for memory_type in MemoryType::VARIANTS {
-            let mut typed =
-                self.memories.values().filter(|entry| entry.memory_type == *memory_type).collect::<Vec<_>>();
+            let mut typed = self
+                .memories
+                .values()
+                .filter(|entry| entry.memory_type == *memory_type)
+                .collect::<Vec<_>>();
             typed.sort_by(|a, b| a.name.cmp(&b.name));
 
             if typed.is_empty() {
@@ -173,8 +199,9 @@ impl MemoryManager {
 
         let file_name = format!("{safe_name}.md");
         let file_path = self.memory_dir.join(&file_name);
-        let frontmatter =
-            format!("---\nname: {name}\ndescription: {description}\ntype: {memory_type}\n---\n{content}\n");
+        let frontmatter = format!(
+            "---\nname: {name}\ndescription: {description}\ntype: {memory_type}\n---\n{content}\n"
+        );
         std::fs::write(&file_path, frontmatter)
             .with_context(|| format!("can't write memory file: {}", file_path.display()))?;
 
@@ -194,7 +221,10 @@ impl MemoryManager {
             "Saved memory '{}' [{}] to {}",
             name,
             memory_type,
-            file_path.strip_prefix(std::env::current_dir()?).unwrap_or(&file_path).display()
+            file_path
+                .strip_prefix(std::env::current_dir()?)
+                .unwrap_or(&file_path)
+                .display()
         ))
     }
 
@@ -209,7 +239,12 @@ impl MemoryManager {
 
         self.sorted_memories()
             .into_iter()
-            .map(|entry| format!("  [{}] {}: {}", entry.memory_type, entry.name, entry.description))
+            .map(|entry| {
+                format!(
+                    "  [{}] {}: {}",
+                    entry.memory_type, entry.name, entry.description
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -217,7 +252,10 @@ impl MemoryManager {
     fn rebuild_index(&self) -> Result<()> {
         let mut lines = vec!["# Memory Index".to_string(), String::new()];
         for entry in self.sorted_memories() {
-            lines.push(format!("- {}: {} [{}]", entry.name, entry.description, entry.memory_type));
+            lines.push(format!(
+                "- {}: {} [{}]",
+                entry.name, entry.description, entry.memory_type
+            ));
 
             if lines.len() >= MAX_INDEX_LINES {
                 lines.push(format!("... (truncated at {} lines)", MAX_INDEX_LINES));
@@ -275,7 +313,13 @@ fn parse_frontmatter(text: &str) -> Result<Option<ParsedMemory>> {
 
 fn sanitize_name(name: &str) -> String {
     name.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') { ch.to_ascii_lowercase() } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -288,7 +332,9 @@ mod tests {
     #[test]
     fn parses_frontmatter_with_yaml_header() {
         let parsed =
-            parse_frontmatter("---\nname: tabs\ndescription: prefers tabs\ntype: user\n---\nbody").unwrap().unwrap();
+            parse_frontmatter("---\nname: tabs\ndescription: prefers tabs\ntype: user\n---\nbody")
+                .unwrap()
+                .unwrap();
 
         assert_eq!(parsed.name.as_deref(), Some("tabs"));
         assert_eq!(parsed.description.as_deref(), Some("prefers tabs"));
@@ -300,11 +346,21 @@ mod tests {
     fn saves_memory_and_rebuilds_index() {
         let dir = std::env::temp_dir().join(format!(
             "s09_memory_test_{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let mut manager = MemoryManager::new(dir.clone());
 
-        manager.save_memory("Prefer Tabs", "Indent with tabs", MemoryType::User, "Use tabs by default.").unwrap();
+        manager
+            .save_memory(
+                "Prefer Tabs",
+                "Indent with tabs",
+                MemoryType::User,
+                "Use tabs by default.",
+            )
+            .unwrap();
 
         let saved_file = dir.join("prefer_tabs.md");
         let index_file = dir.join("MEMORY.md");

@@ -74,14 +74,26 @@ impl SystemPrompt {
     }
 
     /// Overwrites all guidelines.
-    pub fn with_guidelines<T: IntoIterator<Item = S>, S: AsRef<str>>(&mut self, guidelines: T) -> &mut Self {
-        self.guidelines = guidelines.into_iter().map(|s| s.as_ref().to_string()).collect();
+    pub fn with_guidelines<T: IntoIterator<Item = S>, S: AsRef<str>>(
+        &mut self,
+        guidelines: T,
+    ) -> &mut Self {
+        self.guidelines = guidelines
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect();
         self
     }
 
     /// Overwrites all constraints.
-    pub fn with_constraints<T: IntoIterator<Item = S>, S: AsRef<str>>(&mut self, constraints: T) -> &mut Self {
-        self.constraints = constraints.into_iter().map(|s| s.as_ref().to_string()).collect();
+    pub fn with_constraints<T: IntoIterator<Item = S>, S: AsRef<str>>(
+        &mut self,
+        constraints: T,
+    ) -> &mut Self {
+        self.constraints = constraints
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect();
         self
     }
 
@@ -221,22 +233,42 @@ impl Default for SystemPrompt {
 
 impl SystemPromptBuilder {
     pub fn add_guideline(&mut self, guideline: &str) -> &mut Self {
-        self.guidelines.get_or_insert_with(Vec::new).push(guideline.to_string());
+        self.guidelines
+            .get_or_insert_with(Vec::new)
+            .push(guideline.to_string());
         self
     }
 
     pub fn add_constraint(&mut self, constraint: &str) -> &mut Self {
-        self.constraints.get_or_insert_with(Vec::new).push(constraint.to_string());
+        self.constraints
+            .get_or_insert_with(Vec::new)
+            .push(constraint.to_string());
         self
     }
 
-    pub fn guidelines<T: IntoIterator<Item = S>, S: AsRef<str>>(&mut self, guidelines: T) -> &mut Self {
-        self.guidelines = Some(guidelines.into_iter().map(|s| s.as_ref().to_string()).collect());
+    pub fn guidelines<T: IntoIterator<Item = S>, S: AsRef<str>>(
+        &mut self,
+        guidelines: T,
+    ) -> &mut Self {
+        self.guidelines = Some(
+            guidelines
+                .into_iter()
+                .map(|s| s.as_ref().to_string())
+                .collect(),
+        );
         self
     }
 
-    pub fn constraints<T: IntoIterator<Item = S>, S: AsRef<str>>(&mut self, constraints: T) -> &mut Self {
-        self.constraints = Some(constraints.into_iter().map(|s| s.as_ref().to_string()).collect());
+    pub fn constraints<T: IntoIterator<Item = S>, S: AsRef<str>>(
+        &mut self,
+        constraints: T,
+    ) -> &mut Self {
+        self.constraints = Some(
+            constraints
+                .into_iter()
+                .map(|s| s.as_ref().to_string())
+                .collect(),
+        );
         self
     }
 }
@@ -316,7 +348,10 @@ impl Prompt {
 
     /// Create a new prompt from a compiled template that is present in the Tera repository
     pub fn from_compiled_template(name: impl Into<Cow<'static, str>>) -> Prompt {
-        Prompt { template_ref: TemplateRef::Tera(name.into()), context: None }
+        Prompt {
+            template_ref: TemplateRef::Tera(name.into()),
+            context: None,
+        }
     }
 
     /// Adds anything that implements [Into<tera::Context>], like `Serialize` to the Prompt
@@ -354,29 +389,40 @@ impl Prompt {
             return Ok(template.to_string());
         }
 
-        let context: Cow<'_, tera::Context> =
-            self.context.as_ref().map_or_else(|| Cow::Owned(tera::Context::default()), Cow::Borrowed);
+        let context: Cow<'_, tera::Context> = self
+            .context
+            .as_ref()
+            .map_or_else(|| Cow::Owned(tera::Context::default()), Cow::Borrowed);
 
         match &self.template_ref {
             TemplateRef::OneOff(template) => {
-                tera::Tera::one_off(template.as_ref(), &context, false).context("Failed to render one-off template")
-            },
-            TemplateRef::Tera(template) => {
-                TERA.read().unwrap().render(template.as_ref(), &context).context("Failed to render template")
-            },
+                tera::Tera::one_off(template.as_ref(), &context, false)
+                    .context("Failed to render one-off template")
+            }
+            TemplateRef::Tera(template) => TERA
+                .read()
+                .unwrap()
+                .render(template.as_ref(), &context)
+                .context("Failed to render template"),
         }
     }
 }
 
 impl From<&'static str> for Prompt {
     fn from(prompt: &'static str) -> Self {
-        Prompt { template_ref: TemplateRef::OneOff(prompt.into()), context: None }
+        Prompt {
+            template_ref: TemplateRef::OneOff(prompt.into()),
+            context: None,
+        }
     }
 }
 
 impl From<String> for Prompt {
     fn from(prompt: String) -> Self {
-        Prompt { template_ref: TemplateRef::OneOff(prompt.into()), context: None }
+        Prompt {
+            template_ref: TemplateRef::OneOff(prompt.into()),
+            context: None,
+        }
     }
 }
 
@@ -419,7 +465,10 @@ mod tests {
         assert!(output.contains("Extra context here"));
         let additional = output.find("# Additional context").unwrap();
         let project_rules = output.find("# Project rules").unwrap();
-        assert!(project_rules > additional, "CLAUDE.md content should render inside Additional context");
+        assert!(
+            project_rules > additional,
+            "CLAUDE.md content should render inside Additional context"
+        );
         assert!(output.contains("=== DYNAMIC_BOUNDARY ==="));
         assert!(output.contains("## Memory"));
         assert!(output.contains("You previously discussed async runtime"));
@@ -430,7 +479,9 @@ mod tests {
     #[test]
     fn skills_are_not_loaded_for_ordinary_conversation() {
         let generic_output = render_full();
-        assert!(!generic_output.contains("Do not call `load_skill` for greetings, small talk, or ordinary questions."));
+        assert!(!generic_output.contains(
+            "Do not call `load_skill` for greetings, small talk, or ordinary questions."
+        ));
 
         let responses_output = SystemPrompt::builder()
             .skills_available("- using-superpowers: required workflow")
@@ -442,10 +493,15 @@ mod tests {
             .unwrap();
 
         assert!(
-            responses_output.contains("Do not call `load_skill` for greetings, small talk, or ordinary questions."),
+            responses_output.contains(
+                "Do not call `load_skill` for greetings, small talk, or ordinary questions."
+            ),
             "{responses_output}"
         );
-        assert!(responses_output.contains("A skill description must not make its own invocation mandatory."));
+        assert!(
+            responses_output
+                .contains("A skill description must not make its own invocation mandatory.")
+        );
     }
 
     #[test]
@@ -463,12 +519,23 @@ mod tests {
         let boundary = output.find("=== DYNAMIC_BOUNDARY ===").unwrap();
         assert!(output.find("# Project rules").unwrap() < boundary);
         assert!(output.find("# Guidelines you need to follow").unwrap() < boundary);
-        assert!(output.find("# Constraints that must be adhered to").unwrap() < boundary);
+        assert!(
+            output
+                .find("# Constraints that must be adhered to")
+                .unwrap()
+                < boundary
+        );
     }
 
     #[test]
     fn omits_empty_sections() {
-        let output = SystemPrompt::builder().role("Coder").build().unwrap().to_prompt().render().unwrap();
+        let output = SystemPrompt::builder()
+            .role("Coder")
+            .build()
+            .unwrap()
+            .to_prompt()
+            .render()
+            .unwrap();
 
         assert!(output.contains("# Your role"));
         assert!(!output.contains("# Available skills"));

@@ -63,7 +63,9 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
                 return match respond_rx.await {
                     Ok(Some(idxs)) => Ok(format_multi_selection(&options, &idxs)),
                     Ok(None) => Ok("User cancelled the question.".to_string()),
-                    Err(_) => Ok("User interface closed before answering; treat as cancelled.".to_string()),
+                    Err(_) => Ok(
+                        "User interface closed before answering; treat as cancelled.".to_string(),
+                    ),
                 };
             }
 
@@ -77,11 +79,16 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             });
             return match respond_rx.await {
                 Ok(Some(idx)) => {
-                    let chosen = options.get(idx).cloned().unwrap_or_else(|| format!("option {idx}"));
+                    let chosen = options
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| format!("option {idx}"));
                     Ok(format!("User selected: {chosen}"))
-                },
+                }
                 Ok(None) => Ok("User cancelled the question.".to_string()),
-                Err(_) => Ok("User interface closed before answering; treat as cancelled.".to_string()),
+                Err(_) => {
+                    Ok("User interface closed before answering; treat as cancelled.".to_string())
+                }
             };
         }
 
@@ -100,7 +107,10 @@ fn format_multi_selection(options: &[String], idxs: &[usize]) -> String {
     if idxs.is_empty() {
         return "User selected: (none)".to_string();
     }
-    let labels: Vec<&str> = idxs.iter().filter_map(|&i| options.get(i).map(String::as_str)).collect();
+    let labels: Vec<&str> = idxs
+        .iter()
+        .filter_map(|&i| options.get(i).map(String::as_str))
+        .collect();
     if labels.is_empty() {
         format!("User selected indices: {idxs:?}")
     } else {
@@ -134,8 +144,14 @@ mod tests {
     async fn ask_user_formats_question_headless() {
         let context = test_context("ask_user_formats_question");
 
-        let output =
-            run_tool(&context, AskUserTool, "ask_user", serde_json::json!({ "question": "Continue?" })).await.unwrap();
+        let output = run_tool(
+            &context,
+            AskUserTool,
+            "ask_user",
+            serde_json::json!({ "question": "Continue?" }),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output, "Question: Continue?");
     }
@@ -182,12 +198,20 @@ mod tests {
 
         let update = rx.recv().await.expect("RequestSelect");
         match update {
-            AgentUpdate::RequestSelect { prompt, options, respond, log_confirm } => {
+            AgentUpdate::RequestSelect {
+                prompt,
+                options,
+                respond,
+                log_confirm,
+            } => {
                 assert_eq!(prompt, "Pick a color");
                 assert_eq!(options, vec!["red", "blue"]);
-                assert!(!log_confirm, "selection renders on tool meta, not a system line");
+                assert!(
+                    !log_confirm,
+                    "selection renders on tool meta, not a system line"
+                );
                 respond.send(Some(1)).unwrap();
-            },
+            }
             other => panic!("expected RequestSelect, got {other:?}"),
         }
 
@@ -216,11 +240,15 @@ mod tests {
         });
 
         match rx.recv().await.expect("RequestMultiSelect") {
-            AgentUpdate::RequestMultiSelect { prompt, options, respond } => {
+            AgentUpdate::RequestMultiSelect {
+                prompt,
+                options,
+                respond,
+            } => {
                 assert_eq!(prompt, "Pick toppings");
                 assert_eq!(options.len(), 3);
                 respond.send(Some(vec![0, 2])).unwrap();
-            },
+            }
             other => panic!("expected RequestMultiSelect, got {other:?}"),
         }
 
@@ -250,7 +278,7 @@ mod tests {
         match rx.recv().await.expect("RequestSelect") {
             AgentUpdate::RequestSelect { respond, .. } => {
                 respond.send(None).unwrap();
-            },
+            }
             other => panic!("expected RequestSelect, got {other:?}"),
         }
 
@@ -264,10 +292,14 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         context.ui_tx = Some(tx);
 
-        let output =
-            run_tool(&context, AskUserTool, "ask_user", serde_json::json!({ "question": "What is your name?" }))
-                .await
-                .unwrap();
+        let output = run_tool(
+            &context,
+            AskUserTool,
+            "ask_user",
+            serde_json::json!({ "question": "What is your name?" }),
+        )
+        .await
+        .unwrap();
 
         assert!(output.contains("Question shown"));
         assert!(output.contains("What is your name?"));

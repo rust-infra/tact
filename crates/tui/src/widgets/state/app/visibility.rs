@@ -37,7 +37,11 @@ impl App {
 
     /// Left indent columns for nested log content at this physical row.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        let msg_type = self.raw_message_types.get(phys).copied().unwrap_or(RawMessageType::LLM);
+        let msg_type = self
+            .raw_message_types
+            .get(phys)
+            .copied()
+            .unwrap_or(RawMessageType::LLM);
         if crate::render::is_user_message_line(&self.raw_messages, phys) {
             return 0;
         }
@@ -77,7 +81,11 @@ impl App {
     /// specific logical line. Returns (word_start_byte, word_end_byte).
     /// Words consist of letters, digits, underscores, and hyphens; other
     /// characters are separators.
-    pub(crate) fn find_word_bounds(&self, logical_idx: usize, byte_offset: usize) -> Option<(usize, usize)> {
+    pub(crate) fn find_word_bounds(
+        &self,
+        logical_idx: usize,
+        byte_offset: usize,
+    ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
         let text = self.raw_messages.get(phys_idx)?;
         let bytes = text.as_bytes();
@@ -105,7 +113,11 @@ impl App {
                 break;
             }
         }
-        if start < end { Some((start, end)) } else { None }
+        if start < end {
+            Some((start, end))
+        } else {
+            None
+        }
     }
 
     /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
@@ -123,19 +135,27 @@ impl App {
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
         let indent = self.nested_log_indent(phys_idx) as usize;
         let text_col = col.saturating_sub(indent);
-        let byte_offset = visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
+        let byte_offset =
+            visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
         Some((phys_idx, byte_offset))
     }
 
     /// O(1) version: uses the cache mapping built by render_log_panel.
     /// Returns None if the physical index is not visible or cache hasn't been built yet.
     pub(crate) fn phys_to_logical_fast(&self, phys_idx: usize) -> Option<usize> {
-        self.log_scroll.phys_to_logical_cache.get(phys_idx).copied().flatten()
+        self.log_scroll
+            .phys_to_logical_cache
+            .get(phys_idx)
+            .copied()
+            .flatten()
     }
 
     /// Find the tool block (active or completed) containing a logical log line.
     /// Returns `(tool_idx, phys_idx, logical_start, row_count)`.
-    pub(crate) fn find_tool_at_logical(&self, line_idx: usize) -> Option<(usize, usize, usize, usize)> {
+    pub(crate) fn find_tool_at_logical(
+        &self,
+        line_idx: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
         for (i, active) in self.tools.active.iter().enumerate() {
             let Some(si) = self.phys_to_logical_fast(active.phys_idx) else {
                 continue;
@@ -159,21 +179,32 @@ impl App {
     }
 
     /// Find an active or completed thinking card containing a logical log row.
-    pub(crate) fn find_thinking_at_logical(&self, line_idx: usize) -> Option<(usize, usize, usize)> {
+    pub(crate) fn find_thinking_at_logical(
+        &self,
+        line_idx: usize,
+    ) -> Option<(usize, usize, usize)> {
         let find = |phys_idx: usize, rows: usize| {
             let logical_start = self.phys_to_logical_fast(phys_idx)?;
-            (line_idx >= logical_start && line_idx < logical_start + rows).then_some((phys_idx, logical_start, rows))
+            (line_idx >= logical_start && line_idx < logical_start + rows).then_some((
+                phys_idx,
+                logical_start,
+                rows,
+            ))
         };
         if let Some(active) = self.thinking.active.as_ref()
-            && let Some(found) =
-                find(active.phys_idx, crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()))
+            && let Some(found) = find(
+                active.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+            )
         {
             return Some(found);
         }
-        self.thinking
-            .blocks
-            .iter()
-            .find_map(|block| find(block.phys_idx, crate::render::cells::thinking::thinking_visual_rows(1)))
+        self.thinking.blocks.iter().find_map(|block| {
+            find(
+                block.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(1),
+            )
+        })
     }
 
     /// Map a visual line number (mouse click row) back to a logical line number.
@@ -194,7 +225,9 @@ impl App {
         let visible_count = if self.log_scroll.visible_indices_ver == self.messages.len() {
             self.log_scroll.visible_indices.len()
         } else {
-            (0..self.messages.len()).filter(|&idx| self.is_message_visible(idx)).count()
+            (0..self.messages.len())
+                .filter(|&idx| self.is_message_visible(idx))
+                .count()
         };
         visible_count + if self.stream.buffer.is_empty() { 0 } else { 1 }
     }
@@ -204,7 +237,8 @@ impl App {
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
             if let Some(text) = self.raw_messages.get(start.phys_idx) {
-                return text[start.byte_offset.min(text.len())..end.byte_offset.min(text.len())].to_string();
+                return text[start.byte_offset.min(text.len())..end.byte_offset.min(text.len())]
+                    .to_string();
             }
             return String::new();
         }
@@ -237,7 +271,8 @@ impl App {
         let Some(active) = self.thinking.active.take() else {
             return;
         };
-        let old_rows = crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
+        let old_rows =
+            crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
             let end = active.phys_idx.saturating_add(old_rows);
             if active.phys_idx < self.messages.len() && end <= self.messages.len() {
@@ -247,7 +282,13 @@ impl App {
             return;
         }
 
-        let summary = active.content.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default().to_string();
+        let summary = active
+            .content
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_string();
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
         let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
@@ -266,13 +307,17 @@ impl App {
             return;
         }
         let phys_idx = self.push_thinking_placeholder_rows(1);
-        self.thinking.active = Some(ActiveThinkingBlock::new(phys_idx, std::time::Instant::now()));
+        self.thinking.active = Some(ActiveThinkingBlock::new(
+            phys_idx,
+            std::time::Instant::now(),
+        ));
     }
 
     /// Append a thinking delta without creating source rows in the shared log.
     pub(crate) fn append_thinking_delta(&mut self, text: &str) {
         let resize = if let Some(active) = self.thinking.active.as_mut() {
-            let old_rows = crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
+            let old_rows =
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
             active.push_delta(text);
             Some((
                 active.phys_idx,
@@ -296,19 +341,19 @@ impl App {
     }
 
     fn last_visible_phys_idx(&self) -> Option<usize> {
-        (0..self.messages.len()).rev().find(|&idx| self.is_message_visible(idx))
+        (0..self.messages.len())
+            .rev()
+            .find(|&idx| self.is_message_visible(idx))
     }
 
     fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
-        self.tools
-            .active
-            .iter()
-            .any(|active| phys >= active.phys_idx && phys <= active.phys_idx + active.output.message_placeholder_rows())
-            || self
-                .tools
-                .blocks
-                .iter()
-                .any(|block| phys >= block.phys_idx && phys <= block.phys_idx + block.output.message_placeholder_rows())
+        self.tools.active.iter().any(|active| {
+            phys >= active.phys_idx
+                && phys <= active.phys_idx + active.output.message_placeholder_rows()
+        }) || self.tools.blocks.iter().any(|block| {
+            phys >= block.phys_idx
+                && phys <= block.phys_idx + block.output.message_placeholder_rows()
+        })
     }
 
     /// Blank line before assistant stream content when it follows a tool card.
@@ -340,7 +385,11 @@ impl App {
         if self.phys_idx_in_tool_block(phys) {
             return;
         }
-        if self.raw_messages.get(phys).is_some_and(|line| line.is_empty()) {
+        if self
+            .raw_messages
+            .get(phys)
+            .is_some_and(|line| line.is_empty())
+        {
             return;
         }
         self.append_blank(RawMessageType::SysTool);
@@ -384,9 +433,16 @@ impl App {
                     let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
                     let (styled, _) = render_markdown_tui(&code_text, &self.theme);
                     let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2;
-                    let placeholders: Vec<Line<'static>> = (0..placeholder_count).map(|_| Line::from("")).collect();
-                    let raw_placeholders: Vec<String> = (0..placeholder_count).map(|_| String::new()).collect();
-                    self.splice_msgs(start_idx..stream_end, placeholders, raw_placeholders, RawMessageType::LLM);
+                    let placeholders: Vec<Line<'static>> =
+                        (0..placeholder_count).map(|_| Line::from("")).collect();
+                    let raw_placeholders: Vec<String> =
+                        (0..placeholder_count).map(|_| String::new()).collect();
+                    self.splice_msgs(
+                        start_idx..stream_end,
+                        placeholders,
+                        raw_placeholders,
+                        RawMessageType::LLM,
+                    );
                     self.code_blocks.push(CodeBlock {
                         start_idx,
                         end_idx: start_idx + placeholder_count,
@@ -472,7 +528,10 @@ impl App {
     /// with a fallback total based on the current plan length.
     pub(crate) fn ensure_executing_status(&mut self, _step_idx: usize) {
         if !matches!(self.status, Status::Executing { .. }) {
-            self.status = Status::Executing { current_step: 0, total: self.plan.steps.len() };
+            self.status = Status::Executing {
+                current_step: 0,
+                total: self.plan.steps.len(),
+            };
         }
     }
 
@@ -494,11 +553,21 @@ impl App {
         phys_idx
     }
 
-    pub(crate) fn resize_thinking_placeholder_rows(&mut self, phys_idx: usize, old_rows: usize, new_rows: usize) {
+    pub(crate) fn resize_thinking_placeholder_rows(
+        &mut self,
+        phys_idx: usize,
+        old_rows: usize,
+        new_rows: usize,
+    ) {
         if new_rows > old_rows {
             let insert_at = phys_idx + old_rows;
             for _ in 0..(new_rows - old_rows) {
-                self.insert_msg(insert_at, Line::from(""), String::new(), RawMessageType::LLMThinking);
+                self.insert_msg(
+                    insert_at,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::LLMThinking,
+                );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
         } else if new_rows < old_rows {
@@ -578,11 +647,21 @@ impl App {
         self.remove_active_tool_rows(active);
     }
 
-    pub(crate) fn resize_tool_placeholder_rows(&mut self, phys_idx: usize, old_rows: usize, new_rows: usize) {
+    pub(crate) fn resize_tool_placeholder_rows(
+        &mut self,
+        phys_idx: usize,
+        old_rows: usize,
+        new_rows: usize,
+    ) {
         if new_rows > old_rows {
             let insert_at = phys_idx + old_rows;
             for _ in 0..(new_rows - old_rows) {
-                self.insert_msg(insert_at, Line::from(""), String::new(), RawMessageType::SysTool);
+                self.insert_msg(
+                    insert_at,
+                    Line::from(""),
+                    String::new(),
+                    RawMessageType::SysTool,
+                );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
         } else if new_rows < old_rows {
@@ -597,7 +676,10 @@ impl App {
             let old_rows = active.output.visual_rows(false);
             let new_rows = output.visual_rows(false);
             self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
-            self.tools.blocks.push(ToolBlock { phys_idx: active.phys_idx, output });
+            self.tools.blocks.push(ToolBlock {
+                phys_idx: active.phys_idx,
+                output,
+            });
         } else {
             let phys_idx = self.push_tool_placeholder_rows(&output);
             self.tools.blocks.push(ToolBlock { phys_idx, output });

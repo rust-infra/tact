@@ -27,7 +27,10 @@ pub struct OpenAiMultiModelAdapter {
 
 impl OpenAiMultiModelAdapter {
     pub fn new(adapter: OpenAiAdapter) -> Self {
-        Self { adapter, user_id: None }
+        Self {
+            adapter,
+            user_id: None,
+        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -38,7 +41,11 @@ impl OpenAiMultiModelAdapter {
         self.user_id = Some(user_id);
     }
 
-    fn assemble_body(&self, request: &CreateMessageParams, stream: bool) -> Result<serde_json::Value, LlmError> {
+    fn assemble_body(
+        &self,
+        request: &CreateMessageParams,
+        stream: bool,
+    ) -> Result<serde_json::Value, LlmError> {
         // Resolve the hook from the *live* provider each request so `/model`
         // (and other in-process provider updates) pick the right body shape
         // without rebuilding the long-lived client.
@@ -64,7 +71,10 @@ impl LlmClient for OpenAiMultiModelAdapter {
         ),
         LlmError,
     > {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| self.assemble_body(r, s)).await
+        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 
     async fn create_message(

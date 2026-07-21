@@ -17,7 +17,12 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .tools
         .active
         .iter()
-        .filter_map(|active| app.plan.steps.iter().position(|step| step.tool_id == active.tool_id))
+        .filter_map(|active| {
+            app.plan
+                .steps
+                .iter()
+                .position(|step| step.tool_id == active.tool_id)
+        })
         .collect();
 
     let items: Vec<ListItem> = app
@@ -30,13 +35,24 @@ pub(crate) fn render_plan_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             if matches!(app.status, Status::Executing { .. }) && running_indices.contains(&i) {
                 style = style.fg(app.theme.warning).add_modifier(Modifier::BOLD);
             }
-            let is_selected = app.mouse.plan_selection.map(|(s, e)| i >= s.min(e) && i <= s.max(e)).unwrap_or(false);
+            let is_selected = app
+                .mouse
+                .plan_selection
+                .map(|(s, e)| i >= s.min(e) && i <= s.max(e))
+                .unwrap_or(false);
             if is_selected {
                 style = style.add_modifier(Modifier::REVERSED);
             }
             let desc = step.description.clone();
-            let prefix = if app.plan.collapsed[i] { "▶ " } else { "▼ " };
-            let line = Line::from(Span::styled(format!("{}{}. {}", prefix, i + 1, desc), style));
+            let prefix = if app.plan.collapsed[i] {
+                "▶ "
+            } else {
+                "▼ "
+            };
+            let line = Line::from(Span::styled(
+                format!("{}{}. {}", prefix, i + 1, desc),
+                style,
+            ));
             ListItem::new(line)
         })
         .collect();

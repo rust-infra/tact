@@ -29,30 +29,38 @@ fn terminal_stop_reason(
             } else {
                 Ok(Some(StopReason::EndTurn))
             }
-        },
+        }
         Status::Incomplete => {
-            let reason = response.incomplete_details.as_ref().map(|details| details.reason.as_str());
+            let reason = response
+                .incomplete_details
+                .as_ref()
+                .map(|details| details.reason.as_str());
             match reason {
                 Some("max_output_tokens") => Ok(Some(StopReason::MaxTokens)),
                 Some("content_filter") => Ok(Some(StopReason::StopSequence)),
-                Some(other) => {
-                    Err(LlmError::Other(format!("OpenAI Responses incomplete for unsupported reason '{other}'")))
-                },
-                None => Err(LlmError::Other("OpenAI Responses incomplete without a reason".to_string())),
+                Some(other) => Err(LlmError::Other(format!(
+                    "OpenAI Responses incomplete for unsupported reason '{other}'"
+                ))),
+                None => Err(LlmError::Other(
+                    "OpenAI Responses incomplete without a reason".to_string(),
+                )),
             }
-        },
+        }
         Status::Failed => {
             let detail = response
                 .error
                 .as_ref()
                 .map(|error| format!("{}: {}", error.code, error.message))
                 .unwrap_or_else(|| "response failed without error details".to_string());
-            Err(LlmError::Other(format!("OpenAI Responses failed: {detail}")))
-        },
+            Err(LlmError::Other(format!(
+                "OpenAI Responses failed: {detail}"
+            )))
+        }
         Status::Cancelled => Err(LlmError::Other("OpenAI Responses request cancelled".into())),
-        Status::InProgress | Status::Queued => {
-            Err(LlmError::Other(format!("OpenAI Responses ended with non-terminal status {:?}", response.status)))
-        },
+        Status::InProgress | Status::Queued => Err(LlmError::Other(format!(
+            "OpenAI Responses ended with non-terminal status {:?}",
+            response.status
+        ))),
     }
 }
 
@@ -64,7 +72,10 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         .output
         .iter()
         .filter_map(|output| match output {
-            OutputItem::FunctionCall(call) => call.id.as_ref().map(|item_id| (call.call_id.clone(), item_id.clone())),
+            OutputItem::FunctionCall(call) => call
+                .id
+                .as_ref()
+                .map(|item_id| (call.call_id.clone(), item_id.clone())),
             _ => None,
         })
         .collect();
@@ -80,32 +91,43 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                let signature = if reasoning.encrypted_content.as_ref().is_some_and(|encrypted| !encrypted.is_empty()) {
+                let signature = if reasoning
+                    .encrypted_content
+                    .as_ref()
+                    .is_some_and(|encrypted| !encrypted.is_empty())
+                {
                     history::encode(reasoning.clone(), function_call_item_ids.clone())?
                 } else {
                     String::new()
                 };
                 if !thinking.is_empty() || !signature.is_empty() {
-                    blocks.push(ContentBlock::Thinking { thinking, signature });
+                    blocks.push(ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    });
                 }
-            },
+            }
             OutputItem::Message(message) => {
                 for content in &message.content {
                     match content {
                         OutputMessageContent::OutputText(output) => {
                             if !output.text.is_empty() {
-                                blocks.push(ContentBlock::Text { text: output.text.clone() });
+                                blocks.push(ContentBlock::Text {
+                                    text: output.text.clone(),
+                                });
                             }
-                        },
+                        }
                         OutputMessageContent::Refusal(refusal) => {
                             has_refusal = true;
                             if !refusal.refusal.is_empty() {
-                                blocks.push(ContentBlock::Text { text: refusal.refusal.clone() });
+                                blocks.push(ContentBlock::Text {
+                                    text: refusal.refusal.clone(),
+                                });
                             }
-                        },
+                        }
                     }
                 }
-            },
+            }
             OutputItem::FunctionCall(call) => {
                 if call.status != Some(OutputStatus::Completed) {
                     continue;
@@ -117,9 +139,13 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
                     ))
                 })?;
                 has_tools = true;
-                blocks.push(ContentBlock::ToolUse { id: call.call_id.clone(), name: call.name.clone(), input });
-            },
-            _ => {},
+                blocks.push(ContentBlock::ToolUse {
+                    id: call.call_id.clone(),
+                    name: call.name.clone(),
+                    input,
+                });
+            }
+            _ => {}
         }
     }
 
@@ -129,11 +155,17 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         completion: usage.output_tokens,
         total: usage.total_tokens,
         prompt_cache_hit_tokens: usage.input_tokens_details.cached_tokens,
-        prompt_cache_miss_tokens: usage.input_tokens.saturating_sub(usage.input_tokens_details.cached_tokens),
+        prompt_cache_miss_tokens: usage
+            .input_tokens
+            .saturating_sub(usage.input_tokens_details.cached_tokens),
         reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
     });
 
-    Ok(NormalizedResponse { blocks, stop_reason, usage })
+    Ok(NormalizedResponse {
+        blocks,
+        stop_reason,
+        usage,
+    })
 }
 
 #[cfg(test)]
@@ -141,7 +173,9 @@ pub(crate) mod tests {
     use async_openai_responses::types::responses::Response;
 
     use super::normalize_response;
-    use crate::{ContentBlock, CreateMessageParams, Message, RequiredMessageParams, Role, StopReason};
+    use crate::{
+        ContentBlock, CreateMessageParams, Message, RequiredMessageParams, Role, StopReason,
+    };
 
     pub(crate) fn completed_response_json() -> serde_json::Value {
         serde_json::json!({
@@ -195,8 +229,9 @@ pub(crate) mod tests {
         value["status"] = serde_json::Value::String(status.to_string());
         value["output"] = serde_json::json!([]);
         value["usage"] = serde_json::Value::Null;
-        value["incomplete_details"] =
-            reason.map(|reason| serde_json::json!({"reason": reason})).unwrap_or(serde_json::Value::Null);
+        value["incomplete_details"] = reason
+            .map(|reason| serde_json::json!({"reason": reason}))
+            .unwrap_or(serde_json::Value::Null);
         serde_json::from_value(value).unwrap()
     }
 
@@ -232,7 +267,11 @@ pub(crate) mod tests {
 
     #[test]
     fn incomplete_max_output_tokens_maps_to_max_tokens() {
-        let normalized = normalize_response(response_with_status("incomplete", Some("max_output_tokens"))).unwrap();
+        let normalized = normalize_response(response_with_status(
+            "incomplete",
+            Some("max_output_tokens"),
+        ))
+        .unwrap();
         assert_eq!(normalized.stop_reason, Some(StopReason::MaxTokens));
     }
 
@@ -243,7 +282,12 @@ pub(crate) mod tests {
         value["incomplete_details"] = serde_json::json!({"reason": "max_output_tokens"});
 
         let normalized = normalize_response(serde_json::from_value(value).unwrap()).unwrap();
-        assert!(normalized.blocks.iter().any(|block| matches!(block, ContentBlock::ToolUse { .. })));
+        assert!(
+            normalized
+                .blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        );
         assert_eq!(normalized.stop_reason, Some(StopReason::MaxTokens));
     }
 
@@ -256,7 +300,9 @@ pub(crate) mod tests {
             "message": "generation failed"
         });
 
-        let error = normalize_response(serde_json::from_value(value).unwrap()).unwrap_err().to_string();
+        let error = normalize_response(serde_json::from_value(value).unwrap())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("server_error"));
         assert!(error.contains("generation failed"));
     }
@@ -269,13 +315,20 @@ pub(crate) mod tests {
         value["output"][2]["status"] = serde_json::json!("incomplete");
 
         let normalized = normalize_response(serde_json::from_value(value).unwrap()).unwrap();
-        assert!(normalized.blocks.iter().all(|block| !matches!(block, ContentBlock::ToolUse { .. })));
+        assert!(
+            normalized
+                .blocks
+                .iter()
+                .all(|block| !matches!(block, ContentBlock::ToolUse { .. }))
+        );
         assert_eq!(normalized.stop_reason, Some(StopReason::MaxTokens));
     }
 
     #[test]
     fn unknown_incomplete_reason_is_an_error() {
-        let error = normalize_response(response_with_status("incomplete", Some("new_reason"))).unwrap_err().to_string();
+        let error = normalize_response(response_with_status("incomplete", Some("new_reason")))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("new_reason"));
     }
 
@@ -283,7 +336,9 @@ pub(crate) mod tests {
     fn malformed_function_arguments_return_contextual_error() {
         let mut value = completed_response_json();
         value["output"][2]["arguments"] = serde_json::json!("{");
-        let error = normalize_response(serde_json::from_value(value).unwrap()).unwrap_err().to_string();
+        let error = normalize_response(serde_json::from_value(value).unwrap())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("bash"));
         assert!(error.contains("call_1"));
     }
@@ -291,14 +346,17 @@ pub(crate) mod tests {
     #[test]
     fn response_output_item_ids_survive_tact_history_round_trip() {
         let mut value = completed_response_json();
-        value["output"].as_array_mut().unwrap().push(serde_json::json!({
-            "type": "function_call",
-            "arguments": "{\"path\":\"Cargo.toml\"}",
-            "call_id": "call_2",
-            "name": "read_file",
-            "id": "fc_2",
-            "status": "completed"
-        }));
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "function_call",
+                "arguments": "{\"path\":\"Cargo.toml\"}",
+                "call_id": "call_2",
+                "name": "read_file",
+                "id": "fc_2",
+                "status": "completed"
+            }));
         let response: Response = serde_json::from_value(value).unwrap();
         let normalized = normalize_response(response).unwrap();
         let request = CreateMessageParams::new(RequiredMessageParams {
@@ -322,15 +380,25 @@ pub(crate) mod tests {
             max_tokens: 4096,
         });
 
-        let body =
-            serde_json::to_value(super::super::convert::create_response(&request, None).expect("round-trip request"))
-                .unwrap();
+        let body = serde_json::to_value(
+            super::super::convert::create_response(&request, None).expect("round-trip request"),
+        )
+        .unwrap();
         let input = body["input"].as_array().unwrap();
-        let reasoning = input.iter().find(|item| item["type"] == "reasoning").unwrap();
-        let function_call = input.iter().find(|item| item["type"] == "function_call").unwrap();
+        let reasoning = input
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .unwrap();
+        let function_call = input
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .unwrap();
         assert_eq!(reasoning["id"], "rs_1");
         assert_eq!(function_call["id"], "fc_1");
-        let second_call = input.iter().find(|item| item["call_id"] == "call_2").unwrap();
+        let second_call = input
+            .iter()
+            .find(|item| item["call_id"] == "call_2")
+            .unwrap();
         assert_eq!(second_call["id"], "fc_2");
     }
 }

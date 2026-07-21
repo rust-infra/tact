@@ -19,15 +19,21 @@ fn config_search_paths() -> Vec<PathBuf> {
 }
 
 fn dirs_next_home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from).or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
 }
 
 /// Load TOML config and return the path that was actually read (if any).
-pub(super) fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<(TactTomlConfig, Option<PathBuf>)> {
+pub(super) fn load_toml_config(
+    path: Option<&PathBuf>,
+) -> anyhow::Result<(TactTomlConfig, Option<PathBuf>)> {
     if let Some(p) = path {
-        let content = std::fs::read_to_string(p).with_context(|| format!("cannot read config file {:?}", p))?;
-        let cfg: TactTomlConfig =
-            toml::from_str(&content).with_context(|| format!("parse error in config file {:?}", p))?;
+        let content = std::fs::read_to_string(p)
+            .with_context(|| format!("cannot read config file {:?}", p))?;
+        let cfg: TactTomlConfig = toml::from_str(&content)
+            .with_context(|| format!("parse error in config file {:?}", p))?;
         eprintln!("[config] loaded {:?}", p);
         return Ok((cfg, Some(p.clone())));
     }
@@ -36,9 +42,10 @@ pub(super) fn load_toml_config(path: Option<&PathBuf>) -> anyhow::Result<(TactTo
         if !p.exists() {
             continue;
         }
-        let content = std::fs::read_to_string(&p).with_context(|| format!("cannot read config file {:?}", p))?;
-        let cfg: TactTomlConfig =
-            toml::from_str(&content).with_context(|| format!("parse error in config file {:?}", p))?;
+        let content = std::fs::read_to_string(&p)
+            .with_context(|| format!("cannot read config file {:?}", p))?;
+        let cfg: TactTomlConfig = toml::from_str(&content)
+            .with_context(|| format!("parse error in config file {:?}", p))?;
         eprintln!("[config] loaded {:?}", p);
         return Ok((cfg, Some(p)));
     }

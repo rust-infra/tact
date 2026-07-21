@@ -38,12 +38,17 @@ pub enum HookControl {
 }
 
 pub trait SessionStartFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>> + Send + Sync
+    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    + Send
+    + Sync
 {
 }
 
 pub trait PreToolUseFn:
-    for<'a> Fn(&'a LoopState, &'a mut ToolUse) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(
+        &'a LoopState,
+        &'a mut ToolUse,
+    ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -61,7 +66,9 @@ pub trait PostToolUseFn:
 }
 
 impl<F> SessionStartFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>> + Send + Sync
+    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+        + Send
+        + Sync
 {
 }
 

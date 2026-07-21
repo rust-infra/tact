@@ -16,7 +16,9 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 .iter()
                 .enumerate()
                 .filter(|(_, (cmd, desc))| {
-                    filter.is_empty() || cmd.to_lowercase().contains(&filter) || desc.to_lowercase().contains(&filter)
+                    filter.is_empty()
+                        || cmd.to_lowercase().contains(&filter)
+                        || desc.to_lowercase().contains(&filter)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -27,7 +29,9 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 // Skills and arg-taking built-ins: jump to Insert with `/name `
                 // so the user can add args before a second Enter runs them.
                 // Built-ins win even if a same-named skill exists on disk.
-                if (is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd)) || command_needs_args(&cmd) {
+                if (is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd))
+                    || command_needs_args(&cmd)
+                {
                     app.save_undo();
                     app.input = format!("/{cmd} ");
                     app.input_cursor = app.input.len();
@@ -37,39 +41,47 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 app.input_mode = InputMode::Normal;
                 let _ = execute_palette_command(app, &cmd);
             }
-        },
+        }
         // Ctrl+W: delete last word
-        KeyCode::Char('w') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+        KeyCode::Char('w')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             let pos = prev_word_boundary(&app.cmd_line, app.cmd_line.len());
             app.cmd_line.drain(pos..);
             app.palette_selected = 0;
-        },
+        }
         // Ctrl+U: clear palette input
-        KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             app.cmd_line.clear();
             app.palette_selected = 0;
-        },
+        }
         KeyCode::Char(c) => {
             app.cmd_line.push(c);
             app.palette_selected = 0;
-        },
+        }
         KeyCode::Backspace => {
             app.cmd_line.pop();
             app.palette_selected = 0;
-        },
+        }
         KeyCode::Up => {
             if app.palette_selected > 0 {
                 app.palette_selected -= 1;
             }
-        },
+        }
         KeyCode::Down => {
             app.palette_selected += 1;
-        },
+        }
         KeyCode::Esc => {
             app.cmd_line.clear();
             app.input_mode = InputMode::Normal;
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -85,7 +97,10 @@ mod tests {
     }
 
     fn help_index(app: &App) -> usize {
-        app.palette_commands().iter().position(|(cmd, _)| *cmd == "help").expect("help command")
+        app.palette_commands()
+            .iter()
+            .position(|(cmd, _)| *cmd == "help")
+            .expect("help command")
     }
 
     #[test]
@@ -133,18 +148,28 @@ mod tests {
         use crate::widgets::state::SkillEntry;
 
         let mut app = make_app();
-        app.skills_data = vec![SkillEntry { name: "demo".into(), description: "d".into(), body: "body".into() }];
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "d".into(),
+            body: "body".into(),
+        }];
         app.input = "draft text".into();
         app.input_cursor = app.input.len();
         app.input_mode = InputMode::Palette;
-        app.palette_selected =
-            app.palette_commands().iter().position(|(c, _)| c == "demo").expect("demo skill in palette");
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(c, _)| c == "demo")
+            .expect("demo skill in palette");
 
         handle_palette_mode(&mut app, key(KeyCode::Enter));
 
         assert_eq!(app.input, "/demo ");
         assert!(matches!(app.input_mode, InputMode::Insert));
-        assert!(!app.undo_stack.is_empty(), "overwrite must push undo snapshot");
+        assert!(
+            !app.undo_stack.is_empty(),
+            "overwrite must push undo snapshot"
+        );
         // Restore prior draft.
         let (prev, _) = app.undo_stack.last().cloned().expect("undo");
         assert_eq!(prev, "draft text");
@@ -155,8 +180,11 @@ mod tests {
         use crate::widgets::state::SkillEntry;
 
         let mut app = make_app();
-        app.skills_data =
-            vec![SkillEntry { name: "help".into(), description: "skill help".into(), body: "should not equip".into() }];
+        app.skills_data = vec![SkillEntry {
+            name: "help".into(),
+            description: "skill help".into(),
+            body: "should not equip".into(),
+        }];
         app.input_mode = InputMode::Palette;
         app.cmd_line = "help".into();
         app.palette_selected = 0;
@@ -172,8 +200,11 @@ mod tests {
     fn enter_on_plugin_opens_insert_for_subcommand() {
         let mut app = make_app();
         app.input_mode = InputMode::Palette;
-        app.palette_selected =
-            app.palette_commands().iter().position(|(c, _)| c == "plugin").expect("plugin command in palette");
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(c, _)| c == "plugin")
+            .expect("plugin command in palette");
 
         handle_palette_mode(&mut app, key(KeyCode::Enter));
 
@@ -181,7 +212,9 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(matches!(app.input_mode, InputMode::Insert));
         assert!(
-            !app.raw_messages.iter().any(|m| m.contains("Usage: /plugin") || m.contains("用法")),
+            !app.raw_messages
+                .iter()
+                .any(|m| m.contains("Usage: /plugin") || m.contains("用法")),
             "must not execute bare /plugin from palette: {:?}",
             app.raw_messages
         );

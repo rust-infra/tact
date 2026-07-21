@@ -4,67 +4,71 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
-pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &UnboundedSender<UserCommand>) {
+pub(crate) fn handle_normal_mode(
+    app: &mut App,
+    key: KeyEvent,
+    _user_cmd_tx: &UnboundedSender<UserCommand>,
+) {
     match key.code {
         KeyCode::Tab => {
             app.focused_panel = match app.focused_panel {
                 FocusedPanel::Log => FocusedPanel::Plan,
                 FocusedPanel::Plan => FocusedPanel::Log,
             };
-        },
+        }
         KeyCode::Char('e') => {
             app.plan.visible = !app.plan.visible;
             if !app.plan.visible && app.focused_panel == FocusedPanel::Plan {
                 app.focused_panel = FocusedPanel::Log;
             }
-        },
+        }
         KeyCode::Char('j') => match app.focused_panel {
             FocusedPanel::Log => {
                 // Don't check upper bound; render uniformly clamps
                 app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
-            },
+            }
             FocusedPanel::Plan => {
                 if !app.plan.steps.is_empty() && app.plan.selected + 1 < app.plan.steps.len() {
                     app.plan.selected += 1;
                     app.plan.list_state.select(Some(app.plan.selected));
                 }
-            },
+            }
         },
         KeyCode::Char('k') => match app.focused_panel {
             FocusedPanel::Log => {
                 if app.log_scroll.offset > 0 {
                     app.log_scroll.offset -= 1;
                 }
-            },
+            }
             FocusedPanel::Plan => {
                 if app.plan.selected > 0 {
                     app.plan.selected -= 1;
                     app.plan.list_state.select(Some(app.plan.selected));
                 }
-            },
+            }
         },
         KeyCode::Char('g') => {
             if app.focused_panel == FocusedPanel::Log {
                 app.log_scroll.offset = 0;
             }
-        },
+        }
         KeyCode::Char('G') => {
             if app.focused_panel == FocusedPanel::Log {
                 // Set to a large enough value; render clamps to actual max_scroll
                 app.log_scroll.offset = u16::MAX;
             }
-        },
+        }
         KeyCode::Char('/') => {
             app.input_mode = InputMode::Palette;
             app.cmd_line.clear();
             app.palette_selected = 0;
-        },
+        }
         KeyCode::Enter => {
             app.input_mode = InputMode::Insert;
-        },
+        }
         KeyCode::Char('i') => {
             app.input_mode = InputMode::Insert;
-        },
+        }
         KeyCode::Char('y') => {
             let text = match app.focused_panel {
                 FocusedPanel::Plan => {
@@ -82,9 +86,12 @@ pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &Un
                             None
                         }
                     } else {
-                        app.plan.steps.get(app.plan.selected).map(|s| s.description.clone())
+                        app.plan
+                            .steps
+                            .get(app.plan.selected)
+                            .map(|s| s.description.clone())
                     }
-                },
+                }
                 FocusedPanel::Log => {
                     // Prefer character-level mouse selection over last message
                     if let Some(sel) = app.mouse.log_selection {
@@ -94,20 +101,21 @@ pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &Un
                         // Last visible message
                         let total = app.total_log_lines();
                         if total > 0 && app.stream.buffer.is_empty() {
-                            app.visible_message_index(total - 1).and_then(|idx| app.raw_messages.get(idx).cloned())
+                            app.visible_message_index(total - 1)
+                                .and_then(|idx| app.raw_messages.get(idx).cloned())
                         } else if !app.stream.buffer.is_empty() {
                             Some(app.stream.buffer.clone())
                         } else {
                             None
                         }
                     }
-                },
+                }
             };
             if let Some(t) = text {
                 app.copy_text(&t);
                 app.add_new_line();
             }
-        },
+        }
         KeyCode::Char('Y') => {
             if app.focused_panel == FocusedPanel::Log
                 && let Some(code) = app.extract_last_code_block()
@@ -115,7 +123,7 @@ pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &Un
                 app.copy_text(&code);
                 app.add_new_line();
             }
-        },
+        }
         KeyCode::Char('V') => {
             // Open the most visible code block popup
             if app.code_popup.is_some() {
@@ -128,20 +136,22 @@ pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &Un
                     .iter()
                     .enumerate()
                     .rfind(|(_, block)| {
-                        app.phys_to_logical_fast(block.start_idx).map(|l| l <= logical_offset).unwrap_or(false)
+                        app.phys_to_logical_fast(block.start_idx)
+                            .map(|l| l <= logical_offset)
+                            .unwrap_or(false)
                     })
                     .or_else(|| app.code_blocks.iter().enumerate().next_back());
                 if let Some((idx, _)) = best {
                     app.open_code_popup(idx);
                 }
             }
-        },
+        }
         KeyCode::Char('c') => {
             // Same gate as `/cancel`: only Planning / Executing.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = _user_cmd_tx.send(UserCommand::Cancel);
             }
-        },
+        }
         KeyCode::Char('t') => {
             // Open the most recently visible thinking card popup
             if app.thinking.popup.is_some() {
@@ -155,15 +165,15 @@ pub(crate) fn handle_normal_mode(app: &mut App, key: KeyEvent, _user_cmd_tx: &Un
             {
                 app.open_thinking_popup(phys_idx);
             }
-        },
+        }
         KeyCode::Char('q') => {
             app.should_quit = true;
-        },
+        }
         KeyCode::Esc => {
             app.mouse.log_selection = None;
             app.mouse.plan_selection = None;
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -267,11 +277,17 @@ mod tests {
             String::new(),
             Vec::new(),
         );
-        app.status = Status::Executing { current_step: 0, total: 1 };
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
 
         handle_normal_mode(&mut app, key(KeyCode::Char('c')), &user_cmd_tx);
 
-        assert!(matches!(user_cmd_rx.try_recv().expect("expected Cancel"), UserCommand::Cancel));
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
     }
 
     #[test]
@@ -305,7 +321,10 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('c')), &user_cmd_tx);
 
-        assert!(user_cmd_rx.try_recv().is_err(), "Done must not dispatch Cancel via Normal-mode c");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Done must not dispatch Cancel via Normal-mode c"
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tact_llm::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent, RequiredMessageParams, Role,
-    StopReason, Thinking, ThinkingType,
+    ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
+    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
@@ -17,9 +17,9 @@ use crate::{
     ToolSpec,
     compact::{
         CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
-        compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens, estimate_message_tokens,
-        micro_compact, recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
-        write_transcript,
+        compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
+        estimate_message_tokens, micro_compact, recent_messages_for_summary,
+        retained_user_message_token_budget, should_auto_compact, write_transcript,
     },
     config::AgentSettings,
     hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
@@ -28,8 +28,8 @@ use crate::{
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay, is_prompt_too_long_error,
-        is_transient_transport_error,
+        CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
+        is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
     store::DynSessionStore,
@@ -125,7 +125,11 @@ impl Agent {
         permission_manager: PermissionManager,
         system_prompt: AgentSystemPrompt,
     ) -> Self {
-        let cached_tool_specs = tools.tool_specs().into_iter().chain(mcp_router.all_tools()).collect();
+        let cached_tool_specs = tools
+            .tool_specs()
+            .into_iter()
+            .chain(mcp_router.all_tools())
+            .collect();
         let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tool_context.cancel_flag = cancel_flag.clone();
         Self {
@@ -178,7 +182,10 @@ impl Agent {
     }
 
     fn thinking_config(&self) -> Thinking {
-        Thinking { budget_tokens: self.thinking_budget(), type_: ThinkingType::Enabled }
+        Thinking {
+            budget_tokens: self.thinking_budget(),
+            type_: ThinkingType::Enabled,
+        }
     }
 
     /// Attaches a TUI update channel so the agent can stream events
@@ -210,11 +217,11 @@ impl Agent {
             AgentUpdate::TaskComplete(text) => {
                 let summary = text.chars().take(200).collect::<String>();
                 let _ = crate::notifications::notify_task_complete(&summary);
-            },
+            }
             AgentUpdate::StepFailed { idx, error, .. } => {
                 let _ = crate::notifications::notify_step_failed(*idx, error);
-            },
-            _ => {},
+            }
+            _ => {}
         }
 
         if let Some(tx) = &self.runtime.ui_tx {
@@ -231,8 +238,11 @@ impl Agent {
             return Ok(self.runtime.session_id.clone().unwrap_or_default());
         };
 
-        let session_id =
-            self.runtime.session_id.clone().context("session_id must be set via with_session before ensure_session")?;
+        let session_id = self
+            .runtime
+            .session_id
+            .clone()
+            .context("session_id must be set via with_session before ensure_session")?;
 
         // Idempotent: startup normally created the row already.
         let root_dir = self.tool_context.work_dir.display().to_string();
@@ -260,7 +270,9 @@ impl Agent {
             return Ok(());
         };
         let ordinal = self.runtime.context.len() as i64;
-        let db_id = store.append_message(session_id, role, content, ordinal).await?;
+        let db_id = store
+            .append_message(session_id, role, content, ordinal)
+            .await?;
         if self.runtime.first_message_db_id == 0 {
             self.runtime.first_message_db_id = db_id;
         }
@@ -276,7 +288,9 @@ impl Agent {
             return Ok(());
         };
 
-        let (first_id, last_id) = store.replace_session_messages(session_id, &self.runtime.context).await?;
+        let (first_id, last_id) = store
+            .replace_session_messages(session_id, &self.runtime.context)
+            .await?;
         self.runtime.first_message_db_id = first_id;
         self.runtime.last_message_db_id = last_id;
         Ok(())
@@ -353,7 +367,10 @@ impl Agent {
         // Codex-style pre-turn: compact *old* history before appending this
         // turn's user message, reserving space for the incoming prompt so we
         // do not overflow immediately after push.
-        let incoming_tokens = user_turn_message.as_ref().map(estimate_message_tokens).unwrap_or(0);
+        let incoming_tokens = user_turn_message
+            .as_ref()
+            .map(estimate_message_tokens)
+            .unwrap_or(0);
         if should_auto_compact(
             self.runtime.last_token_total,
             self.model_context_window(),
@@ -372,11 +389,18 @@ impl Agent {
         // so the prefix KV-cache holds across turns and tasks.
         let system_prompt = self.build_system_prompt()?;
         loop {
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
-            micro_compact(&mut self.runtime.context, self.agent_settings.micro_compact_enabled);
+            micro_compact(
+                &mut self.runtime.context,
+                self.agent_settings.micro_compact_enabled,
+            );
             // Turn already in context — no incoming reservation.
             if should_auto_compact(
                 self.runtime.last_token_total,
@@ -407,24 +431,32 @@ impl Agent {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: request
+                reasoning_effort: request.thinking.as_ref().and_then(|t| {
+                    tact_llm::current_reasoning_effort_from_budget(t.budget_tokens)
+                        .map(str::to_string)
+                }),
+                extra_body: request
                     .thinking
                     .as_ref()
-                    .and_then(|t| tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)),
-                extra_body: request.thinking.as_ref().map(|t| serde_json::json!({"thinking": t}).to_string()),
+                    .map(|t| serde_json::json!({"thinking": t}).to_string()),
             }));
 
             // ── Stats: before LLM call ──
             self.runtime.stats.prompt_count += 1;
-            let prompt_chars = serde_json::to_string(&request).map(|s| s.chars().count() as u64).unwrap_or(0);
+            let prompt_chars = serde_json::to_string(&request)
+                .map(|s| s.chars().count() as u64)
+                .unwrap_or(0);
             self.runtime.stats.total_prompt_chars += prompt_chars;
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason, token_usage, request_body) = match self.stream_message(&request).await {
+            let (content, stop_reason, token_usage, request_body) = match self
+                .stream_message(&request)
+                .await
+            {
                 Ok(result) => {
                     self.runtime.recovery_state.transport_attempts = 0;
                     result
-                },
+                }
                 Err(error) => {
                     let error_text = error.to_string().to_lowercase();
                     if is_prompt_too_long_error(&error_text)
@@ -455,12 +487,17 @@ impl Agent {
                     }
 
                     return Err(anyhow::anyhow!(error));
-                },
+                }
             };
 
             // ── Stats: after LLM call ──
-            self.runtime.stats.llm_call_durations.push(llm_call_start.elapsed());
-            let response_chars = serde_json::to_string(&content).map(|s| s.chars().count() as u64).unwrap_or(0);
+            self.runtime
+                .stats
+                .llm_call_durations
+                .push(llm_call_start.elapsed());
+            let response_chars = serde_json::to_string(&content)
+                .map(|s| s.chars().count() as u64)
+                .unwrap_or(0);
             self.runtime.stats.total_response_chars += response_chars;
             for block in &content {
                 if let ContentBlock::Thinking { thinking, .. } = block {
@@ -474,7 +511,9 @@ impl Agent {
                 self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
-            let _ = self.persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref()).await;
+            let _ = self
+                .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
+                .await;
 
             // REVIEW: Persisting a truncated assistant message can leave an empty
             // OpenAI assistant message on the next turn (e.g. only a thinking block
@@ -482,14 +521,24 @@ impl Agent {
             // sanitize_assistant_messages in tact_llm::convert currently patches this,
             // but a cleaner fix might be to avoid adding a purely-empty assistant
             // message to the context here in the first place.
-            self.runtime.context.push(Message::new_blocks(Role::Assistant, content.clone()));
+            self.runtime
+                .context
+                .push(Message::new_blocks(Role::Assistant, content.clone()));
 
             // Check whether the truncated response contains pending tool calls.
             // OpenAI requires every assistant message with tool_calls to be
             // immediately followed by tool-result messages for each id.
-            let has_pending_tools = content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            let has_pending_tools = content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
-            self.persist_message(Role::Assistant, &MessageContent::Blocks { content: content.clone() }).await?;
+            self.persist_message(
+                Role::Assistant,
+                &MessageContent::Blocks {
+                    content: content.clone(),
+                },
+            )
+            .await?;
 
             if matches!(stop_reason, Some(StopReason::MaxTokens))
                 && self.runtime.recovery_state.continuation_attempts < MAX_RECOVERY_ATTEMPTS
@@ -498,8 +547,16 @@ impl Agent {
                 // was hit, so the context remains valid for the API.
                 if has_pending_tools {
                     let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
-                    self.runtime.context.push(Message::new_blocks(Role::User, tool_result.clone()));
-                    self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
+                    self.runtime
+                        .context
+                        .push(Message::new_blocks(Role::User, tool_result.clone()));
+                    self.persist_message(
+                        Role::User,
+                        &MessageContent::Blocks {
+                            content: tool_result,
+                        },
+                    )
+                    .await?;
                     if let Some(focus) = manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
                         self.compact_history(Some(focus.as_str())).await?;
@@ -511,9 +568,16 @@ impl Agent {
                     "[Recovery] continue ({}/{}): output truncated",
                     self.runtime.recovery_state.continuation_attempts, MAX_RECOVERY_ATTEMPTS
                 )));
-                self.runtime.context.push(Message::new_text(Role::User, CONTINUATION_MESSAGE));
-                self.persist_message(Role::User, &MessageContent::Text { content: CONTINUATION_MESSAGE.to_string() })
-                    .await?;
+                self.runtime
+                    .context
+                    .push(Message::new_text(Role::User, CONTINUATION_MESSAGE));
+                self.persist_message(
+                    Role::User,
+                    &MessageContent::Text {
+                        content: CONTINUATION_MESSAGE.to_string(),
+                    },
+                )
+                .await?;
                 continue;
             }
             self.runtime.recovery_state.continuation_attempts = 0;
@@ -527,37 +591,55 @@ impl Agent {
             //   model fallback yet — see refusals-and-fallback docs
             // - pause_turn → mapped to EndTurn in tact_llm (no Anthropic server tools)
             match &stop_reason {
-                Some(StopReason::ToolUse) => {},
+                Some(StopReason::ToolUse) => {}
                 Some(StopReason::Refusal) => {
-                    let info_msg = "Model refused this request (stop_reason=refusal). Try rephrasing, \
+                    let info_msg =
+                        "Model refused this request (stop_reason=refusal). Try rephrasing, \
                          or switch to another model with different safety filters."
-                        .to_string();
+                            .to_string();
                     self.emit_update(AgentUpdate::Info(info_msg));
-                    return Err(anyhow::anyhow!("model refused to process this request (stop_reason=refusal)"));
-                },
+                    return Err(anyhow::anyhow!(
+                        "model refused to process this request (stop_reason=refusal)"
+                    ));
+                }
                 Some(StopReason::Unknown(raw)) => {
                     self.emit_update(AgentUpdate::Info(format!(
                         "Unrecognized stop_reason={raw:?}; treating as end of turn"
                     )));
                     return Ok(());
-                },
+                }
                 // PauseTurn: Tact does not use Anthropic server tools; finish like EndTurn.
                 Some(
-                    StopReason::EndTurn | StopReason::StopSequence | StopReason::MaxTokens | StopReason::PauseTurn,
+                    StopReason::EndTurn
+                    | StopReason::StopSequence
+                    | StopReason::MaxTokens
+                    | StopReason::PauseTurn,
                 )
                 | None => {
                     return Ok(());
-                },
+                }
             }
 
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
             let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
 
-            self.runtime.context.push(Message::new_blocks(Role::User, tool_result.clone()));
-            self.persist_message(Role::User, &MessageContent::Blocks { content: tool_result }).await?;
+            self.runtime
+                .context
+                .push(Message::new_blocks(Role::User, tool_result.clone()));
+            self.persist_message(
+                Role::User,
+                &MessageContent::Blocks {
+                    content: tool_result,
+                },
+            )
+            .await?;
 
             if let Some(focus) = manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));
@@ -570,11 +652,20 @@ impl Agent {
         &mut self,
         request: &CreateMessageParams,
     ) -> Result<
-        (Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<tact_llm::LlmRequestBody>),
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<tact_llm::LlmRequestBody>,
+        ),
         anyhow::Error,
     > {
         let ui_tx = self.runtime.ui_tx.clone();
-        self.runtime.client.stream_message(request, ui_tx).await.map_err(|e| anyhow::anyhow!("{e}"))
+        self.runtime
+            .client
+            .stream_message(request, ui_tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub fn session_start(&mut self, hook: impl SessionStartFn + 'static) {
@@ -591,31 +682,46 @@ impl Agent {
 
     /// Returns hooks registered for the given [`HookTypes`] variant.
     pub fn hooks_by_type(&self, hook_type: HookTypes) -> Vec<&Hook> {
-        self.hooks.iter().filter(|hook| hook_type == (*hook).into()).collect()
+        self.hooks
+            .iter()
+            .filter(|hook| hook_type == (*hook).into())
+            .collect()
     }
 
     pub fn all_tool_specs(&self) -> Vec<ToolSpec> {
-        self.cached_tool_specs.iter().map(crate::tool::copy_tool_spec).collect()
+        self.cached_tool_specs
+            .iter()
+            .map(crate::tool::copy_tool_spec)
+            .collect()
     }
 
     // TODO(compact): summarization input is a crude tail-truncation to 80k
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
-        self.compact_history_with_mode(focus, CompactRebuildMode::CodexStyle).await
+        self.compact_history_with_mode(focus, CompactRebuildMode::CodexStyle)
+            .await
     }
 
     /// Previous single-summary compaction (entire history → one user message).
     /// Kept for reference / rollback; production call sites use [`Self::compact_history`].
     #[allow(dead_code)]
     pub async fn compact_history_legacy(&mut self, focus: Option<&str>) -> Result<()> {
-        self.compact_history_with_mode(focus, CompactRebuildMode::LegacySingleSummary).await
+        self.compact_history_with_mode(focus, CompactRebuildMode::LegacySingleSummary)
+            .await
     }
 
-    async fn compact_history_with_mode(&mut self, focus: Option<&str>, mode: CompactRebuildMode) -> Result<()> {
+    async fn compact_history_with_mode(
+        &mut self,
+        focus: Option<&str>,
+        mode: CompactRebuildMode,
+    ) -> Result<()> {
         let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
         let transcript_path = write_transcript(&tact_path, &self.runtime.context).await?;
-        self.emit_update(AgentUpdate::Info(format!("[transcript saved: {}]", transcript_path.display())));
+        self.emit_update(AgentUpdate::Info(format!(
+            "[transcript saved: {}]",
+            transcript_path.display()
+        )));
 
         let model_context_window = self.model_context_window();
         let summary_max_tokens = if model_context_window == 0 {
@@ -633,8 +739,12 @@ impl Agent {
         let summary_input_limit = if model_context_window == 0 {
             crate::compact::KEEP_USER_MESSAGE_TOKENS
         } else {
-            let headroom = model_context_window.saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT).div_ceil(100);
-            model_context_window.saturating_sub(summary_max_tokens as usize).saturating_sub(headroom)
+            let headroom = model_context_window
+                .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
+                .div_ceil(100);
+            model_context_window
+                .saturating_sub(summary_max_tokens as usize)
+                .saturating_sub(headroom)
         };
         let mut prompt = COMPACT_SUMMARY_INSTRUCTIONS.to_string();
         if approx_text_tokens(&prompt) > summary_input_limit {
@@ -644,7 +754,9 @@ impl Agent {
         }
         if let Some(focus) = focus.filter(|value| !value.trim().is_empty()) {
             let addition = format!("\n\nFocus to preserve next: {focus}");
-            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition)) <= summary_input_limit {
+            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
+                <= summary_input_limit
+            {
                 prompt.push_str(&addition);
             }
         }
@@ -656,7 +768,9 @@ impl Agent {
                 } else {
                     format!("\n\nRecent files to reopen if needed:\n- {path}")
                 };
-                if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition)) > summary_input_limit {
+                if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
+                    > summary_input_limit
+                {
                     break;
                 }
                 prompt.push_str(&addition);
@@ -672,7 +786,9 @@ impl Agent {
             prompt.push_str("\n\n");
             prompt.push_str(&recent_messages);
         }
-        debug_assert!(model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit);
+        debug_assert!(
+            model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
+        );
 
         let model_name = crate::get_model();
         let request = CreateMessageParams::new(RequiredMessageParams {
@@ -685,15 +801,19 @@ impl Agent {
             model: model_name,
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-            reasoning_effort: request
+            reasoning_effort: request.thinking.as_ref().and_then(|t| {
+                tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+            }),
+            extra_body: request
                 .thinking
                 .as_ref()
-                .and_then(|t| tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)),
-            extra_body: request.thinking.as_ref().map(|t| serde_json::json!({"thinking": t}).to_string()),
+                .map(|t| serde_json::json!({"thinking": t}).to_string()),
         }));
         // ── Stats: before compaction LLM call ──
         self.runtime.stats.prompt_count += 1;
-        let compact_prompt_chars = serde_json::to_string(&request).map(|s| s.chars().count() as u64).unwrap_or(0);
+        let compact_prompt_chars = serde_json::to_string(&request)
+            .map(|s| s.chars().count() as u64)
+            .unwrap_or(0);
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
@@ -715,13 +835,18 @@ impl Agent {
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;
-                },
+                }
             }
         };
 
         // ── Stats: after compaction LLM call ──
-        self.runtime.stats.llm_call_durations.push(compact_start.elapsed());
-        let compact_response_chars = serde_json::to_string(&blocks).map(|s| s.chars().count() as u64).unwrap_or(0);
+        self.runtime
+            .stats
+            .llm_call_durations
+            .push(compact_start.elapsed());
+        let compact_response_chars = serde_json::to_string(&blocks)
+            .map(|s| s.chars().count() as u64)
+            .unwrap_or(0);
         self.runtime.stats.total_response_chars += compact_response_chars;
         for block in &blocks {
             if let ContentBlock::Thinking { thinking, .. } = block {
@@ -735,12 +860,14 @@ impl Agent {
             // the summarization request (large history prompt), not the size of
             // the replacement context below.
         }
-        let _ = self.persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref()).await;
+        let _ = self
+            .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
+            .await;
         match stop_reason {
-            None | Some(StopReason::EndTurn) => {},
+            None | Some(StopReason::EndTurn) => {}
             Some(reason) => {
                 anyhow::bail!("compaction summary ended with invalid stop reason: {reason:?}")
-            },
+            }
         }
         let summary = blocks
             .iter()
@@ -758,7 +885,8 @@ impl Agent {
         // Inject recently accessed file list into summary, helping the agent recover context after amnesia
         let mut full_summary = summary.clone();
         if !self.runtime.compact_state.recent_files.is_empty() {
-            full_summary.push_str("\n\nRecently accessed files (re-read if you need their contents):\n");
+            full_summary
+                .push_str("\n\nRecently accessed files (re-read if you need their contents):\n");
             for path in &self.runtime.compact_state.recent_files {
                 full_summary.push_str(&format!("- {path}\n"));
             }
@@ -781,7 +909,8 @@ impl Agent {
                     self.max_tokens() as usize,
                     non_retained_input_tokens,
                 );
-                let mut rebuilt = build_compacted_history(&retained, full_summary.clone(), retained_tokens);
+                let mut rebuilt =
+                    build_compacted_history(&retained, full_summary.clone(), retained_tokens);
                 if model_context_window > 0 {
                     let headroom = compact_rebuild_headroom_tokens(model_context_window);
                     loop {
@@ -794,15 +923,21 @@ impl Agent {
                             break;
                         }
                         if retained_tokens == 0 {
-                            anyhow::bail!("compacted request cannot fit model context window {model_context_window}");
+                            anyhow::bail!(
+                                "compacted request cannot fit model context window {model_context_window}"
+                            );
                         }
-                        retained_tokens =
-                            retained_tokens.saturating_sub(total.saturating_sub(model_context_window).max(1));
-                        rebuilt = build_compacted_history(&retained, full_summary.clone(), retained_tokens);
+                        retained_tokens = retained_tokens
+                            .saturating_sub(total.saturating_sub(model_context_window).max(1));
+                        rebuilt = build_compacted_history(
+                            &retained,
+                            full_summary.clone(),
+                            retained_tokens,
+                        );
                     }
                 }
                 rebuilt
-            },
+            }
             CompactRebuildMode::LegacySingleSummary => compacted_context(full_summary),
         };
         let previous_context = std::mem::replace(&mut self.runtime.context, rebuilt_context);
@@ -826,8 +961,14 @@ impl Agent {
     }
 
     fn remember_recent_file(&mut self, path: &str) {
-        self.runtime.compact_state.recent_files.retain(|existing| existing != path);
-        self.runtime.compact_state.recent_files.push(path.to_string());
+        self.runtime
+            .compact_state
+            .recent_files
+            .retain(|existing| existing != path);
+        self.runtime
+            .compact_state
+            .recent_files
+            .push(path.to_string());
         if self.runtime.compact_state.recent_files.len() > 5 {
             let overflow = self.runtime.compact_state.recent_files.len() - 5;
             self.runtime.compact_state.recent_files.drain(0..overflow);
@@ -887,7 +1028,10 @@ impl Agent {
             .memory_guidance(MEMORY_GUIDANCE.trim())
             .build()?;
 
-        prompt.to_prompt().render().context("failed to render system prompt")
+        prompt
+            .to_prompt()
+            .render()
+            .context("failed to render system prompt")
     }
 
     fn load_memory_prompt(&self) -> Result<String> {
@@ -904,14 +1048,18 @@ impl Agent {
 /// The directory snapshot is expensive to compute and its output must be
 /// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
 /// can hit.  We compute it once per session and reuse the cached string.
-fn load_dynamic_context(workdir: &Path, cached_snapshot: &mut Option<String>, snapshot_limit: usize) -> String {
+fn load_dynamic_context(
+    workdir: &Path,
+    cached_snapshot: &mut Option<String>,
+    snapshot_limit: usize,
+) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
         None => {
             let snap = snapshot_dir(workdir, snapshot_limit);
             *cached_snapshot = snap.clone();
             snap.unwrap_or_default()
-        },
+        }
     };
 
     let mut lines = vec![
@@ -967,7 +1115,9 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return true;
         };
-        (name.eq_ignore_ascii_case(".env.example") || name.eq_ignore_ascii_case(".gitignore") || !name.starts_with('.'))
+        (name.eq_ignore_ascii_case(".env.example")
+            || name.eq_ignore_ascii_case(".gitignore")
+            || !name.starts_with('.'))
             && !IGNORE_DIRS.contains(&name)
     };
 
@@ -1008,7 +1158,10 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
 
     let mut dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for rel in &items {
-        let parent = rel.parent().map(|p| p.display().to_string()).unwrap_or_else(|| ".".to_string());
+        let parent = rel
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| ".".to_string());
         let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         dirs.entry(parent).or_default().push(format!("{name}/"));
     }
@@ -1041,7 +1194,10 @@ fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> Stri
     value
 }
 
-fn assemble_claude_md_prompt(workdir: &Path, sources: &crate::config::InstructionSources) -> String {
+fn assemble_claude_md_prompt(
+    workdir: &Path,
+    sources: &crate::config::InstructionSources,
+) -> String {
     if !sources.claude_user && !sources.claude_project && !sources.claude_subdir {
         return String::new();
     }
@@ -1049,18 +1205,25 @@ fn assemble_claude_md_prompt(workdir: &Path, sources: &crate::config::Instructio
     let mut file_sources = Vec::new();
 
     if sources.claude_user {
-        let user_claude = crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
+        let user_claude =
+            crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
         if let Some(path) = user_claude
             && let Ok(content) = std::fs::read_to_string(&path)
         {
-            file_sources.push(("user global (~/.claude/CLAUDE.md)".to_string(), content.trim().to_string()));
+            file_sources.push((
+                "user global (~/.claude/CLAUDE.md)".to_string(),
+                content.trim().to_string(),
+            ));
         }
     }
 
     if sources.claude_project {
         let project_claude = workdir.join("CLAUDE.md");
         if let Ok(content) = std::fs::read_to_string(&project_claude) {
-            file_sources.push(("project root (CLAUDE.md)".to_string(), content.trim().to_string()));
+            file_sources.push((
+                "project root (CLAUDE.md)".to_string(),
+                content.trim().to_string(),
+            ));
         }
     }
 
@@ -1070,7 +1233,10 @@ fn assemble_claude_md_prompt(workdir: &Path, sources: &crate::config::Instructio
     {
         let subdir_claude = cwd.join("CLAUDE.md");
         if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
-            file_sources.push((format!("subdir ({}/CLAUDE.md)", cwd.display()), content.trim().to_string()));
+            file_sources.push((
+                format!("subdir ({}/CLAUDE.md)", cwd.display()),
+                content.trim().to_string(),
+            ));
         }
     }
 
@@ -1092,7 +1258,10 @@ fn assemble_claude_md_prompt(workdir: &Path, sources: &crate::config::Instructio
 ///
 /// Looks at the agent workdir and, when different, the process cwd — matching
 /// the local CLAUDE.md discovery paths (without a user-global file).
-fn assemble_agents_md_prompt(workdir: &Path, sources: &crate::config::InstructionSources) -> String {
+fn assemble_agents_md_prompt(
+    workdir: &Path,
+    sources: &crate::config::InstructionSources,
+) -> String {
     if !sources.agents_md {
         return String::new();
     }
@@ -1101,7 +1270,10 @@ fn assemble_agents_md_prompt(workdir: &Path, sources: &crate::config::Instructio
 
     let project_agents = workdir.join("AGENTS.md");
     if let Ok(content) = std::fs::read_to_string(&project_agents) {
-        file_sources.push(("project root (AGENTS.md)".to_string(), content.trim().to_string()));
+        file_sources.push((
+            "project root (AGENTS.md)".to_string(),
+            content.trim().to_string(),
+        ));
     }
 
     if let Ok(cwd) = std::env::current_dir()
@@ -1109,7 +1281,10 @@ fn assemble_agents_md_prompt(workdir: &Path, sources: &crate::config::Instructio
     {
         let subdir_agents = cwd.join("AGENTS.md");
         if let Ok(content) = std::fs::read_to_string(&subdir_agents) {
-            file_sources.push((format!("subdir ({}/AGENTS.md)", cwd.display()), content.trim().to_string()));
+            file_sources.push((
+                format!("subdir ({}/AGENTS.md)", cwd.display()),
+                content.trim().to_string(),
+            ));
         }
     }
 
@@ -1131,7 +1306,9 @@ fn assemble_agents_md_prompt(workdir: &Path, sources: &crate::config::Instructio
 mod tests {
     use std::sync::Once;
 
-    use tact_llm::{ContentBlock, LlmProvider, Message, MockClient, ProviderKind, Role, StopReason};
+    use tact_llm::{
+        ContentBlock, LlmProvider, Message, MockClient, ProviderKind, Role, StopReason,
+    };
 
     use super::*;
     use crate::tool::test_support::test_context;
@@ -1181,7 +1358,9 @@ mod tests {
     }
 
     fn make_text_block(content: &str) -> ContentBlock {
-        ContentBlock::Text { text: content.to_string() }
+        ContentBlock::Text {
+            text: content.to_string(),
+        }
     }
 
     #[test]
@@ -1190,7 +1369,10 @@ mod tests {
         let context = test_context("agent_settings_snapshot");
         let router = crate::tool::toolset();
         let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
 
         let tiny = crate::config::AgentSettings {
             model_context_window: 500,
@@ -1221,7 +1403,10 @@ mod tests {
 
         assert_eq!(agent.model_context_window(), 500);
         assert_eq!(agent.max_tokens(), 1024);
-        assert_eq!(agent.agent_settings.model_context_window, tiny.model_context_window);
+        assert_eq!(
+            agent.agent_settings.model_context_window,
+            tiny.model_context_window
+        );
     }
 
     #[test]
@@ -1229,7 +1414,10 @@ mod tests {
         let context = test_context("agent_new_test");
         let router = crate::tool::toolset();
         let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
 
         let agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
@@ -1254,10 +1442,15 @@ mod tests {
         let context = test_context("agent_loop_end_turn");
         let router = crate::tool::toolset();
         let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
 
-        let mock =
-            MockClient::new(vec![(vec![make_text_block("Hello, I am a coding agent.")], Some(StopReason::EndTurn))]);
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("Hello, I am a coding agent.")],
+            Some(StopReason::EndTurn),
+        )]);
 
         let mut agent = Agent::new(
             LlmProvider::Mock(mock),
@@ -1268,10 +1461,19 @@ mod tests {
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         );
 
-        let result = agent.agent_loop(Some(Message::new_text(Role::User, "Say hello"))).await;
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "Say hello")))
+            .await;
 
-        assert!(result.is_ok(), "agent_loop should complete: {:?}", result.err());
-        assert!(agent.runtime.context.len() >= 2, "context should have at least user + assistant messages");
+        assert!(
+            result.is_ok(),
+            "agent_loop should complete: {:?}",
+            result.err()
+        );
+        assert!(
+            agent.runtime.context.len() >= 2,
+            "context should have at least user + assistant messages"
+        );
     }
 
     #[tokio::test]
@@ -1284,30 +1486,42 @@ mod tests {
         let mut tool_context = context;
         tool_context.ui_tx = Some(tx.clone());
 
-        let mock =
-            MockClient::new(vec![(vec![make_text_block("I cannot help with that.")], Some(StopReason::Refusal))]);
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("I cannot help with that.")],
+            Some(StopReason::Refusal),
+        )]);
 
         let mut agent = Agent::new(
             LlmProvider::Mock(mock),
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         )
         .with_ui_channel(tx);
 
-        let result = agent.agent_loop(Some(Message::new_text(Role::User, "unsafe request"))).await;
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "unsafe request")))
+            .await;
 
         let err = result.expect_err("refusal should return Err");
-        assert!(err.to_string().contains("refusal"), "error should mention refusal, got: {err}");
+        assert!(
+            err.to_string().contains("refusal"),
+            "error should mention refusal, got: {err}"
+        );
 
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
             updates.push(u);
         }
         assert!(
-            updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("refused"))),
+            updates
+                .iter()
+                .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("refused"))),
             "expected Info about refusal, got: {updates:?}"
         );
     }
@@ -1317,7 +1531,10 @@ mod tests {
         let context = test_context("next_step_idx");
         let router = crate::tool::toolset();
         let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
 
         let mut agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
@@ -1338,7 +1555,10 @@ mod tests {
         let context = test_context("agent_work_dir");
         let router = crate::tool::toolset();
         let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
 
         let expected = context.work_dir.clone();
 
@@ -1386,7 +1606,10 @@ mod tests {
                 ],
                 Some(StopReason::ToolUse),
             ),
-            (vec![make_text_block("reads done")], Some(StopReason::EndTurn)),
+            (
+                vec![make_text_block("reads done")],
+                Some(StopReason::EndTurn),
+            ),
         ]);
 
         let mut agent = Agent::new(
@@ -1394,12 +1617,16 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto).unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
 
-        agent.agent_loop(Some(Message::new_text(Role::User, "read both"))).await.expect("agent_loop");
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read both")))
+            .await
+            .expect("agent_loop");
 
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
@@ -1409,9 +1636,9 @@ mod tests {
         let finished: Vec<_> = updates
             .iter()
             .filter_map(|u| match u {
-                AgentUpdate::StepFinished { tool_id, result, .. } if result.tool == "read_file" => {
-                    Some(tool_id.as_str())
-                },
+                AgentUpdate::StepFinished {
+                    tool_id, result, ..
+                } if result.tool == "read_file" => Some(tool_id.as_str()),
                 _ => None,
             })
             .collect();
@@ -1441,7 +1668,10 @@ mod tests {
                 }],
                 Some(StopReason::ToolUse),
             ),
-            (vec![make_text_block("continued")], Some(StopReason::EndTurn)),
+            (
+                vec![make_text_block("continued")],
+                Some(StopReason::EndTurn),
+            ),
         ]);
 
         let mut agent = Agent::new(
@@ -1449,12 +1679,16 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Plan).unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Plan)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
 
-        agent.agent_loop(Some(Message::new_text(Role::User, "write"))).await.expect("agent_loop");
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "write")))
+            .await
+            .expect("agent_loop");
 
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
@@ -1494,20 +1728,27 @@ mod tests {
             reasoning_tokens: 0,
         };
 
-        let mock =
-            MockClient::with_usage(vec![(vec![make_text_block("ok")], Some(StopReason::EndTurn), usage.clone())]);
+        let mock = MockClient::with_usage(vec![(
+            vec![make_text_block("ok")],
+            Some(StopReason::EndTurn),
+            usage.clone(),
+        )]);
 
         let mut agent = Agent::new(
             LlmProvider::Mock(mock),
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto).unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
 
-        agent.agent_loop(Some(Message::new_text(Role::User, "hi"))).await.expect("agent_loop");
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("agent_loop");
 
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
@@ -1564,35 +1805,49 @@ mod tests {
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
-            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto).unwrap(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
 
-        agent.agent_loop(Some(Message::new_text(Role::User, "rw"))).await.expect("agent_loop");
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "rw")))
+            .await
+            .expect("agent_loop");
 
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
             updates.push(u);
         }
 
-        let read_done =
-            updates.iter().position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"));
-        let write_done =
-            updates.iter().position(|u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"));
+        let read_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"),
+        );
+        let write_done = updates.iter().position(
+            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"),
+        );
         assert!(
             read_done.is_some() && write_done.is_some() && read_done < write_done,
             "read must finish before write on same file, got: {updates:?}"
         );
-        assert_eq!(std::fs::read_to_string(work_dir.join("shared.txt")).unwrap(), "next");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("shared.txt")).unwrap(),
+            "next"
+        );
     }
 
     #[test]
     fn assemble_agents_md_prompt_reads_workdir_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("AGENTS.md"), "# Crate map\n\n- `crates/tact` — runtime\n").unwrap();
+        std::fs::write(
+            dir.path().join("AGENTS.md"),
+            "# Crate map\n\n- `crates/tact` — runtime\n",
+        )
+        .unwrap();
 
-        let rendered = assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default());
+        let rendered =
+            assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default());
         assert!(rendered.starts_with("## AGENTS.md instructions"));
         assert!(rendered.contains("### From project root (AGENTS.md)"));
         assert!(rendered.contains("Crate map"));
@@ -1602,14 +1857,19 @@ mod tests {
     #[test]
     fn assemble_agents_md_prompt_empty_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default()).is_empty());
+        assert!(
+            assemble_agents_md_prompt(dir.path(), &crate::config::InstructionSources::default())
+                .is_empty()
+        );
     }
 
     #[test]
     fn assemble_agents_md_prompt_skipped_when_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Rules\n").unwrap();
-        let sources = crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()])).unwrap();
+        let sources =
+            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
+                .unwrap();
         assert!(assemble_agents_md_prompt(dir.path(), &sources).is_empty());
     }
 
@@ -1617,14 +1877,19 @@ mod tests {
     fn assemble_claude_md_prompt_skipped_when_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        assert!(assemble_claude_md_prompt(dir.path(), &crate::config::InstructionSources::default()).is_empty());
+        assert!(
+            assemble_claude_md_prompt(dir.path(), &crate::config::InstructionSources::default())
+                .is_empty()
+        );
     }
 
     #[test]
     fn assemble_claude_md_prompt_reads_project_when_enabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        let sources = crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()])).unwrap();
+        let sources =
+            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
+                .unwrap();
         let rendered = assemble_claude_md_prompt(dir.path(), &sources);
         assert!(rendered.starts_with("## CLAUDE.md instructions"));
         assert!(rendered.contains("### From project root (CLAUDE.md)"));

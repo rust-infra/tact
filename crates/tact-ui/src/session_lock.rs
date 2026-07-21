@@ -12,7 +12,9 @@ pub struct SessionLockRegistry {
 
 impl SessionLockRegistry {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { guard: tokio::sync::Mutex::new(None) })
+        Arc::new(Self {
+            guard: tokio::sync::Mutex::new(None),
+        })
     }
 
     pub async fn register(&self, guard: Arc<SessionLockGuard>) {
@@ -60,15 +62,22 @@ impl SessionLockGuard {
                 Ok(epoch) => {
                     lock_epoch = Some(epoch);
                     break;
-                },
-                Err(e) if e.to_string().contains("lock conflict; retry") && attempt + 1 < MAX_RETRIES => {
-                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt + 1))).await;
-                },
+                }
+                Err(e)
+                    if e.to_string().contains("lock conflict; retry")
+                        && attempt + 1 < MAX_RETRIES =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        50 * u64::from(attempt + 1),
+                    ))
+                    .await;
+                }
                 Err(e) => return Err(e),
             }
         }
-        let lock_epoch =
-            lock_epoch.ok_or_else(|| anyhow::anyhow!("failed to acquire session lock after {MAX_RETRIES} attempts"))?;
+        let lock_epoch = lock_epoch.ok_or_else(|| {
+            anyhow::anyhow!("failed to acquire session lock after {MAX_RETRIES} attempts")
+        })?;
         Ok(Arc::new(Self {
             store,
             session_id: session_id.to_string(),
@@ -82,7 +91,9 @@ impl SessionLockGuard {
         if self.released.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        self.store.release_session_lock(&self.session_id, self.pid, &self.lock_epoch).await?;
+        self.store
+            .release_session_lock(&self.session_id, self.pid, &self.lock_epoch)
+            .await?;
         Ok(())
     }
 }
@@ -98,7 +109,8 @@ async fn wait_for_exit_signal() -> ExitSignal {
         use tokio::signal::unix::{SignalKind, signal};
 
         let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
-        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
         tokio::select! {
             _ = sigint.recv() => ExitSignal::Interrupt,
             _ = sigterm.recv() => ExitSignal::Terminate,

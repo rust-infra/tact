@@ -14,8 +14,9 @@ use ratatui::{
 use tokio::sync::mpsc::unbounded_channel;
 
 use super::{
-    log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
-    render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
+    log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
+    render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
+    render_status_bar,
 };
 use crate::widgets::state::{App, InputMode};
 
@@ -136,7 +137,9 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
 pub fn render_log_panel_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal.draw(|frame| render_log_panel(frame, frame.area(), app)).expect("draw");
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), app))
+        .expect("draw");
     terminal
 }
 
@@ -150,7 +153,9 @@ pub fn render_log_panel_text(app: &mut App, width: u16, height: u16) -> String {
 pub fn render_main_area_text(app: &mut App, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal.draw(|frame| render_main_area(frame, frame.area(), app)).expect("draw");
+    terminal
+        .draw(|frame| render_main_area(frame, frame.area(), app))
+        .expect("draw");
     buffer_text(terminal.backend().buffer())
 }
 
@@ -158,6 +163,8 @@ pub fn render_main_area_text(app: &mut App, width: u16, height: u16) -> String {
 pub fn render_app_text(app: &mut App, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal.draw(|frame| draw_full_ui(frame, frame.area(), app)).expect("draw");
+    terminal
+        .draw(|frame| draw_full_ui(frame, frame.area(), app))
+        .expect("draw");
     buffer_text(terminal.backend().buffer())
 }

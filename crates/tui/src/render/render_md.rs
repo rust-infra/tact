@@ -24,7 +24,11 @@ impl TuiStyleSheet {
 impl tui_markdown::StyleSheet for TuiStyleSheet {
     fn heading(&self, level: u8) -> Style {
         match level {
-            1 => Style::new().fg(self.theme.accent).bg(self.theme.highlight).bold().underlined(),
+            1 => Style::new()
+                .fg(self.theme.accent)
+                .bg(self.theme.highlight)
+                .bold()
+                .underlined(),
             2 => Style::new().fg(self.theme.accent).bold(),
             3 => Style::new().fg(self.theme.accent).bold().italic(),
             4 => Style::new().fg(self.theme.fg).bold().italic(),
@@ -34,7 +38,9 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
     }
 
     fn code(&self) -> Style {
-        Style::new().fg(self.theme.code_block_fg()).bg(self.theme.code_block_bg())
+        Style::new()
+            .fg(self.theme.code_block_fg())
+            .bg(self.theme.code_block_bg())
     }
 
     fn link(&self) -> Style {
@@ -63,8 +69,11 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
         .lines
         .into_iter()
         .map(|line| {
-            let spans: Vec<Span<'static>> =
-                line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
+            let spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .collect();
             let mut new_line = Line::from(spans).style(line.style);
             if let Some(alignment) = line.alignment {
                 new_line = new_line.alignment(alignment);
@@ -96,7 +105,9 @@ fn escape_task_list_markers(text: &str) -> Cow<'_, str> {
     options.insert(MarkdownOptions::ENABLE_SUBSCRIPT);
     let marker_starts: Vec<usize> = Parser::new_ext(text, options)
         .into_offset_iter()
-        .filter_map(|(event, range)| matches!(event, Event::TaskListMarker(_)).then_some(range.start))
+        .filter_map(|(event, range)| {
+            matches!(event, Event::TaskListMarker(_)).then_some(range.start)
+        })
         .collect();
     if marker_starts.is_empty() {
         return Cow::Borrowed(text);
@@ -219,7 +230,10 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
     let mut col_widths = vec![0; col_count];
     for row in &rows {
         // Skip separator rows when measuring — dashes shouldn't widen columns.
-        let is_sep = row.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()));
+        let is_sep = row.iter().all(|c| {
+            c.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        });
         if is_sep {
             continue;
         }
@@ -234,7 +248,10 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
     let mut raw_lines = Vec::new();
 
     for (row_idx, row) in rows.iter().enumerate() {
-        let is_sep = row.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()));
+        let is_sep = row.iter().all(|c| {
+            c.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        });
 
         if is_sep {
             // Render a visual separator that matches column widths.
@@ -245,7 +262,10 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
                 })
                 .collect();
             let line_text = format!("|{}|", sep_cells.join("|"));
-            styled_lines.push(Line::from(Span::styled(line_text.clone(), Style::default().fg(theme.accent))));
+            styled_lines.push(Line::from(Span::styled(
+                line_text.clone(),
+                Style::default().fg(theme.accent),
+            )));
             raw_lines.push(line_text);
             continue;
         }
@@ -262,7 +282,10 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
             // Header: bold accent cells, dim pipes — keeps `#` / titles visually distinct.
             styled_table_row(&cells, theme.accent, true, theme)
         } else {
-            Line::from(Span::styled(line_text.clone(), Style::default().fg(theme.fg)))
+            Line::from(Span::styled(
+                line_text.clone(),
+                Style::default().fg(theme.fg),
+            ))
         };
 
         styled_lines.push(styled);
@@ -273,7 +296,12 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
 }
 
 /// Build a table row as alternating pipe + cell spans.
-fn styled_table_row(cells: &[String], cell_fg: ratatui::style::Color, bold: bool, theme: &Theme) -> Line<'static> {
+fn styled_table_row(
+    cells: &[String],
+    cell_fg: ratatui::style::Color,
+    bold: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let pipe = Style::default().fg(theme.accent);
     let mut cell_style = Style::default().fg(cell_fg);
     if bold {
@@ -338,7 +366,10 @@ mod tests {
         let md = "```rust\nfn md_test() {}\n```";
         let (lines, raw) = render_markdown_tui(md, &theme());
         let joined = raw.join("\n");
-        assert!(joined.contains("md_test") || joined.contains("fn"), "code block content: {joined}");
+        assert!(
+            joined.contains("md_test") || joined.contains("fn"),
+            "code block content: {joined}"
+        );
         assert!(lines.iter().any(|l| !l.spans.is_empty()));
     }
 
@@ -347,7 +378,10 @@ mod tests {
         let md = "> quoted wisdom";
         let (_lines, raw) = render_markdown_tui(md, &theme());
         let joined = raw.join("\n");
-        assert!(joined.contains("quoted wisdom"), "blockquote text: {joined}");
+        assert!(
+            joined.contains("quoted wisdom"),
+            "blockquote text: {joined}"
+        );
     }
 
     #[test]
@@ -359,15 +393,30 @@ mod tests {
 
     #[test]
     fn format_table_aligns_columns() {
-        let rows = vec!["| Name | Val |".to_string(), "| --- | --- |".to_string(), "| foo | 1 |".to_string()];
+        let rows = vec![
+            "| Name | Val |".to_string(),
+            "| --- | --- |".to_string(),
+            "| foo | 1 |".to_string(),
+        ];
         let (styled, raw) = format_table(&rows, &theme());
         assert!(!styled.is_empty());
         assert!(raw.iter().any(|r| r.contains("foo")));
         // Header + separator + body
         assert_eq!(raw.len(), 3);
-        let pipe_cols: Vec<Vec<usize>> =
-            raw.iter().map(|r| r.char_indices().filter(|(_, c)| *c == '|').map(|(i, _)| i).collect()).collect();
-        assert!(pipe_cols.windows(2).all(|w| w[0] == w[1]), "pipe columns should align:\n{}", raw.join("\n"));
+        let pipe_cols: Vec<Vec<usize>> = raw
+            .iter()
+            .map(|r| {
+                r.char_indices()
+                    .filter(|(_, c)| *c == '|')
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .collect();
+        assert!(
+            pipe_cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe columns should align:\n{}",
+            raw.join("\n")
+        );
     }
 
     #[test]
@@ -383,8 +432,15 @@ mod tests {
         assert_eq!(raw.len(), 5, "header + sep + 3 data rows");
 
         // All rows must have the same display width and pipe positions.
-        let widths: Vec<usize> = raw.iter().map(|r| UnicodeWidthStr::width(r.as_str())).collect();
-        assert!(widths.windows(2).all(|w| w[0] == w[1]), "row display widths differ: {widths:?}\n{}", raw.join("\n"));
+        let widths: Vec<usize> = raw
+            .iter()
+            .map(|r| UnicodeWidthStr::width(r.as_str()))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "row display widths differ: {widths:?}\n{}",
+            raw.join("\n")
+        );
 
         let pipe_display_cols = |s: &str| -> Vec<usize> {
             let mut cols = Vec::new();
@@ -398,7 +454,11 @@ mod tests {
             cols
         };
         let cols: Vec<Vec<usize>> = raw.iter().map(|r| pipe_display_cols(r)).collect();
-        assert!(cols.windows(2).all(|w| w[0] == w[1]), "pipe display columns misaligned:\n{}", raw.join("\n"));
+        assert!(
+            cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe display columns misaligned:\n{}",
+            raw.join("\n")
+        );
     }
 
     #[test]
@@ -411,12 +471,17 @@ mod tests {
         let (styled, _raw) = format_table(&rows, &theme());
         let header = &styled[0];
         assert!(
-            header.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD) && s.content.contains('#')),
+            header
+                .spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD) && s.content.contains('#')),
             "header cell with # should be bold: {header:?}"
         );
         let body = &styled[2];
         assert!(
-            body.spans.iter().all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
+            body.spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
             "body row should not be bold"
         );
     }

@@ -35,7 +35,15 @@ pub async fn run_headless_session<F>(
 where
     F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
 {
-    run_headless_session_with_options(mock, permission_mode, permission_choice, false, setup, drive).await
+    run_headless_session_with_options(
+        mock,
+        permission_mode,
+        permission_choice,
+        false,
+        setup,
+        drive,
+    )
+    .await
 }
 
 /// Like [`run_headless_session`], but allows enabling per-frame capture.
@@ -64,7 +72,9 @@ where
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
     let cmd_handle = drive(user_cmd_tx);
 
-    let snapshots = app.run_while(|| !driver.is_finished(), Duration::from_secs(30)).await;
+    let snapshots = app
+        .run_while(|| !driver.is_finished(), Duration::from_secs(30))
+        .await;
 
     let _ = tokio::time::timeout(Duration::from_secs(30), driver)
         .await
@@ -75,9 +85,20 @@ where
     app.poll();
     let is_done = app.is_done();
     if snapshots.final_render.is_none() {
-        let final_snap = HeadlessSnapshots { final_render: Some(app.render(120, 30)), ..Default::default() };
-        return HeadlessSessionResult { work_dir, snapshots: final_snap, is_done };
+        let final_snap = HeadlessSnapshots {
+            final_render: Some(app.render(120, 30)),
+            ..Default::default()
+        };
+        return HeadlessSessionResult {
+            work_dir,
+            snapshots: final_snap,
+            is_done,
+        };
     }
 
-    HeadlessSessionResult { work_dir, snapshots, is_done }
+    HeadlessSessionResult {
+        work_dir,
+        snapshots,
+        is_done,
+    }
 }

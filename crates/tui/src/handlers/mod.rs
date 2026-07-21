@@ -31,13 +31,21 @@ use crate::{
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
     let cursor = s.floor_char_boundary(cursor.min(s.len()));
-    s[..cursor].char_indices().last().map(|(i, _)| i).unwrap_or(0)
+    s[..cursor]
+        .char_indices()
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0)
 }
 
 /// Returns the byte index of the next char boundary after `cursor`.
 fn next_char_boundary(s: &str, cursor: usize) -> usize {
     let cursor = s.floor_char_boundary(cursor.min(s.len()));
-    s[cursor..].chars().next().map(|c| cursor + c.len_utf8()).unwrap_or(cursor)
+    s[cursor..]
+        .chars()
+        .next()
+        .map(|c| cursor + c.len_utf8())
+        .unwrap_or(cursor)
 }
 
 /// Returns the byte index at the start of the line that contains `cursor`.
@@ -52,7 +60,10 @@ fn start_of_line(s: &str, cursor: usize) -> usize {
 /// Returns the byte index at the end of the line that contains `cursor` (newline position, or string length for the last line).
 fn end_of_line(s: &str, cursor: usize) -> usize {
     let cursor = s.floor_char_boundary(cursor.min(s.len()));
-    s[cursor..].find('\n').map(|i| cursor + i).unwrap_or(s.len())
+    s[cursor..]
+        .find('\n')
+        .map(|i| cursor + i)
+        .unwrap_or(s.len())
 }
 
 /// Exit history navigation mode.
@@ -216,7 +227,9 @@ pub(super) struct CommandExecOutcome {
 
 /// True when `cmd` is a built-in palette entry (wins over same-named skills).
 pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
-    crate::widgets::state::PALETTE_COMMANDS.iter().any(|(name, _)| *name == cmd)
+    crate::widgets::state::PALETTE_COMMANDS
+        .iter()
+        .any(|(name, _)| *name == cmd)
 }
 
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
@@ -236,23 +249,35 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     match cmd {
         "theme" => {
             app.toggle_theme();
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "model" => {
             crate::handlers::select::start_model_picker(app);
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "view-system-prompt" => {
             app.select.set_local(
                 "View system prompt".to_string(),
-                vec!["Raw template".to_string(), "Assembled current prompt".to_string()],
+                vec![
+                    "Raw template".to_string(),
+                    "Assembled current prompt".to_string(),
+                ],
                 0,
                 false,
             );
             app.select_kind = SelectKind::ViewSystemPrompt;
             app.input_mode = InputMode::Select;
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "save" => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let path = std::env::temp_dir().join(format!("agent_log_{timestamp}.txt"));
@@ -262,66 +287,108 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     writeln!(file, "{}", msg).ok();
                 }
                 let msgs = app.msgs();
-                app.add_system_message(msgs.log_saved_tmpl.replace("{}", &path.display().to_string()));
+                app.add_system_message(
+                    msgs.log_saved_tmpl
+                        .replace("{}", &path.display().to_string()),
+                );
             } else {
                 let msgs = app.msgs();
                 app.add_system_message(msgs.log_save_failed.to_string());
             }
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "quit" => {
             app.should_quit = true;
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "help" => {
             app.show_help = !app.show_help;
             app.show_history = false;
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "history" => {
             app.show_history = !app.show_history;
             app.show_help = false;
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "skills" => {
             show_skills_command(app);
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "skill-reload" => {
             match refresh_skills(app) {
                 Ok(count) => {
-                    let msg = app.msgs().skill_reloaded_tmpl.replace("{}", &count.to_string());
+                    let msg = app
+                        .msgs()
+                        .skill_reloaded_tmpl
+                        .replace("{}", &count.to_string());
                     app.add_system_message(msg);
-                },
+                }
                 Err(err) => {
                     let msg = app.msgs().skill_reload_failed_tmpl.replace("{}", &err);
                     app.add_system_message(msg);
-                },
+                }
             }
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "plugin" => plugin::handle_plugin_command(app),
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to abort.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = app.user_cmd_tx.send(UserCommand::Cancel);
             } else {
-                app.flash_msg = Some((app.msgs().cancel_noop_msg.to_string(), std::time::Instant::now()));
+                app.flash_msg = Some((
+                    app.msgs().cancel_noop_msg.to_string(),
+                    std::time::Instant::now(),
+                ));
             }
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "balance" => {
             if app.account_rx.is_none() {
-                return CommandExecOutcome { handled: true, clear_input: true };
+                return CommandExecOutcome {
+                    handled: true,
+                    clear_input: true,
+                };
             }
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
-            CommandExecOutcome { handled: true, clear_input: true }
-        },
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "lang" => {
             app.toggle_language();
-            CommandExecOutcome { handled: true, clear_input: true }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        _ => CommandExecOutcome {
+            handled: false,
+            clear_input: false,
         },
-        _ => CommandExecOutcome { handled: false, clear_input: false },
     }
 }
 
@@ -332,7 +399,11 @@ fn show_skills_command(app: &mut App) {
 
     let title = "📋 Available skills";
     let title_ty = classify_system_message(title);
-    app.append_msg(Line::from(Span::styled(title, Style::default().fg(app.theme.accent))), title.to_string(), title_ty);
+    app.append_msg(
+        Line::from(Span::styled(title, Style::default().fg(app.theme.accent))),
+        title.to_string(),
+        title_ty,
+    );
     app.add_new_line();
 
     let rows = skills_table_rows(&app.skills_description);
@@ -361,7 +432,10 @@ fn show_skills_command(app: &mut App) {
 
 /// Build Markdown table rows for [`format_table`] from `describe_available` text.
 fn skills_table_rows(description: &str) -> Vec<String> {
-    let mut rows = vec!["| Skill | Description |".to_string(), "|-------|-------------|".to_string()];
+    let mut rows = vec![
+        "| Skill | Description |".to_string(),
+        "|-------|-------------|".to_string(),
+    ];
     for line in description.lines() {
         let line = line.trim().trim_start_matches('-').trim();
         if line.is_empty() || line == "(no skills available)" {
@@ -436,7 +510,8 @@ mod tests {
         let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
         app.account_rx = Some(account_rx);
         let cmds = app.palette_commands();
-        let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
+        let commands: Vec<(&str, &str)> =
+            cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
 
         for (cmd, _desc) in &commands {
             if *cmd == "cancel" {
@@ -457,7 +532,8 @@ mod tests {
 
     #[test]
     fn skills_table_rows_parses_describe_available() {
-        let rows = skills_table_rows("- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能");
+        let rows =
+            skills_table_rows("- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能");
         assert_eq!(rows[0], "| Skill | Description |");
         assert_eq!(rows[1], "|-------|-------------|");
         assert_eq!(rows[2], "| code-reviewer | 代码审查专家 |");
@@ -494,7 +570,10 @@ mod tests {
         let joined = app.raw_messages[after_first.saturating_sub(1)..].join("\n");
         assert!(
             app.raw_messages[after_first - 1].is_empty()
-                || app.raw_messages.get(after_first).is_some_and(|s| s.is_empty()),
+                || app
+                    .raw_messages
+                    .get(after_first)
+                    .is_some_and(|s| s.is_empty()),
             "expected blank separator between skills blocks, around: {joined}"
         );
     }
@@ -507,17 +586,26 @@ mod tests {
         assert!(outcome.handled);
         assert!(outcome.clear_input);
         assert!(app.flash_msg.is_some());
-        assert!(user_cmd_rx.try_recv().is_err(), "Done must not dispatch Cancel");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Done must not dispatch Cancel"
+        );
     }
 
     #[test]
     fn cancel_while_executing_dispatches() {
         let (mut app, mut user_cmd_rx) = make_app();
-        app.status = Status::Executing { current_step: 0, total: 1 };
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
         let outcome = execute_palette_command(&mut app, "cancel");
         assert!(outcome.handled);
         assert!(outcome.clear_input);
-        assert!(matches!(user_cmd_rx.try_recv().expect("expected Cancel"), UserCommand::Cancel));
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
     }
 
     #[test]
@@ -536,13 +624,25 @@ mod tests {
         use crate::widgets::state::SkillEntry;
 
         let (mut app, mut user_cmd_rx) = make_app();
-        app.skills_data =
-            vec![SkillEntry { name: "cancel".into(), description: "fake".into(), body: "should not run".into() }];
-        app.status = Status::Executing { current_step: 0, total: 1 };
+        app.skills_data = vec![SkillEntry {
+            name: "cancel".into(),
+            description: "fake".into(),
+            body: "should not run".into(),
+        }];
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
         let outcome = execute_palette_command(&mut app, "cancel");
         assert!(outcome.handled);
-        assert!(matches!(user_cmd_rx.try_recv().expect("Cancel"), UserCommand::Cancel));
-        assert!(user_cmd_rx.try_recv().is_err(), "must not SubmitTask skill body");
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("Cancel"),
+            UserCommand::Cancel
+        ));
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "must not SubmitTask skill body"
+        );
     }
 
     #[test]
@@ -550,8 +650,16 @@ mod tests {
         use crate::widgets::state::SkillEntry;
 
         let (mut app, _rx) = make_app();
-        app.skills_data = vec![SkillEntry { name: "help".into(), description: "skill help".into(), body: "x".into() }];
-        let help_rows: Vec<_> = app.palette_commands().into_iter().filter(|(c, _)| c == "help").collect();
+        app.skills_data = vec![SkillEntry {
+            name: "help".into(),
+            description: "skill help".into(),
+            body: "x".into(),
+        }];
+        let help_rows: Vec<_> = app
+            .palette_commands()
+            .into_iter()
+            .filter(|(c, _)| c == "help")
+            .collect();
         assert_eq!(help_rows.len(), 1, "builtin help only once: {help_rows:?}");
         assert_eq!(help_rows[0].1, app.localize_cmd_desc("help"));
     }

@@ -27,7 +27,8 @@ impl MarketplaceSource {
         }
 
         if value.contains("://") {
-            let url = reqwest::Url::parse(value).with_context(|| format!("invalid marketplace source: {value}"))?;
+            let url = reqwest::Url::parse(value)
+                .with_context(|| format!("invalid marketplace source: {value}"))?;
             if !matches!(url.scheme(), "git" | "http" | "https" | "ssh") || url.host().is_none() {
                 bail!("unsupported marketplace source: {value}");
             }
@@ -112,7 +113,13 @@ impl MarketplaceState {
             bail!("marketplace {name} already exists with a different source");
         }
 
-        self.marketplaces.insert(name.to_owned(), MarketplaceRecord { name: name.to_owned(), source });
+        self.marketplaces.insert(
+            name.to_owned(),
+            MarketplaceRecord {
+                name: name.to_owned(),
+                source,
+            },
+        );
         Ok(())
     }
 
@@ -136,7 +143,9 @@ impl MarketplaceState {
 
     /// Iterates over marketplace names and their records.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &MarketplaceRecord)> {
-        self.marketplaces.iter().map(|(name, record)| (name.as_str(), record))
+        self.marketplaces
+            .iter()
+            .map(|(name, record)| (name.as_str(), record))
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -165,7 +174,9 @@ pub(crate) fn validate_marketplace_name(name: &str) -> Result<()> {
     if name.trim().is_empty()
         || name == MARKETPLACE_BACKUPS_DIRECTORY
         || name.contains(['/', '\\'])
-        || Path::new(name).components().any(|component| !matches!(component, Component::Normal(_)))
+        || Path::new(name)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
     {
         bail!("invalid marketplace name: {name}");
     }
@@ -183,7 +194,9 @@ impl<'de> Deserialize<'de> for MarketplaceState {
         }
 
         let raw = RawMarketplaceState::deserialize(deserializer)?;
-        let mut state = Self { marketplaces: raw.marketplaces };
+        let mut state = Self {
+            marketplaces: raw.marketplaces,
+        };
         state.validate().map_err(serde::de::Error::custom)?;
         state.ensure_builtin();
         Ok(state)
@@ -221,13 +234,19 @@ mod tests {
         let home = PluginHome::from_home(Path::new("/users/example"));
 
         assert_eq!(home.root, Path::new("/users/example/.tact/plugins"));
-        assert_eq!(home.marketplaces, Path::new("/users/example/.tact/plugins/marketplaces"));
+        assert_eq!(
+            home.marketplaces,
+            Path::new("/users/example/.tact/plugins/marketplaces")
+        );
         assert_eq!(home.cache, Path::new("/users/example/.tact/plugins/cache"));
     }
 
     #[test]
     fn github_shorthand_normalizes_to_git_url() {
-        assert_eq!(MarketplaceSource::parse("acme/plugins").unwrap().git_url(), "https://github.com/acme/plugins.git");
+        assert_eq!(
+            MarketplaceSource::parse("acme/plugins").unwrap().git_url(),
+            "https://github.com/acme/plugins.git"
+        );
     }
 
     #[test]
@@ -248,7 +267,11 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_marketplace_uris() {
-        for source in ["file:///tmp/marketplace.json", "mailto:marketplace@example.invalid", "git:///marketplace.git"] {
+        for source in [
+            "file:///tmp/marketplace.json",
+            "mailto:marketplace@example.invalid",
+            "git:///marketplace.git",
+        ] {
             assert!(MarketplaceSource::parse(source).is_err(), "{source}");
         }
     }
@@ -258,7 +281,12 @@ mod tests {
         let mut state = MarketplaceState::with_builtin();
         for name in ["../outside", "nested/name", "nested\\name", ".", ""] {
             assert!(
-                state.add(name, MarketplaceSource::GitUrl("https://example.invalid/a.git".into())).is_err(),
+                state
+                    .add(
+                        name,
+                        MarketplaceSource::GitUrl("https://example.invalid/a.git".into())
+                    )
+                    .is_err(),
                 "{name}"
             );
         }
@@ -267,7 +295,14 @@ mod tests {
     #[test]
     fn public_api_cannot_replace_the_builtin_marketplace() {
         let mut state = MarketplaceState::with_builtin();
-        assert!(state.add("claude-plugins-official", MarketplaceSource::GitUrl("https://x/y.git".into())).is_err());
+        assert!(
+            state
+                .add(
+                    "claude-plugins-official",
+                    MarketplaceSource::GitUrl("https://x/y.git".into())
+                )
+                .is_err()
+        );
         assert_eq!(
             state.get(OFFICIAL_MARKETPLACE).unwrap().source.git_url(),
             "https://github.com/anthropics/claude-plugins-official.git"
@@ -277,9 +312,21 @@ mod tests {
     #[test]
     fn duplicate_user_marketplace_name_with_a_different_source_is_rejected() {
         let mut state = MarketplaceState::with_builtin();
-        state.add("fixture", MarketplaceSource::GitUrl("https://example.invalid/one.git".into())).unwrap();
+        state
+            .add(
+                "fixture",
+                MarketplaceSource::GitUrl("https://example.invalid/one.git".into()),
+            )
+            .unwrap();
 
-        assert!(state.add("fixture", MarketplaceSource::GitUrl("https://example.invalid/two.git".into()),).is_err());
+        assert!(
+            state
+                .add(
+                    "fixture",
+                    MarketplaceSource::GitUrl("https://example.invalid/two.git".into()),
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -306,7 +353,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            state.get("claude-plugins-official").unwrap().source.git_url(),
+            state
+                .get("claude-plugins-official")
+                .unwrap()
+                .source
+                .git_url(),
             "https://github.com/anthropics/claude-plugins-official.git"
         );
     }

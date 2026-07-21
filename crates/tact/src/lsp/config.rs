@@ -34,6 +34,9 @@ impl LspServerConfig {
             .and_then(|e| e.to_str())
             .map(|e| format!(".{}", e.to_lowercase()))
             .unwrap_or_default();
-        self.extension_to_language.get(&ext).cloned().unwrap_or_else(|| "plaintext".to_string())
+        self.extension_to_language
+            .get(&ext)
+            .cloned()
+            .unwrap_or_else(|| "plaintext".to_string())
     }
 }

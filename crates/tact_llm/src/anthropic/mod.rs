@@ -13,7 +13,8 @@ use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo}
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, MessageError, StopReason, StreamUsage,
+    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, MessageError,
+    StopReason, StreamUsage,
 };
 
 /// Events emitted when an Anthropic thinking content block starts.
@@ -43,13 +44,22 @@ impl AnthropicAdapter {
             .read_timeout(Duration::from_secs(120))
             .build()
             .expect("failed to build reqwest client");
-        Self { api_key: api_key.into(), base_url: base_url.into(), api_version: "2023-06-01".to_string(), client }
+        Self {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+            api_version: "2023-06-01".to_string(),
+            client,
+        }
     }
 
     /// Serialize the request and set the `stream` flag.
-    fn prepare_body(&self, request: &CreateMessageParams, stream: bool) -> Result<serde_json::Value, LlmError> {
-        let mut body =
-            serde_json::to_value(request).map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
+    fn prepare_body(
+        &self,
+        request: &CreateMessageParams,
+        stream: bool,
+    ) -> Result<serde_json::Value, LlmError> {
+        let mut body = serde_json::to_value(request)
+            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(e.to_string())))?;
         body["stream"] = serde_json::json!(stream);
         Ok(body)
     }
@@ -62,7 +72,10 @@ impl AnthropicAdapter {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("x-api-key", self.api_key.parse().unwrap());
         headers.insert("anthropic-version", self.api_version.parse().unwrap());
-        headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
         headers
     }
 }
@@ -143,8 +156,15 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError>
-    {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
@@ -165,20 +185,23 @@ impl LlmClient for AnthropicAdapter {
         while let Some(event) = event_source.next().await {
             match event {
                 Err(e) => {
-                    return Err(LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))));
-                },
+                    return Err(LlmError::Anthropic(MessageError::ApiError(
+                        format_http_error(&e),
+                    )));
+                }
                 Ok(Event::Open) => continue,
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
                         break;
                     }
 
-                    let value: serde_json::Value = serde_json::from_str(&msg.data).map_err(|e| {
-                        LlmError::Anthropic(MessageError::ApiError(format!(
-                            "Failed to parse SSE event JSON: {e}. Data: {}",
-                            msg.data
-                        )))
-                    })?;
+                    let value: serde_json::Value =
+                        serde_json::from_str(&msg.data).map_err(|e| {
+                            LlmError::Anthropic(MessageError::ApiError(format!(
+                                "Failed to parse SSE event JSON: {e}. Data: {}",
+                                msg.data
+                            )))
+                        })?;
 
                     let event_type = value["type"].as_str().ok_or_else(|| {
                         LlmError::Anthropic(MessageError::ApiError(format!(
@@ -189,18 +212,23 @@ impl LlmClient for AnthropicAdapter {
 
                     match event_type {
                         "message_start" => {
-                            let start: MessageStartEvent = serde_json::from_value(value).map_err(|e| {
-                                LlmError::Anthropic(MessageError::ApiError(format!(
-                                    "Failed to parse message_start: {e}"
-                                )))
-                            })?;
+                            let start: MessageStartEvent =
+                                serde_json::from_value(value).map_err(|e| {
+                                    LlmError::Anthropic(MessageError::ApiError(format!(
+                                        "Failed to parse message_start: {e}"
+                                    )))
+                                })?;
                             if let Some(ref tx) = ui_tx {
                                 let _ = tx.send(AgentUpdate::ModelInfo(ModelCallParams {
                                     model: start.message.model,
                                     max_tokens: request.max_tokens,
-                                    thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
+                                    thinking_budget: request
+                                        .thinking
+                                        .as_ref()
+                                        .map(|t| t.budget_tokens as u32),
                                     reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                                        crate::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
+                                        crate::current_reasoning_effort_from_budget(t.budget_tokens)
+                                            .map(str::to_string)
                                     }),
                                     extra_body: request
                                         .thinking
@@ -208,16 +236,22 @@ impl LlmClient for AnthropicAdapter {
                                         .map(|t| serde_json::json!({"thinking": t}).to_string()),
                                 }));
                             }
-                        },
+                        }
                         "content_block_start" => {
-                            let start: ContentBlockStartEvent = serde_json::from_value(value).map_err(|e| {
-                                LlmError::Anthropic(MessageError::ApiError(format!(
-                                    "Failed to parse content_block_start: {e}"
-                                )))
-                            })?;
+                            let start: ContentBlockStartEvent = serde_json::from_value(value)
+                                .map_err(|e| {
+                                    LlmError::Anthropic(MessageError::ApiError(format!(
+                                        "Failed to parse content_block_start: {e}"
+                                    )))
+                                })?;
                             let index = start.index;
                             if index >= response_blocks.len() {
-                                response_blocks.resize(index + 1, ContentBlock::Text { text: String::new() });
+                                response_blocks.resize(
+                                    index + 1,
+                                    ContentBlock::Text {
+                                        text: String::new(),
+                                    },
+                                );
                                 tool_input_buffers.resize(index + 1, String::new());
                             }
                             match &start.content_block {
@@ -228,7 +262,7 @@ impl LlmClient for AnthropicAdapter {
                                     {
                                         let _ = tx.send(AgentUpdate::StreamChunk(text.clone()));
                                     }
-                                },
+                                }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
                                     if let Some(ref tx) = ui_tx {
@@ -236,74 +270,85 @@ impl LlmClient for AnthropicAdapter {
                                             let _ = tx.send(AgentUpdate::ThinkingChunk(chunk));
                                         }
                                     }
-                                },
+                                }
                                 ContentBlock::ToolUse { .. } => {
                                     tool_input_buffers[index].clear();
-                                },
-                                _ => {},
+                                }
+                                _ => {}
                             }
                             response_blocks[index] = start.content_block;
-                        },
+                        }
                         "content_block_delta" => {
-                            let delta_event: ContentBlockDeltaEvent = serde_json::from_value(value).map_err(|e| {
-                                LlmError::Anthropic(MessageError::ApiError(format!(
-                                    "Failed to parse content_block_delta: {e}"
-                                )))
-                            })?;
+                            let delta_event: ContentBlockDeltaEvent = serde_json::from_value(value)
+                                .map_err(|e| {
+                                    LlmError::Anthropic(MessageError::ApiError(format!(
+                                        "Failed to parse content_block_delta: {e}"
+                                    )))
+                                })?;
                             let index = delta_event.index;
                             match delta_event.delta {
                                 ContentBlockDelta::TextDelta { text } => {
-                                    if let Some(ContentBlock::Text { text: existing }) = response_blocks.get_mut(index)
+                                    if let Some(ContentBlock::Text { text: existing }) =
+                                        response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&text);
                                         if let Some(ref tx) = ui_tx {
                                             let _ = tx.send(AgentUpdate::StreamChunk(text));
                                         }
                                     }
-                                },
+                                }
                                 ContentBlockDelta::ThinkingDelta { thinking } => {
-                                    if let Some(ContentBlock::Thinking { thinking: existing, .. }) =
-                                        response_blocks.get_mut(index)
+                                    if let Some(ContentBlock::Thinking {
+                                        thinking: existing, ..
+                                    }) = response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&thinking);
                                     }
                                     if let Some(ref tx) = ui_tx {
-                                        let _ = tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(thinking)));
+                                        let _ = tx.send(AgentUpdate::ThinkingChunk(
+                                            ThinkingChunk::Delta(thinking),
+                                        ));
                                     }
-                                },
+                                }
                                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                                     if index < tool_input_buffers.len() {
                                         tool_input_buffers[index].push_str(&partial_json);
                                     }
-                                },
+                                }
                                 ContentBlockDelta::SignatureDelta { signature } => {
-                                    if let Some(ContentBlock::Thinking { signature: existing, .. }) =
-                                        response_blocks.get_mut(index)
+                                    if let Some(ContentBlock::Thinking {
+                                        signature: existing,
+                                        ..
+                                    }) = response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&signature);
                                     }
-                                },
+                                }
                             }
-                        },
+                        }
                         "content_block_stop" => {
-                            let stop: ContentBlockStopEvent = serde_json::from_value(value).map_err(|e| {
-                                LlmError::Anthropic(MessageError::ApiError(format!(
-                                    "Failed to parse content_block_stop: {e}"
-                                )))
-                            })?;
+                            let stop: ContentBlockStopEvent = serde_json::from_value(value)
+                                .map_err(|e| {
+                                    LlmError::Anthropic(MessageError::ApiError(format!(
+                                        "Failed to parse content_block_stop: {e}"
+                                    )))
+                                })?;
                             if is_thinking_content_block(response_blocks.get(stop.index))
                                 && let Some(ref tx) = ui_tx
                             {
-                                let _ = tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                                let _ =
+                                    tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
                             }
-                            if let Some(ContentBlock::ToolUse { input: existing, .. }) =
-                                response_blocks.get_mut(stop.index)
+                            if let Some(ContentBlock::ToolUse {
+                                input: existing, ..
+                            }) = response_blocks.get_mut(stop.index)
                                 && stop.index < tool_input_buffers.len()
-                                && let Ok(value) = serde_json::from_str(&tool_input_buffers[stop.index])
+                                && let Ok(value) =
+                                    serde_json::from_str(&tool_input_buffers[stop.index])
                             {
                                 *existing = value;
                             }
-                        },
+                        }
                         "message_delta" => {
                             let delta_event: MessageDeltaEvent =
                                 serde_json::from_value(value.clone()).map_err(|e| {
@@ -318,10 +363,14 @@ impl LlmClient for AnthropicAdapter {
                                 // returns cache and reasoning tokens in the same
                                 // usage object — parse those from the raw JSON.
                                 let usage_json = &value["usage"];
-                                let cache_hit =
-                                    usage_json["prompt_cache_hit_tokens"].as_u64().map(|n| n as u32).unwrap_or(0);
-                                let cache_miss =
-                                    usage_json["prompt_cache_miss_tokens"].as_u64().map(|n| n as u32).unwrap_or(0);
+                                let cache_hit = usage_json["prompt_cache_hit_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
+                                let cache_miss = usage_json["prompt_cache_miss_tokens"]
+                                    .as_u64()
+                                    .map(|n| n as u32)
+                                    .unwrap_or(0);
                                 let reasoning = usage_json["completion_tokens_details"]
                                     .get("reasoning_tokens")
                                     .and_then(|v| v.as_u64())
@@ -340,23 +389,26 @@ impl LlmClient for AnthropicAdapter {
                                 }
                                 token_usage = Some(info);
                             }
-                        },
+                        }
                         "message_stop" => break,
-                        "ping" => {},
+                        "ping" => {}
                         "error" => {
-                            let err: StreamErrorEvent = serde_json::from_value(value).map_err(|e| {
-                                LlmError::Anthropic(MessageError::ApiError(format!("Failed to parse error event: {e}")))
-                            })?;
+                            let err: StreamErrorEvent =
+                                serde_json::from_value(value).map_err(|e| {
+                                    LlmError::Anthropic(MessageError::ApiError(format!(
+                                        "Failed to parse error event: {e}"
+                                    )))
+                                })?;
                             return Err(LlmError::Anthropic(MessageError::ApiError(format!(
                                 "stream error: {} - {}",
                                 err.error.type_, err.error.message
                             ))));
-                        },
+                        }
                         other => {
                             tracing::warn!("Unknown Anthropic SSE event type: {}", other);
-                        },
+                        }
                     }
-                },
+                }
             }
         }
 
@@ -366,8 +418,15 @@ impl LlmClient for AnthropicAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<crate::LlmRequestBody>), LlmError>
-    {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<crate::LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         let body = self.prepare_body(request, false)?;
 
         let json_body = serde_json::to_vec(&body).unwrap();
@@ -384,7 +443,9 @@ impl LlmClient for AnthropicAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let body_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Anthropic(MessageError::ApiError(format!("HTTP {status}: {body_text}"))));
+            return Err(LlmError::Anthropic(MessageError::ApiError(format!(
+                "HTTP {status}: {body_text}"
+            ))));
         }
 
         #[derive(Deserialize)]
@@ -395,10 +456,11 @@ impl LlmClient for AnthropicAdapter {
             usage: Option<serde_json::Value>,
         }
 
-        let payload: CreateMessageResponse = response
-            .json()
-            .await
-            .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format!("Failed to parse response: {e}"))))?;
+        let payload: CreateMessageResponse = response.json().await.map_err(|e| {
+            LlmError::Anthropic(MessageError::ApiError(format!(
+                "Failed to parse response: {e}"
+            )))
+        })?;
 
         let token_usage = payload.usage.as_ref().and_then(|raw| {
             let prompt = raw["input_tokens"].as_u64().map(|n| n as u32)?;
@@ -407,8 +469,14 @@ impl LlmClient for AnthropicAdapter {
                 prompt,
                 completion,
                 total: prompt + completion,
-                prompt_cache_hit_tokens: raw["prompt_cache_hit_tokens"].as_u64().map(|n| n as u32).unwrap_or(0),
-                prompt_cache_miss_tokens: raw["prompt_cache_miss_tokens"].as_u64().map(|n| n as u32).unwrap_or(0),
+                prompt_cache_hit_tokens: raw["prompt_cache_hit_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
+                prompt_cache_miss_tokens: raw["prompt_cache_miss_tokens"]
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(0),
                 reasoning_tokens: raw["completion_tokens_details"]
                     .get("reasoning_tokens")
                     .and_then(|v| v.as_u64())
@@ -417,7 +485,12 @@ impl LlmClient for AnthropicAdapter {
             })
         });
 
-        Ok((payload.content, parse_stop_reason(payload.stop_reason), token_usage, Some(json_body)))
+        Ok((
+            payload.content,
+            parse_stop_reason(payload.stop_reason),
+            token_usage,
+            Some(json_body),
+        ))
     }
 }
 
@@ -427,18 +500,39 @@ mod tests {
 
     #[test]
     fn parse_stop_reason_handles_known_values() {
-        assert_eq!(parse_stop_reason(Some("pause_turn".to_string())), Some(StopReason::PauseTurn));
-        assert_eq!(parse_stop_reason(Some("end_turn".to_string())), Some(StopReason::EndTurn));
-        assert_eq!(parse_stop_reason(Some("tool_use".to_string())), Some(StopReason::ToolUse));
-        assert_eq!(parse_stop_reason(Some("refusal".to_string())), Some(StopReason::Refusal));
-        assert_eq!(parse_stop_reason(Some("model_context_window_exceeded".to_string())), Some(StopReason::MaxTokens));
-        assert_eq!(parse_stop_reason(Some("brand_new".to_string())), Some(StopReason::Unknown("brand_new".into())));
+        assert_eq!(
+            parse_stop_reason(Some("pause_turn".to_string())),
+            Some(StopReason::PauseTurn)
+        );
+        assert_eq!(
+            parse_stop_reason(Some("end_turn".to_string())),
+            Some(StopReason::EndTurn)
+        );
+        assert_eq!(
+            parse_stop_reason(Some("tool_use".to_string())),
+            Some(StopReason::ToolUse)
+        );
+        assert_eq!(
+            parse_stop_reason(Some("refusal".to_string())),
+            Some(StopReason::Refusal)
+        );
+        assert_eq!(
+            parse_stop_reason(Some("model_context_window_exceeded".to_string())),
+            Some(StopReason::MaxTokens)
+        );
+        assert_eq!(
+            parse_stop_reason(Some("brand_new".to_string())),
+            Some(StopReason::Unknown("brand_new".into()))
+        );
         assert_eq!(parse_stop_reason(None), None);
     }
 
     #[test]
     fn thinking_start_events_empty_initial() {
-        assert!(matches!(thinking_start_events("").as_slice(), [ThinkingChunk::Started]));
+        assert!(matches!(
+            thinking_start_events("").as_slice(),
+            [ThinkingChunk::Started]
+        ));
     }
 
     #[test]
@@ -456,7 +550,9 @@ mod tests {
             thinking: String::new(),
             signature: String::new(),
         })));
-        assert!(!is_thinking_content_block(Some(&ContentBlock::Text { text: "hi".into() })));
+        assert!(!is_thinking_content_block(Some(&ContentBlock::Text {
+            text: "hi".into()
+        })));
         assert!(!is_thinking_content_block(None));
     }
 }

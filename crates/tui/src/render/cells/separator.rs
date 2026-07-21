@@ -26,7 +26,9 @@ impl TaskEndSeparator {
     }
 
     fn dashed_line(width: u16) -> String {
-        (0..width as usize).map(|i| if i % 2 == 0 { '─' } else { ' ' }).collect()
+        (0..width as usize)
+            .map(|i| if i % 2 == 0 { '─' } else { ' ' })
+            .collect()
     }
 }
 
@@ -58,7 +60,10 @@ pub(crate) struct MessageSeparator {
 
 impl MessageSeparator {
     pub(crate) fn new(label: String, fg: Color) -> Self {
-        Self { _label: label, _fg: fg }
+        Self {
+            _label: label,
+            _fg: fg,
+        }
     }
 }
 
@@ -92,8 +97,13 @@ mod render_tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
         sep.render(area, &mut buf);
-        let text: String = (0..area.width).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(text.contains('─'), "task end separator should draw dashes, got: {text}");
+        let text: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            text.contains('─'),
+            "task end separator should draw dashes, got: {text}"
+        );
     }
 
     #[test]
@@ -103,7 +113,12 @@ mod render_tests {
         let mut buf = Buffer::empty(area);
         sep.render(area, &mut buf);
         assert_eq!(sep.height(10), 1);
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(rendered.trim().is_empty(), "message separator row should stay visually blank");
+        let rendered: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            rendered.trim().is_empty(),
+            "message separator row should stay visually blank"
+        );
     }
 }

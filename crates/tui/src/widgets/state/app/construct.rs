@@ -11,9 +11,9 @@ use crate::{
     i18n::Language,
     theme::Theme,
     widgets::state::{
-        AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll, MouseState, PlanPanel,
-        SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status, StatusBarState, StreamState, ThinkingState,
-        ToolState,
+        AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
+        MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
+        StatusBarState, StreamState, ThinkingState, ToolState,
     },
 };
 
@@ -47,8 +47,12 @@ impl App {
             match (cwd, home) {
                 (Some(p), Some(h)) => {
                     let path = p.to_string_lossy().to_string();
-                    if path.starts_with(&h) { format!("~{}", &path[h.len()..]) } else { path }
-                },
+                    if path.starts_with(&h) {
+                        format!("~{}", &path[h.len()..])
+                    } else {
+                        path
+                    }
+                }
                 (Some(p), None) => p.to_string_lossy().to_string(),
                 _ => "?".to_string(),
             }
@@ -105,9 +109,9 @@ impl App {
             account: AccountState::default(),
             skills_description,
             skills_data,
-            skill_registry: std::sync::Arc::new(std::sync::Mutex::new(tact::skill::SkillRegistry::new(
-                std::iter::empty::<std::path::PathBuf>(),
-            ))),
+            skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
+                tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
+            )),
             session_store: None,
             spinner_frame: 0,
             loading_idx: None,
@@ -123,7 +127,8 @@ impl App {
     /// entries in the current directory only; directories can be entered to
     /// browse their contents.
     pub(crate) fn open_file_picker(&mut self) {
-        self.file_picker.set_dir(self.work_dir.clone(), self.work_dir.clone());
+        self.file_picker
+            .set_dir(self.work_dir.clone(), self.work_dir.clone());
         self.input_mode = InputMode::FilePicker;
     }
 }

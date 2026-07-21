@@ -16,14 +16,18 @@ use crate::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LspInput {
-    #[schemars(description = "The LSP action: hover, definition, references, symbols, or diagnostics.")]
+    #[schemars(
+        description = "The LSP action: hover, definition, references, symbols, or diagnostics."
+    )]
     pub action: String,
     #[schemars(description = "Absolute or working-directory-relative path to the source file.")]
     pub file: String,
     #[schemars(description = "1-based line number (required for hover, definition, references).")]
     #[serde(default)]
     pub line: Option<u32>,
-    #[schemars(description = "1-based column number (required for hover, definition, references).")]
+    #[schemars(
+        description = "1-based column number (required for hover, definition, references)."
+    )]
     #[serde(default)]
     pub column: Option<u32>,
 }
@@ -41,7 +45,9 @@ pub async fn query_lsp(ctx: ToolContext, input: LspInput) -> Result<String> {
     let column = input.column.unwrap_or(1);
 
     // Resolve to an absolute path within the workspace.
-    let file_path = safe_path(&ctx.work_dir, &file_raw)?.to_string_lossy().into_owned();
+    let file_path = safe_path(&ctx.work_dir, &file_raw)?
+        .to_string_lossy()
+        .into_owned();
 
     // Seed the global LSP manager from the default config file
     let lsp_manager_arc = lsp::global_lsp_manager();
@@ -85,34 +91,47 @@ pub async fn query_lsp(ctx: ToolContext, input: LspInput) -> Result<String> {
             };
             match result {
                 Ok(Some(text)) => Ok(text),
-                Ok(None) => Ok(format!("No hover information at {}:{}:{}", file_path, line, column)),
+                Ok(None) => Ok(format!(
+                    "No hover information at {}:{}:{}",
+                    file_path, line, column
+                )),
                 Err(e) => Err(anyhow::anyhow!("hover failed: {}", e)),
             }
-        },
+        }
 
         "definition" => {
             let result = {
                 let mut manager = lsp_manager_arc.lock().await;
-                manager.definition(&file_path, &ctx.work_dir, line, column).await
+                manager
+                    .definition(&file_path, &ctx.work_dir, line, column)
+                    .await
             };
             match result {
-                Ok(locs) if locs.is_empty() => Ok(format!("No definition found at {}:{}:{}", file_path, line, column)),
+                Ok(locs) if locs.is_empty() => Ok(format!(
+                    "No definition found at {}:{}:{}",
+                    file_path, line, column
+                )),
                 Ok(locs) => Ok(locs.join("\n")),
                 Err(e) => Err(anyhow::anyhow!("definition failed: {}", e)),
             }
-        },
+        }
 
         "references" => {
             let result = {
                 let mut manager = lsp_manager_arc.lock().await;
-                manager.references(&file_path, &ctx.work_dir, line, column).await
+                manager
+                    .references(&file_path, &ctx.work_dir, line, column)
+                    .await
             };
             match result {
-                Ok(locs) if locs.is_empty() => Ok(format!("No references found at {}:{}:{}", file_path, line, column)),
+                Ok(locs) if locs.is_empty() => Ok(format!(
+                    "No references found at {}:{}:{}",
+                    file_path, line, column
+                )),
                 Ok(locs) => Ok(format!("{} reference(s):\n{}", locs.len(), locs.join("\n"))),
                 Err(e) => Err(anyhow::anyhow!("references failed: {}", e)),
             }
-        },
+        }
 
         "symbols" => {
             let result = {
@@ -124,7 +143,7 @@ pub async fn query_lsp(ctx: ToolContext, input: LspInput) -> Result<String> {
                 Ok(syms) => Ok(syms.join("\n")),
                 Err(e) => Err(anyhow::anyhow!("symbols failed: {}", e)),
             }
-        },
+        }
 
         "diagnostics" => {
             // Give the server a short window to deliver diagnostics
@@ -141,7 +160,7 @@ pub async fn query_lsp(ctx: ToolContext, input: LspInput) -> Result<String> {
 
             let output = LspManager::format_diagnostics(&diagnostics);
             Ok(output)
-        },
+        }
 
         other => Err(anyhow::anyhow!(
             "Unknown action '{}'. Valid actions: hover, definition, references, symbols, diagnostics",

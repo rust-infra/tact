@@ -47,9 +47,11 @@ pub struct StoreRoot {
 impl StoreRoot {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        fs::create_dir_all(&root).with_context(|| format!("failed to create store root {}", root.display()))?;
-        let root =
-            root.canonicalize().with_context(|| format!("failed to canonicalize store root {}", root.display()))?;
+        fs::create_dir_all(&root)
+            .with_context(|| format!("failed to create store root {}", root.display()))?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize store root {}", root.display()))?;
         Ok(Self { root })
     }
 
@@ -59,7 +61,8 @@ impl StoreRoot {
 
     pub fn collection<T>(&self, relative_dir: &str) -> Result<CollectionStore<T>> {
         let dir = self.resolve(relative_dir, true)?;
-        fs::create_dir_all(&dir).with_context(|| format!("failed to create collection {}", dir.display()))?;
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create collection {}", dir.display()))?;
         Ok(CollectionStore::new(dir))
     }
 
@@ -71,13 +74,19 @@ impl StoreRoot {
 
         let candidate = self.root.join(path);
         let resolved = if candidate.exists() || !allow_missing {
-            candidate.canonicalize().with_context(|| format!("failed to canonicalize {}", candidate.display()))?
+            candidate
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize {}", candidate.display()))?
         } else {
             let parent = candidate.parent().context("store path has no parent")?;
-            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-            let parent =
-                parent.canonicalize().with_context(|| format!("failed to canonicalize {}", parent.display()))?;
-            let file_name = candidate.file_name().context("store path has no file name")?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+            let parent = parent
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize {}", parent.display()))?;
+            let file_name = candidate
+                .file_name()
+                .context("store path has no file name")?;
             parent.join(file_name)
         };
 
@@ -100,7 +109,10 @@ pub struct Store<T> {
 
 impl<T> Store<T> {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), _marker: PhantomData }
+        Self {
+            path: path.into(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -109,17 +121,24 @@ where
     T: Serialize + DeserializeOwned,
 {
     pub fn read(&self) -> Result<T> {
-        let raw = fs::read_to_string(&self.path).with_context(|| format!("failed to read {}", self.path.display()))?;
-        serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", self.path.display()))
+        let raw = fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read {}", self.path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {}", self.path.display()))
     }
 
     pub fn write(&self, value: &T) -> Result<WriteOutcome> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let content = format!("{}\n", serde_json::to_string_pretty(value)?);
-        fs::write(&self.path, &content).with_context(|| format!("failed to write {}", self.path.display()))?;
-        Ok(WriteOutcome { path: self.path.clone(), bytes: content.len() })
+        fs::write(&self.path, &content)
+            .with_context(|| format!("failed to write {}", self.path.display()))?;
+        Ok(WriteOutcome {
+            path: self.path.clone(),
+            bytes: content.len(),
+        })
     }
 
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> Result<R>) -> Result<R> {
@@ -133,7 +152,8 @@ where
         use std::io::Write;
 
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let content = format!("{}\n", serde_json::to_string(value)?);
         let mut file = fs::OpenOptions::new()
@@ -141,29 +161,42 @@ where
             .append(true)
             .open(&self.path)
             .with_context(|| format!("failed to open {}", self.path.display()))?;
-        file.write_all(content.as_bytes()).with_context(|| format!("failed to append {}", self.path.display()))?;
-        Ok(WriteOutcome { path: self.path.clone(), bytes: content.len() })
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("failed to append {}", self.path.display()))?;
+        Ok(WriteOutcome {
+            path: self.path.clone(),
+            bytes: content.len(),
+        })
     }
 
     pub fn read_all(&self) -> Result<Vec<T>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let raw = fs::read_to_string(&self.path).with_context(|| format!("failed to read {}", self.path.display()))?;
+        let raw = fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read {}", self.path.display()))?;
         raw.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
-                serde_json::from_str(line).with_context(|| format!("failed to parse line in {}", self.path.display()))
+                serde_json::from_str(line)
+                    .with_context(|| format!("failed to parse line in {}", self.path.display()))
             })
             .collect()
     }
 
     pub fn delete(&self) -> Result<DeleteOutcome> {
         if !self.path.exists() {
-            return Ok(DeleteOutcome { path: self.path.clone(), existed: false });
+            return Ok(DeleteOutcome {
+                path: self.path.clone(),
+                existed: false,
+            });
         }
-        fs::remove_file(&self.path).with_context(|| format!("failed to delete {}", self.path.display()))?;
-        Ok(DeleteOutcome { path: self.path.clone(), existed: true })
+        fs::remove_file(&self.path)
+            .with_context(|| format!("failed to delete {}", self.path.display()))?;
+        Ok(DeleteOutcome {
+            path: self.path.clone(),
+            existed: true,
+        })
     }
 
     pub fn exists(&self) -> bool {
@@ -183,7 +216,10 @@ pub struct CollectionStore<T> {
 
 impl<T> CollectionStore<T> {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into(), _marker: PhantomData }
+        Self {
+            dir: dir.into(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -217,7 +253,9 @@ where
         }
 
         let mut values = Vec::new();
-        for entry in fs::read_dir(&self.dir).with_context(|| format!("failed to read {}", self.dir.display()))? {
+        for entry in fs::read_dir(&self.dir)
+            .with_context(|| format!("failed to read {}", self.dir.display()))?
+        {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -255,12 +293,23 @@ mod tests {
 
     #[test]
     fn store_round_trips_json() {
-        let root =
-            StoreRoot::new(std::env::temp_dir().join(format!("tact-store-test-{}", std::process::id()))).unwrap();
+        let root = StoreRoot::new(
+            std::env::temp_dir().join(format!("tact-store-test-{}", std::process::id())),
+        )
+        .unwrap();
         let store = root.file::<Item>("items/one.json").unwrap();
 
-        store.write(&Item { value: "hello".to_string() }).unwrap();
+        store
+            .write(&Item {
+                value: "hello".to_string(),
+            })
+            .unwrap();
 
-        assert_eq!(store.read().unwrap(), Item { value: "hello".to_string() });
+        assert_eq!(
+            store.read().unwrap(),
+            Item {
+                value: "hello".to_string()
+            }
+        );
     }
 }

@@ -4,7 +4,9 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use tact_protocol::{StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream};
+use tact_protocol::{
+    StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+};
 
 use crate::{i18n::Messages, theme::Theme};
 
@@ -70,7 +72,7 @@ pub fn tool_display_name(tool: &str) -> String {
                     Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 }
             }
-        },
+        }
     }
 }
 
@@ -157,7 +159,10 @@ fn truncate_tool_error(error: &str) -> String {
     if one_line.chars().count() <= MAX_CHARS {
         one_line
     } else {
-        format!("{}…", one_line.chars().take(MAX_CHARS - 1).collect::<String>())
+        format!(
+            "{}…",
+            one_line.chars().take(MAX_CHARS - 1).collect::<String>()
+        )
     }
 }
 
@@ -193,7 +198,11 @@ pub(crate) fn tool_visual_rows(
     card_only: bool,
 ) -> usize {
     if card_only {
-        if has_detail_card { 1 + tool_card_inner_rows(preview_len, total_lines) + 1 } else { 0 }
+        if has_detail_card {
+            1 + tool_card_inner_rows(preview_len, total_lines) + 1
+        } else {
+            0
+        }
     } else if has_detail_card {
         TOOL_HEADER_ROWS + 1 + tool_card_inner_rows(preview_len, total_lines) + 1
     } else {
@@ -228,7 +237,12 @@ pub struct ToolRenderOutput {
 
 impl ToolRenderOutput {
     pub fn visual_rows(&self, card_only: bool) -> usize {
-        tool_visual_rows(self.layout.has_detail_card, self.detail_preview.len(), self.detail_total_lines, card_only)
+        tool_visual_rows(
+            self.layout.has_detail_card,
+            self.detail_preview.len(),
+            self.detail_total_lines,
+            card_only,
+        )
     }
 
     pub fn message_placeholder_rows(&self) -> usize {
@@ -353,15 +367,27 @@ impl<'a> ToolWidget<'a> {
         let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
         // ask_user answers compress onto the meta row (same slot as permission labels),
         // not a separate detail card line.
-        let ask_user_label =
-            (!failed && result.tool == "ask_user").then(|| compact_ask_user_meta(&result.message)).flatten();
-        let arg_full = result.arg_full.clone().unwrap_or_else(|| result.arg_summary.clone());
-        let detail = result
-            .detail
+        let ask_user_label = (!failed && result.tool == "ask_user")
+            .then(|| compact_ask_user_meta(&result.message))
+            .flatten();
+        let arg_full = result
+            .arg_full
             .clone()
-            .or_else(|| if failed && !result.message.is_empty() { Some(result.message.clone()) } else { None });
-        let detail =
-            detail.map(|detail| if failed { detail } else { command_detail(&result.tool, &arg_full, &detail) });
+            .unwrap_or_else(|| result.arg_summary.clone());
+        let detail = result.detail.clone().or_else(|| {
+            if failed && !result.message.is_empty() {
+                Some(result.message.clone())
+            } else {
+                None
+            }
+        });
+        let detail = detail.map(|detail| {
+            if failed {
+                detail
+            } else {
+                command_detail(&result.tool, &arg_full, &detail)
+            }
+        });
         let permission_label = match (result.permission_label.clone(), ask_user_label) {
             // Permission Ask then ask_user choice — keep both on the meta row.
             (Some(perm), Some(choice)) => Some(format!("{perm} · {choice}")),
@@ -393,26 +419,43 @@ impl<'a> ToolWidget<'a> {
         let base = match display_kind(&self.tool_name) {
             ToolDisplayKind::Command => {
                 let label = self.tool_name.to_lowercase();
-                if self.arg_summary.is_empty() { label } else { format!("{label} ({})", self.arg_summary) }
-            },
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label} ({})", self.arg_summary)
+                }
+            }
             _ => {
                 let label = tool_display_name(&self.tool_name);
-                if self.arg_summary.is_empty() { label } else { format!("{label}  {}", self.arg_summary) }
-            },
+                if self.arg_summary.is_empty() {
+                    label
+                } else {
+                    format!("{label}  {}", self.arg_summary)
+                }
+            }
         };
 
-        if let Some(idx) = self.step_index { format!("{}. {}", idx + 1, base) } else { base }
+        if let Some(idx) = self.step_index {
+            format!("{}. {}", idx + 1, base)
+        } else {
+            base
+        }
     }
 
     pub fn title_line(&self) -> Line<'static> {
-        Line::from(Span::styled(self.title_text(), Style::default().fg(self.theme.fg).add_modifier(Modifier::BOLD)))
+        Line::from(Span::styled(
+            self.title_text(),
+            Style::default()
+                .fg(self.theme.fg)
+                .add_modifier(Modifier::BOLD),
+        ))
     }
 
     pub fn size_bytes(&self) -> Option<usize> {
         match display_kind(&self.tool_name) {
             ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead | ToolDisplayKind::FileEdit => {
                 self.detail.as_ref().map(|d| d.len()).filter(|len| *len > 0)
-            },
+            }
             _ => None,
         }
     }
@@ -433,10 +476,18 @@ impl<'a> ToolWidget<'a> {
             };
         }
 
-        let total_lines = self.detail_total_lines.unwrap_or_else(|| detail.lines().count());
-        let preview_cap =
-            if matches!(self.phase, ToolPhase::Failed) { ERROR_PREVIEW_LINES } else { self.preview_lines };
-        let preview_count = self.detail_lines.as_ref().map_or_else(|| total_lines.min(preview_cap), Vec::len);
+        let total_lines = self
+            .detail_total_lines
+            .unwrap_or_else(|| detail.lines().count());
+        let preview_cap = if matches!(self.phase, ToolPhase::Failed) {
+            ERROR_PREVIEW_LINES
+        } else {
+            self.preview_lines
+        };
+        let preview_count = self
+            .detail_lines
+            .as_ref()
+            .map_or_else(|| total_lines.min(preview_cap), Vec::len);
         ToolLayout {
             visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
@@ -446,8 +497,10 @@ impl<'a> ToolWidget<'a> {
 
     pub fn build(&self) -> ToolRenderOutput {
         let layout = self.layout();
-        let use_diff_gutter =
-            matches!(display_kind(&self.tool_name), ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit);
+        let use_diff_gutter = matches!(
+            display_kind(&self.tool_name),
+            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit
+        );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
             let lines: Vec<ToolOutputLine> = self.detail_lines.clone().unwrap_or_else(|| {
@@ -455,13 +508,23 @@ impl<'a> ToolWidget<'a> {
                     .lines()
                     .take(self.max_detail_lines)
                     .map(|line| ToolOutputLine {
-                        spans: vec![ToolOutputSpan { stream: ToolOutputStream::Other, text: line.to_string() }],
+                        spans: vec![ToolOutputSpan {
+                            stream: ToolOutputStream::Other,
+                            text: line.to_string(),
+                        }],
                     })
                     .collect()
             });
-            let total = self.detail_total_lines.unwrap_or_else(|| detail.lines().count());
+            let total = self
+                .detail_total_lines
+                .unwrap_or_else(|| detail.lines().count());
             let preview = if matches!(display_kind(&self.tool_name), ToolDisplayKind::Command) {
-                let mut tail: Vec<_> = lines.iter().rev().take(layout.preview_lines).cloned().collect();
+                let mut tail: Vec<_> = lines
+                    .iter()
+                    .rev()
+                    .take(layout.preview_lines)
+                    .cloned()
+                    .collect();
                 tail.reverse();
                 tail
             } else {
@@ -492,19 +555,30 @@ impl<'a> ToolWidget<'a> {
             tool_name: self.tool_name.clone(),
             use_diff_gutter,
             arg_summary: self.arg_summary.clone(),
-            arg_full: if self.arg_full.is_empty() { self.arg_summary.clone() } else { self.arg_full.clone() },
+            arg_full: if self.arg_full.is_empty() {
+                self.arg_summary.clone()
+            } else {
+                self.arg_full.clone()
+            },
             layout,
             detail_title,
             detail_preview,
             detail_total_lines,
-            detail_full: if has_detail_card { self.display_detail().map(str::to_string) } else { None },
+            detail_full: if has_detail_card {
+                self.display_detail().map(str::to_string)
+            } else {
+                None
+            },
             card_bottom,
         }
     }
 
     fn display_detail(&self) -> Option<&str> {
         if matches!(self.phase, ToolPhase::Failed) {
-            self.detail.as_deref().or(self.error_message.as_deref()).filter(|s| !s.is_empty())
+            self.detail
+                .as_deref()
+                .or(self.error_message.as_deref())
+                .filter(|s| !s.is_empty())
         } else {
             self.detail.as_deref().filter(|s| !s.is_empty())
         }
@@ -532,7 +606,10 @@ impl<'a> ToolWidget<'a> {
 
     fn detail_card_title(&self, total_lines: usize) -> String {
         if self.live_detail {
-            return self.msgs.tool_live_output_title_tmpl.replace("{}", &total_lines.to_string());
+            return self
+                .msgs
+                .tool_live_output_title_tmpl
+                .replace("{}", &total_lines.to_string());
         }
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
@@ -545,7 +622,7 @@ impl<'a> ToolWidget<'a> {
                 .replacen("{}", &self.arg_summary, 1),
             ToolDisplayKind::FileRead => {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
-            },
+            }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
             ToolDisplayKind::Generic => format!("{} output", self.tool_name),
         }
@@ -568,7 +645,10 @@ mod tests {
 
     fn fixture() -> (Theme, Messages) {
         let theme_name = ThemeName::from_str("retro").unwrap();
-        (Theme::from(theme_name), Messages::by_language(Language::English))
+        (
+            Theme::from(theme_name),
+            Messages::by_language(Language::English),
+        )
     }
 
     #[test]
@@ -599,8 +679,17 @@ mod tests {
 
         assert!(output.layout.has_detail_card);
         assert_eq!(output.detail_preview.len(), 2);
-        assert!(output.detail_title.as_deref().unwrap().contains("Live output"));
-        assert_eq!(output.detail_preview[1].spans[0].stream, tact_protocol::ToolOutputStream::Stderr);
+        assert!(
+            output
+                .detail_title
+                .as_deref()
+                .unwrap()
+                .contains("Live output")
+        );
+        assert_eq!(
+            output.detail_preview[1].spans[0].stream,
+            tact_protocol::ToolOutputStream::Stderr
+        );
     }
 
     #[test]
@@ -623,7 +712,10 @@ mod tests {
             "live card count must match streamed output lines, not $ command prefix"
         );
         assert_eq!(output.detail_preview.len(), 2);
-        assert_eq!(output.detail_title.as_deref(), Some("Live output (2 lines)"));
+        assert_eq!(
+            output.detail_title.as_deref(),
+            Some("Live output (2 lines)")
+        );
         assert_eq!(
             output.detail_full.as_deref(),
             Some(
@@ -683,10 +775,16 @@ mod tests {
             .with_phase(ToolPhase::Failed)
             .with_message("hook blocked execution")
             .build();
-        assert_eq!(output.error_message.as_deref(), Some("hook blocked execution"));
+        assert_eq!(
+            output.error_message.as_deref(),
+            Some("hook blocked execution")
+        );
         assert!(output.layout.has_detail_card);
         assert_eq!(output.layout.preview_lines, 1);
-        assert_eq!(output.detail_preview[0].plain_text(), "hook blocked execution");
+        assert_eq!(
+            output.detail_preview[0].plain_text(),
+            "hook blocked execution"
+        );
     }
 
     #[test]
@@ -707,7 +805,10 @@ mod tests {
     #[test]
     fn write_file_builds_detail_card_layout() {
         let (theme, msgs) = fixture();
-        let detail = (0..15).map(|i| format!("line-{i}")).collect::<Vec<_>>().join("\n");
+        let detail = (0..15)
+            .map(|i| format!("line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let widget = ToolWidget::new(&theme, &msgs)
             .with_tool("write_file")
             .with_arg_summary("a.rs")
@@ -718,7 +819,10 @@ mod tests {
         assert!(output.layout.has_detail_card);
         assert!(output.use_diff_gutter);
         assert_eq!(output.layout.preview_lines, DEFAULT_PREVIEW_LINES);
-        assert_eq!(output.layout.visual_rows, tool_visual_rows(true, DEFAULT_PREVIEW_LINES, 15, false));
+        assert_eq!(
+            output.layout.visual_rows,
+            tool_visual_rows(true, DEFAULT_PREVIEW_LINES, 15, false)
+        );
     }
 
     #[test]
@@ -771,7 +875,10 @@ mod tests {
         let output = widget.build();
 
         assert_eq!(output.duration_us, Some(1_200_000));
-        assert_eq!(output.permission_label.as_deref(), Some("Always allow this tool"));
+        assert_eq!(
+            output.permission_label.as_deref(),
+            Some("Always allow this tool")
+        );
         assert!(output.layout.has_detail_card);
     }
 
@@ -791,8 +898,14 @@ mod tests {
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
 
-        assert_eq!(output.permission_label.as_deref(), Some("Selected: C. Ø ( 不加冠词 )"));
-        assert!(!output.layout.has_detail_card, "selection must not open a detail card");
+        assert_eq!(
+            output.permission_label.as_deref(),
+            Some("Selected: C. Ø ( 不加冠词 )")
+        );
+        assert!(
+            !output.layout.has_detail_card,
+            "selection must not open a detail card"
+        );
         let meta = build_meta_text(
             output.phase,
             output.permission_label.as_deref(),
@@ -825,7 +938,10 @@ mod tests {
             permission_label: Some("Allow once".to_string()),
         };
         let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
-        assert_eq!(output.permission_label.as_deref(), Some("Allow once · Selected: B. the"));
+        assert_eq!(
+            output.permission_label.as_deref(),
+            Some("Allow once · Selected: B. the")
+        );
     }
 
     #[test]
@@ -841,7 +957,13 @@ mod tests {
         let output = widget.build();
         assert!(output.layout.has_detail_card);
         assert!(output.use_diff_gutter);
-        assert!(output.detail_title.as_deref().unwrap().contains("src/lib.rs"));
+        assert!(
+            output
+                .detail_title
+                .as_deref()
+                .unwrap()
+                .contains("src/lib.rs")
+        );
         assert_eq!(output.detail_preview[0].plain_text(), "new line one");
     }
 

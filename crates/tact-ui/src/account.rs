@@ -95,14 +95,14 @@ pub fn spawn_poller(account_tx: UnboundedSender<AccountUpdate>) {
                     if account_tx.send(into_update(result)).is_err() {
                         break;
                     }
-                },
+                }
                 Err(AccountError::NotSupported) => break,
                 Err(err) => {
                     backoff = backoff.saturating_add(1);
                     if account_tx.send(AccountUpdate::Error(err)).is_err() {
                         break;
                     }
-                },
+                }
             }
         }
     });

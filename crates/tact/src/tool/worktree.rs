@@ -12,9 +12,16 @@ pub struct WorktreeCreateInput {
     pub base_ref: Option<String>,
 }
 
-#[tool(name = "worktree_create", description = "Create an isolated git worktree lane.")]
+#[tool(
+    name = "worktree_create",
+    description = "Create an isolated git worktree lane."
+)]
 pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Result<String> {
-    ctx.worktree_manager.create(input.name, input.task_id, input.base_ref.unwrap_or_else(|| "HEAD".to_string()))
+    ctx.worktree_manager.create(
+        input.name,
+        input.task_id,
+        input.base_ref.unwrap_or_else(|| "HEAD".to_string()),
+    )
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -30,7 +37,10 @@ pub struct WorktreeNameInput {
     pub name: String,
 }
 
-#[tool(name = "worktree_status", description = "Show git status for a worktree lane.")]
+#[tool(
+    name = "worktree_status",
+    description = "Show git status for a worktree lane."
+)]
 pub async fn worktree_status(ctx: ToolContext, input: WorktreeNameInput) -> Result<String> {
     ctx.worktree_manager.status(&input.name)
 }
@@ -41,7 +51,10 @@ pub struct WorktreeRunInput {
     pub command: String,
 }
 
-#[tool(name = "worktree_run", description = "Run one shell command inside a named worktree.")]
+#[tool(
+    name = "worktree_run",
+    description = "Run one shell command inside a named worktree."
+)]
 pub async fn worktree_run(ctx: ToolContext, input: WorktreeRunInput) -> Result<String> {
     ctx.worktree_manager.run(&input.name, &input.command)
 }
@@ -51,7 +64,10 @@ pub struct WorktreeEventsInput {
     pub limit: Option<usize>,
 }
 
-#[tool(name = "worktree_events", description = "List recent worktree lifecycle events.")]
+#[tool(
+    name = "worktree_events",
+    description = "List recent worktree lifecycle events."
+)]
 pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Result<String> {
     ctx.worktree_manager.events(input.limit.unwrap_or(20))
 }
@@ -65,7 +81,14 @@ mod tests {
     async fn worktree_list_empty_by_default() {
         let context = test_context("worktree_list_empty_by_default");
 
-        let output = run_tool(&context, WorktreeListTool, "worktree_list", serde_json::json!({})).await.unwrap();
+        let output = run_tool(
+            &context,
+            WorktreeListTool,
+            "worktree_list",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output, "No worktrees.");
     }
@@ -74,8 +97,14 @@ mod tests {
     async fn worktree_events_empty_by_default() {
         let context = test_context("worktree_events_empty_by_default");
 
-        let output =
-            run_tool(&context, WorktreeEventsTool, "worktree_events", serde_json::json!({ "limit": 5 })).await.unwrap();
+        let output = run_tool(
+            &context,
+            WorktreeEventsTool,
+            "worktree_events",
+            serde_json::json!({ "limit": 5 }),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output, "");
     }

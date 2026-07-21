@@ -3,7 +3,10 @@ use tokio::{
     process::{ChildStdin, ChildStdout},
 };
 
-pub(crate) async fn send_message(writer: &mut BufWriter<ChildStdin>, body: &str) -> anyhow::Result<()> {
+pub(crate) async fn send_message(
+    writer: &mut BufWriter<ChildStdin>,
+    body: &str,
+) -> anyhow::Result<()> {
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
     writer.write_all(header.as_bytes()).await?;
     writer.write_all(body.as_bytes()).await?;
@@ -11,7 +14,9 @@ pub(crate) async fn send_message(writer: &mut BufWriter<ChildStdin>, body: &str)
     Ok(())
 }
 
-pub(crate) async fn read_message(reader: &mut BufReader<ChildStdout>) -> anyhow::Result<serde_json::Value> {
+pub(crate) async fn read_message(
+    reader: &mut BufReader<ChildStdout>,
+) -> anyhow::Result<serde_json::Value> {
     let mut content_length: usize = 0;
     loop {
         let mut line = String::new();

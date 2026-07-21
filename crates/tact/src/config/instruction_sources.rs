@@ -24,7 +24,12 @@ pub struct InstructionSources {
 
 impl Default for InstructionSources {
     fn default() -> Self {
-        Self { agents_md: true, claude_user: false, claude_project: false, claude_subdir: false }
+        Self {
+            agents_md: true,
+            claude_user: false,
+            claude_project: false,
+            claude_subdir: false,
+        }
     }
 }
 
@@ -38,7 +43,12 @@ impl InstructionSources {
             return Err("instruction_sources must not be empty".into());
         }
 
-        let mut out = Self { agents_md: false, claude_user: false, claude_project: false, claude_subdir: false };
+        let mut out = Self {
+            agents_md: false,
+            claude_user: false,
+            claude_project: false,
+            claude_subdir: false,
+        };
 
         for raw in values {
             let key = raw.trim();
@@ -51,7 +61,7 @@ impl InstructionSources {
                     out.claude_user = true;
                     out.claude_project = true;
                     out.claude_subdir = true;
-                },
+                }
                 "claude_md_user" => out.claude_user = true,
                 "claude_md_project" => out.claude_project = true,
                 "claude_md_subdir" => out.claude_subdir = true,
@@ -61,7 +71,7 @@ impl InstructionSources {
                          (expected agents_md, claude_md, claude_md_user, \
                          claude_md_project, or claude_md_subdir)"
                     ));
-                },
+                }
             }
         }
 
@@ -88,7 +98,8 @@ mod tests {
 
     #[test]
     fn claude_md_shorthand_enables_all_claude_paths() {
-        let s = InstructionSources::from_config(Some(vec!["agents_md".into(), "claude_md".into()])).unwrap();
+        let s = InstructionSources::from_config(Some(vec!["agents_md".into(), "claude_md".into()]))
+            .unwrap();
         assert!(s.agents_md);
         assert!(s.claude_user);
         assert!(s.claude_project);

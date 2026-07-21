@@ -85,7 +85,11 @@ impl TestApp {
         self.0.tools.popup.as_ref().and_then(|p| {
             p.cached_content
                 .clone()
-                .or_else(|| p.file_path.as_ref().and_then(|path| std::fs::read_to_string(path).ok()))
+                .or_else(|| {
+                    p.file_path
+                        .as_ref()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                })
                 .or_else(|| p.inline_content.clone())
         })
     }
@@ -162,7 +166,11 @@ pub struct HeadlessApp {
 
 impl HeadlessApp {
     pub fn new(agent_rx: UnboundedReceiver<AgentUpdate>, work_dir: PathBuf) -> Self {
-        Self { inner: make_headless_app(agent_rx, work_dir), auto_select: None, capture_frames: false }
+        Self {
+            inner: make_headless_app(agent_rx, work_dir),
+            auto_select: None,
+            capture_frames: false,
+        }
     }
 
     pub fn with_auto_select(mut self, choice: Option<usize>) -> Self {

@@ -38,7 +38,13 @@ fn lang_label(lang: &str) -> String {
 }
 
 /// Render code block card overlay.
-pub(crate) fn render_code_cards(frame: &mut Frame, area: Rect, app: &App, visual_scroll: usize, visible_height: usize) {
+pub(crate) fn render_code_cards(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    visual_scroll: usize,
+    visible_height: usize,
+) {
     let vs_cache = &app.log_scroll.visual_start_cache;
     for block in &app.code_blocks {
         let Some(start_logical) = app.phys_to_logical_fast(block.start_idx) else {
@@ -62,7 +68,11 @@ pub(crate) fn render_code_cards(frame: &mut Frame, area: Rect, app: &App, visual
             continue;
         }
 
-        let lang_label = if block.lang.is_empty() { "code".to_string() } else { lang_label(&block.lang) };
+        let lang_label = if block.lang.is_empty() {
+            "code".to_string()
+        } else {
+            lang_label(&block.lang)
+        };
         let total_styled = block.styled.len();
         let inner_h = (y_bot.saturating_sub(y_top).saturating_sub(2)) as usize;
         let shown = total_styled.min(inner_h);
@@ -74,21 +84,31 @@ pub(crate) fn render_code_cards(frame: &mut Frame, area: Rect, app: &App, visual
             .style(Style::default().bg(app.theme.code_card_bg()))
             .title(Span::styled(
                 format!(" {} ", lang_label),
-                Style::default().fg(app.theme.code_card_title_fg()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.theme.code_card_title_fg())
+                    .add_modifier(Modifier::BOLD),
             ))
             .title_bottom(if total_styled > shown {
                 Line::from(Span::styled(
-                    format!(" +{} lines | {}", total_styled - shown, msgs.code_card_bottom),
+                    format!(
+                        " +{} lines | {}",
+                        total_styled - shown,
+                        msgs.code_card_bottom
+                    ),
                     Style::default().fg(app.theme.muted_fg()),
                 ))
             } else {
-                Line::from(Span::styled(msgs.code_card_bottom, Style::default().fg(app.theme.muted_fg())))
+                Line::from(Span::styled(
+                    msgs.code_card_bottom,
+                    Style::default().fg(app.theme.muted_fg()),
+                ))
             });
 
         let card_area = Rect::new(
             area.x + 1 + crate::render::util::LOG_THINKING_INDENT,
             area.y + 1 + y_top,
-            area.width.saturating_sub(2 + crate::render::util::LOG_THINKING_INDENT),
+            area.width
+                .saturating_sub(2 + crate::render::util::LOG_THINKING_INDENT),
             y_bot - y_top,
         );
         frame.render_widget(Clear, card_area);
@@ -113,7 +133,10 @@ pub(crate) fn render_code_cards(frame: &mut Frame, area: Rect, app: &App, visual
                     Line::from(Span::styled(display, base_style))
                 })
                 .collect();
-            frame.render_widget(Paragraph::new(lines).style(Style::default().bg(app.theme.code_card_bg())), inner);
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(app.theme.code_card_bg())),
+                inner,
+            );
         }
     }
 }
@@ -129,7 +152,9 @@ mod overlay_tests {
     #[test]
     fn code_card_overlay_renders_language_and_body() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StreamChunk("```rust\nfn overlay_test() {}\n```\n".into()));
+        app.handle_agent_update(AgentUpdate::StreamChunk(
+            "```rust\nfn overlay_test() {}\n```\n".into(),
+        ));
         assert!(!app.code_blocks.is_empty());
 
         let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
@@ -144,13 +169,18 @@ mod overlay_tests {
             .expect("draw");
 
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("overlay_test"), "code overlay should render code body text, got:\n{text}");
+        assert!(
+            text.contains("overlay_test"),
+            "code overlay should render code body text, got:\n{text}"
+        );
     }
 
     #[test]
     fn code_card_starts_at_the_thinking_indent() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StreamChunk("```rust\nfn alignment_test() {}\n```\n".into()));
+        app.handle_agent_update(AgentUpdate::StreamChunk(
+            "```rust\nfn alignment_test() {}\n```\n".into(),
+        ));
         let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
 
         let backend = TestBackend::new(80, 18);
@@ -164,7 +194,9 @@ mod overlay_tests {
 
         let buffer = terminal.backend().buffer();
         let border_x = (0..buffer.area.height)
-            .find_map(|y| (0..buffer.area.width).find(|&x| matches!(buffer[(x, y)].symbol(), "╭" | "┌")))
+            .find_map(|y| {
+                (0..buffer.area.width).find(|&x| matches!(buffer[(x, y)].symbol(), "╭" | "┌"))
+            })
             .expect("code card top-left border");
         assert_eq!(
             border_x,

@@ -68,8 +68,14 @@ fn full_frame_log_only_without_plan_panel() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(!text.contains("Execution Plan"), "log-only mode should not render plan title, got:\n{text}");
-    assert!(text.contains("Log-only content"), "stream text should appear in log, got:\n{text}");
+    assert!(
+        !text.contains("Execution Plan"),
+        "log-only mode should not render plan title, got:\n{text}"
+    );
+    assert!(
+        text.contains("Log-only content"),
+        "stream text should appear in log, got:\n{text}"
+    );
 }
 
 #[test]
@@ -106,7 +112,10 @@ fn full_frame_failed_tool_shows_in_log() {
 
     let text = render_app_text(&mut app, 120, 30);
 
-    assert!(text.contains("read_file") || text.contains("missing.txt"), "failed tool card should render, got:\n{text}");
+    assert!(
+        text.contains("read_file") || text.contains("missing.txt"),
+        "failed tool card should render, got:\n{text}"
+    );
 }
 
 #[test]
@@ -118,28 +127,42 @@ fn full_frame_stream_and_task_complete() {
     assert!(matches!(app.status, Status::Done));
 
     let text = render_app_text(&mut app, 100, 24);
-    assert!(text.contains("Final answer text"), "completed stream should remain visible, got:\n{text}");
+    assert!(
+        text.contains("Final answer text"),
+        "completed stream should remain visible, got:\n{text}"
+    );
 }
 
 #[test]
 fn full_frame_thinking_then_stream() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("Let me think…".into())));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Let me think…".into(),
+    )));
     app.handle_agent_update(AgentUpdate::StreamChunk("Therefore: 42".into()));
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(text.contains("Therefore: 42"), "stream after thinking should render, got:\n{text}");
+    assert!(
+        text.contains("Therefore: 42"),
+        "stream after thinking should render, got:\n{text}"
+    );
 }
 
 #[test]
 fn full_frame_fatal_error_message() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other("provider timeout".into())));
+    app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
+        "provider timeout".into(),
+    )));
 
     let text = render_app_text(&mut app, 100, 24);
     assert!(
-        text.contains("provider timeout") || app.raw_messages.iter().any(|m| m.contains("provider timeout")),
+        text.contains("provider timeout")
+            || app
+                .raw_messages
+                .iter()
+                .any(|m| m.contains("provider timeout")),
         "fatal error should appear in frame, got:\n{text}"
     );
 }
@@ -150,7 +173,10 @@ fn full_frame_info_cancel_message() {
     app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
 
     let text = render_app_text(&mut app, 100, 20);
-    assert!(text.contains("Cancelling"), "info message should render in log, got:\n{text}");
+    assert!(
+        text.contains("Cancelling"),
+        "info message should render in log, got:\n{text}"
+    );
 }
 
 #[test]
@@ -206,7 +232,12 @@ fn full_frame_select_popup_wraps_long_prompt() {
     let prompt = "📝 对比题：He went to ___ school to pick up his daughter after ___ class.";
     app.handle_agent_update(AgentUpdate::RequestSelect {
         prompt: prompt.into(),
-        options: vec!["A. the ... the".into(), "B. Ø ... Ø".into(), "C. the ... Ø".into(), "D. Ø ... the".into()],
+        options: vec![
+            "A. the ... the".into(),
+            "B. Ø ... Ø".into(),
+            "C. the ... Ø".into(),
+            "D. Ø ... the".into(),
+        ],
         respond: tx,
         log_confirm: false,
     });
@@ -216,7 +247,10 @@ fn full_frame_select_popup_wraps_long_prompt() {
         text.contains("daughter") && text.contains("school"),
         "long select prompt should wrap in body (not truncate in title), got:\n{text}"
     );
-    assert!(text.contains("A. the") && text.contains("D. Ø"), "options should still render, got:\n{text}");
+    assert!(
+        text.contains("A. the") && text.contains("D. Ø"),
+        "options should still render, got:\n{text}"
+    );
 }
 
 #[test]
@@ -227,7 +261,10 @@ fn full_frame_palette_mode_command_line() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(text.contains("theme"), "palette cmd_line should render, got:\n{text}");
+    assert!(
+        text.contains("theme"),
+        "palette cmd_line should render, got:\n{text}"
+    );
 }
 
 #[test]
@@ -239,7 +276,10 @@ fn full_frame_insert_mode_shows_typed_input() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(text.contains("fix the bug"), "insert mode should show typed input, got:\n{text}");
+    assert!(
+        text.contains("fix the bug"),
+        "insert mode should show typed input, got:\n{text}"
+    );
 }
 
 #[test]
@@ -249,7 +289,10 @@ fn full_frame_help_panel_replaces_main() {
 
     let text = render_app_text(&mut app, 100, 30);
 
-    assert!(text.contains("Keyboard Shortcuts"), "help panel should render shortcuts header, got:\n{text}");
+    assert!(
+        text.contains("Keyboard Shortcuts"),
+        "help panel should render shortcuts header, got:\n{text}"
+    );
 }
 
 #[test]
@@ -283,10 +326,15 @@ fn plan_panel_direct_render_shows_steps() {
 
     let backend = TestBackend::new(60, 10);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal.draw(|frame| render_plan_panel(frame, Rect::new(0, 0, 60, 10), &mut app)).expect("draw");
+    terminal
+        .draw(|frame| render_plan_panel(frame, Rect::new(0, 0, 60, 10), &mut app))
+        .expect("draw");
 
     let text = buffer_text(terminal.backend().buffer());
-    assert!(text.contains("write tests") || text.contains("write_file"), "plan panel should list step, got:\n{text}");
+    assert!(
+        text.contains("write tests") || text.contains("write_file"),
+        "plan panel should list step, got:\n{text}"
+    );
 }
 
 #[test]
@@ -303,14 +351,18 @@ fn status_bar_executing_shows_progress_hint() {
         .expect("draw");
 
     let text = buffer_text(terminal.backend().buffer());
-    assert!(!text.trim().is_empty(), "executing status bar should not be blank, got:\n{text}");
+    assert!(
+        !text.trim().is_empty(),
+        "executing status bar should not be blank, got:\n{text}"
+    );
 }
 
 #[test]
 fn full_frame_skills_command_renders_table_with_separator() {
     let mut app = make_app();
     app.plan.visible = false;
-    app.skills_description = "- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能".to_string();
+    app.skills_description =
+        "- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能".to_string();
 
     execute_palette_command(&mut app, "skills");
     execute_palette_command(&mut app, "skills");
@@ -320,8 +372,14 @@ fn full_frame_skills_command_renders_table_with_separator() {
     // content checks that include Chinese.
     let compact = text.replace(' ', "");
     let title_count = text.matches("Available skills").count();
-    assert!(title_count >= 2, "two /skills invocations should both render, got:\n{text}");
-    assert!(text.contains("Skill") && text.contains("Description"), "skills table header should appear, got:\n{text}");
+    assert!(
+        title_count >= 2,
+        "two /skills invocations should both render, got:\n{text}"
+    );
+    assert!(
+        text.contains("Skill") && text.contains("Description"),
+        "skills table header should appear, got:\n{text}"
+    );
     assert!(
         text.contains("code-reviewer") && compact.contains("代码审查专家"),
         "skills table rows should appear, got:\n{text}"
@@ -330,12 +388,23 @@ fn full_frame_skills_command_renders_table_with_separator() {
         text.contains("demo-test") && compact.contains("测试skill加载功能"),
         "second skill row should appear, got:\n{text}"
     );
-    assert!(text.contains('|') && text.contains("---"), "skills output should look like a table, got:\n{text}");
+    assert!(
+        text.contains('|') && text.contains("---"),
+        "skills output should look like a table, got:\n{text}"
+    );
 
     // Consecutive blocks must not sit flush: blank log row between titles.
-    let title_idxs: Vec<_> =
-        app.raw_messages.iter().enumerate().filter_map(|(i, m)| m.contains("Available skills").then_some(i)).collect();
-    assert!(title_idxs.len() >= 2, "expected two skills titles in log, got: {:?}", app.raw_messages);
+    let title_idxs: Vec<_> = app
+        .raw_messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| m.contains("Available skills").then_some(i))
+        .collect();
+    assert!(
+        title_idxs.len() >= 2,
+        "expected two skills titles in log, got: {:?}",
+        app.raw_messages
+    );
     let between = &app.raw_messages[title_idxs[0]..=title_idxs[1]];
     assert!(
         between.iter().any(|m| m.is_empty()),

@@ -41,7 +41,11 @@ impl PluginStore {
     /// Loads marketplace state and restores the built-in official marketplace.
     pub fn load_marketplaces(&self) -> Result<MarketplaceState> {
         let path = self.home.root.join(MARKETPLACES_FILE);
-        let mut state = if path.exists() { read_json(&path)? } else { MarketplaceState::with_builtin() };
+        let mut state = if path.exists() {
+            read_json(&path)?
+        } else {
+            MarketplaceState::with_builtin()
+        };
         state.ensure_builtin();
         Ok(state)
     }
@@ -81,7 +85,10 @@ impl PluginStore {
                 }
 
                 let skills_dir = plugin_root.join("skills");
-                skills_dir.is_dir().then_some(PluginSkillRoot { plugin_id: plugin.id, skills_dir })
+                skills_dir.is_dir().then_some(PluginSkillRoot {
+                    plugin_id: plugin.id,
+                    skills_dir,
+                })
             })
             .collect())
     }
@@ -89,22 +96,30 @@ impl PluginStore {
     /// Commits installed state only after the staged candidate directory is valid.
     pub fn commit_install(&self, state: &InstalledState, candidate: &Path) -> Result<()> {
         if !candidate.is_dir() {
-            bail!("plugin install candidate is not a directory: {}", candidate.display());
+            bail!(
+                "plugin install candidate is not a directory: {}",
+                candidate.display()
+            );
         }
         write_json_atomically(&self.home.root.join(INSTALLED_FILE), state)
     }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read plugin state {}", path.display()))?;
-    serde_json::from_str(&content).with_context(|| format!("failed to parse plugin state {}", path.display()))
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read plugin state {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse plugin state {}", path.display()))
 }
 
 fn write_json_atomically<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().context("plugin state path has no parent")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create plugin state directory {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create plugin state directory {}",
+            parent.display()
+        )
+    })?;
 
     let temporary = temporary_sibling(path)?;
     let write_result = (|| -> Result<()> {
@@ -112,12 +127,27 @@ fn write_json_atomically<T: serde::Serialize>(path: &Path, value: &T) -> Result<
             .create_new(true)
             .write(true)
             .open(&temporary)
-            .with_context(|| format!("failed to create temporary plugin state {}", temporary.display()))?;
+            .with_context(|| {
+                format!(
+                    "failed to create temporary plugin state {}",
+                    temporary.display()
+                )
+            })?;
         serde_json::to_writer_pretty(&mut file, value)?;
-        file.write_all(b"\n")
-            .with_context(|| format!("failed to finish temporary plugin state {}", temporary.display()))?;
-        file.sync_all().with_context(|| format!("failed to sync temporary plugin state {}", temporary.display()))?;
-        fs::rename(&temporary, path).with_context(|| format!("failed to replace plugin state {}", path.display()))?;
+        file.write_all(b"\n").with_context(|| {
+            format!(
+                "failed to finish temporary plugin state {}",
+                temporary.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "failed to sync temporary plugin state {}",
+                temporary.display()
+            )
+        })?;
+        fs::rename(&temporary, path)
+            .with_context(|| format!("failed to replace plugin state {}", path.display()))?;
         Ok(())
     })();
 
@@ -128,7 +158,9 @@ fn write_json_atomically<T: serde::Serialize>(path: &Path, value: &T) -> Result<
 }
 
 fn temporary_sibling(path: &Path) -> Result<PathBuf> {
-    let file_name = path.file_name().context("plugin state path has no file name")?;
+    let file_name = path
+        .file_name()
+        .context("plugin state path has no file name")?;
     Ok(path.with_file_name(format!(".{}.tmp", file_name.to_string_lossy())))
 }
 
@@ -141,23 +173,35 @@ mod tests {
     use super::{PluginSkillRoot, PluginStore};
     use crate::plugin::{InstalledPlugin, InstalledState, MarketplaceSource, OFFICIAL_MARKETPLACE};
 
-    const OFFICIAL_MARKETPLACE_URL: &str = "https://github.com/anthropics/claude-plugins-official.git";
+    const OFFICIAL_MARKETPLACE_URL: &str =
+        "https://github.com/anthropics/claude-plugins-official.git";
 
     #[test]
     fn load_marketplaces_restores_the_builtin_marketplace() {
         let home = tempdir().unwrap();
         let store = PluginStore::from_home(home.path());
         fs::create_dir_all(home.path().join(".tact/plugins")).unwrap();
-        fs::write(home.path().join(".tact/plugins/marketplaces.json"), r#"{ "marketplaces": {} }"#).unwrap();
+        fs::write(
+            home.path().join(".tact/plugins/marketplaces.json"),
+            r#"{ "marketplaces": {} }"#,
+        )
+        .unwrap();
 
-        assert!(store.load_marketplaces().unwrap().get(OFFICIAL_MARKETPLACE).is_some());
+        assert!(
+            store
+                .load_marketplaces()
+                .unwrap()
+                .get(OFFICIAL_MARKETPLACE)
+                .is_some()
+        );
     }
 
     #[test]
     fn official_marketplace_source_is_canonicalized_when_loading_and_saving() {
         let home = tempdir().unwrap();
         let store = PluginStore::from_home(home.path());
-        let attacker_source = MarketplaceSource::GitUrl("https://attacker.invalid/plugins.git".into());
+        let attacker_source =
+            MarketplaceSource::GitUrl("https://attacker.invalid/plugins.git".into());
         fs::create_dir_all(home.path().join(".tact/plugins")).unwrap();
         fs::write(
             home.path().join(".tact/plugins/marketplaces.json"),
@@ -173,8 +217,14 @@ mod tests {
         .unwrap();
         let loaded = store.load_marketplaces().unwrap();
 
-        assert_eq!(loaded.get(OFFICIAL_MARKETPLACE).unwrap().source.git_url(), OFFICIAL_MARKETPLACE_URL);
-        assert_ne!(loaded.get(OFFICIAL_MARKETPLACE).unwrap().source, attacker_source);
+        assert_eq!(
+            loaded.get(OFFICIAL_MARKETPLACE).unwrap().source.git_url(),
+            OFFICIAL_MARKETPLACE_URL
+        );
+        assert_ne!(
+            loaded.get(OFFICIAL_MARKETPLACE).unwrap().source,
+            attacker_source
+        );
     }
 
     #[test]
@@ -183,7 +233,11 @@ mod tests {
         let store = PluginStore::from_home(home.path());
         let candidate = home.path().join("missing-candidate");
 
-        assert!(store.commit_install(&InstalledState::default(), &candidate).is_err());
+        assert!(
+            store
+                .commit_install(&InstalledState::default(), &candidate)
+                .is_err()
+        );
         assert!(!home.path().join(".tact/plugins/installed.json").exists());
     }
 
@@ -209,7 +263,12 @@ mod tests {
         store.commit_install(&state, &candidate).unwrap();
 
         assert_eq!(store.load_installed().unwrap(), state);
-        assert!(!home.path().join(".tact/plugins/.installed.json.tmp").exists());
+        assert!(
+            !home
+                .path()
+                .join(".tact/plugins/.installed.json.tmp")
+                .exists()
+        );
     }
 
     #[test]

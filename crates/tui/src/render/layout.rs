@@ -129,23 +129,33 @@ mod render_tests {
             text.contains("read_file") || text.contains("main.rs"),
             "plan/log should show tool activity, buffer:\n{text}"
         );
-        assert!(text.contains("Hello from mock"), "stream chunk should be visible, buffer:\n{text}");
+        assert!(
+            text.contains("Hello from mock"),
+            "stream chunk should be visible, buffer:\n{text}"
+        );
     }
 
     #[test]
     fn main_area_renders_after_fatal_error() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other("provider timeout".into())));
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
+            "provider timeout".into(),
+        )));
 
         assert!(matches!(app.status, Status::Idle));
 
         let backend = ratatui::backend::TestBackend::new(100, 24);
         let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render_main_area(frame, frame.area(), &mut app)).expect("draw");
+        terminal
+            .draw(|frame| super::render_main_area(frame, frame.area(), &mut app))
+            .expect("draw");
 
         assert!(
             buffer_contains(terminal.backend().buffer(), "provider timeout")
-                || app.raw_messages.iter().any(|m| m.contains("provider timeout")),
+                || app
+                    .raw_messages
+                    .iter()
+                    .any(|m| m.contains("provider timeout")),
             "error should be visible in log or buffer"
         );
     }
@@ -157,7 +167,10 @@ mod render_tests {
         app.panel_split_ratio = 0.45;
 
         let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
-        assert!(!text.trim().is_empty(), "dual-panel layout should render with custom split");
+        assert!(
+            !text.trim().is_empty(),
+            "dual-panel layout should render with custom split"
+        );
     }
 
     #[test]
@@ -167,6 +180,9 @@ mod render_tests {
         app.mouse.is_resizing_panel = true;
 
         let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
-        assert!(!text.trim().is_empty(), "divider should render highlighted while resizing");
+        assert!(
+            !text.trim().is_empty(),
+            "divider should render highlighted while resizing"
+        );
     }
 }

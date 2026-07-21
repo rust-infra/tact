@@ -31,7 +31,12 @@ pub(crate) struct ThinkingCell {
 }
 
 impl ThinkingCell {
-    pub(crate) fn active(block: &ActiveThinkingBlock, spinner: char, theme: &Theme, msgs: &Messages) -> Self {
+    pub(crate) fn active(
+        block: &ActiveThinkingBlock,
+        spinner: char,
+        theme: &Theme,
+        msgs: &Messages,
+    ) -> Self {
         let lines = block.display_tail();
         let visible = lines.len().clamp(1, 3);
         let total = block.content.lines().count().max(1);
@@ -40,11 +45,17 @@ impl ThinkingCell {
             lines,
             title: format!(
                 " {spinner}{}",
-                msgs.thinking_card_title.replacen("{}", &total.to_string(), 1).replacen(
-                    "{}",
-                    if total == 1 { "" } else { msgs.thinking_card_title_pl },
-                    1
-                )
+                msgs.thinking_card_title
+                    .replacen("{}", &total.to_string(), 1)
+                    .replacen(
+                        "{}",
+                        if total == 1 {
+                            ""
+                        } else {
+                            msgs.thinking_card_title_pl
+                        },
+                        1
+                    )
             ),
             bottom: msgs
                 .thinking_card_bottom
@@ -62,16 +73,23 @@ impl ThinkingCell {
         let total = block.content.lines().count().max(1);
         Self {
             lines: vec![block.summary.clone()],
-            title: msgs.thinking_card_title.replacen("{}", &total.to_string(), 1).replacen(
-                "{}",
-                if total == 1 { "" } else { msgs.thinking_card_title_pl },
-                1,
-            ),
-            bottom: msgs.thinking_card_bottom.replacen("{}", "1", 1).replacen("{}", &total.to_string(), 1).replacen(
-                "{}",
-                &format_elapsed(block.elapsed),
-                1,
-            ),
+            title: msgs
+                .thinking_card_title
+                .replacen("{}", &total.to_string(), 1)
+                .replacen(
+                    "{}",
+                    if total == 1 {
+                        ""
+                    } else {
+                        msgs.thinking_card_title_pl
+                    },
+                    1,
+                ),
+            bottom: msgs
+                .thinking_card_bottom
+                .replacen("{}", "1", 1)
+                .replacen("{}", &total.to_string(), 1)
+                .replacen("{}", &format_elapsed(block.elapsed), 1),
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
@@ -154,8 +172,16 @@ impl Renderable for ThinkingCell {
             .border_type(self.border_type)
             .border_style(Style::default().fg(self.accent))
             .style(Style::default().bg(self.bg))
-            .title(if card_skip == 0 { self.title.clone() } else { String::new() })
-            .title_bottom(if borders.contains(Borders::BOTTOM) { self.bottom.clone() } else { String::new() });
+            .title(if card_skip == 0 {
+                self.title.clone()
+            } else {
+                String::new()
+            })
+            .title_bottom(if borders.contains(Borders::BOTTOM) {
+                self.bottom.clone()
+            } else {
+                String::new()
+            });
         block.render(card_area, buf);
 
         let first_line = card_skip.saturating_sub(1);
@@ -164,7 +190,9 @@ impl Renderable for ThinkingCell {
             card_area.x + 1,
             card_area.y + top_border as u16,
             card_area.width.saturating_sub(2),
-            card_area.height.saturating_sub(top_border as u16 + usize::from(borders.contains(Borders::BOTTOM)) as u16),
+            card_area.height.saturating_sub(
+                top_border as u16 + usize::from(borders.contains(Borders::BOTTOM)) as u16,
+            ),
         );
         if inner.height > 0 && first_line < body_lines {
             Paragraph::new(self.truncated_lines(inner.width)[first_line..].to_vec())
@@ -192,14 +220,18 @@ mod tests {
     fn render_text(cell: &ThinkingCell) -> String {
         let backend = TestBackend::new(80, cell.height(80));
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| cell.render(frame.area(), frame.buffer_mut())).expect("draw");
+        terminal
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
         buffer_text(terminal.backend().buffer())
     }
 
     fn render_in_viewport(cell: &ThinkingCell, height: u16) -> String {
         let backend = TestBackend::new(80, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| cell.render(frame.area(), frame.buffer_mut())).expect("draw");
+        terminal
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
         buffer_text(terminal.backend().buffer())
     }
 
@@ -249,7 +281,9 @@ mod tests {
         let text = render_in_viewport(&cell, 12);
         assert_eq!(text.matches("Thinking (1 line)").count(), 1, "{text}");
         assert!(
-            text.lines().nth(cell.height(80) as usize).is_some_and(|line| line.trim().is_empty()),
+            text.lines()
+                .nth(cell.height(80) as usize)
+                .is_some_and(|line| line.trim().is_empty()),
             "thinking card must stop at its own height, got:\n{text}"
         );
     }
@@ -264,8 +298,17 @@ mod tests {
 
         let text = render_text(&cell);
         let rows: Vec<_> = text.lines().collect();
-        assert!(rows.first().is_some_and(|line| line.trim().is_empty()), "{text}");
-        assert!(rows.last().is_some_and(|line| line.trim().is_empty()), "{text}");
-        assert!(rows.iter().any(|line| line.contains("Thinking (1 line)")), "{text}");
+        assert!(
+            rows.first().is_some_and(|line| line.trim().is_empty()),
+            "{text}"
+        );
+        assert!(
+            rows.last().is_some_and(|line| line.trim().is_empty()),
+            "{text}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Thinking (1 line)")),
+            "{text}"
+        );
     }
 }

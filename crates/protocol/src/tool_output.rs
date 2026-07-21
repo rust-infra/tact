@@ -33,15 +33,24 @@ pub struct ToolOutputChunk {
 
 impl ToolOutputChunk {
     pub fn stdout(text: impl Into<String>) -> Self {
-        Self { stream: ToolOutputStream::Stdout, text: text.into() }
+        Self {
+            stream: ToolOutputStream::Stdout,
+            text: text.into(),
+        }
     }
 
     pub fn stderr(text: impl Into<String>) -> Self {
-        Self { stream: ToolOutputStream::Stderr, text: text.into() }
+        Self {
+            stream: ToolOutputStream::Stderr,
+            text: text.into(),
+        }
     }
 
     pub fn other(text: impl Into<String>) -> Self {
-        Self { stream: ToolOutputStream::Other, text: text.into() }
+        Self {
+            stream: ToolOutputStream::Other,
+            text: text.into(),
+        }
     }
 }
 
@@ -70,7 +79,10 @@ impl ToolOutputLine {
             last.text.push(ch);
             return;
         }
-        self.spans.push(ToolOutputSpan { stream, text: ch.to_string() });
+        self.spans.push(ToolOutputSpan {
+            stream,
+            text: ch.to_string(),
+        });
     }
 
     fn is_empty(&self) -> bool {
@@ -94,7 +106,7 @@ impl AnsiState {
             Self::Ground if ch == '\u{1b}' => {
                 *self = Self::Escape;
                 None
-            },
+            }
             Self::Ground => Some(ch),
             Self::Escape => {
                 *self = match ch {
@@ -103,21 +115,21 @@ impl AnsiState {
                     _ => Self::Ground,
                 };
                 None
-            },
+            }
             Self::Csi => {
                 if ('@'..='~').contains(&ch) {
                     *self = Self::Ground;
                 }
                 None
-            },
+            }
             Self::Osc if ch == '\u{7}' => {
                 *self = Self::Ground;
                 None
-            },
+            }
             Self::Osc if ch == '\u{1b}' => {
                 *self = Self::OscEscape;
                 None
-            },
+            }
             Self::Osc => None,
             Self::OscEscape => {
                 *self = if ch == '\\' {
@@ -128,7 +140,7 @@ impl AnsiState {
                     Self::Osc
                 };
                 None
-            },
+            }
         }
     }
 }
@@ -183,7 +195,11 @@ impl ToolOutputBuffer {
             return Vec::new();
         }
         let current_count = usize::from(!self.current.is_empty());
-        let skip = self.committed.len().saturating_add(current_count).saturating_sub(limit);
+        let skip = self
+            .committed
+            .len()
+            .saturating_add(current_count)
+            .saturating_sub(limit);
         self.committed
             .iter()
             .cloned()
@@ -212,7 +228,7 @@ impl ToolOutputBuffer {
             '\r' => self.clear_current(),
             '\n' => self.commit_current(),
             '\t' => self.push_content_char(stream, ch),
-            _ if ch.is_control() => {},
+            _ if ch.is_control() => {}
             _ => self.push_content_char(stream, ch),
         }
     }
@@ -279,8 +295,10 @@ mod tests {
     #[test]
     fn carriage_return_replaces_the_current_line() {
         let mut output = ToolOutputBuffer::new(50_000);
-        output
-            .push_chunks(&[ToolOutputChunk::stdout("Downloading 10%\r"), ToolOutputChunk::stdout("Downloading 90%\n")]);
+        output.push_chunks(&[
+            ToolOutputChunk::stdout("Downloading 10%\r"),
+            ToolOutputChunk::stdout("Downloading 90%\n"),
+        ]);
 
         assert_eq!(output.detail_text(), "Downloading 90%\n");
         assert_eq!(output.logical_line_count(), 1);
@@ -305,7 +323,10 @@ mod tests {
     #[test]
     fn ansi_csi_sequences_can_span_chunks() {
         let mut output = ToolOutputBuffer::new(50_000);
-        output.push_chunks(&[ToolOutputChunk::stderr("\x1b[3"), ToolOutputChunk::stderr("1merror\x1b[0m\n")]);
+        output.push_chunks(&[
+            ToolOutputChunk::stderr("\x1b[3"),
+            ToolOutputChunk::stderr("1merror\x1b[0m\n"),
+        ]);
 
         assert_eq!(output.detail_text(), "error\n");
     }
@@ -324,7 +345,9 @@ mod tests {
     #[test]
     fn preview_keeps_only_the_latest_five_lines() {
         let mut output = ToolOutputBuffer::new(50_000);
-        output.push_chunks(&[ToolOutputChunk::stdout("one\ntwo\nthree\nfour\nfive\nsix\n")]);
+        output.push_chunks(&[ToolOutputChunk::stdout(
+            "one\ntwo\nthree\nfour\nfive\nsix\n",
+        )]);
 
         let preview = output.preview_lines(5);
         let lines: Vec<String> = preview.iter().map(ToolOutputLine::plain_text).collect();
@@ -337,7 +360,11 @@ mod tests {
         let mut output = ToolOutputBuffer::new(50_000);
         output.push_chunks(&[ToolOutputChunk::stdout("one\ntwo")]);
 
-        let lines: Vec<String> = output.preview_lines(5).iter().map(ToolOutputLine::plain_text).collect();
+        let lines: Vec<String> = output
+            .preview_lines(5)
+            .iter()
+            .map(ToolOutputLine::plain_text)
+            .collect();
         assert_eq!(lines, ["one", "two"]);
         assert_eq!(output.logical_line_count(), 2);
     }
@@ -345,16 +372,25 @@ mod tests {
     #[test]
     fn detail_limit_counts_characters_and_adds_one_marker() {
         let mut output = ToolOutputBuffer::new(5);
-        output.push_chunks(&[ToolOutputChunk::stdout("你好ab"), ToolOutputChunk::stdout("cdef")]);
+        output.push_chunks(&[
+            ToolOutputChunk::stdout("你好ab"),
+            ToolOutputChunk::stdout("cdef"),
+        ]);
 
         assert_eq!(output.detail_text(), "你好abc\n[output truncated]");
-        assert_eq!(output.detail_text().matches("[output truncated]").count(), 1);
+        assert_eq!(
+            output.detail_text().matches("[output truncated]").count(),
+            1
+        );
     }
 
     #[test]
     fn adjacent_text_from_the_same_stream_reuses_one_span() {
         let mut output = ToolOutputBuffer::new(50_000);
-        output.push_chunks(&[ToolOutputChunk::stdout("hel"), ToolOutputChunk::stdout("lo\n")]);
+        output.push_chunks(&[
+            ToolOutputChunk::stdout("hel"),
+            ToolOutputChunk::stdout("lo\n"),
+        ]);
 
         let line = output.preview_lines(5).pop().unwrap();
         assert_eq!(line.spans.len(), 1);
@@ -368,13 +404,22 @@ mod tests {
 
         let preview = output.preview_lines(5).pop().unwrap().plain_text();
         assert_eq!(preview.chars().count(), INLINE_LINE_LIMIT_CHARS);
-        assert_eq!(output.detail_text().chars().count(), 50_000 + TRUNCATION_MARKER.chars().count());
+        assert_eq!(
+            output.detail_text().chars().count(),
+            50_000 + TRUNCATION_MARKER.chars().count()
+        );
     }
 
     #[test]
     fn tool_progress_event_keeps_ordered_chunks() {
-        let chunks = vec![ToolOutputChunk::stdout("out"), ToolOutputChunk::stderr("err")];
-        let event = crate::AgentUpdate::ToolProgress { tool_id: "bash-1".to_string(), chunks: chunks.clone() };
+        let chunks = vec![
+            ToolOutputChunk::stdout("out"),
+            ToolOutputChunk::stderr("err"),
+        ];
+        let event = crate::AgentUpdate::ToolProgress {
+            tool_id: "bash-1".to_string(),
+            chunks: chunks.clone(),
+        };
 
         assert!(matches!(
             event,

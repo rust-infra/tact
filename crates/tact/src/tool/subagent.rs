@@ -44,7 +44,10 @@ pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String> {
         subagent = subagent.with_ui_channel(tx);
     }
 
-    subagent.runtime.context.push(Message::new_text(Role::User, input.prompt));
+    subagent
+        .runtime
+        .context
+        .push(Message::new_text(Role::User, input.prompt));
     subagent.agent_loop(None).await?;
 
     let summary = subagent

@@ -46,7 +46,9 @@ pub struct SharedCronScheduler {
 
 impl CronScheduler {
     pub fn new(root: &StoreRoot) -> Result<Self> {
-        let scheduler = Self { store: root.file("cron/scheduled_tasks.json")? };
+        let scheduler = Self {
+            store: root.file("cron/scheduled_tasks.json")?,
+        };
         if !scheduler.store.exists() {
             scheduler.store.write(&ScheduledTaskIndex::default())?;
         }
@@ -100,7 +102,11 @@ impl CronScheduler {
                     "{} {} [{}{}]: {}",
                     task.id,
                     task.cron,
-                    if task.recurring { "recurring" } else { "one-shot" },
+                    if task.recurring {
+                        "recurring"
+                    } else {
+                        "one-shot"
+                    },
                     if task.durable { "/durable" } else { "/session" },
                     task.prompt
                 )
@@ -112,11 +118,20 @@ impl CronScheduler {
 
 impl SharedCronScheduler {
     pub fn new(scheduler: CronScheduler) -> Self {
-        Self { inner: Arc::new(Mutex::new(scheduler)) }
+        Self {
+            inner: Arc::new(Mutex::new(scheduler)),
+        }
     }
 
-    pub fn create(&self, cron: String, prompt: String, recurring: bool, durable: bool) -> Result<String> {
-        let task = self.with_scheduler(|scheduler| scheduler.create(cron, prompt, recurring, durable))?;
+    pub fn create(
+        &self,
+        cron: String,
+        prompt: String,
+        recurring: bool,
+        durable: bool,
+    ) -> Result<String> {
+        let task =
+            self.with_scheduler(|scheduler| scheduler.create(cron, prompt, recurring, durable))?;
         serde_json::to_string_pretty(&task).context("failed to serialize scheduled task")
     }
 
@@ -129,7 +144,10 @@ impl SharedCronScheduler {
     }
 
     fn with_scheduler<T>(&self, f: impl FnOnce(&mut CronScheduler) -> Result<T>) -> Result<T> {
-        let mut scheduler = self.inner.lock().map_err(|_| anyhow::anyhow!("cron scheduler lock poisoned"))?;
+        let mut scheduler = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cron scheduler lock poisoned"))?;
         f(&mut scheduler)
     }
 }

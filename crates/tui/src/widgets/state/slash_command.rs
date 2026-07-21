@@ -15,7 +15,11 @@ impl SlashCommandState {
     /// `start_pos` to `cursor`).
     pub(crate) fn query<'a>(&self, input: &'a str, cursor: usize) -> &'a str {
         let end = cursor.min(input.len());
-        if self.start_pos < end { &input[self.start_pos..end] } else { "" }
+        if self.start_pos < end {
+            &input[self.start_pos..end]
+        } else {
+            ""
+        }
     }
 
     /// Compute the list of matching slash commands with fuzzy scores.
@@ -32,7 +36,11 @@ impl SlashCommandState {
         let query_lower = query.to_lowercase();
         if query_lower.is_empty() || query_lower == "/" {
             // Show all commands when only '/' is typed (palette order: cmds then skills)
-            commands.iter().enumerate().map(|(i, c)| (i, *c, 100)).collect()
+            commands
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i, *c, 100))
+                .collect()
         } else {
             let query = &query_lower[1..]; // strip leading '/'
             let mut scored: Vec<_> = commands
@@ -43,7 +51,11 @@ impl SlashCommandState {
                     // Also check description for matches
                     let desc_score = fuzzy_score(desc, query);
                     let best = score.max(desc_score);
-                    if best > 0 { Some((i, (cmd, desc), best)) } else { None }
+                    if best > 0 {
+                        Some((i, (cmd, desc), best))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             scored.sort_by(|a, b| {
@@ -109,7 +121,10 @@ pub(crate) fn fuzzy_score(target: &str, query: &str) -> i32 {
             // Word boundary bonus (after '_' or uppercase→lowercase transition)
             if t_idx == 0 || {
                 let prev_c = target_chars[t_idx - 1];
-                prev_c == '_' || prev_c == '-' || prev_c == ' ' || (prev_c.is_lowercase() && tc.is_uppercase())
+                prev_c == '_'
+                    || prev_c == '-'
+                    || prev_c == ' '
+                    || (prev_c.is_lowercase() && tc.is_uppercase())
             } {
                 score += 3;
             }

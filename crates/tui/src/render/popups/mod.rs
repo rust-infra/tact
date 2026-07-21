@@ -37,7 +37,12 @@ pub(crate) fn centered_list_popup_area(area: Rect, width: u16, height: u16) -> R
 
 /// Inner content rect for a one-cell bordered block.
 pub(crate) fn popup_inner(area: Rect) -> Rect {
-    Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), area.height.saturating_sub(2))
+    Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
 }
 
 /// Clear + bordered frame for a list-style popup; returns the inner content area.
@@ -49,8 +54,11 @@ pub(crate) fn render_list_popup_chrome(
     bg: ratatui::style::Color,
 ) -> Rect {
     frame.render_widget(Clear, popup_area);
-    let block =
-        Block::default().borders(Borders::ALL).border_type(border_type).title(title).style(Style::default().bg(bg));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .title(title)
+        .style(Style::default().bg(bg));
     frame.render_widget(block, popup_area);
     popup_inner(popup_area)
 }

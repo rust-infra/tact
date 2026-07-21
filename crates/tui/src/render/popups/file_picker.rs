@@ -26,7 +26,12 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.file_picker.query.is_empty() {
         format!("{}: {}", app.msgs().file_picker_title, rel_dir)
     } else {
-        format!("{}: {} /{}", app.msgs().file_picker_title, rel_dir, app.file_picker.query)
+        format!(
+            "{}: {} /{}",
+            app.msgs().file_picker_title,
+            rel_dir,
+            app.file_picker.query
+        )
     };
     let inner = super::render_list_popup_chrome(
         frame,
@@ -37,9 +42,15 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     let items: Vec<ListItem> = if app.file_picker.options.is_empty() {
-        vec![ListItem::new(Span::styled(app.msgs().select_empty, Style::default().fg(Color::Gray)))]
+        vec![ListItem::new(Span::styled(
+            app.msgs().select_empty,
+            Style::default().fg(Color::Gray),
+        ))]
     } else {
-        let selected = app.file_picker.selected.min(app.file_picker.options.len().saturating_sub(1));
+        let selected = app
+            .file_picker
+            .selected
+            .min(app.file_picker.options.len().saturating_sub(1));
         app.file_picker
             .options
             .iter()
@@ -54,8 +65,11 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
                     ("\u{f15b} ", opt.as_str())
                 };
 
-                let prefix =
-                    if is_selected { format!("{} {}", app.msgs().select_arrow, icon) } else { format!("  {}", icon) };
+                let prefix = if is_selected {
+                    format!("{} {}", app.msgs().select_arrow, icon)
+                } else {
+                    format!("  {}", icon)
+                };
 
                 let fg = if is_selected {
                     Color::White
@@ -78,8 +92,11 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
                     }
                 };
 
-                let style =
-                    if is_selected { Style::default().bg(app.theme.highlight).fg(fg) } else { Style::default().fg(fg) };
+                let style = if is_selected {
+                    Style::default().bg(app.theme.highlight).fg(fg)
+                } else {
+                    Style::default().fg(fg)
+                };
 
                 ListItem::new(Span::styled(format!("{}{}", prefix, path_display), style))
             })

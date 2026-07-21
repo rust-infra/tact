@@ -54,7 +54,13 @@ mod tests {
         }
     }
 
-    fn make_diagnostic(file: &str, line: u32, col: u32, severity: DiagnosticSeverity, message: &str) -> LspDiagnostic {
+    fn make_diagnostic(
+        file: &str,
+        line: u32,
+        col: u32,
+        severity: DiagnosticSeverity,
+        message: &str,
+    ) -> LspDiagnostic {
         LspDiagnostic {
             file: file.to_string(),
             line,
@@ -119,7 +125,13 @@ mod tests {
 
     #[test]
     fn test_format_diagnostics_single_error() {
-        let diags = vec![make_diagnostic("src/lib.rs", 10, 5, DiagnosticSeverity::Error, "type mismatch")];
+        let diags = vec![make_diagnostic(
+            "src/lib.rs",
+            10,
+            5,
+            DiagnosticSeverity::Error,
+            "type mismatch",
+        )];
         let result = LspManager::format_diagnostics(&diags);
         assert!(result.contains("[ERROR]"));
         assert!(result.contains("src/lib.rs"));
@@ -142,7 +154,13 @@ mod tests {
 
     #[test]
     fn test_format_diagnostics_with_source_and_code() {
-        let mut d = make_diagnostic("main.rs", 5, 1, DiagnosticSeverity::Error, "mismatched types");
+        let mut d = make_diagnostic(
+            "main.rs",
+            5,
+            1,
+            DiagnosticSeverity::Error,
+            "mismatched types",
+        );
         d.source = Some("rust-analyzer".to_string());
         d.code = Some("E0308".to_string());
         let result = LspManager::format_diagnostics(&[d]);
@@ -184,7 +202,10 @@ mod tests {
         let mut mgr = LspManager::new();
         mgr.register_server(make_config("rust-analyzer"));
         // .rs maps to rust-analyzer
-        assert_eq!(mgr.server_name_for_file("src/main.rs"), Some("rust-analyzer"));
+        assert_eq!(
+            mgr.server_name_for_file("src/main.rs"),
+            Some("rust-analyzer")
+        );
         // .py has no mapping
         assert_eq!(mgr.server_name_for_file("app.py"), None);
     }
@@ -192,7 +213,11 @@ mod tests {
     #[test]
     fn test_path_to_uri_roundtrip() {
         let uri = path_to_uri("src/main.rs");
-        assert!(uri.starts_with("file://"), "expected file:// URI, got {}", uri);
+        assert!(
+            uri.starts_with("file://"),
+            "expected file:// URI, got {}",
+            uri
+        );
         let _back = uri_to_path(&uri);
     }
 
@@ -205,11 +230,26 @@ mod tests {
 
     #[test]
     fn test_severity_from_lsp_int() {
-        assert_eq!(DiagnosticSeverity::from_lsp_int(1), DiagnosticSeverity::Error);
-        assert_eq!(DiagnosticSeverity::from_lsp_int(2), DiagnosticSeverity::Warning);
-        assert_eq!(DiagnosticSeverity::from_lsp_int(3), DiagnosticSeverity::Information);
-        assert_eq!(DiagnosticSeverity::from_lsp_int(4), DiagnosticSeverity::Hint);
-        assert_eq!(DiagnosticSeverity::from_lsp_int(99), DiagnosticSeverity::Hint);
+        assert_eq!(
+            DiagnosticSeverity::from_lsp_int(1),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticSeverity::from_lsp_int(2),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticSeverity::from_lsp_int(3),
+            DiagnosticSeverity::Information
+        );
+        assert_eq!(
+            DiagnosticSeverity::from_lsp_int(4),
+            DiagnosticSeverity::Hint
+        );
+        assert_eq!(
+            DiagnosticSeverity::from_lsp_int(99),
+            DiagnosticSeverity::Hint
+        );
     }
 
     #[test]

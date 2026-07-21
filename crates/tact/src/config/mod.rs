@@ -20,8 +20,9 @@ use clap::Parser;
 pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, PluginSubcommand};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
-    AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig, ResolvedConfig, TactTomlConfig,
-    ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig, VisionImageSettings, VisionImageTomlConfig,
+    AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
+    ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
+    VisionImageSettings, VisionImageTomlConfig,
 };
 
 static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
@@ -30,14 +31,20 @@ static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
 pub fn install(config: types::ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
-    assert!(guard.is_none(), "tact config must be installed exactly once");
+    assert!(
+        guard.is_none(),
+        "tact config must be installed exactly once"
+    );
     *guard = Some(config);
 }
 
 /// Install non-LLM settings for commands that never call the model (e.g. `--list-sessions`).
 pub fn install_without_llm(config: types::ResolvedConfig) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
-    assert!(guard.is_none(), "tact config must be installed exactly once");
+    assert!(
+        guard.is_none(),
+        "tact config must be installed exactly once"
+    );
     *guard = Some(config);
 }
 
@@ -95,7 +102,11 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
     let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
 
     if args.list_sessions || matches!(args.command, Some(CliCommand::Plugin { .. })) {
-        install_without_llm(resolve::resolve_non_llm_settings(&args, &toml_cfg, config_path));
+        install_without_llm(resolve::resolve_non_llm_settings(
+            &args,
+            &toml_cfg,
+            config_path,
+        ));
         return Ok(args);
     }
 

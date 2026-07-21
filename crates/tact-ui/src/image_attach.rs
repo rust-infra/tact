@@ -11,7 +11,11 @@ pub struct PreparedImage {
 }
 
 /// Prepare bytes for a vision attachment using installed config.
-pub fn prepare_image_attachment(bytes: &[u8], ext: &str, settings: &VisionImageSettings) -> Option<PreparedImage> {
+pub fn prepare_image_attachment(
+    bytes: &[u8],
+    ext: &str,
+    settings: &VisionImageSettings,
+) -> Option<PreparedImage> {
     if settings.compress {
         prepare_image_for_vision(bytes, settings.max_edge, settings.jpeg_quality)
     } else {
@@ -20,7 +24,11 @@ pub fn prepare_image_attachment(bytes: &[u8], ext: &str, settings: &VisionImageS
 }
 
 /// Decode, optionally downscale, and re-encode as JPEG to cut vision token usage.
-pub fn prepare_image_for_vision(bytes: &[u8], max_edge: u32, jpeg_quality: u8) -> Option<PreparedImage> {
+pub fn prepare_image_for_vision(
+    bytes: &[u8],
+    max_edge: u32,
+    jpeg_quality: u8,
+) -> Option<PreparedImage> {
     let img = image::load_from_memory(bytes).ok()?;
     let img = downscale_if_needed(img, max_edge);
     encode_jpeg(&img, jpeg_quality)
@@ -29,7 +37,10 @@ pub fn prepare_image_for_vision(bytes: &[u8], max_edge: u32, jpeg_quality: u8) -
 /// Attach original file bytes without re-encoding (higher vision token cost).
 pub fn prepare_raw_image(bytes: &[u8], ext: &str) -> Option<PreparedImage> {
     let media_type = media_type_from_ext(ext)?.to_string();
-    Some(PreparedImage { bytes: bytes.to_vec(), media_type })
+    Some(PreparedImage {
+        bytes: bytes.to_vec(),
+        media_type,
+    })
 }
 
 fn downscale_if_needed(img: DynamicImage, max_edge: u32) -> DynamicImage {
@@ -49,8 +60,18 @@ fn encode_jpeg(img: &DynamicImage, jpeg_quality: u8) -> Option<PreparedImage> {
     let mut out = Vec::new();
     let mut cursor = Cursor::new(&mut out);
     let mut encoder = JpegEncoder::new_with_quality(&mut cursor, jpeg_quality);
-    encoder.encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    Some(PreparedImage { bytes: out, media_type: "image/jpeg".to_string() })
+    encoder
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .ok()?;
+    Some(PreparedImage {
+        bytes: out,
+        media_type: "image/jpeg".to_string(),
+    })
 }
 
 fn media_type_from_ext(ext: &str) -> Option<&'static str> {
@@ -82,9 +103,11 @@ mod tests {
     use super::*;
 
     fn solid_png(w: u32, h: u32) -> Vec<u8> {
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |_, _| Rgb([120, 80, 200]));
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(w, h, |_, _| Rgb([120, 80, 200]));
         let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
         bytes
     }
 
@@ -123,7 +146,10 @@ mod tests {
     #[test]
     fn compress_off_skips_reencode() {
         let raw = solid_png(3000, 2000);
-        let settings = VisionImageSettings { compress: false, ..default_settings() };
+        let settings = VisionImageSettings {
+            compress: false,
+            ..default_settings()
+        };
         let prepared = prepare_image_attachment(&raw, "png", &settings).expect("png");
         assert_eq!(prepared.media_type, "image/png");
         assert_eq!(prepared.bytes, raw);

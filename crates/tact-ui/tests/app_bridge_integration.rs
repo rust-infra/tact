@@ -2,7 +2,10 @@
 
 mod harness;
 
-use harness::{read_file_tool_use, run_single_task, run_single_task_with_setup, text_block, write_file_tool_use};
+use harness::{
+    read_file_tool_use, run_single_task, run_single_task_with_setup, text_block,
+    write_file_tool_use,
+};
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
 use tact_protocol::AgentUpdate;
@@ -10,7 +13,10 @@ use tui::test_support::TestApp;
 
 #[tokio::test]
 async fn driver_stream_complete_renders_in_app() {
-    let mock = MockClient::new(vec![(vec![text_block("Bridge hello.")], Some(StopReason::EndTurn))]);
+    let mock = MockClient::new(vec![(
+        vec![text_block("Bridge hello.")],
+        Some(StopReason::EndTurn),
+    )]);
 
     let (updates, work_dir) = run_single_task(mock, "say hello", PermissionMode::Auto).await;
 
@@ -18,7 +24,10 @@ async fn driver_stream_complete_renders_in_app() {
         AgentUpdate::StreamChunk(s) | AgentUpdate::TaskComplete(s) => s.contains("Bridge hello"),
         _ => false,
     });
-    assert!(has_response, "driver should emit assistant text in updates: {updates:?}");
+    assert!(
+        has_response,
+        "driver should emit assistant text in updates: {updates:?}"
+    );
 
     let mut app = TestApp::new_in_dir(work_dir);
     app.feed_all(updates);
@@ -34,14 +43,21 @@ async fn driver_stream_complete_renders_in_app() {
 #[tokio::test]
 async fn driver_read_file_tool_renders_card_in_app() {
     let mock = MockClient::new(vec![
-        (vec![read_file_tool_use("read1", "sample.txt")], Some(StopReason::ToolUse)),
-        (vec![text_block("Read complete.")], Some(StopReason::EndTurn)),
+        (
+            vec![read_file_tool_use("read1", "sample.txt")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![text_block("Read complete.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
-    let (updates, work_dir) = run_single_task_with_setup(mock, "read sample", PermissionMode::Auto, |dir| {
-        write_workspace_file(dir, "sample.txt", "bridge file content");
-    })
-    .await;
+    let (updates, work_dir) =
+        run_single_task_with_setup(mock, "read sample", PermissionMode::Auto, |dir| {
+            write_workspace_file(dir, "sample.txt", "bridge file content");
+        })
+        .await;
 
     let mut app = TestApp::new_in_dir(work_dir);
     app.feed_all(updates);
@@ -57,8 +73,14 @@ async fn driver_read_file_tool_renders_card_in_app() {
 #[tokio::test]
 async fn driver_write_then_read_opens_diff_popup_in_app() {
     let mock = MockClient::new(vec![
-        (vec![write_file_tool_use("w1", "out.rs", "fn bridge_fn() {}")], Some(StopReason::ToolUse)),
-        (vec![read_file_tool_use("r1", "out.rs")], Some(StopReason::ToolUse)),
+        (
+            vec![write_file_tool_use("w1", "out.rs", "fn bridge_fn() {}")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![read_file_tool_use("r1", "out.rs")],
+            Some(StopReason::ToolUse),
+        ),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
     ]);
 
@@ -67,7 +89,10 @@ async fn driver_write_then_read_opens_diff_popup_in_app() {
     let mut app = TestApp::new_in_dir(work_dir.clone());
     app.feed_all(updates);
 
-    assert!(app.open_last_tool_popup(), "last tool block should support diff popup");
+    assert!(
+        app.open_last_tool_popup(),
+        "last tool block should support diff popup"
+    );
     let popup_text = app.render_main(120, 30);
     assert!(
         popup_text.contains("bridge_fn") || popup_text.contains("out.rs"),
@@ -87,7 +112,12 @@ async fn driver_token_usage_reaches_app_render() {
 
     let (updates, work_dir) = run_single_task(mock, "count tokens", PermissionMode::Auto).await;
 
-    assert!(updates.iter().any(|u| matches!(u, AgentUpdate::TokenUsage(_))), "driver should emit TokenUsage");
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TokenUsage(_))),
+        "driver should emit TokenUsage"
+    );
 
     let mut app = TestApp::new_in_dir(work_dir);
     app.feed_all(updates);

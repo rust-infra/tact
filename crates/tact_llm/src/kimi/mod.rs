@@ -10,7 +10,8 @@ use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, ProviderInfo, ProviderKind, StopReason,
+    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, ProviderInfo,
+    ProviderKind, StopReason,
     inject::{inject_reasoning_content, thinking_budget_enabled},
     openai::{
         CompatibleConfig, OpenAiAdapter,
@@ -69,7 +70,11 @@ impl KimiAdapter {
     pub fn new(config: CompatibleConfig, model: impl Into<String>) -> Self {
         let adapter = OpenAiAdapter::new(config);
         let base_url = adapter.base_url().to_string();
-        Self { adapter, model: model.into(), base_url }
+        Self {
+            adapter,
+            model: model.into(),
+            base_url,
+        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -99,7 +104,11 @@ impl KimiAdapter {
         })
     }
 
-    fn assemble_body(&self, request: &CreateMessageParams, stream: bool) -> Result<Value, LlmError> {
+    fn assemble_body(
+        &self,
+        request: &CreateMessageParams,
+        stream: bool,
+    ) -> Result<Value, LlmError> {
         let provider = self.body_provider();
         assemble_chat_completion_body(request, stream, &provider, &KimiBodyHook)
     }
@@ -111,14 +120,33 @@ impl LlmClient for KimiAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| self.assemble_body(r, s)).await
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
+        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         create_assembled(&self.adapter, request, |r, s| self.assemble_body(r, s)).await
     }
 }
@@ -141,7 +169,11 @@ mod tests {
     #[test]
     fn kimi_hook_skips_for_kimi_code_stable_id() {
         let request = sample_request_with_thinking();
-        let provider = provider(ProviderKind::OpenAi, "kimi-for-coding", "https://api.kimi.com/coding/v1");
+        let provider = provider(
+            ProviderKind::OpenAi,
+            "kimi-for-coding",
+            "https://api.kimi.com/coding/v1",
+        );
         let mut body = empty_body();
         KimiBodyHook.inject(&mut body, &ctx(&request, &provider, &[]));
         assert!(body.get("thinking").is_none());
@@ -176,7 +208,11 @@ mod tests {
     #[test]
     fn kimi_hook_echoes_reasoning_content() {
         let request = sample_request_with_thinking();
-        let provider = provider(ProviderKind::Kimi, "kimi-k2.5", "https://api.moonshot.cn/v1");
+        let provider = provider(
+            ProviderKind::Kimi,
+            "kimi-k2.5",
+            "https://api.moonshot.cn/v1",
+        );
         let mut body = serde_json::json!({
             "messages": [
                 {"role": "user", "content": "hi"},

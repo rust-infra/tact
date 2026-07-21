@@ -68,7 +68,13 @@ pub fn extract_text(content: &MessageContent) -> String {
         MessageContent::Text { content } => content.clone(),
         MessageContent::Blocks { content } => content
             .iter()
-            .filter_map(|block| if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None })
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     }

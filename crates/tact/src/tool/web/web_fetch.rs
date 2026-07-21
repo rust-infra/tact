@@ -64,10 +64,10 @@ fn load_cached_extraction(url: &str) -> Option<String> {
             Ok(content) => {
                 debug!(file = ?cache_file, "Loaded cached web content");
                 return Some(content);
-            },
+            }
             Err(e) => {
                 debug!(file = ?cache_file, error = %e, "Failed to load cache");
-            },
+            }
         }
     }
     None
@@ -98,7 +98,8 @@ fn is_edge_case_html(html: &str, extracted_text: &str) -> bool {
     }
 
     let lower = html.to_lowercase();
-    let has_semantic = lower.contains("<article") || lower.contains("<main") || lower.contains("<body");
+    let has_semantic =
+        lower.contains("<article") || lower.contains("<main") || lower.contains("<body");
 
     if !has_semantic {
         debug!("Edge case: no semantic HTML tags");
@@ -136,8 +137,9 @@ fn strip_html(html: &str) -> String {
             }
             // Block tags => newline
             let block_tags = [
-                "<br", "<p ", "<p>", "</p>", "<div", "</div>", "<h1", "<h2", "<h3", "<h4", "<h5", "<h6", "</h1",
-                "</h2", "</h3", "</h4", "</h5", "</h6", "<li", "</li", "<tr", "</tr", "<hr",
+                "<br", "<p ", "<p>", "</p>", "<div", "</div>", "<h1", "<h2", "<h3", "<h4", "<h5",
+                "<h6", "</h1", "</h2", "</h3", "</h4", "</h5", "</h6", "<li", "</li", "<tr",
+                "</tr", "<hr",
             ];
             for tag in &block_tags {
                 if rest.starts_with(tag) {
@@ -253,12 +255,24 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
 
     let status = resp.status();
     if !status.is_success() {
-        return Err(anyhow::anyhow!("HTTP {} when fetching {}", status, request_url));
+        return Err(anyhow::anyhow!(
+            "HTTP {} when fetching {}",
+            status,
+            request_url
+        ));
     }
 
-    let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
 
-    let body_bytes = resp.bytes().await.map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+    let body_bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
     if body_bytes.len() > MAX_RESPONSE_BYTES {
         return Err(anyhow::anyhow!(
@@ -277,7 +291,9 @@ pub async fn web_fetch(_ctx: ToolContext, input: WebFetchInput) -> Result<String
                 url = %request_url,
                 "JS-heavy page detected; basic HTML stripping may produce incomplete output"
             );
-            format!("[warning: page looks JS-heavy; extracted text may be incomplete]\n\n{extracted}")
+            format!(
+                "[warning: page looks JS-heavy; extracted text may be incomplete]\n\n{extracted}"
+            )
         } else {
             extracted
         }
@@ -298,20 +314,35 @@ mod tests {
 
     #[test]
     fn resolve_requested_url_uses_explicit_url() {
-        let input = WebFetchInput { url: Some("https://example.com".to_string()), result_id: None, prompt: None };
-        assert_eq!(resolve_requested_url(&input).unwrap(), "https://example.com".to_string());
+        let input = WebFetchInput {
+            url: Some("https://example.com".to_string()),
+            result_id: None,
+            prompt: None,
+        };
+        assert_eq!(
+            resolve_requested_url(&input).unwrap(),
+            "https://example.com".to_string()
+        );
     }
 
     #[test]
     fn resolve_requested_url_requires_url_or_result_id() {
-        let input = WebFetchInput { url: None, result_id: None, prompt: None };
+        let input = WebFetchInput {
+            url: None,
+            result_id: None,
+            prompt: None,
+        };
         let err = resolve_requested_url(&input).unwrap_err().to_string();
         assert!(err.contains("requires either `url` or `result_id`"));
     }
 
     #[test]
     fn resolve_requested_url_reports_unknown_result_id() {
-        let input = WebFetchInput { url: None, result_id: Some("ws_missing".to_string()), prompt: None };
+        let input = WebFetchInput {
+            url: None,
+            result_id: Some("ws_missing".to_string()),
+            prompt: None,
+        };
         let err = resolve_requested_url(&input).unwrap_err().to_string();
         assert!(err.contains("Unknown result_id"));
     }
@@ -323,7 +354,11 @@ mod tests {
             let result_id = web_refs::search_result_id(url);
             web_refs::save_search_reference(&result_id, url);
 
-            let input = WebFetchInput { url: None, result_id: Some(result_id), prompt: None };
+            let input = WebFetchInput {
+                url: None,
+                result_id: Some(result_id),
+                prompt: None,
+            };
             assert_eq!(resolve_requested_url(&input).unwrap(), url);
         });
     }
@@ -343,11 +378,17 @@ mod tests {
         let blocked_url = "http://127.0.0.1/private";
         save_cached_extraction(blocked_url, "should_not_be_returned");
 
-        let err =
-            web_fetch(context, WebFetchInput { url: Some(blocked_url.to_string()), result_id: None, prompt: None })
-                .await
-                .unwrap_err()
-                .to_string();
+        let err = web_fetch(
+            context,
+            WebFetchInput {
+                url: Some(blocked_url.to_string()),
+                result_id: None,
+                prompt: None,
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
 
         assert!(err.contains("Blocked host"));
     }

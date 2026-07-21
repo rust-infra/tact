@@ -56,7 +56,14 @@ mod tests {
     async fn sleep_accepts_duration_ms_alias() {
         let context = test_context("sleep_accepts_duration_ms_alias");
 
-        let output = run_tool(&context, SleepTool, "sleep", serde_json::json!({ "duration_ms": 0 })).await.unwrap();
+        let output = run_tool(
+            &context,
+            SleepTool,
+            "sleep",
+            serde_json::json!({ "duration_ms": 0 }),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output, "Slept for 0ms.");
     }

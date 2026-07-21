@@ -24,8 +24,14 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
         app.save_undo();
         app.input = "/plugin ".into();
         app.input_cursor = app.input.len();
-        app.flash_msg = Some((app.msgs().plugin_usage.to_owned(), std::time::Instant::now()));
-        return CommandExecOutcome { handled: true, clear_input: false };
+        app.flash_msg = Some((
+            app.msgs().plugin_usage.to_owned(),
+            std::time::Instant::now(),
+        ));
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: false,
+        };
     }
     match parse_plugin_command(&app.input) {
         Ok(request) => match app.plugin_tx.send(request) {
@@ -34,7 +40,10 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
         },
         Err(_) => app.add_system_message(app.msgs().plugin_usage.to_owned()),
     }
-    CommandExecOutcome { handled: true, clear_input: true }
+    CommandExecOutcome {
+        handled: true,
+        clear_input: true,
+    }
 }
 
 #[cfg(test)]
@@ -75,9 +84,18 @@ mod tests {
 
     #[test]
     fn parses_only_exact_plugin_forms() {
-        assert!(matches!(parse_plugin_command("/plugin list"), Ok(PluginRequest::List)));
-        assert!(matches!(parse_plugin_command("/plugin reload"), Ok(PluginRequest::Reload)));
-        assert!(matches!(parse_plugin_command("/plugin marketplace list"), Ok(PluginRequest::MarketplaceList)));
+        assert!(matches!(
+            parse_plugin_command("/plugin list"),
+            Ok(PluginRequest::List)
+        ));
+        assert!(matches!(
+            parse_plugin_command("/plugin reload"),
+            Ok(PluginRequest::Reload)
+        ));
+        assert!(matches!(
+            parse_plugin_command("/plugin marketplace list"),
+            Ok(PluginRequest::MarketplaceList)
+        ));
         assert!(parse_plugin_command("/plugin list extra").is_err());
         assert!(parse_plugin_command("/plugin marketplace add").is_err());
     }
@@ -92,7 +110,11 @@ mod tests {
         assert!(outcome.handled);
         assert!(outcome.clear_input);
         assert!(matches!(requests.try_recv(), Ok(PluginRequest::List)));
-        assert!(app.raw_messages.iter().any(|message| message.contains("queued")));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("queued"))
+        );
     }
 
     #[test]
@@ -103,7 +125,11 @@ mod tests {
         handle_plugin_command(&mut app);
 
         assert!(requests.try_recv().is_err());
-        assert!(app.raw_messages.iter().any(|message| message.starts_with("Usage: /plugin")));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.starts_with("Usage: /plugin"))
+        );
     }
 
     #[test]
@@ -119,12 +145,16 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(requests.try_recv().is_err());
         assert!(
-            !app.raw_messages.iter().any(|message| message.starts_with("Usage: /plugin")),
+            !app.raw_messages
+                .iter()
+                .any(|message| message.starts_with("Usage: /plugin")),
             "bare /plugin must not spam the log: {:?}",
             app.raw_messages
         );
         assert!(
-            app.flash_msg.as_ref().is_some_and(|(msg, _)| msg.starts_with("Usage: /plugin")),
+            app.flash_msg
+                .as_ref()
+                .is_some_and(|(msg, _)| msg.starts_with("Usage: /plugin")),
             "expected a flash usage hint, got {:?}",
             app.flash_msg
         );
@@ -139,7 +169,9 @@ mod tests {
         handle_plugin_command(&mut app);
 
         assert!(
-            app.raw_messages.iter().any(|message| message.contains("插件请求已加入队列")),
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("插件请求已加入队列")),
             "plugin feedback should use the selected language: {:?}",
             app.raw_messages
         );

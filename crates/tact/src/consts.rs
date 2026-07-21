@@ -25,7 +25,11 @@ impl PluginHome {
     #[must_use]
     pub fn from_home(home: &Path) -> Self {
         let root = home.join(".tact").join("plugins");
-        Self { marketplaces: root.join("marketplaces"), cache: root.join("cache"), root }
+        Self {
+            marketplaces: root.join("marketplaces"),
+            cache: root.join("cache"),
+            root,
+        }
     }
 }
 
@@ -74,7 +78,9 @@ impl TactPath {
     // ----------------------------------------------------------------
 
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: workdir.into() }
+        Self {
+            workdir: workdir.into(),
+        }
     }
 
     pub fn from_cwd() -> std::io::Result<Self> {

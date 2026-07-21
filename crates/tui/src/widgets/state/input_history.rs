@@ -9,6 +9,10 @@ pub(crate) struct InputHistory {
 
 impl InputHistory {
     pub(crate) fn new(entries: Vec<String>) -> Self {
-        Self { entries, index: None, saved: String::new() }
+        Self {
+            entries,
+            index: None,
+            saved: String::new(),
+        }
     }
 }

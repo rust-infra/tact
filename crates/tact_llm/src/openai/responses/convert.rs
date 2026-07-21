@@ -1,14 +1,15 @@
 use async_openai_responses::types::responses::{
-    CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput, FunctionCallOutputItemParam,
-    FunctionTool, FunctionToolCall, IncludeEnum, InputContent, InputImageContent, InputItem, InputParam,
-    InputTextContent, Item, MessageType, OutputStatus, Reasoning, ReasoningSummary, Role as ResponsesRole,
-    Tool as ResponsesTool, ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam,
+    CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput,
+    FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum, InputContent,
+    InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType, OutputStatus,
+    Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction,
+    ToolChoiceOptions, ToolChoiceParam,
 };
 
 use super::history;
 use crate::{
-    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent, OpenAiReasoningEffort, Role, ToolChoice,
-    effective_reasoning_effort,
+    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent, OpenAiReasoningEffort,
+    Role, ToolChoice, effective_reasoning_effort,
 };
 
 fn responses_role(role: Role) -> ResponsesRole {
@@ -29,7 +30,10 @@ fn message_item(role: Role, content: EasyInputContent) -> InputItem {
 
 fn flush_message_content(role: Role, content: &mut Vec<InputContent>, input: &mut Vec<InputItem>) {
     if !content.is_empty() {
-        input.push(message_item(role, EasyInputContent::ContentList(std::mem::take(content))));
+        input.push(message_item(
+            role,
+            EasyInputContent::ContentList(std::mem::take(content)),
+        ));
     }
 }
 
@@ -46,10 +50,15 @@ fn reasoning_item(signature: &str) -> Result<Option<InputItem>, LlmError> {
 fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
     let Message { role, content } = message;
     if let MessageContent::Text { content } = content {
-        return Ok(vec![message_item(*role, EasyInputContent::Text(content.clone()))]);
+        return Ok(vec![message_item(
+            *role,
+            EasyInputContent::Text(content.clone()),
+        )]);
     }
 
-    let MessageContent::Blocks { content } = content else { unreachable!("all MessageContent variants handled") };
+    let MessageContent::Blocks { content } = content else {
+        unreachable!("all MessageContent variants handled")
+    };
     let mut function_call_item_ids = std::collections::BTreeMap::new();
     for block in content {
         if let ContentBlock::Thinking { signature, .. } = block
@@ -63,26 +72,33 @@ fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
     for block in content {
         match block {
             ContentBlock::Text { text } => {
-                message_content.push(InputContent::InputText(InputTextContent { text: text.clone() }));
-            },
+                message_content.push(InputContent::InputText(InputTextContent {
+                    text: text.clone(),
+                }));
+            }
             ContentBlock::Image { source } => {
                 message_content.push(InputContent::InputImage(InputImageContent {
                     detail: Default::default(),
                     file_id: None,
                     image_url: Some(format!("data:{};base64,{}", source.media_type, source.data)),
                 }));
-            },
+            }
             ContentBlock::Thinking { signature, .. } => {
                 flush_message_content(*role, &mut message_content, &mut input);
                 if let Some(reasoning) = reasoning_item(signature)? {
                     input.push(reasoning);
                 }
-            },
-            ContentBlock::RedactedThinking { .. } => {},
-            ContentBlock::ToolUse { id, name, input: args } => {
+            }
+            ContentBlock::RedactedThinking { .. } => {}
+            ContentBlock::ToolUse {
+                id,
+                name,
+                input: args,
+            } => {
                 flush_message_content(*role, &mut message_content, &mut input);
-                let arguments = serde_json::to_string(args)
-                    .map_err(|error| LlmError::Other(format!("serialize arguments for tool '{name}': {error}")))?;
+                let arguments = serde_json::to_string(args).map_err(|error| {
+                    LlmError::Other(format!("serialize arguments for tool '{name}': {error}"))
+                })?;
                 input.push(InputItem::Item(Item::FunctionCall(FunctionToolCall {
                     arguments,
                     call_id: id.clone(),
@@ -91,16 +107,21 @@ fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
                     id: function_call_item_ids.get(id).cloned(),
                     status: Some(OutputStatus::Completed),
                 })));
-            },
-            ContentBlock::ToolResult { tool_use_id, content } => {
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+            } => {
                 flush_message_content(*role, &mut message_content, &mut input);
-                input.push(InputItem::Item(Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                    call_id: tool_use_id.clone(),
-                    output: FunctionCallOutput::Text(content.clone()),
-                    id: None,
-                    status: Some(OutputStatus::Completed),
-                })));
-            },
+                input.push(InputItem::Item(Item::FunctionCallOutput(
+                    FunctionCallOutputItemParam {
+                        call_id: tool_use_id.clone(),
+                        output: FunctionCallOutput::Text(content.clone()),
+                        id: None,
+                        status: Some(OutputStatus::Completed),
+                    },
+                )));
+            }
         }
     }
     flush_message_content(*role, &mut message_content, &mut input);
@@ -112,12 +133,17 @@ fn tool_choice(tool_choice: &ToolChoice) -> ToolChoiceParam {
         ToolChoice::Auto => ToolChoiceParam::Mode(ToolChoiceOptions::Auto),
         ToolChoice::Any => ToolChoiceParam::Mode(ToolChoiceOptions::Required),
         ToolChoice::None => ToolChoiceParam::Mode(ToolChoiceOptions::None),
-        ToolChoice::Tool { name } => ToolChoiceParam::Function(ToolChoiceFunction { name: name.clone() }),
+        ToolChoice::Tool { name } => {
+            ToolChoiceParam::Function(ToolChoiceFunction { name: name.clone() })
+        }
     }
 }
 
 fn normalize_assistant_history_items(body: &mut serde_json::Value) {
-    let Some(input) = body.get_mut("input").and_then(serde_json::Value::as_array_mut) else {
+    let Some(input) = body
+        .get_mut("input")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
         return;
     };
 
@@ -138,7 +164,9 @@ fn normalize_assistant_history_items(body: &mut serde_json::Value) {
             })],
             serde_json::Value::Array(parts) => parts
                 .iter()
-                .filter(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
+                .filter(|part| {
+                    part.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
+                })
                 .map(|part| {
                     serde_json::json!({
                         "type": "output_text",
@@ -199,19 +227,30 @@ pub(crate) fn create_response(
     }
     if let Some(choice) = &request.tool_choice {
         builder.tool_choice(tool_choice(choice));
-    } else if request.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
+    } else if request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
         builder.tool_choice(ToolChoiceOptions::Auto);
     }
     if request.thinking.is_some() || configured_effort.is_some() {
-        builder.reasoning(Reasoning { effort: None, summary: Some(ReasoningSummary::Auto) });
+        builder.reasoning(Reasoning {
+            effort: None,
+            summary: Some(ReasoningSummary::Auto),
+        });
     }
 
-    let typed_request =
-        builder.build().map_err(|error| LlmError::Other(format!("build OpenAI Responses request: {error}")))?;
+    let typed_request = builder
+        .build()
+        .map_err(|error| LlmError::Other(format!("build OpenAI Responses request: {error}")))?;
     let mut body = serde_json::to_value(typed_request)
         .map_err(|error| LlmError::Other(format!("serialize OpenAI Responses request: {error}")))?;
     normalize_assistant_history_items(&mut body);
-    let budget_tokens = request.thinking.as_ref().map_or(0, |thinking| thinking.budget_tokens);
+    let budget_tokens = request
+        .thinking
+        .as_ref()
+        .map_or(0, |thinking| thinking.budget_tokens);
     let effort = match configured_effort {
         Some(effort) => Some(effort),
         None => effective_reasoning_effort(None, budget_tokens),
@@ -226,8 +265,8 @@ pub(crate) fn create_response(
 mod tests {
     use super::create_response;
     use crate::{
-        ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort, RequiredMessageParams, Role,
-        Thinking, ThinkingType, Tool, ToolChoice,
+        ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
+        RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
     };
 
     fn request_with_history() -> CreateMessageParams {
@@ -237,7 +276,9 @@ mod tests {
                 Message::new_blocks(
                     Role::User,
                     vec![
-                        ContentBlock::Text { text: "inspect this".to_string() },
+                        ContentBlock::Text {
+                            text: "inspect this".to_string(),
+                        },
                         ContentBlock::Image {
                             source: ImageSource {
                                 type_: "base64".to_string(),
@@ -254,7 +295,9 @@ mod tests {
                             thinking: "summary".to_string(),
                             signature: "encrypted-payload".to_string(),
                         },
-                        ContentBlock::Text { text: "checking".to_string() },
+                        ContentBlock::Text {
+                            text: "checking".to_string(),
+                        },
                         ContentBlock::ToolUse {
                             id: "call-1".to_string(),
                             name: "bash".to_string(),
@@ -285,7 +328,10 @@ mod tests {
             }),
         }]);
         request.tool_choice = Some(ToolChoice::Any);
-        request.thinking = Some(Thinking { budget_tokens: 32_000, type_: ThinkingType::Enabled });
+        request.thinking = Some(Thinking {
+            budget_tokens: 32_000,
+            type_: ThinkingType::Enabled,
+        });
         request
     }
 
@@ -307,7 +353,8 @@ mod tests {
             item["role"] == "user"
                 && item["content"].as_array().is_some_and(|content| {
                     content.iter().any(|part| {
-                        part["type"] == "input_image" && part["image_url"] == "data:image/png;base64,aGVsbG8="
+                        part["type"] == "input_image"
+                            && part["image_url"] == "data:image/png;base64,aGVsbG8="
                     })
                 })
         }));
@@ -318,7 +365,9 @@ mod tests {
                 && item["arguments"] == r#"{"cmd":"pwd"}"#
         }));
         assert!(input.iter().any(|item| {
-            item["type"] == "function_call_output" && item["call_id"] == "call-1" && item["output"] == "/tmp/project"
+            item["type"] == "function_call_output"
+                && item["call_id"] == "call-1"
+                && item["output"] == "/tmp/project"
         }));
     }
 
@@ -344,7 +393,13 @@ mod tests {
         signature.clear();
 
         let body = create_response(&request, None).unwrap();
-        assert!(body["input"].as_array().unwrap().iter().all(|item| item["type"] != "reasoning"));
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["type"] != "reasoning")
+        );
     }
 
     #[test]
@@ -353,7 +408,12 @@ mod tests {
             (ToolChoice::Auto, serde_json::json!("auto")),
             (ToolChoice::Any, serde_json::json!("required")),
             (ToolChoice::None, serde_json::json!("none")),
-            (ToolChoice::Tool { name: "bash".to_string() }, serde_json::json!({"type": "function", "name": "bash"})),
+            (
+                ToolChoice::Tool {
+                    name: "bash".to_string(),
+                },
+                serde_json::json!({"type": "function", "name": "bash"}),
+            ),
         ];
 
         for (choice, expected) in cases {
@@ -388,13 +448,15 @@ mod tests {
 
     #[test]
     fn serializes_explicit_max_reasoning_effort() {
-        let body = create_response(&request_with_history(), Some(OpenAiReasoningEffort::Max)).unwrap();
+        let body =
+            create_response(&request_with_history(), Some(OpenAiReasoningEffort::Max)).unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
     }
 
     #[test]
     fn explicit_reasoning_effort_wins_over_budget_fallback() {
-        let body = create_response(&request_with_history(), Some(OpenAiReasoningEffort::Low)).unwrap();
+        let body =
+            create_response(&request_with_history(), Some(OpenAiReasoningEffort::Low)).unwrap();
         assert_eq!(body["reasoning"]["effort"], "low");
     }
 
@@ -409,9 +471,16 @@ mod tests {
             .expect("assistant history item");
 
         assert_eq!(assistant["status"], "completed");
-        assert!(assistant["id"].as_str().is_some_and(|id| id.starts_with("tact-assistant-history-")));
+        assert!(
+            assistant["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("tact-assistant-history-"))
+        );
         assert_eq!(assistant["content"][0]["type"], "output_text");
         assert_eq!(assistant["content"][0]["text"], "checking");
-        assert_eq!(assistant["content"][0]["annotations"], serde_json::json!([]));
+        assert_eq!(
+            assistant["content"][0]["annotations"],
+            serde_json::json!([])
+        );
     }
 }

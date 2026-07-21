@@ -22,7 +22,10 @@ pub struct TaskCreateInput {
 pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<String> {
     let task = ctx.task_manager.create(
         input.subject,
-        input.description.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+        input
+            .description
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
     )?;
     render_task_json(&task)
 }
@@ -42,7 +45,10 @@ pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskListInput {}
 
-#[tool(name = "task_list", description = "List all tasks with status summary.")]
+#[tool(
+    name = "task_list",
+    description = "List all tasks with status summary."
+)]
 pub async fn task_list(ctx: ToolContext, _input: TaskListInput) -> Result<String> {
     Ok(render_task_list(ctx.task_manager.list()?))
 }
@@ -63,18 +69,28 @@ pub struct TaskUpdateInput {
     pub add_blocks: Vec<u64>,
 }
 
-#[tool(name = "task_update", description = "Update a task's status, owner, or dependencies.")]
+#[tool(
+    name = "task_update",
+    description = "Update a task's status, owner, or dependencies."
+)]
 pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<String> {
     let status = input
         .status
         .as_deref()
         .map(TaskStatus::from_str)
         .transpose()
-        .map_err(|_| anyhow::anyhow!("Invalid status. Use pending, in_progress, completed, or deleted"))?;
+        .map_err(|_| {
+            anyhow::anyhow!("Invalid status. Use pending, in_progress, completed, or deleted")
+        })?;
 
     let task = ctx.task_manager.update(
         input.task_id,
-        TaskUpdate { status, owner: input.owner, add_blocked_by: input.add_blocked_by, add_blocks: input.add_blocks },
+        TaskUpdate {
+            status,
+            owner: input.owner,
+            add_blocked_by: input.add_blocked_by,
+            add_blocks: input.add_blocks,
+        },
     )?;
     render_task_json(&task)
 }
@@ -107,12 +123,25 @@ mod tests {
 
     #[tokio::test]
     async fn task_update_rejects_invalid_status() {
-        let router = ToolRouter::new().route(TaskCreateTool).route(TaskUpdateTool);
+        let router = ToolRouter::new()
+            .route(TaskCreateTool)
+            .route(TaskUpdateTool);
         let context = test_context("task_update_rejects_invalid_status");
 
-        let created =
-            router.call(&context, "task_create", serde_json::json!({ "subject": "Bad status" })).await.unwrap();
-        let id: u64 = serde_json::from_str::<serde_json::Value>(&created).unwrap().get("id").unwrap().as_u64().unwrap();
+        let created = router
+            .call(
+                &context,
+                "task_create",
+                serde_json::json!({ "subject": "Bad status" }),
+            )
+            .await
+            .unwrap();
+        let id: u64 = serde_json::from_str::<serde_json::Value>(&created)
+            .unwrap()
+            .get("id")
+            .unwrap()
+            .as_u64()
+            .unwrap();
 
         let error = router
             .call(
@@ -126,6 +155,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("Invalid status. Use pending, in_progress, completed, or deleted"));
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid status. Use pending, in_progress, completed, or deleted")
+        );
     }
 }

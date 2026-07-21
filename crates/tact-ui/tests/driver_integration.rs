@@ -8,13 +8,15 @@ use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
-        build_test_agent, build_test_agent_with_session, collect_updates_after, install_test_config,
-        user_command_channels,
+        build_test_agent, build_test_agent_with_session, collect_updates_after,
+        install_test_config, user_command_channels,
     },
 };
 
 fn text_block(content: &str) -> ContentBlock {
-    ContentBlock::Text { text: content.to_string() }
+    ContentBlock::Text {
+        text: content.to_string(),
+    }
 }
 
 fn read_file_tool_use(path: &str) -> ContentBlock {
@@ -45,7 +47,10 @@ fn write_file_tool_use(path: &str, content: &str) -> ContentBlock {
 async fn submit_task_emits_task_complete() {
     install_test_config();
 
-    let mock = MockClient::new(vec![(vec![text_block("Hello from mock.")], Some(StopReason::EndTurn))]);
+    let mock = MockClient::new(vec![(
+        vec![text_block("Hello from mock.")],
+        Some(StopReason::EndTurn),
+    )]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
@@ -53,14 +58,18 @@ async fn submit_task_emits_task_complete() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("Say hello".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("Say hello".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::TaskComplete(text) if text.contains("Hello"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskComplete(text) if text.contains("Hello"))),
         "expected TaskComplete with assistant text, got: {updates:?}"
     );
 }
@@ -69,23 +78,33 @@ async fn submit_task_emits_task_complete() {
 async fn submit_task_clears_stale_cancel_flag() {
     install_test_config();
 
-    let mock = MockClient::new(vec![(vec![text_block("After cancel clear.")], Some(StopReason::EndTurn))]);
+    let mock = MockClient::new(vec![(
+        vec![text_block("After cancel clear.")],
+        Some(StopReason::EndTurn),
+    )]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
-    agent.runtime.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    agent
+        .runtime
+        .cancel_flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("Try again".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("Try again".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "new SubmitTask should clear cancel_flag and complete, got: {updates:?}"
     );
 }
@@ -95,8 +114,14 @@ async fn submit_task_runs_read_file_tool() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (vec![read_file_tool_use("hello.txt")], Some(StopReason::ToolUse)),
-        (vec![text_block("File read complete.")], Some(StopReason::EndTurn)),
+        (
+            vec![read_file_tool_use("hello.txt")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![text_block("File read complete.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -106,7 +131,9 @@ async fn submit_task_runs_read_file_tool() {
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("Read hello.txt".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("Read hello.txt".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -123,7 +150,9 @@ async fn submit_task_runs_read_file_tool() {
         "expected read_file StepFinished, got: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "expected TaskComplete after tool turn, got: {updates:?}"
     );
 }
@@ -134,7 +163,10 @@ async fn cancel_during_task_does_not_emit_task_complete() {
 
     let mock = MockClient::new(vec![
         (vec![bash_tool_use("sleep 30")], Some(StopReason::ToolUse)),
-        (vec![text_block("Should not complete.")], Some(StopReason::EndTurn)),
+        (
+            vec![text_block("Should not complete.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -143,24 +175,35 @@ async fn cancel_during_task_does_not_emit_task_complete() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("run sleep".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("run sleep".into()))
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     user_cmd_tx.send(UserCommand::Cancel).unwrap();
     drop(user_cmd_tx);
 
-    tokio::time::timeout(Duration::from_secs(2), driver).await.expect("driver should cancel bash promptly").unwrap();
+    tokio::time::timeout(Duration::from_secs(2), driver)
+        .await
+        .expect("driver should cancel bash promptly")
+        .unwrap();
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelling"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelling"))),
         "expected Cancelling info, got: {updates:?}"
     );
     assert!(
-        !updates.iter().any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+        !updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "cancelled task must not emit TaskComplete, got: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::TaskCancelled)),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskCancelled)),
         "cancelled task must emit TaskCancelled so TUI leaves busy state, got: {updates:?}"
     );
 }
@@ -169,22 +212,35 @@ async fn cancel_during_task_does_not_emit_task_complete() {
 async fn submit_task_persists_messages_to_session_store() {
     install_test_config();
 
-    let mock = MockClient::new(vec![(vec![text_block("Persist me.")], Some(StopReason::EndTurn))]);
+    let mock = MockClient::new(vec![(
+        vec![text_block("Persist me.")],
+        Some(StopReason::EndTurn),
+    )]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (agent, work_dir, session_store, session_id) = build_test_agent_with_session(mock, Some(agent_tx)).await;
+    let (agent, work_dir, session_store, session_id) =
+        build_test_agent_with_session(mock, Some(agent_tx)).await;
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("persist".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("persist".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
     let _updates = collect_updates_after(agent_rx).await;
 
-    let messages = session_store.load_session(&session_id).await.expect("load session");
-    assert!(messages.len() >= 2, "expected user + assistant rows in SQLite, got {}", messages.len());
+    let messages = session_store
+        .load_session(&session_id)
+        .await
+        .expect("load session");
+    assert!(
+        messages.len() >= 2,
+        "expected user + assistant rows in SQLite, got {}",
+        messages.len()
+    );
 }
 
 #[tokio::test]
@@ -192,8 +248,14 @@ async fn sequential_submit_tasks_both_complete() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (vec![text_block("First task done.")], Some(StopReason::EndTurn)),
-        (vec![text_block("Second task done.")], Some(StopReason::EndTurn)),
+        (
+            vec![text_block("First task done.")],
+            Some(StopReason::EndTurn),
+        ),
+        (
+            vec![text_block("Second task done.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -202,8 +264,12 @@ async fn sequential_submit_tasks_both_complete() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("first".into())).unwrap();
-    user_cmd_tx.send(UserCommand::SubmitTask("second".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("first".into()))
+        .unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("second".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -216,7 +282,11 @@ async fn sequential_submit_tasks_both_complete() {
             _ => None,
         })
         .collect();
-    assert_eq!(completes.len(), 2, "expected two TaskComplete, got: {updates:?}");
+    assert_eq!(
+        completes.len(),
+        2,
+        "expected two TaskComplete, got: {updates:?}"
+    );
     assert!(completes[0].contains("First"));
     assert!(completes[1].contains("Second"));
 }
@@ -226,8 +296,14 @@ async fn submit_task_runs_write_file_tool() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (vec![write_file_tool_use("out.txt", "written by test")], Some(StopReason::ToolUse)),
-        (vec![text_block("Write complete.")], Some(StopReason::EndTurn)),
+        (
+            vec![write_file_tool_use("out.txt", "written by test")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![text_block("Write complete.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -236,7 +312,9 @@ async fn submit_task_runs_write_file_tool() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("write out.txt".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("write out.txt".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -264,8 +342,14 @@ async fn read_missing_file_emits_failed_step() {
     install_test_config();
 
     let mock = MockClient::new(vec![
-        (vec![read_file_tool_use("missing.txt")], Some(StopReason::ToolUse)),
-        (vec![text_block("Handled missing file.")], Some(StopReason::EndTurn)),
+        (
+            vec![read_file_tool_use("missing.txt")],
+            Some(StopReason::ToolUse),
+        ),
+        (
+            vec![text_block("Handled missing file.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -274,7 +358,9 @@ async fn read_missing_file_emits_failed_step() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("read missing".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("read missing".into()))
+        .unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -292,7 +378,9 @@ async fn read_missing_file_emits_failed_step() {
         "missing file should produce failed StepFinished, got: {updates:?}"
     );
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
         "agent should continue after tool failure, got: {updates:?}"
     );
 }
@@ -303,7 +391,10 @@ async fn cancel_emits_cancelled_by_user_info() {
 
     let mock = MockClient::new(vec![
         (vec![bash_tool_use("sleep 3")], Some(StopReason::ToolUse)),
-        (vec![text_block("Should not finish.")], Some(StopReason::EndTurn)),
+        (
+            vec![text_block("Should not finish.")],
+            Some(StopReason::EndTurn),
+        ),
     ]);
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -312,16 +403,23 @@ async fn cancel_emits_cancelled_by_user_info() {
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
-    user_cmd_tx.send(UserCommand::SubmitTask("slow".into())).unwrap();
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("slow".into()))
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     user_cmd_tx.send(UserCommand::Cancel).unwrap();
     drop(user_cmd_tx);
 
-    tokio::time::timeout(Duration::from_secs(5), driver).await.expect("driver should finish").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("driver should finish")
+        .unwrap();
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelled by user"))),
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelled by user"))),
         "cancelled agent_loop should emit info, got: {updates:?}"
     );
 }

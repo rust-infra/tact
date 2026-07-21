@@ -55,26 +55,36 @@ impl ProviderInfo {
         if self.base_url.is_empty() {
             anyhow::bail!("base_url not configured for provider '{}'", self.provider);
         }
-        Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(self.api_key.clone(), self.base_url.clone())))
+        Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
+            self.api_key.clone(),
+            self.base_url.clone(),
+        )))
     }
 
     /// Build a dedicated DeepSeek Chat Completions client.
     fn build_deepseek(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
-        Ok(LlmProvider::DeepSeek(deepseek::DeepSeekAdapter::new(config)))
+        Ok(LlmProvider::DeepSeek(deepseek::DeepSeekAdapter::new(
+            config,
+        )))
     }
 
     /// Build a dedicated Kimi / Moonshot Chat Completions client.
     fn build_kimi(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
-        Ok(LlmProvider::Kimi(kimi::KimiAdapter::new(config, self.model.clone())))
+        Ok(LlmProvider::Kimi(kimi::KimiAdapter::new(
+            config,
+            self.model.clone(),
+        )))
     }
 
     /// Build an OpenAI-compatible (Chat Completions API) client.
     fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
         let adapter = openai::OpenAiAdapter::new(config);
-        Ok(LlmProvider::OpenAi(openai::OpenAiMultiModelAdapter::new(adapter)))
+        Ok(LlmProvider::OpenAi(openai::OpenAiMultiModelAdapter::new(
+            adapter,
+        )))
     }
 
     /// Build the official OpenAI Responses API client.
@@ -86,15 +96,19 @@ impl ProviderInfo {
             self.provider
                 .default_base_url()
                 .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("no default base_url for provider '{}'", self.provider))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
+                })?
         } else {
             self.base_url.clone()
         };
-        Ok(LlmProvider::OpenAiResponses(openai::responses::OpenAiResponsesAdapter::new(
-            self.api_key.clone(),
-            base_url,
-            self.reasoning_effort,
-        )))
+        Ok(LlmProvider::OpenAiResponses(
+            openai::responses::OpenAiResponsesAdapter::new(
+                self.api_key.clone(),
+                base_url,
+                self.reasoning_effort,
+            ),
+        ))
     }
 
     fn openai_compatible_config(&self) -> anyhow::Result<openai::CompatibleConfig> {
@@ -105,11 +119,16 @@ impl ProviderInfo {
             self.provider
                 .default_base_url()
                 .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("no default base_url for provider '{}'", self.provider))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
+                })?
         } else {
             self.base_url.clone()
         };
-        Ok(openai::CompatibleConfig::new(self.api_key.clone(), base_url))
+        Ok(openai::CompatibleConfig::new(
+            self.api_key.clone(),
+            base_url,
+        ))
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint.
@@ -166,7 +185,8 @@ impl ProviderInfo {
             return self.provider == ProviderKind::Kimi;
         }
         reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
-            url.scheme() == "https" && matches!(url.host_str(), Some("api.moonshot.cn" | "api.moonshot.ai"))
+            url.scheme() == "https"
+                && matches!(url.host_str(), Some("api.moonshot.cn" | "api.moonshot.ai"))
         })
     }
 
@@ -236,7 +256,9 @@ where
     F: FnOnce(&ProviderInfo) -> R,
 {
     let guard = PROVIDER.read().expect("LLM provider lock poisoned");
-    f(guard.as_ref().expect("LLM provider not initialized; call tact_llm::init_provider first"))
+    f(guard
+        .as_ref()
+        .expect("LLM provider not initialized; call tact_llm::init_provider first"))
 }
 
 /// Update only the active model id (used by the TUI `/model` command).
@@ -246,8 +268,9 @@ pub fn set_model(model: impl Into<String>) -> Result<(), String> {
         return Err("model must not be empty".to_string());
     }
     let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
-    let info =
-        guard.as_mut().ok_or_else(|| "LLM provider not initialized; call tact_llm::init_provider first".to_string())?;
+    let info = guard.as_mut().ok_or_else(|| {
+        "LLM provider not initialized; call tact_llm::init_provider first".to_string()
+    })?;
     info.model = model;
     Ok(())
 }
@@ -264,7 +287,9 @@ pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
 /// (e.g. `provider = "openai"` with a `deepseek.com` base URL).
 pub fn is_deepseek() -> bool {
     read_provider(|p| {
-        p.provider == ProviderKind::DeepSeek || p.base_url.contains("deepseek") || p.model.contains("deepseek")
+        p.provider == ProviderKind::DeepSeek
+            || p.base_url.contains("deepseek")
+            || p.model.contains("deepseek")
     })
 }
 
@@ -321,7 +346,12 @@ mod tests {
         types::{CreateMessageParams, RequiredMessageParams, StopReason},
     };
 
-    fn provider_info(provider: ProviderKind, api_key: &str, base_url: &str, model: &str) -> ProviderInfo {
+    fn provider_info(
+        provider: ProviderKind,
+        api_key: &str,
+        base_url: &str,
+        model: &str,
+    ) -> ProviderInfo {
         ProviderInfo {
             provider,
             protocol: OpenAiProtocol::default(),
@@ -385,7 +415,12 @@ mod tests {
 
     #[test]
     fn custom_base_url_is_preserved() {
-        let p = provider_info(ProviderKind::Kimi, "sk-test", "https://api.kimi.com/coding/v1", "kimi-for-coding");
+        let p = provider_info(
+            ProviderKind::Kimi,
+            "sk-test",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
         let result = p.build_client().unwrap();
         let LlmProvider::Kimi(adapter) = result else {
             panic!("expected Kimi adapter");
@@ -396,8 +431,18 @@ mod tests {
     #[test]
     fn is_kimi_detection() {
         assert!(provider_info(ProviderKind::Kimi, "", "", "kimi-k2.5").is_kimi());
-        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.moonshot.cn/v1", "").is_kimi());
-        assert!(provider_info(ProviderKind::OpenAi, "", "https://api.kimi.com/coding/v1", "").is_kimi());
+        assert!(
+            provider_info(ProviderKind::OpenAi, "", "https://api.moonshot.cn/v1", "").is_kimi()
+        );
+        assert!(
+            provider_info(
+                ProviderKind::OpenAi,
+                "",
+                "https://api.kimi.com/coding/v1",
+                ""
+            )
+            .is_kimi()
+        );
         assert!(provider_info(ProviderKind::OpenAi, "", "", "kimi-k2.5").is_kimi());
         assert!(!provider_info(ProviderKind::Anthropic, "", "", "claude-sonnet-4").is_kimi());
     }
@@ -412,30 +457,55 @@ mod tests {
         assert!(k27.is_kimi_k2x());
         assert!(k27.is_kimi_k27());
 
-        let coding = provider_info(ProviderKind::OpenAi, "", "https://api.kimi.com/coding/v1", "kimi-for-coding");
+        let coding = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
         assert!(coding.is_kimi_k2x());
         assert!(coding.is_kimi_k27());
     }
 
     #[test]
     fn is_kimi_coding_and_balance_supported() {
-        let coding = provider_info(ProviderKind::OpenAi, "", "https://api.kimi.com/coding/v1", "kimi-for-coding");
+        let coding = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
         assert!(coding.is_kimi_coding());
         assert!(!coding.is_kimi_balance_supported());
         assert!(coding.is_kimi_usage_supported());
 
-        let cn = provider_info(ProviderKind::Kimi, "", "https://api.moonshot.cn/v1", "kimi-k2.5");
+        let cn = provider_info(
+            ProviderKind::Kimi,
+            "",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        );
         assert!(!cn.is_kimi_coding());
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
 
-        let proxy_balance = provider_info(ProviderKind::Kimi, "", "https://proxy.example.com/v1", "kimi-k2.5");
+        let proxy_balance = provider_info(
+            ProviderKind::Kimi,
+            "",
+            "https://proxy.example.com/v1",
+            "kimi-k2.5",
+        );
         assert!(!proxy_balance.is_kimi_balance_supported());
         assert!(!proxy_balance.is_account_query_supported());
 
         // kimi-for-coding behind a custom proxy is still Kimi Code:
         // no balance API, usage quota supported.
-        let proxy = provider_info(ProviderKind::OpenAi, "", "https://proxy.example.com/v1", "kimi-for-coding");
+        let proxy = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://proxy.example.com/v1",
+            "kimi-for-coding",
+        );
         assert!(proxy.is_kimi_coding());
         assert!(!proxy.is_kimi_balance_supported());
         assert!(proxy.is_kimi_usage_supported());
@@ -443,7 +513,12 @@ mod tests {
         assert!(coding.is_account_query_supported());
         assert!(cn.is_account_query_supported());
 
-        let anthropic = provider_info(ProviderKind::Anthropic, "", "https://api.anthropic.com", "claude-sonnet-4");
+        let anthropic = provider_info(
+            ProviderKind::Anthropic,
+            "",
+            "https://api.anthropic.com",
+            "claude-sonnet-4",
+        );
         assert!(!anthropic.is_account_query_supported());
     }
 
@@ -468,7 +543,9 @@ mod tests {
             reasoning_tokens: 1,
         };
         let client = MockClient::with_usage(vec![(
-            vec![ContentBlock::Text { text: "hi".to_string() }],
+            vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
             Some(StopReason::EndTurn),
             usage.clone(),
         )]);
@@ -499,7 +576,12 @@ mod tests {
     #[test]
     fn set_model_updates_and_rejects_empty() {
         let _guard = super::lock_provider_for_tests();
-        init_provider(provider_info(ProviderKind::Kimi, "sk-test", "https://api.moonshot.cn/v1", "kimi-k2.5"));
+        init_provider(provider_info(
+            ProviderKind::Kimi,
+            "sk-test",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        ));
         set_model("kimi-for-coding").unwrap();
         assert_eq!(get_provider().model, "kimi-for-coding");
 

@@ -7,8 +7,8 @@ use ratatui::{
 };
 use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
-    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk, ToolOutputBuffer,
-    ToolOutputChunk,
+    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
+    ToolOutputBuffer, ToolOutputChunk,
 };
 
 use crate::{
@@ -32,7 +32,10 @@ fn sanitize_plugin_failure_detail(detail: &str) -> String {
         .collect();
 
     if sanitized.chars().count() > MAX_PLUGIN_FAILURE_DETAIL_CHARS {
-        sanitized = sanitized.chars().take(MAX_PLUGIN_FAILURE_DETAIL_CHARS).collect();
+        sanitized = sanitized
+            .chars()
+            .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS)
+            .collect();
         sanitized.push_str("...");
     }
 
@@ -45,31 +48,45 @@ fn replace_two(template: &str, first: &str, second: &str) -> String {
 
 fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult) -> String {
     match result {
-        PluginResult::Installed { plugin, marketplace } => {
-            replace_two(messages.plugin_installed_tmpl, plugin, marketplace)
-        },
+        PluginResult::Installed {
+            plugin,
+            marketplace,
+        } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
         // Rendered as a titled table by `App::show_plugin_list`; plain fallback only.
         PluginResult::ListedInstalled { .. } => messages.plugin_list_empty.to_owned(),
-        PluginResult::Reloaded { count } => messages.plugin_reloaded_tmpl.replace("{}", &count.to_string()),
-        PluginResult::MarketplaceAdded { marketplace } => messages.marketplace_added_tmpl.replace("{}", marketplace),
-        PluginResult::ListedMarketplaces { marketplaces } => messages.marketplace_list_tmpl.replace(
-            "{}",
-            &marketplaces
-                .iter()
-                .map(|marketplace| format!("{}: {}", marketplace.name, marketplace.source.git_url()))
-                .collect::<Vec<_>>()
-                .join("\n"),
+        PluginResult::Reloaded { count } => messages
+            .plugin_reloaded_tmpl
+            .replace("{}", &count.to_string()),
+        PluginResult::MarketplaceAdded { marketplace } => {
+            messages.marketplace_added_tmpl.replace("{}", marketplace)
+        }
+        PluginResult::ListedMarketplaces { marketplaces } => {
+            messages.marketplace_list_tmpl.replace(
+                "{}",
+                &marketplaces
+                    .iter()
+                    .map(|marketplace| {
+                        format!("{}: {}", marketplace.name, marketplace.source.git_url())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+        PluginResult::MarketplaceUpdated { marketplace, count } => replace_two(
+            messages.marketplace_updated_tmpl,
+            marketplace,
+            &count.to_string(),
         ),
-        PluginResult::MarketplaceUpdated { marketplace, count } => {
-            replace_two(messages.marketplace_updated_tmpl, marketplace, &count.to_string())
-        },
         PluginResult::MarketplaceRemoved { marketplace } => {
             messages.marketplace_removed_tmpl.replace("{}", marketplace)
-        },
+        }
     }
 }
 
-fn plugin_operation_label(messages: &crate::i18n::Messages, operation: &PluginOperation) -> &'static str {
+fn plugin_operation_label(
+    messages: &crate::i18n::Messages,
+    operation: &PluginOperation,
+) -> &'static str {
     match operation {
         PluginOperation::Install { .. } => messages.plugin_operation_install,
         PluginOperation::List => messages.plugin_operation_list,
@@ -91,7 +108,10 @@ fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
 }
 
 fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
-    chrono::Local::now().signed_duration_since(start).num_seconds().max(0)
+    chrono::Local::now()
+        .signed_duration_since(start)
+        .num_seconds()
+        .max(0)
 }
 
 impl App {
@@ -110,29 +130,43 @@ impl App {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolProgress { .. } => {},
+            | AgentUpdate::ToolProgress { .. } => {}
             _ => {
                 self.flush_and_close_thinking();
-            },
+            }
         }
         // Remove the loading placeholder on any content-producing update.
         // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
         // should NOT remove the placeholder since they don't produce visible content.
         match &update {
-            AgentUpdate::TokenUsage(_) | AgentUpdate::ModelInfo(_) | AgentUpdate::ToolProgress { .. } => {
+            AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolProgress { .. } => {
                 // Metadata only, no content: keep the loading placeholder.
-            },
+            }
             _ => {
                 self.remove_loading_placeholder();
-            },
+            }
         }
         match update {
             AgentUpdate::StepAdded(step) => self.on_step_added(step),
-            AgentUpdate::StepStarted { idx, tool_id, tool_name, arg_summary, arg_full } => {
-                self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full)
-            },
-            AgentUpdate::StepFinished { idx, tool_id, result } => self.on_step_finished(idx, tool_id, result),
-            AgentUpdate::StepFailed { idx, tool_id, error } => self.on_step_failed(idx, tool_id, error),
+            AgentUpdate::StepStarted {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                arg_full,
+            } => self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full),
+            AgentUpdate::StepFinished {
+                idx,
+                tool_id,
+                result,
+            } => self.on_step_finished(idx, tool_id, result),
+            AgentUpdate::StepFailed {
+                idx,
+                tool_id,
+                error,
+            } => self.on_step_failed(idx, tool_id, error),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -151,7 +185,7 @@ impl App {
                 self.freeze_last_prompt_cost();
                 self.task_done_time = Some(chrono::Local::now());
                 // TODO Add task stats block
-            },
+            }
             AgentUpdate::TaskCancelled => {
                 // Cancel exits without TaskComplete; must leave Planning/Executing
                 // or Enter keeps flashing input_busy_msg.
@@ -163,7 +197,7 @@ impl App {
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
                 self.task_done_time = None;
-            },
+            }
             // Error handling
             AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
                 // Fatal error: flush leftover streaming lines
@@ -172,7 +206,7 @@ impl App {
                 self.add_system_message(msgs.error_tmpl.replace("{}", &msg));
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
-            },
+            }
             // Update token usage info
             AgentUpdate::TokenUsage(usage) => {
                 self.status_bar.token_prompt = usage.prompt;
@@ -181,47 +215,58 @@ impl App {
                 self.status_bar.token_cache_hit = usage.prompt_cache_hit_tokens;
                 self.status_bar.token_cache_miss = usage.prompt_cache_miss_tokens;
                 self.status_bar.token_reasoning = usage.reasoning_tokens;
-            },
+            }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
                 self.status_bar.model_name = params.model;
                 self.status_bar.model_max_tokens = params.max_tokens;
                 self.status_bar.model_thinking_budget = params.thinking_budget;
                 self.status_bar.model_reasoning_effort = params.reasoning_effort;
-            },
+            }
             // Add system message
             AgentUpdate::Info(msg) => {
                 self.add_system_message(msg);
-            },
-            AgentUpdate::RequestSelect { prompt, options, respond, log_confirm } => {
+            }
+            AgentUpdate::RequestSelect {
+                prompt,
+                options,
+                respond,
+                log_confirm,
+            } => {
                 self.select_kind = SelectKind::Agent;
                 self.select.set(prompt, options, respond, log_confirm);
                 self.input_mode = InputMode::Select;
-            },
-            AgentUpdate::RequestMultiSelect { prompt, options, respond } => {
+            }
+            AgentUpdate::RequestMultiSelect {
+                prompt,
+                options,
+                respond,
+            } => {
                 self.select_kind = SelectKind::Agent;
                 // Choice is shown on the ask_user tool meta row; no duplicate log line.
                 self.select.set_multi(prompt, options, respond, false);
                 self.input_mode = InputMode::Select;
-            },
+            }
             AgentUpdate::ThinkingChunk(chunk) => {
                 match chunk {
                     ThinkingChunk::Started => {
                         self.begin_thinking_block();
-                    },
+                    }
                     ThinkingChunk::Delta(text) => {
                         // Started may be missing on older producers — open on first delta.
                         if self.thinking.active.is_none() {
                             self.begin_thinking_block();
                         }
                         self.append_thinking_delta(&text);
-                    },
+                    }
                     ThinkingChunk::Finished => {
                         self.flush_and_close_thinking();
-                    },
+                    }
                 }
-            },
-            AgentUpdate::ToolProgress { tool_id, chunks } => self.on_tool_progress(&tool_id, &chunks),
+            }
+            AgentUpdate::ToolProgress { tool_id, chunks } => {
+                self.on_tool_progress(&tool_id, &chunks)
+            }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
         }
         // Unified tail scroll state refresh, covering cases where helpers like
@@ -238,7 +283,9 @@ impl App {
         self.flush_stream_pending();
         let idx = self.plan.steps.len();
         self.plan.steps.push(step.clone());
-        self.plan.steps_set.insert(step.tool_id.clone(), step.clone());
+        self.plan
+            .steps_set
+            .insert(step.tool_id.clone(), step.clone());
         self.plan.collapsed.push(false);
         // Don't change current_step or total — the step hasn't started yet.
         // Ensure there is an Executing status before StepStarted arrives.
@@ -258,7 +305,11 @@ impl App {
         self.flush_stream_pending();
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
-        if let Status::Executing { current_step, total } = &mut self.status {
+        if let Status::Executing {
+            current_step,
+            total,
+        } = &mut self.status
+        {
             *current_step = idx;
             if idx >= *total {
                 *total = idx + 1;
@@ -285,7 +336,12 @@ impl App {
     }
 
     fn on_tool_progress(&mut self, tool_id: &str, chunks: &[ToolOutputChunk]) {
-        let Some(pos) = self.tools.active.iter().position(|active| active.tool_id == tool_id) else {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|active| active.tool_id == tool_id)
+        else {
             return;
         };
         let was_pinned = self.is_log_pinned_to_bottom();
@@ -325,7 +381,9 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
-        let output = ToolWidget::from_step_result(&result, &self.theme, &msgs).with_step_index(idx).build();
+        let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+            .with_step_index(idx)
+            .build();
         self.finalize_tool_block(&tool_id, output);
 
         if let Some(step) = self.plan.steps.get_mut(idx) {
@@ -353,7 +411,9 @@ impl App {
         } else {
             let msgs = self.msgs();
             self.add_system_message(
-                msgs.step_failed_tmpl.replacen("{}", &(idx + 1).to_string(), 1).replacen("{}", &error, 1),
+                msgs.step_failed_tmpl
+                    .replacen("{}", &(idx + 1).to_string(), 1)
+                    .replacen("{}", &error, 1),
             );
         }
         self.status = Status::Idle;
@@ -391,9 +451,16 @@ impl App {
                         let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
                         let (styled, _) = render_markdown_tui(&code_text, &self.theme);
                         let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
-                        let placeholders: Vec<Line<'static>> = (0..placeholder_count).map(|_| Line::from("")).collect();
-                        let raw_placeholders: Vec<String> = (0..placeholder_count).map(|_| String::new()).collect();
-                        self.splice_msgs(start_idx..stream_end, placeholders, raw_placeholders, RawMessageType::LLM);
+                        let placeholders: Vec<Line<'static>> =
+                            (0..placeholder_count).map(|_| Line::from("")).collect();
+                        let raw_placeholders: Vec<String> =
+                            (0..placeholder_count).map(|_| String::new()).collect();
+                        self.splice_msgs(
+                            start_idx..stream_end,
+                            placeholders,
+                            raw_placeholders,
+                            RawMessageType::LLM,
+                        );
                         self.code_blocks.push(CodeBlock {
                             start_idx,
                             end_idx: start_idx + placeholder_count,
@@ -464,10 +531,17 @@ impl App {
                 self.stream.code_block_line_count = 1;
 
                 // Container header: ╭─ lang ─────
-                let label = if lang.is_empty() { "code".to_string() } else { lang.clone() };
+                let label = if lang.is_empty() {
+                    "code".to_string()
+                } else {
+                    lang.clone()
+                };
                 let header_text = format!("╭─ {} ", label);
                 self.append_msg(
-                    Line::from(Span::styled(header_text.clone(), Style::default().fg(Color::DarkGray).bg(CODE_BG))),
+                    Line::from(Span::styled(
+                        header_text.clone(),
+                        Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                    )),
                     format!("```{}", lang),
                     RawMessageType::LLM,
                 );
@@ -539,7 +613,7 @@ impl App {
                     self.account.clear();
                 }
                 self.flash_msg = Some((err.to_string(), std::time::Instant::now()));
-            },
+            }
         }
     }
 
@@ -550,10 +624,15 @@ impl App {
         self.add_new_line();
 
         let msgs = self.msgs();
-        let title = msgs.plugin_list_title_tmpl.replace("{}", &plugins.len().to_string());
+        let title = msgs
+            .plugin_list_title_tmpl
+            .replace("{}", &plugins.len().to_string());
         let title_ty = classify_system_message(&title);
         self.append_msg(
-            Line::from(Span::styled(title.clone(), Style::default().fg(self.theme.accent))),
+            Line::from(Span::styled(
+                title.clone(),
+                Style::default().fg(self.theme.accent),
+            )),
             title,
             title_ty,
         );
@@ -567,12 +646,16 @@ impl App {
                 classify_system_message(empty),
             );
         } else {
-            let mut rows = vec![msgs.plugin_list_header.to_string(), "|---|---|---|".to_string()];
-            rows.extend(
-                plugins
-                    .iter()
-                    .map(|plugin| format!("| {} | {} | {} |", plugin.id, plugin.marketplace, plugin.skill_count)),
-            );
+            let mut rows = vec![
+                msgs.plugin_list_header.to_string(),
+                "|---|---|---|".to_string(),
+            ];
+            rows.extend(plugins.iter().map(|plugin| {
+                format!(
+                    "| {} | {} | {} |",
+                    plugin.id, plugin.marketplace, plugin.skill_count
+                )
+            }));
             let (styled, raw) = format_table(&rows, &self.theme);
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
@@ -589,16 +672,21 @@ impl App {
     pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
         self.dirty = true;
         match event {
-            PluginEvent::Succeeded { result, refresh_skills } => {
+            PluginEvent::Succeeded {
+                result,
+                refresh_skills,
+            } => {
                 if let PluginResult::ListedInstalled { plugins } = &result {
                     self.show_plugin_list(plugins);
                 } else {
                     self.add_system_message(format_plugin_result(&self.msgs(), &result));
                 }
                 if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
-                    self.add_system_message(self.msgs().plugin_reload_failed_tmpl.replace("{}", &error));
+                    self.add_system_message(
+                        self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
+                    );
                 }
-            },
+            }
             PluginEvent::Failed { operation, detail } => {
                 let detail = sanitize_plugin_failure_detail(&detail);
                 self.add_system_message(replace_two(
@@ -606,7 +694,7 @@ impl App {
                     plugin_operation_label(&self.msgs(), &operation),
                     &detail,
                 ));
-            },
+            }
         }
     }
 
@@ -614,7 +702,10 @@ impl App {
     pub(crate) fn maybe_expire_done_status(&mut self) {
         if let Status::Done = self.status
             && let Some(done_time) = self.task_done_time
-            && chrono::Local::now().signed_duration_since(done_time).num_seconds() >= 2
+            && chrono::Local::now()
+                .signed_duration_since(done_time)
+                .num_seconds()
+                >= 2
         {
             self.status = Status::Idle;
             self.task_done_time = None;
@@ -624,7 +715,11 @@ impl App {
 
     /// Clear `flash_msg` after 3s (shared with `run_tui` main loop).
     pub(crate) fn maybe_clear_flash_msg(&mut self) {
-        if self.flash_msg.as_ref().is_some_and(|(_, t)| t.elapsed().as_secs() >= 3) {
+        if self
+            .flash_msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed().as_secs() >= 3)
+        {
             self.flash_msg = None;
             self.dirty = true;
         }
@@ -637,8 +732,8 @@ mod lifecycle_tests {
 
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
-        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk,
-        ToolOutputChunk,
+        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
+        ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -684,8 +779,9 @@ mod lifecycle_tests {
         write_skill(work_dir, "existing");
         let mut app = make_app();
         app.work_dir = work_dir.to_path_buf();
-        app.skill_registry =
-            std::sync::Arc::new(std::sync::Mutex::new(tact::skill::get_skill_registry(work_dir).unwrap()));
+        app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
+            tact::skill::get_skill_registry(work_dir).unwrap(),
+        ));
         app
     }
 
@@ -696,7 +792,9 @@ mod lifecycle_tests {
         write_skill(temp_dir.path(), "new");
 
         app.handle_plugin_event(PluginEvent::Succeeded {
-            result: PluginResult::ListedInstalled { plugins: Vec::new() },
+            result: PluginResult::ListedInstalled {
+                plugins: Vec::new(),
+            },
             refresh_skills: false,
         });
 
@@ -712,7 +810,10 @@ mod lifecycle_tests {
         write_skill(temp_dir.path(), "new");
 
         app.handle_plugin_event(PluginEvent::Failed {
-            operation: PluginOperation::Install { plugin: "plugin".into(), marketplace: "fixture".into() },
+            operation: PluginOperation::Install {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
             detail: "technical detail".into(),
         });
 
@@ -728,7 +829,10 @@ mod lifecycle_tests {
         write_skill(temp_dir.path(), "new");
 
         app.handle_plugin_event(PluginEvent::Succeeded {
-            result: PluginResult::Installed { plugin: "plugin".into(), marketplace: "fixture".into() },
+            result: PluginResult::Installed {
+                plugin: "plugin".into(),
+                marketplace: "fixture".into(),
+            },
             refresh_skills: true,
         });
 
@@ -743,11 +847,18 @@ mod lifecycle_tests {
         app.language = crate::i18n::Language::Chinese;
 
         app.handle_plugin_event(PluginEvent::Succeeded {
-            result: PluginResult::Installed { plugin: "demo".into(), marketplace: "fixture".into() },
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
             refresh_skills: false,
         });
 
-        assert!(app.raw_messages.iter().any(|message| message.contains("已安装插件 demo（来自 fixture）")));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("已安装插件 demo（来自 fixture）"))
+        );
     }
 
     #[test]
@@ -755,11 +866,18 @@ mod lifecycle_tests {
         let mut app = make_app();
 
         app.handle_plugin_event(PluginEvent::Succeeded {
-            result: PluginResult::Installed { plugin: "demo".into(), marketplace: "fixture".into() },
+            result: PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
             refresh_skills: false,
         });
 
-        assert!(app.raw_messages.iter().any(|message| message.contains("Installed plugin demo from fixture")));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.contains("Installed plugin demo from fixture"))
+        );
     }
 
     #[test]
@@ -780,13 +898,22 @@ mod lifecycle_tests {
         });
 
         let joined = app.raw_messages.join("\n");
-        assert!(joined.contains("Installed plugins (1)"), "expected titled block, got:\n{joined}");
+        assert!(
+            joined.contains("Installed plugins (1)"),
+            "expected titled block, got:\n{joined}"
+        );
         assert!(
             joined.contains("superpowers") && joined.contains("superpowers-dev"),
             "table should show plugin and marketplace, got:\n{joined}"
         );
-        assert!(joined.contains("12"), "table should show skill count, got:\n{joined}");
-        assert!(!joined.contains("installed plugins:"), "old flat message must be gone, got:\n{joined}");
+        assert!(
+            joined.contains("12"),
+            "table should show skill count, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("installed plugins:"),
+            "old flat message must be gone, got:\n{joined}"
+        );
     }
 
     #[test]
@@ -795,29 +922,49 @@ mod lifecycle_tests {
         app.language = crate::i18n::Language::Chinese;
 
         app.handle_plugin_event(PluginEvent::Failed {
-            operation: PluginOperation::Install { plugin: "demo".into(), marketplace: "fixture".into() },
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
             detail: "network timeout".into(),
         });
 
-        assert!(app.raw_messages.iter().any(|message| message == "安装插件失败：network timeout"));
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message == "安装插件失败：network timeout")
+        );
     }
 
     #[test]
     fn plugin_failure_message_sanitizes_and_bounds_technical_detail() {
         let mut app = make_app();
-        let detail = format!("\u{1b}[31mnetwork\nerror\r\n\u{7}{}", "雪".repeat(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1));
+        let detail = format!(
+            "\u{1b}[31mnetwork\nerror\r\n\u{7}{}",
+            "雪".repeat(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
+        );
 
         app.handle_plugin_event(PluginEvent::Failed {
-            operation: PluginOperation::Install { plugin: "demo".into(), marketplace: "fixture".into() },
+            operation: PluginOperation::Install {
+                plugin: "demo".into(),
+                marketplace: "fixture".into(),
+            },
             detail,
         });
 
-        let message = app.raw_messages.iter().find(|message| message.starts_with("install plugin failed: ")).unwrap();
+        let message = app
+            .raw_messages
+            .iter()
+            .find(|message| message.starts_with("install plugin failed: "))
+            .unwrap();
         let sanitized_detail = message.strip_prefix("install plugin failed: ").unwrap();
         assert!(!sanitized_detail.chars().any(char::is_control));
         assert!(sanitized_detail.starts_with(" [31mnetwork error  "));
         assert!(sanitized_detail.ends_with("..."));
-        assert_eq!(sanitized_detail.chars().count(), MAX_PLUGIN_FAILURE_DETAIL_CHARS + 3);
+        assert_eq!(
+            sanitized_detail.chars().count(),
+            MAX_PLUGIN_FAILURE_DETAIL_CHARS + 3
+        );
         assert!(sanitized_detail.contains('雪'));
     }
 
@@ -867,7 +1014,12 @@ mod lifecycle_tests {
         assert_eq!(app.tools.active[0].output.visual_rows(false), three_rows);
         assert_eq!(app.tools.active[0].output.detail_preview.len(), 3);
         assert_eq!(
-            app.tools.active[0].output.detail_preview.iter().map(|line| line.plain_text()).collect::<Vec<_>>(),
+            app.tools.active[0]
+                .output
+                .detail_preview
+                .iter()
+                .map(|line| line.plain_text())
+                .collect::<Vec<_>>(),
             ["two", "three", "four"]
         );
     }
@@ -892,7 +1044,11 @@ mod lifecycle_tests {
         seed_running_bash(&mut app, "b1");
 
         let _ = render_log_panel_text(&mut app, 80, 4);
-        assert_ne!(app.log_scroll.offset, u16::MAX, "render clamps the bottom sentinel");
+        assert_ne!(
+            app.log_scroll.offset,
+            u16::MAX,
+            "render clamps the bottom sentinel"
+        );
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
@@ -911,7 +1067,9 @@ mod lifecycle_tests {
     fn progress_keeps_open_thinking_and_ignores_unknown_tool_ids() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("still thinking".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "still thinking".into(),
+        )));
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "unknown".into(),
@@ -934,7 +1092,12 @@ mod lifecycle_tests {
 
         app.open_diff_popup(phys_idx);
 
-        let content = app.tools.popup.as_ref().and_then(|popup| popup.inline_content.as_deref()).unwrap_or_default();
+        let content = app
+            .tools
+            .popup
+            .as_ref()
+            .and_then(|popup| popup.inline_content.as_deref())
+            .unwrap_or_default();
         assert!(content.contains("live line"), "popup content: {content}");
     }
 
@@ -970,7 +1133,10 @@ mod lifecycle_tests {
 
         assert!(completed_rows < live_rows);
         assert!(app.tools.active.is_empty());
-        assert_eq!(app.tools.blocks[0].output.detail_full.as_deref(), Some("$ long-command\n\nlive line\n"));
+        assert_eq!(
+            app.tools.blocks[0].output.detail_full.as_deref(),
+            Some("$ long-command\n\nlive line\n")
+        );
     }
 
     #[test]
@@ -993,8 +1159,18 @@ mod lifecycle_tests {
         app.handle_account_update(AccountUpdate::UsageQuota(UsageQuotaInfo {
             is_available: true,
             windows: vec![
-                UsageQuotaWindow { label: "week".into(), limit: Some(100.0), remaining: Some(74.0), reset_time: None },
-                UsageQuotaWindow { label: "5h".into(), limit: Some(100.0), remaining: Some(85.0), reset_time: None },
+                UsageQuotaWindow {
+                    label: "week".into(),
+                    limit: Some(100.0),
+                    remaining: Some(74.0),
+                    reset_time: None,
+                },
+                UsageQuotaWindow {
+                    label: "5h".into(),
+                    limit: Some(100.0),
+                    remaining: Some(85.0),
+                    reset_time: None,
+                },
             ],
             membership_level: None,
         }));
@@ -1023,9 +1199,17 @@ mod lifecycle_tests {
         }));
 
         assert!(app.account.balance.is_some());
-        assert!(app.account.balance.as_ref().is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY")));
+        assert!(
+            app.account
+                .balance
+                .as_ref()
+                .is_some_and(|b| b.balance_infos.iter().any(|e| e.currency == "CNY"))
+        );
         assert!(app.dirty, "balance update should trigger repaint");
-        assert!(crate::should_repaint(&app), "idle balance update must pass repaint gate so bottom row is drawn");
+        assert!(
+            crate::should_repaint(&app),
+            "idle balance update must pass repaint gate so bottom row is drawn"
+        );
     }
 
     #[test]
@@ -1126,10 +1310,14 @@ mod lifecycle_tests {
     #[test]
     fn error_other_sets_idle_and_adds_message() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other("LLM unavailable".into())));
+        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
+            "LLM unavailable".into(),
+        )));
         assert!(matches!(app.status, Status::Idle));
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("LLM unavailable")),
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("LLM unavailable")),
             "error message should appear in log: {:?}",
             app.raw_messages
         );
@@ -1141,7 +1329,11 @@ mod lifecycle_tests {
         let before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
         assert!(app.raw_messages.len() > before);
-        assert!(app.raw_messages.last().is_some_and(|m| m.contains("Cancelling")));
+        assert!(
+            app.raw_messages
+                .last()
+                .is_some_and(|m| m.contains("Cancelling"))
+        );
     }
 
     #[test]
@@ -1199,7 +1391,9 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunk_flushes_on_stream() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("reasoning line".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "reasoning line".into(),
+        )));
         assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
         assert!(app.thinking.active.is_none());
@@ -1220,7 +1414,10 @@ mod lifecycle_tests {
         assert_eq!(app.status_bar.model_name, "mock-model");
         assert_eq!(app.status_bar.model_max_tokens, 4096);
         assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
-        assert_eq!(app.status_bar.model_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            app.status_bar.model_reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 
     #[test]
@@ -1242,10 +1439,22 @@ mod lifecycle_tests {
         let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
         app.account_rx = Some(account_rx);
-        app.account.balance = Some(tact_protocol::BalanceInfo { is_available: true, balance_infos: vec![] });
-        app.handle_account_update(AccountUpdate::Error(AccountError::QueryFailed("network down".into())));
-        assert!(app.flash_msg.as_ref().is_some_and(|(msg, _)| msg.contains("network down")));
-        assert!(app.account.balance.is_some(), "transient query failures must keep the last successful balance");
+        app.account.balance = Some(tact_protocol::BalanceInfo {
+            is_available: true,
+            balance_infos: vec![],
+        });
+        app.handle_account_update(AccountUpdate::Error(AccountError::QueryFailed(
+            "network down".into(),
+        )));
+        assert!(
+            app.flash_msg
+                .as_ref()
+                .is_some_and(|(msg, _)| msg.contains("network down"))
+        );
+        assert!(
+            app.account.balance.is_some(),
+            "transient query failures must keep the last successful balance"
+        );
     }
 
     #[test]
@@ -1279,7 +1488,10 @@ mod lifecycle_tests {
                 permission_label: None,
             },
         });
-        assert!(!matches!(app.status, Status::Done), "single step finish should not mark task done");
+        assert!(
+            !matches!(app.status, Status::Done),
+            "single step finish should not mark task done"
+        );
     }
 
     #[test]
@@ -1287,7 +1499,10 @@ mod lifecycle_tests {
         let (_tx, account_rx) = unbounded_channel();
         let mut app = make_app();
         app.account_rx = Some(account_rx);
-        app.account.balance = Some(tact_protocol::BalanceInfo { is_available: true, balance_infos: vec![] });
+        app.account.balance = Some(tact_protocol::BalanceInfo {
+            is_available: true,
+            balance_infos: vec![],
+        });
         app.handle_account_update(AccountUpdate::Error(AccountError::NotSupported));
         assert!(app.account.balance.is_none());
     }
@@ -1295,10 +1510,28 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunks_accumulate_before_non_thinking_update() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("part1 ".into())));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("part2".into())));
-        assert!(app.thinking.active.as_ref().unwrap().content.contains("part1"));
-        assert!(app.thinking.active.as_ref().unwrap().content.contains("part2"));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "part1 ".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "part2".into(),
+        )));
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part1")
+        );
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("part2")
+        );
         app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
         assert!(app.thinking.active.is_none());
     }
@@ -1307,7 +1540,9 @@ mod lifecycle_tests {
     fn thinking_finished_closes_without_other_update() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("done thinking\n".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "done thinking\n".into(),
+        )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.active.is_none());
         assert!(!app.thinking.blocks.is_empty());
@@ -1319,7 +1554,9 @@ mod lifecycle_tests {
 
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("still thinking".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "still thinking".into(),
+        )));
         app.handle_agent_update(AgentUpdate::TokenUsage(TokenUsageInfo {
             prompt: 1,
             completion: 2,
@@ -1327,7 +1564,14 @@ mod lifecycle_tests {
             ..Default::default()
         }));
         assert!(app.thinking.active.is_some());
-        assert!(app.thinking.active.as_ref().unwrap().content.contains("still thinking"));
+        assert!(
+            app.thinking
+                .active
+                .as_ref()
+                .unwrap()
+                .content
+                .contains("still thinking")
+        );
     }
 
     #[test]
@@ -1347,7 +1591,9 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("   ".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "   ".into(),
+        )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.blocks.is_empty());
         assert!(app.thinking.active.is_none());
@@ -1357,7 +1603,9 @@ mod lifecycle_tests {
     #[test]
     fn thinking_finished_keeps_the_existing_placeholder_index() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("done thinking\n".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "done thinking\n".into(),
+        )));
         let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
 
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
@@ -1371,9 +1619,17 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.raw_messages.len();
 
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("first\nsecond".into())));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "first\nsecond".into(),
+        )));
 
-        assert_eq!(app.raw_messages.len(), before + crate::render::cells::thinking::thinking_visual_rows(2));
-        assert_eq!(app.thinking.active.as_ref().unwrap().display_tail().len(), 2);
+        assert_eq!(
+            app.raw_messages.len(),
+            before + crate::render::cells::thinking::thinking_visual_rows(2)
+        );
+        assert_eq!(
+            app.thinking.active.as_ref().unwrap().display_tail().len(),
+            2
+        );
     }
 }

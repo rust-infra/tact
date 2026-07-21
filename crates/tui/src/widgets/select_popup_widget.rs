@@ -33,7 +33,14 @@ impl<'a> SelectPopupWidget<'a> {
         empty_text: &'static str,
         arrow: &'static str,
     ) -> Self {
-        SelectPopupWidget { state, highlight_color, fg_color, bg_color, empty_text, arrow }
+        SelectPopupWidget {
+            state,
+            highlight_color,
+            fg_color,
+            bg_color,
+            empty_text,
+            arrow,
+        }
     }
 }
 
@@ -61,7 +68,10 @@ impl Widget for SelectPopupWidget<'_> {
 
         let inner_w = popup_width.saturating_sub(2).max(1) as usize;
         let prompt_style = Style::default().fg(self.fg_color);
-        let mut prompt_lines = wrap_line(&Line::from(Span::styled(self.state.prompt.clone(), prompt_style)), inner_w);
+        let mut prompt_lines = wrap_line(
+            &Line::from(Span::styled(self.state.prompt.clone(), prompt_style)),
+            inner_w,
+        );
 
         let max_popup_h = area.height.saturating_sub(2).max(1);
         // borders(2) + separator(1) + options + optional multi hint(1)
@@ -89,11 +99,16 @@ impl Widget for SelectPopupWidget<'_> {
 
         let prompt_rows = prompt_lines.len() as u16;
         let popup_height = (fixed + prompt_rows).min(max_popup_h);
-        let popup_area = crate::render::popups::centered_list_popup_area(area, popup_width, popup_height);
+        let popup_area =
+            crate::render::popups::centered_list_popup_area(area, popup_width, popup_height);
 
         Clear.render(popup_area, buf);
 
-        let title = if self.state.multi { " Multi-select " } else { " Select " };
+        let title = if self.state.multi {
+            " Multi-select "
+        } else {
+            " Select "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -102,19 +117,31 @@ impl Widget for SelectPopupWidget<'_> {
         block.render(popup_area, buf);
 
         let inner = crate::render::popups::popup_inner(popup_area);
-        let mut constraints =
-            vec![Constraint::Length(prompt_rows), Constraint::Length(1), Constraint::Length(option_count)];
+        let mut constraints = vec![
+            Constraint::Length(prompt_rows),
+            Constraint::Length(1),
+            Constraint::Length(option_count),
+        ];
         if self.state.multi {
             constraints.push(Constraint::Length(1));
         }
-        let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(inner);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
 
         Paragraph::new(prompt_lines).render(chunks[0], buf);
 
         let items: Vec<ListItem> = if self.state.options.is_empty() {
-            vec![ListItem::new(Span::styled(self.empty_text, Style::default().fg(Color::Gray)))]
+            vec![ListItem::new(Span::styled(
+                self.empty_text,
+                Style::default().fg(Color::Gray),
+            ))]
         } else {
-            let selected = self.state.selected.min(self.state.options.len().saturating_sub(1));
+            let selected = self
+                .state
+                .selected
+                .min(self.state.options.len().saturating_sub(1));
             self.state
                 .options
                 .iter()
@@ -128,7 +155,11 @@ impl Widget for SelectPopupWidget<'_> {
                     };
                     let cursor = if is_focused { self.arrow } else { "  " };
                     let text = if self.state.multi {
-                        let mark = if self.state.checked.get(i).copied().unwrap_or(false) { "[x]" } else { "[ ]" };
+                        let mark = if self.state.checked.get(i).copied().unwrap_or(false) {
+                            "[x]"
+                        } else {
+                            "[ ]"
+                        };
                         format!("{cursor}{mark} {opt}")
                     } else {
                         format!("{cursor}{opt}")
@@ -138,7 +169,9 @@ impl Widget for SelectPopupWidget<'_> {
                 .collect()
         };
 
-        List::new(items).block(Block::default()).render(chunks[2], buf);
+        List::new(items)
+            .block(Block::default())
+            .render(chunks[2], buf);
 
         if self.state.multi {
             let hint = Paragraph::new(Line::from(Span::styled(

@@ -90,22 +90,42 @@ impl SessionStats {
         let mut out = String::new();
 
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
-        let _ = writeln!(out, "  Elapsed:               {:>8}", fmt_duration(self.start_time.elapsed()));
+        let _ = writeln!(
+            out,
+            "  Elapsed:               {:>8}",
+            fmt_duration(self.start_time.elapsed())
+        );
 
         let _ = writeln!(out, "  LLM API calls:         {:>8}", self.prompt_count);
 
-        let total_llm_ms: f64 = self.llm_call_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum();
+        let total_llm_ms: f64 = self
+            .llm_call_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum();
         let _ = writeln!(
             out,
             "  Total LLM time:        {:>8}",
             fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0))
         );
 
-        let _ = writeln!(out, "  Prompt chars sent:     {:>8}", self.total_prompt_chars);
-        let _ = writeln!(out, "  Response chars rcvd:  {:>8}", self.total_response_chars);
+        let _ = writeln!(
+            out,
+            "  Prompt chars sent:     {:>8}",
+            self.total_prompt_chars
+        );
+        let _ = writeln!(
+            out,
+            "  Response chars rcvd:  {:>8}",
+            self.total_response_chars
+        );
 
         let _ = writeln!(out, "  Thinking blocks:       {:>8}", self.thinking_blocks);
-        let _ = writeln!(out, "  Thinking chars:        {:>8}", self.total_thinking_chars);
+        let _ = writeln!(
+            out,
+            "  Thinking chars:        {:>8}",
+            self.total_thinking_chars
+        );
 
         let _ = writeln!(out, "  Compactions:           {:>8}", self.compactions);
 
@@ -122,15 +142,26 @@ impl SessionStats {
 
         if !self.tool_durations_ms.is_empty() {
             let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
-            let _ = writeln!(out, "  Total tool time:       {:>8}", fmt_duration(Duration::from_millis(total_tool_ms)));
+            let _ = writeln!(
+                out,
+                "  Total tool time:       {:>8}",
+                fmt_duration(Duration::from_millis(total_tool_ms))
+            );
         }
 
         if self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0 {
             let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
-            let hit_rate =
-                if cache_total > 0 { (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0 } else { 0.0 };
+            let hit_rate = if cache_total > 0 {
+                (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
+            } else {
+                0.0
+            };
             let _ = writeln!(out, "  Cache hit tokens:      {:>8}", self.cache_hit_tokens);
-            let _ = writeln!(out, "  Cache miss tokens:     {:>8}", self.cache_miss_tokens);
+            let _ = writeln!(
+                out,
+                "  Cache miss tokens:     {:>8}",
+                self.cache_miss_tokens
+            );
             let _ = writeln!(out, "  Cache hit rate:        {:>8.1}%", hit_rate);
         }
 

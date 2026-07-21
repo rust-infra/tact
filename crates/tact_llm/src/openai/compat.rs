@@ -12,7 +12,15 @@ pub(crate) async fn stream_assembled(
     request: &CreateMessageParams,
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
     assemble: impl FnOnce(&CreateMessageParams, bool) -> Result<Value, LlmError>,
-) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+) -> Result<
+    (
+        Vec<ContentBlock>,
+        Option<StopReason>,
+        Option<TokenUsageInfo>,
+        Option<LlmRequestBody>,
+    ),
+    LlmError,
+> {
     let body = assemble(request, true)?;
     adapter.stream_completion(&body, ui_tx).await
 }
@@ -21,7 +29,15 @@ pub(crate) async fn create_assembled(
     adapter: &OpenAiAdapter,
     request: &CreateMessageParams,
     assemble: impl FnOnce(&CreateMessageParams, bool) -> Result<Value, LlmError>,
-) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+) -> Result<
+    (
+        Vec<ContentBlock>,
+        Option<StopReason>,
+        Option<TokenUsageInfo>,
+        Option<LlmRequestBody>,
+    ),
+    LlmError,
+> {
     let body = assemble(request, false)?;
     adapter.create_completion(&body).await
 }

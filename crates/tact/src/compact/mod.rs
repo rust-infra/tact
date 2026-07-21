@@ -28,15 +28,15 @@ const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 const PERSIST_THRESHOLD: usize = 30_000;
 /// Number of characters shown in the preview when persisting a large output.
 const PREVIEW_CHARS: usize = 2_000;
-const COMPACTED_TOOL_RESULT: &str =
-    "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+const COMPACTED_TOOL_RESULT: &str = "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
 const _: () = assert!(COMPACTED_TOOL_RESULT.len() < 120);
 const OMITTED_IMAGE: &str = "[Earlier image attachment omitted during compaction.]";
 const MAX_COMPACT_ARTIFACTS: usize = 100;
 
 /// Lead-in for compaction handoff messages. Used both as the summary body
 /// prefix and to detect prior summaries so they are not stacked.
-pub const SUMMARY_PREFIX: &str = "This conversation was compacted so the agent can continue working.";
+pub const SUMMARY_PREFIX: &str =
+    "This conversation was compacted so the agent can continue working.";
 
 /// Maximum estimated tokens of recent real-user messages to retain when
 /// rebuilding compacted history (roughly 80k ASCII characters).
@@ -75,7 +75,11 @@ pub fn micro_compact(messages: &mut [Message], enabled: bool) {
         let MessageContent::Blocks { content } = &mut message.content else {
             continue;
         };
-        let Some(ContentBlock::ToolResult { content: tool_content, .. }) = content.get_mut(block_idx) else {
+        let Some(ContentBlock::ToolResult {
+            content: tool_content,
+            ..
+        }) = content.get_mut(block_idx)
+        else {
             continue;
         };
 
@@ -89,7 +93,11 @@ pub fn micro_compact(messages: &mut [Message], enabled: bool) {
 /// while non-ASCII characters count as one token each.
 pub(crate) fn approx_text_tokens(text: &str) -> usize {
     let (ascii, non_ascii) = text.chars().fold((0usize, 0usize), |counts, ch| {
-        if ch.is_ascii() { (counts.0.saturating_add(1), counts.1) } else { (counts.0, counts.1.saturating_add(1)) }
+        if ch.is_ascii() {
+            (counts.0.saturating_add(1), counts.1)
+        } else {
+            (counts.0, counts.1.saturating_add(1))
+        }
     });
     ascii.div_ceil(4).saturating_add(non_ascii)
 }
@@ -108,7 +116,7 @@ pub fn estimate_context_tokens(messages: &[Message]) -> usize {
                 "failed to serialize context for token estimate; treating as oversized"
             );
             usize::MAX / 2
-        },
+        }
     }
 }
 
@@ -128,12 +136,18 @@ pub(crate) fn retained_user_message_token_budget(
         return KEEP_USER_MESSAGE_TOKENS;
     }
     let headroom_tokens = compact_rebuild_headroom_tokens(model_context_window);
-    let reserved_tokens = max_output_tokens.saturating_add(non_retained_input_tokens).saturating_add(headroom_tokens);
-    model_context_window.saturating_sub(reserved_tokens).min(KEEP_USER_MESSAGE_TOKENS)
+    let reserved_tokens = max_output_tokens
+        .saturating_add(non_retained_input_tokens)
+        .saturating_add(headroom_tokens);
+    model_context_window
+        .saturating_sub(reserved_tokens)
+        .min(KEEP_USER_MESSAGE_TOKENS)
 }
 
 pub(crate) fn compact_rebuild_headroom_tokens(model_context_window: usize) -> usize {
-    model_context_window.saturating_mul(COMPACT_REBUILD_HEADROOM_PERCENT).div_ceil(100)
+    model_context_window
+        .saturating_mul(COMPACT_REBUILD_HEADROOM_PERCENT)
+        .div_ceil(100)
 }
 
 /// Whether `text` is a prior compaction handoff (must not be re-kept as a
@@ -155,9 +169,9 @@ fn is_real_user_message(message: &Message) -> bool {
     }
     match &message.content {
         MessageContent::Text { content } => !is_summary_message(content),
-        MessageContent::Blocks { content } => {
-            content.iter().any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-        },
+        MessageContent::Blocks { content } => content
+            .iter()
+            .any(|block| !matches!(block, ContentBlock::ToolResult { .. })),
     }
 }
 
@@ -177,9 +191,13 @@ fn block_text_tail(message: &Message, max_tokens: usize) -> Option<Message> {
         })
         .collect::<String>();
     if text.is_empty() {
-        (approx_text_tokens(OMITTED_IMAGE) <= max_tokens).then(|| Message::new_text(Role::User, OMITTED_IMAGE))
+        (approx_text_tokens(OMITTED_IMAGE) <= max_tokens)
+            .then(|| Message::new_text(Role::User, OMITTED_IMAGE))
     } else {
-        Some(Message::new_text(Role::User, take_last_tokens(&text, max_tokens)))
+        Some(Message::new_text(
+            Role::User,
+            take_last_tokens(&text, max_tokens),
+        ))
     }
 }
 
@@ -195,21 +213,22 @@ fn summary_message_fallback(message: &Message, max_tokens: usize) -> Option<Mess
                 match block {
                     ContentBlock::Text { text } | ContentBlock::Thinking { thinking: text, .. } => {
                         parts.push(text.clone());
-                    },
+                    }
                     ContentBlock::Image { .. } => parts.push(OMITTED_IMAGE.to_string()),
                     ContentBlock::ToolUse { name, .. } => {
                         parts.push(format!("[Tool call: {name}]"));
-                    },
-                    ContentBlock::ToolResult { tool_use_id, content } => {
-                        parts.push(format!("[Tool result {tool_use_id}]\n{content}"))
-                    },
+                    }
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } => parts.push(format!("[Tool result {tool_use_id}]\n{content}")),
                     ContentBlock::RedactedThinking { .. } => {
                         parts.push("[Redacted thinking omitted.]".to_string());
-                    },
+                    }
                 }
             }
             parts.join("\n")
-        },
+        }
     };
     if text.is_empty() {
         return None;
@@ -233,7 +252,10 @@ fn summary_message_fallback(message: &Message, max_tokens: usize) -> Option<Mess
 /// Serializes the most recent messages that fit a summary-input token budget.
 /// Oversized messages are converted to a text-only view so image base64 and
 /// large structured payloads are never sliced into invalid JSON.
-pub(crate) fn recent_messages_for_summary(messages: &[Message], max_tokens: usize) -> anyhow::Result<String> {
+pub(crate) fn recent_messages_for_summary(
+    messages: &[Message],
+    max_tokens: usize,
+) -> anyhow::Result<String> {
     if messages.is_empty() || max_tokens == 0 {
         return Ok("[]".to_string());
     }
@@ -257,7 +279,8 @@ pub(crate) fn recent_messages_for_summary(messages: &[Message], max_tokens: usiz
     selected.reverse();
 
     while !selected.is_empty() {
-        let serialized = serde_json::to_string(&selected).context("failed to serialize messages for compact prompt")?;
+        let serialized = serde_json::to_string(&selected)
+            .context("failed to serialize messages for compact prompt")?;
         if approx_text_tokens(&serialized) <= max_tokens {
             return Ok(serialized);
         }
@@ -272,8 +295,11 @@ fn take_last_tokens(text: &str, max_tokens: usize) -> String {
     let mut non_ascii = 0usize;
     let mut start = text.len();
     for (index, ch) in text.char_indices().rev() {
-        let (next_ascii, next_non_ascii) =
-            if ch.is_ascii() { (ascii.saturating_add(1), non_ascii) } else { (ascii, non_ascii.saturating_add(1)) };
+        let (next_ascii, next_non_ascii) = if ch.is_ascii() {
+            (ascii.saturating_add(1), non_ascii)
+        } else {
+            (ascii, non_ascii.saturating_add(1))
+        };
         if next_ascii.div_ceil(4).saturating_add(next_non_ascii) > max_tokens {
             break;
         }
@@ -301,7 +327,11 @@ pub fn collect_user_messages(messages: &[Message]) -> Vec<Message> {
 ///
 /// When a single user message exceeds the remaining budget, its **tail** is
 /// kept (most recent content within that turn).
-pub fn build_compacted_history(user_messages: &[Message], summary_text: String, max_tokens: usize) -> Vec<Message> {
+pub fn build_compacted_history(
+    user_messages: &[Message],
+    summary_text: String,
+    max_tokens: usize,
+) -> Vec<Message> {
     let mut selected: Vec<Message> = Vec::with_capacity(user_messages.len().saturating_add(1));
     if max_tokens > 0 {
         let mut remaining = max_tokens;
@@ -314,7 +344,10 @@ pub fn build_compacted_history(user_messages: &[Message], summary_text: String, 
                 selected.push(message.clone());
                 remaining = remaining.saturating_sub(tokens);
             } else if let Some(text) = user_text_content(message) {
-                selected.push(Message::new_text(Role::User, take_last_tokens(text, remaining)));
+                selected.push(Message::new_text(
+                    Role::User,
+                    take_last_tokens(text, remaining),
+                ));
                 break;
             } else if let Some(truncated) = block_text_tail(message, remaining) {
                 selected.push(truncated);
@@ -324,40 +357,61 @@ pub fn build_compacted_history(user_messages: &[Message], summary_text: String, 
         selected.reverse();
     }
 
-    let summary_body = if summary_text.is_empty() { "(no summary available)".to_string() } else { summary_text };
-    selected.push(Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\n\n{summary_body}")));
+    let summary_body = if summary_text.is_empty() {
+        "(no summary available)".to_string()
+    } else {
+        summary_text
+    };
+    selected.push(Message::new_text(
+        Role::User,
+        format!("{SUMMARY_PREFIX}\n\n{summary_body}"),
+    ));
     selected
 }
 
 /// Writes the full conversation to a timestamped JSONL file under
 /// `<workdir>/.claude/transcripts/`.  Returns the written file path.
-pub async fn write_transcript(tact_path: &TactPath, messages: &[Message]) -> anyhow::Result<PathBuf> {
+pub async fn write_transcript(
+    tact_path: &TactPath,
+    messages: &[Message],
+) -> anyhow::Result<PathBuf> {
     let transcript_dir = tact_path.transcript_dir();
     tokio::fs::create_dir_all(&transcript_dir)
         .await
         .with_context(|| format!("failed to create {}", transcript_dir.display()))?;
 
-    let timestamp =
-        SystemTime::now().duration_since(UNIX_EPOCH).context("system clock is before UNIX_EPOCH")?.as_nanos();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_nanos();
     let mut created = None;
     for collision in 0..100u8 {
         let path = transcript_dir.join(format!("transcript_{timestamp}_{collision}.jsonl"));
-        match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&path).await {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
             Ok(file) => {
                 created = Some((path, file));
                 break;
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(error).with_context(|| format!("failed to create {}", path.display()));
-            },
+            }
         }
     }
     let (transcript_path, file) = created.context("failed to allocate a unique transcript name")?;
     let mut writer = tokio::io::BufWriter::new(file);
     for message in messages {
-        let line = serde_json::to_string(message)
-            .with_context(|| format!("failed to serialize message to {}", transcript_path.display()))?;
+        let line = serde_json::to_string(message).with_context(|| {
+            format!(
+                "failed to serialize message to {}",
+                transcript_path.display()
+            )
+        })?;
         writer.write_all(line.as_bytes()).await?;
         writer.write_all(b"\n").await?;
     }
@@ -369,7 +423,11 @@ pub async fn write_transcript(tact_path: &TactPath, messages: &[Message]) -> any
 /// If `output` exceeds [`PERSIST_THRESHOLD`] characters, writes it to disk
 /// under `<workdir>/.claude/tool-results/` and returns a preview with the file path.
 /// Otherwise returns the output unchanged.
-pub async fn persist_large_output(tact_path: &TactPath, tool_use_id: &str, output: &str) -> anyhow::Result<String> {
+pub async fn persist_large_output(
+    tact_path: &TactPath,
+    tool_use_id: &str,
+    output: &str,
+) -> anyhow::Result<String> {
     if output.chars().count() <= PERSIST_THRESHOLD {
         return Ok(output.to_string());
     }
@@ -392,14 +450,24 @@ pub async fn persist_large_output(tact_path: &TactPath, tool_use_id: &str, outpu
     ))
 }
 
-async fn prune_compact_artifacts(dir: &Path, max_files: usize, preserve: &Path) -> anyhow::Result<()> {
-    let mut entries = tokio::fs::read_dir(dir).await.with_context(|| format!("failed to read {}", dir.display()))?;
+async fn prune_compact_artifacts(
+    dir: &Path,
+    max_files: usize,
+    preserve: &Path,
+) -> anyhow::Result<()> {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .with_context(|| format!("failed to read {}", dir.display()))?;
     let mut files = Vec::new();
-    while let Some(entry) =
-        entries.next_entry().await.with_context(|| format!("failed to enumerate {}", dir.display()))?
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("failed to enumerate {}", dir.display()))?
     {
-        let metadata =
-            entry.metadata().await.with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        let metadata = entry
+            .metadata()
+            .await
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
         if metadata.is_file() {
             files.push((metadata.modified().unwrap_or(UNIX_EPOCH), entry.path()));
         }
@@ -409,7 +477,11 @@ async fn prune_compact_artifacts(dir: &Path, max_files: usize, preserve: &Path) 
     }
     files.sort_unstable_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     let remove_count = files.len().saturating_sub(max_files);
-    for (_, path) in files.into_iter().filter(|(_, path)| path != preserve).take(remove_count) {
+    for (_, path) in files
+        .into_iter()
+        .filter(|(_, path)| path != preserve)
+        .take(remove_count)
+    {
         tokio::fs::remove_file(&path)
             .await
             .with_context(|| format!("failed to remove old compact artifact {}", path.display()))?;
@@ -420,7 +492,10 @@ async fn prune_compact_artifacts(dir: &Path, max_files: usize, preserve: &Path) 
 /// Produces a replacement context (single user message) containing a
 /// summary of what was compacted. Used by [`crate::agent::Agent::compact_history_legacy`].
 pub fn compacted_context(summary: String) -> Vec<Message> {
-    vec![Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\n\n{summary}"))]
+    vec![Message::new_text(
+        Role::User,
+        format!("{SUMMARY_PREFIX}\n\n{summary}"),
+    )]
 }
 
 fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
@@ -456,7 +531,9 @@ pub(crate) fn should_auto_compact(
     if model_context_window == 0 {
         return false;
     }
-    let threshold = model_context_window.saturating_mul(AUTO_COMPACT_THRESHOLD_PERCENT).div_ceil(100);
+    let threshold = model_context_window
+        .saturating_mul(AUTO_COMPACT_THRESHOLD_PERCENT)
+        .div_ceil(100);
     if last_token_total > 0 {
         let projected = (last_token_total as usize).saturating_add(incoming_turn_tokens);
         if projected >= threshold {
@@ -471,10 +548,11 @@ mod tests {
     use tact_llm::{ContentBlock, ImageSource, Message, Role};
 
     use super::{
-        KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS, OMITTED_IMAGE, SUMMARY_PREFIX, approx_text_tokens,
-        build_compacted_history, collect_user_messages, estimate_context_tokens, estimate_message_tokens,
-        is_summary_message, persist_large_output, recent_messages_for_summary, retained_user_message_token_budget,
-        should_auto_compact, take_last_tokens, write_transcript,
+        KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS, OMITTED_IMAGE, SUMMARY_PREFIX,
+        approx_text_tokens, build_compacted_history, collect_user_messages,
+        estimate_context_tokens, estimate_message_tokens, is_summary_message, persist_large_output,
+        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
+        take_last_tokens, write_transcript,
     };
 
     #[test]
@@ -509,16 +587,25 @@ mod tests {
 
     #[test]
     fn retained_user_budget_uses_window_reservations_and_hard_cap() {
-        assert_eq!(retained_user_message_token_budget(200_000, 8_000, 0), KEEP_USER_MESSAGE_TOKENS);
+        assert_eq!(
+            retained_user_message_token_budget(200_000, 8_000, 0),
+            KEEP_USER_MESSAGE_TOKENS
+        );
         // 20k window - 8k output - 2k input overhead - 4k headroom = 6k.
-        assert_eq!(retained_user_message_token_budget(20_000, 8_000, 2_000), 6_000);
+        assert_eq!(
+            retained_user_message_token_budget(20_000, 8_000, 2_000),
+            6_000
+        );
         // Reservations consume the full window, so no verbatim users remain.
         assert_eq!(retained_user_message_token_budget(10_000, 8_000, 2_000), 0);
     }
 
     #[test]
     fn retained_user_budget_keeps_legacy_cap_when_window_is_disabled() {
-        assert_eq!(retained_user_message_token_budget(0, usize::MAX, usize::MAX), KEEP_USER_MESSAGE_TOKENS);
+        assert_eq!(
+            retained_user_message_token_budget(0, usize::MAX, usize::MAX),
+            KEEP_USER_MESSAGE_TOKENS
+        );
     }
 
     #[test]
@@ -541,9 +628,17 @@ mod tests {
             Message::new_text(Role::Assistant, "thinking"),
             Message::new_blocks(
                 Role::User,
-                vec![ContentBlock::ToolResult { tool_use_id: "t1".into(), content: "file dump".into() }],
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "file dump".into(),
+                }],
             ),
-            Message::new_blocks(Role::User, vec![ContentBlock::Text { text: "goal from UI".into() }]),
+            Message::new_blocks(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "goal from UI".into(),
+                }],
+            ),
             Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\nold summary")),
             Message::new_text(Role::User, "goal B"),
         ];
@@ -569,7 +664,9 @@ mod tests {
         let user = Message::new_blocks(
             Role::User,
             vec![
-                ContentBlock::Text { text: "UI prompt".into() },
+                ContentBlock::Text {
+                    text: "UI prompt".into(),
+                },
                 ContentBlock::Image {
                     source: ImageSource {
                         type_: "base64".into(),
@@ -595,7 +692,12 @@ mod tests {
 
     #[test]
     fn build_compacted_history_degrades_oversized_blocks_to_text_tail() {
-        let user = Message::new_blocks(Role::User, vec![ContentBlock::Text { text: "abcdefghij".into() }]);
+        let user = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "abcdefghij".into(),
+            }],
+        );
         let history = build_compacted_history(&[user], "sum".into(), 1);
         assert_eq!(history.len(), 2);
         assert!(matches!(
@@ -609,10 +711,15 @@ mod tests {
         let user = Message::new_blocks(
             Role::User,
             vec![ContentBlock::Image {
-                source: ImageSource { type_: "base64".into(), media_type: "image/png".into(), data: "a".repeat(1_000) },
+                source: ImageSource {
+                    type_: "base64".into(),
+                    media_type: "image/png".into(),
+                    data: "a".repeat(1_000),
+                },
             }],
         );
-        let history = build_compacted_history(&[user], "sum".into(), approx_text_tokens(OMITTED_IMAGE));
+        let history =
+            build_compacted_history(&[user], "sum".into(), approx_text_tokens(OMITTED_IMAGE));
         assert!(matches!(
             &history[0].content,
             tact_llm::MessageContent::Text { content } if content == OMITTED_IMAGE
@@ -639,8 +746,12 @@ mod tests {
 
     #[test]
     fn build_compacted_history_keeps_tail_users_then_summary() {
-        let users = vec![Message::new_text(Role::User, "old"), Message::new_text(Role::User, "newer")];
-        let history = build_compacted_history(&users, "handoff body".into(), KEEP_USER_MESSAGE_TOKENS);
+        let users = vec![
+            Message::new_text(Role::User, "old"),
+            Message::new_text(Role::User, "newer"),
+        ];
+        let history =
+            build_compacted_history(&users, "handoff body".into(), KEEP_USER_MESSAGE_TOKENS);
         assert_eq!(history.len(), 3);
         assert!(matches!(
             &history[0].content,
@@ -712,10 +823,14 @@ mod tests {
         let output_dir = tact_path.tool_results_dir();
         tokio::fs::create_dir_all(&output_dir).await.unwrap();
         for index in 0..MAX_COMPACT_ARTIFACTS {
-            tokio::fs::write(output_dir.join(format!("old-{index}.txt")), "old").await.unwrap();
+            tokio::fs::write(output_dir.join(format!("old-{index}.txt")), "old")
+                .await
+                .unwrap();
         }
         let large = "x".repeat(30_001);
-        persist_large_output(&tact_path, "new", &large).await.unwrap();
+        persist_large_output(&tact_path, "new", &large)
+            .await
+            .unwrap();
         let mut entries = tokio::fs::read_dir(&output_dir).await.unwrap();
         let mut count = 0;
         while entries.next_entry().await.unwrap().is_some() {

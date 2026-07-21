@@ -49,7 +49,9 @@ const DDG_LIMITED_NOTICE: &str = "Note: DuckDuckGo instant answers only (not ful
 
 fn format_results(query: &str, results: &[SearchResult], persist_refs: bool) -> String {
     if results.is_empty() {
-        return format!("No instant answer found for '{query}'. Configure BRAVE_SEARCH_API_KEY for full web search.");
+        return format!(
+            "No instant answer found for '{query}'. Configure BRAVE_SEARCH_API_KEY for full web search."
+        );
     }
 
     let mut output = String::new();
@@ -61,7 +63,13 @@ fn format_results(query: &str, results: &[SearchResult], persist_refs: bool) -> 
             web_refs::save_search_reference(&result.id, &result.url);
         }
 
-        let _ = writeln!(&mut output, "{}. [{}] **{}**", index + 1, result.id, result.title);
+        let _ = writeln!(
+            &mut output,
+            "{}. [{}] **{}**",
+            index + 1,
+            result.id,
+            result.title
+        );
         let _ = writeln!(&mut output, "   URL: {}", result.url);
         if !result.snippet.is_empty() {
             let _ = writeln!(&mut output, "   {}", result.snippet);
@@ -89,7 +97,12 @@ pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<Stri
     let num_results = input.num_results.clamp(1, 10);
     debug!(query = %input.query, num_results, "Web search");
 
-    if let Some(api_key) = crate::config::settings().tools.brave_search_api_key.as_deref().filter(|k| !k.is_empty()) {
+    if let Some(api_key) = crate::config::settings()
+        .tools
+        .brave_search_api_key
+        .as_deref()
+        .filter(|k| !k.is_empty())
+    {
         match search_brave(&input.query, num_results, api_key).await {
             Ok(results) => return Ok(format_results(&input.query, &results, true)),
             Err(error) => {
@@ -99,19 +112,26 @@ pub async fn web_search(_ctx: ToolContext, input: WebSearchInput) -> Result<Stri
                 return Ok(format!(
                     "Note: Brave Search failed ({error}); showing DuckDuckGo instant answers instead.\n\n{fallback}"
                 ));
-            },
+            }
         }
     }
 
-    let fallback = format_results(&input.query, &search_duckduckgo(&input.query, num_results).await?, true);
+    let fallback = format_results(
+        &input.query,
+        &search_duckduckgo(&input.query, num_results).await?,
+        true,
+    );
     Ok(format!("{DDG_LIMITED_NOTICE}{fallback}"))
 }
 
 /// Search using the Brave Search API.
 async fn search_brave(query: &str, num_results: usize, api_key: &str) -> Result<Vec<SearchResult>> {
     let client = http::http_client();
-    let url =
-        format!("https://api.search.brave.com/res/v1/web/search?q={}&count={}", http::encode_query(query), num_results);
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        http::encode_query(query),
+        num_results
+    );
 
     let resp = client
         .get(&url)
@@ -124,26 +144,41 @@ async fn search_brave(query: &str, num_results: usize, api_key: &str) -> Result<
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        return Err(anyhow::anyhow!("Brave Search API returned status {}", status));
+        return Err(anyhow::anyhow!(
+            "Brave Search API returned status {}",
+            status
+        ));
     }
 
-    let data: Value = resp.json().await.map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
 
     Ok(extract_brave_results(&data, num_results))
 }
 
 fn extract_brave_results(data: &Value, max: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    let web_results = data.get("web").and_then(|w| w.get("results")).and_then(|r| r.as_array());
+    let web_results = data
+        .get("web")
+        .and_then(|w| w.get("results"))
+        .and_then(|r| r.as_array());
 
     if let Some(items) = web_results {
         for item in items.iter().take(max) {
-            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("(No title)");
+            let title = item
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("(No title)");
             let url = item.get("url").and_then(|u| u.as_str()).unwrap_or("");
             if url.is_empty() {
                 continue;
             }
-            let snippet = item.get("description").and_then(|s| s.as_str()).unwrap_or("");
+            let snippet = item
+                .get("description")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
 
             results.push(SearchResult {
                 id: web_refs::search_result_id(url),
@@ -159,8 +194,10 @@ fn extract_brave_results(data: &Value, max: usize) -> Vec<SearchResult> {
 /// Fallback: DuckDuckGo Instant Answer API.
 async fn search_duckduckgo(query: &str, num_results: usize) -> Result<Vec<SearchResult>> {
     let client = http::http_client();
-    let url =
-        format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1", http::encode_query(query));
+    let url = format!(
+        "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
+        http::encode_query(query)
+    );
 
     let resp = client
         .get(&url)
@@ -174,7 +211,10 @@ async fn search_duckduckgo(query: &str, num_results: usize) -> Result<Vec<Search
         return Err(anyhow::anyhow!("DuckDuckGo API returned status {}", status));
     }
 
-    let data: Value = resp.json().await.map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
 
     Ok(extract_ddg_results(&data, num_results))
 }
@@ -187,12 +227,22 @@ fn extract_ddg_results(data: &Value, max: usize) -> Vec<SearchResult> {
     if let Some(abstract_text) = data.get("Abstract").and_then(|a| a.as_str())
         && !abstract_text.is_empty()
     {
-        let source = data.get("AbstractSource").and_then(|s| s.as_str()).unwrap_or("");
-        let url = data.get("AbstractURL").and_then(|u| u.as_str()).unwrap_or("");
+        let source = data
+            .get("AbstractSource")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let url = data
+            .get("AbstractURL")
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
         if !url.is_empty() {
             results.push(SearchResult {
                 id: web_refs::search_result_id(url),
-                title: if source.is_empty() { "DuckDuckGo abstract".to_string() } else { source.to_string() },
+                title: if source.is_empty() {
+                    "DuckDuckGo abstract".to_string()
+                } else {
+                    source.to_string()
+                },
                 url: url.to_string(),
                 snippet: abstract_text.to_string(),
             });

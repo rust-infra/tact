@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Expr, ExprLit, FnArg, Ident, ItemFn, Lit, MetaNameValue, Pat, PatIdent, PatType, ReturnType, Type,
-    parse_macro_input, punctuated::Punctuated, token::Comma,
+    Attribute, Expr, ExprLit, FnArg, Ident, ItemFn, Lit, MetaNameValue, Pat, PatIdent, PatType,
+    ReturnType, Type, parse_macro_input, punctuated::Punctuated, token::Comma,
 };
 
 #[proc_macro_attribute]
@@ -16,7 +16,10 @@ pub fn tool(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 }
 
-fn expand_tool(args: Punctuated<MetaNameValue, Comma>, item_fn: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
+fn expand_tool(
+    args: Punctuated<MetaNameValue, Comma>,
+    item_fn: ItemFn,
+) -> syn::Result<proc_macro2::TokenStream> {
     let name = required_string_arg(&args, "name")?;
     let description = required_string_arg(&args, "description")?;
 
@@ -34,13 +37,19 @@ fn expand_tool(args: Punctuated<MetaNameValue, Comma>, item_fn: ItemFn) -> syn::
 fn required_string_arg(args: &Punctuated<MetaNameValue, Comma>, name: &str) -> syn::Result<String> {
     for arg in args {
         if arg.path.is_ident(name)
-            && let Expr::Lit(ExprLit { lit: Lit::Str(value), .. }) = &arg.value
+            && let Expr::Lit(ExprLit {
+                lit: Lit::Str(value),
+                ..
+            }) = &arg.value
         {
             return Ok(value.value());
         }
     }
 
-    Err(syn::Error::new_spanned(args, format!("missing required string argument `{name}`")))
+    Err(syn::Error::new_spanned(
+        args,
+        format!("missing required string argument `{name}`"),
+    ))
 }
 
 struct OutputHandling {
@@ -49,7 +58,10 @@ struct OutputHandling {
 
 fn output_handling(item_fn: &ItemFn) -> syn::Result<OutputHandling> {
     if item_fn.sig.asyncness.is_none() {
-        return Err(syn::Error::new_spanned(item_fn.sig.fn_token, "tool handlers must be async functions"));
+        return Err(syn::Error::new_spanned(
+            item_fn.sig.fn_token,
+            "tool handlers must be async functions",
+        ));
     }
 
     match &item_fn.sig.output {
@@ -138,7 +150,12 @@ fn expand_pure_tool(
     let input_ident = format_ident!("{}Input", to_pascal_case(&fn_ident.to_string()));
     let await_expr = output.await_expr;
 
-    let args = item_fn.sig.inputs.iter().map(extract_plain_arg).collect::<syn::Result<Vec<_>>>()?;
+    let args = item_fn
+        .sig
+        .inputs
+        .iter()
+        .map(extract_plain_arg)
+        .collect::<syn::Result<Vec<_>>>()?;
     clear_parameter_attrs(&mut item_fn);
     let fields = args.iter().map(|arg| {
         let attrs = &arg.attrs;
@@ -199,14 +216,24 @@ struct PlainArg {
 
 fn extract_plain_arg(arg: &FnArg) -> syn::Result<PlainArg> {
     let FnArg::Typed(PatType { attrs, pat, ty, .. }) = arg else {
-        return Err(syn::Error::new_spanned(arg, "tool handlers must not take self"));
+        return Err(syn::Error::new_spanned(
+            arg,
+            "tool handlers must not take self",
+        ));
     };
 
     let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() else {
-        return Err(syn::Error::new_spanned(pat, "plain tool handler arguments must be named like `a: i32`"));
+        return Err(syn::Error::new_spanned(
+            pat,
+            "plain tool handler arguments must be named like `a: i32`",
+        ));
     };
 
-    Ok(PlainArg { attrs: attrs.clone(), ident: ident.clone(), ty: ty.as_ref().clone() })
+    Ok(PlainArg {
+        attrs: attrs.clone(),
+        ident: ident.clone(),
+        ty: ty.as_ref().clone(),
+    })
 }
 
 fn extract_stateful_handler_input_type(item_fn: &ItemFn) -> syn::Result<Option<Type>> {
@@ -256,7 +283,10 @@ fn is_type_named(arg: &FnArg, expected: &str) -> bool {
 
 fn extract_arg_type(arg: &FnArg) -> syn::Result<Type> {
     let FnArg::Typed(PatType { ty, .. }) = arg else {
-        return Err(syn::Error::new_spanned(arg, "tool handlers must not take self"));
+        return Err(syn::Error::new_spanned(
+            arg,
+            "tool handlers must not take self",
+        ));
     };
 
     Ok(ty.as_ref().clone())

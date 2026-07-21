@@ -42,12 +42,18 @@ pub async fn run_headless(
         id.clone()
     } else if args.resume_last {
         let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions.into_iter().next().map(|s| s.id).unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        sessions
+            .into_iter()
+            .next()
+            .map(|s| s.id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     } else {
         uuid::Uuid::new_v4().to_string()
     };
 
-    session_store.ensure_session_row(&session_id, &root_dir).await?;
+    session_store
+        .ensure_session_row(&session_id, &root_dir)
+        .await?;
     let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
     lock_registry.register(session_lock.clone()).await;
     session_store.touch_session(&session_id, &root_dir).await?;
@@ -79,8 +85,11 @@ async fn run_headless_locked(
     let background_manager = SharedBackgroundManager::new(&store_root)?;
     let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
-    let worktree_manager = SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
-    let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(tact_path.memory_dir())?));
+    let worktree_manager =
+        SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
+    let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
+        tact_path.memory_dir(),
+    )?));
     let mcp_router = load_mcp_router().await?;
 
     let tools = toolset();
@@ -99,9 +108,15 @@ async fn run_headless_locked(
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
     };
 
-    let mut agent =
-        Agent::new(client.clone(), tool_context, tools, mcp_router, permission_manager, AgentSystemPrompt::Dynamic)
-            .with_session(session_id.clone(), session_store);
+    let mut agent = Agent::new(
+        client.clone(),
+        tool_context,
+        tools,
+        mcp_router,
+        permission_manager,
+        AgentSystemPrompt::Dynamic,
+    )
+    .with_session(session_id.clone(), session_store);
 
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;

@@ -18,19 +18,26 @@ impl App {
             .collect();
         // Skills as slash targets (Claude Code style `/skill-name`).
         // Skip names that collide with built-ins — builtins always win on Enter.
-        let builtin_names: std::collections::HashSet<&str> = PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
+        let builtin_names: std::collections::HashSet<&str> =
+            PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
         for skill in &self.skills_data {
             if builtin_names.contains(skill.name.as_str()) {
                 continue;
             }
-            let desc = if skill.description.is_empty() { skill.name.clone() } else { skill.description.clone() };
+            let desc = if skill.description.is_empty() {
+                skill.name.clone()
+            } else {
+                skill.description.clone()
+            };
             cmds.push((skill.name.clone(), desc));
         }
         cmds
     }
 
     pub(crate) fn save_history(&self, entry: &str) {
-        let _ = self.history_save_tx.send((self.session_id.clone(), entry.to_string()));
+        let _ = self
+            .history_save_tx
+            .send((self.session_id.clone(), entry.to_string()));
     }
 
     pub(crate) fn toggle_theme(&mut self) {
@@ -97,7 +104,9 @@ mod tests {
         app.toggle_theme();
         assert_ne!(app.theme.name, ThemeName::Retro);
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("theme") || m.contains("Theme")),
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("theme") || m.contains("Theme")),
             "toggle should append theme changed message"
         );
     }

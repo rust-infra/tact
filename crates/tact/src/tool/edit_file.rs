@@ -14,8 +14,10 @@ pub struct EditFileInput {
     pub old_text: String,
     #[schemars(description = "Replacement text for matched old_text.")]
     pub new_text: String,
-    #[schemars(description = "If true, replace every occurrence of old_text. If false (default), \
-                       replace only the first match.")]
+    #[schemars(
+        description = "If true, replace every occurrence of old_text. If false (default), \
+                       replace only the first match."
+    )]
     #[serde(default)]
     pub replace_all: bool,
 }
@@ -28,7 +30,9 @@ pub struct EditFileInput {
 pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String> {
     let path = safe_path(&ctx.work_dir, &input.path)?;
 
-    let content = fs::read_to_string(&path).await.map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+    let content = fs::read_to_string(&path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
 
     if input.old_text.is_empty() {
         return Err(anyhow::anyhow!("Error: old_text must not be empty"));
@@ -48,9 +52,16 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
         (content.replacen(&input.old_text, &input.new_text, 1), 1)
     };
 
-    fs::write(&path, updated).await.map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+    fs::write(&path, updated)
+        .await
+        .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
 
-    Ok(format!("Edited {}: replaced {} occurrence{}", path.display(), replaced, if replaced == 1 { "" } else { "s" }))
+    Ok(format!(
+        "Edited {}: replaced {} occurrence{}",
+        path.display(),
+        replaced,
+        if replaced == 1 { "" } else { "s" }
+    ))
 }
 
 #[cfg(test)]
@@ -77,7 +88,10 @@ mod tests {
         .unwrap();
 
         assert!(output.contains("replaced 1 occurrence"));
-        assert_eq!(std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(), "FOO bar foo");
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(),
+            "FOO bar foo"
+        );
     }
 
     #[tokio::test]
@@ -100,7 +114,10 @@ mod tests {
         .unwrap();
 
         assert!(output.contains("replaced 2 occurrences"));
-        assert_eq!(std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(), "FOO bar FOO");
+        assert_eq!(
+            std::fs::read_to_string(context.work_dir.join("dup.txt")).unwrap(),
+            "FOO bar FOO"
+        );
     }
 
     #[tokio::test]

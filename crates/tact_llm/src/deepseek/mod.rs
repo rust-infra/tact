@@ -53,10 +53,10 @@ fn inject_deepseek_thinking(body: &mut Value, request: &CreateMessageParams) {
             // Map our budget bands onto DeepSeek's native high/max.
             let effort = if budget > 32_000 { "max" } else { "high" };
             body["reasoning_effort"] = Value::String(effort.to_owned());
-        },
+        }
         None => {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
-        },
+        }
     }
 }
 
@@ -69,7 +69,10 @@ pub struct DeepSeekAdapter {
 
 impl DeepSeekAdapter {
     pub fn new(config: CompatibleConfig) -> Self {
-        Self { adapter: OpenAiAdapter::new(config), user_id: None }
+        Self {
+            adapter: OpenAiAdapter::new(config),
+            user_id: None,
+        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -80,9 +83,18 @@ impl DeepSeekAdapter {
         self.user_id = Some(user_id);
     }
 
-    fn assemble_body(&self, request: &CreateMessageParams, stream: bool) -> Result<Value, LlmError> {
+    fn assemble_body(
+        &self,
+        request: &CreateMessageParams,
+        stream: bool,
+    ) -> Result<Value, LlmError> {
         crate::read_provider(|provider| {
-            assemble_chat_completion_body(request, stream, provider, &DeepSeekBodyHook::new(self.user_id.clone()))
+            assemble_chat_completion_body(
+                request,
+                stream,
+                provider,
+                &DeepSeekBodyHook::new(self.user_id.clone()),
+            )
         })
     }
 }
@@ -93,14 +105,33 @@ impl LlmClient for DeepSeekAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| self.assemble_body(r, s)).await
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
+        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         create_assembled(&self.adapter, request, |r, s| self.assemble_body(r, s)).await
     }
 }
@@ -117,10 +148,15 @@ mod tests {
     #[test]
     fn deepseek_hook_pairs_thinking_and_effort() {
         let request = sample_request_with_thinking();
-        let provider = provider(ProviderKind::DeepSeek, "deepseek-v4-pro", "https://api.deepseek.com");
+        let provider = provider(
+            ProviderKind::DeepSeek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+        );
         let mut body = empty_body();
         let uid = "a1b2c3d4-5678-90ab-cdef-1234567890ab";
-        DeepSeekBodyHook::new(Some(uid.to_string())).inject(&mut body, &ctx(&request, &provider, &[]));
+        DeepSeekBodyHook::new(Some(uid.to_string()))
+            .inject(&mut body, &ctx(&request, &provider, &[]));
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["user_id"], uid);
@@ -133,8 +169,15 @@ mod tests {
             messages: vec![],
             max_tokens: 1,
         })
-        .with_thinking(RequestThinking { budget_tokens: 32_001, type_: ThinkingType::Enabled });
-        let provider = provider(ProviderKind::DeepSeek, "deepseek-v4-pro", "https://api.deepseek.com");
+        .with_thinking(RequestThinking {
+            budget_tokens: 32_001,
+            type_: ThinkingType::Enabled,
+        });
+        let provider = provider(
+            ProviderKind::DeepSeek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+        );
         let mut body = empty_body();
         DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &[]));
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -148,7 +191,11 @@ mod tests {
             messages: vec![],
             max_tokens: 1,
         });
-        let provider = provider(ProviderKind::DeepSeek, "deepseek-v4-pro", "https://api.deepseek.com");
+        let provider = provider(
+            ProviderKind::DeepSeek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+        );
         let mut body = empty_body();
         DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &[]));
         assert_eq!(body["thinking"]["type"], "disabled");
@@ -158,7 +205,11 @@ mod tests {
     #[test]
     fn deepseek_hook_does_not_echo_reasoning_content() {
         let request = sample_request_with_thinking();
-        let provider = provider(ProviderKind::DeepSeek, "deepseek-v4-pro", "https://api.deepseek.com");
+        let provider = provider(
+            ProviderKind::DeepSeek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+        );
         let mut body = serde_json::json!({
             "messages": [
                 {"role": "user", "content": "hi"},

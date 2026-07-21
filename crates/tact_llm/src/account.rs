@@ -23,7 +23,10 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
         "https://api.deepseek.com/user/balance".to_string()
     } else {
         // Extract origin from base_url and append /user/balance
-        let origin = base_url.trim_end_matches('/').trim_end_matches("/v1").trim_end_matches("/v1/");
+        let origin = base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches("/v1/");
         format!("{origin}/user/balance")
     };
 
@@ -38,10 +41,17 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
     if !resp.status().is_success() {
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("DeepSeek balance query returned HTTP {}: {}", status, error_body.trim());
+        anyhow::bail!(
+            "DeepSeek balance query returned HTTP {}: {}",
+            status,
+            error_body.trim()
+        );
     }
 
-    let body = resp.text().await.context("Failed to read DeepSeek balance response")?;
+    let body = resp
+        .text()
+        .await
+        .context("Failed to read DeepSeek balance response")?;
 
     #[derive(serde::Deserialize)]
     struct RawBalanceEntry {
@@ -57,10 +67,14 @@ pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceIn
         balance_infos: Vec<RawBalanceEntry>,
     }
 
-    let raw: RawBalanceResponse = serde_json::from_str(&body).context("Failed to parse DeepSeek balance response")?;
+    let raw: RawBalanceResponse =
+        serde_json::from_str(&body).context("Failed to parse DeepSeek balance response")?;
 
     fn parse_amount(field: &str, value: &str) -> anyhow::Result<f64> {
-        value.trim().parse::<f64>().with_context(|| format!("DeepSeek balance field {field} is not numeric: {value:?}"))
+        value
+            .trim()
+            .parse::<f64>()
+            .with_context(|| format!("DeepSeek balance field {field} is not numeric: {value:?}"))
     }
 
     Ok(tact_protocol::BalanceInfo {
@@ -100,7 +114,10 @@ fn kimi_balance_url_from_base_url(base_url: &str) -> Option<String> {
 }
 
 fn kimi_balance_currency(base_url: &str) -> &'static str {
-    if reqwest::Url::parse(base_url).ok().and_then(|url| url.host_str().map(str::to_owned)).as_deref()
+    if reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
         == Some("api.moonshot.ai")
     {
         "USD"
@@ -109,7 +126,10 @@ fn kimi_balance_currency(base_url: &str) -> &'static str {
     }
 }
 
-fn parse_kimi_balance_response(body: &str, currency: &str) -> anyhow::Result<tact_protocol::BalanceInfo> {
+fn parse_kimi_balance_response(
+    body: &str,
+    currency: &str,
+) -> anyhow::Result<tact_protocol::BalanceInfo> {
     #[derive(serde::Deserialize)]
     struct RawKimiBalanceData {
         available_balance: f64,
@@ -124,7 +144,8 @@ fn parse_kimi_balance_response(body: &str, currency: &str) -> anyhow::Result<tac
         data: RawKimiBalanceData,
     }
 
-    let raw: RawKimiBalanceResponse = serde_json::from_str(body).context("Failed to parse Kimi balance response")?;
+    let raw: RawKimiBalanceResponse =
+        serde_json::from_str(body).context("Failed to parse Kimi balance response")?;
 
     Ok(tact_protocol::BalanceInfo {
         is_available: raw.status && raw.code == 0,
@@ -144,8 +165,9 @@ fn parse_kimi_balance_response(body: &str, currency: &str) -> anyhow::Result<tac
 pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
     let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
 
-    let balance_url = kimi_balance_url_from_base_url(&base_url)
-        .ok_or_else(|| anyhow::anyhow!("Kimi balance API is only available for official Moonshot API endpoints"))?;
+    let balance_url = kimi_balance_url_from_base_url(&base_url).ok_or_else(|| {
+        anyhow::anyhow!("Kimi balance API is only available for official Moonshot API endpoints")
+    })?;
     let currency = kimi_balance_currency(&base_url);
 
     let resp = CLIENT
@@ -159,10 +181,17 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
     if !resp.status().is_success() {
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Kimi balance query returned HTTP {}: {}", status, error_body.trim());
+        anyhow::bail!(
+            "Kimi balance query returned HTTP {}: {}",
+            status,
+            error_body.trim()
+        );
     }
 
-    let body = resp.text().await.context("Failed to read Kimi balance response")?;
+    let body = resp
+        .text()
+        .await
+        .context("Failed to read Kimi balance response")?;
 
     parse_kimi_balance_response(&body, currency)
 }
@@ -177,7 +206,11 @@ fn kimi_usage_url_from_base_url(base_url: &str) -> String {
     if trimmed.is_empty() {
         return "https://api.kimi.com/coding/v1/usages".to_string();
     }
-    let api_base = if trimmed.ends_with("/v1") { trimmed.to_string() } else { format!("{trimmed}/v1") };
+    let api_base = if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    };
     format!("{api_base}/usages")
 }
 
@@ -229,7 +262,8 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
         user: Option<RawUser>,
     }
 
-    let raw: RawKimiUsageResponse = serde_json::from_str(body).context("Failed to parse Kimi usage response")?;
+    let raw: RawKimiUsageResponse =
+        serde_json::from_str(body).context("Failed to parse Kimi usage response")?;
 
     let mut windows = vec![tact_protocol::UsageQuotaWindow {
         label: "week".to_string(),
@@ -284,10 +318,17 @@ pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuota
     if !resp.status().is_success() {
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Kimi usage query returned HTTP {}: {}", status, error_body.trim());
+        anyhow::bail!(
+            "Kimi usage query returned HTTP {}: {}",
+            status,
+            error_body.trim()
+        );
     }
 
-    let body = resp.text().await.context("Failed to read Kimi usage response")?;
+    let body = resp
+        .text()
+        .await
+        .context("Failed to read Kimi usage response")?;
 
     parse_kimi_usage_response(&body)
 }
@@ -307,9 +348,15 @@ mod tests {
             "https://api.kimi.com/coding/v1/usages"
         );
         // Custom proxy serving kimi-for-coding: derive from the proxy base.
-        assert_eq!(kimi_usage_url_from_base_url("https://proxy.example.com"), "https://proxy.example.com/v1/usages");
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://proxy.example.com"),
+            "https://proxy.example.com/v1/usages"
+        );
         // Empty base URL falls back to the official endpoint.
-        assert_eq!(kimi_usage_url_from_base_url(""), "https://api.kimi.com/coding/v1/usages");
+        assert_eq!(
+            kimi_usage_url_from_base_url(""),
+            "https://api.kimi.com/coding/v1/usages"
+        );
     }
 
     #[test]
@@ -360,11 +407,26 @@ mod tests {
             kimi_balance_url_from_base_url("https://api.moonshot.cn"),
             Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
         );
-        assert_eq!(kimi_balance_url_from_base_url("https://api.kimi.com/coding/v1"), None);
-        assert_eq!(kimi_balance_url_from_base_url("https://proxy.example.com/v1"), None);
-        assert_eq!(kimi_balance_url_from_base_url("https://api.moonshot.cn.attacker.example/v1"), None);
-        assert_eq!(kimi_balance_url_from_base_url("http://api.moonshot.cn/v1"), None);
-        assert_eq!(kimi_balance_url_from_base_url(""), Some("https://api.moonshot.cn/v1/users/me/balance".to_string()));
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.kimi.com/coding/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://proxy.example.com/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("https://api.moonshot.cn.attacker.example/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url("http://api.moonshot.cn/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_balance_url_from_base_url(""),
+            Some("https://api.moonshot.cn/v1/users/me/balance".to_string())
+        );
     }
 
     #[test]
@@ -382,8 +444,7 @@ mod tests {
 
     #[test]
     fn parse_kimi_balance_response_unavailable_when_code_nonzero() {
-        let body =
-            r#"{"code":1,"status":false,"data":{"available_balance":0.0,"voucher_balance":0.0,"cash_balance":0.0}}"#;
+        let body = r#"{"code":1,"status":false,"data":{"available_balance":0.0,"voucher_balance":0.0,"cash_balance":0.0}}"#;
         let info = parse_kimi_balance_response(body, "USD").unwrap();
         assert!(!info.is_available);
         assert_eq!(info.balance_infos[0].currency, "USD");

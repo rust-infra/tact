@@ -11,7 +11,9 @@ use crate::tool::{ToolContext, safe_path};
 pub struct SearchCodeInput {
     #[schemars(description = "Search pattern (regex supported when using rg).")]
     pub query: String,
-    #[schemars(description = "Directory or file to search in, relative to workspace. Defaults to workspace root.")]
+    #[schemars(
+        description = "Directory or file to search in, relative to workspace. Defaults to workspace root."
+    )]
     pub path: Option<String>,
     #[schemars(description = "File glob pattern to filter results, e.g. '*.rs' or '*.ts'.")]
     pub glob: Option<String>,
@@ -54,10 +56,19 @@ pub async fn search_code(ctx: ToolContext, input: SearchCodeInput) -> Result<Str
         run_grep(&input.query, &full_path, max_results).await?
     };
 
-    if result.trim().is_empty() { Ok("No matches found.".to_string()) } else { Ok(result) }
+    if result.trim().is_empty() {
+        Ok("No matches found.".to_string())
+    } else {
+        Ok(result)
+    }
 }
 
-async fn run_ripgrep(query: &str, path: &std::path::Path, glob: Option<&str>, max_results: usize) -> Result<String> {
+async fn run_ripgrep(
+    query: &str,
+    path: &std::path::Path,
+    glob: Option<&str>,
+    max_results: usize,
+) -> Result<String> {
     let mut cmd = Command::new("rg");
     cmd.arg("-n")
         .arg("--max-columns")
@@ -73,13 +84,20 @@ async fn run_ripgrep(query: &str, path: &std::path::Path, glob: Option<&str>, ma
         cmd.arg("--glob").arg(g);
     }
 
-    let output = cmd.output().await.map_err(|e| anyhow::anyhow!("rg failed: {}", e))?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("rg failed: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
 
     if lines.len() > max_results {
         let truncated: Vec<&str> = lines.into_iter().take(max_results).collect();
-        Ok(format!("{}\n... (truncated to {} results)", truncated.join("\n"), max_results))
+        Ok(format!(
+            "{}\n... (truncated to {} results)",
+            truncated.join("\n"),
+            max_results
+        ))
     } else {
         Ok(stdout.into_owned())
     }
@@ -103,7 +121,11 @@ async fn run_grep(query: &str, path: &std::path::Path, max_results: usize) -> Re
 
     if lines.len() > max_results {
         let truncated: Vec<&str> = lines.into_iter().take(max_results).collect();
-        Ok(format!("{}\n... (truncated to {} results)", truncated.join("\n"), max_results))
+        Ok(format!(
+            "{}\n... (truncated to {} results)",
+            truncated.join("\n"),
+            max_results
+        ))
     } else {
         Ok(stdout.into_owned())
     }

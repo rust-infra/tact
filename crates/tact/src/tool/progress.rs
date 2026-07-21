@@ -8,8 +8,14 @@ pub struct ToolProgressReporter {
 }
 
 impl ToolProgressReporter {
-    pub fn new(tool_id: impl Into<String>, ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>) -> Self {
-        Self { tool_id: tool_id.into(), ui_tx }
+    pub fn new(
+        tool_id: impl Into<String>,
+        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            ui_tx,
+        }
     }
 
     pub fn report(&self, chunks: Vec<ToolOutputChunk>) {
@@ -17,7 +23,10 @@ impl ToolProgressReporter {
             return;
         }
         if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress { tool_id: self.tool_id.clone(), chunks });
+            let _ = tx.send(AgentUpdate::ToolProgress {
+                tool_id: self.tool_id.clone(),
+                chunks,
+            });
         }
     }
 }

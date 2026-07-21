@@ -4,7 +4,8 @@ use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    ContentBlock, CreateMessageParams, LlmError, StopReason, anthropic, deepseek, kimi, mock::MockClient, openai,
+    ContentBlock, CreateMessageParams, LlmError, StopReason, anthropic, deepseek, kimi,
+    mock::MockClient, openai,
 };
 
 /// Serialized JSON request body actually sent to the LLM API (for session debugging).
@@ -20,7 +21,15 @@ pub trait LlmClient: Send + Sync {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError>;
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    >;
 
     /// Non-streaming message request (used for context compaction).
     ///
@@ -28,7 +37,15 @@ pub trait LlmClient: Send + Sync {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError>;
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    >;
 }
 
 /// Supported LLM providers.
@@ -49,7 +66,15 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, ui_tx).await,
             LlmProvider::OpenAi(o) => o.stream_message(request, ui_tx).await,
@@ -63,7 +88,15 @@ impl LlmClient for LlmProvider {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            Option<StopReason>,
+            Option<TokenUsageInfo>,
+            Option<LlmRequestBody>,
+        ),
+        LlmError,
+    > {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request).await,
             LlmProvider::OpenAi(o) => o.create_message(request).await,
@@ -88,7 +121,7 @@ impl LlmProvider {
             LlmProvider::Anthropic(_)
             | LlmProvider::OpenAiResponses(_)
             | LlmProvider::Kimi(_)
-            | LlmProvider::Mock(_) => {},
+            | LlmProvider::Mock(_) => {}
         }
     }
 }

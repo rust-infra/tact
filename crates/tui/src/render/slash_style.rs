@@ -11,14 +11,19 @@ use crate::{theme::Theme, widgets::state::SkillEntry};
 
 /// Split a line that starts with a known skill slash into `(skill_token, rest)`.
 /// `skill_token` includes the leading `/` (e.g. `/demo-test`); `rest` may start with spaces.
-pub(crate) fn split_skill_slash<'a>(line: &'a str, skill_names: &HashSet<&str>) -> Option<(&'a str, &'a str)> {
+pub(crate) fn split_skill_slash<'a>(
+    line: &'a str,
+    skill_names: &HashSet<&str>,
+) -> Option<(&'a str, &'a str)> {
     let trimmed = line.trim_start();
     let lead = line.len() - trimmed.len();
     if !trimmed.starts_with('/') {
         return None;
     }
     let after_slash = &trimmed[1..];
-    let cmd_len = after_slash.find(|c: char| c.is_whitespace()).unwrap_or(after_slash.len());
+    let cmd_len = after_slash
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(after_slash.len());
     if cmd_len == 0 {
         return None;
     }
@@ -33,8 +38,15 @@ pub(crate) fn split_skill_slash<'a>(line: &'a str, skill_names: &HashSet<&str>) 
 
 /// Skill names eligible for slash highlighting / matching (excludes built-ins).
 pub(crate) fn skill_name_set(skills: &[SkillEntry]) -> HashSet<&str> {
-    let builtins: HashSet<&str> = crate::widgets::state::PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
-    skills.iter().map(|s| s.name.as_str()).filter(|n| !builtins.contains(n)).collect()
+    let builtins: HashSet<&str> = crate::widgets::state::PALETTE_COMMANDS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| !builtins.contains(n))
+        .collect()
 }
 
 /// Static prefix of an i18n template like `"💬 {}"` → `"💬 "`.
@@ -43,15 +55,25 @@ fn template_prefix(tmpl: &str) -> Option<&str> {
 }
 
 /// Style `/skill args` for the input box.
-pub(crate) fn style_input_skill_line(line: &str, skill_names: &HashSet<&str>, theme: &Theme) -> Option<Line<'static>> {
+pub(crate) fn style_input_skill_line(
+    line: &str,
+    skill_names: &HashSet<&str>,
+    theme: &Theme,
+) -> Option<Line<'static>> {
     let (skill, rest) = split_skill_slash(line, skill_names)?;
     let mut spans = Vec::with_capacity(2);
     spans.push(Span::styled(
         skill.to_string(),
-        Style::default().fg(theme.accent).bg(theme.input_box_bg).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.accent)
+            .bg(theme.input_box_bg)
+            .add_modifier(Modifier::BOLD),
     ));
     if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_string(), Style::default().fg(theme.fg).bg(theme.input_box_bg)));
+        spans.push(Span::styled(
+            rest.to_string(),
+            Style::default().fg(theme.fg).bg(theme.input_box_bg),
+        ));
     }
     Some(Line::from(spans))
 }
@@ -84,13 +106,29 @@ pub(crate) fn style_user_skill_line(
 
     // First line of a skill invocation: use ⚡ prefix with warning color to stand out.
     if lead.contains('💬') {
-        spans.push(Span::styled("⚡ ".to_string(), Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            "⚡ ".to_string(),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
     } else {
-        spans.push(Span::styled(lead.to_string(), Style::default().fg(theme.success)));
+        spans.push(Span::styled(
+            lead.to_string(),
+            Style::default().fg(theme.success),
+        ));
     }
-    spans.push(Span::styled(skill.to_string(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+        skill.to_string(),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ));
     if !args.is_empty() {
-        spans.push(Span::styled(args.to_string(), Style::default().fg(theme.fg)));
+        spans.push(Span::styled(
+            args.to_string(),
+            Style::default().fg(theme.fg),
+        ));
     }
     Some(Line::from(spans))
 }
@@ -117,8 +155,16 @@ mod tests {
     #[test]
     fn skill_name_set_excludes_builtin_names() {
         let skills = vec![
-            SkillEntry { name: "help".into(), description: "skill help".into(), body: "x".into() },
-            SkillEntry { name: "demo".into(), description: "d".into(), body: "y".into() },
+            SkillEntry {
+                name: "help".into(),
+                description: "skill help".into(),
+                body: "x".into(),
+            },
+            SkillEntry {
+                name: "demo".into(),
+                description: "d".into(),
+                body: "y".into(),
+            },
         ];
         let names = skill_name_set(&skills);
         assert!(!names.contains("help"));
@@ -145,7 +191,11 @@ mod tests {
         let names: HashSet<&str> = ["demo"].into_iter().collect();
         let line = style_user_skill_line("💬 /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
         assert_eq!(line.spans[0].content.as_ref(), "⚡ ");
-        assert_eq!(line.spans[0].style.fg, Some(theme.warning), "skill prefix should use warning color");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(theme.warning),
+            "skill prefix should use warning color"
+        );
         assert_eq!(line.spans[1].content.as_ref(), "/demo");
         assert_eq!(line.spans[2].content.as_ref(), " hi");
     }
@@ -156,6 +206,10 @@ mod tests {
         let names: HashSet<&str> = ["demo"].into_iter().collect();
         let line = style_user_skill_line("  /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
         assert_eq!(line.spans[0].content.as_ref(), "  ");
-        assert_eq!(line.spans[0].style.fg, Some(theme.success), "continuation lead should keep success color");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(theme.success),
+            "continuation lead should keep success color"
+        );
     }
 }

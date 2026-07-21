@@ -32,7 +32,10 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         frame.buffer_mut().set_line(
             inner.x,
             inner.y + 1,
-            &Line::from(Span::styled(msgs.palette_empty, Style::default().fg(Color::Gray))),
+            &Line::from(Span::styled(
+                msgs.palette_empty,
+                Style::default().fg(Color::Gray),
+            )),
             inner.width,
         );
         return;
@@ -45,12 +48,20 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let mut rows: Vec<SlashRow<'_>> = Vec::new();
     let mut last_section: Option<Section> = None;
     for (i, &(_idx, (cmd, desc), _score)) in filtered.iter().enumerate() {
-        let section = if skill_names.contains(cmd) { Section::Skills } else { Section::Commands };
+        let section = if skill_names.contains(cmd) {
+            Section::Skills
+        } else {
+            Section::Commands
+        };
         if last_section != Some(section) {
             rows.push(SlashRow::Header(section));
             last_section = Some(section);
         }
-        rows.push(SlashRow::Item { global_idx: i, cmd, desc });
+        rows.push(SlashRow::Item {
+            global_idx: i,
+            cmd,
+            desc,
+        });
     }
 
     // Map selected command index → row index for scroll anchoring.
@@ -63,8 +74,11 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let popup_width: u16 = 56;
     let popup_area = super::centered_list_popup_area(area, popup_width, list_height + 2);
 
-    let offset =
-        if rows.len() > max_visible + 2 && selected_row >= max_visible { selected_row - max_visible + 1 } else { 0 };
+    let offset = if rows.len() > max_visible + 2 && selected_row >= max_visible {
+        selected_row - max_visible + 1
+    } else {
+        0
+    };
 
     let accent = Color::Cyan;
     let visible_end = (offset + max_visible + 2).min(rows.len());
@@ -78,10 +92,16 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
                 };
                 ListItem::new(Line::from(Span::styled(
                     format!(" {label}"),
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM | Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM | Modifier::BOLD),
                 )))
-            },
-            SlashRow::Item { global_idx, cmd, desc } => {
+            }
+            SlashRow::Item {
+                global_idx,
+                cmd,
+                desc,
+            } => {
                 let is_sel = *global_idx == selected;
                 let prefix = if is_sel { "▶ " } else { "  " };
                 let desc_short = truncate_chars(desc, 28);
@@ -97,22 +117,33 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
                     Span::raw("  "),
                     Span::styled(desc_short, Style::default().fg(Color::DarkGray)),
                 ]))
-            },
+            }
         })
         .collect();
 
     let title = match last_section {
-        Some(Section::Skills) if filtered.iter().all(|(_, (c, _), _)| skill_names.contains(*c)) => {
+        Some(Section::Skills)
+            if filtered
+                .iter()
+                .all(|(_, (c, _), _)| skill_names.contains(*c)) =>
+        {
             msgs.slash_section_skills
-        },
-        Some(Section::Commands) if filtered.iter().all(|(_, (c, _), _)| !skill_names.contains(*c)) => {
+        }
+        Some(Section::Commands)
+            if filtered
+                .iter()
+                .all(|(_, (c, _), _)| !skill_names.contains(*c)) =>
+        {
             msgs.slash_section_commands
-        },
+        }
         _ => msgs.slash_title_mixed,
     };
 
     let block = Block::default()
-        .title(Span::styled(title, Style::default().fg(accent).add_modifier(Modifier::BOLD)))
+        .title(Span::styled(
+            title,
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent));
@@ -131,7 +162,11 @@ enum Section {
 
 enum SlashRow<'a> {
     Header(Section),
-    Item { global_idx: usize, cmd: &'a str, desc: &'a str },
+    Item {
+        global_idx: usize,
+        cmd: &'a str,
+        desc: &'a str,
+    },
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {

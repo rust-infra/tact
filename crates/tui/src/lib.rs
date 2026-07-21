@@ -24,9 +24,9 @@ use std::{io, path::PathBuf, time::Duration};
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream,
-        KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -45,12 +45,12 @@ use tokio_stream::StreamExt;
 pub use crate::widgets::state::SkillEntry;
 use crate::{
     handlers::{
-        handle_file_picker_mode, handle_insert_mode, handle_mouse_event, handle_normal_mode, handle_overlay_key,
-        handle_palette_mode, handle_select_mode,
+        handle_file_picker_mode, handle_insert_mode, handle_mouse_event, handle_normal_mode,
+        handle_overlay_key, handle_palette_mode, handle_select_mode,
     },
     render::{
-        render_bottom_bar, render_command_palette, render_file_picker, render_input_box, render_main_area,
-        render_select_popup, render_slash_command_popup, render_status_bar,
+        render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
+        render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
     },
     widgets::state::{App, InputMode, Status},
 };
@@ -180,8 +180,11 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         while let Ok(update) = app.agent_rx.try_recv() {
             app.handle_agent_update(update);
         }
-        let account_updates: Vec<AccountUpdate> =
-            app.account_rx.as_mut().map(|rx| std::iter::from_fn(|| rx.try_recv().ok()).collect()).unwrap_or_default();
+        let account_updates: Vec<AccountUpdate> = app
+            .account_rx
+            .as_mut()
+            .map(|rx| std::iter::from_fn(|| rx.try_recv().ok()).collect())
+            .unwrap_or_default();
         for update in account_updates {
             app.handle_account_update(update);
         }
@@ -215,7 +218,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .split(size)[1];
                 if size != last_size {
                     last_size = size;
-                    app.log_scroll.state = ScrollbarState::new(app.messages.len().saturating_sub(1));
+                    app.log_scroll.state =
+                        ScrollbarState::new(app.messages.len().saturating_sub(1));
                 }
                 let main_chunks = Layout::default()
                     .direction(Direction::Horizontal)

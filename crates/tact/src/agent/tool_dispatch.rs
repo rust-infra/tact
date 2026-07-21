@@ -38,16 +38,24 @@ enum PreparedState {
 
 const TOOL_CANCELLED_MSG: &str = "Cancelled by user";
 
-fn build_tool_results(prepared: Vec<PreparedTool>, mut outputs: Vec<Option<String>>) -> Vec<ContentBlock> {
+fn build_tool_results(
+    prepared: Vec<PreparedTool>,
+    mut outputs: Vec<Option<String>>,
+) -> Vec<ContentBlock> {
     prepared
         .into_iter()
         .enumerate()
         .map(|(idx, prep)| {
             let content = match prep.state {
                 PreparedState::Resolved(msg) => msg,
-                PreparedState::Run => outputs[idx].take().unwrap_or_else(|| TOOL_CANCELLED_MSG.to_string()),
+                PreparedState::Run => outputs[idx]
+                    .take()
+                    .unwrap_or_else(|| TOOL_CANCELLED_MSG.to_string()),
             };
-            ContentBlock::ToolResult { tool_use_id: prep.id, content }
+            ContentBlock::ToolResult {
+                tool_use_id: prep.id,
+                content,
+            }
         })
         .collect()
 }
@@ -66,14 +74,20 @@ async fn run_native_tool(
         Ok(output) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match persist_large_output(&tact_path, tool_use_id, &output).await {
-                Ok(content) => ExecResult { content, status: StepStatus::Success },
+                Ok(content) => ExecResult {
+                    content,
+                    status: StepStatus::Success,
+                },
                 Err(error) => ExecResult {
                     content: format!("Error persisting large output: {error}"),
                     status: StepStatus::Failed,
                 },
             }
+        }
+        Err(e) => ExecResult {
+            content: format!("Error invoking tool {}: {}", name, e),
+            status: StepStatus::Failed,
         },
-        Err(e) => ExecResult { content: format!("Error invoking tool {}: {}", name, e), status: StepStatus::Failed },
     }
 }
 
@@ -90,24 +104,30 @@ async fn run_mcp_tool(
         Ok(output) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match persist_large_output(&tact_path, tool_use_id, &output).await {
-                Ok(content) => ExecResult { content, status: StepStatus::Success },
+                Ok(content) => ExecResult {
+                    content,
+                    status: StepStatus::Success,
+                },
                 Err(error) => ExecResult {
                     content: format!("Error persisting large MCP output: {error}"),
                     status: StepStatus::Failed,
                 },
             }
-        },
-        Err(e) => {
-            ExecResult { content: format!("Error invoking MCP tool {}: {}", name, e), status: StepStatus::Failed }
+        }
+        Err(e) => ExecResult {
+            content: format!("Error invoking MCP tool {}: {}", name, e),
+            status: StepStatus::Failed,
         },
     }
 }
 
 fn recent_file_paths(name: &str, input: &serde_json::Value) -> Vec<String> {
     match name {
-        "read_file" | "write_file" | "edit_file" => {
-            input.get("path").and_then(serde_json::Value::as_str).map(|path| vec![path.to_string()]).unwrap_or_default()
-        },
+        "read_file" | "write_file" | "edit_file" => input
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(|path| vec![path.to_string()])
+            .unwrap_or_default(),
         "batch_read" => input
             .get("files")
             .and_then(serde_json::Value::as_array)
@@ -116,16 +136,23 @@ fn recent_file_paths(name: &str, input: &serde_json::Value) -> Vec<String> {
             .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
             .map(ToOwned::to_owned)
             .collect(),
-        "apply_patch" if !input.get("dry_run").and_then(serde_json::Value::as_bool).unwrap_or(false) => input
-            .get("patch")
-            .and_then(serde_json::Value::as_str)
-            .into_iter()
-            .flat_map(str::lines)
-            .filter_map(|line| line.strip_prefix("+++ "))
-            .map(str::trim)
-            .filter(|path| *path != "/dev/null")
-            .map(|path| path.strip_prefix("b/").unwrap_or(path).to_string())
-            .collect(),
+        "apply_patch"
+            if !input
+                .get("dry_run")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            input
+                .get("patch")
+                .and_then(serde_json::Value::as_str)
+                .into_iter()
+                .flat_map(str::lines)
+                .filter_map(|line| line.strip_prefix("+++ "))
+                .map(str::trim)
+                .filter(|path| *path != "/dev/null")
+                .map(|path| path.strip_prefix("b/").unwrap_or(path).to_string())
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -141,7 +168,12 @@ fn truncate_tool_arg_summary(s: &str) -> String {
     if s.chars().count() <= MAX_TOOL_ARG_SUMMARY_CHARS {
         return s.to_string();
     }
-    format!("{}...", s.chars().take(MAX_TOOL_ARG_SUMMARY_CHARS.saturating_sub(3)).collect::<String>())
+    format!(
+        "{}...",
+        s.chars()
+            .take(MAX_TOOL_ARG_SUMMARY_CHARS.saturating_sub(3))
+            .collect::<String>()
+    )
 }
 
 fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
@@ -151,8 +183,16 @@ fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
 
 fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
     match name {
-        "read_file" | "write_file" => input.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        "run_command" | "bash" | "shell" => input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "read_file" | "write_file" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "run_command" | "bash" | "shell" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => input.to_string(),
     }
 }
@@ -160,13 +200,24 @@ fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
 fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str) -> Option<String> {
     match name {
         "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
-        "write_file" => input.get("content").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        "edit_file" => input.get("new_text").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        "write_file" => input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "edit_file" => input
+            .get("new_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     }
 }
 
-fn step_result_detail(name: &str, input: &serde_json::Value, exec_output: &str, status: &StepStatus) -> Option<String> {
+fn step_result_detail(
+    name: &str,
+    input: &serde_json::Value,
+    exec_output: &str,
+    status: &StepStatus,
+) -> Option<String> {
     if matches!(status, StepStatus::Failed) {
         Some(exec_output.to_string())
     } else {
@@ -187,15 +238,27 @@ impl Agent {
     ///    [`super::tool_schedule`].
     /// 3. **Post-processing** (sequential): PostToolUse hooks, step-finished
     ///    events, and bookkeeping, replayed in the model's original tool order.
-    pub async fn execute_tool_call(&mut self, content: &[ContentBlock]) -> Result<(Vec<ContentBlock>, Option<String>)> {
+    pub async fn execute_tool_call(
+        &mut self,
+        content: &[ContentBlock],
+    ) -> Result<(Vec<ContentBlock>, Option<String>)> {
         // ── Phase 1: sequential pre-flight ──────────────────────────────────
         let mut prepared: Vec<PreparedTool> = Vec::new();
         for block in content {
             let ContentBlock::ToolUse { id, name, input } = block else {
                 continue;
             };
-            *self.runtime.stats.tool_counts.entry(name.clone()).or_insert(0) += 1;
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            *self
+                .runtime
+                .stats
+                .tool_counts
+                .entry(name.clone())
+                .or_insert(0) += 1;
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.append_cancelled_tool_uses(&mut prepared, content);
                 return Ok((build_tool_results(prepared, vec![]), None));
@@ -204,8 +267,11 @@ impl Agent {
             let step_idx = self.next_step_idx();
             let arg_full = tool_arg_full(name, input);
             let arg_summary = truncate_tool_arg_summary(&arg_full);
-            let step_description =
-                if arg_summary.is_empty() { name.clone() } else { format!("{name} ({arg_summary})") };
+            let step_description = if arg_summary.is_empty() {
+                name.clone()
+            } else {
+                format!("{name} ({arg_summary})")
+            };
             self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
                 step_description,
                 name.clone(),
@@ -220,11 +286,18 @@ impl Agent {
                 arg_full,
             });
 
-            let mut tool_use = ToolUse { id: id.clone(), name: name.clone(), input: input.clone() };
+            let mut tool_use = ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            };
             let mut permission_label: Option<String> = None;
             let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
                 Ok(HookControl::Continue) => {
-                    let decision = self.runtime.permission_manager.check(&tool_use.name, &tool_use.input);
+                    let decision = self
+                        .runtime
+                        .permission_manager
+                        .check(&tool_use.name, &tool_use.input);
                     match decision.behavior {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
@@ -235,11 +308,12 @@ impl Agent {
                                 error: msg.clone(),
                             });
                             PreparedState::Resolved(msg)
-                        },
+                        }
                         PermissionBehavior::Ask => {
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
                                 let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-                                let prompt = format_permission_prompt(&tool_use.name, &tool_use.input);
+                                let prompt =
+                                    format_permission_prompt(&tool_use.name, &tool_use.input);
                                 let options = vec![
                                     "Allow once".to_string(),
                                     "Deny".to_string(),
@@ -257,33 +331,40 @@ impl Agent {
                                     _ => Some("deny"),
                                 }
                             } else {
-                                let choice =
-                                    self.runtime.permission_manager.ask_user(&tool_use.name, &tool_use.input)?;
-                                if choice { Some("allow_once") } else { Some("deny") }
+                                let choice = self
+                                    .runtime
+                                    .permission_manager
+                                    .ask_user(&tool_use.name, &tool_use.input)?;
+                                if choice {
+                                    Some("allow_once")
+                                } else {
+                                    Some("deny")
+                                }
                             };
                             match choice {
                                 Some("allow_once") => {
                                     permission_label = Some("Allow once".to_string());
                                     PreparedState::Run
-                                },
+                                }
                                 Some("always_allow") => {
                                     permission_label = Some("Always allow this tool".to_string());
                                     self.runtime.permission_manager.allow_tool(&tool_use.name);
                                     PreparedState::Run
-                                },
+                                }
                                 _ => {
-                                    let msg = format!("Permission denied by user for {}", tool_use.name);
+                                    let msg =
+                                        format!("Permission denied by user for {}", tool_use.name);
                                     self.emit_update(AgentUpdate::StepFailed {
                                         idx: step_idx,
                                         tool_id: id.clone(),
                                         error: msg.clone(),
                                     });
                                     PreparedState::Resolved(msg)
-                                },
+                                }
                             }
-                        },
+                        }
                     }
-                },
+                }
                 Ok(HookControl::Block(reason)) => {
                     let msg = format!("Tool blocked by PreToolUse hook: {reason}");
                     self.emit_update(AgentUpdate::StepFailed {
@@ -292,7 +373,7 @@ impl Agent {
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
-                },
+                }
                 Err(error) => {
                     let msg = format!("PreToolUse hook failed: {error}");
                     self.emit_update(AgentUpdate::StepFailed {
@@ -301,7 +382,7 @@ impl Agent {
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
-                },
+                }
             };
 
             prepared.push(PreparedTool {
@@ -324,15 +405,23 @@ impl Agent {
         let resources: Vec<super::tool_schedule::ToolResources> = run_indices
             .iter()
             .map(|&i| {
-                super::tool_schedule::tool_resources(&prepared[i].name, &prepared[i].input, &self.tool_context.work_dir)
+                super::tool_schedule::tool_resources(
+                    &prepared[i].name,
+                    &prepared[i].input,
+                    &self.tool_context.work_dir,
+                )
             })
             .collect();
 
         // Record how this turn's tools were scheduled, linked to the same LLM
         // call as the token usage, so the parallelism can be audited later.
         if !run_indices.is_empty() {
-            let names: Vec<String> = run_indices.iter().map(|&i| prepared[i].name.clone()).collect();
-            self.persist_tool_schedule(&super::tool_schedule::summarize(&names, &resources)).await;
+            let names: Vec<String> = run_indices
+                .iter()
+                .map(|&i| prepared[i].name.clone())
+                .collect();
+            self.persist_tool_schedule(&super::tool_schedule::summarize(&names, &resources))
+                .await;
         }
 
         // Final tool outputs keyed by index into `prepared`. We still collect
@@ -343,7 +432,11 @@ impl Agent {
         let mut manual_compact = None;
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok((build_tool_results(prepared, outputs), manual_compact));
             }
@@ -365,7 +458,12 @@ impl Agent {
                     } else {
                         run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input).await
                     };
-                    (pi, exec.content, exec.status, start.elapsed().as_micros() as u64)
+                    (
+                        pi,
+                        exec.content,
+                        exec.status,
+                        start.elapsed().as_micros() as u64,
+                    )
                 });
             }
             let mut pending_durations_us: Vec<u64> = Vec::new();
@@ -377,20 +475,33 @@ impl Agent {
                 let prep_step_idx = prepared[pi].step_idx;
                 let prep_permission_label = prepared[pi].permission_label.clone();
 
-                let tool_use = ToolUse { id: prep_id.clone(), name: prep_name.clone(), input: prep_input.clone() };
-                let mut tool_result = ToolResult { tool_use_id: prep_id.clone(), content };
-                let (exec_output, final_status) = match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                    Ok(HookControl::Continue) => (tool_result.content, exec_status),
-                    Ok(HookControl::Block(reason)) => {
-                        (format!("Tool blocked by PostToolUse hook: {reason}"), StepStatus::Failed)
-                    },
-                    Err(error) => (format!("PostToolUse hook failed: {error}"), StepStatus::Failed),
+                let tool_use = ToolUse {
+                    id: prep_id.clone(),
+                    name: prep_name.clone(),
+                    input: prep_input.clone(),
                 };
+                let mut tool_result = ToolResult {
+                    tool_use_id: prep_id.clone(),
+                    content,
+                };
+                let (exec_output, final_status) =
+                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
+                        Ok(HookControl::Continue) => (tool_result.content, exec_status),
+                        Ok(HookControl::Block(reason)) => (
+                            format!("Tool blocked by PostToolUse hook: {reason}"),
+                            StepStatus::Failed,
+                        ),
+                        Err(error) => (
+                            format!("PostToolUse hook failed: {error}"),
+                            StepStatus::Failed,
+                        ),
+                    };
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let arg_summary = tool_arg_summary(&prep_name, &prep_input);
                 let arg_full = tool_arg_full(&prep_name, &prep_input);
-                let detail = step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
+                let detail =
+                    step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
                 let succeeded = matches!(final_status, StepStatus::Success);
                 self.emit_update(AgentUpdate::StepFinished {
                     idx: prep_step_idx,
@@ -420,7 +531,10 @@ impl Agent {
             }
             drop(futures);
             for duration_us in pending_durations_us {
-                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+                self.runtime
+                    .stats
+                    .tool_durations_ms
+                    .push(duration_us / 1000);
             }
             for path in pending_recent_files {
                 self.remember_recent_file(&path);
@@ -431,7 +545,11 @@ impl Agent {
         Ok((build_tool_results(prepared, outputs), manual_compact))
     }
 
-    fn append_cancelled_tool_uses(&mut self, prepared: &mut Vec<PreparedTool>, content: &[ContentBlock]) {
+    fn append_cancelled_tool_uses(
+        &mut self,
+        prepared: &mut Vec<PreparedTool>,
+        content: &[ContentBlock],
+    ) {
         for block in content.iter().skip(prepared.len()) {
             let ContentBlock::ToolUse { id, name, input } = block else {
                 continue;
@@ -474,7 +592,12 @@ mod tests {
     #[test]
     fn step_result_detail_on_failure_returns_full_output() {
         let input = serde_json::json!({"path": "src/lib.rs"});
-        let out = step_result_detail("edit_file", &input, "Error: Text not found in src/lib.rs", &StepStatus::Failed);
+        let out = step_result_detail(
+            "edit_file",
+            &input,
+            "Error: Text not found in src/lib.rs",
+            &StepStatus::Failed,
+        );
         assert_eq!(out.as_deref(), Some("Error: Text not found in src/lib.rs"));
     }
 
@@ -488,15 +611,26 @@ mod tests {
         let out = step_result_detail("write_file", &write, "wrote", &StepStatus::Success);
         assert_eq!(out.as_deref(), Some("fn main(){}"));
 
-        let out = step_result_detail("grep", &serde_json::json!({}), "matches", &StepStatus::Success);
+        let out = step_result_detail(
+            "grep",
+            &serde_json::json!({}),
+            "matches",
+            &StepStatus::Success,
+        );
         assert!(out.is_none());
     }
 
     #[test]
     fn recent_file_paths_cover_reads_writes_edits_batches_and_patches() {
-        assert_eq!(recent_file_paths("write_file", &serde_json::json!({"path": "src/a.rs"})), ["src/a.rs"]);
         assert_eq!(
-            recent_file_paths("batch_read", &serde_json::json!({"files": [{"path": "a"}, {"path": "b"}]})),
+            recent_file_paths("write_file", &serde_json::json!({"path": "src/a.rs"})),
+            ["src/a.rs"]
+        );
+        assert_eq!(
+            recent_file_paths(
+                "batch_read",
+                &serde_json::json!({"files": [{"path": "a"}, {"path": "b"}]})
+            ),
             ["a", "b"]
         );
         assert_eq!(
@@ -507,7 +641,11 @@ mod tests {
             ["a.rs", "b.rs"]
         );
         assert!(
-            recent_file_paths("apply_patch", &serde_json::json!({"patch": "+++ b/a.rs", "dry_run": true})).is_empty()
+            recent_file_paths(
+                "apply_patch",
+                &serde_json::json!({"patch": "+++ b/a.rs", "dry_run": true})
+            )
+            .is_empty()
         );
     }
 

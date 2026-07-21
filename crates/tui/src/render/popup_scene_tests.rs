@@ -6,7 +6,8 @@ use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType, ThinkingBlock, ThinkingPopup,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
+    ThinkingBlock, ThinkingPopup,
 };
 
 fn seed_diff_popup(app: &mut App) {
@@ -29,7 +30,9 @@ fn seed_diff_popup(app: &mut App) {
 fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal.draw(|frame| super::render_main_area(frame, frame.area(), app)).expect("draw");
+    terminal
+        .draw(|frame| super::render_main_area(frame, frame.area(), app))
+        .expect("draw");
     terminal
 }
 
@@ -42,7 +45,9 @@ fn render_thinking_popup_terminal(app: &mut App, width: u16, height: u16) -> Ter
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
-        .draw(|frame| super::popups::thinking_popup::render_thinking_popup(frame, frame.area(), app))
+        .draw(|frame| {
+            super::popups::thinking_popup::render_thinking_popup(frame, frame.area(), app)
+        })
         .expect("draw");
     terminal
 }
@@ -55,7 +60,11 @@ fn seed_code_popup(app: &mut App) {
         content: "fn main() {}".into(),
         styled: vec![Line::from("fn main() {}")],
     });
-    app.code_popup = Some(CodePopup { block_idx: 0, lang: "rust".into(), scroll: 0 });
+    app.code_popup = Some(CodePopup {
+        block_idx: 0,
+        lang: "rust".into(),
+        scroll: 0,
+    });
 }
 
 fn seed_thinking_popup(app: &mut App) {
@@ -101,7 +110,10 @@ fn full_frame_slash_command_popup_lists_help() {
 
     let text = render_app_text(&mut app, 100, 30);
 
-    assert!(text.contains("help"), "slash popup should list help command, got:\n{text}");
+    assert!(
+        text.contains("help"),
+        "slash popup should list help command, got:\n{text}"
+    );
 }
 
 #[test]
@@ -115,7 +127,10 @@ fn full_frame_slash_command_no_match_shows_hint() {
 
     let text = render_app_text(&mut app, 100, 30);
 
-    assert!(text.contains("No matching command"), "unknown slash query should show empty hint, got:\n{text}");
+    assert!(
+        text.contains("No matching command"),
+        "unknown slash query should show empty hint, got:\n{text}"
+    );
 }
 
 #[test]
@@ -128,7 +143,10 @@ fn full_frame_file_picker_lists_options() {
 
     let text = render_app_text(&mut app, 100, 30);
 
-    assert!(text.contains("Attach file") || text.contains("main.rs"), "file picker should list paths, got:\n{text}");
+    assert!(
+        text.contains("Attach file") || text.contains("main.rs"),
+        "file picker should list paths, got:\n{text}"
+    );
 }
 
 #[test]
@@ -158,9 +176,21 @@ fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
     let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
-    assert!(buffer[(row.text_x, row.screen_y)].modifier.contains(Modifier::REVERSED));
-    assert!(!buffer[(row.text_x - 2, row.screen_y)].modifier.contains(Modifier::REVERSED));
-    assert!(!buffer[(app.mouse.popup_text_body_area.x, row.screen_y)].modifier.contains(Modifier::REVERSED));
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(row.text_x - 2, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(app.mouse.popup_text_body_area.x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
 }
 
 #[test]
@@ -176,14 +206,27 @@ fn diff_popup_selection_reverses_wide_scalar_and_maps_both_columns() {
     let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
-    assert!(buffer[(row.text_x + 1, row.screen_y)].modifier.contains(Modifier::REVERSED));
-    assert!(!buffer[(row.text_x + 3, row.screen_y)].modifier.contains(Modifier::REVERSED));
+    assert!(
+        buffer[(row.text_x + 1, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(row.text_x + 3, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
     assert_eq!(row.cells[1], row.cells[2]);
     assert_eq!(row.cells[1].start, 1);
     assert_eq!(row.cells[1].end, 4);
 }
 
-fn assert_diff_popup_grapheme_selection(text: &str, grapheme: &str, grapheme_end: usize, following_end: usize) {
+fn assert_diff_popup_grapheme_selection(
+    text: &str,
+    grapheme: &str,
+    grapheme_end: usize,
+    following_end: usize,
+) {
     let mut app = make_app();
     seed_diff_popup(&mut app);
     let popup = app.tools.popup.as_mut().expect("popup");
@@ -193,19 +236,39 @@ fn assert_diff_popup_grapheme_selection(text: &str, grapheme: &str, grapheme_end
     let _terminal = render_main_area_terminal(&mut app, 100, 30);
     let row = &app.mouse.popup_text_hit_rows[0];
     let grapheme_hit = row.hit(row.text_x + 1);
-    assert_eq!(grapheme_hit, crate::widgets::state::PopupTextHit::new(1, grapheme_end));
+    assert_eq!(
+        grapheme_hit,
+        crate::widgets::state::PopupTextHit::new(1, grapheme_end)
+    );
     assert_eq!(row.hit(row.text_x + 2), grapheme_hit);
-    assert_eq!(row.hit(row.text_x + 3), crate::widgets::state::PopupTextHit::new(grapheme_end, following_end));
+    assert_eq!(
+        row.hit(row.text_x + 3),
+        crate::widgets::state::PopupTextHit::new(grapheme_end, following_end)
+    );
 
-    app.tools.popup.as_mut().expect("popup").selection =
-        Some(PopupTextSelection::new(grapheme_hit.start, grapheme_hit.end));
-    assert_eq!(app.tools.popup.as_ref().expect("popup").copy_content().as_deref(), Some(grapheme));
+    app.tools.popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(
+        grapheme_hit.start,
+        grapheme_hit.end,
+    ));
+    assert_eq!(
+        app.tools
+            .popup
+            .as_ref()
+            .expect("popup")
+            .copy_content()
+            .as_deref(),
+        Some(grapheme)
+    );
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
     let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer[(row.text_x + 1, row.screen_y)].symbol(), grapheme);
-    assert!(buffer[(row.text_x + 1, row.screen_y)].modifier.contains(Modifier::REVERSED));
+    assert!(
+        buffer[(row.text_x + 1, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
     assert_eq!(buffer[(row.text_x + 3, row.screen_y)].symbol(), "b");
 }
 
@@ -234,7 +297,11 @@ fn diff_popup_selection_highlights_visible_scrolled_row() {
     let buffer = terminal.backend().buffer();
 
     assert_eq!(row.line_start, 5);
-    assert!(buffer[(row.text_x, row.screen_y)].modifier.contains(Modifier::REVERSED));
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
 }
 
 #[test]
@@ -244,7 +311,10 @@ fn main_area_code_popup_renders_rust_block() {
 
     let text = render_main_area_text(&mut app, 100, 30);
 
-    assert!(text.contains("fn main()"), "code popup should render block content, got:\n{text}");
+    assert!(
+        text.contains("fn main()"),
+        "code popup should render block content, got:\n{text}"
+    );
 }
 
 #[test]
@@ -265,11 +335,16 @@ fn active_thinking_popup_uses_buffered_content() {
     use tact_protocol::{AgentUpdate, ThinkingChunk};
 
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("draft reasoning".into())));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "draft reasoning".into(),
+    )));
     let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup(phys_idx);
 
-    assert_eq!(app.thinking_popup_content(), Some("draft reasoning".to_string()));
+    assert_eq!(
+        app.thinking_popup_content(),
+        Some("draft reasoning".to_string())
+    );
     let text = render_main_area_text(&mut app, 100, 30);
     assert!(text.contains("draft reasoning"), "{text}");
 }
@@ -279,7 +354,9 @@ fn active_thinking_popup_preserves_blank_lines() {
     use tact_protocol::{AgentUpdate, ThinkingChunk};
 
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("first line\n\nlast line".into())));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "first line\n\nlast line".into(),
+    )));
     let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup(phys_idx);
 
@@ -287,7 +364,8 @@ fn active_thinking_popup_preserves_blank_lines() {
     let first = text.lines().position(|line| line.contains("first line"));
     let last = text.lines().position(|line| line.contains("last line"));
     assert!(
-        last.zip(first).is_some_and(|(last, first)| last >= first + 2),
+        last.zip(first)
+            .is_some_and(|(last, first)| last >= first + 2),
         "thinking popup should retain the blank content line, got:\n{text}"
     );
 }
@@ -312,9 +390,13 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
 
     let text = render_thinking_popup_text(&mut app, 100, 30);
     let first = text.lines().position(|line| line.contains("1. first item"));
-    let second = text.lines().position(|line| line.contains("2. second item"));
+    let second = text
+        .lines()
+        .position(|line| line.contains("2. second item"));
     assert!(
-        second.zip(first).is_some_and(|(second, first)| second >= first + 2),
+        second
+            .zip(first)
+            .is_some_and(|(second, first)| second >= first + 2),
         "ordered thinking items should have a blank row between them, got:\n{text}"
     );
 }
@@ -332,8 +414,16 @@ fn thinking_popup_selection_reverses_selected_body_text_only() {
     let row = &app.mouse.popup_text_hit_rows[0];
     let buffer = terminal.backend().buffer();
 
-    assert!(buffer[(row.text_x, row.screen_y)].modifier.contains(Modifier::REVERSED));
-    assert!(!buffer[(app.mouse.thinking_popup_area.x, row.screen_y)].modifier.contains(Modifier::REVERSED));
+    assert!(
+        buffer[(row.text_x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert!(
+        !buffer[(app.mouse.thinking_popup_area.x, row.screen_y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
 }
 
 #[test]
@@ -379,7 +469,10 @@ fn full_frame_done_status_renders_in_status_bar() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(text.contains("Done") || text.contains("done"), "done state should affect status bar, got:\n{text}");
+    assert!(
+        text.contains("Done") || text.contains("done"),
+        "done state should affect status bar, got:\n{text}"
+    );
 }
 
 #[test]
@@ -387,7 +480,8 @@ fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    app.select.set("Pick one".into(), vec!["A".into(), "B".into()], tx, false);
+    app.select
+        .set("Pick one".into(), vec!["A".into(), "B".into()], tx, false);
 
     let text = render_app_text(&mut app, 100, 24);
 
@@ -400,7 +494,9 @@ fn full_frame_select_mode_shows_in_status_bar() {
 #[test]
 fn main_area_markdown_stream_renders_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk("# Title\n\nBody paragraph.".into()));
+    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+        "# Title\n\nBody paragraph.".into(),
+    ));
 
     let text = render_main_area_text(&mut app, 100, 24);
 
@@ -417,7 +513,10 @@ fn main_area_system_message_renders_in_log() {
 
     let text = render_main_area_text(&mut app, 100, 20);
 
-    assert!(text.contains("System notice"), "system message should appear in log, got:\n{text}");
+    assert!(
+        text.contains("System notice"),
+        "system message should appear in log, got:\n{text}"
+    );
 }
 
 #[test]
@@ -428,7 +527,10 @@ fn main_area_loading_spinner_when_executing() {
 
     let mut app = make_app();
     app.plan.visible = true;
-    app.status = crate::widgets::state::Status::Executing { current_step: 0, total: 1 };
+    app.status = crate::widgets::state::Status::Executing {
+        current_step: 0,
+        total: 1,
+    };
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
         "run tool",
         "bash",
@@ -447,7 +549,10 @@ fn main_area_loading_spinner_when_executing() {
 
     let text = render_main_area_text(&mut app, 100, 24);
 
-    assert!(!text.trim().is_empty(), "executing log with loading placeholder should render, got:\n{text}");
+    assert!(
+        !text.trim().is_empty(),
+        "executing log with loading placeholder should render, got:\n{text}"
+    );
 }
 
 #[test]
@@ -532,7 +637,10 @@ fn full_frame_file_picker_empty_shows_placeholder() {
 
     let text = render_app_text(&mut app, 80, 24);
 
-    assert!(text.contains("No options"), "empty file picker should render placeholder, got:\n{text}");
+    assert!(
+        text.contains("No options"),
+        "empty file picker should render placeholder, got:\n{text}"
+    );
 }
 
 #[test]
@@ -567,7 +675,10 @@ fn diff_popup_renders_unified_diff_markers() {
     let text = render_main_area_text(&mut app, 100, 30);
 
     // Title indicates diff mode, not a language name
-    assert!(text.contains("(diff,"), "diff popup title should indicate diff mode, got:\n{text}");
+    assert!(
+        text.contains("(diff,"),
+        "diff popup title should indicate diff mode, got:\n{text}"
+    );
 
     // All unified diff marker lines present
     assert!(text.contains("--- a/src/lib.rs"), "missing --- header");
@@ -585,8 +696,13 @@ fn diff_popup_renders_unified_diff_markers() {
     assert!(text.contains("fn unchanged()"), "missing context line");
 
     // No line numbers in diff mode
-    let line_with_num = text.lines().any(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()));
-    assert!(!line_with_num, "diff mode should not show line numbers, got:\n{text}");
+    let line_with_num = text
+        .lines()
+        .any(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()));
+    assert!(
+        !line_with_num,
+        "diff mode should not show line numbers, got:\n{text}"
+    );
 }
 
 #[test]
@@ -610,7 +726,10 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
     let text = render_main_area_text(&mut app, 100, 20);
 
     // Title shows language, not diff
-    assert!(text.contains("(2 lines, rust"), "plain code popup should show lang in title, got:\n{text}");
+    assert!(
+        text.contains("(2 lines, rust"),
+        "plain code popup should show lang in title, got:\n{text}"
+    );
     assert!(!text.contains("(diff,"), "should not say diff in title");
 
     // Content rendered
@@ -619,7 +738,10 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 
     // Line numbers present (e.g. "1 fn one()" after border prefix)
     let has_line_num = text.contains("1 fn one()") && text.contains("2 fn two()");
-    assert!(has_line_num, "plain mode should show line numbers, got:\n{text}");
+    assert!(
+        has_line_num,
+        "plain mode should show line numbers, got:\n{text}"
+    );
 }
 
 #[test]
@@ -693,12 +815,24 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     let _ = std::fs::remove_dir_all(&tmp);
 
     // Unified diff must show both the removed line (-) and the added line (+)
-    assert!(text.contains("-    a + b"), "git diff should show removed line '-    a + b', got:\n{text}");
-    assert!(text.contains("+    a - b"), "git diff should show added line '+    a - b', got:\n{text}");
+    assert!(
+        text.contains("-    a + b"),
+        "git diff should show removed line '-    a + b', got:\n{text}"
+    );
+    assert!(
+        text.contains("+    a - b"),
+        "git diff should show added line '+    a - b', got:\n{text}"
+    );
     // Context around the change
-    assert!(text.contains("fn add"), "context line around diff should appear, got:\n{text}");
+    assert!(
+        text.contains("fn add"),
+        "context line around diff should appear, got:\n{text}"
+    );
     // Hunk header present
-    assert!(text.contains("@@"), "diff should show @@ hunk header, got:\n{text}");
+    assert!(
+        text.contains("@@"),
+        "diff should show @@ hunk header, got:\n{text}"
+    );
 }
 #[test]
 fn open_diff_popup_after_read_file_step_finish() {

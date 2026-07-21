@@ -14,6 +14,13 @@ pub(crate) fn path_to_uri(path: &str) -> String {
 }
 
 pub(crate) fn uri_to_path(uri: &str) -> String {
-    let stripped = uri.strip_prefix("file:///").or_else(|| uri.strip_prefix("file://")).unwrap_or(uri);
-    if cfg!(target_os = "windows") { stripped.replace('/', "\\") } else { stripped.to_string() }
+    let stripped = uri
+        .strip_prefix("file:///")
+        .or_else(|| uri.strip_prefix("file://"))
+        .unwrap_or(uri);
+    if cfg!(target_os = "windows") {
+        stripped.replace('/', "\\")
+    } else {
+        stripped.to_string()
+    }
 }

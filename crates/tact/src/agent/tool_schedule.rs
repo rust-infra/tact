@@ -34,7 +34,10 @@ pub(crate) struct ToolResources {
 
 impl ToolResources {
     fn barrier() -> Self {
-        Self { barrier: true, ..Default::default() }
+        Self {
+            barrier: true,
+            ..Default::default()
+        }
     }
 
     /// A tool that touches no workspace file (e.g. `web_search`); it never
@@ -51,7 +54,11 @@ impl ToolResources {
 /// equal/ancestor/descendant overlap test used by [`conflicts`].
 fn normalize(work_dir: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
-    if p.is_absolute() { p.to_path_buf() } else { work_dir.join(p) }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        work_dir.join(p)
+    }
 }
 
 /// Map a single tool call to the workspace resources it touches.
@@ -60,7 +67,12 @@ fn normalize(work_dir: &Path, path: &str) -> PathBuf {
 /// added tools never parallelise unsafely without an explicit opt-in here.
 pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> ToolResources {
     let single = |key: &str| -> Vec<PathBuf> {
-        input.get(key).and_then(|v| v.as_str()).map(|s| normalize(work_dir, s)).into_iter().collect()
+        input
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| normalize(work_dir, s))
+            .into_iter()
+            .collect()
     };
     let list = |key: &str, item_key: &str| -> Vec<PathBuf> {
         input
@@ -76,8 +88,14 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
     };
 
     match name {
-        "read_file" => ToolResources { reads: single("path"), ..Default::default() },
-        "batch_read" => ToolResources { reads: list("files", "path"), ..Default::default() },
+        "read_file" => ToolResources {
+            reads: single("path"),
+            ..Default::default()
+        },
+        "batch_read" => ToolResources {
+            reads: list("files", "path"),
+            ..Default::default()
+        },
         // A search/grep has a directory scope; default to the whole workspace
         // when no `path` is given so it correctly conflicts with any write.
         "search_code" => {
@@ -86,9 +104,15 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
                 .and_then(|v| v.as_str())
                 .map(|s| normalize(work_dir, s))
                 .unwrap_or_else(|| work_dir.to_path_buf());
-            ToolResources { reads: vec![scope], ..Default::default() }
+            ToolResources {
+                reads: vec![scope],
+                ..Default::default()
+            }
+        }
+        "write_file" | "edit_file" => ToolResources {
+            writes: single("path"),
+            ..Default::default()
         },
-        "write_file" | "edit_file" => ToolResources { writes: single("path"), ..Default::default() },
         // Side-effect-free tools that touch no workspace file: safe to run
         // concurrently with anything.
         "web_search" | "web_fetch" | "lsp" | "sleep" => ToolResources::independent(),
@@ -110,7 +134,10 @@ fn mcp_tool_resources(name: &str) -> ToolResources {
     if server.is_empty() || tool.is_empty() {
         return ToolResources::barrier();
     }
-    ToolResources { writes: vec![PathBuf::from(format!("__mcp__{server}"))], ..Default::default() }
+    ToolResources {
+        writes: vec![PathBuf::from(format!("__mcp__{server}"))],
+        ..Default::default()
+    }
 }
 
 /// Two paths overlap when they are equal or one contains the other, so a write
@@ -127,7 +154,13 @@ fn conflicts(a: &ToolResources, b: &ToolResources) -> bool {
         return true;
     }
     let writes_hit = |writes: &[PathBuf], other: &ToolResources| {
-        writes.iter().any(|w| other.reads.iter().chain(other.writes.iter()).any(|p| overlap(w, p)))
+        writes.iter().any(|w| {
+            other
+                .reads
+                .iter()
+                .chain(other.writes.iter())
+                .any(|p| overlap(w, p))
+        })
     };
     writes_hit(&a.writes, b) || writes_hit(&b.writes, a)
 }
@@ -225,7 +258,13 @@ mod tests {
     #[test]
     fn write_after_read_same_file_serializes() {
         // read A, read B, write A, read C, read A  →  waves 0,0,1,0,2
-        let r = vec![res(&["/a"], &[]), res(&["/b"], &[]), res(&[], &["/a"]), res(&["/c"], &[]), res(&["/a"], &[])];
+        let r = vec![
+            res(&["/a"], &[]),
+            res(&["/b"], &[]),
+            res(&[], &["/a"]),
+            res(&["/c"], &[]),
+            res(&["/a"], &[]),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 0, 1, 0, 2]);
     }
 
@@ -250,7 +289,11 @@ mod tests {
     #[test]
     fn barrier_forces_its_own_wave() {
         // read A, bash(barrier), read B  →  0,1,2
-        let r = vec![res(&["/a"], &[]), ToolResources::barrier(), res(&["/b"], &[])];
+        let r = vec![
+            res(&["/a"], &[]),
+            ToolResources::barrier(),
+            res(&["/b"], &[]),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 1, 2]);
     }
 
@@ -263,20 +306,29 @@ mod tests {
 
     #[test]
     fn independent_tools_never_conflict() {
-        let r = vec![ToolResources::independent(), ToolResources::independent(), res(&[], &["/a"])];
+        let r = vec![
+            ToolResources::independent(),
+            ToolResources::independent(),
+            res(&[], &["/a"]),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 0, 0]);
     }
 
     #[test]
     fn mcp_tools_on_different_servers_run_in_parallel() {
-        let r = vec![mcp_tool_resources("mcp__demo__postgres__query"), mcp_tool_resources("mcp__demo__echo__ping")];
+        let r = vec![
+            mcp_tool_resources("mcp__demo__postgres__query"),
+            mcp_tool_resources("mcp__demo__echo__ping"),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 0]);
     }
 
     #[test]
     fn mcp_tools_on_same_server_serialize() {
-        let r =
-            vec![mcp_tool_resources("mcp__demo__postgres__query"), mcp_tool_resources("mcp__demo__postgres__migrate")];
+        let r = vec![
+            mcp_tool_resources("mcp__demo__postgres__query"),
+            mcp_tool_resources("mcp__demo__postgres__migrate"),
+        ];
         assert_eq!(schedule_waves(&r), vec![0, 1]);
     }
 
@@ -288,26 +340,43 @@ mod tests {
 
     #[test]
     fn grouping_batches_parallel_indices() {
-        let r = vec![res(&["/a"], &[]), res(&["/b"], &[]), res(&[], &["/a"]), res(&["/c"], &[])];
+        let r = vec![
+            res(&["/a"], &[]),
+            res(&["/b"], &[]),
+            res(&[], &["/a"]),
+            res(&["/c"], &[]),
+        ];
         assert_eq!(waves_grouped(&r), vec![vec![0, 1, 3], vec![2]]);
     }
 
     #[test]
     fn resources_read_file_path_is_normalized() {
-        let r = tool_resources("read_file", &serde_json::json!({"path": "src/a.rs"}), Path::new("/work"));
+        let r = tool_resources(
+            "read_file",
+            &serde_json::json!({"path": "src/a.rs"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/work/src/a.rs")]);
         assert!(r.writes.is_empty() && !r.barrier);
     }
 
     #[test]
     fn resources_absolute_path_kept() {
-        let r = tool_resources("read_file", &serde_json::json!({"path": "/abs/a.rs"}), Path::new("/work"));
+        let r = tool_resources(
+            "read_file",
+            &serde_json::json!({"path": "/abs/a.rs"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/abs/a.rs")]);
     }
 
     #[test]
     fn resources_bash_is_barrier() {
-        let r = tool_resources("bash", &serde_json::json!({"command": "ls"}), Path::new("/work"));
+        let r = tool_resources(
+            "bash",
+            &serde_json::json!({"command": "ls"}),
+            Path::new("/work"),
+        );
         assert!(r.barrier);
     }
 
@@ -321,12 +390,19 @@ mod tests {
     fn resources_batch_read_collects_all_reads() {
         let input = serde_json::json!({"files": [{"path": "a.rs"}, {"path": "b.rs"}]});
         let r = tool_resources("batch_read", &input, Path::new("/work"));
-        assert_eq!(r.reads, vec![PathBuf::from("/work/a.rs"), PathBuf::from("/work/b.rs")]);
+        assert_eq!(
+            r.reads,
+            vec![PathBuf::from("/work/a.rs"), PathBuf::from("/work/b.rs")]
+        );
     }
 
     #[test]
     fn resources_search_defaults_to_workspace_scope() {
-        let r = tool_resources("search_code", &serde_json::json!({"query": "foo"}), Path::new("/work"));
+        let r = tool_resources(
+            "search_code",
+            &serde_json::json!({"query": "foo"}),
+            Path::new("/work"),
+        );
         assert_eq!(r.reads, vec![PathBuf::from("/work")]);
     }
 
