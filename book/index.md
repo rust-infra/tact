@@ -205,7 +205,7 @@ Future additions may cover deployment or plugin APIs.
 - Tact recovery source: [crates/tact/src/recovery.rs](../crates/tact/src/recovery.rs)
 - Tact team source: [crates/tact/src/team.rs](../crates/tact/src/team.rs)
 - Tact worktree source: [crates/tact/src/worktree/mod.rs](../crates/tact/src/worktree/mod.rs)
-- Tact compaction source: [crates/tact/src/compact.rs](../crates/tact/src/compact.rs)
+- Tact compaction source: [crates/tact/src/compact/mod.rs](../crates/tact/src/compact/mod.rs)
 - Tact background source: [crates/tact/src/background.rs](../crates/tact/src/background.rs)
 - Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
 - Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)

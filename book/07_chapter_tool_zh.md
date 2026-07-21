@@ -234,7 +234,7 @@ pipeline 来绕过应用缓冲。
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |
 | `task.rs`, `subagent.rs` | `task` | 用 `subagent_toolset()` spawn 子 agent |
 | `cron.rs` | `cron_*` | 见 [Cron 调度](./16_chapter_cron.md)（英文） |
-| `compact.rs` | `compact` | 上下文压缩触发 |
+| `compact/mod.rs` | `compact` | 上下文压缩触发 |
 | `web/` | `web_fetch`, `web_search` | HTTP 工具 |
 
 ---

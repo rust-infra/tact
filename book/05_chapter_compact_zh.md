@@ -2,7 +2,7 @@
 
 > 语言：[中文](./05_chapter_compact_zh.md) · [English](./05_chapter_compact.md)
 
-本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`），以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact/src/compact.rs`；编排在 `crates/tact/src/agent/mod.rs` 的 `Agent::compact_history`。
+本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`），以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact/src/compact/mod.rs`；编排在 `crates/tact/src/agent/mod.rs` 的 `Agent::compact_history`。
 
 压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery.md)（英文）。
 
@@ -83,10 +83,18 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    Start([agent_loop 迭代]) --> Cancel{已取消?}
+    Entry([agent_loop 入口]) --> EntrySize{"should_auto_compact?<br/>预留 incoming turn"}
+    EntrySize -->|yes| EntryAuto["emit [auto compact]<br/>compact_history(None)"]
+    EntryAuto --> Push[push user_turn_message]
+    EntrySize -->|no| Push
+    Push --> Start([循环迭代])
+    Start --> Cancel{已取消?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Build[build CreateMessageParams]
+    MC --> Size{"should_auto_compact?<br/>incoming = 0"}
+    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
+    Auto --> Build
+    Size -->|no| Build[build CreateMessageParams]
     Build --> Stream[stream_message]
     Stream -->|Ok| Assist[push assistant message]
     Stream -->|prompt too long| Rec["[Recovery] compact<br/>compact_history(None)"]
@@ -96,29 +104,26 @@ flowchart TD
     Assist --> Tools{有 tool_use?}
     Tools -->|yes| Exec[execute_tool_call]
     Exec --> Persist[push tool_result user message]
-    Persist --> Man{manual_compact?}
+    Persist --> Man{"manual_compact?<br/>仅 compact 工具成功时"}
     Man -->|yes| MC2["[manual compact]<br/>compact_history(focus)"]
     MC2 --> Start
-    Man -->|no| MC3[micro_compact context]
-    MC3 --> Size{should_auto_compact?<br/>tokens 或估算 ≥ window 的 80%}
-    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
-    Auto --> Start
-    Size -->|no| Start
+    Man -->|no| Start
     Tools -->|no| Done{stop / continue?}
 ```
 
 关键顺序：
 
-1. **`micro_compact` 在每次实际模型请求前运行**，包括第一次请求和 continuation 请求。完整自动压缩会延后到工具结果追加之后检查，因此可以让显式的手动 `compact` 优先。
-2. **工具执行完成后，手动压缩优先** — 有 `manual_compact` 时执行 `compact_history(focus)`；否则先执行 `micro_compact`，再检查 `should_auto_compact`。
-3. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery.md)。
-4. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 记录 flag；`compact_history` 在 tool results **追加之后**再跑。
+1. **入口路径** — 在 push 用户 turn 之前，`should_auto_compact` 会预留 `estimate(user_turn)`，避免刚 append 就立刻撑爆窗口。
+2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`，再跑 `should_auto_compact(incoming = 0)`。
+3. **工具执行之后** — 只有**成功**的 `compact` 工具才会设置 `manual_compact`；该路径调用 `compact_history(focus)` 后回到循环顶部。失败 / 被拒绝的 compact 调用不会改写历史。
+4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery.md)。
+5. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 仅在成功时记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
 ---
 
 ## 3. 微压缩（Micro-Compaction）
 
-`micro_compact(messages, enabled)` 在每次模型请求前运行（可通过配置关闭，见 §9）。只触碰包含 `ContentBlock::ToolResult` 的 **user 角色**消息。完整自动压缩会有意延后到工具结果追加之后，此时手动 `compact` 可以优先执行。
+`micro_compact(messages, enabled)` 在每次模型请求前运行（可通过配置关闭，见 §9）。只触碰包含 `ContentBlock::ToolResult` 的 **user 角色**消息。完整自动压缩也会在此时执行（`incoming = 0`）；入口路径会在 push 前单独预留 incoming user turn。
 
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
@@ -354,13 +359,13 @@ flowchart TD
 
 ```text
 [0] User      "帮我给 compact 模块加个 80% 提前触发"
-[1] Assistant  推理 + tool_use(read_file compact.rs)
-[2] User       ToolResult(compact.rs 全文，~5k 字符)
+[1] Assistant  推理 + tool_use(read_file compact/mod.rs)
+[2] User       ToolResult(compact/mod.rs 全文，~5k 字符)
 [3] Assistant  tool_use(read_file agent/mod.rs)
 [4] User       ToolResult(mod.rs 片段，~8k 字符)
 [5] Assistant  tool_use(bash cargo test)
 [6] User       ToolResult(测试日志，~40k 字符)
-[7] Assistant  tool_use(edit_file compact.rs)
+[7] Assistant  tool_use(edit_file compact/mod.rs)
 [8] User       ToolResult("edit applied")
  …             （几十条，累计可达数十万字符 / 逼近 window）
 [N] Assistant  "阈值改好了，接着补测试"
@@ -379,14 +384,14 @@ flowchart TD
            <LLM 摘要，按 6 点组织：>
            1. 当前目标：给 compact 模块加 80% 提前触发
            2. 关键发现：should_auto_compact 同时使用实际与估算 token
-           3. 涉及文件：crates/tact/src/compact.rs（should_auto_compact）、
+           3. 涉及文件：crates/tact/src/compact/mod.rs（should_auto_compact）、
               crates/tact/src/agent/mod.rs（compact_history）
            4. 剩余工作：补单元测试、跑 cargo test
            5. 用户偏好：先加 TODO，后续再优化
            6. 错误：暂无
 
            Recently accessed files (re-read if you need their contents):
-           - crates/tact/src/compact.rs
+           - crates/tact/src/compact/mod.rs
            - crates/tact/src/agent/mod.rs"
 ```
 
@@ -464,7 +469,7 @@ sequenceDiagram
     AgentLoop->>Dispatch: execute_tool_call
     Dispatch->>Tool: call compact(focus?)
     Tool-->>Dispatch: "Compacting conversation…"
-    Note over Dispatch: set manual_compact = Some(focus)
+    Note over Dispatch: 仅在工具成功时 set manual_compact
     Dispatch-->>AgentLoop: tool_result blocks + flag
     AgentLoop->>AgentLoop: push tool_result user message + persist
     AgentLoop->>CH: compact_history(Some(focus))
@@ -473,7 +478,7 @@ sequenceDiagram
 
 工具函数几乎是空操作的原因：在工具调用*内部*改写 `runtime.context` 会让对话卡在半空（assistant `tool_use` 没有匹配 result，或摘要只写了一半）。Dispatch 模式先保证线协议合法，再跑 Level 3。可选 `focus` 引导摘要器必须保留的内容。
 
-Dispatch 使用 `manual_compact = Some(focus)` 作为请求标记。如果 `focus` 是字符串，就复制到标记中；如果缺少 `focus` 或它不是字符串，则设置为 `Some("")`。这个空字符串仍表示“执行手动压缩”，只是不会向 `compact_history` 提供额外重点，后者会忽略它。`None` 才表示没有请求手动压缩。正常顺序是：先追加并持久化 tool result，再调用 `compact_history(Some(focus))` 真正改写 context。
+Dispatch 仅在 compact 调用**成功**时才设置 `manual_compact = Some(focus)` — 被拒绝的调用（非法参数、hook 阻断等）不能改写历史，让模型在下一轮可以恢复。如果 `focus` 是字符串，就复制到标记中；如果缺少 `focus` 或它不是字符串，则设置为 `Some("")`。这个空字符串仍表示“执行手动压缩”，只是不会向 `compact_history` 提供额外重点，后者会忽略它。`None` 才表示没有请求手动压缩或调用失败。正常顺序是：先追加并持久化 tool result，再调用 `compact_history(Some(focus))` 真正改写 context。
 
 ---
 
@@ -585,7 +590,7 @@ flowchart TB
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_tokens`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
+| `crates/tact/src/compact/mod.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_tokens`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
 | `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history` / `compact_history_legacy`；`remember_recent_file`；`replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | 原生/MCP 结果的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
 | `crates/tact/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
@@ -595,7 +600,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Loop[agent/mod.rs loop] --> Compact[compact.rs]
+    Loop[agent/mod.rs loop] --> Compact[compact/mod.rs]
     Loop --> Dispatch[tool_dispatch.rs]
     Dispatch --> Compact
     Dispatch --> CompactTool[tool/compact.rs]

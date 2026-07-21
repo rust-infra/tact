@@ -2,7 +2,7 @@
 
 > Language: [English](./05_chapter_compact.md) · [中文](./05_chapter_compact_zh.md)
 
-This chapter explains how Tact keeps a long-running conversation **inside the model's context window**: cheap in-place truncation every turn (`micro_compact`), full LLM-generated summarization when the limit is reached (`compact_history`), and disk spill for both transcripts and oversized tool outputs. The primitives live in `crates/tact/src/compact.rs`; the orchestration lives in `Agent::compact_history` in `crates/tact/src/agent/mod.rs`.
+This chapter explains how Tact keeps a long-running conversation **inside the model's context window**: cheap in-place truncation every turn (`micro_compact`), full LLM-generated summarization when the limit is reached (`compact_history`), and disk spill for both transcripts and oversized tool outputs. The primitives live in `crates/tact/src/compact/mod.rs`; the orchestration lives in `Agent::compact_history` in `crates/tact/src/agent/mod.rs`.
 
 Compaction is also a **recovery strategy**: when the provider rejects a request as too long, the agent compacts and retries. See [Error Recovery](./06_chapter_recovery.md).
 
@@ -83,10 +83,18 @@ Compaction is not a separate daemon — it is woven into `Agent::agent_loop`. Re
 
 ```mermaid
 flowchart TD
-    Start([agent_loop iteration]) --> Cancel{cancelled?}
+    Entry([agent_loop start]) --> EntrySize{"should_auto_compact?<br/>reserve incoming turn"}
+    EntrySize -->|yes| EntryAuto["emit [auto compact]<br/>compact_history(None)"]
+    EntryAuto --> Push[push user_turn_message]
+    EntrySize -->|no| Push
+    Push --> Start([loop iteration])
+    Start --> Cancel{cancelled?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Build[build CreateMessageParams]
+    MC --> Size{"should_auto_compact?<br/>incoming = 0"}
+    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
+    Auto --> Build
+    Size -->|no| Build[build CreateMessageParams]
     Build --> Stream[stream_message]
     Stream -->|Ok| Assist[push assistant message]
     Stream -->|prompt too long| Rec["[Recovery] compact<br/>compact_history(None)"]
@@ -96,29 +104,26 @@ flowchart TD
     Assist --> Tools{tool_use blocks?}
     Tools -->|yes| Exec[execute_tool_call]
     Exec --> Persist[push tool_result user message]
-    Persist --> Man{manual_compact?}
+    Persist --> Man{"manual_compact?<br/>only if compact tool succeeded"}
     Man -->|yes| MC2["[manual compact]<br/>compact_history(focus)"]
     MC2 --> Start
-    Man -->|no| MC3[micro_compact context]
-    MC3 --> Size{should_auto_compact?<br/>tokens or estimate ≥ 80% window}
-    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
-    Auto --> Start
-    Size -->|no| Start
+    Man -->|no| Start
     Tools -->|no| Done{stop / continue?}
 ```
 
 Key ordering facts:
 
-1. **`micro_compact` runs before every actual model request**, including the first request and continuation requests. Automatic full compaction is checked after tool results are appended, so an explicit manual `compact` request can take priority.
-2. **After tool execution, manual compaction wins** — when `manual_compact` is present, `compact_history(focus)` runs; otherwise the agent runs `micro_compact` and then checks `should_auto_compact`.
-3. **Prompt-too-long recovery** runs `compact_history` then `continue`s the loop (same turn, new context). Cap: `MAX_RECOVERY_ATTEMPTS` (3). Details in [Error Recovery](./06_chapter_recovery.md).
-4. **Manual `compact` tool** cannot rewrite context *inside* the tool handler (API validity). Dispatch records a flag; `compact_history` runs **after** tool results are appended.
+1. **Entry path** — before the user turn is pushed, `should_auto_compact` reserves `estimate(user_turn)` so a large prompt cannot overflow immediately after append.
+2. **Each loop iteration** — `micro_compact` then `should_auto_compact(incoming = 0)` run **before** the model request (including continuations after tools / recovery).
+3. **After tool execution** — only a **successful** `compact` tool sets `manual_compact`; that path calls `compact_history(focus)` then returns to the loop top. Failed / rejected compact invocations leave history intact.
+4. **Prompt-too-long recovery** runs `compact_history` then `continue`s the loop (same turn, new context). Cap: `MAX_RECOVERY_ATTEMPTS` (3). Details in [Error Recovery](./06_chapter_recovery.md).
+5. **Manual `compact` tool** cannot rewrite context *inside* the tool handler (API validity). Dispatch records a flag only on success; `compact_history` runs **after** tool results are appended.
 
 ---
 
 ## 3. Micro-Compaction
 
-`micro_compact(messages, enabled)` runs before each model request (disable via config, see §9). It only touches **user-role** messages that contain `ContentBlock::ToolResult`. The full auto-compact check is deliberately deferred until after tool results are appended, where manual `compact` can take priority.
+`micro_compact(messages, enabled)` runs before each model request (disable via config, see §9). It only touches **user-role** messages that contain `ContentBlock::ToolResult`. Full auto-compact also runs at this point (`incoming = 0`); the entry path separately reserves the incoming user turn before push.
 
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
@@ -354,13 +359,13 @@ The full conversation grows with the task — a mix of roles and content:
 
 ```text
 [0] User      "Add an early 80% trigger to the compact module"
-[1] Assistant  reasoning + tool_use(read_file compact.rs)
-[2] User       ToolResult(full compact.rs, ~5k chars)
+[1] Assistant  reasoning + tool_use(read_file compact/mod.rs)
+[2] User       ToolResult(full compact/mod.rs, ~5k chars)
 [3] Assistant  tool_use(read_file agent/mod.rs)
 [4] User       ToolResult(mod.rs excerpt, ~8k chars)
 [5] Assistant  tool_use(bash cargo test)
 [6] User       ToolResult(test log, ~40k chars)
-[7] Assistant  tool_use(edit_file compact.rs)
+[7] Assistant  tool_use(edit_file compact/mod.rs)
 [8] User       ToolResult("edit applied")
  …             (dozens of entries, potentially hundreds of thousands
                 of chars / approaching the window)
@@ -380,14 +385,14 @@ Recent real user turns remain within budget, followed by the handoff summary:
            <LLM summary, organized around the 6 points:>
            1. Current goal: add an early 80% trigger to the compact module
            2. Key finding: should_auto_compact uses reported and estimated tokens
-           3. Files involved: crates/tact/src/compact.rs (should_auto_compact),
+           3. Files involved: crates/tact/src/compact/mod.rs (should_auto_compact),
               crates/tact/src/agent/mod.rs (compact_history)
            4. Remaining work: add unit tests, run cargo test
            5. User preference: add TODOs first, optimize later
            6. Errors: none so far
 
            Recently accessed files (re-read if you need their contents):
-           - crates/tact/src/compact.rs
+           - crates/tact/src/compact/mod.rs
            - crates/tact/src/agent/mod.rs"
 ```
 
@@ -465,7 +470,7 @@ sequenceDiagram
     AgentLoop->>Dispatch: execute_tool_call
     Dispatch->>Tool: call compact(focus?)
     Tool-->>Dispatch: "Compacting conversation…"
-    Note over Dispatch: set manual_compact = Some(focus)
+    Note over Dispatch: set manual_compact only if tool succeeded
     Dispatch-->>AgentLoop: tool_result blocks + flag
     AgentLoop->>AgentLoop: push tool_result user message + persist
     AgentLoop->>CH: compact_history(Some(focus))
@@ -474,7 +479,7 @@ sequenceDiagram
 
 Why the tool body is nearly a no-op: rewriting `runtime.context` **inside** a tool call would leave the conversation mid-flight (assistant `tool_use` without matching results, or a half-applied summary). The dispatcher pattern keeps the wire protocol valid, then runs Level 3 afterward. Optional `focus` steers what the summarizer must keep.
 
-The dispatcher uses `manual_compact = Some(focus)` as a request flag. A string `focus` is copied into the flag; a missing or non-string `focus` becomes `Some("")`. That empty value still means “perform manual compaction,” but it supplies no extra instruction and is ignored by `compact_history`. `None` means that this tool was not requested. In the normal sequence, the tool result is first appended and persisted, then `compact_history(Some(focus))` performs the actual rewrite.
+The dispatcher sets `manual_compact = Some(focus)` only when the compact invocation **succeeded** — rejected calls (bad arguments, hook blocks, etc.) must not rewrite history so the model can recover next turn. A string `focus` is copied into the flag; a missing or non-string `focus` becomes `Some("")`. That empty value still means “perform manual compaction,” but it supplies no extra instruction and is ignored by `compact_history`. `None` means that this tool was not requested or failed. In the normal sequence, the tool result is first appended and persisted, then `compact_history(Some(focus))` performs the actual rewrite.
 
 ---
 
@@ -586,7 +591,7 @@ Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > defau
 
 | File | Role |
 |------|------|
-| `crates/tact/src/compact.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_tokens`, `collect_user_messages`, `build_compacted_history`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
+| `crates/tact/src/compact/mod.rs` | `micro_compact`, `should_auto_compact`, `estimate_context_tokens`, `collect_user_messages`, `build_compacted_history`, `write_transcript`, `persist_large_output`, `compacted_context`, `CompactState` |
 | `crates/tact/src/agent/mod.rs` | Loop triggers; `compact_history` / `compact_history_legacy`; `remember_recent_file`; `replace_persisted_context` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `persist_large_output` for native/MCP results; `manual_compact` flag; recent-file tracking |
 | `crates/tact/src/tool/compact.rs` | `compact` tool stub + `focus` |
@@ -596,7 +601,7 @@ Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > defau
 
 ```mermaid
 flowchart LR
-    Loop[agent/mod.rs loop] --> Compact[compact.rs]
+    Loop[agent/mod.rs loop] --> Compact[compact/mod.rs]
     Loop --> Dispatch[tool_dispatch.rs]
     Dispatch --> Compact
     Dispatch --> CompactTool[tool/compact.rs]

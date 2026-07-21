@@ -1,4 +1,4 @@
-# Install tact-ui on Windows (build from source, or download a GitHub release when available).
+# Install tact-ui on Windows (prefer GitHub release, else build from source).
 #Requires -Version 5.1
 param(
     [string]$InstallDir = "",
@@ -17,6 +17,8 @@ $Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "rust-infr
 $BinaryName = "tact-ui"
 $CratePackage = "tact-ui"
 $DefaultVersion = "0.19.0"
+# Matches workspace.package.rust-version (edition 2024).
+$MinRustcVersion = "1.85.0"
 
 function Show-Help {
     @"
@@ -24,18 +26,22 @@ Usage: install.ps1 [OPTIONS]
 
 Install the tact-ui binary on Windows.
 
+By default the installer downloads a matching GitHub release asset when one
+exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
+
 Options:
   -InstallDir PATH     Install directory (default: %USERPROFILE%\.local\bin)
-  -FromSource          Build from source (default when no release asset exists)
+  -FromSource          Build from source only (skip release download)
   -Release             Prefer a GitHub release binary; fall back to source build
   -ReleaseOnly         Require a GitHub release binary (no source fallback)
   -GitRef REF          Git branch/tag when cloning (default: main)
-  -SkipDeps            Skip rustup installation
+  -SkipDeps            Skip rustup / optional SQLite helper installation
   -NoModifyPath        Do not add the install directory to the user PATH
   -Help                Show this help
 
 Environment:
   TACT_INSTALL_REPO    GitHub repo (owner/name)
+  TACT_INSTALL_DIR     Override install directory
 
 Examples:
   irm https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.ps1 | iex
@@ -62,7 +68,7 @@ function Fail([string]$Message) {
 }
 
 function Test-RepoRoot([string]$Path) {
-    Test-Path (Join-Path $Path "Cargo.toml") -and (Test-Path (Join-Path $Path "crates\tact"))
+    return ((Test-Path (Join-Path $Path "Cargo.toml")) -and (Test-Path (Join-Path $Path "crates\tact")))
 }
 
 function Get-DefaultInstallDir {
@@ -76,9 +82,44 @@ function Get-TargetTriple {
     Fail "unsupported Windows architecture (32-bit)"
 }
 
+function ConvertTo-Version([string]$Text) {
+    # Strip optional pre-release / metadata so [version] parses (e.g. 1.85.0-nightly → 1.85.0).
+    $clean = ($Text -split '[-+]')[0]
+    return [version]$clean
+}
+
+function Test-RustcMeetsMinimum {
+    $rustc = Get-Command rustc -ErrorAction SilentlyContinue
+    if (-not $rustc) { return $false }
+    $line = & rustc -V 2>$null
+    if (-not $line) { return $false }
+    $parts = $line -split '\s+'
+    if ($parts.Count -lt 2) { return $false }
+    try {
+        return (ConvertTo-Version $parts[1]) -ge (ConvertTo-Version $MinRustcVersion)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Resolve-Version([string]$Root) {
     $cargoToml = Join-Path $Root "Cargo.toml"
     if (Test-Path $cargoToml) {
+        $inPkg = $false
+        foreach ($line in Get-Content $cargoToml) {
+            if ($line -match '^\[workspace\.package\]') {
+                $inPkg = $true
+                continue
+            }
+            if ($line -match '^\[') {
+                $inPkg = $false
+                continue
+            }
+            if ($inPkg -and ($line -match '^version = "(.+)"')) {
+                return $Matches[1]
+            }
+        }
         $match = Select-String -Path $cargoToml -Pattern '^version = "(.+)"' | Select-Object -First 1
         if ($match) {
             return $match.Matches[0].Groups[1].Value
@@ -89,13 +130,29 @@ function Resolve-Version([string]$Root) {
 
 function Ensure-Rust {
     if ($SkipDeps) { return }
-    if (Get-Command cargo -ErrorAction SilentlyContinue) { return }
 
-    Write-Step "Rust toolchain not found; installing via rustup..."
-    $rustup = Join-Path $env:TEMP "rustup-init.exe"
-    Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustup -UseBasicParsing
-    & $rustup -y --default-toolchain stable | Out-Host
-    Remove-Item $rustup -Force -ErrorAction SilentlyContinue
+    if ((Test-RustcMeetsMinimum) -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+    if ($rustup) {
+        Write-Step "Updating stable Rust toolchain (need >= $MinRustcVersion for edition 2024)..."
+        & rustup toolchain install stable --profile minimal
+        if ($LASTEXITCODE -ne 0) { Fail "rustup toolchain install failed" }
+        & rustup default stable
+        if ($LASTEXITCODE -ne 0) { Fail "rustup default stable failed" }
+    }
+    elseif (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        Write-Step "Rust toolchain not found; installing via rustup (stable >= $MinRustcVersion)..."
+        $rustupInit = Join-Path $env:TEMP "rustup-init.exe"
+        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustupInit -UseBasicParsing
+        & $rustupInit -y --default-toolchain stable | Out-Host
+        Remove-Item $rustupInit -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        Fail "rustc is too old; install Rust >= $MinRustcVersion from https://rustup.rs"
+    }
 
     $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
     if (Test-Path $cargoBin) {
@@ -105,14 +162,13 @@ function Ensure-Rust {
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Fail "cargo still not found after rustup install; restart PowerShell and retry"
     }
+    if (-not (Test-RustcMeetsMinimum)) {
+        Fail "rustc is still below $MinRustcVersion; run: rustup update stable"
+    }
 }
 
 function Install-WindowsDeps {
     if ($SkipDeps) { return }
-
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        return
-    }
 
     if (Get-Command scoop -ErrorAction SilentlyContinue) {
         Write-Step "Ensuring SQLite (scoop)..."
@@ -136,20 +192,25 @@ function Install-BinaryFile([string]$SourcePath, [string]$DestDir) {
     if (-not (Test-Path $DestDir)) {
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
     }
-    $dest = Join-Path $DestDir $BinaryName
+    $dest = Join-Path $DestDir "$BinaryName.exe"
     Copy-Item -Path $SourcePath -Destination $dest -Force
     Write-Step "Installed $BinaryName -> $dest"
 }
 
 function Build-FromSource([string]$Root) {
-    Write-Step "Building $BinaryName from source..."
+    Write-Step "Building $BinaryName from source (rustc >= $MinRustcVersion)..."
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Fail "cargo not found"
     }
 
+    $cargoArgs = @("build", "--release", "-p", $CratePackage)
+    if (Test-Path (Join-Path $Root "Cargo.lock")) {
+        $cargoArgs += "--locked"
+    }
+
     Push-Location $Root
     try {
-        & cargo build --release -p $CratePackage
+        & cargo @cargoArgs
         if ($LASTEXITCODE -ne 0) {
             Fail "cargo build failed"
         }
@@ -229,7 +290,6 @@ if (-not $InstallDir) {
 }
 
 $preferSource = $FromSource.IsPresent
-$allowSourceFallback = -not $ReleaseOnly.IsPresent
 
 if ($Release.IsPresent) {
     $preferSource = $false
@@ -255,9 +315,9 @@ else {
 $version = Resolve-Version $srcRoot
 $triple = Get-TargetTriple
 
-Ensure-Rust
-
 if ($preferSource) {
+    Ensure-Rust
+    Install-WindowsDeps
     Build-FromSource $srcRoot
     Ensure-PathEntry $InstallDir
     Write-Step "Done. Run: $BinaryName --help"
@@ -275,6 +335,8 @@ if ($ReleaseOnly) {
 }
 
 Write-Warn "falling back to source build"
+Ensure-Rust
+Install-WindowsDeps
 Build-FromSource $srcRoot
 Ensure-PathEntry $InstallDir
 Write-Step "Done. Run: $BinaryName --help"

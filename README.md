@@ -70,7 +70,11 @@ Or from a clone:
 .\scripts\install.ps1 -FromSource
 ```
 
-The installer builds `tact-ui` from source by default (installs Rust via rustup if needed). When GitHub release assets are published, pass `--release` / `-Release` to download a pre-built binary instead:
+The installer prefers a matching GitHub release asset when one exists, otherwise
+builds `tact-ui` from source (requires **Rust 1.85+** / edition 2024; installs
+rustup if needed). Pass `--from-source` / `-FromSource` to skip the release
+download, or `--release` / `-Release` to prefer a pre-built binary with source
+fallback:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash -s -- --release
@@ -82,13 +86,18 @@ Install options:
 |----------|------|---------|
 | Unix | `--install-dir DIR` | Install location (default: `~/.local/bin`) |
 | Unix | `--system` | Install to `/usr/local/bin` |
+| Unix | `--from-source` | Build from source only |
 | Unix | `--release` | Prefer GitHub release, fall back to source |
+| Unix | `--release-only` | Require a GitHub release (no source fallback) |
 | Windows | `-InstallDir PATH` | Install location (default: `%USERPROFILE%\.local\bin`) |
+| Windows | `-FromSource` | Build from source only |
 | Windows | `-Release` | Prefer GitHub release, fall back to source |
+| Windows | `-ReleaseOnly` | Require a GitHub release (no source fallback) |
 
 **Manual build from source**
 
-Linux: install SQLite build dependencies first (required by `sqlx` / session store):
+Linux: install SQLite build dependencies first (required by `sqlx` / session store).
+Building from source requires **Rust 1.85+** (edition 2024):
 
 ```bash
 sudo apt-get update
@@ -98,7 +107,8 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 ```bash
 git clone https://github.com/rust-infra/tact.git
 cd tact
-cargo build --release
+rustup toolchain install stable   # if needed; rustc >= 1.85
+cargo build --release --locked -p tact-ui
 ./target/release/tact-ui --help
 ```
 
@@ -153,8 +163,8 @@ Optional agent settings (config file or CLI):
 | Setting | CLI flag | Default | Description |
 |---|---|---|---|
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
-| `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (auto-compact + TUI usage meter) |
-| `micro_compact_enabled` | `--no-micro-compact` | `true` | Truncate old tool results in context |
+| `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (80% auto-compact + TUI usage meter) |
+| `micro_compact_enabled` | `--no-micro-compact` | `true` | Stub old tool results before each LLM call |
 
 ### 3. Run
 
@@ -178,7 +188,15 @@ tact-ui -m plan headless "Add rate limiting to the API client"
 
 ### 🧠 Intelligent Agent Loop
 
-Multi-turn conversation loop with built-in context management: auto-compaction when the context window fills up, recovery from interrupted sessions, and persistent memory across conversations.
+Multi-turn conversation loop with progressive context management:
+
+1. **Large-output spill** — oversized tool results land on disk with a short preview in context
+2. **Micro-compact** — before each LLM call, stub old tool results (keep the last 12 intact)
+3. **Full compact** — when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary** (Codex-style)
+
+The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
+
+Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](./book/05_chapter_compact_zh.md)), [`docs/compaction.md`](./docs/compaction.md).
 
 ### 🔧 40+ Built-in Tools
 
@@ -224,7 +242,9 @@ Tact installs skill-only plugins natively; it does not require the Claude Code C
 /superpowers:brainstorming
 ```
 
-Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`. `/plugin marketplace list`, `/plugin list`, and `/plugin reload` show marketplaces, installed plugins, and refresh discovered plugin skills.
+Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`.
+
+In the TUI, `/plugin list` and `/plugin marketplace list` render as titled tables (one row per plugin or marketplace). `/plugin reload` refreshes discovered plugin skills.
 
 Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
 
@@ -286,15 +306,17 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 ```
 
 The agent loop:
-1. Builds the system prompt from role, guidelines, constraints, memory, and dynamic context
-2. Sends the conversation to the LLM with tool definitions
-3. Processes streaming responses: text → display, tool calls → execute
-4. Checks permissions for each tool call
-5. Runs pre/post hooks on tool execution
-6. Writes results back to the conversation history
-7. Auto-compacts when context approaches the window limit
+1. Optionally auto-compacts **old** history (reserving space for the incoming user turn), then appends the turn
+2. Builds the system prompt from role, guidelines, constraints, memory, and dynamic context
+3. Micro-compacts old tool results; auto-compacts again if the window is still over the threshold
+4. Sends the conversation to the LLM with tool definitions
+5. Processes streaming responses: text → display, tool calls → execute
+6. Checks permissions for each tool call
+7. Runs pre/post hooks on tool execution
+8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
+9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop).
 
 ---
 
@@ -306,7 +328,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | **Interface** | Terminal / TUI | Terminal | Editor (VSCode fork) | Terminal | Terminal |
 | **License** | MIT | Proprietary | Proprietary | Apache 2.0 | AGPL |
 | **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Multi-model** | Anthropic + OpenAI | Anthropic only | Multi | Multi | Multi |
+| **Multi-model** | Anthropic + OpenAI + DeepSeek + Kimi | Anthropic only | Multi | Multi | Multi |
 | **Permission system** | 3 modes + hooks | ✅ | ✅ | ✅ | ✅ |
 | **Sub-agents** | ✅ (team + inbox) | ✅ | ❌ | ❌ | ❌ |
 | **Worktree isolation** | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -349,7 +371,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive.
 | `shutdown_response` | Respond to shutdown request |
 | `save_memory` | Save persistent memory across sessions |
 | `load_skill` | Load a named skill |
-| `compact` | Summarize conversation to save context |
+| `compact` | Request conversation summarization (rewrites history only on success) |
 | `worktree_create` | Create a git worktree lane |
 | `worktree_list` | List tracked worktrees |
 | `worktree_status` | Show git status in a worktree |
@@ -395,9 +417,9 @@ thinking_budget = 32000
 mode = "default"                 # "default" | "plan" | "auto"
 
 [agent]
-model_context_window = 200000     # tokens; auto-compact + TUI meter
+model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
 snapshot_max_items = 80
-micro_compact_enabled = true
+micro_compact_enabled = true      # stub old tool results before each LLM call
 notifications_enabled = true
 
 [ui]
@@ -466,7 +488,9 @@ tact is early stage and welcomes contributions! Some good places to start:
 - 💡 **Feature requests** — open a discussion
 - 🔧 **PRs** — pick up a `good-first-issue`
 
-Before opening a PR, run `./scripts/check-rust.sh` (or install hooks with `./scripts/install-git-hooks.sh` to run it on push).
+Before opening a PR, run `./scripts/check-rust.sh` (fmt + clippy `-D warnings` + tests),
+or format only with `./scripts/fmt-rust.sh`. Install hooks with
+`./scripts/install-git-hooks.sh` to run the full check on push.
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for an overview of the codebase.
 

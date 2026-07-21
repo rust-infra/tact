@@ -238,7 +238,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
 | `task.rs`, `subagent.rs` | `task` | Spawns sub-agent with `subagent_toolset()` |
 | `cron.rs` | `cron_*` | See [Cron Scheduling](./16_chapter_cron.md) |
-| `compact.rs` | `compact` | Context compaction trigger |
+| `compact/mod.rs` | `compact` | Context compaction trigger |
 | `web/` | `web_fetch`, `web_search` | HTTP tools |
 
 ---

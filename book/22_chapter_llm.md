@@ -487,7 +487,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider-specific thinking and history hooks |
 | `tact_llm/src/convert.rs` | Request translation, Image → `image_url`, Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` in `with_session` |
-| `crates/tact/src/compact.rs` | `create_message` for summarization |
+| `crates/tact/src/compact/mod.rs` | `create_message` for summarization |
 
 ---
 

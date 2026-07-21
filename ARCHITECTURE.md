@@ -77,7 +77,7 @@ flowchart TB
         HOOK["hook/<br/>Pre/Post/SessionStart hooks"]
         MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
         LSP["lsp/<br/>LspClient, LspManager"]
-        COMP["compact.rs<br/>micro_compact, transcript persistence"]
+        COMP["compact/mod.rs<br/>micro_compact, transcript persistence"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
         LLM["tact_llm crate<br/>Anthropic / OpenAI / DeepSeek / Kimi adapters"]
         TASK["task/<br/>persistent task manager"]

@@ -172,7 +172,7 @@ It stubs empty assistant messages and strips orphaned tool calls on **every** ou
 |------|------|
 | `crates/tact/src/recovery.rs` | `RecoveryState`, classifiers, `backoff_delay`, `CONTINUATION_MESSAGE`, `MAX_RECOVERY_ATTEMPTS` |
 | `crates/tact/src/agent/mod.rs` | Recovery branches in `agent_loop`; counter resets; `compact_history` invocation |
-| `crates/tact/src/compact.rs` | Compaction primitives used by the compact strategy |
+| `crates/tact/src/compact/mod.rs` | Compaction primitives used by the compact strategy |
 | `docs/state_machines.md` | State-machine diagrams including recovery transitions |
 
 ---
