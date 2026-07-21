@@ -165,15 +165,15 @@ fn normalize_assistant_history_items(body: &mut serde_json::Value) {
             })],
             serde_json::Value::Array(parts) => parts
                 .iter()
-                .filter_map(|part| {
-                    (part.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
-                        .then(|| {
-                            serde_json::json!({
-                                "type": "output_text",
-                                "text": part.get("text").cloned().unwrap_or_default(),
-                                "annotations": [],
-                            })
-                        })
+                .filter(|part| {
+                    part.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
+                })
+                .map(|part| {
+                    serde_json::json!({
+                        "type": "output_text",
+                        "text": part.get("text").cloned().unwrap_or_default(),
+                        "annotations": [],
+                    })
                 })
                 .collect(),
             _ => continue,
