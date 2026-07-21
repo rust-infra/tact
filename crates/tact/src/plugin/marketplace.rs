@@ -51,14 +51,28 @@ impl PluginSource {
     }
 
     fn from_catalog_value(value: RawPluginSource) -> Result<Self> {
-        let (source, path, reference) = match value {
-            RawPluginSource::String(source) => (source, None, None),
+        let (source, url, path, reference) = match value {
+            RawPluginSource::String(source) => (source, None, None, None),
             RawPluginSource::Object {
                 source,
+                url,
                 path,
                 reference,
-            } => (source, path, reference),
+            } => (source, url, path, reference),
         };
+        // git-subdir means: clone url, checkout ref, use the subdirectory at path.
+        if source == "git-subdir" {
+            let url =
+                url.with_context(|| format!("{source} source object must specify a url field"))?;
+            if let Some(path) = &path {
+                normalize_relative(path)?;
+            }
+            return Ok(Self::Git {
+                url,
+                path,
+                reference,
+            });
+        }
         if is_relative_source(&source) {
             let source = match path {
                 Some(path) => format!("{}/{}", source.trim_end_matches('/'), path),
@@ -425,6 +439,8 @@ enum RawPluginSource {
     Object {
         source: String,
         #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
         path: Option<String>,
         #[serde(default, rename = "ref")]
         reference: Option<String>,
@@ -455,7 +471,7 @@ fn normalize_relative(value: &str) -> Result<String> {
         }
     }
     if normalized.as_os_str().is_empty() {
-        bail!("plugin source cannot be the marketplace root");
+        return Ok(".".into());
     }
     Ok(normalized.to_string_lossy().into_owned())
 }
@@ -578,6 +594,38 @@ mod tests {
         assert_eq!(
             catalog.plugins["superpowers"].source,
             PluginSource::Relative("plugins/superpowers".into())
+        );
+    }
+
+    #[test]
+    fn parses_git_subdir_plugin_source() {
+        let root = tempdir().unwrap();
+        let catalog = MarketplaceCatalog::parse(
+            r#"{
+                "name":"fixture-market",
+                "plugins":[{
+                    "name":"api-security",
+                    "source":{
+                        "source":"git-subdir",
+                        "url":"https://github.com/example/plugins.git",
+                        "path":"plugins/api-security",
+                        "ref":"v1.0.0",
+                        "sha":"abc123"
+                    }
+                }]
+            }"#,
+            root.path(),
+        )
+        .unwrap();
+
+        let plugin = &catalog.plugins["api-security"];
+        assert_eq!(
+            plugin.source,
+            PluginSource::Git {
+                url: "https://github.com/example/plugins.git".into(),
+                path: Some("plugins/api-security".into()),
+                reference: Some("v1.0.0".into()),
+            }
         );
     }
 

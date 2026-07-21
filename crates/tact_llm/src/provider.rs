@@ -203,6 +203,20 @@ impl ProviderInfo {
             || self.is_kimi_balance_supported()
             || self.is_kimi_usage_supported()
     }
+
+    /// Whether this provider+model supports image (vision) input.
+    ///
+    /// Delegates to [`ProviderKind::supports_vision`]. We also check for
+    /// DeepSeek-like endpoints routed through the OpenAI provider.
+    pub fn supports_vision(&self) -> bool {
+        if self.provider == ProviderKind::DeepSeek
+            || self.base_url.contains("deepseek")
+            || self.model.contains("deepseek")
+        {
+            return false;
+        }
+        self.provider.supports_vision()
+    }
 }
 
 /// The active LLM provider configuration (mutable so `/model` can switch models).
@@ -312,6 +326,13 @@ pub fn is_kimi_usage_supported() -> bool {
 /// Returns true when account balance or usage quota queries are supported.
 pub fn is_account_query_supported() -> bool {
     read_provider(|p| p.is_account_query_supported())
+}
+
+/// Returns false if the current model is known to be text-only (e.g. DeepSeek V4).
+///
+/// Use this to gate image attachments before they reach the LLM layer.
+pub fn supports_vision() -> bool {
+    read_provider(|p| p.supports_vision())
 }
 
 #[cfg(test)]

@@ -8,39 +8,15 @@ pub(crate) struct PluginUsageError;
 pub(crate) fn parse_plugin_command(input: &str) -> Result<PluginRequest, PluginUsageError> {
     let parts: Vec<&str> = input.split_whitespace().collect();
     match parts.as_slice() {
-        ["/plugin", "install", plugin_marketplace] => {
-            let Some((plugin, marketplace)) = plugin_marketplace.split_once('@') else {
-                return Err(PluginUsageError);
-            };
-            if plugin.is_empty() || marketplace.is_empty() || marketplace.contains('@') {
-                return Err(PluginUsageError);
-            }
-            Ok(PluginRequest::Install {
-                plugin: (*plugin).to_owned(),
-                marketplace: marketplace.to_owned(),
-            })
-        }
         ["/plugin", "list"] => Ok(PluginRequest::List),
         ["/plugin", "reload"] => Ok(PluginRequest::Reload),
-        ["/plugin", "marketplace", "add", source] => Ok(PluginRequest::MarketplaceAdd {
-            source: (*source).to_owned(),
-        }),
         ["/plugin", "marketplace", "list"] => Ok(PluginRequest::MarketplaceList),
-        ["/plugin", "marketplace", "update", name] if !name.is_empty() => {
-            Ok(PluginRequest::MarketplaceUpdate {
-                name: (*name).to_owned(),
-            })
-        }
-        ["/plugin", "marketplace", "remove", name] if !name.is_empty() => {
-            Ok(PluginRequest::MarketplaceRemove {
-                name: (*name).to_owned(),
-            })
-        }
         _ => Err(PluginUsageError),
     }
 }
 
 pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
+    let bare_plugin = app.input.trim() == "/plugin";
     match parse_plugin_command(&app.input) {
         Ok(request) => match app.plugin_tx.send(request) {
             Ok(()) => app.add_system_message(app.msgs().plugin_request_queued.to_owned()),
@@ -50,7 +26,9 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
     }
     CommandExecOutcome {
         handled: true,
-        clear_input: true,
+        // Keep input when the user typed bare `/plugin` so they can
+        // type a subcommand after seeing the usage message.
+        clear_input: !bare_plugin,
     }
 }
 
@@ -90,30 +68,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_install_and_marketplace_add() {
-        assert!(matches!(
-            parse_plugin_command("/plugin install demo@fixture"),
-            Ok(PluginRequest::Install { .. })
-        ));
-        assert!(matches!(
-            parse_plugin_command("/plugin marketplace add acme/plugins"),
-            Ok(PluginRequest::MarketplaceAdd { .. })
-        ));
-    }
-
-    #[test]
-    fn marketplace_add_does_not_derive_a_name_from_the_source_url() {
-        assert_eq!(
-            parse_plugin_command(
-                "/plugin marketplace add https://example.invalid/catalog.json?name=wrong"
-            ),
-            Ok(PluginRequest::MarketplaceAdd {
-                source: "https://example.invalid/catalog.json?name=wrong".into()
-            })
-        );
-    }
-
-    #[test]
     fn parses_only_exact_plugin_forms() {
         assert!(matches!(
             parse_plugin_command("/plugin list"),
@@ -127,15 +81,6 @@ mod tests {
             parse_plugin_command("/plugin marketplace list"),
             Ok(PluginRequest::MarketplaceList)
         ));
-        assert!(matches!(
-            parse_plugin_command("/plugin marketplace update fixture"),
-            Ok(PluginRequest::MarketplaceUpdate { .. })
-        ));
-        assert!(matches!(
-            parse_plugin_command("/plugin marketplace remove fixture"),
-            Ok(PluginRequest::MarketplaceRemove { .. })
-        ));
-        assert!(parse_plugin_command("/plugin install demo").is_err());
         assert!(parse_plugin_command("/plugin list extra").is_err());
         assert!(parse_plugin_command("/plugin marketplace add").is_err());
     }
@@ -143,7 +88,7 @@ mod tests {
     #[test]
     fn valid_plugin_command_queues_request_and_reports_pending() {
         let (mut app, mut requests) = make_app();
-        app.input = "/plugin install demo@fixture".into();
+        app.input = "/plugin list".into();
 
         let outcome = handle_plugin_command(&mut app);
 
@@ -151,8 +96,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             requests.try_recv(),
-            Ok(PluginRequest::Install { plugin, marketplace })
-                if plugin == "demo" && marketplace == "fixture"
+            Ok(PluginRequest::List)
         ));
         assert!(
             app.raw_messages
@@ -177,10 +121,28 @@ mod tests {
     }
 
     #[test]
+    fn bare_plugin_shows_usage_and_keeps_input() {
+        let (mut app, mut requests) = make_app();
+        app.input = "/plugin".into();
+
+        let outcome = handle_plugin_command(&mut app);
+
+        assert!(outcome.handled);
+        // Bare /plugin should keep input so user can type subcommand.
+        assert!(!outcome.clear_input);
+        assert!(requests.try_recv().is_err());
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|message| message.starts_with("Usage: /plugin"))
+        );
+    }
+
+    #[test]
     fn plugin_feedback_uses_the_selected_language() {
         let (mut app, _requests) = make_app();
         app.language = Language::Chinese;
-        app.input = "/plugin install demo@fixture".into();
+        app.input = "/plugin list".into();
 
         handle_plugin_command(&mut app);
 

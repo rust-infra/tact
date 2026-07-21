@@ -4512,6 +4512,7 @@ dependencies = [
  "tact",
  "tact_llm",
  "tact_protocol",
+ "tempfile",
  "tokio",
  "tui",
  "uuid",

@@ -147,6 +147,14 @@ impl ProviderKind {
     pub fn is_openai_compatible(self) -> bool {
         !matches!(self, Self::Anthropic)
     }
+
+    /// Whether this provider's models generally support image (vision) input.
+    ///
+    /// DeepSeek V4 (chat/reasoner/v4/v4-pro) is a text-only model.
+    /// Anthropic Claude 3+, OpenAI GPT-4o/V, and Kimi K2.x all support vision.
+    pub fn supports_vision(self) -> bool {
+        !matches!(self, Self::DeepSeek)
+    }
 }
 
 impl FromStr for ProviderKind {

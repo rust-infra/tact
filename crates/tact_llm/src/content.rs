@@ -81,6 +81,18 @@ impl Message {
             content: MessageContent::Blocks { content: blocks },
         }
     }
+
+    /// Returns true if this message contains any `ContentBlock::Image`.
+    ///
+    /// Useful for gating vision-only features before the LLM rejects them.
+    pub fn has_images(&self) -> bool {
+        match &self.content {
+            MessageContent::Text { .. } => false,
+            MessageContent::Blocks { content } => content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. })),
+        }
+    }
 }
 
 /// Incremental update inside a Messages API `content_block_delta` SSE event.

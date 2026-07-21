@@ -49,7 +49,11 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     };
     // Skills autocomplete; built-ins execute. Built-in names never appear as skills
     // in the palette list, but keep the guard if data drifts.
-    if is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd) {
+    if is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd)
+        // Built-in commands that require sub-command arguments should also
+        // autocomplete so the user can type the subcommand (e.g. /plugin list).
+        || cmd == "plugin"
+    {
         return apply_selected_slash_command(app);
     }
     app.slash_command.active = false;

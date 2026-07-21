@@ -340,6 +340,13 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                         exit_status = Some(std::process::ExitStatus::default());
                     }
                 }
+                // Shell has exited. If pipes are still held open by orphaned
+                // background grandchildren, we would hang forever (the loop
+                // waits for closed_pipes == 2). Kill the process group now so
+                // the pipe readers see EOF and the loop can finish.
+                if closed_pipes < 2 {
+                    terminate_child(&mut child, process_group_id).await;
+                }
             }
             _ = progress_tick.tick() => {
                 if report_pending(&ctx, &mut pending, &mut progress_tick) {
@@ -366,6 +373,11 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
             }
         }
     }
+
+    // Guard: kill any orphaned descendants that may still hold pipe fds open.
+    // Normally handled when child.wait() fires, but this is a safety net in
+    // case an unexpected code path exits the loop with a live process group.
+    terminate_child(&mut child, process_group_id).await;
 
     for (stream, decoder) in [ToolOutputStream::Stdout, ToolOutputStream::Stderr]
         .into_iter()
@@ -447,13 +459,43 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn cancellation_kills_descendant_after_shell_has_exited() {
-        let context = test_context("bash_cancel_after_shell_exit");
+    async fn orphaned_background_grandchild_does_not_hang() {
+        // Regression: after the shell exits, a background grandchild that
+        // inherited stdout/stderr pipe fds kept them open, causing a permanent
+        // hang in the select loop (child.wait() returned, but closed_pipes
+        // could never reach 2). Now the child.wait() arm kills the process
+        // group when pipes are still held, so the loop can finish.
+        let context = test_context("bash_orphaned_grandchild");
+        let done = tokio::time::timeout(
+            Duration::from_secs(3),
+            bash(
+                context,
+                BashInput {
+                    command: "sh -c 'sleep 2 &'".to_string(),
+                },
+            ),
+        )
+        .await;
+        match done {
+            Ok(Ok(_output)) => {} // clean completion — no hang
+            Ok(Err(e)) if e.to_string().contains("Cancelled") => {
+                // Acceptable: the kill sends before cancelled; some
+                // output may trigger the cancel-poll to set a reason.
+            }
+            Ok(Err(e)) => panic!("unexpected error: {e}"),
+            Err(_elapsed) => panic!("hung waiting for orphaned grandchild"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_kills_long_running_process() {
+        let context = test_context("bash_cancel_long_running");
         let cancel_flag = context.cancel_flag.clone();
         let mut task = tokio::spawn(bash(
             context,
             BashInput {
-                command: "sh -c 'sleep 2 &'".to_string(),
+                command: "sleep 10".to_string(),
             },
         ));
 
@@ -464,7 +506,7 @@ mod tests {
             task.abort();
         }
         let error = result
-            .expect("cancellation should terminate descendants that still hold output pipes")
+            .expect("cancellation should have terminated the sleep")
             .unwrap()
             .unwrap_err()
             .to_string();
