@@ -16,18 +16,8 @@ pub(crate) struct FilePicker {
     pub(crate) base_dir: std::path::PathBuf,
 }
 
-const FILE_PICKER_EXCLUDES: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    ".tact",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    ".next",
-];
+const FILE_PICKER_EXCLUDES: &[&str] =
+    &[".git", "target", "node_modules", ".tact", "__pycache__", ".venv", "venv", "dist", "build", ".next"];
 
 /// Collect entries (files and directories) in `dir`. Directories are returned
 /// with a trailing `/`. The returned paths are relative to `dir`.
@@ -40,10 +30,7 @@ fn collect_entries(dir: &std::path::Path, base: &std::path::Path) -> Vec<String>
     entries.sort_by(|a, b| {
         let a_is_dir = a.path().is_dir();
         let b_is_dir = b.path().is_dir();
-        a_is_dir
-            .cmp(&b_is_dir)
-            .reverse()
-            .then_with(|| a.file_name().cmp(&b.file_name()))
+        a_is_dir.cmp(&b_is_dir).reverse().then_with(|| a.file_name().cmp(&b.file_name()))
     });
 
     if dir != base
@@ -79,11 +66,7 @@ impl FilePicker {
         }
     }
 
-    pub(crate) fn set_dir(
-        &mut self,
-        current_dir: std::path::PathBuf,
-        base_dir: std::path::PathBuf,
-    ) {
+    pub(crate) fn set_dir(&mut self, current_dir: std::path::PathBuf, base_dir: std::path::PathBuf) {
         self.current_dir = current_dir;
         self.base_dir = base_dir;
         self.refresh();
@@ -117,9 +100,7 @@ impl FilePicker {
 
     /// Returns true if the selected entry is a directory.
     pub(crate) fn selected_is_dir(&self) -> bool {
-        self.selected_path()
-            .map(|p| p.ends_with('/'))
-            .unwrap_or(false)
+        self.selected_path().map(|p| p.ends_with('/')).unwrap_or(false)
     }
 
     /// Remove the last character from the query; if the query is empty,
@@ -160,9 +141,11 @@ impl FilePicker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     // ─── Pure unit tests (no filesystem) ───────────────────────────────────
 
@@ -227,21 +210,13 @@ mod tests {
 
     #[test]
     fn selected_path_returns_current_option() {
-        let fp = FilePicker {
-            options: vec!["src/".into(), "main.rs".into()],
-            selected: 1,
-            ..FilePicker::new()
-        };
+        let fp = FilePicker { options: vec!["src/".into(), "main.rs".into()], selected: 1, ..FilePicker::new() };
         assert_eq!(fp.selected_path(), Some("main.rs"));
     }
 
     #[test]
     fn selected_is_dir_checks_trailing_slash() {
-        let fp = FilePicker {
-            options: vec!["src/".into(), "main.rs".into()],
-            selected: 0,
-            ..FilePicker::new()
-        };
+        let fp = FilePicker { options: vec!["src/".into(), "main.rs".into()], selected: 0, ..FilePicker::new() };
         assert!(fp.selected_is_dir());
 
         let fp = FilePicker { selected: 1, ..fp };
@@ -341,10 +316,7 @@ mod tests {
 
     fn create_temp_picker() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("temp dir");
-        let root = tmp
-            .path()
-            .canonicalize()
-            .unwrap_or_else(|_| tmp.path().to_path_buf());
+        let root = tmp.path().canonicalize().unwrap_or_else(|_| tmp.path().to_path_buf());
 
         // Create a standard test structure
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -478,10 +450,7 @@ mod tests {
 
     #[test]
     fn collect_entries_returns_empty_for_nonexistent_dir() {
-        let options = collect_entries(
-            &PathBuf::from("/nonexistent_dir_xyz"),
-            &PathBuf::from("/nonexistent_dir_xyz"),
-        );
+        let options = collect_entries(&PathBuf::from("/nonexistent_dir_xyz"), &PathBuf::from("/nonexistent_dir_xyz"));
         assert!(options.is_empty());
     }
 }

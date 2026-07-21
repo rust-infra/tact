@@ -1,9 +1,8 @@
 use async_openai_responses::types::responses::{Response, ResponseStreamEvent};
 use tact_protocol::{AgentUpdate, ThinkingChunk};
 
-use crate::LlmError;
-
 use super::normalize::{NormalizedResponse, normalize_response};
+use crate::LlmError;
 
 #[derive(Default)]
 pub(crate) struct ResponsesStreamState {
@@ -51,66 +50,45 @@ impl ResponsesStreamState {
 
     fn set_terminal(&mut self, response: Response) -> Result<Vec<AgentUpdate>, LlmError> {
         if self.terminal.is_some() {
-            return Err(LlmError::Other(
-                "OpenAI Responses stream emitted multiple terminal events".to_string(),
-            ));
+            return Err(LlmError::Other("OpenAI Responses stream emitted multiple terminal events".to_string()));
         }
         self.terminal = Some(response);
         Ok(self.close_thinking().into_iter().collect())
     }
 
-    pub(crate) fn apply(
-        &mut self,
-        event: ResponseStreamEvent,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    pub(crate) fn apply(&mut self, event: ResponseStreamEvent) -> Result<Vec<AgentUpdate>, LlmError> {
         if let ResponseStreamEvent::ResponseError(event) = event {
             let code = event.code.as_deref().unwrap_or("unknown_error");
-            let param = event
-                .param
-                .as_deref()
-                .map(|param| format!(" (param: {param})"))
-                .unwrap_or_default();
-            return Err(LlmError::Other(format!(
-                "OpenAI Responses stream error {code}: {}{param}",
-                event.message
-            )));
+            let param = event.param.as_deref().map(|param| format!(" (param: {param})")).unwrap_or_default();
+            return Err(LlmError::Other(format!("OpenAI Responses stream error {code}: {}{param}", event.message)));
         }
         Ok(match event {
-            ResponseStreamEvent::ResponseReasoningSummaryTextDelta(event) => {
-                self.thinking_delta(event.delta)
-            }
-            ResponseStreamEvent::ResponseReasoningTextDelta(event) => {
-                self.thinking_delta(event.delta)
-            }
+            ResponseStreamEvent::ResponseReasoningSummaryTextDelta(event) => self.thinking_delta(event.delta),
+            ResponseStreamEvent::ResponseReasoningTextDelta(event) => self.thinking_delta(event.delta),
             ResponseStreamEvent::ResponseOutputTextDelta(event) => self.visible_delta(event.delta),
             ResponseStreamEvent::ResponseRefusalDelta(event) => self.visible_delta(event.delta),
             ResponseStreamEvent::ResponseCompleted(event) => {
                 return self.set_terminal(event.response);
-            }
+            },
             ResponseStreamEvent::ResponseIncomplete(event) => {
                 return self.set_terminal(event.response);
-            }
+            },
             ResponseStreamEvent::ResponseFailed(event) => {
                 return self.set_terminal(event.response);
-            }
+            },
             _ => Vec::new(),
         })
     }
 
     pub(crate) fn finish(self) -> Result<NormalizedResponse, LlmError> {
-        let response = self.terminal.ok_or_else(|| {
-            LlmError::Other("OpenAI Responses stream ended without a terminal event".into())
-        })?;
+        let response = self
+            .terminal
+            .ok_or_else(|| LlmError::Other("OpenAI Responses stream ended without a terminal event".into()))?;
         let mut normalized = normalize_response(response)?;
         if !self.output_text.is_empty()
-            && !normalized
-                .blocks
-                .iter()
-                .any(|block| matches!(block, crate::ContentBlock::Text { .. }))
+            && !normalized.blocks.iter().any(|block| matches!(block, crate::ContentBlock::Text { .. }))
         {
-            normalized.blocks.push(crate::ContentBlock::Text {
-                text: self.output_text,
-            });
+            normalized.blocks.push(crate::ContentBlock::Text { text: self.output_text });
         }
         Ok(normalized)
     }
@@ -118,10 +96,11 @@ impl ResponsesStreamState {
 
 #[cfg(test)]
 mod tests {
-    use super::ResponsesStreamState;
-    use crate::ContentBlock;
     use async_openai_responses::types::responses::ResponseStreamEvent;
     use tact_protocol::{AgentUpdate, ThinkingChunk};
+
+    use super::ResponsesStreamState;
+    use crate::ContentBlock;
 
     fn event(value: serde_json::Value) -> ResponseStreamEvent {
         serde_json::from_value(value).unwrap()
@@ -214,10 +193,7 @@ mod tests {
                 "response": super::super::normalize::tests::completed_response_json()
             })))
             .unwrap();
-        assert!(matches!(
-            updates.as_slice(),
-            [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]
-        ));
+        assert!(matches!(updates.as_slice(), [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]));
         assert!(state.finish().is_ok());
     }
 
@@ -247,9 +223,12 @@ mod tests {
             .unwrap();
 
         let normalized = state.finish().unwrap();
-        assert!(normalized.blocks.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text == "100 - 200 = -100")
-        }));
+        assert!(
+            normalized
+                .blocks
+                .iter()
+                .any(|block| { matches!(block, ContentBlock::Text { text } if text == "100 - 200 = -100") })
+        );
     }
 
     #[test]

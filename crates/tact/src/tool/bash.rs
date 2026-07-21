@@ -1,18 +1,18 @@
-use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
 
-use crate::shell::validate_shell_command;
-use crate::tool::ToolContext;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
-use tokio::time::{Interval, MissedTickBehavior, interval};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::{Child, Command},
+    sync::mpsc,
+    time::{Interval, MissedTickBehavior, interval},
+};
 use tool_refactor_macros::tool;
+
+use crate::{shell::validate_shell_command, tool::ToolContext};
 
 const READ_BUFFER_BYTES: usize = 4096;
 const PIPE_CHANNEL_CAPACITY: usize = 32;
@@ -36,7 +36,7 @@ impl Utf8Decoder {
                     output.push_str(valid);
                     self.pending.clear();
                     break;
-                }
+                },
                 Err(error) => {
                     let valid_up_to = error.valid_up_to();
                     if valid_up_to > 0 {
@@ -50,7 +50,7 @@ impl Utf8Decoder {
                     };
                     output.push('\u{fffd}');
                     self.pending.drain(..error_len);
-                }
+                },
             }
         }
         output
@@ -79,20 +79,16 @@ where
             Ok(0) => {
                 let _ = tx.send(PipeEvent::Closed(stream)).await;
                 return;
-            }
+            },
             Ok(read) => {
-                if tx
-                    .send(PipeEvent::Bytes(stream, buffer[..read].to_vec()))
-                    .await
-                    .is_err()
-                {
+                if tx.send(PipeEvent::Bytes(stream, buffer[..read].to_vec())).await.is_err() {
                     return;
                 }
-            }
+            },
             Err(error) => {
                 let _ = tx.send(PipeEvent::Failed(stream, error)).await;
                 return;
-            }
+            },
         }
     }
 }
@@ -162,12 +158,7 @@ fn stream_index(stream: ToolOutputStream) -> usize {
     }
 }
 
-fn push_decoded(
-    stream: ToolOutputStream,
-    text: String,
-    capture: &mut ToolOutputBuffer,
-    pending: &mut PendingProgress,
-) {
+fn push_decoded(stream: ToolOutputStream, text: String, capture: &mut ToolOutputBuffer, pending: &mut PendingProgress) {
     if text.is_empty() {
         return;
     }
@@ -176,11 +167,7 @@ fn push_decoded(
     pending.push(chunk);
 }
 
-fn report_pending(
-    ctx: &ToolContext,
-    pending: &mut PendingProgress,
-    progress_tick: &mut Interval,
-) -> bool {
+fn report_pending(ctx: &ToolContext, pending: &mut PendingProgress, progress_tick: &mut Interval) -> bool {
     if pending.is_empty() {
         return false;
     }
@@ -244,10 +231,7 @@ pub struct BashInput {
     pub command: String,
 }
 
-#[tool(
-    name = "bash",
-    description = "Run a shell command in the current workspace."
-)]
+#[tool(name = "bash", description = "Run a shell command in the current workspace.")]
 pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let command = input.command;
 
@@ -268,24 +252,14 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     };
     let process_group_id = child.id();
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Error: stdout pipe unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Error: stderr pipe unavailable"))?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Error: stdout pipe unavailable"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("Error: stderr pipe unavailable"))?;
     let (pipe_tx, mut pipe_rx) = mpsc::channel(PIPE_CHANNEL_CAPACITY);
     let stdout_task = tokio::spawn(read_pipe(stdout, ToolOutputStream::Stdout, pipe_tx.clone()));
     let stderr_task = tokio::spawn(read_pipe(stderr, ToolOutputStream::Stderr, pipe_tx.clone()));
     drop(pipe_tx);
 
-    let mut decoders = [
-        Utf8Decoder::default(),
-        Utf8Decoder::default(),
-        Utf8Decoder::default(),
-    ];
+    let mut decoders = [Utf8Decoder::default(), Utf8Decoder::default(), Utf8Decoder::default()];
     let mut capture = ToolOutputBuffer::new(OUTPUT_LIMIT_CHARS);
     let mut pending = PendingProgress::default();
     let mut progress_tick = interval(PROGRESS_INTERVAL);
@@ -379,10 +353,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     // case an unexpected code path exits the loop with a live process group.
     terminate_child(&mut child, process_group_id).await;
 
-    for (stream, decoder) in [ToolOutputStream::Stdout, ToolOutputStream::Stderr]
-        .into_iter()
-        .zip(decoders.iter_mut())
-    {
+    for (stream, decoder) in [ToolOutputStream::Stdout, ToolOutputStream::Stderr].into_iter().zip(decoders.iter_mut()) {
         let text = decoder.finish();
         push_decoded(stream, text, &mut capture, &mut pending);
     }
@@ -397,31 +368,19 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     }
     let output = capture.detail_text();
     let trimmed = output.trim();
-    if trimmed.is_empty() {
-        Ok("(no output)".to_string())
-    } else {
-        Ok(trimmed.to_string())
-    }
+    if trimmed.is_empty() { Ok("(no output)".to_string()) } else { Ok(trimmed.to_string()) }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn bash_returns_placeholder_for_empty_output() {
         let context = test_context("bash_returns_placeholder_for_empty_output");
 
-        let output = run_tool(
-            &context,
-            BashTool,
-            "bash",
-            serde_json::json!({ "command": "true" }),
-        )
-        .await
-        .unwrap();
+        let output = run_tool(&context, BashTool, "bash", serde_json::json!({ "command": "true" })).await.unwrap();
 
         assert_eq!(output, "(no output)");
     }
@@ -443,15 +402,11 @@ mod tests {
         let mut context = test_context("bash_uses_configured_timeout");
         context.bash_timeout_secs = 1;
 
-        let error = run_tool(
-            &context,
-            BashTool,
-            "bash",
-            serde_json::json!({ "command": "printf 'started\\n'; sleep 5" }),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
+        let error =
+            run_tool(&context, BashTool, "bash", serde_json::json!({ "command": "printf 'started\\n'; sleep 5" }))
+                .await
+                .unwrap_err()
+                .to_string();
 
         assert!(error.contains("Timeout (1s)"), "unexpected error: {error}");
         assert!(error.contains("started"), "partial output missing: {error}");
@@ -468,20 +423,15 @@ mod tests {
         let context = test_context("bash_orphaned_grandchild");
         let done = tokio::time::timeout(
             Duration::from_secs(3),
-            bash(
-                context,
-                BashInput {
-                    command: "sh -c 'sleep 2 &'".to_string(),
-                },
-            ),
+            bash(context, BashInput { command: "sh -c 'sleep 2 &'".to_string() }),
         )
         .await;
         match done {
-            Ok(Ok(_output)) => {} // clean completion — no hang
+            Ok(Ok(_output)) => {}, // clean completion — no hang
             Ok(Err(e)) if e.to_string().contains("Cancelled") => {
                 // Acceptable: the kill sends before cancelled; some
                 // output may trigger the cancel-poll to set a reason.
-            }
+            },
             Ok(Err(e)) => panic!("unexpected error: {e}"),
             Err(_elapsed) => panic!("hung waiting for orphaned grandchild"),
         }
@@ -492,12 +442,7 @@ mod tests {
     async fn cancellation_kills_long_running_process() {
         let context = test_context("bash_cancel_long_running");
         let cancel_flag = context.cancel_flag.clone();
-        let mut task = tokio::spawn(bash(
-            context,
-            BashInput {
-                command: "sleep 10".to_string(),
-            },
-        ));
+        let mut task = tokio::spawn(bash(context, BashInput { command: "sleep 10".to_string() }));
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         cancel_flag.store(true, Ordering::Relaxed);
@@ -505,15 +450,8 @@ mod tests {
         if result.is_err() {
             task.abort();
         }
-        let error = result
-            .expect("cancellation should have terminated the sleep")
-            .unwrap()
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("Cancelled by user"),
-            "unexpected error: {error}"
-        );
+        let error = result.expect("cancellation should have terminated the sleep").unwrap().unwrap_err().to_string();
+        assert!(error.contains("Cancelled by user"), "unexpected error: {error}");
     }
 
     #[tokio::test]

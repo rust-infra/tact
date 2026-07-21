@@ -117,10 +117,7 @@ mod tests {
         let mut active = ActiveThinkingBlock::new(8, Instant::now());
         active.push_delta("one\ntwo\nthree\nfour\n");
 
-        assert_eq!(
-            active.display_tail(),
-            vec!["two".to_string(), "three".to_string(), "four".to_string()]
-        );
+        assert_eq!(active.display_tail(), vec!["two".to_string(), "three".to_string(), "four".to_string()]);
     }
 
     #[test]
@@ -128,9 +125,6 @@ mod tests {
         let mut active = ActiveThinkingBlock::new(8, Instant::now());
         active.push_delta("one\ntwo");
 
-        assert_eq!(
-            active.display_tail(),
-            vec!["one".to_string(), "two".to_string()]
-        );
+        assert_eq!(active.display_tail(), vec!["one".to_string(), "two".to_string()]);
     }
 }

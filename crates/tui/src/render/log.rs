@@ -1,12 +1,17 @@
-use crate::render::cells::{thinking::ThinkingCell, tool::ToolCell};
-use crate::render::util::wrap_line;
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+};
+
+use crate::{
+    render::{
+        cells::{thinking::ThinkingCell, tool::ToolCell},
+        util::wrap_line,
+    },
+    widgets::state::App,
 };
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
@@ -69,9 +74,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     if indices_stale {
         app.log_scroll.visible_indices.clear();
         app.log_scroll.phys_to_logical_cache.clear();
-        app.log_scroll
-            .phys_to_logical_cache
-            .resize(app.messages.len(), None);
+        app.log_scroll.phys_to_logical_cache.resize(app.messages.len(), None);
         let mut total_logical = 0;
         // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
         for phys in 0..app.messages.len() {
@@ -151,9 +154,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 wrap_line(&line, wrap_width)
             };
             app.log_scroll.visual_cache.extend(wrapped);
-            app.log_scroll
-                .visual_start_cache
-                .push(app.log_scroll.visual_cache.len());
+            app.log_scroll.visual_start_cache.push(app.log_scroll.visual_cache.len());
         }
         app.log_scroll.visual_cache_width = wrap_width as u16;
         app.log_scroll.visual_cache_ver = app.messages.len();
@@ -177,8 +178,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let total_visual = *app.log_scroll.visual_start_cache.last().unwrap_or(&0);
     // Max logical offset: the last logical row whose start visual line still leaves
     // `visible_height` rows of content below it (binary search on prefix sums).
-    let effective_max_logical =
-        effective_max_logical_scroll(&app.log_scroll.visual_start_cache, visible_height);
+    let effective_max_logical = effective_max_logical_scroll(&app.log_scroll.visual_start_cache, visible_height);
     let max_scroll = effective_max_logical as u16;
     if app.log_scroll.offset > max_scroll {
         app.log_scroll.offset = max_scroll;
@@ -189,19 +189,12 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // Map the (already clamped) logical scroll offset to the first visible visual
     // line. See `resolve_visual_scroll` for the bottom-pinning rule that keeps a
     // tall last cell (e.g. a tool detail card) fully reachable.
-    let visual_scroll = resolve_visual_scroll(
-        vs_cache,
-        total_visual,
-        visible_height,
-        logical_scroll,
-        effective_max_logical,
-    );
+    let visual_scroll =
+        resolve_visual_scroll(vs_cache, total_visual, visible_height, logical_scroll, effective_max_logical);
     let end_visual = (visual_scroll + visible_height).min(total_visual);
 
     // Reverse-map visual viewport bounds back to logical row range for cell building.
-    let logical_start = vs_cache
-        .binary_search(&visual_scroll)
-        .unwrap_or_else(|i| i.saturating_sub(1));
+    let logical_start = vs_cache.binary_search(&visual_scroll).unwrap_or_else(|i| i.saturating_sub(1));
     let logical_end = match vs_cache.binary_search(&end_visual) {
         Ok(i) => i,
         Err(i) => i.min(total_logical),
@@ -223,8 +216,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let log_fg = app.theme.fg;
 
-    let mut renderer =
-        super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
+    let mut renderer = super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
 
     // Track message categories for separator insertion
     let mut prev_category: Option<&'static str> = None;
@@ -287,10 +279,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     "system" => "⚙️ system",
                     _ => "🤖 assistant",
                 };
-                let separator = super::cells::separator::MessageSeparator::new(
-                    separator_label.to_string(),
-                    separator_fg,
-                );
+                let separator =
+                    super::cells::separator::MessageSeparator::new(separator_label.to_string(), separator_fg);
                 renderer.push(vs_cache[logical_i], separator);
             }
             prev_category = Some(category);
@@ -304,9 +294,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         // is no longer in the loop range, but subsequent placeholder rows
         // still belong to the same ToolBlock.
         if let Some(phys) = phys_idx {
-            if let Some((thinking_phys, _thinking_logical, thinking_rows)) =
-                app.find_thinking_at_logical(logical_i)
-            {
+            if let Some((thinking_phys, _thinking_logical, thinking_rows)) = app.find_thinking_at_logical(logical_i) {
                 let rows_before = phys.saturating_sub(thinking_phys);
                 let vis_start = if rows_before > 0 && rows_before <= logical_i {
                     vs_cache[logical_i - rows_before]
@@ -314,25 +302,11 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     vs_cache[logical_i]
                 };
                 let msgs = app.msgs();
-                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
-                    as usize)
-                    % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
-                if let Some(active) = app
-                    .thinking
-                    .active
-                    .as_ref()
-                    .filter(|active| active.phys_idx == thinking_phys)
-                {
-                    renderer.push(
-                        vis_start,
-                        ThinkingCell::active(active, spinner, &app.theme, &msgs),
-                    );
-                } else if let Some(block) = app
-                    .thinking
-                    .blocks
-                    .iter()
-                    .find(|block| block.phys_idx == thinking_phys)
-                {
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER
+                    [(app.spinner_frame as usize) % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
+                if let Some(active) = app.thinking.active.as_ref().filter(|active| active.phys_idx == thinking_phys) {
+                    renderer.push(vis_start, ThinkingCell::active(active, spinner, &app.theme, &msgs));
+                } else if let Some(block) = app.thinking.blocks.iter().find(|block| block.phys_idx == thinking_phys) {
                     renderer.push(vis_start, ThinkingCell::completed(block, &app.theme, &msgs));
                 }
                 logical_i += thinking_rows - rows_before;
@@ -344,21 +318,12 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 .active
                 .iter()
                 .find(|active| {
-                    phys >= active.phys_idx
-                        && phys <= active.phys_idx + active.output.message_placeholder_rows()
+                    phys >= active.phys_idx && phys <= active.phys_idx + active.output.message_placeholder_rows()
                 })
-                .map(|active| {
-                    (
-                        active.phys_idx,
-                        active.output.clone(),
-                        Some(active.started_at),
-                    )
-                })
+                .map(|active| (active.phys_idx, active.output.clone(), Some(active.started_at)))
                 .or_else(|| {
                     app.tools.blocks.iter().find_map(|b| {
-                        if phys >= b.phys_idx
-                            && phys <= b.phys_idx + b.output.message_placeholder_rows()
-                        {
+                        if phys >= b.phys_idx && phys <= b.phys_idx + b.output.message_placeholder_rows() {
                             Some((b.phys_idx, b.output.clone(), None))
                         } else {
                             None
@@ -374,9 +339,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     vs_cache[logical_i]
                 };
                 let msgs = app.msgs();
-                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
-                    as usize)
-                    % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER
+                    [(app.spinner_frame as usize) % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
                 let card_cell = ToolCell::from_output(
                     output,
                     started_at,
@@ -408,11 +372,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         // Normal row: build TextCell
-        let cached_lines: Vec<Line<'static>> =
-            app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
-        let raw_text = phys_idx
-            .map(|p| app.raw_messages[p].clone())
-            .unwrap_or_default();
+        let cached_lines: Vec<Line<'static>> = app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
+        let raw_text = phys_idx.map(|p| app.raw_messages[p].clone()).unwrap_or_default();
 
         let indent_cols = phys_idx
             .map(|p| app.nested_log_indent(p))
@@ -420,14 +381,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             // physical message, so apply the same reply indent directly.
             .unwrap_or(super::util::LOG_THINKING_INDENT + 1);
 
-        let cell = super::cells::text::TextCell::new(
-            cached_lines,
-            raw_text,
-            selection_range,
-            None,
-            indent_cols,
-            log_fg,
-        );
+        let cell =
+            super::cells::text::TextCell::new(cached_lines, raw_text, selection_range, None, indent_cols, log_fg);
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
         // viewport clip and calls TextCell::render_partial for sub-line trimming.
@@ -444,17 +399,9 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::default().fg(app.theme.border))
         .title(panel_title)
         .style(Style::default().bg(app.theme.bg));
-    let inner = Rect::new(
-        area.x + 1,
-        area.y + 1,
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    );
+    let inner = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), area.height.saturating_sub(2));
     frame.render_widget(log_block, area);
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(app.theme.bg)),
-        inner,
-    );
+    frame.render_widget(Paragraph::new("").style(Style::default().bg(app.theme.bg)), inner);
     frame.render_widget(renderer, inner);
 
     // Code cards remain viewport-clipped overlays. Thinking cards are direct
@@ -487,9 +434,8 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         0
     };
     let sb_position = sb_position.min(total_visual.saturating_sub(1));
-    let mut state = ScrollbarState::new(total_visual)
-        .viewport_content_length(app.log_scroll.height as usize)
-        .position(sb_position);
+    let mut state =
+        ScrollbarState::new(total_visual).viewport_content_length(app.log_scroll.height as usize).position(sb_position);
     frame.render_stateful_widget(scrollbar, area, &mut state);
 
     // Persist prefix-sum cache for mouse hit-testing and scroll handlers outside render.
@@ -520,49 +466,29 @@ fn resolve_visual_scroll(
     if logical_scroll >= effective_max_logical {
         return max_visual_scroll;
     }
-    vs_cache
-        .get(logical_scroll)
-        .copied()
-        .unwrap_or(max_visual_scroll)
-        .min(max_visual_scroll)
+    vs_cache.get(logical_scroll).copied().unwrap_or(max_visual_scroll).min(max_visual_scroll)
 }
 
 /// Return the greatest logical offset that keeps the visual viewport in range.
 ///
 /// The offset is stored in logical rows while the viewport is measured in visual
 /// rows, so the bottom position must be found through the prefix-sum cache.
-pub(crate) fn effective_max_logical_scroll(
-    visual_start_cache: &[usize],
-    visible_height: usize,
-) -> usize {
+pub(crate) fn effective_max_logical_scroll(visual_start_cache: &[usize], visible_height: usize) -> usize {
     let total_visual = *visual_start_cache.last().unwrap_or(&0);
     if total_visual <= visible_height {
         return 0;
     }
     let target = total_visual - visible_height;
-    visual_start_cache
-        .binary_search(&target)
-        .unwrap_or_else(|idx| idx.saturating_sub(1))
+    visual_start_cache.binary_search(&target).unwrap_or_else(|idx| idx.saturating_sub(1))
 }
 
 /// Render an animated loading spinner at the loading placeholder position.
 /// Uses `app.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
 /// and displays a "Thinking..." label with a subtle pulse.
-fn render_loading_spinner(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    visual_scroll: usize,
-    visible_height: usize,
-) {
+fn render_loading_spinner(frame: &mut Frame, area: Rect, app: &App, visual_scroll: usize, visible_height: usize) {
     let Some(idx) = app.loading_idx else { return };
     // Find logical row for this physical index
-    let Some(logical_row) = app
-        .log_scroll
-        .phys_to_logical_cache
-        .get(idx)
-        .and_then(|&v| v)
-    else {
+    let Some(logical_row) = app.log_scroll.phys_to_logical_cache.get(idx).and_then(|&v| v) else {
         return;
     };
     let vs_cache = &app.log_scroll.visual_start_cache;
@@ -581,12 +507,8 @@ fn render_loading_spinner(
     const SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner_char = SPINNERS[(app.spinner_frame as usize) % SPINNERS.len()];
 
-    let spinner_style = Style::default()
-        .fg(app.theme.warning)
-        .add_modifier(Modifier::BOLD);
-    let text_style = Style::default()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::ITALIC);
+    let spinner_style = Style::default().fg(app.theme.warning).add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(app.theme.accent).add_modifier(Modifier::ITALIC);
 
     let spinner_line = Line::from(vec![
         Span::styled(format!(" {} ", spinner_char), spinner_style),
@@ -631,11 +553,7 @@ mod tests {
             effective_max_logical,
         );
         assert_eq!(vs, 70, "should pin to max_visual_scroll at the bottom");
-        assert_eq!(
-            vs + visible_height,
-            total_visual,
-            "viewport reaches the last line"
-        );
+        assert_eq!(vs + visible_height, total_visual, "viewport reaches the last line");
     }
 
     #[test]

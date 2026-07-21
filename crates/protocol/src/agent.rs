@@ -96,22 +96,11 @@ pub enum AgentUpdate {
         arg_full: String,
     },
     /// A step succeeded, with structured result.
-    StepFinished {
-        idx: usize,
-        tool_id: String,
-        result: StepResult,
-    },
+    StepFinished { idx: usize, tool_id: String, result: StepResult },
     /// A step failed, with error message.
-    StepFailed {
-        idx: usize,
-        tool_id: String,
-        error: String,
-    },
+    StepFailed { idx: usize, tool_id: String, error: String },
     /// Incremental text produced while a tool invocation is still running.
-    ToolProgress {
-        tool_id: String,
-        chunks: Vec<ToolOutputChunk>,
-    },
+    ToolProgress { tool_id: String, chunks: Vec<ToolOutputChunk> },
     /// The entire task is complete
     TaskComplete(String),
     /// The in-flight task was cancelled by the user. TUI must leave
@@ -140,11 +129,7 @@ pub enum AgentUpdate {
     },
     /// Request user to choose **zero or more** options (Space toggles, Enter confirms).
     /// Used by `ask_user` when `multi_select` is true. Does not affect [`RequestSelect`].
-    RequestMultiSelect {
-        prompt: String,
-        options: Vec<String>,
-        respond: oneshot::Sender<Option<Vec<usize>>>,
-    },
+    RequestMultiSelect { prompt: String, options: Vec<String>, respond: oneshot::Sender<Option<Vec<usize>>> },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),
     /// Streaming thinking / reasoning lifecycle event
@@ -215,10 +200,7 @@ impl PlanStep {
             description: description.into(),
             tool: tool.into(),
             tool_id: tool_id.into(),
-            args: args
-                .into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
+            args: args.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
             output: None,
         }
     }

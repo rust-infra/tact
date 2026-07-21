@@ -1,8 +1,9 @@
 use std::time::Instant;
 
-use crate::widgets::tool_widget::ToolRenderOutput;
 use ratatui::text::Line;
 use tact_protocol::ToolOutputBuffer;
+
+use crate::widgets::tool_widget::ToolRenderOutput;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
 #[derive(Default)]
@@ -59,10 +60,7 @@ impl PopupTextSelection {
 
 impl DiffPopup {
     pub(crate) fn copy_content(&self) -> Option<String> {
-        self.cached_content
-            .as_deref()
-            .or(self.inline_content.as_deref())
-            .map(|content| self.copy_content_from(content))
+        self.cached_content.as_deref().or(self.inline_content.as_deref()).map(|content| self.copy_content_from(content))
     }
 
     pub(crate) fn copy_content_from(&self, content: &str) -> String {
@@ -111,25 +109,16 @@ mod tests {
 
     #[test]
     fn popup_selection_ignores_empty_range() {
-        assert_eq!(
-            PopupTextSelection::new(2, 2).normalized_non_empty("text"),
-            None
-        );
+        assert_eq!(PopupTextSelection::new(2, 2).normalized_non_empty("text"), None);
     }
 
     #[test]
     fn popup_selection_clamps_offsets_to_content_length() {
-        assert_eq!(
-            PopupTextSelection::new(0, usize::MAX).normalized_non_empty("text"),
-            Some(0..4)
-        );
+        assert_eq!(PopupTextSelection::new(0, usize::MAX).normalized_non_empty("text"), Some(0..4));
     }
 
     #[test]
     fn popup_selection_floors_multibyte_offsets_to_character_boundaries() {
-        assert_eq!(
-            PopupTextSelection::new(4, 2).normalized_non_empty("a界z"),
-            Some(1..4)
-        );
+        assert_eq!(PopupTextSelection::new(4, 2).normalized_non_empty("a界z"), Some(1..4));
     }
 }

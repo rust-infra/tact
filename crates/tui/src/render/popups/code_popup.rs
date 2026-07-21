@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,6 +5,8 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
+
+use crate::widgets::state::App;
 
 //    total = 10 lines, content_height = 4, scroll = 3
 //
@@ -42,28 +43,16 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let end_line = (scroll + content_height).min(total);
 
     let mut text = Text::default();
-    let title_style = Style::default()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let lang = if popup.lang.is_empty() {
-        "code"
-    } else {
-        &popup.lang
-    };
-    text.push_line(Line::from(Span::styled(
-        format!("```{} ({} lines)", lang, total),
-        title_style,
-    )));
+    let title_style = Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD);
+    let lang = if popup.lang.is_empty() { "code" } else { &popup.lang };
+    text.push_line(Line::from(Span::styled(format!("```{} ({} lines)", lang, total), title_style)));
     text.push_line(Line::from(""));
 
     // Render code lines, truncating to popup width minus borders/padding
     let max_chars = popup_area.width.saturating_sub(4) as usize;
     for &line in &lines[start_line..end_line] {
         let display: String = line.chars().take(max_chars).collect();
-        text.push_line(Line::from(Span::styled(
-            display,
-            Style::default().fg(app.theme.fg),
-        )));
+        text.push_line(Line::from(Span::styled(display, Style::default().fg(app.theme.fg))));
     }
 
     let para = Paragraph::new(text)
@@ -83,11 +72,8 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
     frame.render_widget(para, popup_area);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
+    let scrollbar = Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
+    let mut state = ScrollbarState::new(total).viewport_content_length(content_height).position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
     app.mouse.code_popup_area = popup_area;

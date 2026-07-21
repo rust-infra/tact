@@ -2,9 +2,9 @@
 // Defines all color schemes supported by the TUI. Each theme specifies background,
 // foreground, accent, warning, error, and other UI element colors.
 
-use ratatui::style::Color;
-use ratatui::widgets::BorderType;
 use std::str::FromStr;
+
+use ratatui::{style::Color, widgets::BorderType};
 
 /// Built-in theme name enum.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -58,9 +58,7 @@ impl FromStr for ThemeName {
             "retro" => Ok(Self::Retro),
             "kawaii" => Ok(Self::Kawaii),
             "japanese" => Ok(Self::Japanese),
-            "brutal" | "neo-brutal" | "neo-brutalism" | "neobrutal" | "neobrutalism" => {
-                Ok(Self::Brutal)
-            }
+            "brutal" | "neo-brutal" | "neo-brutalism" | "neobrutal" | "neobrutalism" => Ok(Self::Brutal),
             other => Err(format!("unknown theme: {other}")),
         }
     }
@@ -237,7 +235,7 @@ impl From<ThemeName> for Theme {
                 name,
                 bg: Color::Rgb(255, 255, 255),
                 fg: Color::Rgb(20, 20, 20),
-                accent: Color::Rgb(255, 221, 87), // active tab yellow
+                accent: Color::Rgb(255, 221, 87),  // active tab yellow
                 warning: Color::Rgb(255, 190, 60), // running / emphasis
                 error: Color::Rgb(255, 70, 70),
                 success: Color::Rgb(170, 240, 150),   // tag green
@@ -270,28 +268,17 @@ impl Theme {
             Color::Black => false,
             _ => matches!(
                 self.name,
-                ThemeName::Light
-                    | ThemeName::SolarizedLight
-                    | ThemeName::Kawaii
-                    | ThemeName::Brutal
+                ThemeName::Light | ThemeName::SolarizedLight | ThemeName::Kawaii | ThemeName::Brutal
             ),
         }
     }
 
     pub fn code_block_bg(&self) -> Color {
-        if self.is_light() {
-            Color::Rgb(248, 248, 248)
-        } else {
-            Color::Rgb(30, 35, 50)
-        }
+        if self.is_light() { Color::Rgb(248, 248, 248) } else { Color::Rgb(30, 35, 50) }
     }
 
     pub fn code_block_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Rgb(200, 200, 210)
-        }
+        if self.is_light() { self.fg } else { Color::Rgb(200, 200, 210) }
     }
 
     pub fn code_card_bg(&self) -> Color {
@@ -299,42 +286,22 @@ impl Theme {
     }
 
     pub fn code_card_border(&self) -> Color {
-        if self.is_light() {
-            self.border
-        } else {
-            Color::Rgb(100, 120, 180)
-        }
+        if self.is_light() { self.border } else { Color::Rgb(100, 120, 180) }
     }
 
     pub fn code_card_title_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Rgb(160, 180, 240)
-        }
+        if self.is_light() { self.fg } else { Color::Rgb(160, 180, 240) }
     }
 
     pub fn thinking_card_border(&self) -> Color {
-        if self.is_light() {
-            self.border
-        } else {
-            Color::Rgb(140, 140, 220)
-        }
+        if self.is_light() { self.border } else { Color::Rgb(140, 140, 220) }
     }
 
     pub fn thinking_preview_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Rgb(180, 180, 200)
-        }
+        if self.is_light() { self.fg } else { Color::Rgb(180, 180, 200) }
     }
 
     pub fn muted_fg(&self) -> Color {
-        if self.is_light() {
-            Color::Rgb(120, 120, 120)
-        } else {
-            Color::Rgb(128, 128, 128)
-        }
+        if self.is_light() { Color::Rgb(120, 120, 120) } else { Color::Rgb(128, 128, 128) }
     }
 }

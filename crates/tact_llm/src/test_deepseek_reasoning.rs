@@ -24,10 +24,9 @@ fn skip_unless_api_key() -> Option<(String, String, String)> {
         _ => {
             eprintln!("skipping: DEEPSEEK_API_KEY not set");
             return None;
-        }
+        },
     };
-    let base_url = std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "https://api.deepseek.com".to_string());
+    let base_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
     let model = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
     Some((api_key, base_url, model))
 }
@@ -62,11 +61,7 @@ fn date_tool() -> Value {
     })
 }
 
-async fn chat_completions(
-    api_key: &str,
-    base_url: &str,
-    body: &Value,
-) -> Result<(reqwest::StatusCode, Value), String> {
+async fn chat_completions(api_key: &str, base_url: &str, body: &Value) -> Result<(reqwest::StatusCode, Value), String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
     let resp = client
@@ -88,15 +83,11 @@ fn assistant_message(choice: &Value) -> Value {
 }
 
 fn reasoning_of(msg: &Value) -> Option<&str> {
-    msg.get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
+    msg.get("reasoning_content").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
 }
 
 fn has_tool_calls(msg: &Value) -> bool {
-    msg.get("tool_calls")
-        .and_then(|v| v.as_array())
-        .is_some_and(|a| !a.is_empty())
+    msg.get("tool_calls").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())
 }
 
 fn strip_reasoning(mut msg: Value) -> Value {
@@ -109,9 +100,9 @@ fn strip_reasoning(mut msg: Value) -> Value {
 /// Keep `reasoning_content` only on the last assistant message that has it;
 /// strip it from every earlier assistant message.
 fn keep_latest_reasoning_only(messages: &mut [Value]) {
-    let last = messages.iter().rposition(|m| {
-        m.get("role").and_then(|r| r.as_str()) == Some("assistant") && reasoning_of(m).is_some()
-    });
+    let last = messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant") && reasoning_of(m).is_some());
     for (i, msg) in messages.iter_mut().enumerate() {
         if Some(i) != last
             && let Some(obj) = msg.as_object_mut()
@@ -122,10 +113,7 @@ fn keep_latest_reasoning_only(messages: &mut [Value]) {
 }
 
 fn count_reasoning(messages: &[Value]) -> usize {
-    messages
-        .iter()
-        .filter(|m| reasoning_of(m).is_some())
-        .count()
+    messages.iter().filter(|m| reasoning_of(m).is_some()).count()
 }
 
 /// Scenario 1+2: plain multi-turn with and without echoing `reasoning_content`.
@@ -144,21 +132,12 @@ async fn deepseek_reasoning_plain_multiturn_echo_optional() {
         "stream": false,
     }));
 
-    let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body)
-        .await
-        .expect("turn1 request");
+    let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body).await.expect("turn1 request");
     assert!(status1.is_success(), "turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
-    println!(
-        "turn1 ok; reasoning_content present={} len={}",
-        rc1.is_some(),
-        rc1.map(str::len).unwrap_or(0)
-    );
-    assert!(
-        rc1.is_some(),
-        "expected reasoning_content in thinking mode: {asst1}"
-    );
+    println!("turn1 ok; reasoning_content present={} len={}", rc1.is_some(), rc1.map(str::len).unwrap_or(0));
+    assert!(rc1.is_some(), "expected reasoning_content in thinking mode: {asst1}");
 
     // Turn 2a: omit reasoning_content (docs: should be fine / ignored).
     let turn2_omit = with_thinking(json!({
@@ -172,9 +151,8 @@ async fn deepseek_reasoning_plain_multiturn_echo_optional() {
         "stream": false,
     }));
 
-    let (status_omit, resp_omit) = chat_completions(&api_key, &base_url, &turn2_omit)
-        .await
-        .expect("turn2 omit request");
+    let (status_omit, resp_omit) =
+        chat_completions(&api_key, &base_url, &turn2_omit).await.expect("turn2 omit request");
     println!("plain omit reasoning_content → {status_omit}");
     assert!(
         status_omit.is_success(),
@@ -193,9 +171,8 @@ async fn deepseek_reasoning_plain_multiturn_echo_optional() {
         "stream": false,
     }));
 
-    let (status_echo, resp_echo) = chat_completions(&api_key, &base_url, &turn2_echo)
-        .await
-        .expect("turn2 echo request");
+    let (status_echo, resp_echo) =
+        chat_completions(&api_key, &base_url, &turn2_echo).await.expect("turn2 echo request");
     println!("plain echo reasoning_content → {status_echo}");
     assert!(
         status_echo.is_success(),
@@ -224,17 +201,11 @@ async fn deepseek_reasoning_tool_call_echo_required_or_not() {
         "stream": false,
     }));
 
-    let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body)
-        .await
-        .expect("tool turn1 request");
+    let (status1, resp1) = chat_completions(&api_key, &base_url, &turn1_body).await.expect("tool turn1 request");
     assert!(status1.is_success(), "tool turn1 failed: {status1} {resp1}");
     let asst1 = assistant_message(&resp1);
     let rc1 = reasoning_of(&asst1);
-    let tool_calls = asst1
-        .get("tool_calls")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let tool_calls = asst1.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     println!(
         "tool turn1 ok; reasoning_content present={} len={} tool_calls={}",
         rc1.is_some(),
@@ -248,10 +219,7 @@ async fn deepseek_reasoning_tool_call_echo_required_or_not() {
         );
         return;
     }
-    assert!(
-        rc1.is_some(),
-        "expected reasoning_content alongside tool_calls: {asst1}"
-    );
+    assert!(rc1.is_some(), "expected reasoning_content alongside tool_calls: {asst1}");
 
     let tool_call_id = tool_calls[0]["id"].as_str().unwrap_or("call_0");
     let tool_result = json!({
@@ -274,9 +242,8 @@ async fn deepseek_reasoning_tool_call_echo_required_or_not() {
         "stream": false,
     }));
 
-    let (status_without, resp_without) = chat_completions(&api_key, &base_url, &without_rc)
-        .await
-        .expect("tool followup without rc");
+    let (status_without, resp_without) =
+        chat_completions(&api_key, &base_url, &without_rc).await.expect("tool followup without rc");
     println!(
         "tool followup WITHOUT reasoning_content → {status_without} body={}",
         serde_json::to_string(&resp_without).unwrap_or_default()
@@ -291,14 +258,10 @@ async fn deepseek_reasoning_tool_call_echo_required_or_not() {
         "stream": false,
     }));
 
-    let (status_with, resp_with) = chat_completions(&api_key, &base_url, &with_rc)
-        .await
-        .expect("tool followup with rc");
+    let (status_with, resp_with) =
+        chat_completions(&api_key, &base_url, &with_rc).await.expect("tool followup with rc");
     println!("tool followup WITH reasoning_content → {status_with}");
-    assert!(
-        status_with.is_success(),
-        "tool followup with reasoning_content must succeed: {status_with} {resp_with}"
-    );
+    assert!(status_with.is_success(), "tool followup with reasoning_content must succeed: {status_with} {resp_with}");
 
     // Document the without-rc behavior as an explicit assertion so CI records
     // the contract we observed. Prefer: without_rc fails XOR both succeed —
@@ -343,9 +306,7 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
         "max_tokens": 512,
         "stream": false,
     }));
-    let (s1, r1) = chat_completions(&api_key, &base_url, &round1)
-        .await
-        .expect("round1");
+    let (s1, r1) = chat_completions(&api_key, &base_url, &round1).await.expect("round1");
     assert!(s1.is_success(), "round1 failed: {s1} {r1}");
     let asst1 = assistant_message(&r1);
     if !has_tool_calls(&asst1) || reasoning_of(&asst1).is_none() {
@@ -365,9 +326,7 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
         "max_tokens": 512,
         "stream": false,
     }));
-    let (s1b, r1b) = chat_completions(&api_key, &base_url, &round1_finish)
-        .await
-        .expect("round1 finish");
+    let (s1b, r1b) = chat_completions(&api_key, &base_url, &round1_finish).await.expect("round1 finish");
     assert!(s1b.is_success(), "round1 finish failed: {s1b} {r1b}");
     let asst2 = assistant_message(&r1b);
     println!(
@@ -391,9 +350,7 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
         "max_tokens": 512,
         "stream": false,
     }));
-    let (s2, r2) = chat_completions(&api_key, &base_url, &round2)
-        .await
-        .expect("round2");
+    let (s2, r2) = chat_completions(&api_key, &base_url, &round2).await.expect("round2");
     assert!(s2.is_success(), "round2 failed: {s2} {r2}");
     let asst3 = assistant_message(&r2);
     if !has_tool_calls(&asst3) || reasoning_of(&asst3).is_none() {
@@ -412,14 +369,8 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
     keep_latest_reasoning_only(&mut history);
     let after = count_reasoning(&history);
     println!("reasoning_content count before keep_latest={before} after={after}");
-    assert_eq!(
-        after, 1,
-        "expected exactly one reasoning_content after keep_latest"
-    );
-    assert!(
-        before >= 2,
-        "need at least two historical thinkings to exercise latest-only (got {before})"
-    );
+    assert_eq!(after, 1, "expected exactly one reasoning_content after keep_latest");
+    assert!(before >= 2, "need at least two historical thinkings to exercise latest-only (got {before})");
 
     let latest_only = with_thinking(json!({
         "model": model,
@@ -428,15 +379,10 @@ async fn deepseek_reasoning_tool_call_echo_latest_only() {
         "max_tokens": 512,
         "stream": false,
     }));
-    let (status, resp) = chat_completions(&api_key, &base_url, &latest_only)
-        .await
-        .expect("latest-only followup");
+    let (status, resp) = chat_completions(&api_key, &base_url, &latest_only).await.expect("latest-only followup");
     println!(
         "tool history with ONLY latest reasoning_content → {status} body={}",
         serde_json::to_string(&resp).unwrap_or_default()
     );
-    assert!(
-        status.is_success(),
-        "echoing only the latest reasoning_content should succeed: {status} {resp}"
-    );
+    assert!(status.is_success(), "echoing only the latest reasoning_content should succeed: {status} {resp}");
 }

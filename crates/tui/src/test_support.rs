@@ -1,12 +1,15 @@
 //! Public test helpers for cross-crate integration (e.g. tact-ui → App bridge).
 
-use crate::headless_loop::{auto_confirm_select, drain_agent_updates, make_headless_app};
-use crate::render::test_harness::{make_app, render_app_text, render_main_area_text};
-use crate::widgets::state::{App, InputMode, Status};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
+
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+use crate::{
+    headless_loop::{auto_confirm_select, drain_agent_updates, make_headless_app},
+    render::test_harness::{make_app, render_app_text, render_main_area_text},
+    widgets::state::{App, InputMode, Status},
+};
 
 /// Thin wrapper around [`App`] for integration tests outside the `tui` crate.
 pub struct TestApp(App);
@@ -82,11 +85,7 @@ impl TestApp {
         self.0.tools.popup.as_ref().and_then(|p| {
             p.cached_content
                 .clone()
-                .or_else(|| {
-                    p.file_path
-                        .as_ref()
-                        .and_then(|path| std::fs::read_to_string(path).ok())
-                })
+                .or_else(|| p.file_path.as_ref().and_then(|path| std::fs::read_to_string(path).ok()))
                 .or_else(|| p.inline_content.clone())
         })
     }
@@ -163,11 +162,7 @@ pub struct HeadlessApp {
 
 impl HeadlessApp {
     pub fn new(agent_rx: UnboundedReceiver<AgentUpdate>, work_dir: PathBuf) -> Self {
-        Self {
-            inner: make_headless_app(agent_rx, work_dir),
-            auto_select: None,
-            capture_frames: false,
-        }
+        Self { inner: make_headless_app(agent_rx, work_dir), auto_select: None, capture_frames: false }
     }
 
     pub fn with_auto_select(mut self, choice: Option<usize>) -> Self {

@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::PlanStep;
 use ratatui::widgets::{ListState, ScrollbarState};
+
+use super::PlanStep;
 
 /// Execution Plan panel state.
 #[derive(Default)]

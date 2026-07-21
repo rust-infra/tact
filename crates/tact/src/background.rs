@@ -23,8 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::{process::Command, time::timeout};
 
 use crate::store::{CollectionStore, StoreRoot};
 
@@ -131,15 +130,15 @@ impl SharedBackgroundManager {
                         String::from_utf8_lossy(&output.stderr)
                     );
                     record.output = combined.chars().take(MAX_OUTPUT_CHARS).collect();
-                }
+                },
                 Ok(Err(error)) => {
                     record.status = BackgroundTaskStatus::Error;
                     record.output = error.to_string();
-                }
+                },
                 Err(_) => {
                     record.status = BackgroundTaskStatus::Error;
                     record.output = format!("Error: Timeout ({COMMAND_TIMEOUT:?})");
-                }
+                },
             }
             let _ = manager.save_record(record);
         });
@@ -148,11 +147,7 @@ impl SharedBackgroundManager {
     }
 
     pub fn check(&self, task_id: Option<&str>) -> Result<String> {
-        let mut tasks = self
-            .inner
-            .tasks
-            .lock()
-            .map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
+        let mut tasks = self.inner.tasks.lock().map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
 
         if let Some(task_id) = task_id {
             let record = tasks
@@ -183,11 +178,7 @@ impl SharedBackgroundManager {
 
     fn save_record(&self, record: BackgroundTaskRecord) -> Result<()> {
         self.inner.records.write(&record.id, &record)?;
-        let mut tasks = self
-            .inner
-            .tasks
-            .lock()
-            .map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
+        let mut tasks = self.inner.tasks.lock().map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
         tasks.insert(record.id.clone(), record);
         Ok(())
     }
@@ -203,17 +194,16 @@ impl std::ops::Deref for SharedBackgroundManager {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
     use crate::store::StoreRoot;
-    use tempfile::TempDir;
 
     #[test]
     fn marks_stale_running_tasks_on_startup() {
         let tmp = TempDir::new().unwrap();
         let root = StoreRoot::new(tmp.path()).unwrap();
-        let records = root
-            .collection::<BackgroundTaskRecord>("background/tasks")
-            .unwrap();
+        let records = root.collection::<BackgroundTaskRecord>("background/tasks").unwrap();
         records
             .write(
                 "deadbeef",

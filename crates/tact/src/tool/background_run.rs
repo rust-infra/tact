@@ -11,10 +11,7 @@ pub struct BackgroundRunInput {
     pub command: String,
 }
 
-#[tool(
-    name = "background_run",
-    description = "Run a shell command in the background."
-)]
+#[tool(name = "background_run", description = "Run a shell command in the background.")]
 pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
     ctx.background_manager.run(input.command, &ctx.work_dir)
 }
@@ -25,32 +22,21 @@ pub struct CheckBackgroundInput {
     pub task_id: Option<String>,
 }
 
-#[tool(
-    name = "check_background",
-    description = "Check background task status."
-)]
+#[tool(name = "check_background", description = "Check background task status.")]
 pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> Result<String> {
     ctx.background_manager.check(input.task_id.as_deref())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn check_background_lists_empty_when_no_tasks() {
         let context = test_context("check_background_lists_empty_when_no_tasks");
 
-        let output = run_tool(
-            &context,
-            CheckBackgroundTool,
-            "check_background",
-            serde_json::json!({}),
-        )
-        .await
-        .unwrap();
+        let output = run_tool(&context, CheckBackgroundTool, "check_background", serde_json::json!({})).await.unwrap();
 
         assert_eq!(output, "No background tasks.");
     }
@@ -59,14 +45,10 @@ mod tests {
     async fn check_background_errors_for_unknown_task_id() {
         let context = test_context("check_background_errors_for_unknown_task_id");
 
-        let error = run_tool(
-            &context,
-            CheckBackgroundTool,
-            "check_background",
-            serde_json::json!({ "task_id": "deadbeef" }),
-        )
-        .await
-        .unwrap_err();
+        let error =
+            run_tool(&context, CheckBackgroundTool, "check_background", serde_json::json!({ "task_id": "deadbeef" }))
+                .await
+                .unwrap_err();
 
         assert!(error.to_string().contains("Unknown background task"));
     }

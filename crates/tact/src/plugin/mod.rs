@@ -3,17 +3,17 @@ mod marketplace;
 mod model;
 mod store;
 
-use crate::consts::PluginHome;
 use anyhow::{Context, Result};
+pub use install::*;
+pub use marketplace::*;
+pub use model::*;
+pub use store::*;
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 
-pub use install::*;
-pub use marketplace::*;
-pub use model::*;
-pub use store::*;
+use crate::consts::PluginHome;
 
 /// A plugin operation requested by the interactive UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,23 +42,15 @@ pub enum PluginOperation {
 impl From<&PluginRequest> for PluginOperation {
     fn from(request: &PluginRequest) -> Self {
         match request {
-            PluginRequest::Install {
-                plugin,
-                marketplace,
-            } => Self::Install {
-                plugin: plugin.clone(),
-                marketplace: marketplace.clone(),
+            PluginRequest::Install { plugin, marketplace } => {
+                Self::Install { plugin: plugin.clone(), marketplace: marketplace.clone() }
             },
             PluginRequest::List => Self::List,
             PluginRequest::Reload => Self::Reload,
             PluginRequest::MarketplaceAdd { .. } => Self::MarketplaceAdd,
             PluginRequest::MarketplaceList => Self::MarketplaceList,
-            PluginRequest::MarketplaceUpdate { name } => Self::MarketplaceUpdate {
-                marketplace: name.clone(),
-            },
-            PluginRequest::MarketplaceRemove { name } => Self::MarketplaceRemove {
-                marketplace: name.clone(),
-            },
+            PluginRequest::MarketplaceUpdate { name } => Self::MarketplaceUpdate { marketplace: name.clone() },
+            PluginRequest::MarketplaceRemove { name } => Self::MarketplaceRemove { marketplace: name.clone() },
         }
     }
 }
@@ -66,42 +58,20 @@ impl From<&PluginRequest> for PluginOperation {
 /// Structured data produced by a successful plugin operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginResult {
-    Installed {
-        plugin: String,
-        marketplace: String,
-    },
-    ListedInstalled {
-        plugins: Vec<InstalledPlugin>,
-    },
-    Reloaded {
-        count: usize,
-    },
-    MarketplaceAdded {
-        marketplace: String,
-    },
-    ListedMarketplaces {
-        marketplaces: Vec<MarketplaceRecord>,
-    },
-    MarketplaceUpdated {
-        marketplace: String,
-        count: usize,
-    },
-    MarketplaceRemoved {
-        marketplace: String,
-    },
+    Installed { plugin: String, marketplace: String },
+    ListedInstalled { plugins: Vec<InstalledPlugin> },
+    Reloaded { count: usize },
+    MarketplaceAdded { marketplace: String },
+    ListedMarketplaces { marketplaces: Vec<MarketplaceRecord> },
+    MarketplaceUpdated { marketplace: String, count: usize },
+    MarketplaceRemoved { marketplace: String },
 }
 
 /// A structured result produced by the plugin worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginEvent {
-    Succeeded {
-        result: PluginResult,
-        refresh_skills: bool,
-    },
-    Failed {
-        operation: PluginOperation,
-        detail: String,
-    },
+    Succeeded { result: PluginResult, refresh_skills: bool },
+    Failed { operation: PluginOperation, detail: String },
 }
 
 /// Starts the plugin worker. Filesystem and Git operations run on Tokio's
@@ -114,29 +84,14 @@ pub fn spawn_worker(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(request) = request_rx.recv().await {
-            let refresh_skills = matches!(
-                &request,
-                PluginRequest::Install { .. } | PluginRequest::Reload
-            );
+            let refresh_skills = matches!(&request, PluginRequest::Install { .. } | PluginRequest::Reload);
             let operation = PluginOperation::from(&request);
             let worker_home = home.clone();
-            let event =
-                match tokio::task::spawn_blocking(move || execute_request(worker_home, request))
-                    .await
-                {
-                    Ok(Ok(result)) => PluginEvent::Succeeded {
-                        result,
-                        refresh_skills,
-                    },
-                    Ok(Err(error)) => PluginEvent::Failed {
-                        operation,
-                        detail: error.to_string(),
-                    },
-                    Err(error) => PluginEvent::Failed {
-                        operation,
-                        detail: error.to_string(),
-                    },
-                };
+            let event = match tokio::task::spawn_blocking(move || execute_request(worker_home, request)).await {
+                Ok(Ok(result)) => PluginEvent::Succeeded { result, refresh_skills },
+                Ok(Err(error)) => PluginEvent::Failed { operation, detail: error.to_string() },
+                Err(error) => PluginEvent::Failed { operation, detail: error.to_string() },
+            };
             if event_tx.send(event).is_err() {
                 break;
             }
@@ -171,50 +126,37 @@ pub fn spawn_unavailable_worker(
 pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
     let marketplaces = MarketplaceService::new(home.clone());
     match request {
-        PluginRequest::Install {
-            plugin,
-            marketplace,
-        } => {
+        PluginRequest::Install { plugin, marketplace } => {
             let installed = PluginInstaller::new(home).install(&plugin, &marketplace)?;
-            Ok(PluginResult::Installed {
-                plugin: installed.id,
-                marketplace: installed.marketplace,
-            })
-        }
+            Ok(PluginResult::Installed { plugin: installed.id, marketplace: installed.marketplace })
+        },
         PluginRequest::List => {
             let plugins = PluginInstaller::new(home).list()?;
             Ok(PluginResult::ListedInstalled { plugins })
-        }
+        },
         PluginRequest::Reload => {
             let plugins = PluginInstaller::new(home).list()?;
-            Ok(PluginResult::Reloaded {
-                count: plugins.len(),
-            })
-        }
+            Ok(PluginResult::Reloaded { count: plugins.len() })
+        },
         PluginRequest::MarketplaceAdd { source } => {
-            let marketplace = block_on_async(
-                marketplaces.add_catalog_source(MarketplaceSource::parse(&source)?),
-            )?;
+            let marketplace = block_on_async(marketplaces.add_catalog_source(MarketplaceSource::parse(&source)?))?;
             Ok(PluginResult::MarketplaceAdded { marketplace })
-        }
+        },
         PluginRequest::MarketplaceList => {
             let state = PluginStore::new(home).load_marketplaces()?;
             Ok(PluginResult::ListedMarketplaces {
                 marketplaces: state.iter().map(|(_, record)| record.clone()).collect(),
             })
-        }
+        },
         PluginRequest::MarketplaceUpdate { name } => {
             let catalog = block_on_async(marketplaces.update_marketplace(&name))
                 .with_context(|| format!("failed to update marketplace {name}"))?;
-            Ok(PluginResult::MarketplaceUpdated {
-                marketplace: name,
-                count: catalog.plugins.len(),
-            })
-        }
+            Ok(PluginResult::MarketplaceUpdated { marketplace: name, count: catalog.plugins.len() })
+        },
         PluginRequest::MarketplaceRemove { name } => {
             marketplaces.remove_source(&name)?;
             Ok(PluginResult::MarketplaceRemoved { marketplace: name })
-        }
+        },
     }
 }
 
@@ -246,10 +188,7 @@ mod tests {
         let worker = spawn_worker(home, request_rx, event_tx);
         request_tx.send(request).unwrap();
         drop(request_tx);
-        let event = event_rx
-            .recv()
-            .await
-            .expect("worker should return an event");
+        let event = event_rx.recv().await.expect("worker should return an event");
         worker.await.expect("worker task should not panic");
         event
     }
@@ -261,22 +200,14 @@ mod tests {
 
         let event = run_request(
             home.clone(),
-            PluginRequest::Install {
-                plugin: "missing".into(),
-                marketplace: "fixture".into(),
-            },
+            PluginRequest::Install { plugin: "missing".into(), marketplace: "fixture".into() },
         )
         .await;
 
         assert!(matches!(event, PluginEvent::Failed { .. }));
         assert!(!home.root.join("installed.json").exists());
         assert!(!home.root.join("marketplaces.json").exists());
-        assert!(
-            fs::read_dir(temporary_home.path())
-                .unwrap()
-                .next()
-                .is_none()
-        );
+        assert!(fs::read_dir(temporary_home.path()).unwrap().next().is_none());
     }
 
     #[tokio::test]
@@ -284,13 +215,8 @@ mod tests {
         let temporary_home = tempdir().unwrap();
         let home = PluginHome::from_home(temporary_home.path());
 
-        let event = run_request(
-            home,
-            PluginRequest::MarketplaceAdd {
-                source: "not-a-marketplace-source".into(),
-            },
-        )
-        .await;
+        let event =
+            run_request(home, PluginRequest::MarketplaceAdd { source: "not-a-marketplace-source".into() }).await;
 
         assert!(matches!(event, PluginEvent::Failed { .. }));
     }
@@ -304,10 +230,7 @@ mod tests {
         request_tx.send(PluginRequest::List).unwrap();
         drop(request_tx);
 
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(PluginEvent::Failed { .. })
-        ));
+        assert!(matches!(event_rx.recv().await, Some(PluginEvent::Failed { .. })));
         worker.await.expect("worker task should not panic");
     }
 }

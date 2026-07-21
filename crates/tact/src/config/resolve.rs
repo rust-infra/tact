@@ -1,40 +1,22 @@
-use super::cli::CliArgs;
-use super::instruction_sources::InstructionSources;
-use super::types::{
-    AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
-    VisionImageSettings,
-};
 use tact_llm::{OpenAiProtocol, ProviderKind};
 
+use super::{
+    cli::CliArgs,
+    instruction_sources::InstructionSources,
+    types::{
+        AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings, VisionImageSettings,
+    },
+};
+
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
-    let compress = toml_cfg
-        .ui
-        .vision_image
-        .compress
-        .unwrap_or(VisionImageSettings::DEFAULT_COMPRESS);
-    let max_edge = toml_cfg
-        .ui
-        .vision_image
-        .max_edge
-        .unwrap_or(VisionImageSettings::DEFAULT_MAX_EDGE)
-        .clamp(256, 4096);
-    let jpeg_quality = toml_cfg
-        .ui
-        .vision_image
-        .jpeg_quality
-        .unwrap_or(VisionImageSettings::DEFAULT_JPEG_QUALITY)
-        .clamp(1, 100);
-    VisionImageSettings {
-        compress,
-        max_edge,
-        jpeg_quality,
-    }
+    let compress = toml_cfg.ui.vision_image.compress.unwrap_or(VisionImageSettings::DEFAULT_COMPRESS);
+    let max_edge = toml_cfg.ui.vision_image.max_edge.unwrap_or(VisionImageSettings::DEFAULT_MAX_EDGE).clamp(256, 4096);
+    let jpeg_quality =
+        toml_cfg.ui.vision_image.jpeg_quality.unwrap_or(VisionImageSettings::DEFAULT_JPEG_QUALITY).clamp(1, 100);
+    VisionImageSettings { compress, max_edge, jpeg_quality }
 }
 
-fn resolve_provider_kind(
-    args: &CliArgs,
-    toml_cfg: &TactTomlConfig,
-) -> anyhow::Result<ProviderKind> {
+fn resolve_provider_kind(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<ProviderKind> {
     let raw = args
         .provider
         .clone()
@@ -54,21 +36,13 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         key.parse::<ProviderKind>().map_err(anyhow::Error::msg)?;
     }
 
-    let entry = toml_cfg
-        .llm
-        .providers
-        .get(provider.as_str())
-        .ok_or_else(|| {
-            let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
-            anyhow::anyhow!(
-                "provider '{provider}' not found in llm.providers (have: {})",
-                if have.is_empty() {
-                    "<none>".into()
-                } else {
-                    have.join(", ")
-                }
-            )
-        })?;
+    let entry = toml_cfg.llm.providers.get(provider.as_str()).ok_or_else(|| {
+        let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
+        anyhow::anyhow!(
+            "provider '{provider}' not found in llm.providers (have: {})",
+            if have.is_empty() { "<none>".into() } else { have.join(", ") }
+        )
+    })?;
 
     let api_key = args
         .api_key
@@ -85,12 +59,8 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .filter(|u| !u.is_empty())
         .ok_or_else(|| anyhow::anyhow!("base_url not configured for provider '{provider}'"))?;
 
-    let model = args
-        .model
-        .clone()
-        .or_else(|| entry.model.clone())
-        .filter(|m| !m.trim().is_empty())
-        .ok_or_else(|| {
+    let model =
+        args.model.clone().or_else(|| entry.model.clone()).filter(|m| !m.trim().is_empty()).ok_or_else(|| {
             anyhow::anyhow!(
                 "model not configured for provider '{provider}'. Set llm.providers.{provider}.model or pass --model"
             )
@@ -110,15 +80,7 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         anyhow::bail!("reasoning_effort is only supported for provider 'openai'");
     }
 
-    Ok(LlmSettings {
-        provider,
-        protocol,
-        reasoning_effort,
-        api_key,
-        base_url,
-        model,
-        models: entry.models.clone(),
-    })
+    Ok(LlmSettings { provider, protocol, reasoning_effort, api_key, base_url, model, models: entry.models.clone() })
 }
 
 pub(super) fn resolve_non_llm_settings(
@@ -129,34 +91,20 @@ pub(super) fn resolve_non_llm_settings(
     let notifications_enabled = if args.no_notifications {
         false
     } else {
-        args.notifications
-            .or(toml_cfg.agent.notifications_enabled)
-            .unwrap_or(true)
+        args.notifications.or(toml_cfg.agent.notifications_enabled).unwrap_or(true)
     };
 
-    let snapshot_max_items = args
-        .snapshot_max_items
-        .or(toml_cfg.agent.snapshot_max_items)
-        .unwrap_or(80);
+    let snapshot_max_items = args.snapshot_max_items.or(toml_cfg.agent.snapshot_max_items).unwrap_or(80);
 
-    let micro_compact_enabled = if args.no_micro_compact {
-        false
-    } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
-    };
+    let micro_compact_enabled =
+        if args.no_micro_compact { false } else { toml_cfg.agent.micro_compact_enabled.unwrap_or(true) };
 
-    let skill_body_auto_inject =
-        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+    let skill_body_auto_inject = args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let instruction_sources =
-        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .expect("invalid instruction_sources in config");
+    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+        .expect("invalid instruction_sources in config");
 
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+    let theme = args.theme.clone().or_else(|| toml_cfg.ui.theme.clone()).unwrap_or_else(|| "retro".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -165,15 +113,9 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
-    let bash_timeout_secs = toml_cfg
-        .tools
-        .bash_timeout_secs
-        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
+    let bash_timeout_secs = toml_cfg.tools.bash_timeout_secs.unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
-    let permission_mode = args
-        .permission_mode
-        .clone()
-        .or_else(|| toml_cfg.permission.mode.clone());
+    let permission_mode = args.permission_mode.clone().or_else(|| toml_cfg.permission.mode.clone());
 
     ResolvedConfig {
         llm: LlmSettings {
@@ -195,14 +137,8 @@ pub(super) fn resolve_non_llm_settings(
             skill_body_auto_inject,
             instruction_sources,
         },
-        ui: UiSettings {
-            theme,
-            vision_image,
-        },
-        tools: ToolSettings {
-            brave_search_api_key,
-            bash_timeout_secs,
-        },
+        ui: UiSettings { theme, vision_image },
+        tools: ToolSettings { brave_search_api_key, bash_timeout_secs },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -222,13 +158,7 @@ pub(super) fn resolve_config(
         .max_tokens
         .or_else(|| entry.and_then(|e| e.max_tokens))
         .or(toml_cfg.llm.max_tokens)
-        .unwrap_or_else(|| {
-            if provider_info.is_kimi_k2x() {
-                32_000
-            } else {
-                8_000
-            }
-        });
+        .unwrap_or_else(|| if provider_info.is_kimi_k2x() { 32_000 } else { 8_000 });
 
     let thinking_budget = args
         .thinking_budget
@@ -236,10 +166,7 @@ pub(super) fn resolve_config(
         .or(toml_cfg.llm.thinking_budget)
         .unwrap_or(32_000);
 
-    let model_context_window = args
-        .model_context_window
-        .or(toml_cfg.agent.model_context_window)
-        .unwrap_or(200_000);
+    let model_context_window = args.model_context_window.or(toml_cfg.agent.model_context_window).unwrap_or(200_000);
 
     if model_context_window != 0
         && !usize::try_from(max_tokens).is_ok_and(|max_tokens| max_tokens < model_context_window)
@@ -252,34 +179,20 @@ pub(super) fn resolve_config(
     let notifications_enabled = if args.no_notifications {
         false
     } else {
-        args.notifications
-            .or(toml_cfg.agent.notifications_enabled)
-            .unwrap_or(true)
+        args.notifications.or(toml_cfg.agent.notifications_enabled).unwrap_or(true)
     };
 
-    let snapshot_max_items = args
-        .snapshot_max_items
-        .or(toml_cfg.agent.snapshot_max_items)
-        .unwrap_or(80);
+    let snapshot_max_items = args.snapshot_max_items.or(toml_cfg.agent.snapshot_max_items).unwrap_or(80);
 
-    let micro_compact_enabled = if args.no_micro_compact {
-        false
-    } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
-    };
+    let micro_compact_enabled =
+        if args.no_micro_compact { false } else { toml_cfg.agent.micro_compact_enabled.unwrap_or(true) };
 
-    let skill_body_auto_inject =
-        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
+    let skill_body_auto_inject = args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let instruction_sources =
-        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let instruction_sources = InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+    let theme = args.theme.clone().or_else(|| toml_cfg.ui.theme.clone()).unwrap_or_else(|| "retro".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -288,15 +201,9 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
         .filter(|k| !k.is_empty());
-    let bash_timeout_secs = toml_cfg
-        .tools
-        .bash_timeout_secs
-        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
+    let bash_timeout_secs = toml_cfg.tools.bash_timeout_secs.unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
-    let permission_mode = args
-        .permission_mode
-        .clone()
-        .or_else(|| toml_cfg.permission.mode.clone());
+    let permission_mode = args.permission_mode.clone().or_else(|| toml_cfg.permission.mode.clone());
 
     Ok(ResolvedConfig {
         llm,
@@ -310,14 +217,8 @@ pub(super) fn resolve_config(
             skill_body_auto_inject,
             instruction_sources,
         },
-        ui: UiSettings {
-            theme,
-            vision_image,
-        },
-        tools: ToolSettings {
-            brave_search_api_key,
-            bash_timeout_secs,
-        },
+        ui: UiSettings { theme, vision_image },
+        tools: ToolSettings { brave_search_api_key, bash_timeout_secs },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -327,8 +228,7 @@ pub(super) fn resolve_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::cli::CliArgs;
-    use crate::config::types::TactTomlConfig;
+    use crate::config::{cli::CliArgs, types::TactTomlConfig};
 
     fn empty_cli_args() -> CliArgs {
         CliArgs {
@@ -371,31 +271,16 @@ model = "gpt-4o"
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
-        assert_eq!(
-            resolved.llm.protocol,
-            tact_llm::OpenAiProtocol::ChatCompletions
-        );
+        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::ChatCompletions);
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
         assert_eq!(resolved.ui.theme, "retro");
-        assert_eq!(
-            resolved.ui.vision_image.compress,
-            VisionImageSettings::DEFAULT_COMPRESS
-        );
-        assert_eq!(
-            resolved.ui.vision_image.max_edge,
-            VisionImageSettings::DEFAULT_MAX_EDGE
-        );
-        assert_eq!(
-            resolved.ui.vision_image.jpeg_quality,
-            VisionImageSettings::DEFAULT_JPEG_QUALITY
-        );
+        assert_eq!(resolved.ui.vision_image.compress, VisionImageSettings::DEFAULT_COMPRESS);
+        assert_eq!(resolved.ui.vision_image.max_edge, VisionImageSettings::DEFAULT_MAX_EDGE);
+        assert_eq!(resolved.ui.vision_image.jpeg_quality, VisionImageSettings::DEFAULT_JPEG_QUALITY);
         assert!(resolved.agent.micro_compact_enabled);
-        assert_eq!(
-            resolved.agent.instruction_sources,
-            InstructionSources::default()
-        );
+        assert_eq!(resolved.agent.instruction_sources, InstructionSources::default());
     }
 
     #[test]
@@ -434,10 +319,7 @@ reasoning_effort = "max"
         .unwrap();
 
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(
-            resolved.llm.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Max)
-        );
+        assert_eq!(resolved.llm.reasoning_effort, Some(tact_llm::OpenAiReasoningEffort::Max));
     }
 
     #[test]
@@ -455,9 +337,7 @@ reasoning_effort = "max"
         )
         .unwrap();
 
-        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(error.contains("reasoning_effort is only supported for provider 'openai'"));
     }
 
@@ -494,9 +374,7 @@ protocol = "responses"
         )
         .unwrap();
 
-        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(error.contains("only supported for provider 'openai'"));
     }
 
@@ -615,10 +493,7 @@ models = ["kimi-k2.5", "kimi-for-coding"]
         )
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(
-            resolved.llm.models,
-            vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
-        );
+        assert_eq!(resolved.llm.models, vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]);
     }
 
     #[test]
@@ -699,9 +574,7 @@ model = "claude-sonnet-4-20250514"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("base_url"));
     }
 
@@ -715,9 +588,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("LLM provider not configured"));
     }
 
@@ -752,9 +623,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("api_key"));
     }
 
@@ -775,9 +644,7 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("unknown provider"));
     }
 
@@ -794,9 +661,7 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("not found in llm.providers"));
     }
 
@@ -813,9 +678,7 @@ model = "gpt-4o"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("unknown provider"));
     }
 
@@ -831,9 +694,7 @@ api_key = "sk-test"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("model not configured"));
     }
 
@@ -902,9 +763,7 @@ model_context_window = 8000
         )
         .unwrap();
 
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err().to_string();
         assert_eq!(
             err,
             "invalid token limits: llm.max_tokens (8000) must be less than agent.model_context_window (8000)"
@@ -931,9 +790,7 @@ model_context_window = 8000
         let mut args = empty_cli_args();
         args.max_tokens = Some(9000);
 
-        let err = resolve_config(&args, &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_config(&args, &toml_cfg, None).unwrap_err().to_string();
         assert!(err.contains("llm.max_tokens (9000)"));
         assert!(err.contains("agent.model_context_window (8000)"));
     }

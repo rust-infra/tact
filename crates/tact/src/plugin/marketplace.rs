@@ -8,12 +8,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::consts::PluginHome;
-
 use super::{
-    MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceRecord, MarketplaceSource, PluginStore,
-    validate_marketplace_name,
+    MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceRecord, MarketplaceSource, PluginStore, validate_marketplace_name,
 };
+use crate::consts::PluginHome;
 
 const MARKETPLACE_FILE: &str = "marketplace.json";
 
@@ -21,29 +19,20 @@ const MARKETPLACE_FILE: &str = "marketplace.json";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginSource {
     Relative(String),
-    Git {
-        url: String,
-        path: Option<String>,
-        reference: Option<String>,
-    },
+    Git { url: String, path: Option<String>, reference: Option<String> },
 }
 
 impl PluginSource {
     /// Resolves an on-disk marketplace-relative source and verifies containment.
     pub fn resolve(value: &str, marketplace_root: &Path) -> Result<Self> {
         let relative = normalize_relative(value)?;
-        let root = marketplace_root.canonicalize().with_context(|| {
-            format!(
-                "failed to canonicalize marketplace root {}",
-                marketplace_root.display()
-            )
-        })?;
-        let resolved = root.join(&relative).canonicalize().with_context(|| {
-            format!(
-                "failed to resolve plugin source {value} within {}",
-                root.display()
-            )
-        })?;
+        let root = marketplace_root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize marketplace root {}", marketplace_root.display()))?;
+        let resolved = root
+            .join(&relative)
+            .canonicalize()
+            .with_context(|| format!("failed to resolve plugin source {value} within {}", root.display()))?;
         if !resolved.starts_with(&root) {
             bail!("plugin source escapes marketplace root: {value}");
         }
@@ -53,25 +42,15 @@ impl PluginSource {
     fn from_catalog_value(value: RawPluginSource) -> Result<Self> {
         let (source, url, path, reference) = match value {
             RawPluginSource::String(source) => (source, None, None, None),
-            RawPluginSource::Object {
-                source,
-                url,
-                path,
-                reference,
-            } => (source, url, path, reference),
+            RawPluginSource::Object { source, url, path, reference } => (source, url, path, reference),
         };
         // git-subdir means: clone url, checkout ref, use the subdirectory at path.
         if source == "git-subdir" {
-            let url =
-                url.with_context(|| format!("{source} source object must specify a url field"))?;
+            let url = url.with_context(|| format!("{source} source object must specify a url field"))?;
             if let Some(path) = &path {
                 normalize_relative(path)?;
             }
-            return Ok(Self::Git {
-                url,
-                path,
-                reference,
-            });
+            return Ok(Self::Git { url, path, reference });
         }
         if is_relative_source(&source) {
             let source = match path {
@@ -90,11 +69,7 @@ impl PluginSource {
         if let Some(path) = &path {
             normalize_relative(path)?;
         }
-        Ok(Self::Git {
-            url,
-            path,
-            reference,
-        })
+        Ok(Self::Git { url, path, reference })
     }
 }
 
@@ -115,8 +90,7 @@ pub struct MarketplaceCatalog {
 impl MarketplaceCatalog {
     /// Parses Claude-compatible marketplace JSON without inspecting plugin manifests.
     pub fn parse(content: &str, marketplace_root: &Path) -> Result<Self> {
-        let raw: RawCatalog =
-            serde_json::from_str(content).context("failed to parse marketplace catalog")?;
+        let raw: RawCatalog = serde_json::from_str(content).context("failed to parse marketplace catalog")?;
         if raw.name.trim().is_empty() {
             bail!("marketplace catalog name cannot be empty");
         }
@@ -134,17 +108,11 @@ impl MarketplaceCatalog {
                 plugin.source = PluginSource::resolve(source, marketplace_root)?;
             }
             if plugins.insert(raw_plugin.name.clone(), plugin).is_some() {
-                bail!(
-                    "marketplace catalog contains duplicate plugin {}",
-                    raw_plugin.name
-                );
+                bail!("marketplace catalog contains duplicate plugin {}", raw_plugin.name);
             }
         }
 
-        Ok(Self {
-            name: raw.name,
-            plugins,
-        })
+        Ok(Self { name: raw.name, plugins })
     }
 }
 
@@ -160,11 +128,7 @@ impl MarketplaceService {
     /// Creates a service for the given Tact plugin home.
     #[must_use]
     pub fn new(home: PluginHome) -> Self {
-        Self {
-            store: PluginStore::new(home.clone()),
-            home,
-            client: reqwest::Client::new(),
-        }
+        Self { store: PluginStore::new(home.clone()), home, client: reqwest::Client::new() }
     }
 
     /// Adds a marketplace source to the persistent registry.
@@ -177,10 +141,7 @@ impl MarketplaceService {
     /// Retrieves a source and records it under the name declared by its catalog.
     pub async fn add_catalog_source(&self, source: MarketplaceSource) -> Result<String> {
         fs::create_dir_all(&self.home.marketplaces)?;
-        let candidate = self
-            .home
-            .marketplaces
-            .join(format!(".add-{}", Uuid::new_v4()));
+        let candidate = self.home.marketplaces.join(format!(".add-{}", Uuid::new_v4()));
         let refreshed = match &source {
             MarketplaceSource::GitUrl(url) => self.refresh_git(url, &candidate),
             MarketplaceSource::CatalogUrl(url) => self.refresh_catalog_url(url, &candidate).await,
@@ -216,10 +177,7 @@ impl MarketplaceService {
     /// Refreshes one marketplace and returns its normalized catalog.
     pub async fn update_marketplace(&self, name: &str) -> Result<MarketplaceCatalog> {
         let marketplaces = self.store.load_marketplaces()?;
-        let record = marketplaces
-            .get(name)
-            .cloned()
-            .with_context(|| format!("unknown marketplace {name}"))?;
+        let record = marketplaces.get(name).cloned().with_context(|| format!("unknown marketplace {name}"))?;
         self.refresh_record(&record).await?;
         self.catalog(name)
     }
@@ -243,12 +201,8 @@ impl MarketplaceService {
     async fn refresh_record(&self, record: &MarketplaceRecord) -> Result<()> {
         let destination = self.marketplace_path(&record.name)?;
         self.restore_interrupted_replacement(&destination)?;
-        fs::create_dir_all(&self.home.marketplaces).with_context(|| {
-            format!(
-                "failed to create marketplace directory {}",
-                self.home.marketplaces.display()
-            )
-        })?;
+        fs::create_dir_all(&self.home.marketplaces)
+            .with_context(|| format!("failed to create marketplace directory {}", self.home.marketplaces.display()))?;
 
         match &record.source {
             MarketplaceSource::GitUrl(url) => self.refresh_git(url, &destination),
@@ -259,8 +213,7 @@ impl MarketplaceService {
     fn refresh_git(&self, url: &str, destination: &Path) -> Result<()> {
         let temporary = self.temporary_directory(destination)?;
         let result = (|| -> Result<()> {
-            git2::Repository::clone(url, &temporary)
-                .with_context(|| format!("failed to clone marketplace {url}"))?;
+            git2::Repository::clone(url, &temporary).with_context(|| format!("failed to clone marketplace {url}"))?;
             self.activate_candidate(&temporary, destination)
         })();
         if result.is_err() {
@@ -272,20 +225,12 @@ impl MarketplaceService {
     async fn refresh_catalog_url(&self, url: &str, destination: &Path) -> Result<()> {
         let temporary = self.temporary_directory(destination)?;
         let result = async {
-            fs::create_dir_all(&temporary).with_context(|| {
-                format!(
-                    "failed to create temporary catalog directory {}",
-                    temporary.display()
-                )
-            })?;
+            fs::create_dir_all(&temporary)
+                .with_context(|| format!("failed to create temporary catalog directory {}", temporary.display()))?;
             let response = self.client.get(url).send().await?.error_for_status()?;
             let content = response.text().await?;
-            fs::write(temporary.join(MARKETPLACE_FILE), content).with_context(|| {
-                format!(
-                    "failed to write temporary marketplace catalog {}",
-                    temporary.display()
-                )
-            })?;
+            fs::write(temporary.join(MARKETPLACE_FILE), content)
+                .with_context(|| format!("failed to write temporary marketplace catalog {}", temporary.display()))?;
             self.activate_candidate(&temporary, destination)
         }
         .await;
@@ -301,20 +246,15 @@ impl MarketplaceService {
     }
 
     fn ensure_marketplace_root_is_contained(&self, root: &Path) -> Result<()> {
-        let marketplaces = self.home.marketplaces.canonicalize().with_context(|| {
-            format!(
-                "failed to canonicalize marketplace home {}",
-                self.home.marketplaces.display()
-            )
-        })?;
-        let root = root.canonicalize().with_context(|| {
-            format!("failed to canonicalize marketplace root {}", root.display())
-        })?;
+        let marketplaces =
+            self.home.marketplaces.canonicalize().with_context(|| {
+                format!("failed to canonicalize marketplace home {}", self.home.marketplaces.display())
+            })?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize marketplace root {}", root.display()))?;
         if !root.starts_with(&marketplaces) {
-            bail!(
-                "marketplace root escapes marketplace home: {}",
-                root.display()
-            );
+            bail!("marketplace root escapes marketplace home: {}", root.display());
         }
         Ok(())
     }
@@ -322,12 +262,8 @@ impl MarketplaceService {
     fn activate_candidate(&self, candidate: &Path, destination: &Path) -> Result<()> {
         self.ensure_marketplace_root_is_contained(candidate)?;
         let catalog = catalog_path(candidate);
-        let content = fs::read_to_string(&catalog).with_context(|| {
-            format!(
-                "failed to read candidate marketplace catalog {}",
-                catalog.display()
-            )
-        })?;
+        let content = fs::read_to_string(&catalog)
+            .with_context(|| format!("failed to read candidate marketplace catalog {}", catalog.display()))?;
         MarketplaceCatalog::parse(&content, candidate)?;
         if destination.exists() {
             self.ensure_marketplace_root_is_contained(destination)?;
@@ -342,80 +278,46 @@ impl MarketplaceService {
     fn restore_interrupted_replacement(&self, destination: &Path) -> Result<()> {
         let backup = self.backup_path(destination)?;
         if !destination.exists() && backup.exists() {
-            let backup_directory = backup
-                .parent()
-                .context("marketplace backup has no parent directory")?;
+            let backup_directory = backup.parent().context("marketplace backup has no parent directory")?;
             self.ensure_backup_directory_is_contained(backup_directory)?;
             fs::rename(&backup, destination).with_context(|| {
-                format!(
-                    "failed to restore marketplace backup {} to {}",
-                    backup.display(),
-                    destination.display()
-                )
+                format!("failed to restore marketplace backup {} to {}", backup.display(), destination.display())
             })?;
         }
         Ok(())
     }
 
     fn backup_path(&self, destination: &Path) -> Result<PathBuf> {
-        let name = destination
-            .file_name()
-            .context("marketplace destination has no name")?;
-        Ok(self
-            .home
-            .marketplaces
-            .join(MARKETPLACE_BACKUPS_DIRECTORY)
-            .join(name))
+        let name = destination.file_name().context("marketplace destination has no name")?;
+        Ok(self.home.marketplaces.join(MARKETPLACE_BACKUPS_DIRECTORY).join(name))
     }
 
     fn prepare_backup_directory(&self, backup: &Path) -> Result<()> {
-        let backup_directory = backup
-            .parent()
-            .context("marketplace backup has no parent directory")?;
-        fs::create_dir_all(backup_directory).with_context(|| {
-            format!(
-                "failed to create marketplace backup directory {}",
-                backup_directory.display()
-            )
-        })?;
+        let backup_directory = backup.parent().context("marketplace backup has no parent directory")?;
+        fs::create_dir_all(backup_directory)
+            .with_context(|| format!("failed to create marketplace backup directory {}", backup_directory.display()))?;
         self.ensure_backup_directory_is_contained(backup_directory)
     }
 
     fn ensure_backup_directory_is_contained(&self, backup_directory: &Path) -> Result<()> {
-        let marketplaces = self.home.marketplaces.canonicalize().with_context(|| {
-            format!(
-                "failed to canonicalize marketplace home {}",
-                self.home.marketplaces.display()
-            )
-        })?;
+        let marketplaces =
+            self.home.marketplaces.canonicalize().with_context(|| {
+                format!("failed to canonicalize marketplace home {}", self.home.marketplaces.display())
+            })?;
         let backup_directory = backup_directory.canonicalize().with_context(|| {
-            format!(
-                "failed to canonicalize marketplace backup directory {}",
-                backup_directory.display()
-            )
+            format!("failed to canonicalize marketplace backup directory {}", backup_directory.display())
         })?;
         let expected = marketplaces.join(MARKETPLACE_BACKUPS_DIRECTORY);
         if backup_directory != expected {
-            bail!(
-                "marketplace backup directory escapes marketplace home: {}",
-                backup_directory.display()
-            );
+            bail!("marketplace backup directory escapes marketplace home: {}", backup_directory.display());
         }
         Ok(())
     }
 
     fn temporary_directory(&self, destination: &Path) -> Result<PathBuf> {
-        let parent = destination
-            .parent()
-            .context("marketplace destination has no parent")?;
-        let name = destination
-            .file_name()
-            .context("marketplace destination has no name")?;
-        Ok(parent.join(format!(
-            ".{}.{}.tmp",
-            name.to_string_lossy(),
-            Uuid::new_v4()
-        )))
+        let parent = destination.parent().context("marketplace destination has no parent")?;
+        let name = destination.file_name().context("marketplace destination has no name")?;
+        Ok(parent.join(format!(".{}.{}.tmp", name.to_string_lossy(), Uuid::new_v4())))
     }
 }
 
@@ -463,11 +365,11 @@ fn normalize_relative(value: &str) -> Result<String> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::CurDir => {}
+            Component::CurDir => {},
             Component::Normal(part) => normalized.push(part),
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 bail!("plugin source escapes marketplace root: {value}")
-            }
+            },
         }
     }
     if normalized.as_os_str().is_empty() {
@@ -478,35 +380,19 @@ fn normalize_relative(value: &str) -> Result<String> {
 
 fn replace_directory(temporary: &Path, destination: &Path, backup: &Path) -> Result<()> {
     if !destination.exists() {
-        return fs::rename(temporary, destination).with_context(|| {
-            format!(
-                "failed to activate refreshed marketplace {}",
-                destination.display()
-            )
-        });
+        return fs::rename(temporary, destination)
+            .with_context(|| format!("failed to activate refreshed marketplace {}", destination.display()));
     }
     if backup.exists() {
-        fs::remove_dir_all(backup).with_context(|| {
-            format!(
-                "failed to remove stale marketplace backup {}",
-                backup.display()
-            )
-        })?;
+        fs::remove_dir_all(backup)
+            .with_context(|| format!("failed to remove stale marketplace backup {}", backup.display()))?;
     }
-    fs::rename(destination, backup).with_context(|| {
-        format!(
-            "failed to stage existing marketplace {}",
-            destination.display()
-        )
-    })?;
+    fs::rename(destination, backup)
+        .with_context(|| format!("failed to stage existing marketplace {}", destination.display()))?;
     if let Err(error) = fs::rename(temporary, destination) {
         return match fs::rename(backup, destination) {
-            Ok(()) => Err(error).with_context(|| {
-                format!(
-                    "failed to activate refreshed marketplace {}",
-                    destination.display()
-                )
-            }),
+            Ok(()) => Err(error)
+                .with_context(|| format!("failed to activate refreshed marketplace {}", destination.display())),
             Err(rollback_error) => Err(anyhow!(
                 "failed to activate refreshed marketplace {}; rollback from {} also failed: {}; activation error: {}",
                 destination.display(),
@@ -516,17 +402,12 @@ fn replace_directory(temporary: &Path, destination: &Path, backup: &Path) -> Res
             )),
         };
     }
-    fs::remove_dir_all(backup)
-        .with_context(|| format!("failed to remove previous marketplace {}", backup.display()))
+    fs::remove_dir_all(backup).with_context(|| format!("failed to remove previous marketplace {}", backup.display()))
 }
 
 fn catalog_path(root: &Path) -> PathBuf {
     let claude_path = root.join(".claude-plugin").join(MARKETPLACE_FILE);
-    if claude_path.exists() {
-        claude_path
-    } else {
-        root.join(MARKETPLACE_FILE)
-    }
+    if claude_path.exists() { claude_path } else { root.join(MARKETPLACE_FILE) }
 }
 
 #[cfg(test)]
@@ -537,41 +418,30 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceCatalog, MarketplaceService, MarketplaceSource,
-        PluginSource,
+        MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceCatalog, MarketplaceService, MarketplaceSource, PluginSource,
     };
     use crate::consts::PluginHome;
 
     fn commit_repository(path: &std::path::Path) {
         let repository = Repository::init(path).unwrap();
         let mut index = repository.index().unwrap();
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
         index.write().unwrap();
         let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
         let signature = Signature::now("fixture", "fixture@example.invalid").unwrap();
-        repository
-            .commit(Some("HEAD"), &signature, &signature, "fixture", &tree, &[])
-            .unwrap();
+        repository.commit(Some("HEAD"), &signature, &signature, "fixture", &tree, &[]).unwrap();
     }
 
     #[tokio::test]
     async fn add_catalog_source_uses_the_catalog_declared_name() {
         let home = tempdir().unwrap();
         let repository = tempdir().unwrap();
-        fs::write(
-            repository.path().join("marketplace.json"),
-            r#"{"name":"catalog-owned","plugins":[]}"#,
-        )
-        .unwrap();
+        fs::write(repository.path().join("marketplace.json"), r#"{"name":"catalog-owned","plugins":[]}"#).unwrap();
         commit_repository(repository.path());
         let service = MarketplaceService::new(PluginHome::from_home(home.path()));
 
         let name = service
-            .add_catalog_source(MarketplaceSource::GitUrl(
-                repository.path().display().to_string(),
-            ))
+            .add_catalog_source(MarketplaceSource::GitUrl(repository.path().display().to_string()))
             .await
             .unwrap();
 
@@ -591,10 +461,7 @@ mod tests {
         let catalog = MarketplaceCatalog::parse(CLAUDE_FIXTURE, root.path()).unwrap();
 
         assert_eq!(catalog.name, "fixture-market");
-        assert_eq!(
-            catalog.plugins["superpowers"].source,
-            PluginSource::Relative("plugins/superpowers".into())
-        );
+        assert_eq!(catalog.plugins["superpowers"].source, PluginSource::Relative("plugins/superpowers".into()));
     }
 
     #[test]
@@ -688,11 +555,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            MarketplaceService::new(plugin_home)
-                .catalog("fixture-market")
-                .is_err()
-        );
+        assert!(MarketplaceService::new(plugin_home).catalog("fixture-market").is_err());
     }
 
     #[test]
@@ -707,17 +570,9 @@ mod tests {
             r#"{"name":"fixture-market","plugins":[{"name":"inside","source":"./plugins/inside"}]}"#,
         )
         .unwrap();
-        symlink(
-            outside.path(),
-            plugin_home.marketplaces.join("fixture-market"),
-        )
-        .unwrap();
+        symlink(outside.path(), plugin_home.marketplaces.join("fixture-market")).unwrap();
 
-        assert!(
-            MarketplaceService::new(plugin_home)
-                .catalog("fixture-market")
-                .is_err()
-        );
+        assert!(MarketplaceService::new(plugin_home).catalog("fixture-market").is_err());
     }
 
     #[test]
@@ -740,19 +595,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            service
-                .activate_candidate(&candidate, &destination)
-                .is_err()
-        );
+        assert!(service.activate_candidate(&candidate, &destination).is_err());
         assert_eq!(service.catalog("fixture-market").unwrap().plugins.len(), 1);
-        assert!(
-            service
-                .catalog("fixture-market")
-                .unwrap()
-                .plugins
-                .contains_key("old")
-        );
+        assert!(service.catalog("fixture-market").unwrap().plugins.contains_key("old"));
     }
 
     #[test]
@@ -783,18 +628,10 @@ mod tests {
         )
         .unwrap();
 
-        service
-            .activate_candidate(&candidate, &destination)
-            .unwrap();
+        service.activate_candidate(&candidate, &destination).unwrap();
 
         assert!(service.catalog("foo").unwrap().plugins.contains_key("new"));
-        assert!(
-            service
-                .catalog("foo.backup")
-                .unwrap()
-                .plugins
-                .contains_key("other")
-        );
+        assert!(service.catalog("foo.backup").unwrap().plugins.contains_key("other"));
     }
 
     #[test]
@@ -802,10 +639,7 @@ mod tests {
         let home = tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let service = MarketplaceService::new(plugin_home.clone());
-        let backup = plugin_home
-            .marketplaces
-            .join(MARKETPLACE_BACKUPS_DIRECTORY)
-            .join("fixture-market");
+        let backup = plugin_home.marketplaces.join(MARKETPLACE_BACKUPS_DIRECTORY).join("fixture-market");
         fs::create_dir_all(backup.join("plugins/restored")).unwrap();
         fs::write(
             backup.join("marketplace.json"),

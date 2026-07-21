@@ -1,7 +1,10 @@
-use crate::render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT};
-use crate::theme::Theme;
-use crate::widgets::state::RawMessageType;
 use ratatui::style::Color;
+
+use crate::{
+    render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT},
+    theme::Theme,
+    widgets::state::RawMessageType,
+};
 
 /// Visual style for prefix-marked system messages in the log panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,10 +35,7 @@ impl SystemMsgStyle {
             ("🎨", SystemMsgStyle::Accent),
         ];
         let trimmed = s.trim_start();
-        PREFIXES
-            .iter()
-            .find(|(prefix, _)| trimmed.starts_with(prefix))
-            .map(|(_, style)| *style)
+        PREFIXES.iter().find(|(prefix, _)| trimmed.starts_with(prefix)).map(|(_, style)| *style)
     }
 
     /// Detect a system-marker prefix, including indent-marked rows (`"  …"`).
@@ -67,8 +67,7 @@ fn is_plan_step_line(raw: &str) -> bool {
     raw.strip_prefix("  ")
         .and_then(|rest| {
             let (num, after) = rest.split_once(". ")?;
-            (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty())
-                .then_some(())
+            (!num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !after.is_empty()).then_some(())
         })
         .is_some()
 }
@@ -121,72 +120,27 @@ mod tests {
 
     #[test]
     fn from_line_maps_prefixes() {
-        assert_eq!(
-            SystemMsgStyle::from_line("✓ done"),
-            Some(SystemMsgStyle::Success)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("✔ done"),
-            Some(SystemMsgStyle::Success)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("  ✅ ok"),
-            Some(SystemMsgStyle::Success)
-        );
+        assert_eq!(SystemMsgStyle::from_line("✓ done"), Some(SystemMsgStyle::Success));
+        assert_eq!(SystemMsgStyle::from_line("✔ done"), Some(SystemMsgStyle::Success));
+        assert_eq!(SystemMsgStyle::from_line("  ✅ ok"), Some(SystemMsgStyle::Success));
         // Leading whitespace must not demote success/error/warning to accent.
-        assert_eq!(
-            SystemMsgStyle::from_line("  ✓ done"),
-            Some(SystemMsgStyle::Success)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("✗ fail"),
-            Some(SystemMsgStyle::Error)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("❌ boom"),
-            Some(SystemMsgStyle::Error)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("⚠ caution"),
-            Some(SystemMsgStyle::Warning)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("⚠️ caution"),
-            Some(SystemMsgStyle::Warning)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("📝 note"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("▶ start"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("🤖 agent"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("📋 Copied: x"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("🎨 Theme: Dark"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("  indented"),
-            Some(SystemMsgStyle::Accent)
-        );
+        assert_eq!(SystemMsgStyle::from_line("  ✓ done"), Some(SystemMsgStyle::Success));
+        assert_eq!(SystemMsgStyle::from_line("✗ fail"), Some(SystemMsgStyle::Error));
+        assert_eq!(SystemMsgStyle::from_line("❌ boom"), Some(SystemMsgStyle::Error));
+        assert_eq!(SystemMsgStyle::from_line("⚠ caution"), Some(SystemMsgStyle::Warning));
+        assert_eq!(SystemMsgStyle::from_line("⚠️ caution"), Some(SystemMsgStyle::Warning));
+        assert_eq!(SystemMsgStyle::from_line("📝 note"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("▶ start"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("🤖 agent"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("📋 Copied: x"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("🎨 Theme: Dark"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("  indented"), Some(SystemMsgStyle::Accent));
     }
 
     #[test]
     fn from_marker_ignores_indent_only_rows() {
         assert_eq!(SystemMsgStyle::from_marker("  indented"), None);
-        assert_eq!(
-            SystemMsgStyle::from_marker("  ✓ done"),
-            Some(SystemMsgStyle::Success)
-        );
+        assert_eq!(SystemMsgStyle::from_marker("  ✓ done"), Some(SystemMsgStyle::Success));
     }
 
     #[test]
@@ -199,14 +153,8 @@ mod tests {
     #[test]
     fn indent_prefix_skips_markdown_path() {
         // Intentional: leading "  " selects the plain system path (no MD).
-        assert_eq!(
-            SystemMsgStyle::from_line("  **not bold**"),
-            Some(SystemMsgStyle::Accent)
-        );
-        assert_eq!(
-            SystemMsgStyle::from_line("  # heading"),
-            Some(SystemMsgStyle::Accent)
-        );
+        assert_eq!(SystemMsgStyle::from_line("  **not bold**"), Some(SystemMsgStyle::Accent));
+        assert_eq!(SystemMsgStyle::from_line("  # heading"), Some(SystemMsgStyle::Accent));
     }
 
     #[test]

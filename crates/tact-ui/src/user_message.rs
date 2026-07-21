@@ -31,11 +31,7 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
             let path = cap.name("img_path").map(|m| m.as_str()).unwrap_or("");
             refs.push((m.start(), m.end(), prefix_len, Ref::Image { alt, path }));
         } else {
-            let path = cap
-                .name("qpath")
-                .or_else(|| cap.name("upath"))
-                .map(|m| m.as_str())
-                .unwrap_or("");
+            let path = cap.name("qpath").or_else(|| cap.name("upath")).map(|m| m.as_str()).unwrap_or("");
             refs.push((m.start(), m.end(), prefix_len, Ref::AtFile { path }));
         }
     }
@@ -47,9 +43,7 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
     for (start, end, prefix_len, r) in refs {
         let content_start = start + prefix_len;
         if content_start > last_end {
-            blocks.push(ContentBlock::Text {
-                text: task[last_end..content_start].to_string(),
-            });
+            blocks.push(ContentBlock::Text { text: task[last_end..content_start].to_string() });
         }
 
         match r {
@@ -57,62 +51,48 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
                 let resolved = match safe_path(work_dir, path) {
                     Ok(p) => p,
                     Err(_) => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
+                        blocks.push(ContentBlock::Text { text: task[content_start..end].to_string() });
                         last_end = end;
                         continue;
-                    }
+                    },
                 };
                 match load_image_block(&resolved).await {
                     Some(source) => {
                         if !alt.is_empty() {
-                            blocks.push(ContentBlock::Text {
-                                text: format!("({})", alt),
-                            });
+                            blocks.push(ContentBlock::Text { text: format!("({})", alt) });
                         }
                         blocks.push(ContentBlock::Image { source });
-                    }
+                    },
                     None => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
-                    }
+                        blocks.push(ContentBlock::Text { text: task[content_start..end].to_string() });
+                    },
                 }
-            }
+            },
             Ref::AtFile { path } => {
                 let resolved = match safe_path(work_dir, path) {
                     Ok(p) => p,
                     Err(_) => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
+                        blocks.push(ContentBlock::Text { text: task[content_start..end].to_string() });
                         last_end = end;
                         continue;
-                    }
+                    },
                 };
                 if let Some(source) = load_image_block(&resolved).await {
                     blocks.push(ContentBlock::Image { source });
                 } else if let Some(content) = load_text_file(&resolved).await {
                     let header = format!("--- file: {} ---\n", resolved.display());
-                    blocks.push(ContentBlock::Text {
-                        text: format!("{}{}\n---\n", header, content),
-                    });
+                    blocks.push(ContentBlock::Text { text: format!("{}{}\n---\n", header, content) });
                 } else {
-                    blocks.push(ContentBlock::Text {
-                        text: task[content_start..end].to_string(),
-                    });
+                    blocks.push(ContentBlock::Text { text: task[content_start..end].to_string() });
                 }
-            }
+            },
         }
 
         last_end = end;
     }
 
     if last_end < task.len() {
-        blocks.push(ContentBlock::Text {
-            text: task[last_end..].to_string(),
-        });
+        blocks.push(ContentBlock::Text { text: task[last_end..].to_string() });
     }
 
     if blocks.is_empty() {
@@ -133,21 +113,16 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
     if !path.is_file() {
         return None;
     }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if !crate::image_attach::is_supported_image_ext(&ext) {
         return None;
     }
     let bytes = tokio::fs::read(path).await.ok()?;
     let settings = crate::image_attach::vision_settings_from_config();
-    let prepared = tokio::task::spawn_blocking(move || {
-        crate::image_attach::prepare_image_attachment(&bytes, &ext, &settings)
-    })
-    .await
-    .ok()??;
+    let prepared =
+        tokio::task::spawn_blocking(move || crate::image_attach::prepare_image_attachment(&bytes, &ext, &settings))
+            .await
+            .ok()??;
     Some(ImageSource {
         type_: "base64".to_string(),
         media_type: prepared.media_type,
@@ -157,10 +132,12 @@ async fn load_image_block(path: &Path) -> Option<ImageSource> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use tact_llm::MessageContent;
+
     use super::*;
     use crate::test_support::install_test_config;
-    use std::path::PathBuf;
-    use tact_llm::MessageContent;
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tact_tui_test_{}", std::process::id()));
@@ -169,20 +146,14 @@ mod tests {
     }
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
     }
 
     fn assert_text_contains(block: &ContentBlock, needle: &str) {
         match block {
-            ContentBlock::Text { text } => assert!(
-                text.contains(needle),
-                "expected text block to contain {:?}, got {:?}",
-                needle,
-                text
-            ),
+            ContentBlock::Text { text } => {
+                assert!(text.contains(needle), "expected text block to contain {:?}, got {:?}", needle, text)
+            },
             _ => panic!("expected text block, got {:?}", block),
         }
     }
@@ -213,8 +184,7 @@ mod tests {
         let file_path = dir.join("hello.txt");
         std::fs::write(&file_path, "hello world").unwrap();
 
-        let msg =
-            rt().block_on(async { build_user_message("review @hello.txt please", &dir).await });
+        let msg = rt().block_on(async { build_user_message("review @hello.txt please", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
@@ -239,7 +209,7 @@ mod tests {
         match blocks[1] {
             ContentBlock::Image { source } => {
                 assert_eq!(source.media_type, "image/jpeg");
-            }
+            },
             _ => panic!("expected image block"),
         }
     }
@@ -250,8 +220,7 @@ mod tests {
         let file_path = dir.join("my file.txt");
         std::fs::write(&file_path, "spacy content").unwrap();
 
-        let msg =
-            rt().block_on(async { build_user_message("read @\"my file.txt\" now", &dir).await });
+        let msg = rt().block_on(async { build_user_message("read @\"my file.txt\" now", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
@@ -278,21 +247,11 @@ mod tests {
         std::fs::write(dir.join("code.rs"), "fn main() {}").unwrap();
         write_test_png(&dir.join("shot.png"), 16, 16);
 
-        let msg = rt().block_on(async {
-            build_user_message("check ![shot](shot.png) and @code.rs", &dir).await
-        });
+        let msg = rt().block_on(async { build_user_message("check ![shot](shot.png) and @code.rs", &dir).await });
 
         let blocks = text_blocks(&msg);
-        assert!(
-            blocks
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Image { .. }))
-        );
-        assert!(
-            blocks
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main")))
-        );
+        assert!(blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
+        assert!(blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main"))));
     }
 
     fn write_test_png(path: &std::path::Path, w: u32, h: u32) {

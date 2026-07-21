@@ -23,14 +23,10 @@ async fn plugin_list_when_empty() {
 #[tokio::test]
 async fn marketplace_list_shows_builtin() {
     let _guard = with_temp_home();
-    let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
-        command: MarketplaceSubcommand::List,
-    })
-    .await;
-    assert!(
-        result.is_ok(),
-        "marketplace list should succeed: {result:?}"
-    );
+    let result =
+        tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace { command: MarketplaceSubcommand::List })
+            .await;
+    assert!(result.is_ok(), "marketplace list should succeed: {result:?}");
 }
 
 #[tokio::test]
@@ -40,9 +36,7 @@ async fn marketplace_add_and_remove() {
     // Try adding a marketplace. This requires network to clone the repo,
     // so accept either success or failure.
     let result_add = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
-        command: MarketplaceSubcommand::Add {
-            source: "https://github.com/example/test-plugins.git".into(),
-        },
+        command: MarketplaceSubcommand::Add { source: "https://github.com/example/test-plugins.git".into() },
     })
     .await;
 
@@ -50,17 +44,15 @@ async fn marketplace_add_and_remove() {
         Ok(()) => {
             // Remove it only if add succeeded
             let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
-                command: MarketplaceSubcommand::Remove {
-                    name: "example/test-plugins".into(),
-                },
+                command: MarketplaceSubcommand::Remove { name: "example/test-plugins".into() },
             })
             .await;
             assert!(result.is_ok(), "remove should succeed: {result:?}");
-        }
+        },
         Err(e) => {
             // Add may fail without network — that's acceptable
             eprintln!("marketplace add (expected without network): {e}");
-        }
+        },
     }
 }
 
@@ -68,15 +60,10 @@ async fn marketplace_add_and_remove() {
 async fn removing_builtin_marketplace_fails() {
     let _guard = with_temp_home();
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
-        command: MarketplaceSubcommand::Remove {
-            name: "claude-plugins-official".into(),
-        },
+        command: MarketplaceSubcommand::Remove { name: "claude-plugins-official".into() },
     })
     .await;
-    assert!(
-        result.is_err(),
-        "removing the built-in marketplace should fail"
-    );
+    assert!(result.is_err(), "removing the built-in marketplace should fail");
 }
 
 #[tokio::test]

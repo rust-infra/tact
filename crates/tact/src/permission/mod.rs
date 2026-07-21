@@ -12,14 +12,13 @@
 //! Dangerous bash patterns (`sudo`, `rm -rf /`) are always classified as
 //! High risk regardless of context.
 
+use std::fmt;
+
 use anyhow::Result;
 use serde_json::Value;
-use std::fmt;
 use strum_macros::{Display, EnumString};
 
-const READ_PREFIXES: &[&str] = &[
-    "read", "list", "get", "show", "search", "query", "inspect", "find",
-];
+const READ_PREFIXES: &[&str] = &["read", "list", "get", "show", "search", "query", "inspect", "find"];
 const HIGH_PREFIXES: &[&str] = &["delete", "remove", "drop", "shutdown"];
 use crate::shell::is_high_risk_shell_command;
 const READ_ONLY_BASH_COMMANDS: &[&str] = &["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep"];
@@ -83,24 +82,15 @@ pub struct PermissionDecision {
 
 impl PermissionDecision {
     fn allow(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Allow,
-            reason: reason.into(),
-        }
+        Self { behavior: PermissionBehavior::Allow, reason: reason.into() }
     }
 
     fn ask(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Ask,
-            reason: reason.into(),
-        }
+        Self { behavior: PermissionBehavior::Ask, reason: reason.into() }
     }
 
     fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Deny,
-            reason: reason.into(),
-        }
+        Self { behavior: PermissionBehavior::Deny, reason: reason.into() }
     }
 }
 
@@ -158,10 +148,7 @@ impl PermissionManager {
         }
 
         if intent.risk == CapabilityRisk::High {
-            return PermissionDecision::ask(format!(
-                "High-risk capability requires approval: {}",
-                intent.tool
-            ));
+            return PermissionDecision::ask(format!("High-risk capability requires approval: {}", intent.tool));
         }
 
         if self.is_always_allowed(tool_name) {
@@ -173,25 +160,19 @@ impl PermissionManager {
             PermissionMode::Auto => {
                 self.consecutive_denials = 0;
                 PermissionDecision::allow("Auto mode: non-high capability auto-approved")
-            }
+            },
             PermissionMode::Default | PermissionMode::Plan => {
                 PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
-            }
+            },
         }
     }
 
     pub fn ask_user(&mut self, tool_name: &str, tool_input: &Value) -> Result<bool> {
         let preview = truncate_for_prompt(tool_input, 200);
-        eprintln!(
-            "[permission] non-interactive: denying {} ({})",
-            tool_name, preview
-        );
+        eprintln!("[permission] non-interactive: denying {} ({})", tool_name, preview);
         let approved = self.apply_user_choice(UserPermissionChoice::Deny, tool_name);
         if !approved && self.should_suggest_plan_mode() {
-            eprintln!(
-                "[{} consecutive denials -- consider switching to plan mode]",
-                self.consecutive_denials
-            );
+            eprintln!("[{} consecutive denials -- consider switching to plan mode]", self.consecutive_denials);
         }
         Ok(approved)
     }
@@ -201,16 +182,16 @@ impl PermissionManager {
             UserPermissionChoice::AllowOnce => {
                 self.consecutive_denials = 0;
                 true
-            }
+            },
             UserPermissionChoice::Deny => {
                 self.consecutive_denials += 1;
                 false
-            }
+            },
             UserPermissionChoice::AlwaysAllow => {
                 self.allow_tool(tool_name);
                 self.consecutive_denials = 0;
                 true
-            }
+            },
         }
     }
 
@@ -221,9 +202,7 @@ impl PermissionManager {
     }
 
     fn is_always_allowed(&self, tool_name: &str) -> bool {
-        self.always_allowed_tools
-            .iter()
-            .any(|allowed| allowed == tool_name)
+        self.always_allowed_tools.iter().any(|allowed| allowed == tool_name)
     }
 
     fn should_suggest_plan_mode(&self) -> bool {
@@ -235,12 +214,7 @@ pub fn normalize_capability(tool_name: &str, tool_input: &Value) -> CapabilityIn
     let (source, server, short_tool) = parse_source(tool_name);
     let risk = classify_risk(&short_tool, tool_input);
 
-    CapabilityIntent {
-        source,
-        server,
-        tool: short_tool,
-        risk,
-    }
+    CapabilityIntent { source, server, tool: short_tool, risk }
 }
 
 fn parse_source(tool_name: &str) -> (CapabilitySource, Option<String>, String) {
@@ -249,11 +223,7 @@ fn parse_source(tool_name: &str) -> (CapabilitySource, Option<String>, String) {
         && !server.is_empty()
         && !tool.is_empty()
     {
-        return (
-            CapabilitySource::Mcp,
-            Some(server.to_string()),
-            tool.to_string(),
-        );
+        return (CapabilitySource::Mcp, Some(server.to_string()), tool.to_string());
     }
 
     (CapabilitySource::Native, None, tool_name.to_string())
@@ -270,11 +240,7 @@ fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
     }
 
     if tool_name == "bash" {
-        let command = tool_input
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let command = tool_input.get("command").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
 
         return if is_high_risk_shell_command(&command) {
             CapabilityRisk::High
@@ -285,11 +251,7 @@ fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
         };
     }
 
-    if starts_with_any(tool_name, HIGH_PREFIXES) {
-        CapabilityRisk::High
-    } else {
-        CapabilityRisk::Write
-    }
+    if starts_with_any(tool_name, HIGH_PREFIXES) { CapabilityRisk::High } else { CapabilityRisk::Write }
 }
 
 fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
@@ -297,10 +259,7 @@ fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
 }
 
 fn is_read_only_bash_command(command: &str) -> bool {
-    if command
-        .chars()
-        .any(|ch| matches!(ch, ';' | '&' | '|' | '`' | '$' | '>' | '<'))
-    {
+    if command.chars().any(|ch| matches!(ch, ';' | '&' | '|' | '`' | '$' | '>' | '<')) {
         return false;
     }
 
@@ -340,34 +299,20 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 /// question UI comes *after* approval.
 pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
     match tool_name {
-        "ask_user" => match tool_input
-            .get("question")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|q| !q.is_empty())
-        {
-            Some(q) => format!(
-                "Allow ask_user? The agent wants to ask you a question.\n{}",
-                truncate_chars(q, 80)
-            ),
-            None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
+        "ask_user" => {
+            match tool_input.get("question").and_then(|v| v.as_str()).map(str::trim).filter(|q| !q.is_empty()) {
+                Some(q) => format!("Allow ask_user? The agent wants to ask you a question.\n{}", truncate_chars(q, 80)),
+                None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
+            }
         },
-        "bash" => match tool_input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
+        "bash" => match tool_input.get("command").and_then(|v| v.as_str()).map(str::trim).filter(|c| !c.is_empty()) {
             Some(cmd) => format!("Allow bash?\n{}", truncate_chars(cmd, 120)),
             None => "Allow bash?".to_string(),
         },
         "edit_file" | "write_file" | "read_file" | "apply_patch" => {
-            let path = tool_input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let path = tool_input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Allow {tool_name} on {path}?")
-        }
+        },
         _ => {
             let preview = truncate_for_prompt(tool_input, 80);
             if preview == "{}" || preview.is_empty() {
@@ -375,7 +320,7 @@ pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
             } else {
                 format!("Allow {tool_name}?\n{preview}")
             }
-        }
+        },
     }
 }
 
@@ -384,8 +329,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CapabilityRisk, CapabilitySource, PermissionBehavior, PermissionManager, PermissionMode,
-        UserPermissionChoice, format_permission_prompt, normalize_capability,
+        CapabilityRisk, CapabilitySource, PermissionBehavior, PermissionManager, PermissionMode, UserPermissionChoice,
+        format_permission_prompt, normalize_capability,
     };
 
     #[test]
@@ -424,10 +369,8 @@ mod tests {
 
     #[test]
     fn classifies_simple_bash_reads_as_read_only() {
-        let intent = normalize_capability(
-            "bash",
-            &json!({ "command": "ls -la /home/w/ai/learn-claude-code-rs-sfull" }),
-        );
+        let intent =
+            normalize_capability("bash", &json!({ "command": "ls -la /home/w/ai/learn-claude-code-rs-sfull" }));
 
         assert_eq!(intent.risk, CapabilityRisk::Read);
     }
@@ -443,11 +386,7 @@ mod tests {
 
     #[test]
     fn read_capabilities_are_allowed_in_all_modes() {
-        for mode in [
-            PermissionMode::Default,
-            PermissionMode::Plan,
-            PermissionMode::Auto,
-        ] {
+        for mode in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::Auto] {
             let mut manager = PermissionManager::try_new(mode).unwrap();
             let decision = manager.check("read_file", &json!({ "path": "src/main.rs" }));
 
@@ -553,8 +492,7 @@ mod tests {
 
     #[test]
     fn edit_file_permission_prompt_shows_path() {
-        let prompt =
-            format_permission_prompt("edit_file", &json!({ "path": "src/lib.rs", "old": "a" }));
+        let prompt = format_permission_prompt("edit_file", &json!({ "path": "src/lib.rs", "old": "a" }));
         assert_eq!(prompt, "Allow edit_file on src/lib.rs?");
     }
 }

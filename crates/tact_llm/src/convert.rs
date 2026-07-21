@@ -3,19 +3,19 @@
 //! Prefer [`From`] / [`Into`] for 1:1 mappings. Multi-message expansions (e.g. a
 //! user turn with embedded tool results) stay as free functions.
 
-use crate::{
-    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, Role, StopReason,
-    Tool, ToolChoice, openai::CreateChatCompletionRequest,
-};
 use async_openai::types::{
-    ChatCompletionMessageToolCall, ChatCompletionNamedToolChoice,
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPart, ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage,
+    ChatCompletionMessageToolCall, ChatCompletionNamedToolChoice, ChatCompletionRequestAssistantMessage,
+    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart,
+    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionToolChoiceOption,
-    ChatCompletionToolType, FinishReason, FunctionCall, FunctionName, FunctionObject, ImageUrl,
-    ImageUrlDetail, Role as OpenAiRole,
+    ChatCompletionToolType, FinishReason, FunctionCall, FunctionName, FunctionObject, ImageUrl, ImageUrlDetail,
+    Role as OpenAiRole,
+};
+
+use crate::{
+    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, Role, StopReason, Tool, ToolChoice,
+    openai::CreateChatCompletionRequest,
 };
 
 impl From<&Tool> for ChatCompletionTool {
@@ -84,9 +84,7 @@ fn user_text_message(content: impl Into<String>) -> ChatCompletionRequestMessage
     })
 }
 
-fn user_parts_message(
-    parts: Vec<ChatCompletionRequestMessageContentPart>,
-) -> ChatCompletionRequestMessage {
+fn user_parts_message(parts: Vec<ChatCompletionRequestMessageContentPart>) -> ChatCompletionRequestMessage {
     ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
         content: ChatCompletionRequestUserMessageContent::Array(parts),
         role: OpenAiRole::User,
@@ -122,10 +120,7 @@ fn tool_call_from_block(block: &ContentBlock) -> Option<ChatCompletionMessageToo
     Some(ChatCompletionMessageToolCall {
         id: id.clone(),
         r#type: ChatCompletionToolType::Function,
-        function: FunctionCall {
-            name: name.clone(),
-            arguments: input.to_string(),
-        },
+        function: FunctionCall { name: name.clone(), arguments: input.to_string() },
     })
 }
 
@@ -136,9 +131,7 @@ fn tool_call_from_block(block: &ContentBlock) -> Option<ChatCompletionMessageToo
 ///
 /// Not a [`From`] impl: one Tact message may expand into multiple OpenAI messages
 /// (e.g. user blocks that mix text with `tool_result`).
-pub fn messages_to_openai(
-    messages: &[Message],
-) -> (Vec<ChatCompletionRequestMessage>, Vec<Option<String>>) {
+pub fn messages_to_openai(messages: &[Message]) -> (Vec<ChatCompletionRequestMessage>, Vec<Option<String>>) {
     // Lower bound: one OpenAI message per Tact message (user turns with tool
     // results may emit more).
     let mut result = Vec::with_capacity(messages.len());
@@ -149,7 +142,7 @@ pub fn messages_to_openai(
                 MessageContent::Text { content } => {
                     result.push(user_text_message(content.clone()));
                     reasoning.push(None);
-                }
+                },
                 MessageContent::Blocks { content } => {
                     let mut parts = Vec::with_capacity(content.len());
                     let mut tool_results = Vec::new();
@@ -157,12 +150,11 @@ pub fn messages_to_openai(
                         match block {
                             ContentBlock::Text { text } => parts.push(text_content_part(text)),
                             ContentBlock::Image { source } => parts.push(source.into()),
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                            } => tool_results.push(tool_result_message(tool_use_id, content)),
+                            ContentBlock::ToolResult { tool_use_id, content } => {
+                                tool_results.push(tool_result_message(tool_use_id, content))
+                            },
                             // Drop thinking on the user side for now.
-                            _ => {}
+                            _ => {},
                         }
                     }
                     if !parts.is_empty() {
@@ -174,13 +166,13 @@ pub fn messages_to_openai(
                         result.push(tool_result);
                         reasoning.push(None);
                     }
-                }
+                },
             },
             Role::Assistant => match &msg.content {
                 MessageContent::Text { content } => {
                     result.push(assistant_message(Some(content.clone()), None));
                     reasoning.push(None);
-                }
+                },
                 MessageContent::Blocks { content } => {
                     let mut assistant_reasoning = String::new();
                     let mut text_parts = Vec::new();
@@ -190,28 +182,23 @@ pub fn messages_to_openai(
                             ContentBlock::Text { text } => text_parts.push(text.as_str()),
                             ContentBlock::Thinking { thinking, .. } => {
                                 assistant_reasoning.push_str(thinking);
-                            }
+                            },
                             ContentBlock::ToolUse { .. } => {
                                 if let Some(tc) = tool_call_from_block(block) {
                                     tool_calls.push(tc);
                                 }
-                            }
+                            },
                             // Drop redacted / unknown blocks when sending to OpenAI.
                             // REVIEW: thinking-only turns can leave empty assistant
                             // messages; sanitize_assistant_messages stubs those.
-                            _ => {}
+                            _ => {},
                         }
                     }
-                    let content = if text_parts.is_empty() {
-                        None
-                    } else {
-                        Some(text_parts.join(""))
-                    };
+                    let content = if text_parts.is_empty() { None } else { Some(text_parts.join("")) };
                     let tool_calls = (!tool_calls.is_empty()).then_some(tool_calls);
                     result.push(assistant_message(content, tool_calls));
-                    reasoning
-                        .push((!assistant_reasoning.is_empty()).then_some(assistant_reasoning));
-                }
+                    reasoning.push((!assistant_reasoning.is_empty()).then_some(assistant_reasoning));
+                },
             },
         }
     }
@@ -237,10 +224,7 @@ pub fn messages_to_openai(
 /// MaxTokens recovery. The real fix may be to avoid producing empty assistant
 /// messages in the agent runtime / conversion pipeline rather than patching
 /// them after the fact.
-fn sanitize_assistant_messages(
-    messages: &mut Vec<ChatCompletionRequestMessage>,
-    reasoning: &mut Vec<Option<String>>,
-) {
+fn sanitize_assistant_messages(messages: &mut Vec<ChatCompletionRequestMessage>, reasoning: &mut Vec<Option<String>>) {
     debug_assert_eq!(messages.len(), reasoning.len());
     let mut i = 0;
     while i < messages.len() {
@@ -258,11 +242,8 @@ fn sanitize_assistant_messages(
 
         // Own the ids so we can later mutate `messages[i]` (which currently
         // borrows `tool_calls`).
-        let tool_call_ids: Vec<String> = tool_calls
-            .iter()
-            .map(|tc| tc.id.clone())
-            .filter(|id| !id.is_empty())
-            .collect();
+        let tool_call_ids: Vec<String> =
+            tool_calls.iter().map(|tc| tc.id.clone()).filter(|id| !id.is_empty()).collect();
 
         let mut matched = 0;
         let mut j = i + 1;
@@ -273,7 +254,7 @@ fn sanitize_assistant_messages(
                         matched += 1;
                     }
                     j += 1;
-                }
+                },
                 // Stop scanning when we hit a non-tool message.
                 _ => break,
             }
@@ -310,14 +291,10 @@ fn stub_empty_assistant_if_needed(message: &mut ChatCompletionRequestMessage) {
     let ChatCompletionRequestMessage::Assistant(assistant) = message else {
         return;
     };
-    let has_tool_calls = assistant
-        .tool_calls
-        .as_ref()
-        .is_some_and(|tcs| !tcs.is_empty());
+    let has_tool_calls = assistant.tool_calls.as_ref().is_some_and(|tcs| !tcs.is_empty());
     if !has_tool_calls && assistant.content.as_deref().unwrap_or("").is_empty() {
         tracing::warn!("Replacing empty assistant message with stub to keep OpenAI request valid");
-        assistant.content =
-            Some("[Assistant response was empty or truncated. Continuing...]".to_string());
+        assistant.content = Some("[Assistant response was empty or truncated. Continuing...]".to_string());
     }
 }
 
@@ -330,22 +307,18 @@ fn stub_empty_assistant_if_needed(message: &mut ChatCompletionRequestMessage) {
 ///
 /// Provider-specific fields (`thinking`, `reasoning_effort`, `user_id`) are injected
 /// later by [`crate::openai::body::OpenAiBodyHook`], not via this typed request.
-pub fn build_openai_request(
-    request: &CreateMessageParams,
-) -> (CreateChatCompletionRequest, Vec<Option<String>>) {
+pub fn build_openai_request(request: &CreateMessageParams) -> (CreateChatCompletionRequest, Vec<Option<String>>) {
     let system_slots = usize::from(request.system.is_some());
     let mut messages = Vec::with_capacity(system_slots + request.messages.len());
     let mut reasoning_per_message = Vec::with_capacity(system_slots + request.messages.len());
 
     // Anthropic sends system as a top-level field; OpenAI expects it as the first system message.
     if let Some(system) = &request.system {
-        messages.push(ChatCompletionRequestMessage::System(
-            ChatCompletionRequestSystemMessage {
-                content: system.clone(),
-                role: OpenAiRole::System,
-                name: None,
-            },
-        ));
+        messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+            content: system.clone(),
+            role: OpenAiRole::System,
+            name: None,
+        }));
         reasoning_per_message.push(None);
     }
 
@@ -371,10 +344,7 @@ pub fn build_openai_request(
         stream_options: None,
         temperature: request.temperature,
         top_p: request.top_p,
-        tools: request
-            .tools
-            .as_ref()
-            .map(|tools| tools.iter().map(ChatCompletionTool::from).collect()),
+        tools: request.tools.as_ref().map(|tools| tools.iter().map(ChatCompletionTool::from).collect()),
         tool_choice: request.tool_choice.as_ref().map(Into::into),
         user: None,
     };
@@ -390,18 +360,9 @@ mod tests {
     #[test]
     fn finish_reason_maps_via_from() {
         assert_eq!(StopReason::from(FinishReason::Stop), StopReason::EndTurn);
-        assert_eq!(
-            StopReason::from(FinishReason::Length),
-            StopReason::MaxTokens
-        );
-        assert_eq!(
-            StopReason::from(FinishReason::ToolCalls),
-            StopReason::ToolUse
-        );
-        assert_eq!(
-            StopReason::from(FinishReason::ContentFilter),
-            StopReason::StopSequence
-        );
+        assert_eq!(StopReason::from(FinishReason::Length), StopReason::MaxTokens);
+        assert_eq!(StopReason::from(FinishReason::ToolCalls), StopReason::ToolUse);
+        assert_eq!(StopReason::from(FinishReason::ContentFilter), StopReason::StopSequence);
     }
 
     #[test]
@@ -431,9 +392,7 @@ mod tests {
             panic!("expected array content");
         };
         assert_eq!(parts.len(), 2);
-        assert!(
-            matches!(&parts[0], ChatCompletionRequestMessageContentPart::Text(t) if t.text == "describe this")
-        );
+        assert!(matches!(&parts[0], ChatCompletionRequestMessageContentPart::Text(t) if t.text == "describe this"));
         assert!(
             matches!(&parts[1], ChatCompletionRequestMessageContentPart::Image(img) if img.image_url.url.starts_with("data:image/png;base64,"))
         );
@@ -458,10 +417,7 @@ mod tests {
             })
             .expect("assistant message");
         assert!(
-            assistant_msg
-                .content
-                .as_deref()
-                .is_some_and(|c| !c.is_empty()),
+            assistant_msg.content.as_deref().is_some_and(|c| !c.is_empty()),
             "empty assistant message should be replaced with a stub"
         );
         assert!(assistant_msg.tool_calls.is_none());
@@ -495,10 +451,7 @@ mod tests {
             .expect("assistant message");
         assert!(assistant_msg.tool_calls.is_none());
         assert!(
-            assistant_msg
-                .content
-                .as_deref()
-                .is_some_and(|c| !c.is_empty()),
+            assistant_msg.content.as_deref().is_some_and(|c| !c.is_empty()),
             "orphaned tool_calls should be stripped and content stubbed"
         );
     }
@@ -507,10 +460,7 @@ mod tests {
     fn thinking_only_assistant_gets_stubbed() {
         let assistant = Message::new_blocks(
             Role::Assistant,
-            vec![ContentBlock::Thinking {
-                thinking: "partial reasoning".to_string(),
-                signature: String::new(),
-            }],
+            vec![ContentBlock::Thinking { thinking: "partial reasoning".to_string(), signature: String::new() }],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: "mock".to_string(),
@@ -528,10 +478,7 @@ mod tests {
             })
             .expect("assistant message");
         assert!(
-            assistant_msg
-                .content
-                .as_deref()
-                .is_some_and(|c| !c.is_empty()),
+            assistant_msg.content.as_deref().is_some_and(|c| !c.is_empty()),
             "thinking-only assistant should be stubbed after thinking is dropped"
         );
         assert!(assistant_msg.tool_calls.is_none());
@@ -542,13 +489,8 @@ mod tests {
         let assistant = Message::new_blocks(
             Role::Assistant,
             vec![
-                ContentBlock::Thinking {
-                    thinking: "reasoning".to_string(),
-                    signature: String::new(),
-                },
-                ContentBlock::Text {
-                    text: "actual answer".to_string(),
-                },
+                ContentBlock::Thinking { thinking: "reasoning".to_string(), signature: String::new() },
+                ContentBlock::Text { text: "actual answer".to_string() },
             ],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
@@ -575,9 +517,7 @@ mod tests {
         let assistant = Message::new_blocks(
             Role::Assistant,
             vec![
-                ContentBlock::Text {
-                    text: "let me check".to_string(),
-                },
+                ContentBlock::Text { text: "let me check".to_string() },
                 ContentBlock::ToolUse {
                     id: "orphan".to_string(),
                     name: "read_file".to_string(),
@@ -617,10 +557,7 @@ mod tests {
         );
         let user = Message::new_blocks(
             Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: "call_1".to_string(),
-                content: "file content".to_string(),
-            }],
+            vec![ContentBlock::ToolResult { tool_use_id: "call_1".to_string(), content: "file content".to_string() }],
         );
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: "mock".to_string(),
@@ -640,10 +577,7 @@ mod tests {
         assert!(assistant_msg.tool_calls.is_some());
         assert_eq!(assistant_msg.tool_calls.as_ref().unwrap().len(), 1);
         assert!(
-            openai_request
-                .messages
-                .iter()
-                .any(|m| matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            openai_request.messages.iter().any(|m| matches!(m, ChatCompletionRequestMessage::Tool(_))),
             "matching tool result should be kept"
         );
     }
@@ -669,10 +603,7 @@ mod tests {
         );
         let user = Message::new_blocks(
             Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: "call_1".to_string(),
-                content: "partial".to_string(),
-            }],
+            vec![ContentBlock::ToolResult { tool_use_id: "call_1".to_string(), content: "partial".to_string() }],
         );
         let follow_up = Message::new_text(Role::User, "continue".to_string());
         let request = CreateMessageParams::new(RequiredMessageParams {
@@ -697,10 +628,7 @@ mod tests {
             .expect("assistant message");
         assert!(assistant_msg.tool_calls.is_none());
         assert!(
-            openai_request
-                .messages
-                .iter()
-                .all(|m| !matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            openai_request.messages.iter().all(|m| !matches!(m, ChatCompletionRequestMessage::Tool(_))),
             "orphan tool messages must be removed with stripped tool_calls"
         );
         assert!(
@@ -721,10 +649,7 @@ mod tests {
         let assistant = Message::new_blocks(
             Role::Assistant,
             vec![
-                ContentBlock::Thinking {
-                    thinking: "plan both tools".to_string(),
-                    signature: String::new(),
-                },
+                ContentBlock::Thinking { thinking: "plan both tools".to_string(), signature: String::new() },
                 ContentBlock::ToolUse {
                     id: "call_a".to_string(),
                     name: "read_file".to_string(),
@@ -740,14 +665,8 @@ mod tests {
         let user = Message::new_blocks(
             Role::User,
             vec![
-                ContentBlock::ToolResult {
-                    tool_use_id: "call_a".to_string(),
-                    content: "a".to_string(),
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: "call_b".to_string(),
-                    content: "b".to_string(),
-                },
+                ContentBlock::ToolResult { tool_use_id: "call_a".to_string(), content: "a".to_string() },
+                ContentBlock::ToolResult { tool_use_id: "call_b".to_string(), content: "b".to_string() },
             ],
         );
 
@@ -767,11 +686,8 @@ mod tests {
             .expect("assistant message");
         assert_eq!(reasoning[assistant_idx].as_deref(), Some("plan both tools"));
 
-        let tool_count = openai_request
-            .messages
-            .iter()
-            .filter(|msg| matches!(msg, ChatCompletionRequestMessage::Tool(_)))
-            .count();
+        let tool_count =
+            openai_request.messages.iter().filter(|msg| matches!(msg, ChatCompletionRequestMessage::Tool(_))).count();
         assert_eq!(tool_count, 2);
     }
 }

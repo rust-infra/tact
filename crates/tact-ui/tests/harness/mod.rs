@@ -1,24 +1,28 @@
 //! Shared helpers for tact-ui integration tests.
 #![allow(dead_code, unused_imports)]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tact::permission::PermissionMode;
-use tact_llm::MockClient;
-use tact_llm::{ContentBlock, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
-use tact_ui::driver::run_command_loop;
-use tact_ui::test_support::{
-    build_test_agent_with_config, build_test_agent_with_mcp, build_test_agent_with_mode,
-    collect_updates_after, install_test_config, install_test_config_with, user_command_channels,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::task::JoinHandle;
+
+use tact::permission::PermissionMode;
+use tact_llm::{ContentBlock, MockClient, StopReason};
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
+use tact_ui::{
+    driver::run_command_loop,
+    test_support::{
+        build_test_agent_with_config, build_test_agent_with_mcp, build_test_agent_with_mode, collect_updates_after,
+        install_test_config, install_test_config_with, user_command_channels,
+    },
+};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    task::JoinHandle,
+};
 
 pub fn text_block(content: &str) -> ContentBlock {
-    ContentBlock::Text {
-        text: content.to_string(),
-    }
+    ContentBlock::Text { text: content.to_string() }
 }
 
 pub fn read_file_tool_use(id: &str, path: &str) -> ContentBlock {
@@ -80,14 +84,14 @@ pub fn wire_permission_responder(
             match update {
                 AgentUpdate::RequestSelect { respond, .. } => {
                     let _ = respond.send(choice);
-                }
+                },
                 AgentUpdate::RequestMultiSelect { respond, .. } => {
                     // Map single harness choice → one-element multi selection (or cancel).
                     let _ = respond.send(choice.map(|i| vec![i]));
-                }
+                },
                 other => {
                     let _ = collect_tx.send(other);
-                }
+                },
             }
         }
     });
@@ -130,9 +134,7 @@ pub async fn run_single_task_with_permission_choice(
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
-    user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
-        .unwrap();
+    user_cmd_tx.send(UserCommand::SubmitTask(task.into())).unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -151,15 +153,12 @@ pub async fn run_single_task_with_mcp(
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
     let collect_rx = wire_permission_responder(agent_rx, permission_choice);
-    let (agent, work_dir) =
-        build_test_agent_with_mcp(mock, Some(agent_tx), permission_mode, mcp_router);
+    let (agent, work_dir) = build_test_agent_with_mcp(mock, Some(agent_tx), permission_mode, mcp_router);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
-    user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
-        .unwrap();
+    user_cmd_tx.send(UserCommand::SubmitTask(task.into())).unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -177,16 +176,13 @@ pub async fn run_single_task_with_config(
 ) -> (Vec<AgentUpdate>, std::path::PathBuf) {
     let (agent_tx, agent_rx) = unbounded_channel();
     let collect_rx = wire_permission_responder(agent_rx, None);
-    let (agent, work_dir) =
-        build_test_agent_with_config(mock, Some(agent_tx), permission_mode, &config);
+    let (agent, work_dir) = build_test_agent_with_config(mock, Some(agent_tx), permission_mode, &config);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
-    user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
-        .unwrap();
+    user_cmd_tx.send(UserCommand::SubmitTask(task.into())).unwrap();
     drop(user_cmd_tx);
 
     driver.await.unwrap();
@@ -245,10 +241,7 @@ pub fn first_index(updates: &[AgentUpdate], pred: impl Fn(&AgentUpdate) -> bool)
     updates.iter().position(pred)
 }
 
-pub fn mock_turn(
-    blocks: Vec<ContentBlock>,
-    stop: StopReason,
-) -> (Vec<ContentBlock>, Option<StopReason>) {
+pub fn mock_turn(blocks: Vec<ContentBlock>, stop: StopReason) -> (Vec<ContentBlock>, Option<StopReason>) {
     (blocks, Some(stop))
 }
 
@@ -271,10 +264,7 @@ pub fn apply_patch_tool_use(id: &str, patch: &str) -> ContentBlock {
 }
 
 pub fn batch_read_tool_use(id: &str, paths: &[&str]) -> ContentBlock {
-    let files: Vec<serde_json::Value> = paths
-        .iter()
-        .map(|p| serde_json::json!({ "path": p }))
-        .collect();
+    let files: Vec<serde_json::Value> = paths.iter().map(|p| serde_json::json!({ "path": p })).collect();
     ContentBlock::ToolUse {
         id: id.to_string(),
         name: "batch_read".to_string(),
@@ -287,20 +277,10 @@ pub fn search_code_tool_use(id: &str, query: &str, path: Option<&str>) -> Conten
     if let Some(p) = path {
         input["path"] = serde_json::Value::String(p.to_string());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "search_code".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "search_code".to_string(), input }
 }
 
-pub fn lsp_tool_use(
-    id: &str,
-    action: &str,
-    file: &str,
-    line: Option<u32>,
-    column: Option<u32>,
-) -> ContentBlock {
+pub fn lsp_tool_use(id: &str, action: &str, file: &str, line: Option<u32>, column: Option<u32>) -> ContentBlock {
     let mut input = serde_json::json!({
         "action": action,
         "file": file,
@@ -311,11 +291,7 @@ pub fn lsp_tool_use(
     if let Some(c) = column {
         input["column"] = serde_json::Value::Number(c.into());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "lsp".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "lsp".to_string(), input }
 }
 
 pub fn web_search_tool_use(id: &str, query: &str) -> ContentBlock {
@@ -339,11 +315,7 @@ pub fn task_tool_use(id: &str, prompt: &str, description: Option<&str>) -> Conte
     if let Some(d) = description {
         input["description"] = serde_json::Value::String(d.to_string());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "task".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "task".to_string(), input }
 }
 
 pub fn spawn_teammate_tool_use(id: &str, name: &str, role: &str) -> ContentBlock {
@@ -386,13 +358,7 @@ pub fn plan_approval_tool_use(id: &str, from: &str, to: &str, body: &str) -> Con
     }
 }
 
-pub fn save_memory_tool_use(
-    id: &str,
-    name: &str,
-    memory_type: &str,
-    description: &str,
-    content: &str,
-) -> ContentBlock {
+pub fn save_memory_tool_use(id: &str, name: &str, memory_type: &str, description: &str, content: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),
         name: "save_memory".to_string(),
@@ -418,19 +384,11 @@ pub fn worktree_create_tool_use(id: &str, name: &str, base_ref: Option<&str>) ->
     if let Some(r) = base_ref {
         input["base_ref"] = serde_json::Value::String(r.to_string());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "worktree_create".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "worktree_create".to_string(), input }
 }
 
 pub fn worktree_list_tool_use(id: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "worktree_list".to_string(),
-        input: serde_json::json!({}),
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "worktree_list".to_string(), input: serde_json::json!({}) }
 }
 
 pub fn worktree_status_tool_use(id: &str, name: &str) -> ContentBlock {
@@ -450,11 +408,7 @@ pub fn cron_create_tool_use(id: &str, cron: &str, prompt: &str) -> ContentBlock 
 }
 
 pub fn cron_list_tool_use(id: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "cron_list".to_string(),
-        input: serde_json::json!({}),
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "cron_list".to_string(), input: serde_json::json!({}) }
 }
 
 pub fn cron_delete_tool_use(id: &str, cron_id: &str) -> ContentBlock {
@@ -469,33 +423,17 @@ pub fn ask_user_tool_use(id: &str, question: &str, options: Option<&[&str]>) -> 
     ask_user_tool_use_ex(id, question, options, false)
 }
 
-pub fn ask_user_tool_use_ex(
-    id: &str,
-    question: &str,
-    options: Option<&[&str]>,
-    multi_select: bool,
-) -> ContentBlock {
+pub fn ask_user_tool_use_ex(id: &str, question: &str, options: Option<&[&str]>, multi_select: bool) -> ContentBlock {
     let mut input = serde_json::json!({ "question": question, "multi_select": multi_select });
     if let Some(opts) = options {
-        input["options"] = serde_json::Value::Array(
-            opts.iter()
-                .map(|o| serde_json::Value::String(o.to_string()))
-                .collect(),
-        );
+        input["options"] =
+            serde_json::Value::Array(opts.iter().map(|o| serde_json::Value::String(o.to_string())).collect());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "ask_user".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "ask_user".to_string(), input }
 }
 
 pub fn sleep_tool_use(id: &str, ms: u64) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "sleep".to_string(),
-        input: serde_json::json!({ "ms": ms }),
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "sleep".to_string(), input: serde_json::json!({ "ms": ms }) }
 }
 
 pub fn background_run_tool_use(id: &str, command: &str) -> ContentBlock {
@@ -511,11 +449,7 @@ pub fn check_background_tool_use(id: &str, task_id: Option<&str>) -> ContentBloc
     if let Some(t) = task_id {
         input["task_id"] = serde_json::Value::String(t.to_string());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "check_background".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "check_background".to_string(), input }
 }
 
 pub fn compact_tool_use(id: &str, focus: Option<&str>) -> ContentBlock {
@@ -523,11 +457,7 @@ pub fn compact_tool_use(id: &str, focus: Option<&str>) -> ContentBlock {
     if let Some(f) = focus {
         input["focus"] = serde_json::Value::String(f.to_string());
     }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "compact".to_string(),
-        input,
-    }
+    ContentBlock::ToolUse { id: id.to_string(), name: "compact".to_string(), input }
 }
 
 // ── Permission responders ────────────────────────────────────────────
@@ -549,14 +479,14 @@ pub fn wire_permission_responder_with_choices(
                 AgentUpdate::RequestSelect { respond, .. } => {
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice);
-                }
+                },
                 AgentUpdate::RequestMultiSelect { respond, .. } => {
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice.map(|i| vec![i]));
-                }
+                },
                 other => {
                     let _ = collect_tx.send(other);
-                }
+                },
             }
         }
     });
@@ -565,28 +495,19 @@ pub fn wire_permission_responder_with_choices(
 
 // ── Assertion helpers ────────────────────────────────────────────────
 
-pub fn step_result<'a>(
-    updates: &'a [AgentUpdate],
-    id: &str,
-) -> Option<&'a tact_protocol::StepResult> {
+pub fn step_result<'a>(updates: &'a [AgentUpdate], id: &str) -> Option<&'a tact_protocol::StepResult> {
     updates.iter().find_map(|u| match u {
-        AgentUpdate::StepFinished {
-            tool_id, result, ..
-        } if tool_id == id => Some(result),
+        AgentUpdate::StepFinished { tool_id, result, .. } if tool_id == id => Some(result),
         _ => None,
     })
 }
 
 pub fn step_succeeded(updates: &[AgentUpdate], id: &str) -> bool {
-    step_result(updates, id)
-        .map(|r| matches!(r.status, tact_protocol::StepStatus::Success))
-        .unwrap_or(false)
+    step_result(updates, id).map(|r| matches!(r.status, tact_protocol::StepStatus::Success)).unwrap_or(false)
 }
 
 pub fn step_failed(updates: &[AgentUpdate], id: &str) -> bool {
-    updates
-        .iter()
-        .any(|u| matches!(u, AgentUpdate::StepFailed { tool_id, .. } if tool_id == id))
+    updates.iter().any(|u| matches!(u, AgentUpdate::StepFailed { tool_id, .. } if tool_id == id))
 }
 
 pub fn task_completed_with(updates: &[AgentUpdate], substring: &str) -> bool {
@@ -597,10 +518,7 @@ pub fn task_completed_with(updates: &[AgentUpdate], substring: &str) -> bool {
 }
 
 pub fn request_select_count(updates: &[AgentUpdate]) -> usize {
-    updates
-        .iter()
-        .filter(|u| matches!(u, AgentUpdate::RequestSelect { .. }))
-        .count()
+    updates.iter().filter(|u| matches!(u, AgentUpdate::RequestSelect { .. })).count()
 }
 
 pub fn token_usage_total(updates: &[AgentUpdate]) -> tact_protocol::TokenUsageInfo {
@@ -634,21 +552,12 @@ pub fn assert_update_before(
 ) {
     let a = updates.iter().position(&a_pred);
     let b = updates.iter().position(&b_pred);
-    assert!(
-        a.is_some() && b.is_some() && a < b,
-        "{msg}: positions a={a:?}, b={b:?}",
-    );
+    assert!(a.is_some() && b.is_some() && a < b, "{msg}: positions a={a:?}, b={b:?}",);
 }
 
 /// Load persisted messages from a SQLite session store for verification.
-pub async fn load_session_messages(
-    store: &tact::store::DynSessionStore,
-    session_id: &str,
-) -> Vec<tact_llm::Message> {
-    store
-        .load_session(session_id)
-        .await
-        .expect("load session messages")
+pub async fn load_session_messages(store: &tact::store::DynSessionStore, session_id: &str) -> Vec<tact_llm::Message> {
+    store.load_session(session_id).await.expect("load session messages")
 }
 
 /// Like [`wire_permission_responder_with_choices`], but also returns an atomic
@@ -669,15 +578,15 @@ pub fn wire_permission_responder_with_counter(
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice);
-                }
+                },
                 AgentUpdate::RequestMultiSelect { respond, .. } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
                     let _ = respond.send(choice.map(|i| vec![i]));
-                }
+                },
                 other => {
                     let _ = collect_tx.send(other);
-                }
+                },
             }
         }
     });

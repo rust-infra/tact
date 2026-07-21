@@ -5,12 +5,15 @@
 //! between OpenAI / DeepSeek-compatible / Kimi body shapes without rebuilding
 //! the long-lived client.
 
-use crate::hook_select::body_hook_for;
-use crate::openai::body::assemble_chat_completion_body;
-use crate::openai::compat::{create_assembled, stream_assembled};
-use crate::{CreateMessageParams, LlmClient, LlmError};
-
 use super::OpenAiAdapter;
+use crate::{
+    CreateMessageParams, LlmClient, LlmError,
+    hook_select::body_hook_for,
+    openai::{
+        body::assemble_chat_completion_body,
+        compat::{create_assembled, stream_assembled},
+    },
+};
 
 /// OpenAI-labeled client that re-selects body hooks from the live provider.
 ///
@@ -24,10 +27,7 @@ pub struct OpenAiMultiModelAdapter {
 
 impl OpenAiMultiModelAdapter {
     pub fn new(adapter: OpenAiAdapter) -> Self {
-        Self {
-            adapter,
-            user_id: None,
-        }
+        Self { adapter, user_id: None }
     }
 
     pub fn base_url(&self) -> &str {
@@ -38,11 +38,7 @@ impl OpenAiMultiModelAdapter {
         self.user_id = Some(user_id);
     }
 
-    fn assemble_body(
-        &self,
-        request: &CreateMessageParams,
-        stream: bool,
-    ) -> Result<serde_json::Value, LlmError> {
+    fn assemble_body(&self, request: &CreateMessageParams, stream: bool) -> Result<serde_json::Value, LlmError> {
         // Resolve the hook from the *live* provider each request so `/model`
         // (and other in-process provider updates) pick the right body shape
         // without rebuilding the long-lived client.
@@ -68,10 +64,7 @@ impl LlmClient for OpenAiMultiModelAdapter {
         ),
         LlmError,
     > {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
-            self.assemble_body(r, s)
-        })
-        .await
+        stream_assembled(&self.adapter, request, ui_tx, |r, s| self.assemble_body(r, s)).await
     }
 
     async fn create_message(
@@ -93,9 +86,10 @@ impl LlmClient for OpenAiMultiModelAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::CompatibleConfig;
-    use crate::openai::body::test_util::sample_request_with_thinking;
-    use crate::{ProviderInfo, ProviderKind};
+    use crate::{
+        ProviderInfo, ProviderKind,
+        openai::{CompatibleConfig, body::test_util::sample_request_with_thinking},
+    };
 
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {

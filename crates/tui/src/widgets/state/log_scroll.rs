@@ -1,6 +1,6 @@
+use ratatui::{text::Line, widgets::ScrollbarState};
+
 use crate::theme::ThemeName;
-use ratatui::text::Line;
-use ratatui::widgets::ScrollbarState;
 
 /// Log panel scroll state: manages scroll offset, scrollbar, panel height,
 /// visible-index caches, and visual line mapping.

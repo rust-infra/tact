@@ -1,5 +1,6 @@
-use crate::widgets::state::{App, InputMode, SelectKind};
 use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::widgets::state::{App, InputMode, SelectKind};
 
 /// Select popup mode key handling: up/down to navigate, Enter to confirm, Esc to cancel.
 /// Multi-select also uses Space to toggle checkboxes.
@@ -7,7 +8,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char(' ') if app.select.multi => {
             app.select.toggle_checked();
-        }
+        },
         KeyCode::Enter => {
             if app.select.options.is_empty() {
                 let msgs = app.msgs();
@@ -22,15 +23,8 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
 
             if multi {
                 let idxs = app.select.confirm_multi();
-                let chosen: Vec<String> = idxs
-                    .iter()
-                    .filter_map(|&i| app.select.options.get(i).cloned())
-                    .collect();
-                let label = if chosen.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    chosen.join(", ")
-                };
+                let chosen: Vec<String> = idxs.iter().filter_map(|&i| app.select.options.get(i).cloned()).collect();
+                let label = if chosen.is_empty() { "(none)".to_string() } else { chosen.join(", ") };
                 match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                     SelectKind::Agent => {
                         if log_confirm {
@@ -38,24 +32,17 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             app.add_system_message(msgs.selected_tmpl.replace("{}", &label));
                         }
                         app.input_mode = InputMode::Normal;
-                    }
+                    },
                     // Multi is only opened for agent ask_user; local flows stay single-select.
-                    SelectKind::ModelPick
-                    | SelectKind::PersistModel { .. }
-                    | SelectKind::ViewSystemPrompt => {
+                    SelectKind::ModelPick | SelectKind::PersistModel { .. } | SelectKind::ViewSystemPrompt => {
                         app.input_mode = InputMode::Normal;
-                    }
+                    },
                 }
                 return;
             }
 
             let idx = app.select.confirm().unwrap_or(0);
-            let chosen = app
-                .select
-                .options
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| "?".to_string());
+            let chosen = app.select.options.get(idx).cloned().unwrap_or_else(|| "?".to_string());
 
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                 SelectKind::Agent => {
@@ -64,13 +51,12 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         app.add_system_message(msgs.selected_tmpl.replace("{}", &chosen));
                     }
                     app.input_mode = InputMode::Normal;
-                }
+                },
                 SelectKind::ViewSystemPrompt => {
                     let content = if idx == 0 {
                         Some((
                             "Raw system prompt template",
-                            include_str!("../../../tact/src/prompt/system_prompt_template.md")
-                                .to_string(),
+                            include_str!("../../../tact/src/prompt/system_prompt_template.md").to_string(),
                         ))
                     } else {
                         app.session_store.as_ref().and_then(|store| {
@@ -80,9 +66,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             })
                             .ok()
                             .flatten()
-                            .and_then(|body| {
-                                crate::system_prompt::extract_system_prompt(&body).ok()
-                            })
+                            .and_then(|body| crate::system_prompt::extract_system_prompt(&body).ok())
                             .map(|content| ("Assembled current system prompt", content))
                         })
                     };
@@ -90,37 +74,36 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         "Assembled current system prompt",
                         "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
                     ));
-                    let (rendered, _) =
-                        crate::render::render_md::render_markdown_tui(&content, &app.theme);
+                    let (rendered, _) = crate::render::render_md::render_markdown_tui(&content, &app.theme);
                     app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
                         title: title.to_string(),
                         rendered,
                         scroll: 0,
                     });
                     app.input_mode = InputMode::Normal;
-                }
+                },
                 SelectKind::ModelPick => {
                     apply_model_pick(app, strip_current_marker(&chosen));
-                }
+                },
                 SelectKind::PersistModel { model } => {
                     finish_persist_prompt(app, &chosen, &model);
-                }
+                },
             }
-        }
+        },
         KeyCode::Char('j') | KeyCode::Down => {
             app.select.move_down();
-        }
+        },
         KeyCode::Char('k') | KeyCode::Up => {
             app.select.move_up();
-        }
+        },
         KeyCode::Esc => {
             app.select.cancel();
             let msgs = app.msgs();
             app.add_system_message(msgs.selection_cancelled.to_string());
             app.select_kind = SelectKind::Agent;
             app.input_mode = InputMode::Normal;
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -149,15 +132,10 @@ fn apply_model_pick(app: &mut App, model: String) {
         return;
     }
 
-    app.select_kind = SelectKind::PersistModel {
-        model: model.clone(),
-    };
+    app.select_kind = SelectKind::PersistModel { model: model.clone() };
     app.select.set_local(
         msgs.model_persist_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
+        vec![msgs.model_persist_yes.to_string(), msgs.model_persist_no.to_string()],
         1,
         false,
     );
@@ -171,13 +149,10 @@ fn finish_persist_prompt(app: &mut App, chosen: &str, model: &str) {
         match tact::config::persist_active_provider_model(model) {
             Ok(()) => {
                 app.add_system_message(msgs.model_persisted_tmpl.replace("{}", model));
-            }
+            },
             Err(err) => {
-                app.add_system_message(
-                    msgs.model_persist_failed_tmpl
-                        .replace("{}", &err.to_string()),
-                );
-            }
+                app.add_system_message(msgs.model_persist_failed_tmpl.replace("{}", &err.to_string()));
+            },
         }
     } else {
         app.add_system_message(msgs.model_session_only.to_string());
@@ -195,10 +170,7 @@ pub(crate) fn start_model_picker(app: &mut App) {
 
     let mut candidates = settings.llm.models.clone();
     if candidates.is_empty() {
-        app.add_system_message(
-            msgs.model_list_empty_tmpl
-                .replace("{}", settings.llm.provider.as_str()),
-        );
+        app.add_system_message(msgs.model_list_empty_tmpl.replace("{}", settings.llm.provider.as_str()));
         return;
     }
 
@@ -208,15 +180,10 @@ pub(crate) fn start_model_picker(app: &mut App) {
     }
 
     let selected = candidates.iter().position(|m| m == &current).unwrap_or(0);
-    let options: Vec<String> = candidates
-        .into_iter()
-        .enumerate()
-        .map(|(i, m)| if i == selected { format!("{m} *") } else { m })
-        .collect();
+    let options: Vec<String> =
+        candidates.into_iter().enumerate().map(|(i, m)| if i == selected { format!("{m} *") } else { m }).collect();
 
-    let prompt = msgs
-        .model_select_prompt_tmpl
-        .replace("{}", settings.llm.provider.as_str());
+    let prompt = msgs.model_select_prompt_tmpl.replace("{}", settings.llm.provider.as_str());
     app.select_kind = SelectKind::ModelPick;
     app.select.set_local(prompt, options, selected, false);
     app.input_mode = InputMode::Select;
@@ -224,10 +191,11 @@ pub(crate) fn start_model_picker(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tact_llm::{ProviderInfo, ProviderKind};
+
+    use super::*;
+    use crate::render::test_harness::make_app;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -237,12 +205,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.select_kind = SelectKind::Agent;
         app.input_mode = InputMode::Select;
-        app.select.set(
-            "Pick one".into(),
-            vec!["Allow once".into(), "Deny".into()],
-            tx,
-            true,
-        );
+        app.select.set("Pick one".into(), vec!["Allow once".into(), "Deny".into()], tx, true);
         rx
     }
 
@@ -269,11 +232,7 @@ mod tests {
             },
             ui: tact::config::UiSettings {
                 theme: "retro".into(),
-                vision_image: tact::config::VisionImageSettings {
-                    compress: true,
-                    max_edge: 1280,
-                    jpeg_quality: 80,
-                },
+                vision_image: tact::config::VisionImageSettings { compress: true, max_edge: 1280, jpeg_quality: 80 },
             },
             tools: tact::config::ToolSettings {
                 brave_search_api_key: None,
@@ -328,9 +287,7 @@ mod tests {
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_eq!(rx.try_recv(), Ok(Some(1)));
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("Deny") || m.contains("Selected") || m.contains("已选择")),
+            app.raw_messages.iter().any(|m| m.contains("Deny") || m.contains("Selected") || m.contains("已选择")),
             "log_confirm should render selection in the log: {:?}",
             app.raw_messages
         );
@@ -354,9 +311,7 @@ mod tests {
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("models") || m.contains("models =")),
+            app.raw_messages.iter().any(|m| m.contains("models") || m.contains("models =")),
             "expected empty-models hint, got {:?}",
             app.raw_messages
         );

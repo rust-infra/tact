@@ -93,10 +93,7 @@ pub struct SkillRegistry {
 
 impl SkillRegistry {
     pub fn new(skill_dirs: impl IntoIterator<Item = PathBuf>) -> Self {
-        Self {
-            skill_dirs: skill_dirs.into_iter().collect(),
-            skills: HashMap::new(),
-        }
+        Self { skill_dirs: skill_dirs.into_iter().collect(), skills: HashMap::new() }
     }
 
     pub fn load_skills(&mut self) -> Result<()> {
@@ -130,7 +127,7 @@ impl SkillRegistry {
                 Err(error) => {
                     warn!("skipping plugin skill directory entry: {error}");
                     continue;
-                }
+                },
             };
             if !entry.file_type()?.is_dir() {
                 continue;
@@ -147,11 +144,7 @@ impl SkillRegistry {
         self.load_skills_from_dir_with_namespace(skills_dir, None)
     }
 
-    fn load_skills_from_dir_with_namespace(
-        &mut self,
-        skills_dir: &Path,
-        namespace: Option<&str>,
-    ) -> Result<()> {
+    fn load_skills_from_dir_with_namespace(&mut self, skills_dir: &Path, namespace: Option<&str>) -> Result<()> {
         if !skills_dir.exists() {
             return Ok(());
         }
@@ -163,7 +156,7 @@ impl SkillRegistry {
                 Err(e) => {
                     warn!("skipping skill dir entry: {e}");
                     None
-                }
+                },
             })
             .filter(|entry| entry.file_type().is_file())
             .filter(|entry| entry.file_name().to_str() == Some("SKILL.md"))
@@ -180,30 +173,18 @@ impl SkillRegistry {
             Err(e) => {
                 warn!("can't read skill file {}: {e}", path.display());
                 return;
-            }
+            },
         };
 
         let (meta, body) = parse_frontmatter(&content);
-        let fallback_name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let fallback_name =
+            path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
         let local_name = meta.name.unwrap_or(fallback_name);
-        let name = namespace
-            .map(|plugin_id| format!("{plugin_id}:{local_name}"))
-            .unwrap_or(local_name);
-        let description = meta
-            .description
-            .unwrap_or_else(|| "No description".to_string());
+        let name = namespace.map(|plugin_id| format!("{plugin_id}:{local_name}")).unwrap_or(local_name);
+        let description = meta.description.unwrap_or_else(|| "No description".to_string());
 
         let document = SkillDocument {
-            manifest: SkillManifest {
-                name: name.clone(),
-                description,
-                path: path.to_path_buf(),
-            },
+            manifest: SkillManifest { name: name.clone(), description, path: path.to_path_buf() },
             body,
         };
 
@@ -222,9 +203,7 @@ impl SkillRegistry {
         names
             .into_iter()
             .filter_map(|name| {
-                self.skills.get(&name).map(|skill| {
-                    format!("- {}: {}", skill.manifest.name, skill.manifest.description)
-                })
+                self.skills.get(&name).map(|skill| format!("- {}: {}", skill.manifest.name, skill.manifest.description))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -252,12 +231,8 @@ impl SkillRegistry {
             None => {
                 let mut names = self.skills.keys().cloned().collect::<Vec<_>>();
                 names.sort();
-                format!(
-                    "Error: Unknown skill '{}'. Available: {}",
-                    name,
-                    names.join(", ")
-                )
-            }
+                format!("Error: Unknown skill '{}'. Available: {}", name, names.join(", "))
+            },
         }
     }
 
@@ -294,9 +269,10 @@ fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
     use crate::plugin::PluginSkillRoot;
-    use tempfile::tempdir;
 
     #[test]
     fn parses_frontmatter_with_lf_line_endings() {
@@ -321,11 +297,8 @@ mod tests {
     fn write_skill(root: &Path, name: &str, description: &str, body: &str) {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
-        )
-        .unwrap();
+        std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"))
+            .unwrap();
     }
 
     fn registry_with_plugins(plugins: &[(&str, &str)]) -> SkillRegistry {
@@ -335,10 +308,7 @@ mod tests {
         for (plugin_id, skill_name) in plugins {
             let skills_dir = dir.path().join(plugin_id).join("skills");
             write_skill(&skills_dir, skill_name, "Plugin skill", "plugin body");
-            roots.push(PluginSkillRoot {
-                plugin_id: (*plugin_id).to_owned(),
-                skills_dir,
-            });
+            roots.push(PluginSkillRoot { plugin_id: (*plugin_id).to_owned(), skills_dir });
         }
 
         let mut registry = SkillRegistry::new([]);
@@ -359,20 +329,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let skills_dir = dir.path().join("plugin/skills");
         write_skill(&skills_dir, "direct", "Direct plugin skill", "direct body");
-        write_skill(
-            &skills_dir.join("nested"),
-            "hidden",
-            "Nested plugin skill",
-            "nested body",
-        );
+        write_skill(&skills_dir.join("nested"), "hidden", "Nested plugin skill", "nested body");
         let mut registry = SkillRegistry::new([]);
 
-        registry
-            .load_plugin_skills(&[PluginSkillRoot {
-                plugin_id: "plugin".into(),
-                skills_dir,
-            }])
-            .unwrap();
+        registry.load_plugin_skills(&[PluginSkillRoot { plugin_id: "plugin".into(), skills_dir }]).unwrap();
 
         assert!(registry.skills().contains_key("plugin:direct"));
         assert!(!registry.skills().contains_key("plugin:hidden"));
@@ -382,22 +342,14 @@ mod tests {
     fn standalone_skill_keeps_its_unqualified_name() {
         let dir = tempdir().unwrap();
         let standalone_dir = dir.path().join("standalone");
-        write_skill(
-            &standalone_dir,
-            "review",
-            "Standalone skill",
-            "standalone body",
-        );
+        write_skill(&standalone_dir, "review", "Standalone skill", "standalone body");
 
         let mut registry = SkillRegistry::new([standalone_dir]);
         registry.load_skills().unwrap();
         let plugin_skills_dir = dir.path().join("plugin/skills");
         write_skill(&plugin_skills_dir, "review", "Plugin skill", "plugin body");
         registry
-            .load_plugin_skills(&[PluginSkillRoot {
-                plugin_id: "alpha".to_owned(),
-                skills_dir: plugin_skills_dir,
-            }])
+            .load_plugin_skills(&[PluginSkillRoot { plugin_id: "alpha".to_owned(), skills_dir: plugin_skills_dir }])
             .unwrap();
 
         assert!(registry.skills().contains_key("review"));
@@ -429,12 +381,7 @@ mod tests {
     fn project_skill_overrides_legacy_same_name() {
         let dir = tempdir().unwrap();
         write_skill(&dir.path().join("skills"), "style", "legacy", "LEGACY");
-        write_skill(
-            &dir.path().join(".claude/skills"),
-            "style",
-            "project",
-            "PROJECT",
-        );
+        write_skill(&dir.path().join(".claude/skills"), "style", "project", "PROJECT");
 
         let registry = get_skill_registry(dir.path()).unwrap();
         assert!(registry.load_full_text("style").contains("PROJECT"));
@@ -451,22 +398,13 @@ mod tests {
             "fresh temp workdir should not already contain {unique}"
         );
 
-        write_skill(
-            &dir.path().join(".claude/skills"),
-            &unique,
-            "Deploy",
-            "v1 body",
-        );
+        write_skill(&dir.path().join(".claude/skills"), &unique, "Deploy", "v1 body");
         {
             let mut reg = lock_skills(&shared);
             *reg = get_skill_registry(dir.path()).unwrap();
             assert!(reg.load_full_text(&unique).contains("v1 body"));
         }
         // Same Arc still visible to other holders.
-        assert!(
-            lock_skills(&shared)
-                .load_full_text(&unique)
-                .contains("v1 body")
-        );
+        assert!(lock_skills(&shared).load_full_text(&unique).contains("v1 body"));
     }
 }

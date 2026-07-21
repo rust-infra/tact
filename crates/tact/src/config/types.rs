@@ -64,9 +64,7 @@ pub struct PermissionTomlConfig {
 
 impl Default for PermissionTomlConfig {
     fn default() -> Self {
-        Self {
-            mode: Some("default".into()),
-        }
+        Self { mode: Some("default".into()) }
     }
 }
 
@@ -288,9 +286,6 @@ models = ["kimi-k2.5", "kimi-for-coding"]
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         let kimi = cfg.llm.providers.get("kimi").unwrap();
-        assert_eq!(
-            kimi.models,
-            vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
-        );
+        assert_eq!(kimi.models, vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]);
     }
 }

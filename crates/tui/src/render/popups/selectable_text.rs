@@ -1,10 +1,11 @@
-use crate::widgets::state::{PopupHitRow, PopupTextHit};
 use ratatui::{
     buffer::CellWidth,
     style::{Modifier, Style},
     text::{Line, Span},
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::widgets::state::{PopupHitRow, PopupTextHit};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SourceLine<'a> {
@@ -49,13 +50,9 @@ impl DisplayRow {
         let mut style = None;
 
         for grapheme in &self.graphemes {
-            let grapheme_selected =
-                selection.is_some_and(|range| hit_intersects(grapheme.hit, range));
-            let grapheme_style = if grapheme_selected {
-                grapheme.style.add_modifier(Modifier::REVERSED)
-            } else {
-                grapheme.style
-            };
+            let grapheme_selected = selection.is_some_and(|range| hit_intersects(grapheme.hit, range));
+            let grapheme_style =
+                if grapheme_selected { grapheme.style.add_modifier(Modifier::REVERSED) } else { grapheme.style };
             if let Some(current) = style.filter(|current| *current != grapheme_style) {
                 spans.push(Span::styled(std::mem::take(&mut content), current));
             }
@@ -71,11 +68,7 @@ impl DisplayRow {
 
 pub(crate) fn source_lines(content: &str) -> Vec<SourceLine<'_>> {
     if content.is_empty() {
-        return vec![SourceLine {
-            text: "",
-            start: 0,
-            end: 0,
-        }];
+        return vec![SourceLine { text: "", start: 0, end: 0 }];
     }
 
     let mut lines = Vec::new();
@@ -84,49 +77,28 @@ pub(crate) fn source_lines(content: &str) -> Vec<SourceLine<'_>> {
         if ch != '\n' {
             continue;
         }
-        let line_end = if newline > line_start && content.as_bytes()[newline - 1] == b'\r' {
-            newline - 1
-        } else {
-            newline
-        };
-        lines.push(SourceLine {
-            text: &content[line_start..line_end],
-            start: line_start,
-            end: line_end,
-        });
+        let line_end =
+            if newline > line_start && content.as_bytes()[newline - 1] == b'\r' { newline - 1 } else { newline };
+        lines.push(SourceLine { text: &content[line_start..line_end], start: line_start, end: line_end });
         line_start = newline + 1;
     }
     if line_start < content.len() {
-        lines.push(SourceLine {
-            text: &content[line_start..],
-            start: line_start,
-            end: content.len(),
-        });
+        lines.push(SourceLine { text: &content[line_start..], start: line_start, end: content.len() });
     }
     if lines.is_empty() {
-        lines.push(SourceLine {
-            text: content,
-            start: 0,
-            end: content.len(),
-        });
+        lines.push(SourceLine { text: content, start: 0, end: content.len() });
     }
     lines
 }
 
-pub(crate) fn scalar_styles(
-    line: Option<&Line<'_>>,
-    fallback: Style,
-    scalar_count: usize,
-) -> Vec<Style> {
+pub(crate) fn scalar_styles(line: Option<&Line<'_>>, fallback: Style, scalar_count: usize) -> Vec<Style> {
     let Some(line) = line else {
         return vec![fallback; scalar_count];
     };
     let mut styles: Vec<_> = line
         .spans
         .iter()
-        .flat_map(|span| {
-            std::iter::repeat_n(line.style.patch(span.style), span.content.chars().count())
-        })
+        .flat_map(|span| std::iter::repeat_n(line.style.patch(span.style), span.content.chars().count()))
         .collect();
     styles.resize(scalar_count, fallback);
     styles
@@ -163,11 +135,7 @@ pub(crate) fn layout_display_rows(
     for (relative_start, symbol) in text.grapheme_indices(true) {
         let start = line_start + relative_start;
         let end = start + symbol.len();
-        let width = if symbol.contains(char::is_control) {
-            0
-        } else {
-            usize::from(symbol.cell_width())
-        };
+        let width = if symbol.contains(char::is_control) { 0 } else { usize::from(symbol.cell_width()) };
 
         if width > 0 && row_width + width > max_width {
             if wrap && !graphemes.is_empty() {
@@ -189,36 +157,21 @@ pub(crate) fn layout_display_rows(
                     }
                     cell.end = end;
                 }
-                if let Some(previous_grapheme) = graphemes
-                    .iter_mut()
-                    .rev()
-                    .find(|grapheme| grapheme.hit == previous_hit)
+                if let Some(previous_grapheme) =
+                    graphemes.iter_mut().rev().find(|grapheme| grapheme.hit == previous_hit)
                 {
                     previous_grapheme.hit.end = end;
                 }
             }
-            graphemes.push(DisplayGrapheme {
-                symbol: symbol.to_owned(),
-                hit: PopupTextHit::new(start, end),
-                style,
-            });
+            graphemes.push(DisplayGrapheme { symbol: symbol.to_owned(), hit: PopupTextHit::new(start, end), style });
             row_end = end;
             continue;
         }
 
-        let hit_start = if cells.is_empty() {
-            graphemes
-                .first()
-                .map_or(start, |grapheme| grapheme.hit.start)
-        } else {
-            start
-        };
+        let hit_start =
+            if cells.is_empty() { graphemes.first().map_or(start, |grapheme| grapheme.hit.start) } else { start };
         let hit = PopupTextHit::new(hit_start, end);
-        graphemes.push(DisplayGrapheme {
-            symbol: symbol.to_owned(),
-            hit,
-            style,
-        });
+        graphemes.push(DisplayGrapheme { symbol: symbol.to_owned(), hit, style });
         cells.extend(std::iter::repeat_n(hit, width));
         row_width += width;
         row_end = end;

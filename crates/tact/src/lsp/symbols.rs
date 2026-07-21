@@ -13,16 +13,8 @@ pub(crate) fn extract_locations(result: &serde_json::Value) -> Vec<String> {
         .into_iter()
         .filter_map(|loc| {
             let uri = loc.get("uri")?.as_str()?;
-            let line = loc
-                .pointer("/range/start/line")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                + 1; // convert to 1-based
-            let col = loc
-                .pointer("/range/start/character")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                + 1;
+            let line = loc.pointer("/range/start/line").and_then(|v| v.as_u64()).unwrap_or(0) + 1; // convert to 1-based
+            let col = loc.pointer("/range/start/character").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
             let path = uri_to_path(uri);
             Some(format!("{}:{}:{}", path, line, col))
         })
@@ -32,10 +24,7 @@ pub(crate) fn extract_locations(result: &serde_json::Value) -> Vec<String> {
 /// Recursively collect symbol names from a DocumentSymbol or SymbolInformation node.
 pub(crate) fn collect_symbol(sym: &serde_json::Value, depth: usize, out: &mut Vec<String>) {
     let indent = "  ".repeat(depth);
-    let name = sym
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("<unnamed>");
+    let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("<unnamed>");
     let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
     let kind_str = symbol_kind_name(kind);
     out.push(format!("{}{} ({})", indent, name, kind_str));

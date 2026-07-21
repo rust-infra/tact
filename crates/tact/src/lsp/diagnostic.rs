@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use dashmap::DashMap;
 use serde_json;
-use std::sync::Arc;
 
 use super::uri::uri_to_path;
 
@@ -60,40 +61,26 @@ pub(crate) fn handle_diagnostics(
         None => return,
     };
 
-    let raw_diags = match params
-        .and_then(|p| p.get("diagnostics"))
-        .and_then(|v| v.as_array())
-    {
+    let raw_diags = match params.and_then(|p| p.get("diagnostics")).and_then(|v| v.as_array()) {
         Some(d) => d,
         None => {
             diagnostics.insert(uri, Vec::new());
             return;
-        }
+        },
     };
 
     // Convert the URI back to a file path for storage
     let file_path = uri_to_path(&uri);
 
-    let parsed: Vec<LspDiagnostic> = raw_diags
-        .iter()
-        .filter_map(|d| parse_diagnostic(d, &file_path, server_name))
-        .collect();
+    let parsed: Vec<LspDiagnostic> =
+        raw_diags.iter().filter_map(|d| parse_diagnostic(d, &file_path, server_name)).collect();
 
-    tracing::debug!(
-        "LSP server {}: {} diagnostics for {}",
-        server_name,
-        parsed.len(),
-        file_path
-    );
+    tracing::debug!("LSP server {}: {} diagnostics for {}", server_name, parsed.len(), file_path);
 
     diagnostics.insert(uri, parsed);
 }
 
-pub(crate) fn parse_diagnostic(
-    d: &serde_json::Value,
-    file_path: &str,
-    server_name: &str,
-) -> Option<LspDiagnostic> {
+pub(crate) fn parse_diagnostic(d: &serde_json::Value, file_path: &str, server_name: &str) -> Option<LspDiagnostic> {
     let range = d.get("range")?;
     let start = range.get("start")?;
     let line = start.get("line")?.as_u64()? as u32 + 1; // LSP is 0-based
@@ -106,11 +93,8 @@ pub(crate) fn parse_diagnostic(
         .map(DiagnosticSeverity::from_lsp_int)
         .unwrap_or(DiagnosticSeverity::Error);
 
-    let source = d
-        .get("source")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| Some(server_name.to_string()));
+    let source =
+        d.get("source").and_then(|v| v.as_str()).map(|s| s.to_string()).or_else(|| Some(server_name.to_string()));
 
     let code = d.get("code").map(|v| match v {
         serde_json::Value::String(s) => s.clone(),
@@ -118,15 +102,7 @@ pub(crate) fn parse_diagnostic(
         other => other.to_string(),
     });
 
-    Some(LspDiagnostic {
-        file: file_path.to_string(),
-        line,
-        column,
-        severity,
-        message,
-        source,
-        code,
-    })
+    Some(LspDiagnostic { file: file_path.to_string(), line, column, severity, message, source, code })
 }
 
 /// Format diagnostics into a human-readable multi-line string.
@@ -144,14 +120,8 @@ pub fn format_diagnostics(diagnostics: &[LspDiagnostic]) -> String {
                 d.line,
                 d.column,
                 d.message,
-                d.source
-                    .as_deref()
-                    .map(|s| format!(" ({})", s))
-                    .unwrap_or_default(),
-                d.code
-                    .as_deref()
-                    .map(|c| format!(" [{}]", c))
-                    .unwrap_or_default(),
+                d.source.as_deref().map(|s| format!(" ({})", s)).unwrap_or_default(),
+                d.code.as_deref().map(|c| format!(" [{}]", c)).unwrap_or_default(),
             )
         })
         .collect::<Vec<_>>()

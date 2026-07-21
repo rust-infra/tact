@@ -41,13 +41,7 @@ impl SelectPopup {
     }
 
     /// Set popup content without a oneshot channel (local TUI flows like `/model`).
-    pub(crate) fn set_local(
-        &mut self,
-        prompt: String,
-        options: Vec<String>,
-        selected: usize,
-        log_confirm: bool,
-    ) {
+    pub(crate) fn set_local(&mut self, prompt: String, options: Vec<String>, selected: usize, log_confirm: bool) {
         self.prompt = prompt;
         self.options = options;
         self.selected = selected.min(self.options.len().saturating_sub(1));
@@ -109,12 +103,7 @@ impl SelectPopup {
 
     /// Confirm multi-select: send all checked indices (may be empty).
     pub(crate) fn confirm_multi(&mut self) -> Vec<usize> {
-        let idxs: Vec<usize> = self
-            .checked
-            .iter()
-            .enumerate()
-            .filter_map(|(i, on)| on.then_some(i))
-            .collect();
+        let idxs: Vec<usize> = self.checked.iter().enumerate().filter_map(|(i, on)| on.then_some(i)).collect();
         if let Some(tx) = self.respond_multi.take() {
             let _ = tx.send(Some(idxs.clone()));
         }

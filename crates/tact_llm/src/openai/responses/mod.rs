@@ -13,12 +13,10 @@ use serde_json::Value;
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, OpenAiReasoningEffort,
-    StopReason,
-};
-
 use self::{convert::create_response, normalize::NormalizedResponse, stream::ResponsesStreamState};
+use crate::{
+    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, OpenAiReasoningEffort, StopReason,
+};
 
 fn set_default_id(value: &mut Value, default_id: String) {
     let Some(object) = value.as_object_mut() else {
@@ -44,19 +42,14 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
                 response["status"] = Value::String(status.to_string());
             }
         }
-        if let Some(output) = event
-            .get_mut("response")
-            .and_then(|response| response.get_mut("output"))
-            .and_then(Value::as_array_mut)
+        if let Some(output) =
+            event.get_mut("response").and_then(|response| response.get_mut("output")).and_then(Value::as_array_mut)
         {
             for (index, item) in output.iter_mut().enumerate() {
                 set_default_id(item, format!("compat-output-item-{index}"));
                 let is_message = item.get("type").and_then(Value::as_str) == Some("message");
-                let is_function_call =
-                    item.get("type").and_then(Value::as_str) == Some("function_call");
-                if (is_message || is_function_call)
-                    && !item.get("status").is_some_and(Value::is_string)
-                {
+                let is_function_call = item.get("type").and_then(Value::as_str) == Some("function_call");
+                if (is_message || is_function_call) && !item.get("status").is_some_and(Value::is_string) {
                     item["status"] = Value::String(status.to_string());
                 }
                 if !is_message {
@@ -80,9 +73,7 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
 
 fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmError> {
     let Some(event_type) = event.get("type").and_then(Value::as_str) else {
-        return Err(LlmError::Other(
-            "deserialize OpenAI Responses stream event: missing field `type`".to_string(),
-        ));
+        return Err(LlmError::Other("deserialize OpenAI Responses stream event: missing field `type`".to_string()));
     };
     let consumed = matches!(
         event_type,
@@ -100,11 +91,7 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
     }
     serde_json::from_value(normalize_stream_event_json(event))
         .map(Some)
-        .map_err(|error| {
-            LlmError::Other(format!(
-                "deserialize OpenAI Responses stream event: {error}"
-            ))
-        })
+        .map_err(|error| LlmError::Other(format!("deserialize OpenAI Responses stream event: {error}")))
 }
 
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
@@ -127,11 +114,7 @@ impl OpenAiResponsesAdapter {
             .with_api_base(base_url.clone())
             .with_org_id("")
             .with_project_id("");
-        Self {
-            client: Client::with_config(config),
-            base_url,
-            reasoning_effort,
-        }
+        Self { client: Client::with_config(config), base_url, reasoning_effort }
     }
 
     pub fn base_url(&self) -> &str {
@@ -141,18 +124,8 @@ impl OpenAiResponsesAdapter {
     fn into_result(
         normalized: NormalizedResponse,
         request_body: LlmRequestBody,
-    ) -> (
-        Vec<ContentBlock>,
-        Option<StopReason>,
-        Option<TokenUsageInfo>,
-        Option<LlmRequestBody>,
-    ) {
-        (
-            normalized.blocks,
-            normalized.stop_reason,
-            normalized.usage,
-            Some(request_body),
-        )
+    ) -> (Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>) {
+        (normalized.blocks, normalized.stop_reason, normalized.usage, Some(request_body))
     }
 }
 
@@ -162,25 +135,13 @@ impl LlmClient for OpenAiResponsesAdapter {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)
             .map_err(|error| LlmError::Other(format!("serialize Responses request: {error}")))?;
-        let mut response_stream = self
-            .client
-            .responses()
-            .create_stream_byot::<_, Value>(wire_request)
-            .await
-            .map_err(LlmError::from)?;
+        let mut response_stream =
+            self.client.responses().create_stream_byot::<_, Value>(wire_request).await.map_err(LlmError::from)?;
         let mut state = ResponsesStreamState::default();
 
         while let Some(result) = response_stream.next().await {
@@ -196,7 +157,7 @@ impl LlmClient for OpenAiResponsesAdapter {
                         let _ = tx.send(update);
                     }
                     return Err(LlmError::from(error));
-                }
+                },
             };
             let updates = match state.apply(event) {
                 Ok(updates) => updates,
@@ -207,7 +168,7 @@ impl LlmClient for OpenAiResponsesAdapter {
                         let _ = tx.send(update);
                     }
                     return Err(error);
-                }
+                },
             };
             for update in updates {
                 if let Some(tx) = &ui_tx {
@@ -233,39 +194,21 @@ impl LlmClient for OpenAiResponsesAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)
             .map_err(|error| LlmError::Other(format!("serialize Responses request: {error}")))?;
-        let response = self
-            .client
-            .responses()
-            .create_byot::<_, Response>(wire_request)
-            .await
-            .map_err(LlmError::from)?;
-        Ok(Self::into_result(
-            normalize::normalize_response(response)?,
-            request_body,
-        ))
+        let response =
+            self.client.responses().create_byot::<_, Response>(wire_request).await.map_err(LlmError::from)?;
+        Ok(Self::into_result(normalize::normalize_response(response)?, request_body))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{normalize_stream_event_json, parse_stream_event};
-    use crate::{
-        ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
-        StopReason, Tool,
-    };
+    use crate::{ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role, StopReason, Tool};
 
     #[test]
     fn fills_missing_output_text_annotations_for_terminal_events() {
@@ -279,10 +222,7 @@ mod tests {
             }
         }));
 
-        assert_eq!(
-            event["response"]["output"][0]["content"][0]["annotations"],
-            serde_json::json!([])
-        );
+        assert_eq!(event["response"]["output"][0]["content"][0]["annotations"], serde_json::json!([]));
     }
 
     #[test]
@@ -318,10 +258,7 @@ mod tests {
     fn infers_terminal_response_status_from_the_event_type() {
         let mut response = super::normalize::tests::completed_response_json();
         response.as_object_mut().unwrap().remove("status");
-        response["output"][1]
-            .as_object_mut()
-            .unwrap()
-            .remove("status");
+        response["output"][1].as_object_mut().unwrap().remove("status");
 
         let event = parse_stream_event(serde_json::json!({
             "type": "response.completed",
@@ -336,10 +273,7 @@ mod tests {
     #[test]
     fn infers_completed_status_for_terminal_function_calls() {
         let mut response = super::normalize::tests::completed_response_json();
-        response["output"][2]
-            .as_object_mut()
-            .unwrap()
-            .remove("status");
+        response["output"][2].as_object_mut().unwrap().remove("status");
 
         let event = normalize_stream_event_json(serde_json::json!({
             "type": "response.completed",
@@ -347,10 +281,7 @@ mod tests {
             "response": response
         }));
 
-        assert_eq!(
-            event["response"]["output"][2]["status"],
-            serde_json::json!("completed")
-        );
+        assert_eq!(event["response"]["output"][2]["status"], serde_json::json!("completed"));
     }
 
     /// Run with:
@@ -360,12 +291,11 @@ mod tests {
     async fn live_responses_stream_handles_test_endpoint() {
         dotenvy::dotenv().ok();
 
-        let api_key = std::env::var("OPENAI_API_KEY_TEST")
-            .expect("OPENAI_API_KEY_TEST must be set for the live Responses test");
+        let api_key =
+            std::env::var("OPENAI_API_KEY_TEST").expect("OPENAI_API_KEY_TEST must be set for the live Responses test");
         let base_url = std::env::var("OPENAI_BASE_URL_TEST")
             .expect("OPENAI_BASE_URL_TEST must be set for the live Responses test");
-        let model =
-            std::env::var("OPENAI_MODEL_TEST").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+        let model = std::env::var("OPENAI_MODEL_TEST").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
         let first_user = Message::new_text(Role::User, "Reply with the single word: responses.");
         let request = CreateMessageParams::new(RequiredMessageParams {
             model,
@@ -374,10 +304,8 @@ mod tests {
         });
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
-        let (blocks, stop_reason, _usage, request_body) = adapter
-            .stream_message(&request, None)
-            .await
-            .expect("Responses stream request should succeed");
+        let (blocks, stop_reason, _usage, request_body) =
+            adapter.stream_message(&request, None).await.expect("Responses stream request should succeed");
         let visible_text = blocks
             .iter()
             .filter_map(|block| match block {
@@ -387,14 +315,8 @@ mod tests {
             .collect::<String>();
 
         assert_eq!(stop_reason, Some(StopReason::EndTurn));
-        assert!(
-            !visible_text.trim().is_empty(),
-            "expected visible response text"
-        );
-        assert!(
-            request_body.is_some(),
-            "expected serialized Responses request"
-        );
+        assert!(!visible_text.trim().is_empty(), "expected visible response text");
+        assert!(request_body.is_some(), "expected serialized Responses request");
 
         let follow_up = CreateMessageParams::new(RequiredMessageParams {
             model: request.model.clone(),
@@ -405,15 +327,15 @@ mod tests {
             ],
             max_tokens: 128,
         });
-        let (follow_up_blocks, follow_up_stop_reason, _usage, _request_body) = adapter
-            .stream_message(&follow_up, None)
-            .await
-            .expect("second Responses stream request should succeed");
+        let (follow_up_blocks, follow_up_stop_reason, _usage, _request_body) =
+            adapter.stream_message(&follow_up, None).await.expect("second Responses stream request should succeed");
 
         assert_eq!(follow_up_stop_reason, Some(StopReason::EndTurn));
-        assert!(follow_up_blocks.iter().any(|block| {
-            matches!(block, crate::ContentBlock::Text { text } if !text.trim().is_empty())
-        }));
+        assert!(
+            follow_up_blocks
+                .iter()
+                .any(|block| { matches!(block, crate::ContentBlock::Text { text } if !text.trim().is_empty()) })
+        );
     }
 
     /// Run with:
@@ -423,12 +345,11 @@ mod tests {
     async fn live_responses_stream_calls_tool_on_test_endpoint() {
         dotenvy::dotenv().ok();
 
-        let api_key = std::env::var("OPENAI_API_KEY_TEST")
-            .expect("OPENAI_API_KEY_TEST must be set for the live Responses test");
+        let api_key =
+            std::env::var("OPENAI_API_KEY_TEST").expect("OPENAI_API_KEY_TEST must be set for the live Responses test");
         let base_url = std::env::var("OPENAI_BASE_URL_TEST")
             .expect("OPENAI_BASE_URL_TEST must be set for the live Responses test");
-        let model =
-            std::env::var("OPENAI_MODEL_TEST").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+        let model = std::env::var("OPENAI_MODEL_TEST").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
         let first_user = Message::new_text(Role::User, "commit");
         let system = "You are a coding agent. Complete the user's request instead of stopping after an \
              explanation. Before committing, use the bash tool to inspect repository status. \
@@ -451,20 +372,12 @@ mod tests {
         .with_tools(tools.clone());
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
-        let (blocks, stop_reason, _usage, _request_body) = adapter
-            .stream_message(&request, None)
-            .await
-            .expect("Responses stream request with a tool should succeed");
+        let (blocks, stop_reason, _usage, _request_body) =
+            adapter.stream_message(&request, None).await.expect("Responses stream request with a tool should succeed");
 
-        assert_eq!(
-            stop_reason,
-            Some(StopReason::ToolUse),
-            "blocks: {blocks:#?}"
-        );
+        assert_eq!(stop_reason, Some(StopReason::ToolUse), "blocks: {blocks:#?}");
         assert!(
-            blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "bash")),
+            blocks.iter().any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "bash")),
             "expected a bash tool call, got: {blocks:#?}"
         );
 
@@ -482,10 +395,7 @@ mod tests {
                 Message::new_blocks(Role::Assistant, blocks),
                 Message::new_blocks(
                     Role::User,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id,
-                        content: "## main\n M src/lib.rs".into(),
-                    }],
+                    vec![ContentBlock::ToolResult { tool_use_id, content: "## main\n M src/lib.rs".into() }],
                 ),
             ],
             max_tokens: 512,
@@ -498,15 +408,9 @@ mod tests {
             .await
             .expect("Responses follow-up after a tool result should succeed");
 
-        assert_eq!(
-            follow_up_stop_reason,
-            Some(StopReason::ToolUse),
-            "blocks: {follow_up_blocks:#?}"
-        );
+        assert_eq!(follow_up_stop_reason, Some(StopReason::ToolUse), "blocks: {follow_up_blocks:#?}");
         assert!(
-            follow_up_blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "bash"))
+            follow_up_blocks.iter().any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "bash"))
         );
     }
 }

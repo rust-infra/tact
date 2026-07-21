@@ -4,8 +4,7 @@
 //! - [`CreateMessageParams`] — shared request model (Anthropic Messages shape)
 //! - [`StopReason`] — shared stop signal for the agent loop
 
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -112,9 +111,7 @@ impl FromStr for OpenAiProtocol {
         match value {
             "chat_completions" => Ok(Self::ChatCompletions),
             "responses" => Ok(Self::Responses),
-            other => Err(format!(
-                "unknown OpenAI protocol '{other}'; expected chat_completions|responses"
-            )),
+            other => Err(format!("unknown OpenAI protocol '{other}'; expected chat_completions|responses")),
         }
     }
 }
@@ -166,9 +163,7 @@ impl FromStr for ProviderKind {
             "openai" => Ok(Self::OpenAi),
             "deepseek" => Ok(Self::DeepSeek),
             "kimi" => Ok(Self::Kimi),
-            other => Err(format!(
-                "unknown provider '{other}'; expected anthropic|openai|deepseek|kimi"
-            )),
+            other => Err(format!("unknown provider '{other}'; expected anthropic|openai|deepseek|kimi")),
         }
     }
 }
@@ -369,9 +364,10 @@ impl StopReason {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::{Message, Role};
-    use std::str::FromStr;
 
     #[test]
     fn builder_sets_optional_fields() {
@@ -382,10 +378,7 @@ mod tests {
         })
         .with_system("sys")
         .with_stream(true)
-        .with_thinking(Thinking {
-            budget_tokens: 1024,
-            type_: ThinkingType::Enabled,
-        });
+        .with_thinking(Thinking { budget_tokens: 1024, type_: ThinkingType::Enabled });
 
         assert_eq!(params.system.as_deref(), Some("sys"));
         assert_eq!(params.stream, Some(true));
@@ -399,10 +392,7 @@ mod tests {
             messages: vec![],
             max_tokens: 10,
         })
-        .with_thinking(Thinking {
-            budget_tokens: 2048,
-            type_: ThinkingType::Enabled,
-        });
+        .with_thinking(Thinking { budget_tokens: 2048, type_: ThinkingType::Enabled });
         let json = serde_json::to_value(&params).unwrap();
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["thinking"]["budget_tokens"], 2048);
@@ -411,45 +401,22 @@ mod tests {
 
     #[test]
     fn anthropic_maps_known_and_unknown() {
-        assert_eq!(
-            StopReason::from_anthropic(Some("pause_turn")),
-            Some(StopReason::PauseTurn)
-        );
-        assert_eq!(
-            StopReason::from_anthropic(Some("refusal")),
-            Some(StopReason::Refusal)
-        );
-        assert_eq!(
-            StopReason::from_anthropic(Some("model_context_window_exceeded")),
-            Some(StopReason::MaxTokens)
-        );
-        assert_eq!(
-            StopReason::from_anthropic(Some("brand_new")),
-            Some(StopReason::Unknown("brand_new".into()))
-        );
+        assert_eq!(StopReason::from_anthropic(Some("pause_turn")), Some(StopReason::PauseTurn));
+        assert_eq!(StopReason::from_anthropic(Some("refusal")), Some(StopReason::Refusal));
+        assert_eq!(StopReason::from_anthropic(Some("model_context_window_exceeded")), Some(StopReason::MaxTokens));
+        assert_eq!(StopReason::from_anthropic(Some("brand_new")), Some(StopReason::Unknown("brand_new".into())));
         assert_eq!(StopReason::from_anthropic(None), None);
     }
 
     #[test]
     fn openai_maps_known() {
-        assert_eq!(
-            StopReason::from_openai(Some("tool_calls")),
-            Some(StopReason::ToolUse)
-        );
-        assert_eq!(
-            StopReason::from_openai(Some("length")),
-            Some(StopReason::MaxTokens)
-        );
+        assert_eq!(StopReason::from_openai(Some("tool_calls")), Some(StopReason::ToolUse));
+        assert_eq!(StopReason::from_openai(Some("length")), Some(StopReason::MaxTokens));
     }
 
     #[test]
     fn provider_kind_from_str_round_trip() {
-        for kind in [
-            ProviderKind::Anthropic,
-            ProviderKind::OpenAi,
-            ProviderKind::DeepSeek,
-            ProviderKind::Kimi,
-        ] {
+        for kind in [ProviderKind::Anthropic, ProviderKind::OpenAi, ProviderKind::DeepSeek, ProviderKind::Kimi] {
             assert_eq!(ProviderKind::from_str(kind.as_str()).unwrap(), kind);
             assert_eq!(kind.to_string(), kind.as_str());
         }
@@ -463,18 +430,9 @@ mod tests {
 
     #[test]
     fn provider_kind_default_base_urls() {
-        assert_eq!(
-            ProviderKind::OpenAi.default_base_url(),
-            Some("https://api.openai.com/v1")
-        );
-        assert_eq!(
-            ProviderKind::DeepSeek.default_base_url(),
-            Some("https://api.deepseek.com")
-        );
-        assert_eq!(
-            ProviderKind::Kimi.default_base_url(),
-            Some("https://api.moonshot.cn/v1")
-        );
+        assert_eq!(ProviderKind::OpenAi.default_base_url(), Some("https://api.openai.com/v1"));
+        assert_eq!(ProviderKind::DeepSeek.default_base_url(), Some("https://api.deepseek.com"));
+        assert_eq!(ProviderKind::Kimi.default_base_url(), Some("https://api.moonshot.cn/v1"));
         assert_eq!(ProviderKind::Anthropic.default_base_url(), None);
     }
 
@@ -489,10 +447,7 @@ mod tests {
     #[test]
     fn openai_protocol_from_str_round_trip_and_default() {
         for protocol in [OpenAiProtocol::ChatCompletions, OpenAiProtocol::Responses] {
-            assert_eq!(
-                OpenAiProtocol::from_str(protocol.as_str()).unwrap(),
-                protocol
-            );
+            assert_eq!(OpenAiProtocol::from_str(protocol.as_str()).unwrap(), protocol);
             assert_eq!(protocol.to_string(), protocol.as_str());
         }
         assert_eq!(OpenAiProtocol::default(), OpenAiProtocol::ChatCompletions);
@@ -518,14 +473,8 @@ mod tests {
     fn openai_reasoning_effort_rejects_unknown_and_overrides_budget() {
         let error = OpenAiReasoningEffort::from_str("extreme").unwrap_err();
         assert!(error.contains("none|minimal|low|medium|high|xhigh|max"));
-        assert_eq!(
-            effective_reasoning_effort(Some(OpenAiReasoningEffort::Max), 1),
-            Some(OpenAiReasoningEffort::Max)
-        );
+        assert_eq!(effective_reasoning_effort(Some(OpenAiReasoningEffort::Max), 1), Some(OpenAiReasoningEffort::Max));
         assert_eq!(effective_reasoning_effort(None, 0), None);
-        assert_eq!(
-            effective_reasoning_effort(None, 32_001),
-            Some(OpenAiReasoningEffort::High)
-        );
+        assert_eq!(effective_reasoning_effort(None, 32_001), Some(OpenAiReasoningEffort::High));
     }
 }

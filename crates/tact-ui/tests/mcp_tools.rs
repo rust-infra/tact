@@ -16,8 +16,7 @@ use rmcp::{
 };
 use serde_json::json;
 use tact::mcp::{MCPToolRouter, McpClient, MockMcpService};
-use tact_llm::MockClient;
-use tact_llm::{ContentBlock, StopReason};
+use tact_llm::{ContentBlock, MockClient, StopReason};
 use tact_protocol::{AgentUpdate, StepStatus};
 
 fn echo_tool() -> McpTool {
@@ -53,9 +52,7 @@ async fn agent_routes_mcp_tool_through_mock_server() {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "echo: {message}"
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(format!("echo: {message}"))]))
     });
 
     let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
@@ -63,34 +60,16 @@ async fn agent_routes_mcp_tool_through_mock_server() {
     router.register_client(client);
 
     // The MCP tool spec is exposed to the LLM alongside local tools.
-    assert!(
-        router
-            .all_tools()
-            .iter()
-            .any(|spec| spec.name == "mcp__demo__echo")
-    );
+    assert!(router.all_tools().iter().any(|spec| spec.name == "mcp__demo__echo"));
 
     let mock = MockClient::new(vec![
-        (
-            vec![mcp_echo_tool_use("tu1", "hi")],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![ContentBlock::Text {
-                text: "done".to_string(),
-            }],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![mcp_echo_tool_use("tu1", "hi")], Some(StopReason::ToolUse)),
+        (vec![ContentBlock::Text { text: "done".to_string() }], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, _work_dir) = run_single_task_with_mcp(
-        mock,
-        "call the echo tool",
-        tact::permission::PermissionMode::Auto,
-        None,
-        router,
-    )
-    .await;
+    let (updates, _work_dir) =
+        run_single_task_with_mcp(mock, "call the echo tool", tact::permission::PermissionMode::Auto, None, router)
+            .await;
 
     assert!(updates.iter().any(|u| matches!(
         u,
@@ -103,34 +82,19 @@ async fn agent_routes_mcp_tool_through_mock_server() {
 async fn large_mcp_output_is_persisted() {
     let echo = echo_tool();
     let service = MockMcpService::new(vec![echo.clone()], |_params| {
-        Ok(CallToolResult::success(vec![Content::text(
-            "x".repeat(30_001),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text("x".repeat(30_001))]))
     });
     let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
     let mut router = MCPToolRouter::new();
     router.register_client(client);
     let mock = MockClient::new(vec![
-        (
-            vec![mcp_echo_tool_use("mcp_big", "large")],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![ContentBlock::Text {
-                text: "done".to_string(),
-            }],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![mcp_echo_tool_use("mcp_big", "large")], Some(StopReason::ToolUse)),
+        (vec![ContentBlock::Text { text: "done".to_string() }], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, work_dir) = run_single_task_with_mcp(
-        mock,
-        "call large MCP tool",
-        tact::permission::PermissionMode::Auto,
-        None,
-        router,
-    )
-    .await;
+    let (updates, work_dir) =
+        run_single_task_with_mcp(mock, "call large MCP tool", tact::permission::PermissionMode::Auto, None, router)
+            .await;
 
     assert!(updates.iter().any(|update| matches!(
         update,
@@ -146,9 +110,7 @@ async fn large_mcp_output_is_persisted() {
 async fn mcp_tool_error_is_reported_as_step_failure() {
     let echo = echo_tool();
     let service = MockMcpService::new(vec![echo.clone()], |_params| {
-        Ok(CallToolResult::error(vec![Content::text(
-            "server exploded",
-        )]))
+        Ok(CallToolResult::error(vec![Content::text("server exploded")]))
     });
 
     let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
@@ -156,26 +118,13 @@ async fn mcp_tool_error_is_reported_as_step_failure() {
     router.register_client(client);
 
     let mock = MockClient::new(vec![
-        (
-            vec![mcp_echo_tool_use("tu1", "hi")],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![ContentBlock::Text {
-                text: "done".to_string(),
-            }],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![mcp_echo_tool_use("tu1", "hi")], Some(StopReason::ToolUse)),
+        (vec![ContentBlock::Text { text: "done".to_string() }], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, _work_dir) = run_single_task_with_mcp(
-        mock,
-        "call the echo tool",
-        tact::permission::PermissionMode::Auto,
-        None,
-        router,
-    )
-    .await;
+    let (updates, _work_dir) =
+        run_single_task_with_mcp(mock, "call the echo tool", tact::permission::PermissionMode::Auto, None, router)
+            .await;
 
     // The router's joined content for an error result is the error text; the
     // agent still records the step as successful execution of the tool itself,
@@ -198,9 +147,7 @@ async fn mcp_tool_prompts_in_default_mode() {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "echo: {message}"
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(format!("echo: {message}"))]))
     });
 
     let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
@@ -208,16 +155,8 @@ async fn mcp_tool_prompts_in_default_mode() {
     router.register_client(client);
 
     let mock = MockClient::new(vec![
-        (
-            vec![mcp_echo_tool_use("tu1", "hi")],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![ContentBlock::Text {
-                text: "done".to_string(),
-            }],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![mcp_echo_tool_use("tu1", "hi")], Some(StopReason::ToolUse)),
+        (vec![ContentBlock::Text { text: "done".to_string() }], Some(StopReason::EndTurn)),
     ]);
 
     let (updates, _work_dir) = run_single_task_with_mcp(
@@ -245,10 +184,7 @@ async fn mcp_tool_prompts_in_default_mode() {
 async fn agent_recovers_when_mcp_tool_returns_error() {
     let echo = echo_tool();
     let service = MockMcpService::new(vec![echo.clone()], |_params| {
-        Err(ServiceError::McpError(McpError::internal_error(
-            "server exploded",
-            None,
-        )))
+        Err(ServiceError::McpError(McpError::internal_error("server exploded", None)))
     });
 
     let client = McpClient::with_service("demo", vec![echo], Arc::new(service));
@@ -256,26 +192,13 @@ async fn agent_recovers_when_mcp_tool_returns_error() {
     router.register_client(client);
 
     let mock = MockClient::new(vec![
-        (
-            vec![mcp_echo_tool_use("tu1", "hi")],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![ContentBlock::Text {
-                text: "recovered".to_string(),
-            }],
-            Some(StopReason::EndTurn),
-        ),
+        (vec![mcp_echo_tool_use("tu1", "hi")], Some(StopReason::ToolUse)),
+        (vec![ContentBlock::Text { text: "recovered".to_string() }], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, _work_dir) = run_single_task_with_mcp(
-        mock,
-        "call the echo tool",
-        tact::permission::PermissionMode::Auto,
-        None,
-        router,
-    )
-    .await;
+    let (updates, _work_dir) =
+        run_single_task_with_mcp(mock, "call the echo tool", tact::permission::PermissionMode::Auto, None, router)
+            .await;
 
     // The failed MCP tool should be recorded as a failed step.
     assert!(updates.iter().any(|u| matches!(

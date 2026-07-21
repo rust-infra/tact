@@ -1,12 +1,12 @@
 //! Log panel render coverage: P0 interaction, P1 content shapes, P2 chrome/edge cases.
 
-use super::test_harness::{
-    buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
-};
-use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
-use ratatui::style::Modifier;
 use std::collections::HashMap;
+
+use ratatui::style::Modifier;
 use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+
+use super::test_harness::{buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text};
+use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -16,10 +16,7 @@ fn seed_many_numbered_lines(app: &mut App, count: usize) {
 
 fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
     app.plan.visible = true;
-    let output: String = (1..=line_count)
-        .map(|n| format!("bash-out-{n:02}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let output: String = (1..=line_count).map(|n| format!("bash-out-{n:02}")).collect::<Vec<_>>().join("\n");
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
         "run shell",
         "bash",
@@ -60,9 +57,7 @@ fn line_index_of(rendered: &str, needle: &str) -> Option<usize> {
 fn buffer_column_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
-            let suffix: String = (x..buffer.area.width)
-                .map(|col| buffer[(col, y)].symbol())
-                .collect();
+            let suffix: String = (x..buffer.area.width).map(|col| buffer[(col, y)].symbol()).collect();
             if suffix.starts_with(needle) {
                 return Some(x);
             }
@@ -107,17 +102,11 @@ fn log_scroll_offset_hides_early_lines() {
 
     app.log_scroll.offset = 0;
     let top = render_log_panel_text(&mut app, 60, 10);
-    assert!(
-        top.contains("log-row-00"),
-        "at offset 0 the first row should be visible, got:\n{top}"
-    );
+    assert!(top.contains("log-row-00"), "at offset 0 the first row should be visible, got:\n{top}");
 
     app.log_scroll.offset = u16::MAX;
     let bottom = render_log_panel_text(&mut app, 60, 10);
-    assert!(
-        !bottom.contains("log-row-00"),
-        "scrolled to bottom should hide the first row, got:\n{bottom}"
-    );
+    assert!(!bottom.contains("log-row-00"), "scrolled to bottom should hide the first row, got:\n{bottom}");
     assert!(
         bottom.contains("log-row-39") || bottom.contains("log-row-38"),
         "scrolled to bottom should show the last rows, got:\n{bottom}"
@@ -161,9 +150,7 @@ fn log_mixed_categories_render_user_and_assistant() {
 fn log_assistant_reply_aligns_with_thinking_indent() {
     let mut app = make_app();
     app.add_user_message("user task".into());
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "thinking reference".into(),
-    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("thinking reference".into())));
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
     app.add_system_message("final assistant reply".into());
 
@@ -173,14 +160,8 @@ fn log_assistant_reply_aligns_with_thinking_indent() {
     let assistant_x = buffer_column_of(buffer, "final assistant reply").expect("assistant line");
     let user_x = buffer_column_of(buffer, "💬").expect("user line");
 
-    assert_eq!(
-        assistant_x, thinking_x,
-        "normal assistant replies should align with Thinking body text"
-    );
-    assert!(
-        user_x < assistant_x,
-        "user messages should stay left of the indented assistant reply"
-    );
+    assert_eq!(assistant_x, thinking_x, "normal assistant replies should align with Thinking body text");
+    assert!(user_x < assistant_x, "user messages should stay left of the indented assistant reply");
 }
 
 #[test]
@@ -190,19 +171,14 @@ fn log_task_end_separator_renders_dashed_rule() {
     app.add_task_end_separator();
 
     let text = render_log_panel_text(&mut app, 60, 12);
-    assert!(
-        text.contains('─'),
-        "task-end separator should render dashed rule, got:\n{text}"
-    );
+    assert!(text.contains('─'), "task-end separator should render dashed rule, got:\n{text}");
 }
 
 #[test]
 fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
     let mut app = make_app();
     for i in 1..=6 {
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
-            "reason line {i}\n"
-        ))));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!("reason line {i}\n"))));
     }
     app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
 
@@ -216,9 +192,7 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
 #[test]
 fn active_thinking_card_renders_a_three_line_tail_without_source_rows() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "one\ntwo\nthree\nfour\n".into(),
-    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("one\ntwo\nthree\nfour\n".into())));
 
     let text = render_log_panel_text(&mut app, 100, 24);
     assert!(text.contains("two") && text.contains("four"), "{text}");
@@ -229,16 +203,8 @@ fn active_thinking_card_renders_a_three_line_tail_without_source_rows() {
 #[test]
 fn log_sys_tool_message_uses_extra_indent() {
     let mut app = make_app();
-    app.append_msg(
-        ratatui::text::Line::from("plain assistant"),
-        "plain assistant".into(),
-        RawMessageType::LLM,
-    );
-    app.append_msg(
-        ratatui::text::Line::from("nested tool line"),
-        "nested tool line".into(),
-        RawMessageType::SysTool,
-    );
+    app.append_msg(ratatui::text::Line::from("plain assistant"), "plain assistant".into(), RawMessageType::LLM);
+    app.append_msg(ratatui::text::Line::from("nested tool line"), "nested tool line".into(), RawMessageType::SysTool);
 
     let text = render_log_panel_text(&mut app, 80, 12);
     let plain_x = line_column_of(&text, "plain assistant").expect("plain line");
@@ -273,14 +239,8 @@ fn log_stream_buffer_shows_in_progress_text() {
     app.handle_agent_update(AgentUpdate::StreamChunk("streaming partial".into()));
 
     let text = render_log_panel_text(&mut app, 80, 16);
-    assert!(
-        text.contains("streaming partial"),
-        "in-progress stream buffer should render in log, got:\n{text}"
-    );
-    assert!(
-        !app.stream.buffer.is_empty(),
-        "stream buffer should remain until task completes"
-    );
+    assert!(text.contains("streaming partial"), "in-progress stream buffer should render in log, got:\n{text}");
+    assert!(!app.stream.buffer.is_empty(), "stream buffer should remain until task completes");
 }
 
 // ── P2: scrollbar, cache, tool viewport, spinner ────────────────────────────
@@ -324,10 +284,7 @@ fn log_visual_cache_rebuilds_on_theme_change() {
     app.toggle_theme();
     render_log_panel_text(&mut app, 80, 16);
 
-    assert_ne!(
-        before, app.log_scroll.visual_cache_theme,
-        "theme toggle should invalidate visual cache theme tag"
-    );
+    assert_ne!(before, app.log_scroll.visual_cache_theme, "theme toggle should invalidate visual cache theme tag");
     assert_eq!(app.log_scroll.visual_cache_theme, app.theme.name);
 }
 
@@ -350,10 +307,7 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
         .get(placeholder_phys)
         .and_then(|v| *v)
         .expect("placeholder row should map to logical index");
-    assert!(
-        placeholder_logical > summary_logical,
-        "placeholder row should be below summary row"
-    );
+    assert!(placeholder_logical > summary_logical, "placeholder row should be below summary row");
 
     app.log_scroll.offset = placeholder_logical as u16;
     let mid = render_log_panel_text(&mut app, 100, 14);
@@ -373,10 +327,7 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
 #[test]
 fn log_loading_spinner_shows_braille_and_label() {
     let mut app = make_app();
-    app.status = Status::Executing {
-        current_step: 0,
-        total: 1,
-    };
+    app.status = Status::Executing { current_step: 0, total: 1 };
     app.append_blank(RawMessageType::SysTool);
     app.loading_idx = Some(app.messages.len().saturating_sub(1));
     app.spinner_frame = 3;

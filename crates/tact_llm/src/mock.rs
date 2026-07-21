@@ -1,7 +1,9 @@
 //! Deterministic mock LLM client for tests.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
@@ -15,14 +17,7 @@ struct MockTurn {
     usage: Option<TokenUsageInfo>,
 }
 
-type MockTurnResult = Result<
-    (
-        Vec<ContentBlock>,
-        Option<StopReason>,
-        Option<TokenUsageInfo>,
-    ),
-    LlmError,
->;
+type MockTurnResult = Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>;
 
 /// Backing behavior for [`MockClient`].
 trait MockClientInner: Send + Sync {
@@ -39,20 +34,9 @@ impl MockClientInner for CannedMockInner {
         &self,
         _request: &CreateMessageParams,
         idx: usize,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         let turn = &self.responses[idx % self.responses.len()];
-        Ok((
-            turn.blocks.clone(),
-            clone_stop_reason(&turn.stop_reason),
-            turn.usage.clone(),
-        ))
+        Ok((turn.blocks.clone(), clone_stop_reason(&turn.stop_reason), turn.usage.clone()))
     }
 }
 
@@ -65,28 +49,15 @@ where
     F: Fn(
             &CreateMessageParams,
             usize,
-        ) -> Result<
-            (
-                Vec<ContentBlock>,
-                Option<StopReason>,
-                Option<TokenUsageInfo>,
-            ),
-            LlmError,
-        > + Send
+        ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>
+        + Send
         + Sync,
 {
     fn next_turn(
         &self,
         request: &CreateMessageParams,
         idx: usize,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError> {
         (self.responder)(request, idx)
     }
 }
@@ -123,11 +94,7 @@ impl MockClient {
             Arc::new(CannedMockInner {
                 responses: responses
                     .into_iter()
-                    .map(|(blocks, stop_reason)| MockTurn {
-                        blocks,
-                        stop_reason,
-                        usage: None,
-                    })
+                    .map(|(blocks, stop_reason)| MockTurn { blocks, stop_reason, usage: None })
                     .collect(),
             }),
             false,
@@ -136,18 +103,12 @@ impl MockClient {
 
     /// Like [`Self::new`], but attaches token usage to each turn (and emits
     /// [`AgentUpdate::TokenUsage`] on `stream_message` when `ui_tx` is set).
-    pub fn with_usage(
-        responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>,
-    ) -> Self {
+    pub fn with_usage(responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>) -> Self {
         Self::with_inner(
             Arc::new(CannedMockInner {
                 responses: responses
                     .into_iter()
-                    .map(|(blocks, stop_reason, usage)| MockTurn {
-                        blocks,
-                        stop_reason,
-                        usage: Some(usage),
-                    })
+                    .map(|(blocks, stop_reason, usage)| MockTurn { blocks, stop_reason, usage: Some(usage) })
                     .collect(),
             }),
             false,
@@ -165,14 +126,8 @@ impl MockClient {
         F: Fn(
                 &CreateMessageParams,
                 usize,
-            ) -> Result<
-                (
-                    Vec<ContentBlock>,
-                    Option<StopReason>,
-                    Option<TokenUsageInfo>,
-                ),
-                LlmError,
-            > + Send
+            ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>), LlmError>
+            + Send
             + Sync
             + 'static,
     {
@@ -185,28 +140,18 @@ impl MockClient {
     /// successful turn.
     pub fn with_error(errors: Vec<LlmError>) -> Self {
         Self::with_responder(move |_request, idx| {
-            errors
-                .get(idx)
-                .map(|e| Err(clone_llm_error(e)))
-                .unwrap_or_else(|| Ok((vec![], None, None)))
+            errors.get(idx).map(|e| Err(clone_llm_error(e))).unwrap_or_else(|| Ok((vec![], None, None)))
         })
     }
 
     /// Enable emission of [`AgentUpdate::StreamChunk`] events during
     /// `stream_message` by splitting text blocks into word-sized chunks.
     pub fn with_streaming_chunks(self) -> Self {
-        Self {
-            emit_stream_chunks: true,
-            ..self
-        }
+        Self { emit_stream_chunks: true, ..self }
     }
 
     fn with_inner(inner: Arc<dyn MockClientInner + Send + Sync>, emit_stream_chunks: bool) -> Self {
-        Self {
-            inner,
-            counter: Arc::new(AtomicUsize::new(0)),
-            emit_stream_chunks,
-        }
+        Self { inner, counter: Arc::new(AtomicUsize::new(0)), emit_stream_chunks }
     }
 
     fn next_turn(&self, request: &CreateMessageParams) -> MockTurnResult {
@@ -228,11 +173,7 @@ impl MockClient {
                 let words: Vec<&str> = text.split_whitespace().collect();
                 let n = words.len();
                 for (i, word) in words.into_iter().enumerate() {
-                    let chunk = if i + 1 == n {
-                        word.to_string()
-                    } else {
-                        format!("{word} ")
-                    };
+                    let chunk = if i + 1 == n { word.to_string() } else { format!("{word} ") };
                     let _ = tx.send(AgentUpdate::StreamChunk(chunk));
                 }
             }
@@ -246,15 +187,7 @@ impl LlmClient for MockClient {
         &self,
         request: &CreateMessageParams,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         if let Some(ref u) = usage {
             Self::emit_token_usage(&ui_tx, u);
@@ -268,15 +201,7 @@ impl LlmClient for MockClient {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         Ok((blocks, stop_reason, usage, None))
     }

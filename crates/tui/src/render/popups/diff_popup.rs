@@ -1,5 +1,3 @@
-use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -8,12 +6,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
+use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
+use crate::widgets::state::App;
+
 /// Infer a language label from the file extension.
 fn lang_from_path(path: &str) -> String {
-    match std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-    {
+    match std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
         Some("rs") => "rust".to_string(),
         Some("py") => "python".to_string(),
         Some("js") | Some("mjs") => "javascript".to_string(),
@@ -46,12 +44,7 @@ fn syntax_highlight(
     if lang.is_empty() {
         return code
             .lines()
-            .map(|l| {
-                Line::from(Span::styled(
-                    l.to_string(),
-                    Style::default().fg(code_fg).bg(code_bg),
-                ))
-            })
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(code_fg).bg(code_bg))))
             .collect();
     }
 
@@ -121,9 +114,7 @@ fn load_popup_content(
             popup.inline_content.clone()
         })
     } else if let Some(path) = &popup.file_path {
-        std::fs::read_to_string(path)
-            .ok()
-            .or_else(|| popup.inline_content.clone())
+        std::fs::read_to_string(path).ok().or_else(|| popup.inline_content.clone())
     } else {
         popup.inline_content.clone()
     };
@@ -138,13 +129,7 @@ fn load_popup_content(
     }
 }
 
-fn render_popup_chrome(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    title: &str,
-    body: Text<'static>,
-) -> Rect {
+fn render_popup_chrome(frame: &mut Frame, area: Rect, app: &App, title: &str, body: Text<'static>) -> Rect {
     let popup_area = super::centered_popup_area(area);
     frame.render_widget(Clear, popup_area);
 
@@ -157,23 +142,12 @@ fn render_popup_chrome(
             .border_style(Style::default().fg(app.theme.code_card_border()))
             .title(Span::styled(
                 title,
-                Style::default()
-                    .fg(app.theme.code_card_title_fg())
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(app.theme.code_card_title_fg()).add_modifier(Modifier::BOLD),
             ))
             .title_bottom(Line::from(vec![
-                Span::styled(
-                    app.msgs().popup_copy_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
-                Span::styled(
-                    app.msgs().popup_scroll_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
-                Span::styled(
-                    app.msgs().popup_close_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
+                Span::styled(app.msgs().popup_copy_hint, Style::default().fg(app.theme.accent)),
+                Span::styled(app.msgs().popup_scroll_hint, Style::default().fg(app.theme.accent)),
+                Span::styled(app.msgs().popup_close_hint, Style::default().fg(app.theme.accent)),
             ]))
             .style(Style::default().bg(code_bg)),
     );
@@ -235,10 +209,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             app.msgs().tool_popup_empty.to_string()
         };
-        let body = Text::from(Line::from(Span::styled(
-            err,
-            Style::default().fg(app.theme.error).bg(code_bg),
-        )));
+        let body = Text::from(Line::from(Span::styled(err, Style::default().fg(app.theme.error).bg(code_bg))));
         let popup_area = render_popup_chrome(frame, area, app, &popup_title, body);
         app.mouse.diff_popup_area = popup_area;
         app.mouse.popup_text_body_area = body_area;
@@ -287,8 +258,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
             let style = Style::default().fg(fg).bg(code_bg).add_modifier(line_style);
             let styles = vec![style; source.text.chars().count()];
-            for display in layout_display_rows(source.text, source.start, &styles, body_width, true)
-            {
+            for display in layout_display_rows(source.text, source.start, &styles, body_width, true) {
                 if hit_rows.len() >= content_height {
                     break 'source;
                 }
@@ -307,22 +277,11 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         let plus_style = Style::default().fg(app.theme.success).bg(code_bg);
         let fallback_style = Style::default().fg(code_fg).bg(code_bg);
 
-        for (i, source) in source_lines
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(content_height)
-        {
+        for (i, source) in source_lines.iter().enumerate().skip(scroll).take(content_height) {
             debug_assert_eq!(source.end, source.start + source.text.len());
             let num = format!("{:>nw$}", i + 1, nw = num_width);
-            let styles = scalar_styles(
-                highlighted_lines.get(i),
-                fallback_style,
-                source.text.chars().count(),
-            );
-            let display =
-                layout_display_rows(source.text, source.start, &styles, code_width, false)
-                    .remove(0);
+            let styles = scalar_styles(highlighted_lines.get(i), fallback_style, source.text.chars().count());
+            let display = layout_display_rows(source.text, source.start, &styles, code_width, false).remove(0);
             let mut spans = vec![Span::styled(format!(" {} ", num), num_style)];
             if use_diff_gutter {
                 spans.push(Span::styled("+ ", plus_style));
@@ -338,11 +297,8 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let popup_area = render_popup_chrome(frame, area, app, &title, text);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
+    let scrollbar = Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
+    let mut state = ScrollbarState::new(total).viewport_content_length(content_height).position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
     app.mouse.diff_popup_area = popup_area;
@@ -502,23 +458,13 @@ mod tests {
         let red = Style::default().fg(ratatui::style::Color::Red);
         let blue = Style::default().fg(ratatui::style::Color::Blue);
         let green = Style::default().fg(ratatui::style::Color::Green);
-        let line = Line::from(vec![
-            Span::styled("ab", red),
-            Span::styled("👩‍💻", blue),
-            Span::styled("c", green),
-        ]);
+        let line = Line::from(vec![Span::styled("ab", red), Span::styled("👩‍💻", blue), Span::styled("c", green)]);
         let styles = scalar_styles(Some(&line), Style::default(), 7);
 
         let display = layout_display_rows("ab👩‍💻c", 10, &styles, 4, false).remove(0);
         let spans = display.spans(None);
 
-        assert_eq!(
-            spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>(),
-            "ab👩‍💻"
-        );
+        assert_eq!(spans.iter().map(|span| span.content.as_ref()).collect::<String>(), "ab👩‍💻");
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].style, red);
         assert_eq!(spans[1].style, blue);

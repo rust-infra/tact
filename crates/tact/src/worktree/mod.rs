@@ -52,22 +52,14 @@ pub struct SharedWorktreeManager {
 
 impl WorktreeManager {
     pub fn new(root: &StoreRoot, repo_root: PathBuf) -> Result<Self> {
-        let manager = Self {
-            repo_root,
-            index: root.file("worktrees/index.json")?,
-        };
+        let manager = Self { repo_root, index: root.file("worktrees/index.json")? };
         if !manager.index.exists() {
             manager.index.write(&WorktreeIndex::default())?;
         }
         Ok(manager)
     }
 
-    pub fn create(
-        &mut self,
-        name: String,
-        task_id: Option<u64>,
-        base_ref: String,
-    ) -> Result<String> {
+    pub fn create(&mut self, name: String, task_id: Option<u64>, base_ref: String) -> Result<String> {
         let mut index = self.index.read().unwrap_or_default();
         if index.worktrees.iter().any(|worktree| worktree.name == name) {
             anyhow::bail!("worktree {name} already exists");
@@ -76,14 +68,7 @@ impl WorktreeManager {
         let branch = format!("wt/{name}");
         let output = Command::new("git")
             .current_dir(&self.repo_root)
-            .args([
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                &dir.display().to_string(),
-                &base_ref,
-            ])
+            .args(["worktree", "add", "-b", &branch, &dir.display().to_string(), &base_ref])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .output()
@@ -104,9 +89,7 @@ impl WorktreeManager {
             status: "active".to_string(),
         };
         index.worktrees.push(record.clone());
-        index
-            .events
-            .push(format!("{} worktree.create {}", Utc::now(), name));
+        index.events.push(format!("{} worktree.create {}", Utc::now(), name));
         self.index.write(&index)?;
         serde_json::to_string_pretty(&record).context("failed to serialize worktree")
     }
@@ -142,11 +125,7 @@ impl WorktreeManager {
             .arg(command)
             .output()
             .with_context(|| format!("failed to run command in {}", record.path))?;
-        Ok(format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ))
+        Ok(format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
     }
 
     pub fn events(&self, limit: usize) -> Result<String> {
@@ -176,16 +155,11 @@ impl WorktreeManager {
 
 impl SharedWorktreeManager {
     pub fn new(manager: WorktreeManager) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(manager)),
-        }
+        Self { inner: Arc::new(Mutex::new(manager)) }
     }
 
     pub fn with_manager<T>(&self, f: impl FnOnce(&mut WorktreeManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("worktree manager lock poisoned"))?;
+        let mut manager = self.inner.lock().map_err(|_| anyhow::anyhow!("worktree manager lock poisoned"))?;
         f(&mut manager)
     }
 

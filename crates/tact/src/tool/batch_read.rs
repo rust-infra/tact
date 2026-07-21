@@ -3,19 +3,18 @@
 //! All paths are validated before any read begins. Files are read
 //! concurrently via `tokio::spawn` + `join_all`.
 
-use crate::tool::{ToolContext, safe_path};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
 
+use crate::tool::{ToolContext, safe_path};
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileRead {
     #[schemars(description = "Path to the file to read, relative to the current workspace.")]
     pub path: String,
-    #[schemars(
-        description = "Optional maximum number of lines to return from the start of the file."
-    )]
+    #[schemars(description = "Optional maximum number of lines to return from the start of the file.")]
     pub limit: Option<u64>,
     #[schemars(
         description = "Optional 1-based line number to start reading from. Use with limit to read specific sections."
@@ -27,9 +26,7 @@ pub struct FileRead {
 pub struct BatchReadInput {
     #[schemars(description = "List of files to read in parallel.")]
     pub files: Vec<FileRead>,
-    #[schemars(
-        description = "Optional human-readable description of what this batch read is for."
-    )]
+    #[schemars(description = "Optional human-readable description of what this batch read is for.")]
     #[serde(default)]
     #[allow(dead_code)]
     pub description: Option<String>,
@@ -46,8 +43,7 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
     }
 
     // Phase 1: validate all paths before reading
-    let mut prepare: Vec<(String, Option<u64>, Option<u64>)> =
-        Vec::with_capacity(input.files.len());
+    let mut prepare: Vec<(String, Option<u64>, Option<u64>)> = Vec::with_capacity(input.files.len());
     let mut errors: Vec<String> = Vec::new();
 
     for (i, f) in input.files.iter().enumerate() {
@@ -55,7 +51,7 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
             Ok(p) => prepare.push((p.display().to_string(), f.limit, f.offset)),
             Err(e) => {
                 errors.push(format!("File {}: invalid path {}: {}", i, f.path, e));
-            }
+            },
         }
     }
 
@@ -83,28 +79,21 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
 
     // Phase 3: assemble output with file headers
     let mut output = String::new();
-    output.push_str(&format!(
-        "BatchRead {} file{}:\n\n",
-        total,
-        if total != 1 { "s" } else { "" }
-    ));
+    output.push_str(&format!("BatchRead {} file{}:\n\n", total, if total != 1 { "s" } else { "" }));
 
     for (i, result) in results.into_iter().enumerate() {
-        let (path_str, limit, offset, content) =
-            result.map_err(|e| anyhow::anyhow!("BatchRead task panicked: {e}"))?;
+        let (path_str, limit, offset, content) = result.map_err(|e| anyhow::anyhow!("BatchRead task panicked: {e}"))?;
 
         output.push_str(&format!("── {} ──\n", path_str));
 
         match content {
             Err(e) => {
                 output.push_str(&format!("Error reading file: {}\n", e));
-            }
+            },
             Ok(text) => {
                 let mut lines: Vec<&str> = text.lines().collect();
 
-                let skip = offset
-                    .map(|o| (o.saturating_sub(1) as usize).min(lines.len()))
-                    .unwrap_or(0);
+                let skip = offset.map(|o| (o.saturating_sub(1) as usize).min(lines.len())).unwrap_or(0);
                 if skip > 0 {
                     lines = lines.into_iter().skip(skip).collect();
                     output.push_str(&format!("... ({} lines skipped) ...\n", skip));
@@ -122,7 +111,7 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
                     output.push_str(&lines.join("\n"));
                     output.push('\n');
                 }
-            }
+            },
         }
 
         if i < total - 1 {
@@ -136,9 +125,8 @@ pub async fn batch_read(ctx: ToolContext, input: BatchReadInput) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context, write_workspace_file};
 
     #[tokio::test]
     async fn batch_read_rejects_invalid_path_before_reading() {

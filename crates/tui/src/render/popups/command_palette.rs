@@ -1,4 +1,3 @@
-use crate::widgets::state::App;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,6 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, List, ListItem},
 };
+
+use crate::widgets::state::App;
 
 /// Map command name to emoji icon for palette display.
 fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
@@ -53,9 +54,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .filter(|(_, (cmd, desc))| {
-            filter.is_empty()
-                || cmd.to_lowercase().contains(&filter)
-                || desc.to_lowercase().contains(&filter)
+            filter.is_empty() || cmd.to_lowercase().contains(&filter) || desc.to_lowercase().contains(&filter)
         })
         .collect();
 
@@ -74,10 +73,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     let items: Vec<ListItem> = if filtered.is_empty() {
-        vec![ListItem::new(Span::styled(
-            msgs.palette_empty,
-            Style::default().fg(Color::Gray),
-        ))]
+        vec![ListItem::new(Span::styled(msgs.palette_empty, Style::default().fg(Color::Gray)))]
     } else {
         let selected = app.palette_selected.min(filtered.len().saturating_sub(1));
         let mut results: Vec<ListItem> = Vec::new();
@@ -89,9 +85,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
                 if !results.is_empty() || skill {
                     results.push(ListItem::new(Line::from(Span::styled(
                         cat,
-                        Style::default()
-                            .fg(Color::Rgb(100, 100, 120))
-                            .add_modifier(ratatui::style::Modifier::DIM),
+                        Style::default().fg(Color::Rgb(100, 100, 120)).add_modifier(ratatui::style::Modifier::DIM),
                     ))));
                 }
                 last_cat = cat;

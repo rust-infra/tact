@@ -1,12 +1,9 @@
 //! Shared HTTP utilities for web tools.
 
-use std::net::IpAddr;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{net::IpAddr, sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
-use reqwest::Url;
-use reqwest::redirect::Policy;
+use reqwest::{Url, redirect::Policy};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,7 +45,7 @@ pub fn validate_public_http_url(raw: &str) -> Result<Url> {
     let url = Url::parse(raw.trim()).context("Invalid URL")?;
 
     match url.scheme() {
-        "http" | "https" => {}
+        "http" | "https" => {},
         scheme => anyhow::bail!("Only http and https URLs are allowed, got {scheme}"),
     }
 
@@ -56,9 +53,7 @@ pub fn validate_public_http_url(raw: &str) -> Result<Url> {
         anyhow::bail!("URLs with embedded credentials are not allowed");
     }
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL must have a host"))?;
+    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("URL must have a host"))?;
 
     if is_blocked_host(host) {
         anyhow::bail!("Blocked host: {host}");
@@ -84,9 +79,8 @@ pub async fn validate_public_http_url_resolved(raw: &str) -> Result<Url> {
 
 async fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
     let mut resolved_any = false;
-    let mut addrs = tokio::net::lookup_host((host, port))
-        .await
-        .with_context(|| format!("failed to resolve host {host}"))?;
+    let mut addrs =
+        tokio::net::lookup_host((host, port)).await.with_context(|| format!("failed to resolve host {host}"))?;
 
     for addr in addrs.by_ref() {
         resolved_any = true;
@@ -118,18 +112,9 @@ fn is_blocked_host(host: &str) -> bool {
 fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_unicast_link_local()
-                || v6.is_unique_local()
-        }
+            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+        },
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || v6.is_unicast_link_local() || v6.is_unique_local(),
     }
 }
 
@@ -147,7 +132,7 @@ pub fn encode_query(value: &str) -> String {
                     // Writing to a String is infallible.
                     let _ = write!(encoded, "%{byte:02X}");
                 }
-            }
+            },
         }
     }
     encoded
@@ -186,10 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_public_http_url_resolved_blocks_localhost_dns() {
-        let err = validate_public_http_url_resolved("http://localhost/admin")
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = validate_public_http_url_resolved("http://localhost/admin").await.unwrap_err().to_string();
         assert!(err.contains("Blocked host"));
     }
 

@@ -63,10 +63,7 @@ pub struct PluginLoader {
 
 impl PluginLoader {
     pub fn new(search_dirs: Vec<PathBuf>) -> Self {
-        Self {
-            search_dirs,
-            plugins: HashMap::new(),
-        }
+        Self { search_dirs, plugins: HashMap::new() }
     }
 
     pub fn scan(&mut self) -> Result<Vec<String>> {
@@ -81,8 +78,8 @@ impl PluginLoader {
 
             let raw = fs::read_to_string(&manifest_path)
                 .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-            let manifest: PluginManifest = serde_json::from_str(&raw)
-                .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+            let manifest: PluginManifest =
+                serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", manifest_path.display()))?;
 
             loaded.push(manifest.name.clone());
             self.plugins.insert(manifest.name.clone(), manifest);
@@ -109,10 +106,7 @@ pub trait McpService: Send + Sync + 'static {
     fn list_all_tools(&self) -> BoxFuture<'_, Result<Vec<McpTool>, ServiceError>>;
 
     /// Execute a single tool call.
-    fn call_tool(
-        &self,
-        params: CallToolRequestParams,
-    ) -> BoxFuture<'_, Result<CallToolResult, ServiceError>>;
+    fn call_tool(&self, params: CallToolRequestParams) -> BoxFuture<'_, Result<CallToolResult, ServiceError>>;
 
     /// Optional cleanup hook. The default implementation is a no-op.
     fn cancel(&self) -> BoxFuture<'_, ()> {
@@ -140,10 +134,7 @@ impl McpService for RealMcpService {
         .boxed()
     }
 
-    fn call_tool(
-        &self,
-        params: CallToolRequestParams,
-    ) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
+    fn call_tool(&self, params: CallToolRequestParams) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
         async move {
             let guard = self.0.read().await;
             match guard.as_ref() {
@@ -180,17 +171,12 @@ impl McpClient {
         match Self::fetch_tools(&server_name, service.as_ref()).await {
             Ok(tools) => {
                 let tool_specs = build_tool_specs(&server_name, &tools);
-                Ok(Self {
-                    server_name,
-                    service,
-                    tools,
-                    tool_specs,
-                })
-            }
+                Ok(Self { server_name, service, tools, tool_specs })
+            },
             Err(err) => {
                 let _ = service.cancel().await;
                 Err(err)
-            }
+            },
         }
     }
 
@@ -198,29 +184,17 @@ impl McpClient {
     ///
     /// This is the entry point for test doubles: construct a [`MockMcpService`],
     /// wrap it, and register it with [`MCPToolRouter`].
-    pub fn with_service(
-        server_name: impl Into<String>,
-        tools: Vec<McpTool>,
-        service: Arc<dyn McpService>,
-    ) -> Self {
+    pub fn with_service(server_name: impl Into<String>, tools: Vec<McpTool>, service: Arc<dyn McpService>) -> Self {
         let server_name = server_name.into();
         let tool_specs = build_tool_specs(&server_name, &tools);
-        Self {
-            server_name,
-            service,
-            tools,
-            tool_specs,
-        }
+        Self { server_name, service, tools, tool_specs }
     }
 
     pub fn list_tools(&self) -> &[McpTool] {
         &self.tools
     }
 
-    async fn connect(
-        server_name: &str,
-        config: McpServerConfig,
-    ) -> Result<RunningService<RoleClient, ()>> {
+    async fn connect(server_name: &str, config: McpServerConfig) -> Result<RunningService<RoleClient, ()>> {
         let command = config.command;
         let args = config.args;
         let env = config.env;
@@ -231,16 +205,11 @@ impl McpClient {
         .with_context(|| format!("failed to spawn MCP server {server_name}"))?
         .0;
 
-        ().serve(transport)
-            .await
-            .with_context(|| format!("failed to initialize MCP client for server {server_name}"))
+        ().serve(transport).await.with_context(|| format!("failed to initialize MCP client for server {server_name}"))
     }
 
     async fn fetch_tools(server_name: &str, service: &dyn McpService) -> Result<Vec<McpTool>> {
-        service
-            .list_all_tools()
-            .await
-            .with_context(|| format!("failed to list tools from {server_name}"))
+        service.list_all_tools().await.with_context(|| format!("failed to list tools from {server_name}"))
     }
 
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<String> {
@@ -251,17 +220,12 @@ impl McpClient {
                 let mut map = Map::new();
                 map.insert("value".to_string(), other);
                 Some(map)
-            }
+            },
         };
 
         let result = self
             .service
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: tool_name.to_string().into(),
-                arguments,
-                task: None,
-            })
+            .call_tool(CallToolRequestParams { meta: None, name: tool_name.to_string().into(), arguments, task: None })
             .await
             .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
 
@@ -285,8 +249,7 @@ impl McpClient {
 ///
 /// Configure it with a tool list and a handler closure; calls are forwarded to
 /// the closure so tests can assert inputs and return canned responses.
-type McpToolHandler =
-    Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
+type McpToolHandler = Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
 
 pub struct MockMcpService {
     tools: Vec<McpTool>,
@@ -297,16 +260,9 @@ pub struct MockMcpService {
 impl MockMcpService {
     pub fn new<F>(tools: Vec<McpTool>, handler: F) -> Self
     where
-        F: Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync + 'static,
     {
-        Self {
-            tools,
-            handler: Arc::new(handler),
-            calls: std::sync::Mutex::new(Vec::new()),
-        }
+        Self { tools, handler: Arc::new(handler), calls: std::sync::Mutex::new(Vec::new()) }
     }
 
     /// Return every `(tool_name, arguments)` pair received so far.
@@ -321,20 +277,10 @@ impl McpService for MockMcpService {
         std::future::ready(Ok(tools)).boxed()
     }
 
-    fn call_tool(
-        &self,
-        params: CallToolRequestParams,
-    ) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
+    fn call_tool(&self, params: CallToolRequestParams) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
         let name = params.name.to_string();
-        let args = params
-            .arguments
-            .as_ref()
-            .map(|m| Value::Object(m.clone()))
-            .unwrap_or(Value::Null);
-        self.calls
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((name, args));
+        let args = params.arguments.as_ref().map(|m| Value::Object(m.clone())).unwrap_or(Value::Null);
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push((name, args));
         let handler = self.handler.clone();
         std::future::ready(handler(&params)).boxed()
     }
@@ -360,10 +306,7 @@ impl TryFrom<&str> for McpToolName {
             bail!("invalid MCP tool name: {tool_name}");
         }
 
-        Ok(Self {
-            server: server.to_string(),
-            tool: tool.to_string(),
-        })
+        Ok(Self { server: server.to_string(), tool: tool.to_string() })
     }
 }
 
@@ -387,27 +330,19 @@ impl MCPToolRouter {
 
     pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {
         let parsed = McpToolName::try_from(tool_name)?;
-        let client = self
-            .clients
-            .get(&parsed.server)
-            .with_context(|| format!("unknown MCP server {}", parsed.server))?;
+        let client =
+            self.clients.get(&parsed.server).with_context(|| format!("unknown MCP server {}", parsed.server))?;
 
         client.call_tool(&parsed.tool, arguments).await
     }
 
     pub fn all_tools(&self) -> Vec<ToolSpec> {
-        self.clients
-            .values()
-            .flat_map(|client| client.tool_specs.iter().map(copy_tool_spec))
-            .collect()
+        self.clients.values().flat_map(|client| client.tool_specs.iter().map(copy_tool_spec)).collect()
     }
 
     pub fn server_summaries(&self) -> Vec<(String, usize)> {
-        let mut summaries = self
-            .clients
-            .iter()
-            .map(|(name, client)| (name.clone(), client.tool_count()))
-            .collect::<Vec<_>>();
+        let mut summaries =
+            self.clients.iter().map(|(name, client)| (name.clone(), client.tool_count())).collect::<Vec<_>>();
         summaries.sort_by(|a, b| a.0.cmp(&b.0));
         summaries
     }
@@ -451,15 +386,12 @@ pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     while let Some((server_name, result)) = connections.next().await {
         match result {
             Ok(client) => {
-                println!(
-                    "[MCP connected: {server_name} ({} tools)]",
-                    client.list_tools().len()
-                );
+                println!("[MCP connected: {server_name} ({} tools)]", client.list_tools().len());
                 router.register_client(client);
-            }
+            },
             Err(err) => {
                 println!("[MCP connect failed: {server_name}: {err:#}]");
-            }
+            },
         }
     }
 
@@ -489,16 +421,14 @@ mod tests {
 
     use rmcp::{
         ErrorData as McpError, ServerHandler, ServiceExt,
-        model::{
-            CallToolResult, Content, JsonObject, ListToolsResult, ServerInfo, Tool as McpTool,
-        },
+        model::{CallToolResult, Content, JsonObject, ListToolsResult, ServerInfo, Tool as McpTool},
         service::{RequestContext, RoleServer},
     };
     use serde_json::json;
 
     use super::{
-        MCPToolRouter, McpClient, McpServerConfig, McpToolName, MockMcpService, PluginLoader,
-        PluginManifest, RealMcpService,
+        MCPToolRouter, McpClient, McpServerConfig, McpToolName, MockMcpService, PluginLoader, PluginManifest,
+        RealMcpService,
     };
 
     #[test]
@@ -571,10 +501,7 @@ mod tests {
         router.register_client(client);
 
         assert_eq!(router.all_tools().len(), 1);
-        let output = router
-            .call("mcp__test__echo", json!({"text": "hello"}))
-            .await
-            .unwrap();
+        let output = router.call("mcp__test__echo", json!({"text": "hello"})).await.unwrap();
         assert_eq!(output, "hello");
     }
 
@@ -645,32 +572,15 @@ mod tests {
         });
 
         let mut router = MCPToolRouter::new();
-        router.register_client(McpClient::with_service(
-            "demo",
-            vec![echo],
-            Arc::new(echo_service),
-        ));
-        router.register_client(McpClient::with_service(
-            "other",
-            vec![upper],
-            Arc::new(upper_service),
-        ));
+        router.register_client(McpClient::with_service("demo", vec![echo], Arc::new(echo_service)));
+        router.register_client(McpClient::with_service("other", vec![upper], Arc::new(upper_service)));
 
-        let echo_out = router
-            .call("mcp__demo__echo", json!({"text": "hello"}))
-            .await
-            .unwrap();
-        let upper_out = router
-            .call("mcp__other__upper", json!({"text": "hello"}))
-            .await
-            .unwrap();
+        let echo_out = router.call("mcp__demo__echo", json!({"text": "hello"})).await.unwrap();
+        let upper_out = router.call("mcp__other__upper", json!({"text": "hello"})).await.unwrap();
 
         assert_eq!(echo_out, "hello");
         assert_eq!(upper_out, "HELLO");
-        assert_eq!(
-            router.server_summaries(),
-            vec![("demo".to_string(), 1), ("other".to_string(), 1)]
-        );
+        assert_eq!(router.server_summaries(), vec![("demo".to_string(), 1), ("other".to_string(), 1)]);
     }
 
     #[tokio::test]
@@ -691,14 +601,8 @@ mod tests {
         let mut router = MCPToolRouter::new();
         router.register_client(client);
 
-        let _ = router
-            .call("mcp__test__echo", json!({"text": "first"}))
-            .await
-            .unwrap();
-        let _ = router
-            .call("mcp__test__echo", json!({"text": "second"}))
-            .await
-            .unwrap();
+        let _ = router.call("mcp__test__echo", json!({"text": "first"})).await.unwrap();
+        let _ = router.call("mcp__test__echo", json!({"text": "second"})).await.unwrap();
 
         let calls = service.calls();
         assert_eq!(calls.len(), 2);
@@ -723,31 +627,21 @@ mod tests {
         });
 
         let mut router = MCPToolRouter::new();
-        router.register_client(McpClient::with_service(
-            "test",
-            vec![echo],
-            Arc::new(service),
-        ));
+        router.register_client(McpClient::with_service("test", vec![echo], Arc::new(service)));
         let router = Arc::new(router);
 
         let mut handles = Vec::new();
         for i in 0..3 {
             let router = router.clone();
             handles.push(tokio::spawn(async move {
-                router
-                    .call("mcp__test__echo", json!({"text": i.to_string()}))
-                    .await
-                    .unwrap()
+                router.call("mcp__test__echo", json!({"text": i.to_string()})).await.unwrap()
             }));
         }
 
         let results = futures_util::future::join_all(handles).await;
         let mut outputs: Vec<String> = results.into_iter().map(|r| r.unwrap()).collect();
         outputs.sort();
-        assert_eq!(
-            outputs,
-            vec!["0".to_string(), "1".to_string(), "2".to_string()]
-        );
+        assert_eq!(outputs, vec!["0".to_string(), "1".to_string(), "2".to_string()]);
     }
 
     struct EchoServer {
@@ -767,8 +661,7 @@ mod tests {
             &self,
             _request: Option<rmcp::model::PaginatedRequestParams>,
             _context: RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_
-        {
+        ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
             std::future::ready(Ok(ListToolsResult::with_all_items(self.tools.clone())))
         }
 
@@ -776,8 +669,7 @@ mod tests {
             &self,
             request: rmcp::model::CallToolRequestParams,
             _context: RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_
-        {
+        ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
             let text = request
                 .arguments
                 .as_ref()
@@ -792,9 +684,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_client_talks_to_real_in_process_server() {
         let tool = echo_tool();
-        let server = EchoServer {
-            tools: vec![tool.clone()],
-        };
+        let server = EchoServer { tools: vec![tool.clone()] };
         let (client_stream, server_stream) = tokio::io::duplex(64);
 
         let _server_handle = tokio::spawn(async move {
@@ -806,16 +696,9 @@ mod tests {
         });
 
         let running = ().serve(client_stream).await.unwrap();
-        let client = McpClient::with_service(
-            "fixture",
-            vec![tool],
-            Arc::new(RealMcpService::new(running)),
-        );
+        let client = McpClient::with_service("fixture", vec![tool], Arc::new(RealMcpService::new(running)));
 
-        let output = client
-            .call_tool("echo", json!({"text": "hello"}))
-            .await
-            .unwrap();
+        let output = client.call_tool("echo", json!({"text": "hello"})).await.unwrap();
         assert_eq!(output, "hello");
     }
 }

@@ -25,22 +25,22 @@
 //! `crates/tool_refactor_macros`) auto-generates the [`Tool`] impl and
 //! JSON schema from an async function signature.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
-use crate::ToolSpec;
-use crate::background::SharedBackgroundManager;
-use crate::cron::SharedCronScheduler;
-use crate::memory::MemoryManager;
-use crate::task::SharedTaskManager;
-use crate::team::SharedTeammateManager;
-use crate::worktree::SharedWorktreeManager;
 use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
+
+use crate::{
+    ToolSpec, background::SharedBackgroundManager, cron::SharedCronScheduler, memory::MemoryManager,
+    task::SharedTaskManager, team::SharedTeammateManager, worktree::SharedWorktreeManager,
+};
 
 mod apply_patch;
 mod ask_user;
@@ -68,8 +68,6 @@ mod web;
 mod worktree;
 mod write_file;
 
-pub use registry::{subagent_toolset, toolset};
-
 #[cfg(test)]
 use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
@@ -86,6 +84,7 @@ use load_skill::LoadSkillTool;
 use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
+pub use registry::{subagent_toolset, toolset};
 #[cfg(test)]
 use search_code::SearchCodeTool;
 #[cfg(test)]
@@ -157,10 +156,7 @@ pub struct ToolRouter {
 
 impl ToolRouter {
     pub fn new() -> Self {
-        Self {
-            tools: HashMap::new(),
-            cached_specs: OnceLock::new(),
-        }
+        Self { tools: HashMap::new(), cached_specs: OnceLock::new() }
     }
 
     pub fn route<T>(mut self, tool: T) -> Self
@@ -180,10 +176,7 @@ impl ToolRouter {
     }
 
     pub async fn call(&self, context: &ToolContext, name: &str, input: Value) -> Result<String> {
-        let tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown tool: {name}"))?;
+        let tool = self.tools.get(name).ok_or_else(|| anyhow::anyhow!("unknown tool: {name}"))?;
 
         tool.call(context.clone(), input).await
     }
@@ -203,11 +196,7 @@ where
 }
 
 pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
-    ToolSpec {
-        name: spec.name.clone(),
-        description: spec.description.clone(),
-        input_schema: spec.input_schema.clone(),
-    }
+    ToolSpec { name: spec.name.clone(), description: spec.description.clone(), input_schema: spec.input_schema.clone() }
 }
 
 pub use path::{safe_path, safe_path_allow_missing};
@@ -215,8 +204,10 @@ pub use progress::ToolProgressReporter;
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{install_skill, test_context, write_workspace_file};
-    use super::*;
+    use super::{
+        test_support::{install_skill, test_context, write_workspace_file},
+        *,
+    };
 
     #[derive(serde::Deserialize, JsonSchema)]
     struct EchoInput {
@@ -251,10 +242,7 @@ mod tests {
         let router = ToolRouter::new().route(EchoTool);
         let context = test_context("router_dispatches_by_tool_name");
 
-        let output = router
-            .call(&context, "echo", serde_json::json!({ "text": "tool" }))
-            .await
-            .unwrap();
+        let output = router.call(&context, "echo", serde_json::json!({ "text": "tool" })).await.unwrap();
 
         assert!(output.ends_with(":tool"));
         assert!(output.contains("tact-tool-test-router_dispatches_by_tool_name"));
@@ -265,10 +253,7 @@ mod tests {
         let router = ToolRouter::new().route(EchoTool);
         let context = test_context("router_rejects_unknown_tool");
 
-        let error = router
-            .call(&context, "missing_tool", serde_json::json!({}))
-            .await
-            .unwrap_err();
+        let error = router.call(&context, "missing_tool", serde_json::json!({})).await.unwrap_err();
 
         assert!(error.to_string().contains("unknown tool: missing_tool"));
     }
@@ -287,20 +272,9 @@ mod tests {
     #[test]
     fn subagent_toolset_includes_core_file_tools() {
         let router = subagent_toolset();
-        let names: Vec<_> = router
-            .tool_specs()
-            .into_iter()
-            .map(|spec| spec.name)
-            .collect();
+        let names: Vec<_> = router.tool_specs().into_iter().map(|spec| spec.name).collect();
 
-        for tool in [
-            "bash",
-            "read_file",
-            "write_file",
-            "edit_file",
-            "search_code",
-            "sleep",
-        ] {
+        for tool in ["bash", "read_file", "write_file", "edit_file", "search_code", "sleep"] {
             assert!(names.contains(&tool.to_string()), "missing {tool}");
         }
     }
@@ -310,10 +284,7 @@ mod tests {
         let router = ToolRouter::new().route(SleepTool);
         let context = test_context("proc_macro_supports_plain_function_tools");
 
-        let output = router
-            .call(&context, "sleep", serde_json::json!({ "ms": 0 }))
-            .await
-            .unwrap();
+        let output = router.call(&context, "sleep", serde_json::json!({ "ms": 0 })).await.unwrap();
 
         assert_eq!(output, "Slept for 0ms.");
 
@@ -332,14 +303,8 @@ mod tests {
         let path = "test.txt";
         let content = "hello world\nsecond line\n";
 
-        let output = router
-            .call(
-                &context,
-                "write_file",
-                serde_json::json!({ "path": path, "content": content }),
-            )
-            .await
-            .unwrap();
+        let output =
+            router.call(&context, "write_file", serde_json::json!({ "path": path, "content": content })).await.unwrap();
 
         assert!(output.contains("Wrote"));
         assert!(output.contains("test.txt"));
@@ -359,14 +324,8 @@ mod tests {
         let content = "x".repeat(300 * 1024);
         let path = "large.txt";
 
-        let output = router
-            .call(
-                &context,
-                "write_file",
-                serde_json::json!({ "path": path, "content": content }),
-            )
-            .await
-            .unwrap();
+        let output =
+            router.call(&context, "write_file", serde_json::json!({ "path": path, "content": content })).await.unwrap();
 
         assert!(output.contains("Wrote"));
         let written = std::fs::read_to_string(context.work_dir.join(path)).unwrap();
@@ -387,18 +346,10 @@ mod tests {
     async fn read_file_returns_content_with_offset_and_limit() {
         let router = ToolRouter::new().route(ReadFileTool);
         let context = test_context("read_file_returns_content_with_offset_and_limit");
-        write_workspace_file(
-            &context.work_dir,
-            "sample.txt",
-            "line1\nline2\nline3\nline4\n",
-        );
+        write_workspace_file(&context.work_dir, "sample.txt", "line1\nline2\nline3\nline4\n");
 
         let output = router
-            .call(
-                &context,
-                "read_file",
-                serde_json::json!({ "path": "sample.txt", "offset": 2, "limit": 2 }),
-            )
+            .call(&context, "read_file", serde_json::json!({ "path": "sample.txt", "offset": 2, "limit": 2 }))
             .await
             .unwrap();
 
@@ -412,11 +363,8 @@ mod tests {
     async fn read_file_rejects_path_outside_workspace() {
         let router = ToolRouter::new().route(ReadFileTool);
         let context = test_context("read_file_rejects_path_outside_workspace");
-        let outside_dir = context
-            .work_dir
-            .parent()
-            .unwrap()
-            .join("tact-outside-read_file_rejects_path_outside_workspace");
+        let outside_dir =
+            context.work_dir.parent().unwrap().join("tact-outside-read_file_rejects_path_outside_workspace");
         std::fs::create_dir_all(&outside_dir).unwrap();
         std::fs::write(outside_dir.join("secret.txt"), "secret").unwrap();
 
@@ -512,10 +460,7 @@ mod tests {
         let router = ToolRouter::new().route(BatchReadTool);
         let context = test_context("batch_read_rejects_empty_files_array");
 
-        let error = router
-            .call(&context, "batch_read", serde_json::json!({ "files": [] }))
-            .await
-            .unwrap_err();
+        let error = router.call(&context, "batch_read", serde_json::json!({ "files": [] })).await.unwrap_err();
 
         assert!(error.to_string().contains("files array must not be empty"));
     }
@@ -525,14 +470,7 @@ mod tests {
         let router = ToolRouter::new().route(BashTool);
         let context = test_context("bash_runs_command_in_workspace");
 
-        let output = router
-            .call(
-                &context,
-                "bash",
-                serde_json::json!({ "command": "echo hello-bash" }),
-            )
-            .await
-            .unwrap();
+        let output = router.call(&context, "bash", serde_json::json!({ "command": "echo hello-bash" })).await.unwrap();
 
         assert_eq!(output, "hello-bash");
     }
@@ -542,14 +480,7 @@ mod tests {
         let router = ToolRouter::new().route(BashTool);
         let context = test_context("bash_blocks_dangerous_commands");
 
-        let error = router
-            .call(
-                &context,
-                "bash",
-                serde_json::json!({ "command": "sudo rm -rf /" }),
-            )
-            .await
-            .unwrap_err();
+        let error = router.call(&context, "bash", serde_json::json!({ "command": "sudo rm -rf /" })).await.unwrap_err();
 
         assert!(error.to_string().contains("Dangerous command blocked"));
     }
@@ -558,11 +489,7 @@ mod tests {
     async fn search_code_finds_matches_in_workspace() {
         let router = ToolRouter::new().route(SearchCodeTool);
         let context = test_context("search_code_finds_matches_in_workspace");
-        write_workspace_file(
-            &context.work_dir,
-            "src/lib.rs",
-            "pub fn unique_needle_xyz() {}\n",
-        );
+        write_workspace_file(&context.work_dir, "src/lib.rs", "pub fn unique_needle_xyz() {}\n");
 
         let output = router
             .call(
@@ -612,14 +539,7 @@ mod tests {
         context.skill_registry = install_skill(&context.work_dir, "demo", "Skill body content.");
         let router = ToolRouter::new().route(LoadSkillTool);
 
-        let output = router
-            .call(
-                &context,
-                "load_skill",
-                serde_json::json!({ "name": "demo" }),
-            )
-            .await
-            .unwrap();
+        let output = router.call(&context, "load_skill", serde_json::json!({ "name": "demo" })).await.unwrap();
 
         assert!(output.contains("<skill name=\"demo\">"));
         assert!(output.contains("Skill body content."));
@@ -627,10 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn cron_tools_manage_scheduled_tasks() {
-        let router = ToolRouter::new()
-            .route(CronCreateTool)
-            .route(CronListTool)
-            .route(CronDeleteTool);
+        let router = ToolRouter::new().route(CronCreateTool).route(CronListTool).route(CronDeleteTool);
         let context = test_context("cron_tools_manage_scheduled_tasks");
 
         let created = router
@@ -654,23 +571,14 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let listed = router
-            .call(&context, "cron_list", serde_json::json!({}))
-            .await
-            .unwrap();
+        let listed = router.call(&context, "cron_list", serde_json::json!({})).await.unwrap();
         assert!(listed.contains(&id));
         assert!(listed.contains("Daily standup"));
 
-        let deleted = router
-            .call(&context, "cron_delete", serde_json::json!({ "id": id }))
-            .await
-            .unwrap();
+        let deleted = router.call(&context, "cron_delete", serde_json::json!({ "id": id })).await.unwrap();
         assert!(deleted.contains("Deleted scheduled task"));
 
-        let listed = router
-            .call(&context, "cron_list", serde_json::json!({}))
-            .await
-            .unwrap();
+        let listed = router.call(&context, "cron_list", serde_json::json!({})).await.unwrap();
         assert_eq!(listed, "No scheduled tasks.");
     }
 
@@ -684,18 +592,11 @@ mod tests {
         let context = test_context("team_tools_spawn_and_message");
 
         router
-            .call(
-                &context,
-                "spawn_teammate",
-                serde_json::json!({ "name": "alice", "role": "reviewer" }),
-            )
+            .call(&context, "spawn_teammate", serde_json::json!({ "name": "alice", "role": "reviewer" }))
             .await
             .unwrap();
 
-        let listed = router
-            .call(&context, "list_teammates", serde_json::json!({}))
-            .await
-            .unwrap();
+        let listed = router.call(&context, "list_teammates", serde_json::json!({})).await.unwrap();
         assert!(listed.contains("alice [reviewer]"));
 
         router
@@ -711,50 +612,24 @@ mod tests {
             .await
             .unwrap();
 
-        let inbox = router
-            .call(
-                &context,
-                "read_inbox",
-                serde_json::json!({ "owner": "alice" }),
-            )
-            .await
-            .unwrap();
+        let inbox = router.call(&context, "read_inbox", serde_json::json!({ "owner": "alice" })).await.unwrap();
         assert!(inbox.contains("Please review PR #1"));
     }
 
     #[tokio::test]
     async fn background_run_starts_and_completes() {
-        let router = ToolRouter::new()
-            .route(BackgroundRunTool)
-            .route(CheckBackgroundTool);
+        let router = ToolRouter::new().route(BackgroundRunTool).route(CheckBackgroundTool);
         let context = test_context("background_run_starts_and_completes");
 
-        let started = router
-            .call(
-                &context,
-                "background_run",
-                serde_json::json!({ "command": "echo bg-done" }),
-            )
-            .await
-            .unwrap();
+        let started =
+            router.call(&context, "background_run", serde_json::json!({ "command": "echo bg-done" })).await.unwrap();
         assert!(started.contains("Background task"));
-        let task_id = started
-            .split_whitespace()
-            .nth(2)
-            .unwrap()
-            .trim_end_matches(':')
-            .to_string();
+        let task_id = started.split_whitespace().nth(2).unwrap().trim_end_matches(':').to_string();
 
         let mut completed = false;
         for _ in 0..50 {
-            let status = router
-                .call(
-                    &context,
-                    "check_background",
-                    serde_json::json!({ "task_id": task_id }),
-                )
-                .await
-                .unwrap();
+            let status =
+                router.call(&context, "check_background", serde_json::json!({ "task_id": task_id })).await.unwrap();
             if status.contains("completed") {
                 completed = true;
                 assert!(status.contains("bg-done"));
@@ -767,38 +642,18 @@ mod tests {
 
     #[tokio::test]
     async fn task_get_list_and_update() {
-        let router = ToolRouter::new()
-            .route(TaskCreateTool)
-            .route(TaskGetTool)
-            .route(TaskListTool)
-            .route(TaskUpdateTool);
+        let router =
+            ToolRouter::new().route(TaskCreateTool).route(TaskGetTool).route(TaskListTool).route(TaskUpdateTool);
         let context = test_context("task_get_list_and_update");
 
-        let created = router
-            .call(
-                &context,
-                "task_create",
-                serde_json::json!({ "subject": "Lifecycle task" }),
-            )
-            .await
-            .unwrap();
-        let id = serde_json::from_str::<serde_json::Value>(&created)
-            .unwrap()
-            .get("id")
-            .unwrap()
-            .as_u64()
-            .unwrap();
+        let created =
+            router.call(&context, "task_create", serde_json::json!({ "subject": "Lifecycle task" })).await.unwrap();
+        let id = serde_json::from_str::<serde_json::Value>(&created).unwrap().get("id").unwrap().as_u64().unwrap();
 
-        let fetched = router
-            .call(&context, "task_get", serde_json::json!({ "task_id": id }))
-            .await
-            .unwrap();
+        let fetched = router.call(&context, "task_get", serde_json::json!({ "task_id": id })).await.unwrap();
         assert!(fetched.contains("\"subject\": \"Lifecycle task\""));
 
-        let listed = router
-            .call(&context, "task_list", serde_json::json!({}))
-            .await
-            .unwrap();
+        let listed = router.call(&context, "task_list", serde_json::json!({})).await.unwrap();
         assert!(listed.contains("[ ] #1: Lifecycle task"));
 
         let updated = router

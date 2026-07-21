@@ -39,11 +39,11 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
-    pub thinking_card_title: &'static str, // "🧠 Thinking ({} line{})"
+    pub thinking_card_title: &'static str,    // "🧠 Thinking ({} line{})"
     pub thinking_card_title_pl: &'static str, // "s" / "" for plural
-    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
-    pub diff_card_title: &'static str,      // "+{} {}"
-    pub diff_card_bottom: &'static str,     // "Double-click for full code"
+    pub thinking_card_bottom: &'static str,   // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
+    pub diff_card_title: &'static str,        // "+{} {}"
+    pub diff_card_bottom: &'static str,       // "Double-click for full code"
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "

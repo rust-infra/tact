@@ -4,20 +4,15 @@
 mod harness;
 
 use harness::{bash_tool_use, read_file_tool_use, text_block, write_file_tool_use};
-use tact::permission::PermissionMode;
-use tact::tool::test_support::write_workspace_file;
-use tact_llm::MockClient;
-use tact_llm::StopReason;
+use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
+use tact_llm::{MockClient, StopReason};
 use tact_ui::headless_session::run_headless_session_with_options;
 use tui::test_support::TestApp;
 
 #[tokio::test]
 async fn headless_frame_capture_records_progression() {
     let mock = MockClient::new(vec![
-        (
-            vec![bash_tool_use("b1", "sleep 0.1")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![bash_tool_use("b1", "sleep 0.1")], Some(StopReason::ToolUse)),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
     ]);
 
@@ -29,23 +24,15 @@ async fn headless_frame_capture_records_progression() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(tact_protocol::UserCommand::SubmitTask("sleep".into()))
-                    .unwrap();
+                tx.send(tact_protocol::UserCommand::SubmitTask("sleep".into())).unwrap();
                 drop(tx);
             })
         },
     )
     .await;
 
-    assert!(
-        !result.snapshots.frames.is_empty(),
-        "frame capture should produce at least one frame"
-    );
-    let has_tool_card = result
-        .snapshots
-        .frames
-        .iter()
-        .any(|f| f.contains("bash") || f.contains("sleep"));
+    assert!(!result.snapshots.frames.is_empty(), "frame capture should produce at least one frame");
+    let has_tool_card = result.snapshots.frames.iter().any(|f| f.contains("bash") || f.contains("sleep"));
     if !has_tool_card {
         eprintln!("frames count: {}", result.snapshots.frames.len());
         if let Some(f) = result.snapshots.frames.first() {
@@ -58,23 +45,10 @@ async fn headless_frame_capture_records_progression() {
             eprintln!("final render:\n{f}");
         }
     }
+    assert!(has_tool_card, "some captured frame should show the write_file tool card");
     assert!(
-        has_tool_card,
-        "some captured frame should show the write_file tool card"
-    );
-    assert!(
-        result
-            .snapshots
-            .final_render
-            .as_ref()
-            .unwrap()
-            .contains("Task completed")
-            || result
-                .snapshots
-                .final_render
-                .as_ref()
-                .unwrap()
-                .contains("Done"),
+        result.snapshots.final_render.as_ref().unwrap().contains("Task completed")
+            || result.snapshots.final_render.as_ref().unwrap().contains("Done"),
         "final frame should show completion"
     );
 }
@@ -82,15 +56,11 @@ async fn headless_frame_capture_records_progression() {
 #[tokio::test]
 async fn test_app_can_open_and_inspect_tool_popup() {
     let mock = MockClient::new(vec![
-        (
-            vec![write_file_tool_use("w1", "out.rs", "fn test() {}")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![write_file_tool_use("w1", "out.rs", "fn test() {}")], Some(StopReason::ToolUse)),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, work_dir) =
-        harness::run_single_task(mock, "write file", PermissionMode::Auto).await;
+    let (updates, work_dir) = harness::run_single_task(mock, "write file", PermissionMode::Auto).await;
 
     let mut app = TestApp::new_in_dir(work_dir);
     app.feed_all(updates);
@@ -129,10 +99,7 @@ async fn test_app_can_toggle_help_and_history_overlays() {
 #[tokio::test]
 async fn headless_session_default_permission_reaches_select_popup() {
     let mock = MockClient::new(vec![
-        (
-            vec![write_file_tool_use("w1", "out.rs", "fn x() {}")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![write_file_tool_use("w1", "out.rs", "fn x() {}")], Some(StopReason::ToolUse)),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
     ]);
 
@@ -144,8 +111,7 @@ async fn headless_session_default_permission_reaches_select_popup() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(tact_protocol::UserCommand::SubmitTask("write".into()))
-                    .unwrap();
+                tx.send(tact_protocol::UserCommand::SubmitTask("write".into())).unwrap();
                 drop(tx);
             })
         },
@@ -153,10 +119,7 @@ async fn headless_session_default_permission_reaches_select_popup() {
     .await;
 
     assert!(result.is_done);
-    let select_text = result
-        .snapshots
-        .select
-        .expect("select popup snapshot should be captured");
+    let select_text = result.snapshots.select.expect("select popup snapshot should be captured");
     assert!(
         select_text.contains("Allow") || select_text.contains("SELECT"),
         "select popup should show permission options: {select_text}"
@@ -166,26 +129,19 @@ async fn headless_session_default_permission_reaches_select_popup() {
 #[tokio::test]
 async fn test_app_feeds_read_file_then_opens_popup() {
     let mock = MockClient::new(vec![
-        (
-            vec![read_file_tool_use("r1", "data.txt")],
-            Some(StopReason::ToolUse),
-        ),
+        (vec![read_file_tool_use("r1", "data.txt")], Some(StopReason::ToolUse)),
         (vec![text_block("Done.")], Some(StopReason::EndTurn)),
     ]);
 
-    let (updates, work_dir) =
-        harness::run_single_task_with_setup(mock, "read", PermissionMode::Auto, |dir| {
-            write_workspace_file(dir, "data.txt", "hello popup");
-        })
-        .await;
+    let (updates, work_dir) = harness::run_single_task_with_setup(mock, "read", PermissionMode::Auto, |dir| {
+        write_workspace_file(dir, "data.txt", "hello popup");
+    })
+    .await;
 
     let mut app = TestApp::new_in_dir(work_dir);
     app.feed_all(updates);
 
     assert!(app.open_last_tool_popup());
     let content = app.diff_popup_content().unwrap_or_default();
-    assert!(
-        content.contains("hello popup"),
-        "popup should contain file content: {content}"
-    );
+    assert!(content.contains("hello popup"), "popup should contain file content: {content}");
 }

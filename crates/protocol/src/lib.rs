@@ -11,15 +11,11 @@ pub mod biz;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, ThinkingChunk,
-    TokenUsageInfo, UserCommand,
+    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, ThinkingChunk, TokenUsageInfo,
+    UserCommand,
 };
-pub use biz::{
-    AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
-};
-pub use tool_output::{
-    ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
-};
+pub use biz::{AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow};
+pub use tool_output::{ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream};
 
 /// Format a byte count using human-readable units: B, KB, MB, GB.
 ///
@@ -42,11 +38,7 @@ pub fn format_bytes(bytes: usize) -> String {
 
     let formatted = format!("{:.1}", size);
     if formatted.ends_with(".0") {
-        format!(
-            "{} {}",
-            &formatted[..formatted.len() - 2],
-            UNITS[unit_index]
-        )
+        format!("{} {}", &formatted[..formatted.len() - 2], UNITS[unit_index])
     } else {
         format!("{} {}", formatted, UNITS[unit_index])
     }
@@ -69,34 +61,21 @@ mod tests {
 
     #[test]
     fn usage_pct_basic() {
-        let w = UsageQuotaWindow {
-            label: "week".to_string(),
-            limit: Some(100.0),
-            remaining: Some(42.0),
-            reset_time: None,
-        };
+        let w =
+            UsageQuotaWindow { label: "week".to_string(), limit: Some(100.0), remaining: Some(42.0), reset_time: None };
         assert!((w.usage_pct().unwrap() - 58.0).abs() < 1e-9);
     }
 
     #[test]
     fn usage_pct_zero_limit() {
-        let w = UsageQuotaWindow {
-            label: "week".to_string(),
-            limit: Some(0.0),
-            remaining: Some(0.0),
-            reset_time: None,
-        };
+        let w =
+            UsageQuotaWindow { label: "week".to_string(), limit: Some(0.0), remaining: Some(0.0), reset_time: None };
         assert_eq!(w.usage_pct(), None);
     }
 
     #[test]
     fn usage_pct_unlimited_window() {
-        let w = UsageQuotaWindow {
-            label: "week".to_string(),
-            limit: None,
-            remaining: Some(42.0),
-            reset_time: None,
-        };
+        let w = UsageQuotaWindow { label: "week".to_string(), limit: None, remaining: Some(42.0), reset_time: None };
         assert_eq!(w.usage_pct(), None);
         assert!(w.has_remaining());
     }

@@ -6,8 +6,7 @@ use sqlx::{Row, SqlitePool};
 use tact_llm::{Message, MessageContent, Role};
 use tact_protocol::TokenUsageInfo;
 
-use super::process_identity::process_identity;
-use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary};
+use super::{MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary, process_identity::process_identity};
 
 pub struct SqliteSessionStore {
     pool: SqlitePool,
@@ -16,18 +15,14 @@ pub struct SqliteSessionStore {
 impl SqliteSessionStore {
     pub async fn new(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
+            tokio::fs::create_dir_all(parent).await.context("failed to create database directory")?;
         }
         // sqlx may fail to open a non-existent database file in some environments;
         // create an empty file first to ensure it's present.
         if let Err(e) = tokio::fs::metadata(path).await
             && e.kind() == std::io::ErrorKind::NotFound
         {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
+            tokio::fs::File::create(path).await.context("failed to create database file")?;
         }
         let url = format!("sqlite:{}", path.display());
         let pool = SqlitePool::connect(&url)
@@ -100,12 +95,10 @@ impl SqliteSessionStore {
         .await
         .context("failed to create token_usages table")?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);",
-        )
-        .execute(&pool)
-        .await
-        .context("failed to create token_usages index")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);")
+            .execute(&pool)
+            .await
+            .context("failed to create token_usages index")?;
 
         sqlx::query(
             r#"
@@ -121,12 +114,10 @@ impl SqliteSessionStore {
         .await
         .context("failed to create input_history table")?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_input_history_session_id ON input_history(session_id);",
-        )
-        .execute(&pool)
-        .await
-        .context("failed to create input_history index")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_input_history_session_id ON input_history(session_id);")
+            .execute(&pool)
+            .await
+            .context("failed to create input_history index")?;
 
         Ok(Self { pool })
     }
@@ -246,22 +237,20 @@ impl super::SessionStore for SqliteSessionStore {
         content: &MessageContent,
         ordinal: i64,
     ) -> Result<i64> {
-        let content_json =
-            serde_json::to_string(content).context("failed to serialize message content")?;
+        let content_json = serde_json::to_string(content).context("failed to serialize message content")?;
         let now = Self::now();
 
-        let id = sqlx::query(
-            "INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(role_to_str(role))
-        .bind(content_json)
-        .bind(ordinal)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert message")?
-        .last_insert_rowid();
+        let id =
+            sqlx::query("INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)")
+                .bind(session_id)
+                .bind(role_to_str(role))
+                .bind(content_json)
+                .bind(ordinal)
+                .bind(now)
+                .execute(&self.pool)
+                .await
+                .context("failed to insert message")?
+                .last_insert_rowid();
 
         sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
             .bind(now)
@@ -273,16 +262,8 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(id)
     }
 
-    async fn replace_session_messages(
-        &self,
-        session_id: &str,
-        messages: &[Message],
-    ) -> Result<(i64, i64)> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin replace session messages transaction")?;
+    async fn replace_session_messages(&self, session_id: &str, messages: &[Message]) -> Result<(i64, i64)> {
+        let mut tx = self.pool.begin().await.context("failed to begin replace session messages transaction")?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
@@ -296,8 +277,8 @@ impl super::SessionStore for SqliteSessionStore {
 
         for (idx, message) in messages.iter().enumerate() {
             let ordinal = (idx + 1) as i64;
-            let content_json = serde_json::to_string(&message.content)
-                .context("failed to serialize message content")?;
+            let content_json =
+                serde_json::to_string(&message.content).context("failed to serialize message content")?;
             let id = sqlx::query(
                 "INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
             )
@@ -324,32 +305,25 @@ impl super::SessionStore for SqliteSessionStore {
             .await
             .context("failed to update session timestamp after replace")?;
 
-        tx.commit()
-            .await
-            .context("failed to commit replace session messages transaction")?;
+        tx.commit().await.context("failed to commit replace session messages transaction")?;
 
         Ok((first_id, last_id))
     }
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>> {
-        let rows = sqlx::query(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
-        )
-        .bind(session_id)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to load session messages")?;
+        let rows = sqlx::query("SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC")
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to load session messages")?;
 
         let mut messages = Vec::with_capacity(rows.len());
         for row in rows {
             let role_str: String = row.try_get("role")?;
             let content_json: String = row.try_get("content")?;
-            let content: MessageContent = serde_json::from_str(&content_json)
-                .context("failed to deserialize message content")?;
-            messages.push(Message {
-                role: str_to_role(&role_str)?,
-                content,
-            });
+            let content: MessageContent =
+                serde_json::from_str(&content_json).context("failed to deserialize message content")?;
+            messages.push(Message { role: str_to_role(&role_str)?, content });
         }
 
         Ok(messages)
@@ -401,16 +375,8 @@ impl super::SessionStore for SqliteSessionStore {
             sessions.push(SessionSummary {
                 id: row.try_get("id")?,
                 root_dir: row.try_get("root_dir")?,
-                created_at: parse_timestamp(
-                    &row,
-                    "created_at",
-                    "failed to parse session created_at",
-                )?,
-                updated_at: parse_timestamp(
-                    &row,
-                    "updated_at",
-                    "failed to parse session updated_at",
-                )?,
+                created_at: parse_timestamp(&row, "created_at", "failed to parse session created_at")?,
+                updated_at: parse_timestamp(&row, "updated_at", "failed to parse session updated_at")?,
                 message_count: row.try_get("message_count")?,
             });
         }
@@ -419,11 +385,7 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin delete session transaction")?;
+        let mut tx = self.pool.begin().await.context("failed to begin delete session transaction")?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
@@ -446,9 +408,7 @@ impl super::SessionStore for SqliteSessionStore {
             .await
             .context("failed to delete session")?;
 
-        tx.commit()
-            .await
-            .context("failed to commit delete session transaction")?;
+        tx.commit().await.context("failed to commit delete session transaction")?;
         Ok(())
     }
 
@@ -602,17 +562,10 @@ impl super::SessionStore for SqliteSessionStore {
         .fetch_optional(&self.pool)
         .await
         .context("failed to load latest request body")?;
-        row.map(|row| row.try_get("request_body"))
-            .transpose()
-            .map_err(Into::into)
+        row.map(|row| row.try_get("request_body")).transpose().map_err(Into::into)
     }
 
-    async fn record_tool_schedule(
-        &self,
-        session_id: &str,
-        last_message_id: i64,
-        schedule_json: &str,
-    ) -> Result<()> {
+    async fn record_tool_schedule(&self, session_id: &str, last_message_id: i64, schedule_json: &str) -> Result<()> {
         // Update the latest token-usage row for this call window. Uses a
         // subquery because SQLite's UPDATE has no ORDER BY/LIMIT by default.
         sqlx::query(
@@ -637,22 +590,18 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>> {
-        let rows =
-            sqlx::query("SELECT content FROM input_history WHERE session_id = ? ORDER BY id ASC")
-                .bind(session_id)
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to load input history")?;
+        let rows = sqlx::query("SELECT content FROM input_history WHERE session_id = ? ORDER BY id ASC")
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to load input history")?;
 
-        let mut entries: Vec<String> = rows
-            .into_iter()
-            .filter_map(|row| row.try_get::<String, _>("content").ok())
-            .collect();
+        let mut entries: Vec<String> =
+            rows.into_iter().filter_map(|row| row.try_get::<String, _>("content").ok()).collect();
 
         if entries.len() > MAX_INPUT_HISTORY {
             entries = entries.split_off(entries.len() - MAX_INPUT_HISTORY);
-            self.trim_input_history(session_id, MAX_INPUT_HISTORY)
-                .await?;
+            self.trim_input_history(session_id, MAX_INPUT_HISTORY).await?;
         }
 
         Ok(entries)
@@ -669,8 +618,8 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn try_lock_session(&self, session_id: &str, pid: u32) -> Result<String> {
-        let lock_epoch = process_identity(pid)
-            .ok_or_else(|| anyhow::anyhow!("failed to read process identity for pid {pid}"))?;
+        let lock_epoch =
+            process_identity(pid).ok_or_else(|| anyhow::anyhow!("failed to read process identity for pid {pid}"))?;
         let pid_i64 = i64::from(pid);
 
         let acquired = sqlx::query(
@@ -704,10 +653,7 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to read session lock")?;
 
         let (holder, holder_epoch) = match row {
-            Some(r) => (
-                r.try_get::<i64, _>("locked_by")?,
-                r.try_get::<String, _>("lock_epoch")?,
-            ),
+            Some(r) => (r.try_get::<i64, _>("locked_by")?, r.try_get::<String, _>("lock_epoch")?),
             None => anyhow::bail!("session not found: {session_id}"),
         };
 
@@ -740,12 +686,7 @@ impl super::SessionStore for SqliteSessionStore {
         anyhow::bail!("session {session_id} lock conflict; retry")
     }
 
-    async fn release_session_lock(
-        &self,
-        session_id: &str,
-        pid: u32,
-        lock_epoch: &str,
-    ) -> Result<()> {
+    async fn release_session_lock(&self, session_id: &str, pid: u32, lock_epoch: &str) -> Result<()> {
         let pid_i64 = i64::from(pid);
         let result = sqlx::query(
             "UPDATE sessions SET locked_by = 0, lock_epoch = '' WHERE id = ? AND locked_by = ? AND lock_epoch = ?",
@@ -757,9 +698,7 @@ impl super::SessionStore for SqliteSessionStore {
         .await
         .context("failed to release session lock")?;
         if result.rows_affected() == 0 {
-            anyhow::bail!(
-                "session {session_id} lock release had no effect (already released or epoch mismatch)"
-            );
+            anyhow::bail!("session {session_id} lock release had no effect (already released or epoch mismatch)");
         }
         Ok(())
     }
@@ -792,8 +731,7 @@ fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use std::ffi::c_void;
-        use std::ptr;
+        use std::{ffi::c_void, ptr};
 
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
@@ -825,10 +763,7 @@ fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Resul
         return Ok(dt);
     }
     if let Ok(date) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-        return Ok(DateTime::from_naive_utc_and_offset(
-            date.and_hms_opt(0, 0, 0).unwrap_or_default(),
-            Utc,
-        ));
+        return Ok(DateTime::from_naive_utc_and_offset(date.and_hms_opt(0, 0, 0).unwrap_or_default(), Utc));
     }
     Err(anyhow::anyhow!("{}: {}", msg, s))
 }
@@ -839,8 +774,7 @@ mod tests {
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
-    use super::super::SessionStore;
-    use super::SqliteSessionStore;
+    use super::{super::SessionStore, SqliteSessionStore};
 
     #[tokio::test]
     async fn test_session_round_trip_and_stats() {
@@ -848,31 +782,14 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         store
-            .append_message(
-                "session-1",
-                Role::User,
-                &MessageContent::Text {
-                    content: "hello".to_string(),
-                },
-                1,
-            )
+            .append_message("session-1", Role::User, &MessageContent::Text { content: "hello".to_string() }, 1)
             .await
             .unwrap();
         store
-            .append_message(
-                "session-1",
-                Role::Assistant,
-                &MessageContent::Text {
-                    content: "world".to_string(),
-                },
-                2,
-            )
+            .append_message("session-1", Role::Assistant, &MessageContent::Text { content: "world".to_string() }, 2)
             .await
             .unwrap();
 
@@ -906,23 +823,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         // A token-usage row for an LLM call whose last message id is 7.
-        store
-            .record_token_usage("session-1", "stream", None, 1, 7, Some(b"{}"))
-            .await
-            .unwrap();
+        store.record_token_usage("session-1", "stream", None, 1, 7, Some(b"{}")).await.unwrap();
 
         // The schedule for that turn is recorded afterwards, keyed by the same id.
         let schedule = r#"{"total_tools":2,"wave_count":1,"max_parallelism":2,"waves":[]}"#;
-        store
-            .record_tool_schedule("session-1", 7, schedule)
-            .await
-            .unwrap();
+        store.record_tool_schedule("session-1", 7, schedule).await.unwrap();
 
         let row = sqlx::query("SELECT tool_schedule FROM token_usages WHERE last_message_id = 7")
             .fetch_one(&store.pool)
@@ -938,40 +846,22 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         let entries = vec!["first", "second"];
         for entry in &entries {
-            store
-                .append_input_history("session-1", entry)
-                .await
-                .unwrap();
+            store.append_input_history("session-1", entry).await.unwrap();
         }
 
         let loaded = store.load_input_history("session-1").await.unwrap();
         assert_eq!(loaded, entries);
 
-        store
-            .append_input_history("session-1", "third")
-            .await
-            .unwrap();
+        store.append_input_history("session-1", "third").await.unwrap();
         let loaded = store.load_input_history("session-1").await.unwrap();
         assert_eq!(loaded, vec!["first", "second", "third"]);
 
-        store
-            .create_session("session-2", "/tmp/tact-test")
-            .await
-            .unwrap();
-        assert!(
-            store
-                .load_input_history("session-2")
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        store.create_session("session-2", "/tmp/tact-test").await.unwrap();
+        assert!(store.load_input_history("session-2").await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -980,17 +870,11 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         let entries: Vec<String> = (0..120).map(|i| format!("entry-{i}")).collect();
         for entry in &entries {
-            store
-                .append_input_history("session-1", entry)
-                .await
-                .unwrap();
+            store.append_input_history("session-1", entry).await.unwrap();
         }
 
         let loaded = store.load_input_history("session-1").await.unwrap();
@@ -1008,10 +892,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
-        store
-            .create_session("session-1", "/Users/me/project")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/Users/me/project").await.unwrap();
 
         let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1025,52 +906,28 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
+
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .append_message("session-1", Role::User, &MessageContent::Text { content: "old".to_string() }, 1)
+            .await
+            .unwrap();
+        store
+            .append_message("session-1", Role::Assistant, &MessageContent::Text { content: "old reply".to_string() }, 2)
             .await
             .unwrap();
 
-        store
-            .append_message(
-                "session-1",
-                Role::User,
-                &MessageContent::Text {
-                    content: "old".to_string(),
-                },
-                1,
-            )
-            .await
-            .unwrap();
-        store
-            .append_message(
-                "session-1",
-                Role::Assistant,
-                &MessageContent::Text {
-                    content: "old reply".to_string(),
-                },
-                2,
-            )
-            .await
-            .unwrap();
-
-        let replacement = vec![Message::new_text(
-            Role::User,
-            "compacted summary".to_string(),
-        )];
-        store
-            .replace_session_messages("session-1", &replacement)
-            .await
-            .unwrap();
+        let replacement = vec![Message::new_text(Role::User, "compacted summary".to_string())];
+        store.replace_session_messages("session-1", &replacement).await.unwrap();
 
         let loaded = store.load_session("session-1").await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(matches!(loaded[0].role, Role::User));
 
-        let row =
-            sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 1);
     }
 
@@ -1079,10 +936,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         let pid = std::process::id();
         let lock_epoch = store.try_lock_session("session-1", pid).await.unwrap();
@@ -1096,10 +950,7 @@ mod tests {
         assert_eq!(locked_by, i64::from(pid));
         assert_eq!(stored_epoch, lock_epoch);
 
-        store
-            .release_session_lock("session-1", pid, &lock_epoch)
-            .await
-            .unwrap();
+        store.release_session_lock("session-1", pid, &lock_epoch).await.unwrap();
 
         let row = sqlx::query("SELECT locked_by, lock_epoch FROM sessions WHERE id = 'session-1'")
             .fetch_one(&store.pool)
@@ -1116,23 +967,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         let pid = std::process::id();
         store.try_lock_session("session-1", pid).await.unwrap();
 
-        let mut child = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .expect("spawn sleep helper");
+        let mut child = std::process::Command::new("sleep").arg("60").spawn().expect("spawn sleep helper");
         let other_pid = child.id();
-        let err = store
-            .try_lock_session("session-1", other_pid)
-            .await
-            .unwrap_err();
+        let err = store.try_lock_session("session-1", other_pid).await.unwrap_err();
         let _ = child.kill();
         let _ = child.wait();
 
@@ -1144,10 +986,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
-        store
-            .create_session("session-1", "/tmp/tact-test")
-            .await
-            .unwrap();
+        store.create_session("session-1", "/tmp/tact-test").await.unwrap();
 
         sqlx::query("UPDATE sessions SET locked_by = ?, lock_epoch = ? WHERE id = 'session-1'")
             .bind(999_999_i64)
@@ -1159,10 +998,8 @@ mod tests {
         let pid = std::process::id();
         store.try_lock_session("session-1", pid).await.unwrap();
 
-        let row = sqlx::query("SELECT locked_by FROM sessions WHERE id = 'session-1'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+        let row =
+            sqlx::query("SELECT locked_by FROM sessions WHERE id = 'session-1'").fetch_one(&store.pool).await.unwrap();
         assert_eq!(row.try_get::<i64, _>("locked_by").unwrap(), i64::from(pid));
     }
 }

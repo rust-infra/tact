@@ -2,8 +2,7 @@
 
 use serde_json::Value;
 
-use crate::CreateMessageParams;
-use crate::openai::reasoning_effort_from_budget;
+use crate::{CreateMessageParams, openai::reasoning_effort_from_budget};
 
 /// Inject `user_id` into the request body for KV cache isolation.
 pub(crate) fn inject_user_id(body: &mut Value, user_id: Option<&str>) {

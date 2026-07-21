@@ -48,10 +48,7 @@ pub(crate) struct TextPosition {
 
 impl TextPosition {
     pub(crate) fn new(phys_idx: usize, byte_offset: usize) -> Self {
-        Self {
-            phys_idx,
-            byte_offset,
-        }
+        Self { phys_idx, byte_offset }
     }
 }
 
@@ -69,25 +66,18 @@ impl LogSelection {
 
     /// Select an entire physical message (`[0, len)`).
     pub(crate) fn full_message(phys_idx: usize, len: usize) -> Self {
-        Self::new(
-            TextPosition::new(phys_idx, 0),
-            TextPosition::new(phys_idx, len),
-        )
+        Self::new(TextPosition::new(phys_idx, 0), TextPosition::new(phys_idx, len))
     }
 
     /// Select a byte span within a single physical message.
     pub(crate) fn span(phys_idx: usize, start: usize, end: usize) -> Self {
-        Self::new(
-            TextPosition::new(phys_idx, start),
-            TextPosition::new(phys_idx, end),
-        )
+        Self::new(TextPosition::new(phys_idx, start), TextPosition::new(phys_idx, end))
     }
 
     /// Normalize so that start <= end (by physical index, then byte offset).
     pub(crate) fn normalized(&self) -> (TextPosition, TextPosition) {
         if self.start.phys_idx < self.end.phys_idx
-            || (self.start.phys_idx == self.end.phys_idx
-                && self.start.byte_offset <= self.end.byte_offset)
+            || (self.start.phys_idx == self.end.phys_idx && self.start.byte_offset <= self.end.byte_offset)
         {
             (self.start, self.end)
         } else {

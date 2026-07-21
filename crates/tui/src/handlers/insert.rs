@@ -1,22 +1,20 @@
-use super::{
-    cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
-    line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-    skills::{is_skill_command, skill_name_set, submit_user_task},
-    start_of_line,
-};
-use crate::widgets::state::App;
-use crate::widgets::state::{InputMode, Status};
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
+
+use super::{
+    cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor, line_length,
+    next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
+    skills::{is_skill_command, skill_name_set, submit_user_task},
+    start_of_line,
+};
+use crate::widgets::state::{App, InputMode, Status};
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let skill_names = skill_name_set(app);
-    let cmds =
-        app.slash_command
-            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
+    let cmds = app.slash_command.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
     let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
     if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
         let start = app.slash_command.start_pos;
@@ -37,22 +35,15 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
     let skill_names = skill_name_set(app);
-    let matched =
-        app.slash_command
-            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
-    let sel = app
-        .slash_command
-        .selected
-        .min(matched.len().saturating_sub(1));
+    let matched = app.slash_command.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
+    let sel = app.slash_command.selected.min(matched.len().saturating_sub(1));
     let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
         return false;
     };
     // Skills autocomplete; built-ins execute. Built-in names never appear as skills
     // in the palette list, but keep the guard if data drifts. Arg-taking built-ins
     // (e.g. /plugin list) also autocomplete so the user can type the subcommand.
-    if (is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd))
-        || super::command_needs_args(cmd)
-    {
+    if (is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd)) || super::command_needs_args(cmd) {
         return apply_selected_slash_command(app);
     }
     app.slash_command.active = false;
@@ -68,9 +59,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
     // Deactivate slash command on submit.
     app.slash_command.active = false;
 
-    if key
-        .modifiers
-        .contains(crossterm::event::KeyModifiers::SHIFT)
+    if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
         || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
     {
         // insert blank character for writing next line
@@ -80,11 +69,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
     } else if !app.input.is_empty() {
         let trimmed = app.input.trim();
         if let Some(rest) = trimmed.strip_prefix('/') {
-            let cmd = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_string();
+            let cmd = rest.split_whitespace().next().unwrap_or_default().to_string();
             let outcome = execute_palette_command(app, &cmd);
             if outcome.handled {
                 if outcome.clear_input {
@@ -96,19 +81,13 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-            app.flash_msg = Some((
-                app.msgs().input_busy_msg.to_string(),
-                std::time::Instant::now(),
-            ));
+            app.flash_msg = Some((app.msgs().input_busy_msg.to_string(), std::time::Instant::now()));
             return;
         }
 
         let display = app.input.clone();
         if tact::consts::exceeds_input_char_limit(display.chars().count()) {
-            let msg = app
-                .msgs()
-                .input_too_long_tmpl
-                .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+            let msg = app.msgs().input_too_long_tmpl.replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
             app.add_system_message(msg);
             return;
         }
@@ -119,43 +98,31 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
     }
 }
 
-pub(crate) fn handle_insert_mode(
-    app: &mut App,
-    key: KeyEvent,
-    user_cmd_tx: &UnboundedSender<UserCommand>,
-) {
+pub(crate) fn handle_insert_mode(app: &mut App, key: KeyEvent, user_cmd_tx: &UnboundedSender<UserCommand>) {
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
             let cmds = app.palette_commands();
-            let commands: Vec<(&str, &str)> =
-                cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
+            let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
             let skill_names = skill_name_set(app);
-            let n = app
-                .slash_command
-                .matched_commands(&app.input, app.input_cursor, &commands, &skill_names)
-                .len();
+            let n = app.slash_command.matched_commands(&app.input, app.input_cursor, &commands, &skill_names).len();
             if n > 0 {
                 app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
             }
-        }
+        },
         KeyCode::Down if app.slash_command.active => {
             let cmds = app.palette_commands();
-            let commands: Vec<(&str, &str)> =
-                cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
+            let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
             let skill_names = skill_name_set(app);
-            let n = app
-                .slash_command
-                .matched_commands(&app.input, app.input_cursor, &commands, &skill_names)
-                .len();
+            let n = app.slash_command.matched_commands(&app.input, app.input_cursor, &commands, &skill_names).len();
             if n > 0 {
                 let max = n.saturating_sub(1);
                 app.slash_command.selected = (app.slash_command.selected + 1).min(max);
             }
-        }
+        },
         KeyCode::Tab if app.slash_command.active => {
             apply_selected_slash_command(app);
-        }
+        },
         KeyCode::Enter if app.slash_command.active => {
             // Enter runs the highlighted slash command; Tab only autocompletes.
             if execute_selected_slash_command(app) {
@@ -163,10 +130,10 @@ pub(crate) fn handle_insert_mode(
             }
             // If no command matches, fallback to the normal Enter behavior.
             handle_enter_submit(app, &key, user_cmd_tx);
-        }
+        },
         KeyCode::Esc if app.slash_command.active => {
             app.slash_command.active = false;
-        }
+        },
         KeyCode::Char(' ') if app.slash_command.active => {
             app.slash_command.active = false;
             app.input_history.index = None;
@@ -174,7 +141,7 @@ pub(crate) fn handle_insert_mode(
             app.save_undo();
             app.input.insert(app.input_cursor, ' ');
             app.input_cursor += 1;
-        }
+        },
         KeyCode::Backspace if app.slash_command.active && key.modifiers.is_empty() => {
             app.input_history.index = None;
             app.input_history.saved.clear();
@@ -187,17 +154,13 @@ pub(crate) fn handle_insert_mode(
                     app.slash_command.active = false;
                 }
             }
-        }
+        },
         // --- End slash command shortcuts ---
         KeyCode::Enter => {
             handle_enter_submit(app, &key, user_cmd_tx);
-        }
+        },
         // Quick word delete
-        KeyCode::Char('w')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('w') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             // Editing a history entry exits history navigation
             app.input_history.index = None;
             app.input_history.saved.clear();
@@ -207,7 +170,7 @@ pub(crate) fn handle_insert_mode(
                 app.input.drain(pos..app.input_cursor);
                 app.input_cursor = pos;
             }
-        }
+        },
         KeyCode::Backspace if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
             // Editing a history entry exits history navigation
             app.input_history.index = None;
@@ -218,29 +181,17 @@ pub(crate) fn handle_insert_mode(
                 app.input.drain(pos..app.input_cursor);
                 app.input_cursor = pos;
             }
-        }
+        },
         // Ctrl+A: jump to input start
-        KeyCode::Char('a')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('a') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             app.input_cursor = 0;
-        }
+        },
         // Ctrl+E: jump to input end
-        KeyCode::Char('e')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('e') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             app.input_cursor = app.input.len();
-        }
+        },
         // Ctrl+K: kill to end of line; if cursor is at end of line, delete newline to merge with next line
-        KeyCode::Char('k')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             exit_history(app);
             let end = end_of_line(&app.input, app.input_cursor);
             let delete_end = if end < app.input.len() { end + 1 } else { end };
@@ -248,7 +199,7 @@ pub(crate) fn handle_insert_mode(
                 app.save_undo();
             }
             app.input.drain(app.input_cursor..delete_end);
-        }
+        },
         KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
             // Editing a history entry exits history navigation
             app.input_history.index = None;
@@ -258,13 +209,9 @@ pub(crate) fn handle_insert_mode(
                 let pos = next_word_boundary(&app.input, app.input_cursor);
                 app.input.drain(app.input_cursor..pos);
             }
-        }
+        },
         // Ctrl+U: kill to beginning of line
-        KeyCode::Char('u')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             exit_history(app);
             let start = start_of_line(&app.input, app.input_cursor);
             if start < app.input_cursor {
@@ -272,42 +219,26 @@ pub(crate) fn handle_insert_mode(
             }
             app.input.drain(start..app.input_cursor);
             app.input_cursor = start;
-        }
+        },
         // Ctrl+D: delete character after cursor (only when input is non-empty)
-        KeyCode::Char('d')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             exit_history(app);
             if app.input_cursor < app.input.len() {
                 app.save_undo();
                 let next = next_char_boundary(&app.input, app.input_cursor);
                 app.input.drain(app.input_cursor..next);
             }
-        }
+        },
         // Ctrl+Home: jump to input start
-        KeyCode::Home
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Home if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             app.input_cursor = 0;
-        }
+        },
         // Ctrl+End: jump to input end
-        KeyCode::End
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::End if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             app.input_cursor = app.input.len();
-        }
+        },
         // Ctrl+Backspace: delete previous word (consistent with Ctrl+W / Alt+Backspace)
-        KeyCode::Backspace
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Backspace if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             exit_history(app);
             if app.input_cursor > 0 {
                 app.save_undo();
@@ -315,13 +246,9 @@ pub(crate) fn handle_insert_mode(
                 app.input.drain(pos..app.input_cursor);
                 app.input_cursor = pos;
             }
-        }
+        },
         // Ctrl+P: history back (unrestricted by cursor line position)
-        KeyCode::Char('p')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('p') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             if !app.input_history.entries.is_empty() {
                 if app.input_history.index.is_none() {
                     app.input_history.saved = app.input.clone();
@@ -336,13 +263,9 @@ pub(crate) fn handle_insert_mode(
                     app.input_cursor = app.input.len();
                 }
             }
-        }
+        },
         // Ctrl+N: history forward (unrestricted by cursor line position)
-        KeyCode::Char('n')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('n') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             if let Some(idx) = app.input_history.index {
                 if idx + 1 < app.input_history.entries.len() {
                     app.input_history.index = Some(idx + 1);
@@ -354,41 +277,27 @@ pub(crate) fn handle_insert_mode(
                     app.input_cursor = app.input.len();
                 }
             }
-        }
+        },
         // Ctrl+Z: undo
-        KeyCode::Char('z')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('z') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             if let Some((prev_input, prev_cursor)) = app.undo_stack.pop() {
                 app.redo_stack.push((app.input.clone(), app.input_cursor));
                 app.input = prev_input;
                 app.input_cursor = prev_cursor;
             }
-        }
+        },
         // Ctrl+Y: redo
-        KeyCode::Char('y')
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-        {
+        KeyCode::Char('y') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
             if let Some((next_input, next_cursor)) = app.redo_stack.pop() {
                 app.undo_stack.push((app.input.clone(), app.input_cursor));
                 app.input = next_input;
                 app.input_cursor = next_cursor;
             }
-        }
+        },
         KeyCode::Char('/')
             if {
-                let cursor = app
-                    .input
-                    .floor_char_boundary(app.input_cursor.min(app.input.len()));
-                cursor == 0
-                    || app.input[..cursor]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|c| c.is_whitespace())
+                let cursor = app.input.floor_char_boundary(app.input_cursor.min(app.input.len()));
+                cursor == 0 || app.input[..cursor].chars().next_back().is_none_or(|c| c.is_whitespace())
             } =>
         {
             // Activate slash command popup when '/' is typed at input start or after whitespace.
@@ -400,7 +309,7 @@ pub(crate) fn handle_insert_mode(
             app.slash_command.selected = 0;
             app.input.insert(app.input_cursor, '/');
             app.input_cursor += '/'.len_utf8();
-        }
+        },
         KeyCode::Char('/') => {
             // Literal '/' (not at start / after whitespace).
             app.input_history.index = None;
@@ -408,24 +317,18 @@ pub(crate) fn handle_insert_mode(
             app.save_undo();
             app.input.insert(app.input_cursor, '/');
             app.input_cursor += '/'.len_utf8();
-        }
+        },
 
         KeyCode::Char('@')
             if {
-                let cursor = app
-                    .input
-                    .floor_char_boundary(app.input_cursor.min(app.input.len()));
-                cursor == 0
-                    || app.input[..cursor]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|c| c.is_whitespace())
+                let cursor = app.input.floor_char_boundary(app.input_cursor.min(app.input.len()));
+                cursor == 0 || app.input[..cursor].chars().next_back().is_none_or(|c| c.is_whitespace())
             } =>
         {
             // Open the file picker when '@' is typed at the start of the input
             // or after whitespace.
             app.open_file_picker();
-        }
+        },
         KeyCode::Char('@') => {
             // Literal '@' (e.g. inside an email address).
             app.input_history.index = None;
@@ -433,7 +336,7 @@ pub(crate) fn handle_insert_mode(
             app.save_undo();
             app.input.insert(app.input_cursor, '@');
             app.input_cursor += '@'.len_utf8();
-        }
+        },
         KeyCode::Char(c) => {
             // Typing anything exits history navigation
             app.input_history.index = None;
@@ -450,7 +353,7 @@ pub(crate) fn handle_insert_mode(
             }
             app.input.insert(app.input_cursor, c);
             app.input_cursor += c.len_utf8();
-        }
+        },
         KeyCode::Backspace => {
             // Editing a history entry exits history navigation
             app.input_history.index = None;
@@ -461,7 +364,7 @@ pub(crate) fn handle_insert_mode(
                 app.input.remove(prev);
                 app.input_cursor = prev;
             }
-        }
+        },
         KeyCode::Delete => {
             // Editing a history entry exits history navigation
             app.input_history.index = None;
@@ -470,30 +373,26 @@ pub(crate) fn handle_insert_mode(
                 app.save_undo();
                 app.input.remove(app.input_cursor);
             }
-        }
+        },
         // Quick cursor movement (by word)
         KeyCode::Left
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
+            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                 || key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
         {
             app.input_cursor = prev_word_boundary(&app.input, app.input_cursor);
-        }
+        },
         KeyCode::Right
-            if key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
+            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                 || key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
         {
             app.input_cursor = next_word_boundary(&app.input, app.input_cursor);
-        }
+        },
         KeyCode::Left => {
             app.input_cursor = prev_char_boundary(&app.input, app.input_cursor);
-        }
+        },
         KeyCode::Right => {
             app.input_cursor = next_char_boundary(&app.input, app.input_cursor);
-        }
+        },
         KeyCode::Up => {
             let (line, _col) = cursor_line_col(&app.input, app.input_cursor);
             if line > 0 {
@@ -516,7 +415,7 @@ pub(crate) fn handle_insert_mode(
                     app.input_cursor = app.input.len();
                 }
             }
-        }
+        },
         KeyCode::Down => {
             let (line, _col) = cursor_line_col(&app.input, app.input_cursor);
             let next_len = line_length(&app.input, line + 1);
@@ -539,28 +438,30 @@ pub(crate) fn handle_insert_mode(
                     }
                 }
             }
-        }
+        },
         KeyCode::Home => {
             let (line, _) = cursor_line_col(&app.input, app.input_cursor);
             app.input_cursor = line_col_to_cursor(&app.input, line, 0);
-        }
+        },
         KeyCode::End => {
             let (line, _) = cursor_line_col(&app.input, app.input_cursor);
             app.input_cursor = line_col_to_cursor(&app.input, line, line_length(&app.input, line));
-        }
+        },
         KeyCode::Esc => app.input_mode = InputMode::Normal,
-        _ => {}
+        _ => {},
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::handle_insert_mode;
-    use crate::widgets::state::{App, Status};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
+
+    use super::handle_insert_mode;
+    use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -593,17 +494,10 @@ mod tests {
         app.input = "/quit".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(app.should_quit, "expected /quit to set should_quit");
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected /quit not to dispatch SubmitTask"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected /quit not to dispatch SubmitTask");
     }
 
     #[test]
@@ -614,20 +508,11 @@ mod tests {
         app.input = "/cancel".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        let cmd = user_cmd_rx
-            .try_recv()
-            .expect("expected /cancel to dispatch UserCommand::Cancel");
+        let cmd = user_cmd_rx.try_recv().expect("expected /cancel to dispatch UserCommand::Cancel");
         assert!(matches!(cmd, UserCommand::Cancel));
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected /cancel not to dispatch SubmitTask"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected /cancel not to dispatch SubmitTask");
     }
 
     #[test]
@@ -640,45 +525,28 @@ mod tests {
         app.slash_command.start_pos = 0;
         app.slash_command.selected = 0;
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(app.should_quit, "expected Enter to execute /quit");
         assert!(app.input.is_empty(), "expected input cleared after /quit");
         assert!(!app.slash_command.active);
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected popup Enter not to submit a task"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected popup Enter not to submit a task");
     }
 
     #[test]
     fn slash_popup_enter_cancel_dispatches_while_executing() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
-        app.status = Status::Executing {
-            current_step: 0,
-            total: 1,
-        };
+        app.status = Status::Executing { current_step: 0, total: 1 };
         app.input = "/cancel".to_string();
         app.input_cursor = app.input.len();
         app.slash_command.active = true;
         app.slash_command.start_pos = 0;
         app.slash_command.selected = 0;
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        assert!(matches!(
-            user_cmd_rx.try_recv().expect("expected Cancel"),
-            UserCommand::Cancel
-        ));
+        assert!(matches!(user_cmd_rx.try_recv().expect("expected Cancel"), UserCommand::Cancel));
         assert!(app.input.is_empty());
         assert!(!app.slash_command.active);
     }
@@ -693,15 +561,9 @@ mod tests {
         app.slash_command.start_pos = 0;
         app.slash_command.selected = 0;
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        let cmd = user_cmd_rx
-            .try_recv()
-            .expect("expected no-match slash Enter to submit task");
+        let cmd = user_cmd_rx.try_recv().expect("expected no-match slash Enter to submit task");
         match cmd {
             UserCommand::SubmitTask(task) => assert_eq!(task, "/zzzzzz"),
             other => panic!("expected SubmitTask, got {:?}", other),
@@ -717,18 +579,11 @@ mod tests {
         app.input = "/cancel".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(app.input.is_empty());
         assert!(app.flash_msg.is_some());
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected idle /cancel not to dispatch UserCommand"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected idle /cancel not to dispatch UserCommand");
     }
 
     #[test]
@@ -739,18 +594,11 @@ mod tests {
         app.input = "/cancel".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(app.input.is_empty());
         assert!(app.flash_msg.is_some());
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected Done /cancel not to dispatch UserCommand::Cancel"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected Done /cancel not to dispatch UserCommand::Cancel");
     }
 
     #[test]
@@ -762,15 +610,10 @@ mod tests {
         app.input = "hello world".to_string();
         app.input_cursor = app.input.chars().count();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        let cmd = user_cmd_rx
-            .try_recv()
-            .expect("expected short input to submit even when model_context_window is tiny");
+        let cmd =
+            user_cmd_rx.try_recv().expect("expected short input to submit even when model_context_window is tiny");
         match cmd {
             UserCommand::SubmitTask(task) => assert_eq!(task, "hello world"),
             other => panic!("expected SubmitTask, got {:?}", other),
@@ -786,19 +629,13 @@ mod tests {
         app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
         app.input_cursor = app.input.chars().count();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
+        assert!(user_cmd_rx.try_recv().is_err(), "expected oversize input not to dispatch UserCommand");
         assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected oversize input not to dispatch UserCommand"
-        );
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("too long")
-                || m.contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("too long") || m.contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
             "expected a system message indicating input is too long"
         );
         assert_eq!(
@@ -816,20 +653,10 @@ mod tests {
         app.input = "do something".to_string();
         app.input_cursor = app.input.chars().count();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "expected busy input not to submit task"
-        );
-        assert!(
-            app.flash_msg.is_some(),
-            "expected a flash message while busy"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "expected busy input not to submit task");
+        assert!(app.flash_msg.is_some(), "expected a flash message while busy");
     }
 
     #[test]
@@ -849,18 +676,11 @@ mod tests {
         app.slash_command.start_pos = 0;
         app.slash_command.selected = 0;
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert_eq!(app.input, "/demo ");
         assert!(!app.slash_command.active);
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "popup Enter on skill must not SubmitTask"
-        );
+        assert!(user_cmd_rx.try_recv().is_err(), "popup Enter on skill must not SubmitTask");
     }
 
     #[test]
@@ -874,22 +694,13 @@ mod tests {
         app.slash_command.start_pos = 0;
         app.slash_command.selected = 0;
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
-        assert_eq!(
-            app.input, "/plugin ",
-            "Enter on /plugin should leave `/plugin ` so the user can type list/reload"
-        );
+        assert_eq!(app.input, "/plugin ", "Enter on /plugin should leave `/plugin ` so the user can type list/reload");
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(!app.slash_command.active);
         assert!(
-            !app.raw_messages
-                .iter()
-                .any(|m| m.starts_with("Usage: /plugin")),
+            !app.raw_messages.iter().any(|m| m.starts_with("Usage: /plugin")),
             "must not run bare /plugin yet: {:?}",
             app.raw_messages
         );
@@ -909,30 +720,16 @@ mod tests {
         }];
 
         for c in "/demo:".chars() {
-            handle_insert_mode(
-                &mut app,
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-                &user_cmd_tx,
-            );
+            handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &user_cmd_tx);
         }
 
         let commands = app.palette_commands();
-        let refs: Vec<(&str, &str)> = commands
-            .iter()
-            .map(|(command, description)| (command.as_str(), description.as_str()))
-            .collect();
-        let matches = app.slash_command.matched_commands(
-            &app.input,
-            app.input_cursor,
-            &refs,
-            &super::skill_name_set(&app),
-        );
+        let refs: Vec<(&str, &str)> =
+            commands.iter().map(|(command, description)| (command.as_str(), description.as_str())).collect();
+        let matches =
+            app.slash_command.matched_commands(&app.input, app.input_cursor, &refs, &super::skill_name_set(&app));
         assert!(app.slash_command.active);
-        assert!(
-            matches
-                .iter()
-                .any(|(_, (name, _), _)| *name == "demo:review")
-        );
+        assert!(matches.iter().any(|(_, (name, _), _)| *name == "demo:review"));
     }
 
     #[test]
@@ -949,11 +746,7 @@ mod tests {
         app.input = "/demo".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(matches!(app.status, Status::Planning));
         assert!(app.input.is_empty());
@@ -962,13 +755,10 @@ mod tests {
                 assert!(task.contains("<skill name=\"demo\">"));
                 assert!(task.contains("Follow the checklist."));
                 assert!(!task.contains("ARGUMENTS:"));
-            }
+            },
             other => panic!("expected SubmitTask, got {other:?}"),
         }
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("/demo")),
-            "user bubble should show slash command"
-        );
+        assert!(app.raw_messages.iter().any(|m| m.contains("/demo")), "user bubble should show slash command");
     }
 
     #[test]
@@ -985,24 +775,15 @@ mod tests {
         app.input = "/demo fix auth".to_string();
         app.input_cursor = app.input.len();
 
-        handle_insert_mode(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &user_cmd_tx,
-        );
+        handle_insert_mode(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &user_cmd_tx);
 
         assert!(matches!(app.status, Status::Planning));
         match user_cmd_rx.try_recv().expect("SubmitTask") {
             UserCommand::SubmitTask(task) => {
                 assert!(task.contains("ARGUMENTS: fix auth"));
-            }
+            },
             other => panic!("expected SubmitTask, got {other:?}"),
         }
-        assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("/demo fix auth")),
-            "user bubble should show slash + args"
-        );
+        assert!(app.raw_messages.iter().any(|m| m.contains("/demo fix auth")), "user bubble should show slash + args");
     }
 }

@@ -45,7 +45,6 @@ pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
 pub use tact_llm::Tool as ToolSpec;
-
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
 /// Returns the model name from the active provider configuration.
@@ -69,13 +68,7 @@ pub fn extract_text(content: &MessageContent) -> String {
         MessageContent::Text { content } => content.clone(),
         MessageContent::Blocks { content } => content
             .iter()
-            .filter_map(|block| {
-                if let ContentBlock::Text { text } = block {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|block| if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None })
             .collect::<Vec<_>>()
             .join("\n"),
     }

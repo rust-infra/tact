@@ -19,10 +19,7 @@ fn resolve_safe_path(work_dir: &Path, path: &str, allow_missing: bool) -> Result
     let full = if candidate.exists() || !allow_missing {
         candidate.canonicalize()?
     } else {
-        let parent = candidate
-            .parent()
-            .context("Path has no parent")?
-            .canonicalize()?;
+        let parent = candidate.parent().context("Path has no parent")?.canonicalize()?;
 
         if !parent.starts_with(&work_dir) {
             return Err(anyhow::anyhow!("Path escapes workspace"));
@@ -42,9 +39,9 @@ fn resolve_safe_path(work_dir: &Path, path: &str, allow_missing: bool) -> Result
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, os::unix::fs as unix_fs};
+
     use super::*;
-    use std::fs;
-    use std::os::unix::fs as unix_fs;
 
     fn setup_workspace() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -90,10 +87,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         // On some platforms canonicalize fails with "No such file" before
         // reaching the workspace check. Either error is acceptable.
-        assert!(
-            err.contains("escapes workspace") || err.contains("No such file"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("escapes workspace") || err.contains("No such file"), "unexpected error: {err}");
     }
 
     #[test]
@@ -102,10 +96,7 @@ mod tests {
         let result = safe_path(&work_dir, "../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("escapes workspace") || err.contains("No such file"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("escapes workspace") || err.contains("No such file"), "unexpected error: {err}");
     }
 
     #[test]
@@ -135,10 +126,7 @@ mod tests {
         let result = safe_path_allow_missing(&work_dir, "../outside.txt");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("escapes workspace") || err.contains("No such file"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("escapes workspace") || err.contains("No such file"), "unexpected error: {err}");
     }
 
     #[test]
@@ -171,10 +159,7 @@ mod tests {
         let result = safe_path(&work_dir, "escape_link");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("escapes workspace") || err.contains("No such file"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("escapes workspace") || err.contains("No such file"), "unexpected error: {err}");
     }
 
     #[test]

@@ -20,8 +20,8 @@ use crate::{
     i18n::Messages,
     render::renderable::Renderable,
     widgets::tool_widget::{
-        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us,
-        tool_card_inner_rows, tool_visual_rows,
+        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us, tool_card_inner_rows,
+        tool_visual_rows,
     },
 };
 
@@ -117,9 +117,7 @@ impl ToolCell {
             self.permission_label.as_deref(),
             self.size_bytes,
             duration_us,
-            self.error_message
-                .as_deref()
-                .filter(|_| !(self.has_detail_card && self.phase == ToolPhase::Failed)),
+            self.error_message.as_deref().filter(|_| !(self.has_detail_card && self.phase == ToolPhase::Failed)),
             self.spinner_char,
             self.tool_phase_running,
             self.tool_phase_success,
@@ -153,10 +151,7 @@ impl ToolCell {
         let plus_style = Style::default().fg(self.success).bg(self.bg);
 
         let visible_line_count = self.detail_total_lines.min(self.detail_preview.len());
-        let first_line_number = self
-            .detail_total_lines
-            .saturating_sub(visible_line_count)
-            .saturating_add(1);
+        let first_line_number = self.detail_total_lines.saturating_sub(visible_line_count).saturating_add(1);
         let lines: Vec<Line<'static>> = self
             .detail_preview
             .iter()
@@ -198,12 +193,7 @@ impl ToolCell {
     fn card_bottom_text(&self) -> String {
         let base = self.card_bottom.trim();
         if self.detail_total_lines > self.detail_preview.len() {
-            format!(
-                " {}/{} lines | {} ",
-                self.detail_preview.len(),
-                self.detail_total_lines,
-                base
-            )
+            format!(" {}/{} lines | {} ", self.detail_preview.len(), self.detail_total_lines, base)
         } else {
             self.card_bottom.clone()
         }
@@ -232,12 +222,8 @@ impl Renderable for ToolCell {
     ///                top border
     /// ```
     fn height(&self, _width: u16) -> u16 {
-        tool_visual_rows(
-            self.has_detail_card,
-            self.detail_preview.len(),
-            self.detail_total_lines,
-            self.card_only,
-        ) as u16
+        tool_visual_rows(self.has_detail_card, self.detail_preview.len(), self.detail_total_lines, self.card_only)
+            as u16
     }
 
     /// Render a rectangular slice of this cell into `buf`, starting `skip_lines`
@@ -284,8 +270,7 @@ impl Renderable for ToolCell {
     /// | 1..1+N-1   | Card interior only (borders clipped)|
     /// | ≥ height   | Nothing — cell is fully off-screen  |
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
-        let area =
-            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
+        let area = crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -306,9 +291,7 @@ impl Renderable for ToolCell {
                         .style(Style::default().fg(self.fg).bg(self.bg))
                         .render(row_area, buf);
                 } else {
-                    Paragraph::new(vec![self.meta_line()])
-                        .style(Style::default().bg(self.bg))
-                        .render(row_area, buf);
+                    Paragraph::new(vec![self.meta_line()]).style(Style::default().bg(self.bg)).render(row_area, buf);
                 }
             }
         }
@@ -322,10 +305,7 @@ impl Renderable for ToolCell {
         let (card_area_y_offset, card_skip) = if self.card_only {
             (0, skip_lines)
         } else {
-            (
-                TOOL_HEADER_ROWS.saturating_sub(skip_lines),
-                skip_lines.saturating_sub(TOOL_HEADER_ROWS),
-            )
+            (TOOL_HEADER_ROWS.saturating_sub(skip_lines), skip_lines.saturating_sub(TOOL_HEADER_ROWS))
         };
 
         // Entire card is above the viewport — nothing to draw.
@@ -338,12 +318,7 @@ impl Renderable for ToolCell {
         if remaining_h == 0 {
             return;
         }
-        let card_area = Rect::new(
-            area.x,
-            area.y + card_area_y_offset as u16,
-            area.width,
-            remaining_h,
-        );
+        let card_area = Rect::new(area.x, area.y + card_area_y_offset as u16, area.width, remaining_h);
 
         // ── Case A: full card (card_skip == 0) ──────────────────────
         //
@@ -355,23 +330,12 @@ impl Renderable for ToolCell {
             let card_block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(self.card_border_type)
-                .border_style(
-                    Style::default()
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .border_style(Style::default().fg(self.accent).add_modifier(Modifier::BOLD))
                 .style(Style::default().bg(self.bg))
-                .title(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD),
-                ))
+                .title(Span::styled(title, Style::default().fg(self.accent).add_modifier(Modifier::BOLD)))
                 .title_bottom(Line::from(Span::styled(
                     self.card_bottom_text(),
-                    Style::default()
-                        .fg(self.accent)
-                        .add_modifier(Modifier::ITALIC),
+                    Style::default().fg(self.accent).add_modifier(Modifier::ITALIC),
                 )));
 
             card_block.render(card_area, buf);
@@ -386,9 +350,7 @@ impl Renderable for ToolCell {
 
             if inner.height > 0 {
                 let lines = self.detail_card_lines(inner.width);
-                Paragraph::new(lines)
-                    .style(Style::default().bg(self.bg))
-                    .render(inner, buf);
+                Paragraph::new(lines).style(Style::default().bg(self.bg)).render(inner, buf);
             }
             return;
         }
@@ -423,15 +385,9 @@ impl Renderable for ToolCell {
 
         if inner.height > 0 {
             let all = self.detail_card_lines(inner.width);
-            let visible: Vec<Line<'static>> = all
-                .into_iter()
-                .skip(inner_skip)
-                .take(inner.height as usize)
-                .collect();
+            let visible: Vec<Line<'static>> = all.into_iter().skip(inner_skip).take(inner.height as usize).collect();
             if !visible.is_empty() {
-                Paragraph::new(visible)
-                    .style(Style::default().bg(self.bg))
-                    .render(inner, buf);
+                Paragraph::new(visible).style(Style::default().bg(self.bg)).render(inner, buf);
             }
         }
     }
@@ -450,9 +406,10 @@ impl Renderable for ToolCell {
 
 #[cfg(test)]
 mod tests {
+    use tact_protocol::ToolOutputSpan;
+
     use super::*;
     use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, ToolLayout, ToolPhase, tool_visual_rows};
-    use tact_protocol::ToolOutputSpan;
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -461,10 +418,7 @@ mod tests {
     fn make_output(has_card: bool, preview_count: usize, total: usize) -> ToolRenderOutput {
         let preview: Vec<ToolOutputLine> = (1..=preview_count)
             .map(|i| ToolOutputLine {
-                spans: vec![ToolOutputSpan {
-                    stream: ToolOutputStream::Other,
-                    text: format!("line-{i:02}"),
-                }],
+                spans: vec![ToolOutputSpan { stream: ToolOutputStream::Other, text: format!("line-{i:02}") }],
             })
             .collect();
         ToolRenderOutput {
@@ -484,11 +438,7 @@ mod tests {
                 preview_lines: preview_count,
                 has_detail_card: has_card,
             },
-            detail_title: if has_card {
-                Some("Wrote src/main.rs (15 lines)".into())
-            } else {
-                None
-            },
+            detail_title: if has_card { Some("Wrote src/main.rs (15 lines)".into()) } else { None },
             detail_preview: preview,
             detail_total_lines: total,
             detail_full: None,
@@ -500,11 +450,7 @@ mod tests {
         tool_cell_mode(output, false, None)
     }
 
-    fn tool_cell_mode(
-        output: ToolRenderOutput,
-        card_only: bool,
-        started_at: Option<std::time::Instant>,
-    ) -> ToolCell {
+    fn tool_cell_mode(output: ToolRenderOutput, card_only: bool, started_at: Option<std::time::Instant>) -> ToolCell {
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         ToolCell::from_output(
             output,
@@ -667,18 +613,8 @@ mod tests {
     fn stderr_preview_uses_warning_color() {
         let mut output = make_output(true, 2, 2);
         output.detail_preview = vec![
-            ToolOutputLine {
-                spans: vec![ToolOutputSpan {
-                    stream: ToolOutputStream::Stdout,
-                    text: "normal".into(),
-                }],
-            },
-            ToolOutputLine {
-                spans: vec![ToolOutputSpan {
-                    stream: ToolOutputStream::Stderr,
-                    text: "warning".into(),
-                }],
-            },
+            ToolOutputLine { spans: vec![ToolOutputSpan { stream: ToolOutputStream::Stdout, text: "normal".into() }] },
+            ToolOutputLine { spans: vec![ToolOutputSpan { stream: ToolOutputStream::Stderr, text: "warning".into() }] },
         ];
         let cell = tool_cell(output);
         let area = Rect::new(0, 0, 60, 10);

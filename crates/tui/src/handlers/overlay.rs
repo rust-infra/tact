@@ -1,8 +1,9 @@
 //! Shared keyboard handling for scrollable overlay popups
 //! (thinking / tool-diff / code).
 
-use crate::widgets::state::App;
 use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::widgets::state::App;
 
 /// Handle a key while an overlay popup is open.
 /// Returns `true` if an overlay was active (key is consumed either way).
@@ -11,10 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 /// otherwise ↑/↓/j/k would scroll the overlay instead of moving the selection.
 pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
     use crate::widgets::state::InputMode;
-    if matches!(
-        app.input_mode,
-        InputMode::Select | InputMode::FilePicker | InputMode::Palette
-    ) {
+    if matches!(app.input_mode, InputMode::Select | InputMode::FilePicker | InputMode::Palette) {
         return false;
     }
     if !app.has_overlay_popup() {
@@ -30,23 +28,26 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
             if let Some(ref mut p) = app.code_popup {
                 p.scroll = u16::MAX;
             }
-        }
+        },
         KeyCode::Char('g') if app.code_popup.is_some() => {
             if let Some(ref mut p) = app.code_popup {
                 p.scroll = 0;
             }
-        }
-        _ => {}
+        },
+        _ => {},
     }
     true
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::render::test_harness::make_app;
-    use crate::widgets::state::{CodePopup, DiffPopup, ThinkingPopup};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::{
+        render::test_harness::make_app,
+        widgets::state::{CodePopup, DiffPopup, ThinkingPopup},
+    };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -70,10 +71,7 @@ mod tests {
             selection_text: String::new(),
         });
         app.input_mode = InputMode::Select;
-        assert!(
-            !handle_overlay_key(&mut app, key(KeyCode::Down)),
-            "Select mode must receive ↑↓, not the overlay"
-        );
+        assert!(!handle_overlay_key(&mut app, key(KeyCode::Down)), "Select mode must receive ↑↓, not the overlay");
     }
 
     #[test]
@@ -114,11 +112,7 @@ mod tests {
     #[test]
     fn g_jumps_code_popup_to_top() {
         let mut app = make_app();
-        app.code_popup = Some(CodePopup {
-            block_idx: 0,
-            lang: "rs".into(),
-            scroll: 10,
-        });
+        app.code_popup = Some(CodePopup { block_idx: 0, lang: "rs".into(), scroll: 10 });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Char('g'))));
         assert_eq!(app.code_popup.as_ref().unwrap().scroll, 0);
     }

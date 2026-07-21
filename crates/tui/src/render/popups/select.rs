@@ -1,5 +1,6 @@
-use crate::widgets::state::App;
 use ratatui::{Frame, layout::Rect};
+
+use crate::widgets::state::App;
 
 pub(crate) fn render_select_popup(frame: &mut Frame, area: Rect, app: &App) {
     use crate::widgets::select_popup_widget::SelectPopupWidget;

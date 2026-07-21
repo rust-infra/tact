@@ -1,7 +1,7 @@
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_llm::{Message, Role};
+use tact_llm::{Message, Role, get_llm_client};
 use tool_refactor_macros::tool;
 
 use crate::{
@@ -10,7 +10,6 @@ use crate::{
     permission::{PermissionManager, PermissionMode},
     tool::{ToolContext, subagent_toolset},
 };
-use tact_llm::get_llm_client;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SubagentInput {
@@ -45,10 +44,7 @@ pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String> {
         subagent = subagent.with_ui_channel(tx);
     }
 
-    subagent
-        .runtime
-        .context
-        .push(Message::new_text(Role::User, input.prompt));
+    subagent.runtime.context.push(Message::new_text(Role::User, input.prompt));
     subagent.agent_loop(None).await?;
 
     let summary = subagent

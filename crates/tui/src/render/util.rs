@@ -1,6 +1,8 @@
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::{
+    layout::Rect,
+    style::Style,
+    text::{Line, Span},
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Left gutter for thinking blocks inside the log panel.
@@ -49,31 +51,17 @@ fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
 /// Split a styled Line by display width into multiple Lines not exceeding max_width.
 pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
     let line_style = line.style;
-    let text: String = line
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<Vec<_>>()
-        .concat();
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>().concat();
     let base_style = line_style.patch(line.spans.first().map(|s| s.style).unwrap_or_default());
 
     if !text.contains('\n') && UnicodeWidthStr::width(text.as_str()) <= max_width {
         let spans: Vec<Span<'static>> = line
             .spans
             .iter()
-            .map(|span| {
-                Span::styled(
-                    span.content.clone().into_owned(),
-                    line_style.patch(span.style),
-                )
-            })
+            .map(|span| Span::styled(span.content.clone().into_owned(), line_style.patch(span.style)))
             .collect();
         if !spans.is_empty() {
-            return vec![Line {
-                style: Style::default(),
-                alignment: line.alignment,
-                spans,
-            }];
+            return vec![Line { style: Style::default(), alignment: line.alignment, spans }];
         }
     }
 
@@ -162,8 +150,9 @@ pub(crate) fn visual_pos_to_byte_offset(
 
 #[cfg(test)]
 mod wrap_tests {
-    use super::*;
     use ratatui::style::{Color, Modifier, Style};
+
+    use super::*;
 
     #[test]
     fn visual_pos_to_byte_offset_basic() {
@@ -191,23 +180,11 @@ mod wrap_tests {
 
     #[test]
     fn line_style_after_wrap() {
-        let line = Line::from(vec![
-            Span::styled("### ", Style::default()),
-            Span::styled("Heading", Style::default()),
-        ])
-        .style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        let line = Line::from(vec![Span::styled("### ", Style::default()), Span::styled("Heading", Style::default())])
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
         let wrapped = wrap_line(&line, 80);
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].spans[0].style.fg, Some(Color::Cyan));
-        assert!(
-            wrapped[0].spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
+        assert!(wrapped[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
     }
 }

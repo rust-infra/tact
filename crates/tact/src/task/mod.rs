@@ -24,18 +24,7 @@ use crate::store::{CollectionStore, Store, StoreRoot};
 ///
 /// Each state has a visual marker for LLM-friendly list rendering
 /// (`[ ]` → `[>]` → `[x]` / `[-]`).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    EnumString,
-    Display,
-    EnumPropertyDerive,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, EnumPropertyDerive)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum TaskStatus {
@@ -117,10 +106,7 @@ pub struct TaskManager {
 impl TaskManager {
     /// Creates a new task manager from the given store root.
     pub fn new(root: &StoreRoot) -> Result<Self> {
-        let manager = Self {
-            tasks: root.collection("tasks")?,
-            index: root.file("tasks/index.json")?,
-        };
+        let manager = Self { tasks: root.collection("tasks")?, index: root.file("tasks/index.json")? };
         if !manager.index.exists() {
             manager.index.write(&TaskIndex::default())?;
         }
@@ -139,9 +125,7 @@ impl TaskManager {
 
     /// Gets the task with the given ID.
     pub fn get(&self, task_id: u64) -> Result<TaskRecord> {
-        self.tasks
-            .read(&task_key(task_id))
-            .with_context(|| format!("Task {} not found", task_id))
+        self.tasks.read(&task_key(task_id)).with_context(|| format!("Task {} not found", task_id))
     }
 
     /// Updates the task with the given ID using the given update.
@@ -218,9 +202,7 @@ pub struct SharedTaskManager {
 impl SharedTaskManager {
     /// Creates a new shared task manager with the given task manager.
     pub fn new(manager: TaskManager) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(manager)),
-        }
+        Self { inner: Arc::new(Mutex::new(manager)) }
     }
 
     /// Creates a new task in the manager.
@@ -250,10 +232,7 @@ impl SharedTaskManager {
 
     /// Runs a callback with the task manager locked.
     fn with_manager<T>(&self, callback: impl FnOnce(&mut TaskManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("task manager lock poisoned"))?;
+        let mut manager = self.inner.lock().map_err(|_| anyhow::anyhow!("task manager lock poisoned"))?;
         callback(&mut manager)
     }
 }
@@ -285,19 +264,8 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String {
             } else {
                 format!(" (blocked by: {:?})", task.blocked_by)
             };
-            let owner = if task.owner.is_empty() {
-                String::new()
-            } else {
-                format!(" owner={}", task.owner)
-            };
-            format!(
-                "{} #{}: {}{}{}",
-                task.status.marker(),
-                task.id,
-                task.subject,
-                owner,
-                blocked
-            )
+            let owner = if task.owner.is_empty() { String::new() } else { format!(" owner={}", task.owner) };
+            format!("{} #{}: {}{}{}", task.status.marker(), task.id, task.subject, owner, blocked)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -330,9 +298,7 @@ mod tests {
         let (mut manager, _dir) = test_manager("create_assigns_incrementing_ids");
 
         let first = manager.create("First".to_string(), None).unwrap();
-        let second = manager
-            .create("Second".to_string(), Some("details".to_string()))
-            .unwrap();
+        let second = manager.create("Second".to_string(), Some("details".to_string())).unwrap();
 
         assert_eq!(first.id, 1);
         assert_eq!(first.subject, "First");
@@ -367,15 +333,8 @@ mod tests {
         let blocker = manager.create("Blocker".to_string(), None).unwrap();
         let blocked = manager.create("Blocked".to_string(), None).unwrap();
 
-        let updated = manager
-            .update(
-                blocker.id,
-                TaskUpdate {
-                    add_blocks: vec![blocked.id],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        let updated =
+            manager.update(blocker.id, TaskUpdate { add_blocks: vec![blocked.id], ..Default::default() }).unwrap();
 
         assert_eq!(updated.blocks, vec![blocked.id]);
 
@@ -388,25 +347,9 @@ mod tests {
         let (mut manager, _dir) = test_manager("completing_task_clears_blocked_by");
         let blocker = manager.create("Blocker".to_string(), None).unwrap();
         let blocked = manager.create("Blocked".to_string(), None).unwrap();
-        manager
-            .update(
-                blocker.id,
-                TaskUpdate {
-                    add_blocks: vec![blocked.id],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        manager.update(blocker.id, TaskUpdate { add_blocks: vec![blocked.id], ..Default::default() }).unwrap();
 
-        manager
-            .update(
-                blocker.id,
-                TaskUpdate {
-                    status: Some(TaskStatus::Completed),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        manager.update(blocker.id, TaskUpdate { status: Some(TaskStatus::Completed), ..Default::default() }).unwrap();
 
         let blocked = manager.get(blocked.id).unwrap();
         assert!(blocked.blocked_by.is_empty());

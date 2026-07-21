@@ -1,15 +1,15 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
-use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::{path::Path, sync::atomic::Ordering};
 
 use tact::{Agent, extract_text};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 
-use crate::account;
-use crate::user_message::build_user_message;
+use crate::{account, user_message::build_user_message};
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
@@ -52,7 +52,7 @@ pub async fn run_command_loop_with_account(
                 if let Some(tx) = &ui_tx {
                     let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
                 }
-            }
+            },
             UserCommand::SubmitTask(task) => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("submit task join panicked"));
@@ -60,26 +60,19 @@ pub async fn run_command_loop_with_account(
                 let work_dir = image_work_dir.clone();
                 let mut task_agent = agent.take().expect("agent available for submit");
                 active = Some(tokio::spawn(async move {
-                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
-                        .await;
+                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir).await;
                     task_agent
                 }));
-            }
+            },
             other => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("command join panicked"));
                 }
                 if let Some(mut a) = agent.take() {
-                    handle_user_command_with_account(
-                        &mut a,
-                        other,
-                        &image_work_dir,
-                        account_tx.as_ref(),
-                    )
-                    .await;
+                    handle_user_command_with_account(&mut a, other, &image_work_dir, account_tx.as_ref()).await;
                     agent = Some(a);
                 }
-            }
+            },
         }
     }
 
@@ -139,17 +132,17 @@ async fn handle_user_command_with_account(
                         let text = extract_text(&last.content);
                         agent.emit_update(AgentUpdate::TaskComplete(text));
                     }
-                }
+                },
                 Ok(()) => {
                     // Cancelled: clear TUI busy state (Planning/Executing) so
                     // the next prompt is not blocked behind input_busy_msg.
                     agent.emit_update(AgentUpdate::TaskCancelled);
-                }
+                },
                 Err(e) => {
                     agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                }
+                },
             }
-        }
+        },
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
                 return;
@@ -160,13 +153,13 @@ async fn handle_user_command_with_account(
             match account::query_once().await {
                 Ok(result) => {
                     let _ = account_tx.send(account::into_update(result));
-                }
+                },
                 Err(err) => {
                     let _ = account_tx.send(AccountUpdate::Error(err));
-                }
+                },
             }
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -174,16 +167,13 @@ async fn handle_user_command_with_account(
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use tact_llm::MockClient;
-    use tact_llm::{ContentBlock, StopReason};
-
-    use crate::test_support::{build_test_agent, install_test_config};
+    use tact_llm::{ContentBlock, MockClient, StopReason};
     use tact_protocol::{AgentUpdate, UserCommand};
 
+    use crate::test_support::{build_test_agent, install_test_config};
+
     fn text_block(content: &str) -> ContentBlock {
-        ContentBlock::Text {
-            text: content.to_string(),
-        }
+        ContentBlock::Text { text: content.to_string() }
     }
 
     #[tokio::test]
@@ -208,8 +198,7 @@ mod tests {
         let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
 
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-        super::handle_user_command(&mut agent, UserCommand::SubmitTask("go".into()), &work_dir)
-            .await;
+        super::handle_user_command(&mut agent, UserCommand::SubmitTask("go".into()), &work_dir).await;
 
         assert!(!agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let mut saw_complete = false;

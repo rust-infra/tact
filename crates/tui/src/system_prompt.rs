@@ -3,8 +3,8 @@ use serde_json::Value;
 
 /// Extract the system instructions from a persisted provider request body.
 pub(crate) fn extract_system_prompt(request_body: &[u8]) -> Result<String> {
-    let value: Value = serde_json::from_slice(request_body)
-        .map_err(|err| anyhow!("invalid persisted request JSON: {err}"))?;
+    let value: Value =
+        serde_json::from_slice(request_body).map_err(|err| anyhow!("invalid persisted request JSON: {err}"))?;
 
     if let Some(instructions) = value.get("instructions").and_then(Value::as_str) {
         return Ok(instructions.to_owned());
@@ -24,9 +24,7 @@ pub(crate) fn extract_system_prompt(request_body: &[u8]) -> Result<String> {
             let text = parts
                 .iter()
                 .filter_map(|part| {
-                    part.get("text")
-                        .and_then(Value::as_str)
-                        .or_else(|| part.get("content").and_then(Value::as_str))
+                    part.get("text").and_then(Value::as_str).or_else(|| part.get("content").and_then(Value::as_str))
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -44,17 +42,13 @@ mod tests {
 
     #[test]
     fn extracts_responses_instructions() {
-        assert_eq!(
-            extract_system_prompt(br#"{"instructions":"assembled"}"#).unwrap(),
-            "assembled"
-        );
+        assert_eq!(extract_system_prompt(br#"{"instructions":"assembled"}"#).unwrap(), "assembled");
     }
 
     #[test]
     fn extracts_chat_system_message() {
         assert_eq!(
-            extract_system_prompt(br#"{"messages":[{"role":"system","content":"assembled"}]}"#)
-                .unwrap(),
+            extract_system_prompt(br#"{"messages":[{"role":"system","content":"assembled"}]}"#).unwrap(),
             "assembled"
         );
     }

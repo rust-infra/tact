@@ -1,12 +1,13 @@
-use crate::tool::{ToolContext, safe_path_allow_missing};
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::time::{Duration, Instant};
 use tact_protocol::{AgentUpdate, format_bytes};
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
+
+use crate::tool::{ToolContext, safe_path_allow_missing};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileInput {
@@ -29,9 +30,7 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
     let path = safe_path_allow_missing(&ctx.work_dir, &input.path)?;
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| anyhow::anyhow!("Error creating parent directories: {}", e))?;
+        fs::create_dir_all(parent).await.map_err(|e| anyhow::anyhow!("Error creating parent directories: {}", e))?;
     }
 
     let total = input.content.len();
@@ -39,13 +38,9 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
     let line_count = input.content.lines().count();
 
     if total <= SINGLE_WRITE_THRESHOLD {
-        fs::write(&path, bytes)
-            .await
-            .map_err(|e| anyhow::anyhow!("Error writing file: {}", e))?;
+        fs::write(&path, bytes).await.map_err(|e| anyhow::anyhow!("Error writing file: {}", e))?;
     } else {
-        let mut file = fs::File::create(&path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Error creating file: {}", e))?;
+        let mut file = fs::File::create(&path).await.map_err(|e| anyhow::anyhow!("Error creating file: {}", e))?;
 
         let mut written = 0usize;
         let mut next_milestone = total / 10;
@@ -53,9 +48,7 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
         let update_interval = Duration::from_millis(200);
 
         for chunk in bytes.chunks(WRITE_CHUNK_SIZE) {
-            file.write_all(chunk)
-                .await
-                .map_err(|e| anyhow::anyhow!("Error writing file: {}", e))?;
+            file.write_all(chunk).await.map_err(|e| anyhow::anyhow!("Error writing file: {}", e))?;
             written += chunk.len();
 
             if written < total {
@@ -85,24 +78,16 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
             }
         }
 
-        file.flush()
-            .await
-            .map_err(|e| anyhow::anyhow!("Error flushing file: {}", e))?;
+        file.flush().await.map_err(|e| anyhow::anyhow!("Error flushing file: {}", e))?;
     }
 
-    Ok(format!(
-        "Wrote {} / {} lines to {}",
-        format_bytes(total),
-        line_count,
-        path.display()
-    ))
+    Ok(format!("Wrote {} / {} lines to {}", format_bytes(total), line_count, path.display()))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn write_file_writes_into_existing_subdirectory() {
@@ -121,8 +106,7 @@ mod tests {
         .await
         .unwrap();
 
-        let written =
-            std::fs::read_to_string(context.work_dir.join("nested/dir/file.txt")).unwrap();
+        let written = std::fs::read_to_string(context.work_dir.join("nested/dir/file.txt")).unwrap();
         assert_eq!(written, "nested content\n");
     }
 }

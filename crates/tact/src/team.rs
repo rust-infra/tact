@@ -52,10 +52,7 @@ pub struct SharedTeammateManager {
 
 impl TeammateManager {
     pub fn new(root: &StoreRoot) -> Result<Self> {
-        let manager = Self {
-            config: root.file("team/config.json")?,
-            inboxes: root.collection("team/inbox")?,
-        };
+        let manager = Self { config: root.file("team/config.json")?, inboxes: root.collection("team/inbox")? };
         if !manager.config.exists() {
             manager.config.write(&TeamConfig::default())?;
         }
@@ -64,18 +61,10 @@ impl TeammateManager {
 
     pub fn spawn_teammate(&mut self, name: String, role: String) -> Result<String> {
         let mut config = self.config.read().unwrap_or_default();
-        if config
-            .teammates
-            .iter()
-            .any(|teammate| teammate.name == name)
-        {
+        if config.teammates.iter().any(|teammate| teammate.name == name) {
             anyhow::bail!("teammate {name} already exists");
         }
-        let record = TeammateRecord {
-            name,
-            role,
-            status: "idle".to_string(),
-        };
+        let record = TeammateRecord { name, role, status: "idle".to_string() };
         config.teammates.push(record.clone());
         self.config.write(&config)?;
         serde_json::to_string_pretty(&record).context("failed to serialize teammate")
@@ -95,13 +84,7 @@ impl TeammateManager {
     }
 
     pub fn send_message(&mut self, from: String, to: String, body: String) -> Result<String> {
-        let message = InboxMessage {
-            from,
-            to: to.clone(),
-            body,
-            kind: "message".to_string(),
-            created_at: Utc::now(),
-        };
+        let message = InboxMessage { from, to: to.clone(), body, kind: "message".to_string(), created_at: Utc::now() };
         self.inboxes.append(&to, &message)?;
         Ok(format!("sent message to {to}"))
     }
@@ -122,20 +105,8 @@ impl TeammateManager {
         serde_json::to_string_pretty(&messages).context("failed to serialize inbox")
     }
 
-    pub fn protocol_request(
-        &mut self,
-        from: String,
-        to: String,
-        kind: String,
-        body: String,
-    ) -> Result<String> {
-        let message = InboxMessage {
-            from,
-            to: to.clone(),
-            body,
-            kind,
-            created_at: Utc::now(),
-        };
+    pub fn protocol_request(&mut self, from: String, to: String, kind: String, body: String) -> Result<String> {
+        let message = InboxMessage { from, to: to.clone(), body, kind, created_at: Utc::now() };
         self.inboxes.append(&to, &message)?;
         Ok(format!("sent protocol request to {to}"))
     }
@@ -143,16 +114,11 @@ impl TeammateManager {
 
 impl SharedTeammateManager {
     pub fn new(manager: TeammateManager) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(manager)),
-        }
+        Self { inner: Arc::new(Mutex::new(manager)) }
     }
 
     pub fn with_manager<T>(&self, f: impl FnOnce(&mut TeammateManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("teammate manager lock poisoned"))?;
+        let mut manager = self.inner.lock().map_err(|_| anyhow::anyhow!("teammate manager lock poisoned"))?;
         f(&mut manager)
     }
 
@@ -176,13 +142,7 @@ impl SharedTeammateManager {
         self.with_manager(|manager| manager.read_inbox(owner))
     }
 
-    pub fn protocol_request(
-        &self,
-        from: String,
-        to: String,
-        kind: String,
-        body: String,
-    ) -> Result<String> {
+    pub fn protocol_request(&self, from: String, to: String, kind: String, body: String) -> Result<String> {
         self.with_manager(|manager| manager.protocol_request(from, to, kind, body))
     }
 }

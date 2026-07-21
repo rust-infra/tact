@@ -86,10 +86,7 @@ flowchart TD
     Start([agent_loop iteration]) --> Cancel{cancelled?}
     Cancel -->|yes| Exit([return])
     Cancel -->|no| MC[micro_compact context]
-    MC --> Size{should_auto_compact?<br/>tokens or estimate ≥ 80% window}
-    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
-    Auto --> Build
-    Size -->|no| Build[build CreateMessageParams]
+    MC --> Build[build CreateMessageParams]
     Build --> Stream[stream_message]
     Stream -->|Ok| Assist[push assistant message]
     Stream -->|prompt too long| Rec["[Recovery] compact<br/>compact_history(None)"]
@@ -102,21 +99,26 @@ flowchart TD
     Persist --> Man{manual_compact?}
     Man -->|yes| MC2["[manual compact]<br/>compact_history(focus)"]
     MC2 --> Start
-    Man -->|no| Start
+    Man -->|no| MC3[micro_compact context]
+    MC3 --> Size{should_auto_compact?<br/>tokens or estimate ≥ 80% window}
+    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
+    Auto --> Start
+    Size -->|no| Start
     Tools -->|no| Done{stop / continue?}
 ```
 
 Key ordering facts:
 
-1. **`micro_compact` always runs before the auto-compact check** — so auto-compact measures an *already-stubbed* context.
-2. **Prompt-too-long recovery** runs `compact_history` then `continue`s the loop (same turn, new context). Cap: `MAX_RECOVERY_ATTEMPTS` (3). Details in [Error Recovery](./06_chapter_recovery.md).
-3. **Manual `compact` tool** cannot rewrite context *inside* the tool handler (API validity). Dispatch records a flag; `compact_history` runs **after** tool results are appended.
+1. **`micro_compact` runs before every actual model request**, including the first request and continuation requests. Automatic full compaction is checked after tool results are appended, so an explicit manual `compact` request can take priority.
+2. **After tool execution, manual compaction wins** — when `manual_compact` is present, `compact_history(focus)` runs; otherwise the agent runs `micro_compact` and then checks `should_auto_compact`.
+3. **Prompt-too-long recovery** runs `compact_history` then `continue`s the loop (same turn, new context). Cap: `MAX_RECOVERY_ATTEMPTS` (3). Details in [Error Recovery](./06_chapter_recovery.md).
+4. **Manual `compact` tool** cannot rewrite context *inside* the tool handler (API validity). Dispatch records a flag; `compact_history` runs **after** tool results are appended.
 
 ---
 
 ## 3. Micro-Compaction
 
-`micro_compact(messages, enabled)` runs at the top of every turn (disable via config, see §9). It only touches **user-role** messages that contain `ContentBlock::ToolResult`.
+`micro_compact(messages, enabled)` runs before each model request (disable via config, see §9). It only touches **user-role** messages that contain `ContentBlock::ToolResult`. The full auto-compact check is deliberately deferred until after tool results are appended, where manual `compact` can take priority.
 
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
@@ -198,6 +200,8 @@ Both sides of the OR compare against the same **token** window. Serialized conte
 
 Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. Both plain-text turns and block-based UI turns are real users; tool-result-only block messages and prior summaries are excluded. The retained-user budget is `min(20k estimated tokens, window - max output - estimate(system + tools + summary) - 20% headroom)`. A block turn is kept verbatim when it fits; an oversized block turn falls back to its text tail, or an omission marker when it contains only images. Base64 is never sliced. Legacy single-summary path remains as `compact_history_legacy`.
 
+The summary request reserves two separate costs before selecting history: the summary output budget (up to 2,000 tokens) and **10% of the model window as safety headroom**. For a 200,000-token window, the headroom is 20,000 tokens. This absorbs estimation error, JSON serialization overhead, and differences between the conservative estimate and the provider tokenizer. The percentage is rounded up, so the reserve is never rounded down.
+
 ```rust
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
     match serde_json::to_string(messages) {
@@ -271,7 +275,7 @@ flowchart LR
     New -->|serialized into prompt| SumLLM[summarization LLM]
 ```
 
-**3. Summarization call** — a fresh non-streaming `create_message` (at most 2,000 output tokens, no tools, no thinking) reserves output and 10% safety headroom before selecting input. Transient transport failures get up to three retries with backoff. `MaxTokens`, refusal/other abnormal stop reasons, and empty text are rejected without replacing the old context. The prompt asks the model to preserve:
+**3. Summarization call** — a fresh non-streaming `create_message` (at most 2,000 output tokens, no tools, no thinking) reserves output and 10% safety headroom before selecting input. If the fixed summary instructions alone exceed this input limit, compaction fails early because no valid summary request can be constructed, even after removing all history. Transient transport failures get up to three retries with backoff. `MaxTokens`, refusal/other abnormal stop reasons, and empty text are rejected without replacing the old context. The prompt asks the model to preserve:
 
 1. Current goal and accomplishments  
 2. Findings, decisions, architectural insights  
@@ -300,6 +304,10 @@ Optional appendages:
 ```
 
 (`compact_history_legacy` still replaces with a **single** summary user message.)
+
+### Compaction failure behavior
+
+The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason, or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to three times before failing.
 
 **5. Bookkeeping**
 
@@ -465,6 +473,8 @@ sequenceDiagram
 ```
 
 Why the tool body is nearly a no-op: rewriting `runtime.context` **inside** a tool call would leave the conversation mid-flight (assistant `tool_use` without matching results, or a half-applied summary). The dispatcher pattern keeps the wire protocol valid, then runs Level 3 afterward. Optional `focus` steers what the summarizer must keep.
+
+The dispatcher uses `manual_compact = Some(focus)` as a request flag. A string `focus` is copied into the flag; a missing or non-string `focus` becomes `Some("")`. That empty value still means “perform manual compaction,” but it supplies no extra instruction and is ignored by `compact_history`. `None` means that this tool was not requested. In the normal sequence, the tool result is first appended and persisted, then `compact_history(Some(focus))` performs the actual rewrite.
 
 ---
 

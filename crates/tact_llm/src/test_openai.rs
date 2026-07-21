@@ -9,27 +9,24 @@
 //!   OPENAI_BASE_URL=https://api.kimi.com/coding/v1  (optional, defaults to OpenAI official)
 //!   OPENAI_MODEL=moonshot-v1-8k
 
-use super::openai::{
-    CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest,
+use async_openai::{
+    config::Config,
+    types::{
+        ChatCompletionRequestMessage, ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        CreateChatCompletionRequest, Role,
+    },
 };
-use async_openai::config::Config;
-use async_openai::types::{
-    ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest, Role,
-};
+
+use super::openai::{CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest};
 
 fn build_local_test_request(model: String) -> LocalCreateChatCompletionRequest {
     LocalCreateChatCompletionRequest {
         model,
-        messages: vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Text(
-                    "Say hello in one word.".into(),
-                ),
-                role: Role::User,
-                name: None,
-            },
-        )],
+        messages: vec![ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Text("Say hello in one word.".into()),
+            role: Role::User,
+            name: None,
+        })],
         frequency_penalty: None,
         logit_bias: None,
         logprobs: None,
@@ -53,15 +50,11 @@ fn build_local_test_request(model: String) -> LocalCreateChatCompletionRequest {
 fn build_async_openai_test_request(model: String) -> CreateChatCompletionRequest {
     CreateChatCompletionRequest {
         model,
-        messages: vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Text(
-                    "Say hello in one word.".into(),
-                ),
-                role: Role::User,
-                name: None,
-            },
-        )],
+        messages: vec![ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Text("Say hello in one word.".into()),
+            role: Role::User,
+            name: None,
+        })],
         max_tokens: Some(16),
         n: Some(1),
         stream: Some(false),
@@ -76,8 +69,7 @@ async fn test_openai_raw_reqwest() {
     dotenvy::dotenv().ok();
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 
     let config = CompatibleConfig::new(&api_key, &base_url);
@@ -109,12 +101,7 @@ async fn test_openai_raw_reqwest() {
     println!("Response body:\n{}", body_text);
     println!("===== END =====");
 
-    assert!(
-        status.is_success(),
-        "Expected 2xx, got {}. Body: {}",
-        status,
-        body_text
-    );
+    assert!(status.is_success(), "Expected 2xx, got {}. Body: {}", status, body_text);
 }
 
 /// Test non-streaming chat completion through async-openai client.
@@ -124,8 +111,7 @@ async fn test_openai_async_openai_non_stream() {
     dotenvy::dotenv().ok();
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 
     let config = CompatibleConfig::new(&api_key, &base_url);
@@ -142,11 +128,11 @@ async fn test_openai_async_openai_non_stream() {
             if let Some(choice) = resp.choices.first() {
                 println!("Content: {:?}", choice.message.content);
             }
-        }
+        },
         Err(e) => {
             println!("ERROR: {:?}", e);
             panic!("async-openai non-stream failed: {}", e);
-        }
+        },
     }
     println!("===== END =====");
 }
@@ -158,8 +144,7 @@ async fn test_openai_async_openai_stream() {
     dotenvy::dotenv().ok();
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 
     let config = CompatibleConfig::new(&api_key, &base_url);
@@ -184,19 +169,19 @@ async fn test_openai_async_openai_stream() {
                         {
                             print!("{}", content);
                         }
-                    }
+                    },
                     Err(e) => {
                         println!("\nSTREAM ERROR: {:?}", e);
                         panic!("async-openai stream failed: {}", e);
-                    }
+                    },
                 }
             }
             println!("\nReceived {} chunks", chunks);
-        }
+        },
         Err(e) => {
             println!("ERROR: {:?}", e);
             panic!("async-openai stream init failed: {}", e);
-        }
+        },
     }
     println!("===== END =====");
 }

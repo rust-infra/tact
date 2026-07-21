@@ -1,20 +1,20 @@
-use crate::render::render_md::render_markdown_tui;
-use crate::widgets::state::log_messages::{SystemMsgStyle, classify_system_message};
-use crate::widgets::state::*;
 use chrono::Local;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+use crate::{
+    render::render_md::render_markdown_tui,
+    widgets::state::{
+        log_messages::{SystemMsgStyle, classify_system_message},
+        *,
+    },
+};
 
 impl App {
     pub(crate) fn add_startup_logo(&mut self) {
-        let logo = [
-            "  ████████╗ ",
-            "  ╚══██╔══╝ ",
-            "     ██║    ",
-            "     ██║    ",
-            "     ██║    ",
-            "     ╚═╝    ",
-        ];
+        let logo = ["  ████████╗ ", "  ╚══██╔══╝ ", "     ██║    ", "     ██║    ", "     ██║    ", "     ╚═╝    "];
 
         // Gradient: use accent color and increase brightness for each line
         let accent = self.theme.accent;
@@ -26,36 +26,18 @@ impl App {
                     Color::Rgb(r.saturating_sub(step), g.saturating_sub(step), b),
                     Color::Rgb(r, g, b),
                     Color::Rgb(r.saturating_add(step / 2), g.saturating_add(step / 2), b),
-                    Color::Rgb(
-                        r.saturating_add(step),
-                        g.saturating_add(step),
-                        b.saturating_add(step / 2),
-                    ),
-                    Color::Rgb(
-                        r.saturating_add(step * 2),
-                        g.saturating_add(step * 2),
-                        b.saturating_add(step),
-                    ),
+                    Color::Rgb(r.saturating_add(step), g.saturating_add(step), b.saturating_add(step / 2)),
+                    Color::Rgb(r.saturating_add(step * 2), g.saturating_add(step * 2), b.saturating_add(step)),
                 ]
-            }
-            _ => [
-                Color::Green,
-                Color::LightGreen,
-                Color::Green,
-                Color::LightGreen,
-                Color::Green,
-                Color::LightGreen,
-            ],
+            },
+            _ => [Color::Green, Color::LightGreen, Color::Green, Color::LightGreen, Color::Green, Color::LightGreen],
         };
 
         self.add_new_line();
         for (i, line) in logo.iter().enumerate() {
             let color = line_colors[i.min(line_colors.len() - 1)];
             self.append_msg(
-                Line::from(Span::styled(
-                    (*line).to_string(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                )),
+                Line::from(Span::styled((*line).to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD))),
                 (*line).to_string(),
                 RawMessageType::LLM,
             );
@@ -66,9 +48,7 @@ impl App {
         self.append_msg(
             Line::from(Span::styled(
                 title.clone(),
-                Style::default()
-                    .fg(self.theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD),
             )),
             title,
             RawMessageType::LLM,
@@ -76,18 +56,14 @@ impl App {
 
         // Random startup quote
         let quotes = self.msgs().startup_quotes;
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let seed =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let idx = (seed as usize) % quotes.len();
         let tagline = quotes[idx];
         self.append_msg(
             Line::from(Span::styled(
                 tagline.to_string(),
-                Style::default()
-                    .fg(self.theme.muted_fg())
-                    .add_modifier(Modifier::ITALIC),
+                Style::default().fg(self.theme.muted_fg()).add_modifier(Modifier::ITALIC),
             )),
             tagline.to_string(),
             RawMessageType::LLM,
@@ -98,8 +74,7 @@ impl App {
     /// Save current input state to undo stack and clear redo stack. Max 100 snapshots retained.
     pub(crate) fn save_undo(&mut self) {
         self.redo_stack.clear();
-        self.undo_stack
-            .push((self.input.clone(), self.input_cursor));
+        self.undo_stack.push((self.input.clone(), self.input_cursor));
         if self.undo_stack.len() > 100 {
             self.undo_stack.remove(0);
         }
@@ -154,12 +129,7 @@ impl App {
                     msgs.user_msg_prefix,
                     msgs.user_msg_cont,
                 )
-                .unwrap_or_else(|| {
-                    Line::from(Span::styled(
-                        text.clone(),
-                        Style::default().fg(theme.success),
-                    ))
-                });
+                .unwrap_or_else(|| Line::from(Span::styled(text.clone(), Style::default().fg(theme.success))));
                 (styled, text)
             })
             .collect();
@@ -167,11 +137,7 @@ impl App {
             self.append_msg(styled, text, RawMessageType::LLM);
         }
         let timestamp = Local::now().format("%H:%M:%S").to_string();
-        self.task_history.push(HistoryEntry {
-            task: content,
-            timestamp,
-            summary: String::new(),
-        });
+        self.task_history.push(HistoryEntry { task: content, timestamp, summary: String::new() });
         if self.task_history.len() > 20 {
             self.task_history.remove(0);
         }
@@ -189,38 +155,23 @@ mod tests {
         let mut app = make_app();
 
         app.add_system_message("❌ Error: boom".into());
-        assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
-            Some(app.theme.error)
-        );
+        assert_eq!(app.messages.last().unwrap().spans[0].style.fg, Some(app.theme.error));
 
         app.add_system_message("✓ Selected: x".into());
-        assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
-            Some(app.theme.success)
-        );
+        assert_eq!(app.messages.last().unwrap().spans[0].style.fg, Some(app.theme.success));
 
         app.add_system_message("  ✓ still success".into());
-        assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
-            Some(app.theme.success)
-        );
+        assert_eq!(app.messages.last().unwrap().spans[0].style.fg, Some(app.theme.success));
 
         app.add_system_message("📋 Copied: x".into());
-        assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
-            Some(app.theme.accent)
-        );
+        assert_eq!(app.messages.last().unwrap().spans[0].style.fg, Some(app.theme.accent));
     }
 
     #[test]
     fn indent_prefix_uses_plain_path_not_markdown() {
         let mut app = make_app();
         app.add_system_message("  **not bold**".into());
-        assert_eq!(
-            app.raw_messages.last().map(String::as_str),
-            Some("  **not bold**")
-        );
+        assert_eq!(app.raw_messages.last().map(String::as_str), Some("  **not bold**"));
         let spans = &app.messages.last().unwrap().spans;
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.fg, Some(app.theme.accent));

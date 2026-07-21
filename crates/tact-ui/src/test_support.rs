@@ -1,7 +1,9 @@
 //! Helpers for tact-ui integration tests (mock LLM + channel harness).
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use tact::{
     Agent, AgentSystemPrompt,
@@ -78,10 +80,7 @@ pub fn install_test_config_with(config: tact::config::ResolvedConfig) {
 }
 
 /// Build an agent wired to a mock LLM and optional UI update channel.
-pub fn build_test_agent(
-    mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
-) -> (Agent, std::path::PathBuf) {
+pub fn build_test_agent(mock: MockClient, ui_tx: Option<UnboundedSender<AgentUpdate>>) -> (Agent, std::path::PathBuf) {
     build_test_agent_with_mode(mock, ui_tx, PermissionMode::Auto)
 }
 
@@ -178,15 +177,10 @@ pub async fn build_test_agent_with_session(
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).expect("create session db dir");
     }
-    let session_store = open_sqlite_session_store(&db_path)
-        .await
-        .expect("open test session store");
+    let session_store = open_sqlite_session_store(&db_path).await.expect("open test session store");
     let session_id = "integration-session".to_string();
     let root_dir = work_dir.display().to_string();
-    session_store
-        .ensure_session_row(&session_id, &root_dir)
-        .await
-        .expect("ensure session row");
+    session_store.ensure_session_row(&session_id, &root_dir).await.expect("ensure session row");
 
     let mut tool_context = context;
     tool_context.ui_tx = ui_tx.clone();
@@ -209,10 +203,8 @@ pub async fn build_test_agent_with_session(
 }
 
 /// `(sender, receiver)` pair for driving `run_command_loop` in tests.
-pub fn user_command_channels() -> (
-    UnboundedSender<tact_protocol::UserCommand>,
-    UnboundedReceiver<tact_protocol::UserCommand>,
-) {
+pub fn user_command_channels()
+-> (UnboundedSender<tact_protocol::UserCommand>, UnboundedReceiver<tact_protocol::UserCommand>) {
     unbounded_channel()
 }
 

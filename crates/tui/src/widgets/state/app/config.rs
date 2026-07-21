@@ -1,6 +1,8 @@
-use crate::i18n::Messages;
-use crate::theme::{Theme, ThemeName};
-use crate::widgets::state::*;
+use crate::{
+    i18n::Messages,
+    theme::{Theme, ThemeName},
+    widgets::state::*,
+};
 impl App {
     /// Palette commands visible for the current provider configuration,
     /// including dynamic skill commands.
@@ -16,26 +18,19 @@ impl App {
             .collect();
         // Skills as slash targets (Claude Code style `/skill-name`).
         // Skip names that collide with built-ins — builtins always win on Enter.
-        let builtin_names: std::collections::HashSet<&str> =
-            PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
+        let builtin_names: std::collections::HashSet<&str> = PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
         for skill in &self.skills_data {
             if builtin_names.contains(skill.name.as_str()) {
                 continue;
             }
-            let desc = if skill.description.is_empty() {
-                skill.name.clone()
-            } else {
-                skill.description.clone()
-            };
+            let desc = if skill.description.is_empty() { skill.name.clone() } else { skill.description.clone() };
             cmds.push((skill.name.clone(), desc));
         }
         cmds
     }
 
     pub(crate) fn save_history(&self, entry: &str) {
-        let _ = self
-            .history_save_tx
-            .send((self.session_id.clone(), entry.to_string()));
+        let _ = self.history_save_tx.send((self.session_id.clone(), entry.to_string()));
     }
 
     pub(crate) fn toggle_theme(&mut self) {
@@ -92,8 +87,7 @@ impl App {
 #[cfg(test)]
 mod tests {
 
-    use crate::render::test_harness::make_app;
-    use crate::theme::ThemeName;
+    use crate::{render::test_harness::make_app, theme::ThemeName};
 
     #[test]
     fn toggle_theme_cycles_from_retro() {
@@ -103,9 +97,7 @@ mod tests {
         app.toggle_theme();
         assert_ne!(app.theme.name, ThemeName::Retro);
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("theme") || m.contains("Theme")),
+            app.raw_messages.iter().any(|m| m.contains("theme") || m.contains("Theme")),
             "toggle should append theme changed message"
         );
     }

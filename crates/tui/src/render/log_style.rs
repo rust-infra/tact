@@ -1,9 +1,12 @@
-use super::slash_style::style_user_skill_line;
-use crate::theme::Theme;
-use crate::widgets::state::RawMessageType;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use std::collections::HashSet;
+
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+use super::slash_style::style_user_skill_line;
+use crate::{theme::Theme, widgets::state::RawMessageType};
 
 /// Whether `phys_idx` belongs to a user message block (first line or continuation).
 pub(crate) fn is_user_message_line(raw_messages: &[String], phys_idx: usize) -> bool {
@@ -52,9 +55,7 @@ pub(crate) fn restyle_log_line_with_skills(
     }
 
     if is_user_line {
-        if let Some(line) =
-            style_user_skill_line(raw, skill_names, theme, user_prefix_tmpl, user_cont_tmpl)
-        {
+        if let Some(line) = style_user_skill_line(raw, skill_names, theme, user_prefix_tmpl, user_cont_tmpl) {
             return line;
         }
         return single_span(raw, theme.success);
@@ -138,9 +139,7 @@ mod tests {
     fn stored_code(text: &str) -> Line<'static> {
         Line::from(Span::styled(
             text.to_string(),
-            Style::default()
-                .fg(Color::Rgb(200, 200, 210))
-                .bg(Color::Rgb(30, 35, 50)),
+            Style::default().fg(Color::Rgb(200, 200, 210)).bg(Color::Rgb(30, 35, 50)),
         ))
     }
 
@@ -152,37 +151,19 @@ mod tests {
         is_user_line: bool,
     ) -> Line<'static> {
         let empty = HashSet::new();
-        restyle_log_line_with_skills(
-            stored,
-            raw,
-            theme,
-            msg_type,
-            is_user_line,
-            &empty,
-            "💬 {}",
-            "  {}",
-        )
+        restyle_log_line_with_skills(stored, raw, theme, msg_type, is_user_line, &empty, "💬 {}", "  {}")
     }
 
     #[test]
     fn user_first_and_continuation_lines_use_success() {
         let theme = brutal();
-        let raw_messages = vec![
-            String::new(),
-            "💬 hello".to_string(),
-            "  continued".to_string(),
-        ];
+        let raw_messages = vec![String::new(), "💬 hello".to_string(), "  continued".to_string()];
 
         assert!(is_user_message_line(&raw_messages, 1));
         assert!(is_user_message_line(&raw_messages, 2));
 
-        let first = restyle_log_line(
-            &stored_plain("💬 hello", Color::Green),
-            "💬 hello",
-            &theme,
-            RawMessageType::LLM,
-            true,
-        );
+        let first =
+            restyle_log_line(&stored_plain("💬 hello", Color::Green), "💬 hello", &theme, RawMessageType::LLM, true);
         let cont = restyle_log_line(
             &stored_plain("  continued", Color::Green),
             "  continued",
@@ -198,71 +179,30 @@ mod tests {
     fn system_prefixes_map_to_semantic_colors() {
         let theme = brutal();
 
-        let ok = restyle_log_line(
-            &stored_plain("✓ done", Color::Green),
-            "✓ done",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
-        let err = restyle_log_line(
-            &stored_plain("✗ failed", Color::Red),
-            "✗ failed",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
-        let warn = restyle_log_line(
-            &stored_plain("⚠ retry", Color::Yellow),
-            "⚠ retry",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
+        let ok = restyle_log_line(&stored_plain("✓ done", Color::Green), "✓ done", &theme, RawMessageType::LLM, false);
+        let err =
+            restyle_log_line(&stored_plain("✗ failed", Color::Red), "✗ failed", &theme, RawMessageType::LLM, false);
+        let warn =
+            restyle_log_line(&stored_plain("⚠ retry", Color::Yellow), "⚠ retry", &theme, RawMessageType::LLM, false);
 
-        let err_x = restyle_log_line(
-            &stored_plain("❌ boom", Color::Red),
-            "❌ boom",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
-        let ok_badge = restyle_log_line(
-            &stored_plain("✅ ok", Color::Green),
-            "✅ ok",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
+        let err_x =
+            restyle_log_line(&stored_plain("❌ boom", Color::Red), "❌ boom", &theme, RawMessageType::LLM, false);
+        let ok_badge =
+            restyle_log_line(&stored_plain("✅ ok", Color::Green), "✅ ok", &theme, RawMessageType::LLM, false);
 
         assert_eq!(ok.spans.first().unwrap().style.fg, Some(theme.success));
         assert_eq!(err.spans.first().unwrap().style.fg, Some(theme.error));
         assert_eq!(warn.spans.first().unwrap().style.fg, Some(theme.warning));
         assert_eq!(err_x.spans.first().unwrap().style.fg, Some(theme.error));
-        assert_eq!(
-            ok_badge.spans.first().unwrap().style.fg,
-            Some(theme.success)
-        );
+        assert_eq!(ok_badge.spans.first().unwrap().style.fg, Some(theme.success));
     }
 
     #[test]
     fn code_block_restyles_for_light_theme() {
         let theme = brutal();
-        let line = restyle_log_line(
-            &stored_code("fn main() {}"),
-            "fn main() {}",
-            &theme,
-            RawMessageType::LLM,
-            false,
-        );
-        assert_eq!(
-            line.spans.first().unwrap().style.bg,
-            Some(theme.code_block_bg())
-        );
-        assert_eq!(
-            line.spans.first().unwrap().style.fg,
-            Some(theme.code_block_fg())
-        );
+        let line = restyle_log_line(&stored_code("fn main() {}"), "fn main() {}", &theme, RawMessageType::LLM, false);
+        assert_eq!(line.spans.first().unwrap().style.bg, Some(theme.code_block_bg()));
+        assert_eq!(line.spans.first().unwrap().style.fg, Some(theme.code_block_fg()));
     }
 
     #[test]
@@ -299,10 +239,12 @@ mod tests {
 
     #[test]
     fn heading_style_after_wrap() {
-        use crate::render::render_md::render_markdown_tui;
-        use crate::render::util::wrap_line;
-        use crate::theme::ThemeName;
         use ratatui::style::Modifier;
+
+        use crate::{
+            render::{render_md::render_markdown_tui, util::wrap_line},
+            theme::ThemeName,
+        };
 
         let theme = Theme::from(ThemeName::Dark);
         let (lines, raw) = render_markdown_tui("### Popular exchanges in HK", &theme);

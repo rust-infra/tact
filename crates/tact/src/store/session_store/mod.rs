@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -44,20 +43,11 @@ pub trait SessionStore: Send + Sync {
     /// Refresh `updated_at` and `root_dir` after the process lock is held.
     async fn touch_session(&self, id: &str, root_dir: &str) -> Result<()>;
 
-    async fn append_message(
-        &self,
-        session_id: &str,
-        role: Role,
-        content: &MessageContent,
-        ordinal: i64,
-    ) -> Result<i64>;
+    async fn append_message(&self, session_id: &str, role: Role, content: &MessageContent, ordinal: i64)
+    -> Result<i64>;
 
     /// Replace all persisted messages for a session (used after compaction).
-    async fn replace_session_messages(
-        &self,
-        session_id: &str,
-        messages: &[Message],
-    ) -> Result<(i64, i64)>;
+    async fn replace_session_messages(&self, session_id: &str, messages: &[Message]) -> Result<(i64, i64)>;
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;
 
@@ -97,12 +87,7 @@ pub trait SessionStore: Send + Sync {
     /// token-usage row for `last_message_id` — the LLM call whose tool calls
     /// were just scheduled. Links scheduling strategy to token usage for later
     /// performance/troubleshooting analysis.
-    async fn record_tool_schedule(
-        &self,
-        session_id: &str,
-        last_message_id: i64,
-        schedule_json: &str,
-    ) -> Result<()>;
+    async fn record_tool_schedule(&self, session_id: &str, last_message_id: i64, schedule_json: &str) -> Result<()>;
 
     async fn load_input_history(&self, session_id: &str) -> Result<Vec<String>>;
 
@@ -113,12 +98,7 @@ pub trait SessionStore: Send + Sync {
     async fn try_lock_session(&self, session_id: &str, pid: u32) -> Result<String>;
 
     /// Release the process lock when held by `pid` with the matching `lock_epoch`.
-    async fn release_session_lock(
-        &self,
-        session_id: &str,
-        pid: u32,
-        lock_epoch: &str,
-    ) -> Result<()>;
+    async fn release_session_lock(&self, session_id: &str, pid: u32, lock_epoch: &str) -> Result<()>;
 }
 
 pub type DynSessionStore = Arc<dyn SessionStore>;

@@ -6,9 +6,10 @@
 //! `$ARGUMENTS[N]` is left unchanged. Shared [`submit_user_task`] matches a
 //! normal Insert Enter submit (Planning / log / history).
 
+use tact_protocol::UserCommand;
+
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
-use tact_protocol::UserCommand;
 
 /// Extract args after `/{skill_name}` from the input box (empty if none / partial).
 pub(super) fn skill_args_from_input(input: &str, skill_name: &str) -> String {
@@ -86,9 +87,7 @@ fn substitute_arguments(body: &str, args: &str) -> String {
 
 /// Escape attribute text for skill name in `<skill name="…">`.
 fn escape_xml_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
+    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
 }
 
 /// Render skill body for the agent, Claude Code–style `$ARGUMENTS` / append.
@@ -110,39 +109,26 @@ pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
 /// The system prompt explains that slash-invoked `<skill>` blocks (including
 /// `ARGUMENTS:`) are user invocations, not `load_skill` tool metadata.
 pub(super) fn format_skill_agent_task(skill: &SkillEntry, args: &str) -> String {
-    format!(
-        "<skill name=\"{}\">\n{}\n</skill>",
-        escape_xml_attr(&skill.name),
-        render_skill_body(skill, args)
-    )
+    format!("<skill name=\"{}\">\n{}\n</skill>", escape_xml_attr(&skill.name), render_skill_body(skill, args))
 }
 
 /// Shared task submission used by normal Enter and skill invoke.
 /// Returns `true` when the task was accepted and dispatched.
 pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: String) -> bool {
     if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-        app.flash_msg = Some((
-            app.msgs().input_busy_msg.to_string(),
-            std::time::Instant::now(),
-        ));
+        app.flash_msg = Some((app.msgs().input_busy_msg.to_string(), std::time::Instant::now()));
         return false;
     }
 
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
     if tact::consts::exceeds_input_char_limit(agent_chars) {
-        let msg = app
-            .msgs()
-            .skill_task_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+        let msg = app.msgs().skill_task_too_long_tmpl.replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }
     if tact::consts::exceeds_input_char_limit(display_chars) {
-        let msg = app
-            .msgs()
-            .input_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+        let msg = app.msgs().input_too_long_tmpl.replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }
@@ -169,11 +155,7 @@ pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandEx
     let (display, agent_task) = {
         let skill = find_skill(app, cmd)?;
         let args = skill_args_from_input(&app.input, &skill.name);
-        let display = if args.is_empty() {
-            format!("/{}", skill.name)
-        } else {
-            format!("/{} {}", skill.name, args)
-        };
+        let display = if args.is_empty() { format!("/{}", skill.name) } else { format!("/{} {}", skill.name, args) };
         let agent_task = format_skill_agent_task(skill, &args);
         (display, agent_task)
     };
@@ -184,10 +166,7 @@ pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandEx
         app.input_cursor = 0;
     }
 
-    Some(CommandExecOutcome {
-        handled: true,
-        clear_input: false,
-    })
+    Some(CommandExecOutcome { handled: true, clear_input: false })
 }
 
 #[cfg(test)]
@@ -196,10 +175,7 @@ mod tests {
 
     #[test]
     fn skill_args_strips_command_prefix() {
-        assert_eq!(
-            skill_args_from_input("/code-reviewer fix auth", "code-reviewer"),
-            "fix auth"
-        );
+        assert_eq!(skill_args_from_input("/code-reviewer fix auth", "code-reviewer"), "fix auth");
         assert_eq!(skill_args_from_input("/code-reviewer", "code-reviewer"), "");
         assert_eq!(skill_args_from_input("/cod", "code-reviewer"), "");
         // Prefix skill must not steal args from a longer skill name.
@@ -208,11 +184,7 @@ mod tests {
 
     #[test]
     fn format_skill_agent_task_wraps_body() {
-        let skill = SkillEntry {
-            name: "demo".into(),
-            description: "d".into(),
-            body: "Use Result.".into(),
-        };
+        let skill = SkillEntry { name: "demo".into(), description: "d".into(), body: "Use Result.".into() };
         let out = format_skill_agent_task(&skill, "refactor foo");
         assert!(out.contains("<skill name=\"demo\">"));
         assert!(out.contains("Use Result."));
@@ -221,11 +193,8 @@ mod tests {
 
     #[test]
     fn format_skill_substitutes_arguments_placeholder() {
-        let skill = SkillEntry {
-            name: "deploy".into(),
-            description: "d".into(),
-            body: "Deploy $ARGUMENTS to prod.".into(),
-        };
+        let skill =
+            SkillEntry { name: "deploy".into(), description: "d".into(), body: "Deploy $ARGUMENTS to prod.".into() };
         let out = format_skill_agent_task(&skill, "v2");
         assert!(out.contains("Deploy v2 to prod."));
         assert!(!out.contains("$ARGUMENTS"));
@@ -256,11 +225,7 @@ mod tests {
 
     #[test]
     fn format_skill_no_args_is_body_only() {
-        let skill = SkillEntry {
-            name: "demo".into(),
-            description: "d".into(),
-            body: "Just run.".into(),
-        };
+        let skill = SkillEntry { name: "demo".into(), description: "d".into(), body: "Just run.".into() };
         let out = format_skill_agent_task(&skill, "");
         assert!(out.contains("Just run."));
         assert!(!out.contains("ARGUMENTS:"));
@@ -268,11 +233,7 @@ mod tests {
 
     #[test]
     fn format_skill_escapes_name_attr() {
-        let skill = SkillEntry {
-            name: r#"weird"name"#.into(),
-            description: "d".into(),
-            body: "x".into(),
-        };
+        let skill = SkillEntry { name: r#"weird"name"#.into(), description: "d".into(), body: "x".into() };
         let out = format_skill_agent_task(&skill, "");
         assert!(out.contains(r#"<skill name="weird&quot;name">"#));
     }

@@ -17,9 +17,7 @@ pub struct HelpWidget<'a> {
 impl<'a> Widget for HelpWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let msgs = self.msgs;
-        let header_style = Style::default()
-            .fg(Color::Rgb(140, 170, 220))
-            .add_modifier(Modifier::BOLD);
+        let header_style = Style::default().fg(Color::Rgb(140, 170, 220)).add_modifier(Modifier::BOLD);
         let normal_style = Style::default().fg(self.theme.fg);
         let dim_style = Style::default().fg(Color::Rgb(120, 120, 140));
 
@@ -59,12 +57,7 @@ impl<'a> Widget for HelpWidget<'a> {
             Line::from(Span::styled(msgs.help_y_copy, normal_style)),
         ];
         let para = Paragraph::new(help_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(msgs.help_title),
-            )
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(msgs.help_title))
             .style(Style::default().fg(self.theme.fg).bg(self.theme.bg));
         para.render(area, buf);
     }

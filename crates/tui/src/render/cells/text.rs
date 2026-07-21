@@ -1,10 +1,12 @@
-use crate::render::renderable::Renderable;
-use crate::render::util::wrap_line;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 use unicode_width::UnicodeWidthChar;
+
+use crate::render::{renderable::Renderable, util::wrap_line};
 
 /// Writes a single-line span into the buffer.
 fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
@@ -45,14 +47,7 @@ impl TextCell {
         indent_cols: u16,
         fg_color: Color,
     ) -> Self {
-        TextCell {
-            cached_lines,
-            raw_text,
-            selection_range,
-            prefix,
-            indent_cols,
-            fg_color,
-        }
+        TextCell { cached_lines, raw_text, selection_range, prefix, indent_cols, fg_color }
     }
 
     /// Build the visual line list for rendering (selection overlay or cache).
@@ -74,31 +69,17 @@ impl TextCell {
         self.cached_lines.clone()
     }
 
-    fn build_selected_lines(
-        &self,
-        wrap_width: u16,
-        sel_start: usize,
-        sel_end: usize,
-    ) -> Vec<Line<'static>> {
+    fn build_selected_lines(&self, wrap_width: u16, sel_start: usize, sel_end: usize) -> Vec<Line<'static>> {
         let raw = &self.raw_text;
         let sel_start = raw.floor_char_boundary(sel_start.min(raw.len()));
         let sel_end = raw.floor_char_boundary(sel_end.min(raw.len()));
-        let (sel_start, sel_end) = if sel_end < sel_start {
-            (sel_end, sel_start)
-        } else {
-            (sel_start, sel_end)
-        };
+        let (sel_start, sel_end) = if sel_end < sel_start { (sel_end, sel_start) } else { (sel_start, sel_end) };
         let before = &raw[..sel_start];
         let selected = &raw[sel_start..sel_end];
         let after = &raw[sel_end..];
         let styled_line = Line::from(vec![
             Span::styled(before.to_string(), Style::default().fg(self.fg_color)),
-            Span::styled(
-                selected.to_string(),
-                Style::default()
-                    .add_modifier(Modifier::REVERSED)
-                    .fg(self.fg_color),
-            ),
+            Span::styled(selected.to_string(), Style::default().add_modifier(Modifier::REVERSED).fg(self.fg_color)),
             Span::styled(after.to_string(), Style::default().fg(self.fg_color)),
         ]);
         wrap_line(&styled_line, wrap_width as usize)
@@ -141,19 +122,13 @@ impl Renderable for TextCell {
 
 #[cfg(test)]
 mod render_tests {
-    use super::*;
-    use crate::render::renderable::Renderable;
     use ratatui::style::Color;
 
+    use super::*;
+    use crate::render::renderable::Renderable;
+
     fn sample_cell() -> TextCell {
-        TextCell::new(
-            vec![Line::from("alpha beta gamma")],
-            "alpha beta gamma".into(),
-            None,
-            None,
-            0,
-            Color::White,
-        )
+        TextCell::new(vec![Line::from("alpha beta gamma")], "alpha beta gamma".into(), None, None, 0, Color::White)
     }
 
     #[test]
@@ -201,10 +176,7 @@ mod render_tests {
                 }
             }
         }
-        assert!(
-            reversed,
-            "word selection should reverse the target word spans"
-        );
+        assert!(reversed, "word selection should reverse the target word spans");
         assert_eq!(sample_cell().height(40), 1);
     }
 }

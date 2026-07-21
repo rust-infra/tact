@@ -59,10 +59,7 @@ pub fn notify_task_complete(summary: &str) -> Result<()> {
 
 /// Sends a notification that a step has failed.
 pub fn notify_step_failed(step_idx: usize, error: &str) -> Result<()> {
-    let msg = format!(
-        "Step {step_idx} failed: {}",
-        error.chars().take(120).collect::<String>()
-    );
+    let msg = format!("Step {step_idx} failed: {}", error.chars().take(120).collect::<String>());
     notify("Tact — Step Failed", &msg)
 }
 

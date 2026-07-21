@@ -1,7 +1,6 @@
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+
 use super::renderable::Renderable;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::widgets::Widget;
 
 /// Log column layout renderer: arranges and draws Renderable units by visual offset.
 pub(crate) struct LogColumnRenderer<'a> {
@@ -15,11 +14,7 @@ pub(crate) struct LogColumnRenderer<'a> {
 
 impl<'a> LogColumnRenderer<'a> {
     pub(crate) fn new() -> Self {
-        LogColumnRenderer {
-            cells: Vec::new(),
-            viewport_top: 0,
-            viewport_height: 0,
-        }
+        LogColumnRenderer { cells: Vec::new(), viewport_top: 0, viewport_height: 0 }
     }
 
     pub(crate) fn with_viewport(mut self, top: usize, height: usize) -> Self {
@@ -60,8 +55,9 @@ impl Widget for LogColumnRenderer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ratatui::style::Style;
+
+    use super::*;
 
     /// Minimal Renderable emitting `id` repeated across `rows` lines.
     struct StubCell {
@@ -124,10 +120,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         r.render(area, &mut buf);
 
-        assert!(
-            !buffer_text(&buf).contains('X'),
-            "cell entirely above viewport must not render"
-        );
+        assert!(!buffer_text(&buf).contains('X'), "cell entirely above viewport must not render");
     }
 
     #[test]
@@ -142,9 +135,6 @@ mod tests {
 
         // Two rows (indices 2,3) remain visible → 'C' appears on first two buffer rows.
         let text = buffer_text(&buf);
-        assert!(
-            text.starts_with("C"),
-            "clipped cell should draw from top: {text}"
-        );
+        assert!(text.starts_with("C"), "clipped cell should draw from top: {text}");
     }
 }

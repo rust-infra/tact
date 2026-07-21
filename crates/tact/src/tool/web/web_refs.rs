@@ -1,10 +1,12 @@
 //! Shared helpers for linking `web_search` results to `web_fetch` via result ids.
 
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::{
+    cell::RefCell,
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    path::PathBuf,
+};
 
 use tracing::warn;
 
@@ -74,15 +76,10 @@ pub(crate) fn load_search_reference(result_id: &str) -> Option<String> {
         return None;
     }
     let file = search_ref_dir().join(format!("{trimmed}.txt"));
-    fs::read_to_string(file)
-        .ok()
-        .map(|content| content.trim().to_string())
+    fs::read_to_string(file).ok().map(|content| content.trim().to_string())
 }
 
-pub(crate) fn resolve_fetch_target(
-    url: Option<&str>,
-    result_id: Option<&str>,
-) -> anyhow::Result<String> {
+pub(crate) fn resolve_fetch_target(url: Option<&str>, result_id: Option<&str>) -> anyhow::Result<String> {
     if let Some(url) = url.map(str::trim).filter(|value| !value.is_empty()) {
         return Ok(url.to_string());
     }
@@ -91,9 +88,7 @@ pub(crate) fn resolve_fetch_target(
         if let Some(url) = load_search_reference(result_id) {
             return Ok(url);
         }
-        anyhow::bail!(
-            "Unknown result_id: {result_id}. Run web_search first or provide url directly."
-        );
+        anyhow::bail!("Unknown result_id: {result_id}. Run web_search first or provide url directly.");
     }
 
     anyhow::bail!("web_fetch requires either `url` or `result_id`.")
@@ -101,8 +96,9 @@ pub(crate) fn resolve_fetch_target(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fmt::Write as _;
+
+    use super::*;
 
     #[derive(serde::Serialize)]
     struct SearchResult {
@@ -126,13 +122,7 @@ mod tests {
 
         for (index, result) in results.iter().enumerate() {
             save_search_reference(&result.id, &result.url);
-            let _ = writeln!(
-                &mut output,
-                "{}. [{}] **{}**",
-                index + 1,
-                result.id,
-                result.title
-            );
+            let _ = writeln!(&mut output, "{}. [{}] **{}**", index + 1, result.id, result.title);
             let _ = writeln!(&mut output, "   URL: {}", result.url);
             if !result.snippet.is_empty() {
                 let _ = writeln!(&mut output, "   {}", result.snippet);
@@ -141,8 +131,7 @@ mod tests {
         }
 
         let payload = SearchResultPayload { query, results };
-        let payload_json =
-            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
+        let payload_json = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
         let _ = writeln!(&mut output, "JSON_RESULTS_BEGIN");
         let _ = writeln!(&mut output, "{payload_json}");
         let _ = writeln!(&mut output, "JSON_RESULTS_END");
@@ -189,11 +178,7 @@ mod tests {
 
             assert_eq!(parsed["results"][0]["result_id"], result_id);
             assert_eq!(
-                resolve_fetch_target(
-                    None,
-                    Some(parsed["results"][0]["result_id"].as_str().unwrap())
-                )
-                .unwrap(),
+                resolve_fetch_target(None, Some(parsed["results"][0]["result_id"].as_str().unwrap())).unwrap(),
                 url
             );
         });

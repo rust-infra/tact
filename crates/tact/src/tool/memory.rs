@@ -18,26 +18,17 @@ pub struct SaveMemoryInput {
     pub content: String,
 }
 
-#[tool(
-    name = "save_memory",
-    description = "Save a persistent memory that survives across sessions."
-)]
+#[tool(name = "save_memory", description = "Save a persistent memory that survives across sessions.")]
 pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<String> {
     let memory_type = input.memory_type.parse::<MemoryType>()?;
-    let mut manager = ctx
-        .memory_manager
-        .lock()
-        .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))?;
-    manager
-        .save_memory(&input.name, &input.description, memory_type, &input.content)
-        .context("failed to save memory")
+    let mut manager = ctx.memory_manager.lock().map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))?;
+    manager.save_memory(&input.name, &input.description, memory_type, &input.content).context("failed to save memory")
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tool::test_support::{run_tool, test_context};
-
     use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
 
     #[tokio::test]
     async fn save_memory_rejects_invalid_type() {

@@ -25,11 +25,7 @@ pub struct StandardOpenAiBodyHook;
 
 impl OpenAiBodyHook for StandardOpenAiBodyHook {
     fn inject(&self, body: &mut Value, ctx: &BodyHookCtx<'_>) {
-        crate::inject::inject_openai_reasoning_effort(
-            body,
-            ctx.request,
-            ctx.provider.reasoning_effort,
-        );
+        crate::inject::inject_openai_reasoning_effort(body, ctx.request, ctx.provider.reasoning_effort);
     }
 }
 
@@ -49,14 +45,9 @@ pub(crate) fn assemble_chat_completion_body(
         openai_request.stream_options = None;
     }
 
-    let mut body =
-        serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
+    let mut body = serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
 
-    let ctx = BodyHookCtx {
-        request,
-        provider,
-        reasoning_per_message: &reasoning_per_message,
-    };
+    let ctx = BodyHookCtx { request, provider, reasoning_per_message: &reasoning_per_message };
     hook.inject(&mut body, &ctx);
     Ok(body)
 }
@@ -64,8 +55,10 @@ pub(crate) fn assemble_chat_completion_body(
 #[cfg(test)]
 pub(crate) mod test_util {
     use super::*;
-    use crate::types::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderKind, RequiredMessageParams};
+    use crate::{
+        ProviderKind, RequiredMessageParams,
+        types::{Thinking as RequestThinking, ThinkingType},
+    };
 
     pub(crate) fn sample_request_with_thinking() -> CreateMessageParams {
         CreateMessageParams::new(RequiredMessageParams {
@@ -73,10 +66,7 @@ pub(crate) mod test_util {
             messages: vec![],
             max_tokens: 1,
         })
-        .with_thinking(RequestThinking {
-            budget_tokens: 1000,
-            type_: ThinkingType::Enabled,
-        })
+        .with_thinking(RequestThinking { budget_tokens: 1000, type_: ThinkingType::Enabled })
     }
 
     pub(crate) fn empty_body() -> Value {
@@ -91,11 +81,7 @@ pub(crate) mod test_util {
         provider: &'a ProviderInfo,
         reasoning: &'a [Option<String>],
     ) -> BodyHookCtx<'a> {
-        BodyHookCtx {
-            request,
-            provider,
-            reasoning_per_message: reasoning,
-        }
+        BodyHookCtx { request, provider, reasoning_per_message: reasoning }
     }
 
     pub(crate) fn provider(kind: ProviderKind, model: &str, base_url: &str) -> ProviderInfo {
@@ -112,10 +98,11 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
-    use super::test_util::*;
-    use super::*;
-    use crate::types::{Thinking as RequestThinking, ThinkingType};
-    use crate::{ProviderKind, RequiredMessageParams};
+    use super::{test_util::*, *};
+    use crate::{
+        ProviderKind, RequiredMessageParams,
+        types::{Thinking as RequestThinking, ThinkingType},
+    };
 
     #[test]
     fn openai_hook_uses_reasoning_effort_bands() {
@@ -134,10 +121,7 @@ mod tests {
             messages: vec![],
             max_tokens: 1,
         })
-        .with_thinking(RequestThinking {
-            budget_tokens: 0,
-            type_: ThinkingType::Enabled,
-        });
+        .with_thinking(RequestThinking { budget_tokens: 0, type_: ThinkingType::Enabled });
         let provider = provider(ProviderKind::OpenAi, "o3-mini", "https://api.openai.com/v1");
         let mut body = empty_body();
         StandardOpenAiBodyHook.inject(&mut body, &ctx(&request, &provider, &[]));

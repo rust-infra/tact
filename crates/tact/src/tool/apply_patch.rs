@@ -3,13 +3,15 @@
 // Parses standard unified diff format (as produced by `git diff` or `diff -u`).
 // Supports dry_run mode which validates the patch without writing any files.
 
-use crate::tool::{ToolContext, safe_path};
+use std::path::PathBuf;
+
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::path::PathBuf;
 use tool_refactor_macros::tool;
 use tracing::debug;
+
+use crate::tool::{ToolContext, safe_path};
 
 // ---------------------------------------------------------------------------
 // Input
@@ -69,10 +71,7 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
         } else if let Some(raw) = line.strip_prefix("+++ ") {
             // Extract target path, stripping the "b/" prefix if present.
             let path = raw.trim_start_matches("b/").trim().to_string();
-            current_file = Some(FilePatch {
-                path,
-                hunks: Vec::new(),
-            });
+            current_file = Some(FilePatch { path, hunks: Vec::new() });
         } else if line.starts_with("@@ ") {
             // Finalise the previous hunk.
             if let Some(h) = current_hunk.take()
@@ -81,10 +80,7 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
                 f.hunks.push(h);
             }
             let orig_start = parse_hunk_header(line)?;
-            current_hunk = Some(Hunk {
-                orig_start,
-                lines: Vec::new(),
-            });
+            current_hunk = Some(Hunk { orig_start, lines: Vec::new() });
         } else if let Some(ref mut hunk) = current_hunk {
             if let Some(stripped) = line.strip_prefix('+') {
                 hunk.lines.push(('+', stripped.to_string()));
@@ -113,30 +109,14 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, String> {
 
 /// Parse `@@ -<orig_start>,<count> +<new_start>,<count> @@` to get orig_start (0-based).
 fn parse_hunk_header(line: &str) -> Result<usize, String> {
-    let ranges = line
-        .split("@@")
-        .nth(1)
-        .ok_or_else(|| format!("invalid hunk header: {}", line))?
-        .trim();
-    let orig_range = ranges
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| format!("invalid hunk header: {}", line))?;
+    let ranges = line.split("@@").nth(1).ok_or_else(|| format!("invalid hunk header: {}", line))?.trim();
+    let orig_range = ranges.split_whitespace().next().ok_or_else(|| format!("invalid hunk header: {}", line))?;
     // orig_range is "-l,s" or "-l"
-    let orig_start_str = orig_range
-        .trim_start_matches('-')
-        .split(',')
-        .next()
-        .ok_or_else(|| format!("invalid hunk header: {}", line))?;
-    let start: isize = orig_start_str
-        .parse()
-        .map_err(|_| format!("invalid hunk header: {}", line))?;
+    let orig_start_str =
+        orig_range.trim_start_matches('-').split(',').next().ok_or_else(|| format!("invalid hunk header: {}", line))?;
+    let start: isize = orig_start_str.parse().map_err(|_| format!("invalid hunk header: {}", line))?;
     // orig_start is 1-based in unified diff; convert to 0-based.
-    if start <= 0 {
-        Ok(0)
-    } else {
-        Ok((start - 1) as usize)
-    }
+    if start <= 0 { Ok(0) } else { Ok((start - 1) as usize) }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +139,8 @@ fn apply_hunk(lines: Vec<String>, hunk: &Hunk) -> Result<Vec<String>, String> {
             ' ' | '-' => {
                 expected.push(content);
                 context_positions.push(orig_start + expected.len() - 1);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -191,8 +171,8 @@ fn apply_hunk(lines: Vec<String>, hunk: &Hunk) -> Result<Vec<String>, String> {
     for (kind, content) in hunk_lines {
         match kind {
             ' ' | '+' => new_lines.push(content.clone()),
-            '-' => {} // skip removed lines
-            _ => {}
+            '-' => {}, // skip removed lines
+            _ => {},
         }
     }
 
@@ -216,8 +196,7 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
     debug!(dry_run = input.dry_run, "Applying patch");
 
     // Parse the patch.
-    let file_patches = parse_unified_diff(&input.patch)
-        .map_err(|e| anyhow::anyhow!("Failed to parse patch: {}", e))?;
+    let file_patches = parse_unified_diff(&input.patch).map_err(|e| anyhow::anyhow!("Failed to parse patch: {}", e))?;
 
     if file_patches.is_empty() {
         return Err(anyhow::anyhow!("No files found in patch"));
@@ -229,8 +208,8 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
     let mut to_write: Vec<(PathBuf, Vec<u8>, String)> = Vec::new();
 
     for fp in &file_patches {
-        let path = safe_path(&ctx.work_dir, &fp.path)
-            .map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", fp.path, e))?;
+        let path =
+            safe_path(&ctx.work_dir, &fp.path).map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", fp.path, e))?;
 
         let original_content = tokio::fs::read_to_string(&path)
             .await
@@ -246,16 +225,15 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
                     '+' => {
                         file_added += 1;
                         total_added += 1;
-                    }
+                    },
                     '-' => {
                         file_removed += 1;
                         total_removed += 1;
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
-            lines = apply_hunk(lines, hunk)
-                .map_err(|e| anyhow::anyhow!("Hunk failed in {}: {}", fp.path, e))?;
+            lines = apply_hunk(lines, hunk).map_err(|e| anyhow::anyhow!("Hunk failed in {}: {}", fp.path, e))?;
         }
 
         let new_content = lines.join("\n");
@@ -292,29 +270,17 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
                         rollback_errors.push(format!("  rollback {}: {}", rb_path.display(), re));
                     }
                 }
-                let mut msg = format!(
-                    "Failed to write {} ({}). Rolled back {} file(s).",
-                    path.display(),
-                    e,
-                    written.len()
-                );
+                let mut msg =
+                    format!("Failed to write {} ({}). Rolled back {} file(s).", path.display(), e, written.len());
                 if !rollback_errors.is_empty() {
-                    msg.push_str(&format!(
-                        "\nRollback errors:\n{}",
-                        rollback_errors.join("\n")
-                    ));
+                    msg.push_str(&format!("\nRollback errors:\n{}", rollback_errors.join("\n")));
                 }
                 return Err(anyhow::anyhow!("{msg}"));
-            }
+            },
         }
     }
 
-    Ok(format!(
-        "Applied patch to {} file(s) (+{} -{} lines).",
-        to_write.len(),
-        total_added,
-        total_removed,
-    ))
+    Ok(format!("Applied patch to {} file(s) (+{} -{} lines).", to_write.len(), total_added, total_removed,))
 }
 
 // ---------------------------------------------------------------------------
@@ -335,10 +301,7 @@ mod tests {
     #[test]
     fn test_apply_hunk_simple() {
         let lines: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
-        let hunk = Hunk {
-            orig_start: 1,
-            lines: vec![(' ', "b".into()), ('-', "c".into()), ('+', "C".into())],
-        };
+        let hunk = Hunk { orig_start: 1, lines: vec![(' ', "b".into()), ('-', "c".into()), ('+', "C".into())] };
         let result = apply_hunk(lines, &hunk).unwrap();
         assert_eq!(result, vec!["a", "b", "C"]);
     }
@@ -346,10 +309,7 @@ mod tests {
     #[test]
     fn test_apply_hunk_context_mismatch() {
         let lines: Vec<String> = vec!["x".into(), "y".into()];
-        let hunk = Hunk {
-            orig_start: 0,
-            lines: vec![('-', "z".into())],
-        };
+        let hunk = Hunk { orig_start: 0, lines: vec![('-', "z".into())] };
         assert!(apply_hunk(lines, &hunk).is_err());
     }
 

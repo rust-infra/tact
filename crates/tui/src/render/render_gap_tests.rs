@@ -1,22 +1,22 @@
 //! Render gap tests: P0/P1 coverage for previously untested paths.
 
-use super::plan::render_plan_panel;
-use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
+use std::{collections::HashMap, time::Duration};
+
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use std::collections::HashMap;
-use std::time::Duration;
 use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+
+use super::{
+    plan::render_plan_panel,
+    test_harness::{buffer_text, make_app, render_app_text, render_main_area_text},
+};
+use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
 #[test]
 fn full_frame_keeps_bottom_bar_visible_when_terminal_is_short() {
     let mut app = make_app();
     let text = render_app_text(&mut app, 120, 8);
 
-    assert!(
-        text.contains("Focus:"),
-        "bottom bar should remain visible: {text}"
-    );
+    assert!(text.contains("Focus:"), "bottom bar should remain visible: {text}");
 }
 
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
@@ -101,10 +101,7 @@ fn write_file_diff_popup_shows_gutter() {
     let text = render_main_area_text(&mut app, 100, 30);
     let _ = std::fs::remove_file(&file);
 
-    assert!(
-        app.tools.popup.as_ref().is_some_and(|p| p.use_diff_gutter),
-        "write_file popup should enable diff gutter"
-    );
+    assert!(app.tools.popup.as_ref().is_some_and(|p| p.use_diff_gutter), "write_file popup should enable diff gutter");
     assert!(
         text.contains("gutter_test") || text.contains('+'),
         "write_file diff popup should render content or + gutter, got:\n{text}"
@@ -128,20 +125,13 @@ fn bash_tool_popup_shows_command_output() {
 #[test]
 fn log_renders_collapsed_thinking_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "Analyzing the problem…".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        " considering options.".into(),
-    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("Analyzing the problem…".into())));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(" considering options.".into())));
     app.handle_agent_update(AgentUpdate::StreamChunk("Final answer.".into()));
 
     let text = render_main_area_text(&mut app, 100, 28);
 
-    assert!(
-        !app.thinking.blocks.is_empty(),
-        "thinking block should be closed after stream"
-    );
+    assert!(!app.thinking.blocks.is_empty(), "thinking block should be closed after stream");
     assert!(
         text.contains("Thinking") || text.contains("Analyzing") || text.contains("considering"),
         "collapsed thinking card should render in log, got:\n{text}"
@@ -151,17 +141,12 @@ fn log_renders_collapsed_thinking_card() {
 #[test]
 fn log_renders_streamed_code_block_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```rust\nfn code_card_test() {}\n```\n".into(),
-    ));
+    app.handle_agent_update(AgentUpdate::StreamChunk("```rust\nfn code_card_test() {}\n```\n".into()));
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
     let text = render_main_area_text(&mut app, 100, 28);
 
-    assert!(
-        !app.code_blocks.is_empty(),
-        "stream should create a code block"
-    );
+    assert!(!app.code_blocks.is_empty(), "stream should create a code block");
     assert!(
         text.contains("rust") || text.contains("code_card_test"),
         "inline code card should render in log, got:\n{text}"
@@ -178,11 +163,7 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
     ));
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
-    assert_eq!(
-        app.code_blocks.len(),
-        2,
-        "both fenced blocks should become cards"
-    );
+    assert_eq!(app.code_blocks.len(), 2, "both fenced blocks should become cards");
     let leaked: Vec<_> = app
         .raw_messages
         .iter()
@@ -193,10 +174,7 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
         })
         .map(|(i, r)| (i, r.as_str()))
         .collect();
-    assert!(
-        leaked.is_empty(),
-        "closing fence without trailing newline must not leak into raw_messages: {leaked:?}"
-    );
+    assert!(leaked.is_empty(), "closing fence without trailing newline must not leak into raw_messages: {leaked:?}");
 
     let text = render_main_area_text(&mut app, 100, 32);
     assert!(
@@ -214,10 +192,7 @@ fn full_frame_normal_mode_status_bar() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(
-        text.contains("NORMAL"),
-        "normal mode should appear in status bar, got:\n{text}"
-    );
+    assert!(text.contains("NORMAL"), "normal mode should appear in status bar, got:\n{text}");
 }
 
 #[test]
@@ -267,9 +242,7 @@ fn plan_panel_shows_multiple_steps_with_one_running() {
 
     let backend = TestBackend::new(60, 12);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| render_plan_panel(frame, Rect::new(0, 0, 60, 12), &mut app))
-        .expect("draw");
+    terminal.draw(|frame| render_plan_panel(frame, Rect::new(0, 0, 60, 12), &mut app)).expect("draw");
 
     let text = buffer_text(terminal.backend().buffer());
     assert!(
@@ -311,10 +284,7 @@ fn plan_panel_lists_failed_step_description() {
 #[test]
 fn diff_popup_scroll_skips_leading_lines() {
     let mut app = make_app();
-    let lines: String = (1..=20)
-        .map(|n| format!("line-{n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let lines: String = (1..=20).map(|n| format!("line-{n}")).collect::<Vec<_>>().join("\n");
     seed_write_file_finished(&mut app, "scroll.rs", &lines);
     open_last_tool_popup(&mut app);
     if let Some(popup) = app.tools.popup.as_mut() {
@@ -338,14 +308,12 @@ fn diff_popup_scroll_skips_leading_lines() {
 
 #[test]
 fn code_popup_scroll_skips_leading_lines() {
-    use crate::widgets::state::{CodeBlock, CodePopup};
     use ratatui::text::Line;
 
+    use crate::widgets::state::{CodeBlock, CodePopup};
+
     let mut app = make_app();
-    let content: String = (1..=15)
-        .map(|n| format!("row {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let content: String = (1..=15).map(|n| format!("row {n}")).collect::<Vec<_>>().join("\n");
     let styled: Vec<Line<'static>> = content.lines().map(|l| Line::from(l.to_string())).collect();
     app.code_blocks.push(CodeBlock {
         start_idx: 0,
@@ -354,11 +322,7 @@ fn code_popup_scroll_skips_leading_lines() {
         content: content.clone(),
         styled,
     });
-    app.code_popup = Some(CodePopup {
-        block_idx: 0,
-        lang: "rust".into(),
-        scroll: 5,
-    });
+    app.code_popup = Some(CodePopup { block_idx: 0, lang: "rust".into(), scroll: 5 });
 
     let text = render_main_area_text(&mut app, 100, 18);
 
@@ -392,10 +356,7 @@ fn bottom_bar_shows_plan_focus_indicator() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(
-        text.contains("[Plan]") || text.contains("Plan"),
-        "plan focus should appear in bottom bar, got:\n{text}"
-    );
+    assert!(text.contains("[Plan]") || text.contains("Plan"), "plan focus should appear in bottom bar, got:\n{text}");
 }
 
 #[test]
@@ -413,20 +374,16 @@ fn narrow_terminal_renders_without_empty_frame() {
 
 #[test]
 fn thinking_popup_scroll_shows_later_lines() {
-    use crate::widgets::state::{ThinkingBlock, ThinkingPopup};
     use ratatui::text::Line;
 
+    use crate::widgets::state::{ThinkingBlock, ThinkingPopup};
+
     let mut app = make_app();
-    let markdown: Vec<Line> = (1..=12)
-        .map(|n| Line::from(format!("reason-{n}")))
-        .collect();
+    let markdown: Vec<Line> = (1..=12).map(|n| Line::from(format!("reason-{n}"))).collect();
     app.raw_messages.push("Thinking".into());
     app.thinking.blocks.push(ThinkingBlock {
         phys_idx: 0,
-        content: (1..=12)
-            .map(|n| format!("reason-{n}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        content: (1..=12).map(|n| format!("reason-{n}")).collect::<Vec<_>>().join("\n"),
         summary: "reason-12".into(),
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
@@ -496,10 +453,7 @@ fn full_frame_planning_status_renders_in_status_bar() {
 
     let text = render_app_text(&mut app, 100, 24);
 
-    assert!(
-        text.contains("Planning"),
-        "planning status should appear in status bar, got:\n{text}"
-    );
+    assert!(text.contains("Planning"), "planning status should appear in status bar, got:\n{text}");
 }
 
 #[test]
@@ -614,19 +568,13 @@ fn usage_quota_update_renders_in_bottom_bar() {
         text.contains("week") && text.contains("58%"),
         "usage quota should render label and percentage on bottom bar row 1, got:\n{text}"
     );
-    assert!(
-        text.contains('█') || text.contains('░'),
-        "usage quota should render an ASCII progress bar, got:\n{text}"
-    );
+    assert!(text.contains('█') || text.contains('░'), "usage quota should render an ASCII progress bar, got:\n{text}");
 }
 
 #[test]
 fn flash_msg_renders_warning_in_status_bar() {
     let mut app = make_app();
-    app.flash_msg = Some((
-        "Balance query failed: timeout".into(),
-        std::time::Instant::now(),
-    ));
+    app.flash_msg = Some(("Balance query failed: timeout".into(), std::time::Instant::now()));
 
     let text = render_app_text(&mut app, 100, 24);
     assert!(
@@ -638,10 +586,7 @@ fn flash_msg_renders_warning_in_status_bar() {
 #[test]
 fn flash_msg_clears_after_three_seconds() {
     let mut app = make_app();
-    app.flash_msg = Some((
-        "stale warning".into(),
-        std::time::Instant::now() - std::time::Duration::from_secs(4),
-    ));
+    app.flash_msg = Some(("stale warning".into(), std::time::Instant::now() - std::time::Duration::from_secs(4)));
 
     app.maybe_clear_flash_msg();
 
@@ -679,8 +624,5 @@ fn toggle_theme_renders_changed_message_in_log() {
 
     let text = render_app_text(&mut app, 100, 24);
     assert_ne!(app.theme.name, before);
-    assert!(
-        !text.trim().is_empty(),
-        "theme toggle should produce visible log update, got:\n{text}"
-    );
+    assert!(!text.trim().is_empty(), "theme toggle should produce visible log update, got:\n{text}");
 }
