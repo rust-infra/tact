@@ -283,13 +283,13 @@ pub(crate) fn recent_messages_for_summary(
         let serialized = serde_json::to_string(&selected)
             .context("failed to serialize messages for compact prompt")?;
         if approx_text_tokens(&serialized) <= max_tokens {
-            tracing::warn!(
-                prompt_tokens = approx_text_tokens(&serialized),
-                needed_tokens = max_tokens,
-                "compact summary prompt too large, dropping the oldest message"
-            );
             return Ok(serialized);
         }
+        tracing::warn!(
+            prompt_tokens = approx_text_tokens(&serialized),
+            needed_tokens = max_tokens,
+            "compact summary prompt too large, dropping the oldest message"
+        );
         // Removes the oldest message and tries again.
         selected.remove(0);
     }
