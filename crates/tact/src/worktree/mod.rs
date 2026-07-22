@@ -5,7 +5,7 @@
 //! and status.
 //!
 //! - [`WorktreeManager`] wraps `git worktree add` and stores metadata in
-//!   `.claude/worktrees/index.json`.
+//!   `.tact/worktrees/index.json`.
 //! - [`SharedWorktreeManager`] is the thread-safe wrapper.
 //! - Supports `create`, `list`, `status`, `run` (execute in-tree), and
 //!   `events` (audit log).

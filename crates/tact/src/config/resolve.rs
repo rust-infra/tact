@@ -159,11 +159,6 @@ pub(super) fn resolve_non_llm_settings(
 
     let vision_image = resolve_vision_image(toml_cfg);
 
-    let brave_search_api_key = args
-        .brave_search_api_key
-        .clone()
-        .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
-        .filter(|k| !k.is_empty());
     let bash_timeout_secs = toml_cfg
         .tools
         .bash_timeout_secs
@@ -198,10 +193,7 @@ pub(super) fn resolve_non_llm_settings(
             theme,
             vision_image,
         },
-        tools: ToolSettings {
-            brave_search_api_key,
-            bash_timeout_secs,
-        },
+        tools: ToolSettings { bash_timeout_secs },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -282,11 +274,6 @@ pub(super) fn resolve_config(
 
     let vision_image = resolve_vision_image(toml_cfg);
 
-    let brave_search_api_key = args
-        .brave_search_api_key
-        .clone()
-        .or_else(|| toml_cfg.tools.brave_search_api_key.clone())
-        .filter(|k| !k.is_empty());
     let bash_timeout_secs = toml_cfg
         .tools
         .bash_timeout_secs
@@ -313,10 +300,7 @@ pub(super) fn resolve_config(
             theme,
             vision_image,
         },
-        tools: ToolSettings {
-            brave_search_api_key,
-            bash_timeout_secs,
-        },
+        tools: ToolSettings { bash_timeout_secs },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -348,7 +332,6 @@ mod tests {
             snapshot_max_items: None,
             no_micro_compact: false,
             no_notifications: false,
-            brave_search_api_key: None,
             tokio_console: false,
             skill_body_auto_inject: false,
         }

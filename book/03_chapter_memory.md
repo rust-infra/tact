@@ -1,7 +1,7 @@
 # Persistent Memory
 > Language: [English](./03_chapter_memory.md) · [中文](./03_chapter_memory_zh.md)
 
-This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `.claude/memory/`. They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
+This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `.tact/memory/`. They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
 
 For how memory fits into prompt assembly and the dynamic boundary, see [System Prompt](./04_chapter_prompt.md). For the tool that writes memories, see [Tool System](./07_chapter_tool.md).
 
@@ -30,7 +30,7 @@ graph TB
         TP[TactPath.memory_dir]
         MM[MemoryManager]
         TP --> MM
-        MM -->|load_all| Files[".claude/memory/*.md"]
+        MM -->|load_all| Files[".tact/memory/*.md"]
     end
 
     subgraph Agent["Each LLM turn"]
@@ -49,7 +49,7 @@ graph TB
     Files --> MM2
 ```
 
-At startup, `get_memory_manager(tact_path.memory_dir())` constructs a `MemoryManager`, scans `.claude/memory/`, and loads all valid `.md` files into an in-memory `HashMap`. The same `Arc<Mutex<MemoryManager>>` is shared through `ToolContext` for both prompt rendering and `save_memory`.
+At startup, `get_memory_manager(tact_path.memory_dir())` constructs a `MemoryManager`, scans `.tact/memory/`, and loads all valid `.md` files into an in-memory `HashMap`. The same `Arc<Mutex<MemoryManager>>` is shared through `ToolContext` for both prompt rendering and `save_memory`.
 
 ---
 
@@ -167,9 +167,9 @@ Constructed in `tui.rs` alongside other session services. Sub-agents inherit the
 
 | Path | Purpose |
 |------|---------|
-| `<workdir>/.claude/memory/` | Memory directory (`TactPath::memory_dir()`) |
-| `<workdir>/.claude/memory/{name}.md` | Individual memory files |
-| `<workdir>/.claude/memory/MEMORY.md` | Auto-generated index (not loaded as a memory) |
+| `<workdir>/.tact/memory/` | Memory directory (`TactPath::memory_dir()`) |
+| `<workdir>/.tact/memory/{name}.md` | Individual memory files |
+| `<workdir>/.tact/memory/MEMORY.md` | Auto-generated index (not loaded as a memory) |
 
 Memory uses **Markdown files directly**, not the JSON `Store` layer described in [Store and Persistence](./01_chapter_store.md).
 
@@ -184,7 +184,7 @@ Memory uses **Markdown files directly**, not the JSON `Store` layer described in
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`, system prompt wiring |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `get_memory_manager()` at session startup |
-| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.claude/memory` |
+| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.tact/memory` |
 
 ---
 

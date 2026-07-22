@@ -77,10 +77,6 @@ pub struct CliArgs {
     #[arg(long)]
     pub no_micro_compact: bool,
 
-    /// Brave Search API key for the web_search tool.
-    #[arg(long)]
-    pub brave_search_api_key: Option<String>,
-
     /// Enable tokio-console debugging subscriber.
     #[arg(long)]
     pub tokio_console: bool,

@@ -37,7 +37,7 @@ graph TB
 
     subgraph Store
         SQLite[(SQLite Session Store)]
-        Files[(.claude/ Store)]
+        Files[(.tact/ Store)]
     end
 
     MCPSrv[MCP Servers]
@@ -149,7 +149,7 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 |---|---------|-------------|
 | 1 | [Store and Persistence](./01_chapter_store.md) ([中文](./01_chapter_store_zh.md)) | `StoreRoot` / JSON file store, SQLite session database, domain consumers, and agent persistence hooks |
 | 2 | [Skill Registry](./02_chapter_skill.md) ([中文](./02_chapter_skill_zh.md)) | `SKILL.md` multi-root discovery, prompt summaries, `load_skill`, TUI slash invoke (`$ARGUMENTS`), and `<skill>` tag format |
-| 3 | [Persistent Memory](./03_chapter_memory.md) ([中文](./03_chapter_memory_zh.md)) | Markdown memories under `.claude/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
+| 3 | [Persistent Memory](./03_chapter_memory.md) ([中文](./03_chapter_memory_zh.md)) | Markdown memories under `.tact/memory/`, types, system prompt injection, `save_memory`, and `MEMORY.md` index |
 | 4 | [System Prompt](./04_chapter_prompt.md) ([中文](./04_chapter_prompt_zh.md)) | How Tact assembles the system prompt from role, skills, guidelines, memory, and dynamic context, and how it stays cache-friendly across turns |
 | 5 | [Context Compaction](./05_chapter_compact.md) ([中文](./05_chapter_compact_zh.md)) | `micro_compact` tool-result stubbing, `compact_history` LLM summarization, transcript spill, and large-output persistence |
 | 6 | [Error Recovery](./06_chapter_recovery.md) ([中文](./06_chapter_recovery_zh.md)) | `RecoveryState`, transport back-off retries, prompt-too-long compaction, and output-limit continuation in `agent_loop` |
@@ -160,24 +160,23 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 11 | [Tasks and Tool Scheduling](./11_chapter_task.md) ([中文](./11_chapter_task_zh.md)) | **Tool** parallel scheduling (waves/barriers) — not [Ch 19 Persistent Tasks](./19_chapter_persistent_tasks.md) |
 | 12 | [Subagents](./12_chapter_subagent.md) ([中文](./12_chapter_subagent_zh.md)) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
 | 13 | [Background Tasks](./13_chapter_background.md) ([中文](./13_chapter_background_zh.md)) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
-| 14 | [Team Coordination](./14_chapter_team.md) ([中文](./14_chapter_team_zh.md)) | Teammate roster under `.claude/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
+| 14 | [Team Coordination](./14_chapter_team.md) ([中文](./14_chapter_team_zh.md)) | Teammate roster under `.tact/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
 | 15 | [Worktree Lanes](./15_chapter_worktree.md) ([中文](./15_chapter_worktree_zh.md)) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
-| 16 | [Cron Scheduling](./16_chapter_cron.md) ([中文](./16_chapter_cron_zh.md)) | Scheduled prompt registry: data model, `.claude/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
+| 16 | [Cron Scheduling](./16_chapter_cron.md) ([中文](./16_chapter_cron_zh.md)) | Scheduled prompt registry: data model, `.tact/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
 | 17 | [Desktop Notifications](./17_chapter_notify.md) ([中文](./17_chapter_notify_zh.md)) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
 | 18 | [Agent Main Loop](./18_chapter_agent_loop.md) ([中文](./18_chapter_agent_loop_zh.md)) | Capstone: `agent_loop` turn cycle, streaming, `cancel_flag`, `AgentUpdate`, TUI `TaskComplete` wiring |
-| 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) ([中文](./19_chapter_persistent_tasks_zh.md)) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.claude/tasks/` |
-| 20 | [LSP Code Intelligence](./20_chapter_lsp.md) ([中文](./20_chapter_lsp_zh.md)) | `LspManager`, `~/.tact/lsp_servers.json`, native `lsp` tool actions |
-| 21 | [Configuration](./21_chapter_config.md) ([中文](./21_chapter_config_zh.md)) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
-| 22 | [LLM Providers](./22_chapter_llm.md) ([中文](./22_chapter_llm_zh.md)) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
-| 23 | [Terminal UI](./23_chapter_tui.md) ([中文](./23_chapter_tui_zh.md)) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
-| 24 | [Testing Strategy](./24_chapter_testing.md) ([中文](./24_chapter_testing_zh.md)) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
-| 25 | [Agent–TUI Protocol](./25_chapter_protocol.md) ([中文](./25_chapter_protocol_zh.md)) | `tact_protocol` message types, plan step lifecycle, task-level state transitions |
+| 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) ([中文](./19_chapter_persistent_tasks_zh.md)) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.tact/tasks/` |
+| 20 | [Configuration](./21_chapter_config.md) ([中文](./21_chapter_config_zh.md)) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
+| 21 | [LLM Providers](./22_chapter_llm.md) ([中文](./22_chapter_llm_zh.md)) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
+| 22 | [Terminal UI](./23_chapter_tui.md) ([中文](./23_chapter_tui_zh.md)) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
+| 23 | [Testing Strategy](./24_chapter_testing.md) ([中文](./24_chapter_testing_zh.md)) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
+| 24 | [Agent–TUI Protocol](./25_chapter_protocol.md) ([中文](./25_chapter_protocol_zh.md)) | `tact_protocol` message types, plan step lifecycle, task-level state transitions |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19–20** cover TaskManager and LSP in depth. **Ch 21–23** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 24** documents the integration test harness. **Ch 25** documents the `tact_protocol` message types and state transitions.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19** covers TaskManager in depth. **Ch 20–22** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 23** documents the integration test harness. **Ch 24** documents the `tact_protocol` message types and state transitions.
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
@@ -210,7 +209,6 @@ Future additions may cover deployment or plugin APIs.
 - Tact subagent source: [crates/tact/src/tool/subagent.rs](../crates/tact/src/tool/subagent.rs)
 - Tact agent loop source: [crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)
 - Tact task manager source: [crates/tact/src/task/mod.rs](../crates/tact/src/task/mod.rs)
-- Tact LSP source: [crates/tact/src/lsp/](../crates/tact/src/lsp/)
 - Tact config source: [crates/tact/src/config/](../crates/tact/src/config/)
 - Tact LLM source: [crates/tact_llm/src/lib.rs](../crates/tact_llm/src/lib.rs)
 - Tact protocol source: [crates/protocol/src/agent.rs](../crates/protocol/src/agent.rs)

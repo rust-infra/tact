@@ -136,10 +136,9 @@ Restricted set for isolated workers spawned by the `task` tool:
 | `read_file` | Read workspace files |
 | `write_file` | Create/overwrite files |
 | `edit_file` | Exact string replace (first or all) |
-| `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes six — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
+Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes five — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 
@@ -188,7 +187,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 
 Failure message: `"Path escapes workspace"`.
 
-This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.claude/` JSON files.
+This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.tact/` JSON files.
 
 ---
 
@@ -206,7 +205,7 @@ let exec = if is_mcp {
 
 `run_native_tool` first calls `ctx.for_invocation(tool_use_id)`, then
 `tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to
-`.claude/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
+`.tact/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
 exceeds context limits.
 
 `bash` uses concurrent Tokio readers for piped stdout and stderr. An aggregator
@@ -233,13 +232,11 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `read_file.rs`, `write_file.rs`, `edit_file.rs` | file I/O | Path-safe |
 | `batch_read.rs` | batch ops | Parallel multi-file read |
 | `bash.rs` | `bash` | Validated shell; streamed pipes, timeout, process-group cancellation |
-| `search_code.rs` | `search_code` | Ripgrep wrapper |
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
 | `task.rs`, `subagent.rs` | `task` | Spawns sub-agent with `subagent_toolset()` |
 | `cron.rs` | `cron_*` | See [Cron Scheduling](./16_chapter_cron.md) |
 | `compact/mod.rs` | `compact` | Context compaction trigger |
-| `web/` | `web_fetch`, `web_search` | HTTP tools |
 
 ---
 
@@ -263,7 +260,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | Gap | Detail |
 |-----|--------|
 | Static tool registration | No runtime plugin API for native tools beyond MCP |
-| Router comment drift | `subagent_toolset` doc comment lists 4 tools; code registers 6 |
+| Router comment drift | `subagent_toolset` doc comment lists 4 tools; code registers 5 |
 | No tool versioning | Renaming a tool breaks saved allowlists and prompts |
 | MCP vs native name collision | Unchecked at registration — last writer wins in spec list |
 | `ToolRouter` not dynamic | Cannot add/remove tools mid-session |

@@ -90,9 +90,8 @@ After all waves finish:
 |------|----------|------|
 | `read_file` | `input.path` | read |
 | `batch_read` | `input.files[].path` | read |
-| `search_code` | directory scope | read |
 | `write_file`, `edit_file` | `input.path` | write |
-| `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent |
+| `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 
 Paths are normalised to absolute and rooted at `work_dir`. Two paths overlap if they are equal or one is an ancestor of the other, so a write to `src/foo.rs` conflicts with a search scoped to `src/`.

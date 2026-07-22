@@ -28,7 +28,8 @@ use crate::{
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        CONTINUATION_MESSAGE, MAX_RECOVERY_ATTEMPTS, RecoveryState, backoff_delay,
+        CONTINUATION_MESSAGE, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS,
+        MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay,
         is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
@@ -376,6 +377,7 @@ impl Agent {
             self.model_context_window(),
             estimate_context_tokens(&self.runtime.context),
             incoming_tokens,
+            self.max_tokens() as usize,
         ) {
             self.emit_update(AgentUpdate::Info("[auto compact]".into()));
             self.compact_history(None).await?;
@@ -407,6 +409,7 @@ impl Agent {
                 self.model_context_window(),
                 estimate_context_tokens(&self.runtime.context),
                 0,
+                self.max_tokens() as usize,
             ) {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
@@ -460,26 +463,26 @@ impl Agent {
                 Err(error) => {
                     let error_text = error.to_string().to_lowercase();
                     if is_prompt_too_long_error(&error_text)
-                        && self.runtime.recovery_state.compact_attempts < MAX_RECOVERY_ATTEMPTS
+                        && self.runtime.recovery_state.compact_attempts < MAX_COMPACT_ATTEMPTS
                     {
                         self.runtime.recovery_state.compact_attempts += 1;
                         self.emit_update(AgentUpdate::Info(format!(
                             "[Recovery] compact ({}/{}): context too large",
-                            self.runtime.recovery_state.compact_attempts, MAX_RECOVERY_ATTEMPTS
+                            self.runtime.recovery_state.compact_attempts, MAX_COMPACT_ATTEMPTS
                         )));
                         self.compact_history(None).await?;
                         continue;
                     }
 
                     if is_transient_transport_error(&error_text)
-                        && self.runtime.recovery_state.transport_attempts < MAX_RECOVERY_ATTEMPTS
+                        && self.runtime.recovery_state.transport_attempts < MAX_TRANSPORT_ATTEMPTS
                     {
                         let delay = backoff_delay(self.runtime.recovery_state.transport_attempts);
                         self.runtime.recovery_state.transport_attempts += 1;
                         self.emit_update(AgentUpdate::Info(format!(
                             "[Recovery] backoff ({}/{}): retrying in {:.1}s",
                             self.runtime.recovery_state.transport_attempts,
-                            MAX_RECOVERY_ATTEMPTS,
+                            MAX_TRANSPORT_ATTEMPTS,
                             delay.as_secs_f64()
                         )));
                         tokio::time::sleep(delay).await;
@@ -541,7 +544,7 @@ impl Agent {
             .await?;
 
             if matches!(stop_reason, Some(StopReason::MaxTokens))
-                && self.runtime.recovery_state.continuation_attempts < MAX_RECOVERY_ATTEMPTS
+                && self.runtime.recovery_state.continuation_attempts < MAX_CONTINUATION_ATTEMPTS
             {
                 // Execute any tool calls that arrived before the token limit
                 // was hit, so the context remains valid for the API.
@@ -566,7 +569,7 @@ impl Agent {
                 self.runtime.recovery_state.continuation_attempts += 1;
                 self.emit_update(AgentUpdate::Info(format!(
                     "[Recovery] continue ({}/{}): output truncated",
-                    self.runtime.recovery_state.continuation_attempts, MAX_RECOVERY_ATTEMPTS
+                    self.runtime.recovery_state.continuation_attempts, MAX_CONTINUATION_ATTEMPTS
                 )));
                 self.runtime
                     .context
@@ -688,6 +691,7 @@ impl Agent {
             .collect()
     }
 
+    /// Returns all tool specs for the agent.
     pub fn all_tool_specs(&self) -> Vec<ToolSpec> {
         self.cached_tool_specs
             .iter()
@@ -754,28 +758,37 @@ impl Agent {
         }
         if let Some(focus) = focus.filter(|value| !value.trim().is_empty()) {
             let addition = format!("\n\nFocus to preserve next: {focus}");
-            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
-                <= summary_input_limit
-            {
+            let available = summary_input_limit.saturating_sub(approx_text_tokens(&prompt));
+            if approx_text_tokens(&addition) <= available {
                 prompt.push_str(&addition);
+            } else {
+                tracing::warn!(
+                    focus_chars = focus.len(),
+                    available_tokens = available,
+                    needed_tokens = approx_text_tokens(&addition),
+                    "focus too large for compact summary prompt, dropping"
+                );
             }
         }
-        if !self.runtime.compact_state.recent_files.is_empty() {
-            let mut heading_added = false;
-            for path in &self.runtime.compact_state.recent_files {
-                let addition = if heading_added {
-                    format!("\n- {path}")
-                } else {
-                    format!("\n\nRecent files to reopen if needed:\n- {path}")
-                };
-                if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
-                    > summary_input_limit
-                {
-                    break;
-                }
-                prompt.push_str(&addition);
-                heading_added = true;
+        let mut heading_added = false;
+        for path in &self.runtime.compact_state.recent_files {
+            let addition = if heading_added {
+                format!("\n- {path}")
+            } else {
+                format!("\n\nRecent files to reopen if needed:\n- {path}")
+            };
+            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
+                > summary_input_limit
+            {
+                tracing::warn!(
+                    prompt_tokens = approx_text_tokens(&prompt),
+                    needed_tokens = approx_text_tokens(&addition),
+                    "compact summary prompt too large, dropping recent files"
+                );
+                break;
             }
+            prompt.push_str(&addition);
+            heading_added = true;
         }
         let history_budget = summary_input_limit
             .saturating_sub(approx_text_tokens(&prompt))
@@ -823,7 +836,7 @@ impl Agent {
                 Ok(response) => break response,
                 Err(error) => {
                     let error_text = error.to_string();
-                    if retry_attempt >= MAX_RECOVERY_ATTEMPTS
+                    if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
                         || !is_transient_transport_error(&error_text.to_lowercase())
                     {
                         return Err(anyhow::Error::from(error));
@@ -831,7 +844,7 @@ impl Agent {
                     retry_attempt = retry_attempt.saturating_add(1);
                     let delay = backoff_delay(retry_attempt.saturating_sub(1));
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_RECOVERY_ATTEMPTS}] retrying in {:.1}s",
+                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s",
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;
@@ -894,6 +907,11 @@ impl Agent {
 
         let rebuilt_context = match mode {
             CompactRebuildMode::CodexStyle => {
+                // Rebuild: keep recent real user messages verbatim from the
+                // tail, then append a single summary message. Budget is
+                // model_context_window minus system prompt, tool specs,
+                // summary, max output, and headroom. Shrink the budget in a
+                // loop until the rebuilt context fits, or bail if it can't.
                 let retained = collect_user_messages(&self.runtime.context);
                 let system_prompt_tokens = approx_text_tokens(&self.build_system_prompt()?);
                 let tool_specs_tokens = approx_text_tokens(
@@ -927,6 +945,9 @@ impl Agent {
                                 "compacted request cannot fit model context window {model_context_window}"
                             );
                         }
+                        tracing::warn!(
+                            "rebuild over window, shrinking retained token budget: total={total} window={model_context_window} retained={retained_tokens}"
+                        );
                         retained_tokens = retained_tokens
                             .saturating_sub(total.saturating_sub(model_context_window).max(1));
                         rebuilt = build_compacted_history(
@@ -1346,7 +1367,6 @@ mod tests {
                     },
                 },
                 tools: crate::config::ToolSettings {
-                    brave_search_api_key: None,
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                 },
                 permission_mode: None,

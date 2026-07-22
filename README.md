@@ -153,7 +153,6 @@ theme = "retro"   # retro | brutal | nord | dark | auto ...
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
-brave_search_api_key = "bsk-..."   # optional, for web_search
 ```
 
 CLI flags override the config file (e.g. `--model`, `--api-key`, `--theme`).
@@ -204,8 +203,6 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 |----------|-------|
 | **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch`, `batch_read` |
 | **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
-| **Code Intelligence** | `search_code` (ripgrep), `lsp` (hover / goto-def / references / diagnostics) |
-| **Web** | `web_search`, `web_fetch` |
 | **Task Management** | `task`, `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
 | **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
@@ -351,10 +348,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `bash` | Run a shell command |
 | `background_run` | Run a command in the background |
 | `check_background` | Check background task status |
-| `search_code` | Search codebase with regex (ripgrep) |
-| `lsp` | Query language server (hover, goto-def, references, diagnostics) |
-| `web_search` | Search the web |
-| `web_fetch` | Fetch and parse a web page |
 | `sleep` | Wait for N milliseconds |
 | `task` | Spawn a sub-agent with fresh context |
 | `task_create` | Create a persistent task |
@@ -431,7 +424,6 @@ theme = "retro"                  # or "auto"
 
 [tools]
 bash_timeout_secs = 1800          # wall-clock seconds; 0 disables timeout
-brave_search_api_key = "bsk-..."
 ```
 
 ### CLI flags (override config)
@@ -449,7 +441,6 @@ brave_search_api_key = "bsk-..."
 | `--theme` | TUI theme |
 | `--snapshot-max-items` | Project structure snapshot size |
 | `--no-micro-compact` | Disable micro-compaction |
-| `--brave-search-api-key` | Brave Search API key |
 | `--tokio-console` | Enable tokio-console debugging |
 
 ---

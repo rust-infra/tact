@@ -45,7 +45,6 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             },
         },
         tools: tact::config::ToolSettings {
-            brave_search_api_key: None,
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         },
         permission_mode: None,
@@ -103,8 +102,8 @@ async fn context_limit_triggers_auto_compact() {
     );
     assert!(task_completed_with(&updates, "Done after compact"));
 
-    // Transcript should have been written under .claude/transcripts.
-    let transcript_dir = work_dir.join(".claude").join("transcripts");
+    // Transcript should have been written under .tact/transcripts.
+    let transcript_dir = work_dir.join(".tact").join("transcripts");
     assert!(
         transcript_dir
             .read_dir()

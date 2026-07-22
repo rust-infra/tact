@@ -48,7 +48,7 @@ Tact’s answer is **progressive defense**: free local stubs first, then one pai
 flowchart TB
     subgraph L1["Level 1 — spill one result"]
         Bash[successful tool returns] --> Big{> 30k chars?}
-        Big -->|yes| Disk1["write .claude/tool-results/id.txt"]
+        Big -->|yes| Disk1["write .tact/tool-results/id.txt"]
         Disk1 --> Env["replace with &lt;persisted-output&gt;"]
         Big -->|no| Keep[keep full output]
     end
@@ -190,22 +190,35 @@ The shared threshold is **`agent.model_context_window`** — the model context w
 
 ### Decision (OR)
 
-`should_auto_compact` fires when **either** condition holds (optionally reserving an *incoming* user turn not yet in context):
+`should_auto_compact` fires when **either** condition holds (optionally reserving an *incoming* user turn not yet in context and the next `max_tokens` output):
 
 ```text
 last_token_total > 0
-  && last_token_total + estimate_message_tokens(incoming_turn) >= 80% of model_context_window
-  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) >= 80% of model_context_window
+  && last_token_total + estimate_message_tokens(incoming_turn) + max_tokens >= 80% of model_context_window
+  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) + max_tokens >= 80% of model_context_window
 ```
 
-Both sides of the OR compare against the same **token** window. Serialized content is estimated by counting ASCII at roughly four characters per token and non-ASCII conservatively at one character per token.
+Both sides of the OR compare against the same **token** window and both reserve the model's output budget (`max_tokens`) so compaction triggers early enough for the LLM to fit its response. Serialized content is estimated by counting ASCII at roughly four characters per token and non-ASCII conservatively at one character per token.
 
 - **Entry (`agent_loop`)**: compact **old** history first with `incoming_turn_tokens = estimate(user_turn)`, then `push` the turn verbatim.
 - **Loop / recovery / manual**: turn already in context → `incoming_turn_tokens = 0`.
 
-Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. Both plain-text turns and block-based UI turns are real users; tool-result-only block messages and prior summaries are excluded. The retained-user budget is `min(20k estimated tokens, window - max output - estimate(system + tools + summary) - 20% headroom)`. A block turn is kept verbatim when it fits; an oversized block turn falls back to its text tail, or an omission marker when it contains only images. Base64 is never sliced. Legacy single-summary path remains as `compact_history_legacy`.
+Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. The rebuild has three stages:
 
-The summary request reserves two separate costs before selecting history: the summary output budget (up to 2,000 tokens) and **10% of the model window as safety headroom**. For a 200,000-token window, the headroom is 20,000 tokens. This absorbs estimation error, JSON serialization overhead, and differences between the conservative estimate and the provider tokenizer. The percentage is rounded up, so the reserve is never rounded down.
+1. **`collect_user_messages`** — walks the entire context, extracting real user turns via `is_real_user_message` (excludes tool-result-only blocks, prior summaries, and non-User roles).
+2. **`retained_user_message_token_budget`** — budget = `min(20k estimated tokens, model_context_window - max_tokens - estimate(system + tools + summary) - 20% headroom)`.
+3. **`build_compacted_history`** — keeps real user messages from the tail up to the budget; a block turn is kept verbatim when it fits, an oversized one falls back to its text tail, or an omission marker when it contains only images. Base64 is never sliced. A summary message is appended last.
+
+The legacy single-summary path remains as `compact_history_legacy`.
+
+Two distinct percentages apply in different phases:
+
+| Phase | Headroom | Used in |
+|-------|----------|---------|
+| Summarizer **input** budget | **10%** of window | `compact_history_with_mode` — reserves space so the summary instructions + history tail fit before calling the LLM |
+| Rebuild **final-request** guard | **20%** of window | `compact_rebuild_headroom_tokens` — ensures the post-compact request (system + tools + retained users + summary + max_output) does not overflow after reconstruction |
+
+For a 200,000-token window, the summarizer input headroom is 10% = 20,000 tokens, and the rebuild guard is 20% = 40,000 tokens. Both absorb estimation error, JSON serialization overhead, and differences between the conservative estimate and the provider tokenizer. Percentages are rounded up, so the reserve is never rounded down.
 
 ```rust
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
@@ -237,6 +250,15 @@ After compaction, `last_token_total` is **reset to 0** (the summarizer call's us
 
 `Agent::compact_history(focus: Option<&str>)` is the expensive path. It never “deletes” work permanently: the pre-compact context is always written to a transcript first.
 
+### Two rebuild strategies
+
+Tact has **two** compaction rebuild modes. Both share the same summarization pipeline (transcript → select recent messages → LLM summary), but differ in **how context is replaced after the summary is produced**:
+
+- **Codex-style** (`compact_history`, production default): rebuilds via `collect_user_messages` + `build_compacted_history`. Context after: `[real User…] + [SUMMARY_PREFIX + summary]`. Real user turns are preserved verbatim from the tail (budget permitting). Current turn survives loop compaction because `collect_user_messages` recovers it from the full context.
+- **Legacy** (`compact_history_legacy`, rollback only): replaces the entire context with `compacted_context(summary)` — a single user message. All user turns are lost; the current turn in loop compaction is eaten into the summary.
+
+Only Codex is called by production call sites; Legacy exists as `#[allow(dead_code)]` for reference.
+
 ### End-to-end sequence
 
 ```mermaid
@@ -249,7 +271,7 @@ sequenceDiagram
     participant Store as SessionStore
 
     AgentLoop->>CH: compact_history(focus?)
-    CH->>Disk: write transcript to .claude/transcripts/transcript_ts.jsonl
+    CH->>Disk: write transcript to .tact/transcripts/transcript_ts.jsonl
     CH-->>AgentLoop: Info "[transcript saved: …]"
     CH->>CH: select recent messages within a 20k-token cap
     CH->>CH: build summarize prompt + optional focus + recent_files
@@ -257,14 +279,17 @@ sequenceDiagram
     LLM-->>CH: validated complete non-empty text summary
     CH->>CH: reset message-id window (first/last/llm_call ids = 0)
     CH->>CH: append "Recently accessed files…" to summary
-    CH->>CH: context = build_compacted_history(users + summary)
+    CH->>CH: users = collect_user_messages(old context)
+    CH->>CH: budget = retained_user_message_token_budget(window, max_tokens, …)
+    CH->>CH: context = build_compacted_history(users, summary, budget)
+    CH->>CH: shrink loop: if oversize → reduce budget → rebuild
     CH->>Store: replace_session_messages (SQLite matches new context)
     CH->>CH: stats.compactions += 1
 ```
 
 ### Step details
 
-**1. Transcript spill** — `write_transcript` atomically creates a unique `.claude/transcripts/transcript_<unix_nanos>_<collision>.jsonl`, one JSON message per line. TUI shows `[transcript saved: …]`. Full history is recoverable offline; the model is **not** automatically pointed at this path in the summary message (gap in §11).
+**1. Transcript spill** — `write_transcript` atomically creates a unique `.tact/transcripts/transcript_<unix_nanos>_<collision>.jsonl`, one JSON message per line. TUI shows `[transcript saved: …]`. Full history is recoverable offline; the model is **not** automatically pointed at this path in the summary message (gap in §11).
 
 **2. Recent-window selection** — walk `context` **from the end** within both the model-window budget and a **20,000 estimated-token cap**. An oversized message is converted to a valid text-only view; images become omission markers, so base64 is never cut. No message is forced in when it cannot fit. Earlier turns survive only via transcript + whatever the summary can infer.
 
@@ -294,7 +319,26 @@ Optional appendages:
 - `Focus to preserve next: {focus}` — from the manual `compact` tool  
 - `Recent files to reopen if needed:` — from `CompactState.recent_files`
 
-**4. Context replacement** — Codex-style rebuild via `build_compacted_history`:
+If the focus text is too large to fit in the summarizer input budget together with the fixed instructions, it is silently dropped — but a `tracing::warn!` log records the event (original length, available budget, and needed tokens) so the omission is observable in diagnostics.
+
+When a message exceeds the summary-input budget, `summary_message_fallback` converts it to a valid text-only representation. Each block type is mapped as follows:
+
+| Block type | Becomes |
+|------------|---------|
+| `Text` | Kept as-is |
+| `Thinking` | Kept as-is |
+| `RedactedThinking` | `[Redacted thinking omitted.]` |
+| `Image` | `[Earlier image attachment omitted during compaction.]` |
+| `ToolUse` | `[Tool call: {name}]` |
+| `ToolResult` | `[Tool result {tool_use_id}]\n{content}` |
+
+If even the fallback text is too large, it is tail-truncated (`take_last_tokens`) to the remaining budget. Base64 image data is **never** sliced — it is replaced wholesale by the omission marker, guaranteeing the serialized JSON is always valid.
+
+**4. Context replacement** — Codex-style rebuild, in three stages:
+
+**4a. Collect user messages** — `collect_user_messages(&old_context)` walks the full context, filtering with `is_real_user_message`: keeps non-summary, non-tool-result-only User messages. This is the candidate set, not yet truncated.
+
+**4b. Rebuild from tail** — `build_compacted_history(users, summary, max_tokens)` keeps real user messages from the tail within a token budget; a summary message is appended last:
 
 ```text
 [0] User  "<earlier real user text…>"
@@ -309,6 +353,35 @@ Optional appendages:
 ```
 
 (`compact_history_legacy` still replaces with a **single** summary user message.)
+
+**4c. Shrink loop (final-request guard)** — The initial budget comes from `retained_user_message_token_budget` (`model_context_window - max_tokens - estimate(system+tools+summary) - 20% headroom`, capped at 20k). But this is an estimate; the rebuilt payload may still exceed the window. So a loop runs:
+
+1. Compute total tokens: `system + tools + estimate(rebuilt) + max_tokens + headroom`
+2. If ≤ `model_context_window` → accepted.
+3. If it exceeds → `retained_tokens -= overflow`, rebuild again with the smaller budget, go to step 1.
+4. If `retained_tokens == 0` and still doesn't fit → `anyhow::bail!` (original context intact; even a single summary alone exceeds the window).
+
+### Design rationale: summarizer input vs rebuilt context
+
+The compaction pipeline has **two** message selection phases with very different goals.
+
+| | Summarizer input (step 2–3) | Rebuilt context (step 4) |
+|---|---|---|
+| **Goal** | Produce a good handoff summary | Agent continues working after compact |
+| **Who reads it** | The summarizer LLM (one-shot) | The main agent (every turn until next compact) |
+| **Roles** | User + Assistant + ToolResult | **User only** |
+| **Message types** | All, with `summary_message_fallback` compression | Only "real user" (skips pure tool-result blocks, prior summaries, non-User) |
+| **User text** | Fed into summarizer, not preserved verbatim | ✅ Preserved verbatim (from tail, budget permitting) |
+| **Assistant / Thinking** | Fed into summarizer | ❌ Dropped (summary already covers it) |
+| **ToolUse** | Compressed to `[Tool call: {name}]` | ❌ Dropped |
+| **ToolResult** | Full text (compressed via fallback) | ❌ Dropped |
+| **Budget** | `min(20k, summary_input_limit - prompt)` | `min(20k, window - output - system - tools - summary - 20%)` |
+
+The asymmetry is intentional:
+
+- **Summarizer sees everything** because it needs the full context to write an accurate handoff. A tool result containing a file's full text tells the summarizer which functions were modified; a test log tells it whether tests passed. Without these, the summary would be vague. `summary_message_fallback` compresses the data (omits base64 images, truncates from tail) but does **not** skip entire messages.
+
+- **Rebuilt context keeps only real user intent** because the agent needs the original task framing verbatim — "add an 80% trigger to the compact module" — to continue working. Everything else (assistant reasoning, tool calls, tool results) has already been condensed into the handoff summary. Keeping assistant/tool content would waste the limited window on redundant detail. The `is_real_user_message` filter excludes pure tool-result blocks (no user intent), prior summaries (no stacking), and non-User roles, while keeping every message that carries the user's own words.
 
 ### Compaction failure behavior
 
@@ -408,7 +481,7 @@ Every `tool_use` / `ToolResult` / reasoning block from `[1]`–`[N]` is **no lon
 | Reasoning / thinking | Retained | Dropped (summarizer produces no thinking) |
 | Size | Up to hundreds of thousands of chars | Budgeted users + summary ≤ 2k output tokens + file list |
 | Raw details | Directly readable | Recoverable via `recent_files` hints + `read_file` |
-| Disk transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
+| Disk transcript | — | `.tact/transcripts/transcript_<ts>.jsonl` |
 
 #### Runtime Fields Reset Alongside
 
@@ -500,7 +573,7 @@ persist_large_output(&tact_path, tool_use_id, &output)
 flowchart TD
     Out[successful tool output] --> Th{chars > 30_000?}
     Th -->|no| Full[return unchanged]
-    Th -->|yes| Write["fs::write .claude/tool-results/&lt;tool_use_id&gt;.txt"]
+    Th -->|yes| Write["fs::write .tact/tool-results/&lt;tool_use_id&gt;.txt"]
     Write --> Prev["take first 2_000 chars"]
     Prev --> Wrap["wrap in &lt;persisted-output&gt; envelope"]
     Wrap --> TR[ToolResult content in context]
@@ -510,7 +583,7 @@ Replacement shape:
 
 ```xml
 <persisted-output>
-Full output saved to: .claude/tool-results/<tool_use_id>.txt
+Full output saved to: .tact/tool-results/<tool_use_id>.txt
 Preview:
 [first 2000 characters…]
 </persisted-output>
@@ -559,7 +632,7 @@ Compaction spills two kinds of artifacts under the workdir (via `TactPath`):
 ```mermaid
 flowchart TB
     WD["&lt;workdir&gt;"]
-    WD --> Claude[".claude/"]
+    WD --> Tact[".tact/"]
     Claude --> TR["transcripts/<br/>transcript_&lt;unix_nanos&gt;_&lt;n&gt;.jsonl"]
     Claude --> OR["tool-results/<br/>&lt;tool_use_id&gt;.txt"]
     WD --> Tact[".tact/tact.db"]
@@ -568,8 +641,8 @@ flowchart TB
 
 | Path | Writer | Contents |
 |------|--------|----------|
-| `.claude/transcripts/transcript_<ts>.jsonl` | `write_transcript` | Full pre-compact conversation |
-| `.claude/tool-results/<id>.txt` | `persist_large_output` | Full oversized native/MCP output |
+| `.tact/transcripts/transcript_<ts>.jsonl` | `write_transcript` | Full pre-compact conversation |
+| `.tact/tool-results/<id>.txt` | `persist_large_output` | Full oversized native/MCP output |
 | `.tact/tact.db` messages | `replace_session_messages` | Post-compact retained-users + summary context |
 
 After each write, each spill directory keeps at most the 100 newest files; older regular files are removed by modification time.

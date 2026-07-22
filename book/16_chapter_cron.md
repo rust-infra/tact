@@ -1,7 +1,7 @@
 # Cron Scheduling
 > Language: [English](./16_chapter_cron.md) · [中文](./16_chapter_cron_zh.md)
 
-This chapter explains how Tact lets the agent **register scheduled prompts**: cron expressions, prompt text, and metadata persisted under `.claude/cron/`. The model can create, list, and delete these records through native tools; the storage layer is wired into every main-agent session via `ToolContext`.
+This chapter explains how Tact lets the agent **register scheduled prompts**: cron expressions, prompt text, and metadata persisted under `.tact/cron/`. The model can create, list, and delete these records through native tools; the storage layer is wired into every main-agent session via `ToolContext`.
 
 **Important scope note:** as of this writing, Tact persists scheduled tasks but does **not** yet run a background tick loop that evaluates cron expressions and injects prompts into `agent_loop`. The `recurring` and `durable` flags are stored and shown in listings; they are reserved for future runtime behaviour. See [§8 Current Gaps](#8-current-gaps).
 
@@ -27,7 +27,7 @@ The agent uses `cron_create` during a turn when the user asks for reminders, dai
 ```mermaid
 graph TB
     subgraph Entry["Session startup (tui.rs)"]
-        SR[StoreRoot .claude/]
+        SR[StoreRoot .tact/]
         CS[CronScheduler]
         SCS[SharedCronScheduler]
         SR --> CS
@@ -103,7 +103,7 @@ All tasks live in a single JSON index file. IDs are monotonic hex strings (`form
 | Backend | `Store<ScheduledTaskIndex>` — read/modify/write whole file |
 | Init | If the file is missing on first open, an empty index is written |
 
-The path helper `TactPath::cron_dir()` resolves `<workdir>/.claude/cron` in `crates/tact/src/consts.rs`; the scheduler uses the store layer's relative path `cron/scheduled_tasks.json` under the same root.
+The path helper `TactPath::cron_dir()` resolves `<workdir>/.tact/cron` in `crates/tact/src/consts.rs`; the scheduler uses the store layer's relative path `cron/scheduled_tasks.json` under the same root.
 
 Example on-disk shape:
 
@@ -132,7 +132,7 @@ Example on-disk shape:
 Both `crates/tact-ui/src/headless.rs` and `interactive.rs` build the scheduler once per process:
 
 ```text
-store_root = StoreRoot::new(.claude/)
+store_root = StoreRoot::new(.tact/)
 cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?)
 tool_context = ToolContext { cron_scheduler, work_dir, … }
 agent = Agent::new(client, tool_context, toolset(), …)
@@ -186,7 +186,7 @@ Tags in brackets: `recurring` or `one-shot`, plus `/durable` or `/session`.
 
 **Output:** `"Deleted scheduled task {id}"`, or error if id not found.
 
-These tools are **independent** barriers in the tool scheduler (no file-path conflicts). They do not touch `work_dir` directly — only the JSON store under `.claude/cron/`.
+These tools are **independent** barriers in the tool scheduler (no file-path conflicts). They do not touch `work_dir` directly — only the JSON store under `.tact/cron/`.
 
 ---
 
@@ -251,5 +251,5 @@ When a runtime is added, likely touch points are: a tokio interval in `tui.rs` o
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Sub-agents, team, tasks, worktrees table (Cron row)
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — how tool calls run once the model acts (orthogonal to cron firing)
-- [crates/tact/tact.md](../crates/tact/tact.md) — domain managers and `.claude/` layout
+- [crates/tact/tact.md](../crates/tact/tact.md) — domain managers and `.tact/` layout
 - [docs/state_machines.md](../docs/state_machines.md) — background task lifecycle (contrast with cron)

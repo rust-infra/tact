@@ -96,26 +96,13 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
             reads: list("files", "path"),
             ..Default::default()
         },
-        // A search/grep has a directory scope; default to the whole workspace
-        // when no `path` is given so it correctly conflicts with any write.
-        "search_code" => {
-            let scope = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|s| normalize(work_dir, s))
-                .unwrap_or_else(|| work_dir.to_path_buf());
-            ToolResources {
-                reads: vec![scope],
-                ..Default::default()
-            }
-        }
         "write_file" | "edit_file" => ToolResources {
             writes: single("path"),
             ..Default::default()
         },
         // Side-effect-free tools that touch no workspace file: safe to run
         // concurrently with anything.
-        "web_search" | "web_fetch" | "lsp" | "sleep" => ToolResources::independent(),
+        "sleep" => ToolResources::independent(),
         name if name.starts_with("mcp__") => mcp_tool_resources(name),
         // bash, apply_patch (multi-file diff), task/subagent, worktree_run,
         // and all state mutations have effects we cannot scope.
@@ -394,16 +381,6 @@ mod tests {
             r.reads,
             vec![PathBuf::from("/work/a.rs"), PathBuf::from("/work/b.rs")]
         );
-    }
-
-    #[test]
-    fn resources_search_defaults_to_workspace_scope() {
-        let r = tool_resources(
-            "search_code",
-            &serde_json::json!({"query": "foo"}),
-            Path::new("/work"),
-        );
-        assert_eq!(r.reads, vec![PathBuf::from("/work")]);
     }
 
     #[test]

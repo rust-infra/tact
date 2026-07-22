@@ -78,7 +78,7 @@ async fn run_headless_locked(
     let permission_manager = PermissionManager::try_new(mode)?;
     eprintln!("[permission: {mode}]");
 
-    let store_root = StoreRoot::new(tact_path.claude_dir())?;
+    let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let work_dir = tact_path.workdir().to_path_buf();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);

@@ -2,7 +2,7 @@
 
 > 语言：[中文](./16_chapter_cron_zh.md) · [English](./16_chapter_cron.md)
 
-本章说明 Tact 如何让 agent **注册定时 prompt**：cron 表达式、prompt 文本和元数据持久化在 `.claude/cron/` 下。模型可通过原生工具创建、列出和删除这些记录；存储层通过 `ToolContext` 接入每个主 agent 会话。
+本章说明 Tact 如何让 agent **注册定时 prompt**：cron 表达式、prompt 文本和元数据持久化在 `.tact/cron/` 下。模型可通过原生工具创建、列出和删除这些记录；存储层通过 `ToolContext` 接入每个主 agent 会话。
 
 **重要范围说明：** 截至本文撰写时，Tact 会持久化定时任务，但 **尚未** 运行后台 tick 循环来求值 cron 表达式并将 prompt 注入 `agent_loop`。`recurring` 和 `durable` 标志会存储并在列表中展示；它们为未来的运行时行为预留。见 [§8 当前缺口](#8-当前缺口)。
 
@@ -28,7 +28,7 @@ Tact 中的 Cron **不是** shell 作业运行器（那是 [后台任务](../cra
 ```mermaid
 graph TB
     subgraph Entry["会话启动（tui.rs）"]
-        SR[StoreRoot .claude/]
+        SR[StoreRoot .tact/]
         CS[CronScheduler]
         SCS[SharedCronScheduler]
         SR --> CS
@@ -104,7 +104,7 @@ pub struct ScheduledTaskIndex {
 | 后端 | `Store<ScheduledTaskIndex>` — 读/改/写整个文件 |
 | 初始化 | 首次打开时若文件缺失，写入空索引 |
 
-路径辅助 `TactPath::cron_dir()` 在 `crates/tact/src/consts.rs` 中解析 `<workdir>/.claude/cron`；调度器在同一根下使用 store 层的相对路径 `cron/scheduled_tasks.json`。
+路径辅助 `TactPath::cron_dir()` 在 `crates/tact/src/consts.rs` 中解析 `<workdir>/.tact/cron`；调度器在同一根下使用 store 层的相对路径 `cron/scheduled_tasks.json`。
 
 磁盘上示例形状：
 
@@ -133,7 +133,7 @@ pub struct ScheduledTaskIndex {
 `crates/tact-ui/src/headless.rs` 和 `interactive.rs` 每个进程构建一次调度器：
 
 ```text
-store_root = StoreRoot::new(.claude/)
+store_root = StoreRoot::new(.tact/)
 cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?)
 tool_context = ToolContext { cron_scheduler, work_dir, … }
 agent = Agent::new(client, tool_context, toolset(), …)
@@ -187,7 +187,7 @@ agent = Agent::new(client, tool_context, toolset(), …)
 
 **输出：** `"Deleted scheduled task {id}"`，或 id 未找到时错误。
 
-这些工具在工具调度器中是 **独立** barrier（无文件路径冲突）。它们不直接触碰 `work_dir`——只触碰 `.claude/cron/` 下的 JSON store。
+这些工具在工具调度器中是 **独立** barrier（无文件路径冲突）。它们不直接触碰 `work_dir`——只触碰 `.tact/cron/` 下的 JSON store。
 
 ---
 
@@ -252,5 +252,5 @@ flowchart LR
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — 子 agent、团队、任务、worktree 表（Cron 行）
 - [任务与工具调度](./11_chapter_task.md) — 模型行动后工具调用如何运行（与 cron 触发正交）
-- [crates/tact/tact.md](../crates/tact/tact.md) — 领域 manager 与 `.claude/` 布局
+- [crates/tact/tact.md](../crates/tact/tact.md) — 领域 manager 与 `.tact/` 布局
 - [docs/state_machines.md](../docs/state_machines.md) — 后台任务生命周期（与 cron 对比）

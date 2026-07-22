@@ -52,20 +52,17 @@ mod compact;
 mod cron;
 mod edit_file;
 mod load_skill;
-mod lsp_tool;
 mod memory;
 mod path;
 mod progress;
 mod read_file;
 mod registry;
-mod search_code;
 mod sleep;
 mod subagent;
 mod task;
 mod team;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-mod web;
 mod worktree;
 mod write_file;
 
@@ -86,8 +83,6 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset};
-#[cfg(test)]
-use search_code::SearchCodeTool;
 #[cfg(test)]
 use sleep::SleepTool;
 #[cfg(test)]
@@ -295,14 +290,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
 
-        for tool in [
-            "bash",
-            "read_file",
-            "write_file",
-            "edit_file",
-            "search_code",
-            "sleep",
-        ] {
+        for tool in ["bash", "read_file", "write_file", "edit_file", "sleep"] {
             assert!(names.contains(&tool.to_string()), "missing {tool}");
         }
     }
@@ -557,32 +545,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_code_finds_matches_in_workspace() {
-        let router = ToolRouter::new().route(SearchCodeTool);
-        let context = test_context("search_code_finds_matches_in_workspace");
-        write_workspace_file(
-            &context.work_dir,
-            "src/lib.rs",
-            "pub fn unique_needle_xyz() {}\n",
-        );
-
-        let output = router
-            .call(
-                &context,
-                "search_code",
-                serde_json::json!({
-                    "query": "unique_needle_xyz",
-                    "path": "src",
-                    "glob": "*.rs"
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.contains("unique_needle_xyz"));
-    }
-
-    #[tokio::test]
     async fn save_memory_persists_entry() {
         let router = ToolRouter::new().route(SaveMemoryTool);
         let context = test_context("save_memory_persists_entry");
@@ -602,7 +564,7 @@ mod tests {
             .unwrap();
 
         assert!(output.contains("Prefer Tabs") || output.contains("prefer_tabs"));
-        let memory_file = context.work_dir.join(".claude/memory/prefer_tabs.md");
+        let memory_file = context.work_dir.join(".tact/memory/prefer_tabs.md");
         assert!(memory_file.exists());
         let saved = std::fs::read_to_string(memory_file).unwrap();
         assert!(saved.contains("Use tabs by default."));

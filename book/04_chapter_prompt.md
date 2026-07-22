@@ -229,7 +229,7 @@ A real session snapshot (default `instruction_sources = ["agents_md"]`, project 
 - **guidelines** / **constraints** — tact built-in defaults
 - **memory_guidance** — when to call `save_memory`
 - **additional** — project `AGENTS.md` (rendered under `# Additional context`)
-- **memory** — persistent `.claude/memory/*.md` content
+- **memory** — persistent `.tact/memory/*.md` content
 - **dynamic_context** — date, workdir, model, platform, directory snapshot
 
 The rendered prompt looks like:

@@ -6,7 +6,12 @@
 //!
 //! - [`CONTINUATION_MESSAGE`]: appended when the LLM hits its output limit,
 //!   asking it to pick up mid-response.
-//! - [`MAX_RECOVERY_ATTEMPTS`]: total number of retries before giving up.
+//! - [`MAX_COMPACT_ATTEMPTS`]: prompt-too-long compaction retries.
+//! - [`MAX_TRANSPORT_ATTEMPTS`]: transient network error retries (higher for
+//!   long-running tasks that may encounter multiple intermittent failures).
+//! - [`MAX_CONTINUATION_ATTEMPTS`]: max-tokens continuation retries.
+//! - [`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`]: transient retries during the
+//!   compaction summary call itself.
 //! - [`RecoveryState`]: tracks attempts across compaction, continuation, and
 //!   transport categories.
 //! - [`is_prompt_too_long_error`] / [`is_transient_transport_error`]:
@@ -14,7 +19,14 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+pub const MAX_COMPACT_ATTEMPTS: u32 = 3;
+pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;
+pub const MAX_CONTINUATION_ATTEMPTS: u32 = 3;
+/// Retries for transient errors during the compaction summary LLM call.
+/// Kept smaller than [`MAX_TRANSPORT_ATTEMPTS`] because the summary call is
+/// a short one-shot operation — failing after a few retries means the
+/// compaction cannot proceed, and the main loop will surface the error.
+pub const MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS: u32 = 3;
 const BACKOFF_BASE_DELAY_SECS: f64 = 1.0;
 const BACKOFF_MAX_DELAY_SECS: f64 = 30.0;
 

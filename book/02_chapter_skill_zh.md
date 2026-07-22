@@ -247,7 +247,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 方面 | Skills | Memory |
 |------|--------|--------|
-| 位置 | legacy `skills/` + `~/.tact/skills/` + `.claude/skills/` | `<workdir>/.claude/memory/` |
+| 位置 | legacy `skills/` + `~/.tact/skills/` + `.claude/skills/` | `<workdir>/.tact/memory/` |
 | 格式 | `SKILL.md` + 可选 frontmatter | `{name}.md` + 必需 frontmatter |
 | 提示词注入 | 始终摘要；正文按需 / 斜杠 | 每轮全文（动态节） |
 | 写入路径 | 编辑磁盘文件（无 agent 工具） | `save_memory` 工具 |

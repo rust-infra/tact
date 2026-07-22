@@ -26,7 +26,6 @@ pub mod config;
 pub mod consts;
 pub mod cron;
 pub mod hook;
-pub mod lsp;
 pub mod mcp;
 pub mod memory;
 pub mod notifications;

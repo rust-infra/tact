@@ -95,7 +95,7 @@ sequenceDiagram
 
 ## 4. 受限工具集
 
-`subagent_toolset()` 恰好注册六个工具：
+`subagent_toolset()` 恰好注册五个工具：
 
 | Tool | 用途 |
 |------|------|
@@ -103,7 +103,6 @@ sequenceDiagram
 | `read_file` | 读工作区文件 |
 | `write_file` | 创建或覆盖文件 |
 | `edit_file` | 精确字符串替换（first 或 all） |
-| `search_code` | Ripgrep 搜索 |
 | `sleep` | 计时 / 轮询 |
 
 与主 agent 相比 notable **省略**：
@@ -189,7 +188,7 @@ let summary = subagent
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
 | 隔离 | 全新 context，6 个工具 | N/A |
-| 持久化 | 仅内存 | `.claude/team/` JSON |
+| 持久化 | 仅内存 | `.tact/team/` JSON |
 | 用例 | 委托聚焦的编码工作 | 多 agent 协调协议 |
 
 见 [团队协调](./14_chapter_team_zh.md)。
@@ -222,7 +221,7 @@ let summary = subagent
 | 独立 cancel 标志 | 父级 Cancel 可能无法中止长时间运行的子 agent |
 | 无会话持久化 | 进程在 `task` 中途崩溃则子 agent 轮次丢失 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |
-| 模块注释过时 | `subagent_toolset` 文档写四个工具；实际注册六个 |
+| 模块注释过时 | `subagent_toolset` 文档写四个工具；实际注册五个 |
 | 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖 |
 
 ---

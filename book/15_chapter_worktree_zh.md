@@ -50,7 +50,7 @@ index: root.file("worktrees/index.json")?,   // Store<WorktreeIndex>
 ```text
 <repo_root>/
 ├── .worktrees/<name>/          # 实际的 git worktree（checkout）
-└── .claude/
+└── .tact/
     └── worktrees/index.json    # Tact 的元数据 + 事件
 ```
 
@@ -63,7 +63,7 @@ sequenceDiagram
     participant Agent
     participant WM as WorktreeManager
     participant Git as git CLI
-    participant FS as .claude/worktrees/index.json
+    participant FS as .tact/worktrees/index.json
 
     Agent->>WM: worktree_create("fix-auth", base_ref: "main")
     WM->>WM: 若名称已在索引中则拒绝
@@ -155,5 +155,5 @@ let worktree_manager =
 - [任务与工具调度](./11_chapter_task.md) — `task_id` 所指的 task 记录
 - [团队协调](./14_chapter_team.md) — worktree 设计与之配对的协调层
 - [权限模型](./10_chapter_permission.md) — `worktree_run` 如何（以及未如何）被门控
-- [Store 与持久化](./01_chapter_store_zh.md) — `.claude/worktrees/` 下的 `Store<WorktreeIndex>`
+- [Store 与持久化](./01_chapter_store_zh.md) — `.tact/worktrees/` 下的 `Store<WorktreeIndex>`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 子 agent、团队、任务、worktree

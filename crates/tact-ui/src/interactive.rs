@@ -84,7 +84,7 @@ async fn run_interactive_locked(
     let tui_work_dir = work_dir.clone();
     let image_work_dir = work_dir.clone();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
-    let store_root = StoreRoot::new(tact_path.claude_dir())?;
+    let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;
     let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);

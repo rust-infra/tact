@@ -1,7 +1,7 @@
 //! Cron-style scheduled tasks.
 //!
 //! Allows the agent to create, list, and delete recurring or one-shot
-//! scheduled prompts.  Tasks are persisted to `.claude/cron/`.
+//! scheduled prompts.  Tasks are persisted to `.tact/cron/`.
 //!
 //! - [`CronScheduler`] is the single-threaded store.
 //! - [`SharedCronScheduler`] wraps it with `Arc<Mutex<…>>`.

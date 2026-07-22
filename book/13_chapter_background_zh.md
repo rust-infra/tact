@@ -37,7 +37,7 @@ pub struct BackgroundTaskRecord {
 `BackgroundManager` 双重持有记录：
 
 ```rust
-records: CollectionStore<BackgroundTaskRecord>,   // .claude/background/tasks/{id}.json
+records: CollectionStore<BackgroundTaskRecord>,   // .tact/background/tasks/{id}.json
 tasks:   Mutex<HashMap<String, BackgroundTaskRecord>>,  // 内存镜像
 next_id: AtomicU64,                                // 单调递增 id 源
 ```
@@ -53,7 +53,7 @@ sequenceDiagram
     participant Agent
     participant BM as BackgroundManager
     participant Task as tokio::spawn
-    participant FS as .claude/background/tasks/
+    participant FS as .tact/background/tasks/
 
     Agent->>BM: background_run("cargo build")
     BM->>BM: validate_shell_command (blocks sudo, rm -rf /, …)
@@ -142,7 +142,7 @@ output: "Process interrupted (agent restarted)"
 | 无取消工具 | 运行中任务无法被模型 kill；仅超时或进程退出结束 |
 | 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |
-| 记录累积 | `.claude/background/tasks/` 从不修剪 |
+| 记录累积 | `.tact/background/tasks/` 从不修剪 |
 | 50k 输出 cap 静默截断 | 无同步 `bash` 的 `<persisted-output>` 溢出 |
 | ID 可能碰撞 | 32 位 hex 计数器由 wall clock 播种；无对磁盘的唯一性检查 |
 
