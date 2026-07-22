@@ -361,6 +361,25 @@ flowchart LR
 3. 若超出 → `retained_tokens -= 超出量`，然后以更小预算重新调 `build_compacted_history`，回到步骤 1。
 4. 若 `retained_tokens == 0` 仍放不下 → `anyhow::bail!`（原 context 保持不变，单条摘要都超窗口）。
 
+### 设计原理：摘要器输入 vs 重建 context
+
+压缩流水线中有**两个**消息选择阶段，目标完全不同。
+
+| 维度 | 摘要器输入（步骤 2–3） | 重建 context（步骤 4） |
+|------|----------------------|----------------------|
+| **目标** | 产出一份好的交接摘要 | 压缩后 agent 继续工作 |
+| **谁读** | 摘要 LLM（一次性） | 主 agent（每轮直到下次压缩） |
+| **角色** | User + Assistant + ToolResult | **仅 User** |
+| **用户原文** | 送入摘要器，不保留原文 | ✅ 原样保留（从尾部，预算内） |
+| **Assistant / ToolUse / ToolResult** | 送入摘要器（压缩后） | ❌ 丢弃（摘要已覆盖） |
+| **预算** | `min(20k, summary_input_limit - 固定指令)` | `min(20k, window - output - system - tools - summary - 20%)` |
+
+这种不对称是故意的：
+
+- **摘要器需要看全景**才能写出一份准确的手记。没有 tool result，摘要器就不知道改了什么文件、测试是否通过。`summary_message_fallback` 压缩数据但不跳过整条消息。
+
+- **重建 context 只保留用户意图**，因为 agent 需要原样保留任务目标原文才能继续工作。其他一切已被摘要浓缩，在有限窗口里重复保留只是浪费空间。
+
 ### 压缩失败时的行为
 
 只有在摘要通过校验且重建后的请求符合模型窗口限制后，context 才会被替换。如果摘要生成失败、返回空文本、使用无效 stop reason，或重建后的请求仍放不进窗口，原有的内存 context 会保持不变。如果写入新的 context 到 SQLite 失败，替换也会回滚。压缩开始时写入的 transcript 仍会保留，可用于诊断或离线恢复。当前 agent loop 随后会向上返回错误，通常结束本次任务；它不会带着同一个超大 context 盲目重试。例外是摘要请求遇到瞬时传输错误：这种情况会先最多重试三次，之后才失败。

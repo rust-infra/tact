@@ -361,6 +361,28 @@ If even the fallback text is too large, it is tail-truncated (`take_last_tokens`
 3. If it exceeds → `retained_tokens -= overflow`, rebuild again with the smaller budget, go to step 1.
 4. If `retained_tokens == 0` and still doesn't fit → `anyhow::bail!` (original context intact; even a single summary alone exceeds the window).
 
+### Design rationale: summarizer input vs rebuilt context
+
+The compaction pipeline has **two** message selection phases with very different goals.
+
+| | Summarizer input (step 2–3) | Rebuilt context (step 4) |
+|---|---|---|
+| **Goal** | Produce a good handoff summary | Agent continues working after compact |
+| **Who reads it** | The summarizer LLM (one-shot) | The main agent (every turn until next compact) |
+| **Roles** | User + Assistant + ToolResult | **User only** |
+| **Message types** | All, with `summary_message_fallback` compression | Only "real user" (skips pure tool-result blocks, prior summaries, non-User) |
+| **User text** | Fed into summarizer, not preserved verbatim | ✅ Preserved verbatim (from tail, budget permitting) |
+| **Assistant / Thinking** | Fed into summarizer | ❌ Dropped (summary already covers it) |
+| **ToolUse** | Compressed to `[Tool call: {name}]` | ❌ Dropped |
+| **ToolResult** | Full text (compressed via fallback) | ❌ Dropped |
+| **Budget** | `min(20k, summary_input_limit - prompt)` | `min(20k, window - output - system - tools - summary - 20%)` |
+
+The asymmetry is intentional:
+
+- **Summarizer sees everything** because it needs the full context to write an accurate handoff. A tool result containing a file's full text tells the summarizer which functions were modified; a test log tells it whether tests passed. Without these, the summary would be vague. `summary_message_fallback` compresses the data (omits base64 images, truncates from tail) but does **not** skip entire messages.
+
+- **Rebuilt context keeps only real user intent** because the agent needs the original task framing verbatim — "add an 80% trigger to the compact module" — to continue working. Everything else (assistant reasoning, tool calls, tool results) has already been condensed into the handoff summary. Keeping assistant/tool content would waste the limited window on redundant detail. The `is_real_user_message` filter excludes pure tool-result blocks (no user intent), prior summaries (no stacking), and non-User roles, while keeping every message that carries the user's own words.
+
 ### Compaction failure behavior
 
 The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason, or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to three times before failing.
