@@ -118,8 +118,7 @@ impl App {
                     match msg.role {
                         Role::User => self.add_user_message(content.clone()),
                         Role::Assistant => {
-                            let (lines, raw_lines) =
-                                render_markdown_tui(content, &self.theme);
+                            let (lines, raw_lines) = render_markdown_tui(content, &self.theme);
                             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
                         }
                     }
@@ -151,8 +150,7 @@ impl App {
                     self.add_new_line();
                     for block in &blocks {
                         if let ContentBlock::Text { text } = block {
-                            let (lines, raw_lines) =
-                                render_markdown_tui(text, &self.theme);
+                            let (lines, raw_lines) = render_markdown_tui(text, &self.theme);
                             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
                         }
                     }
