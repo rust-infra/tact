@@ -138,7 +138,7 @@ async fn large_mcp_output_is_persisted() {
                 && matches!(result.status, StepStatus::Success)
                 && result.message.contains("<persisted-output>")
     )));
-    assert!(work_dir.join(".claude/tool-results/mcp_big.txt").exists());
+    assert!(work_dir.join(".tact/tool-results/mcp_big.txt").exists());
 }
 
 #[tokio::test]

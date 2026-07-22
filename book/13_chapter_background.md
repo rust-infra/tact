@@ -36,7 +36,7 @@ pub struct BackgroundTaskRecord {
 `BackgroundManager` holds the records twice:
 
 ```rust
-records: CollectionStore<BackgroundTaskRecord>,   // .claude/background/tasks/{id}.json
+records: CollectionStore<BackgroundTaskRecord>,   // .tact/background/tasks/{id}.json
 tasks:   Mutex<HashMap<String, BackgroundTaskRecord>>,  // in-memory mirror
 next_id: AtomicU64,                                // monotonically increasing id source
 ```
@@ -52,7 +52,7 @@ sequenceDiagram
     participant Agent
     participant BM as BackgroundManager
     participant Task as tokio::spawn
-    participant FS as .claude/background/tasks/
+    participant FS as .tact/background/tasks/
 
     Agent->>BM: background_run("cargo build")
     BM->>BM: validate_shell_command (blocks sudo, rm -rf /, …)
@@ -141,7 +141,7 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |
-| Records accumulate | `.claude/background/tasks/` is never pruned |
+| Records accumulate | `.tact/background/tasks/` is never pruned |
 | 50k output cap silently truncates | No `<persisted-output>` spill like synchronous `bash` gets |
 | ID collisions possible | 32-bit hex counter seeded by wall clock; no uniqueness check against disk |
 

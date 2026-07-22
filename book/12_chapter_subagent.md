@@ -188,7 +188,7 @@ That string becomes the `task` tool's JSON/text result and is appended to the **
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
 | Isolation | Fresh context, 6 tools | N/A |
-| Persistence | In-memory only | `.claude/team/` JSON |
+| Persistence | In-memory only | `.tact/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 
 See [Team Coordination](./14_chapter_team.md).

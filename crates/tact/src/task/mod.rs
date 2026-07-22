@@ -321,7 +321,7 @@ mod tests {
         let root_dir = std::env::temp_dir().join(format!("tact-task-test-{name}"));
         let _ = std::fs::remove_dir_all(&root_dir);
         std::fs::create_dir_all(&root_dir).unwrap();
-        let store_root = StoreRoot::new(root_dir.join(".claude")).unwrap();
+        let store_root = StoreRoot::new(root_dir.join(".tact")).unwrap();
         (TaskManager::new(&store_root).unwrap(), root_dir)
     }
 

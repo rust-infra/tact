@@ -48,7 +48,7 @@ Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再
 flowchart TB
     subgraph L1["Level 1 — 溢出单条结果"]
         Bash[成功的工具返回] --> Big{> 30k 字符?}
-        Big -->|yes| Disk1["写入 .claude/tool-results/id.txt"]
+        Big -->|yes| Disk1["写入 .tact/tool-results/id.txt"]
         Disk1 --> Env["替换为 &lt;persisted-output&gt;"]
         Big -->|no| Keep[保留全文]
     end
@@ -190,22 +190,35 @@ Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工
 
 ### 判定（OR）
 
-`should_auto_compact` 在以下**任一**条件成立时触发（可预留尚未入 context 的本轮 user turn）：
+`should_auto_compact` 在以下**任一**条件成立时触发（可预留尚未入 context 的本轮 user turn，以及下一次 `max_tokens` 输出）：
 
 ```text
 last_token_total > 0
-  && last_token_total + estimate_message_tokens(incoming_turn) >= model_context_window 的 80%
-  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) >= model_context_window 的 80%
+  && last_token_total + estimate_message_tokens(incoming_turn) + max_tokens >= model_context_window 的 80%
+  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) + max_tokens >= model_context_window 的 80%
 ```
 
-OR 两侧都与同一 **token** 窗口比较。序列化内容中的 ASCII 按约 4 字符一个 token 估算，非 ASCII 则保守地按每字符一个 token 计算。
+OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算（`max_tokens`），确保 LLM 还有足够的空间生成回复。序列化内容中的 ASCII 按约 4 字符一个 token 估算，非 ASCII 则保守地按每字符一个 token 计算。
 
 - **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_tokens = estimate(user_turn)`），再 `push` 本轮原文。
 - **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_tokens = 0`。
 
-摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。纯文本 turn 和基于 block 的 UI turn 都属于真实 user；只含工具结果的 block 消息和旧 summary 会被排除。保留用户消息的预算为 `min(20k 估算 token, window - 最大输出 - estimate(system + tools + summary) - 20% 余量)`。block turn 在预算内原样保留；超大 block turn 退化为文本尾部，纯图片则变成省略占位符，绝不截断 base64。旧单消息路径保留为 `compact_history_legacy`。
+摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。重建分为三步：
 
-摘要请求在选择历史前会预留两类成本：最多 2,000 tokens 的摘要输出预算，以及**模型窗口的 10% 安全余量**。例如 200,000 token 的窗口会预留 20,000 tokens。安全余量用于吸收估算误差、JSON 序列化开销，以及保守估算与 provider tokenizer 之间的差异。百分比计算向上取整，因此不会向下少留余量。
+1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息和非 User 角色）。
+2. **`retained_user_message_token_budget`** — 预算 = `min(20k 估算 token, model_context_window - max_tokens - estimate(system + tools + summary) - 20% 余量)`。
+3. **`build_compacted_history`** — 从尾部保留真实 user 消息直到预算用尽；block turn 在预算内原样保留，超大 block turn 退化为文本尾部，纯图片则变成省略占位符，绝不截断 base64。最后追加一条 summary 消息。
+
+旧单消息路径保留为 `compact_history_legacy`。
+
+两个不同的百分比适用于不同的阶段：
+
+| 阶段 | 余量 | 用途 |
+|------|------|------|
+| 摘要器 **输入** 预算 | 窗口的 **10%** | `compact_history_with_mode` — 确保摘要指令 + 历史尾部在调用 LLM 前有足够空间 |
+| 重建 **最终请求** 安全兜底 | 窗口的 **20%** | `compact_rebuild_headroom_tokens` — 确保压缩后请求（system + tools + 保留用户 + 摘要 + max_output）不会溢出 |
+
+以 200,000 token 窗口为例，摘要器输入余量为 10% = 20,000 tokens，重建兜底为 20% = 40,000 tokens。两者都用于吸收估算误差、JSON 序列化开销，以及保守估算与 provider tokenizer 之间的差异。百分比向上取整，不会向下少留。
 
 ```rust
 pub fn estimate_context_tokens(messages: &[Message]) -> usize {
@@ -237,6 +250,15 @@ flowchart TD
 
 `Agent::compact_history(focus: Option<&str>)` 是昂贵路径。它从不永久「删除」工作：压缩前的 context 总会先写入 transcript。
 
+### 两种重建策略
+
+Tact 有**两种**压缩重建模式。两者共享相同的摘要流水线（transcript → 选取近期消息 → LLM 摘要），区别仅在于**摘要产出后如何替换 context**：
+
+- **Codex 风格**（`compact_history`，生产默认）：通过 `collect_user_messages` + `build_compacted_history` 重建。压缩后 context：`[真实 User…] + [SUMMARY_PREFIX + summary]`。真实 user turn 从尾部原样保留（预算允许）。当前轮次在 loop 压缩中不会丢失——`collect_user_messages` 从完整 context 中恢复它。
+- **Legacy**（`compact_history_legacy`，仅保留用于回滚）：用 `compacted_context(summary)` 替换整个 context——单条 user 消息。所有 user turn 丢失；loop 压缩中当前轮次原文被摘要吞掉。
+
+只有 Codex 被生产调用点使用；Legacy 以 `#[allow(dead_code)]` 存在供参考。
+
 ### 端到端时序
 
 ```mermaid
@@ -249,7 +271,7 @@ sequenceDiagram
     participant Store as SessionStore
 
     AgentLoop->>CH: compact_history(focus?)
-    CH->>Disk: 写入 .claude/transcripts/transcript_ts.jsonl
+    CH->>Disk: 写入 .tact/transcripts/transcript_ts.jsonl
     CH-->>AgentLoop: Info "[transcript saved: …]"
     CH->>CH: 在 20k token 上限内选择近期消息
     CH->>CH: 组装摘要 prompt + 可选 focus + recent_files
@@ -257,14 +279,17 @@ sequenceDiagram
     LLM-->>CH: 校验为完整、非空的文本摘要
     CH->>CH: 重置 message-id 窗口 (first/last/llm_call ids = 0)
     CH->>CH: 向摘要追加 "Recently accessed files…"
-    CH->>CH: context = build_compacted_history(users + summary)
+    CH->>CH: users = collect_user_messages(旧 context)
+    CH->>CH: budget = retained_user_message_token_budget(window, max_tokens, …)
+    CH->>CH: context = build_compacted_history(users, summary, budget)
+    CH->>CH: 收缩循环：溢出 → 缩小 budget → 重建
     CH->>Store: replace_session_messages（SQLite 对齐新 context）
     CH->>CH: stats.compactions += 1
 ```
 
 ### 步骤说明
 
-**1. Transcript 落盘** — `write_transcript` 原子创建唯一的 `.claude/transcripts/transcript_<unix_nanos>_<collision>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回；摘要消息里**不会**自动告知模型该路径（§11 缺口）。
+**1. Transcript 落盘** — `write_transcript` 原子创建唯一的 `.tact/transcripts/transcript_<unix_nanos>_<collision>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回；摘要消息里**不会**自动告知模型该路径（§11 缺口）。
 
 **2. 近期窗口选择** — 从 `context` **末尾**向前，在模型窗口预算与 **20,000 估算 token 上限**内累加。超大消息转成合法的纯文本视图，图片变成省略占位符，不会切断 base64；无法容纳时不强塞消息。更早回合只靠 transcript + 摘要能推断的内容存活。
 
@@ -294,7 +319,26 @@ flowchart LR
 - `Focus to preserve next: {focus}` — 来自手动 `compact` 工具  
 - `Recent files to reopen if needed:` — 来自 `CompactState.recent_files`
 
-**4. 替换 context** — Codex 风格，经 `build_compacted_history` 重建：
+如果 focus 文本过长，无法与固定指令一起放入摘要输入预算，会被静默丢弃——但会通过 `tracing::warn!` 记录日志（原始长度、可用预算和所需 token 数），使该事件在诊断中可见。
+
+当某条消息超出摘要输入预算时，`summary_message_fallback` 会将其转为合法纯文本表示。各 block 类型的映射方式如下：
+
+| Block 类型 | 转为 |
+|------------|------|
+| `Text` | 保留原文 |
+| `Thinking` | 保留原文 |
+| `RedactedThinking` | `[Redacted thinking omitted.]` |
+| `Image` | `[Earlier image attachment omitted during compaction.]` |
+| `ToolUse` | `[Tool call: {name}]` |
+| `ToolResult` | `[Tool result {tool_use_id}]\n{content}` |
+
+如果降级后的文本仍然太大，会从尾部截断（`take_last_tokens`）到剩余预算。Base64 图片数据**绝不会**被截断——它们会被整体替换为省略标记，保证序列化 JSON 始终合法。
+
+**4. 替换 context** — Codex 风格重建，分三步：
+
+**4a. 收集用户消息** — `collect_user_messages(&old_context)` 遍历完整 context，用 `is_real_user_message` 过滤：保留非摘要、非纯工具结果的 User 角色消息。这是候选集，尚不截断。
+
+**4b. 从尾部重建** — `build_compacted_history(users, summary, max_tokens)` 在 token 预算内从尾部保留真实 user 消息；最后追加一条 summary 消息：
 
 ```text
 [0] User  "<较早的真实 user 原文…>"
@@ -309,6 +353,13 @@ flowchart LR
 ```
 
 （`compact_history_legacy` 仍会整段换成**单条** summary user 消息。）
+
+**4c. 收缩循环（最终请求安全兜底）** — 第一步预算来自 `retained_user_message_token_budget`（`model_context_window - max_tokens - estimate(system+tools+summary) - 20%`，上限 20k）。但这是一个估算，重建后的实际体积可能超过窗口。因此进入一个循环：
+
+1. 计算总 token：`system + tools + estimate(rebuilt) + max_tokens + headroom`
+2. 若 ≤ `model_context_window` → 通过。
+3. 若超出 → `retained_tokens -= 超出量`，然后以更小预算重新调 `build_compacted_history`，回到步骤 1。
+4. 若 `retained_tokens == 0` 仍放不下 → `anyhow::bail!`（原 context 保持不变，单条摘要都超窗口）。
 
 ### 压缩失败时的行为
 
@@ -407,7 +458,7 @@ flowchart TD
 | 推理 / thinking | 保留 | 丢弃（摘要器不产 thinking） |
 | 体积 | 可达数十万字符 | 预算内 user + 摘要 ≤ 2k 输出 tokens + 文件清单 |
 | 原始细节 | 直接可读 | 靠 `recent_files` 提示重新 `read_file` 找回 |
-| 落盘 transcript | — | `.claude/transcripts/transcript_<ts>.jsonl` |
+| 落盘 transcript | — | `.tact/transcripts/transcript_<ts>.jsonl` |
 
 #### 同时被重置的运行时字段
 
@@ -499,7 +550,7 @@ persist_large_output(&tact_path, tool_use_id, &output)
 flowchart TD
     Out[成功的工具输出] --> Th{字符数 > 30_000?}
     Th -->|no| Full[原样返回]
-    Th -->|yes| Write["fs::write .claude/tool-results/&lt;tool_use_id&gt;.txt"]
+    Th -->|yes| Write["fs::write .tact/tool-results/&lt;tool_use_id&gt;.txt"]
     Write --> Prev["取前 2_000 字符"]
     Prev --> Wrap["包进 &lt;persisted-output&gt; 信封"]
     Wrap --> TR[context 中的 ToolResult 内容]
@@ -509,7 +560,7 @@ flowchart TD
 
 ```xml
 <persisted-output>
-Full output saved to: .claude/tool-results/<tool_use_id>.txt
+Full output saved to: .tact/tool-results/<tool_use_id>.txt
 Preview:
 [first 2000 characters…]
 </persisted-output>
@@ -558,7 +609,7 @@ flowchart TB
 ```mermaid
 flowchart TB
     WD["&lt;workdir&gt;"]
-    WD --> Claude[".claude/"]
+    WD --> Tact[".tact/"]
     Claude --> TR["transcripts/<br/>transcript_&lt;unix_nanos&gt;_&lt;n&gt;.jsonl"]
     Claude --> OR["tool-results/<br/>&lt;tool_use_id&gt;.txt"]
     WD --> Tact[".tact/tact.db"]
@@ -567,8 +618,8 @@ flowchart TB
 
 | 路径 | 写入方 | 内容 |
 |------|--------|------|
-| `.claude/transcripts/transcript_<ts>.jsonl` | `write_transcript` | 压缩前完整对话 |
-| `.claude/tool-results/<id>.txt` | `persist_large_output` | 超大原生/MCP 输出全文 |
+| `.tact/transcripts/transcript_<ts>.jsonl` | `write_transcript` | 压缩前完整对话 |
+| `.tact/tool-results/<id>.txt` | `persist_large_output` | 超大原生/MCP 输出全文 |
 | `.tact/tact.db` messages | `replace_session_messages` | 压缩后的保留 user + 摘要 context |
 
 每次写入后，每个溢出目录最多保留修改时间最新的 100 个文件；更旧的普通文件会被删除。

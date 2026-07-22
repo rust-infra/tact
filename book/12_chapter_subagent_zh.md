@@ -189,7 +189,7 @@ let summary = subagent
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
 | 隔离 | 全新 context，6 个工具 | N/A |
-| 持久化 | 仅内存 | `.claude/team/` JSON |
+| 持久化 | 仅内存 | `.tact/team/` JSON |
 | 用例 | 委托聚焦的编码工作 | 多 agent 协调协议 |
 
 见 [团队协调](./14_chapter_team_zh.md)。

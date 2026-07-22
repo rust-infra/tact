@@ -1,6 +1,6 @@
 //! Persistent JSON-backed key-value and collection store.
 //!
-//! The store lives under `.claude/` and is the persistence layer for
+//! The store lives under `.tact/` and is the persistence layer for
 //! tasks, background work, cron, teammates, worktrees, and memory.
 //!
 //! - [`StoreRoot`] resolves relative paths safely within the store root.

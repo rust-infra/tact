@@ -2,9 +2,9 @@
 
 > 语言：[中文](./01_chapter_store_zh.md) · [English](./01_chapter_store.md)
 
-本章说明 Tact 的**磁盘持久化层**：`.claude/` 下的 JSON 文件存储，以及独立的 SQLite 会话数据库。二者共同保存对话历史、领域状态（任务、cron、队友等）与可观测性数据。
+本章说明 Tact 的**磁盘持久化层**：`.tact/` 下的 JSON 文件存储，以及独立的 SQLite 会话数据库。二者共同保存对话历史、领域状态（任务、cron、队友等）与可观测性数据。
 
-记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用 `.claude/memory/` 下的 Markdown 文件，**不属于** JSON store API。
+记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用 `.tact/memory/` 下的 Markdown 文件，**不属于** JSON store API。
 
 ---
 
@@ -14,14 +14,14 @@ Tact 刻意拆分职责：
 
 | 层级 | 位置 | API | 主要用途 |
 |------|------|-----|----------|
-| **JSON store** | `<workdir>/.claude/` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` | 领域记录（tasks、cron、team 等） |
+| **JSON store** | `<workdir>/.tact/` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` | 领域记录（tasks、cron、team 等） |
 | **Session store** | `<workdir>/.tact/tact.db` | `SessionStore` trait、`SqliteSessionStore` | 消息、token 用量、输入历史 |
 
 ```mermaid
 graph TB
     subgraph Workdir["<workdir>"]
         Tact[".tact/"]
-        Claude[".claude/"]
+        Tact[".tact/"]
         Skills["skills/（非 StoreRoot）"]
     end
 
@@ -182,7 +182,7 @@ sequenceDiagram
     participant JSON as StoreRoot / 领域模块
     participant SQL as SqliteSessionStore
 
-    TUI->>JSON: StoreRoot::new(.claude/)
+    TUI->>JSON: StoreRoot::new(.tact/)
     TUI->>JSON: TaskManager, CronScheduler, …
     TUI->>SQL: open_sqlite_session_store(tact.db)
     TUI->>Agent: with_session(id, store)

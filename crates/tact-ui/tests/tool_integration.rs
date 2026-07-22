@@ -71,7 +71,7 @@ async fn large_non_bash_output_is_persisted() {
                 && matches!(result.status, StepStatus::Success)
                 && result.message.contains("<persisted-output>")
     )));
-    assert!(work_dir.join(".claude/tool-results/read_big.txt").exists());
+    assert!(work_dir.join(".tact/tool-results/read_big.txt").exists());
 }
 
 #[tokio::test]

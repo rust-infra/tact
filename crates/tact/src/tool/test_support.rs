@@ -31,14 +31,14 @@ pub fn test_context(name: &str) -> ToolContext {
     let root_dir = std::env::temp_dir().join(format!("tact-tool-test-{name}"));
     let _ = std::fs::remove_dir_all(&root_dir);
     std::fs::create_dir_all(&root_dir).unwrap();
-    let store_root = StoreRoot::new(root_dir.join(".claude")).unwrap();
+    let store_root = StoreRoot::new(root_dir.join(".tact")).unwrap();
 
     ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
             root_dir.join(".claude/skills")
         ]))),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
-            root_dir.join(".claude/memory"),
+            root_dir.join(".tact/memory"),
         ))),
         work_dir: root_dir.clone(),
         task_manager: SharedTaskManager::new(TaskManager::new(&store_root).unwrap()),

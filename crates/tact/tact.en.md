@@ -215,7 +215,7 @@ Store handles persistence. Domain managers handle business rules.
 ## State Directory
 
 ```text
-.claude/
+.tact/
   background/
   cron/
   memory/

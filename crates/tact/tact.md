@@ -297,10 +297,10 @@ Callers don't need to know how task files are named, nor should they directly ma
 
 ## State Directory
 
-The default state root is `.claude` in the current workspace:
+The default state root is `.tact` in the current workspace:
 
 ```text
-.claude/
+.tact/
   background/
     tasks/
       <id>.json
@@ -452,7 +452,7 @@ The skill system scans (later root wins on name clash):
 
 At startup, only skill summaries go into the system prompt (`describe_available`). Full content is loaded on demand via `load_skill`, or injected as a user task from the TUI when the user runs `/skill-name` (see book Ch 2 / Ch 23).
 
-The memory system uses `.claude/memory`, writing preferences, facts, feedback, and references via `save_memory`. The system prompt loads a memory summary, allowing the agent to retain important information across sessions.
+The memory system uses `.tact/memory`, writing preferences, facts, feedback, and references via `save_memory`. The system prompt loads a memory summary, allowing the agent to retain important information across sessions.
 
 ## MCP
 

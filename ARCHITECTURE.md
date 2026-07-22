@@ -317,7 +317,7 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 |---|---|
 | Role / guidelines / constraints | Static template |
 | Skills | `skill_registry.describe_available()` (name/description only; full body via `load_skill` or TUI `/skill`) |
-| Memory | `.claude/memory/*.md` via `MemoryManager` |
+| Memory | `.tact/memory/*.md` via `MemoryManager` |
 | CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir — **cached once per session** |
 | AGENTS.md | project `AGENTS.md` (and cwd if it differs), injected via `additional` — **cached once per session** |
 | **Dynamic context** | `load_dynamic_context()` — date, workdir, model, platform, **Project structure** |
@@ -349,7 +349,7 @@ When the conversation approaches the model context window (`agent.model_context_
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
 2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
-3. Large successful native and MCP outputs are persisted to `<workdir>/.claude/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
+3. Large successful native and MCP outputs are persisted to `<workdir>/.tact/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 
@@ -368,11 +368,11 @@ Recovery mechanisms inside `agent_loop()`:
 | Feature | Module | Description |
 |---|---|---|
 | `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `search_code`, `sleep`). |
-| Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.claude/tasks/`. |
+| Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.tact/tasks/`. |
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
-| Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.claude/worktrees/`. |
+| Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.tact/worktrees/`. |
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
-| Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.claude/cron/`. |
+| Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.tact/cron/`. |
 | Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
 | Skills | `skill/` | `SKILL.md` under legacy `skills/`, `~/.tact/skills/`, and `.claude/skills/`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 

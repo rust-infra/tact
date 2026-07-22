@@ -1,9 +1,9 @@
 # Store and Persistence
 > Language: [English](./01_chapter_store.md) · [中文](./01_chapter_store_zh.md)
 
-This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.claude/` and the separate SQLite session database. Together they hold conversation history, domain state (tasks, cron, teammates, …), and observability data.
+This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.tact/` and the separate SQLite session database. Together they hold conversation history, domain state (tasks, cron, teammates, …), and observability data.
 
-Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in `.claude/memory/` and is **not** part of the JSON store API.
+Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in `.tact/memory/` and is **not** part of the JSON store API.
 
 ---
 
@@ -13,14 +13,14 @@ Tact deliberately splits concerns:
 
 | Layer | Location | API | Primary use |
 |-------|----------|-----|-------------|
-| **JSON store** | `<workdir>/.claude/` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` | Domain records (tasks, cron, team, …) |
+| **JSON store** | `<workdir>/.tact/` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` | Domain records (tasks, cron, team, …) |
 | **Session store** | `<workdir>/.tact/tact.db` | `SessionStore` trait, `SqliteSessionStore` | Messages, token usage, input history |
 
 ```mermaid
 graph TB
     subgraph Workdir["<workdir>"]
         Tact[".tact/"]
-        Claude[".claude/"]
+        Tact[".tact/"]
         Skills["skills/ (not StoreRoot)"]
     end
 
@@ -181,7 +181,7 @@ sequenceDiagram
     participant JSON as StoreRoot / domains
     participant SQL as SqliteSessionStore
 
-    TUI->>JSON: StoreRoot::new(.claude/)
+    TUI->>JSON: StoreRoot::new(.tact/)
     TUI->>JSON: TaskManager, CronScheduler, …
     TUI->>SQL: open_sqlite_session_store(tact.db)
     TUI->>Agent: with_session(id, store)

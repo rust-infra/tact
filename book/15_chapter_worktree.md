@@ -49,7 +49,7 @@ On disk there are two separate locations to keep straight:
 ```text
 <repo_root>/
 ├── .worktrees/<name>/          # the actual git worktree (checkout)
-└── .claude/
+└── .tact/
     └── worktrees/index.json    # Tact's metadata + events
 ```
 
@@ -62,7 +62,7 @@ sequenceDiagram
     participant Agent
     participant WM as WorktreeManager
     participant Git as git CLI
-    participant FS as .claude/worktrees/index.json
+    participant FS as .tact/worktrees/index.json
 
     Agent->>WM: worktree_create("fix-auth", base_ref: "main")
     WM->>WM: reject if name already in index
@@ -154,5 +154,5 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — the task records `task_id` refers to
 - [Team Coordination](./14_chapter_team.md) — the coordination layer worktrees are designed to pair with
 - [Permission Model](./10_chapter_permission.md) — how `worktree_run` is (and isn't) gated
-- [Store and Persistence](./01_chapter_store.md) — `Store<WorktreeIndex>` under `.claude/worktrees/`
+- [Store and Persistence](./01_chapter_store.md) — `Store<WorktreeIndex>` under `.tact/worktrees/`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 sub-agents, team, tasks, worktrees

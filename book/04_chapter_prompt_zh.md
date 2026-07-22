@@ -230,7 +230,7 @@ SystemPrompt::from(include_str!("my_template.md"))
 - **guidelines** / **constraints** — tact 内置默认
 - **memory_guidance** — 何时调用 `save_memory`
 - **additional** — 项目 `AGENTS.md`（渲染在 `# Additional context` 下）
-- **memory** — 持久化 `.claude/memory/*.md` 内容
+- **memory** — 持久化 `.tact/memory/*.md` 内容
 - **dynamic_context** — 日期、workdir、模型、平台、目录快照
 
 渲染后的提示词类似：

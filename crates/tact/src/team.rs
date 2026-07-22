@@ -7,7 +7,7 @@
 //! - [`TeammateManager`] is the single-threaded store.
 //! - [`SharedTeammateManager`] is the `Arc<Mutex<…>>` wrapper.
 //! - [`InboxMessage`] includes sender, recipient, body, kind, and timestamp.
-//! - [`TeamConfig`] is the persistent roster under `.claude/team/`.
+//! - [`TeamConfig`] is the persistent roster under `.tact/team/`.
 
 use std::sync::{Arc, Mutex};
 

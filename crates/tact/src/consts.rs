@@ -57,7 +57,7 @@ const CLAUDE_DIR: &str = ".claude";
 const MEMORY_DIR: &str = "memory";
 const SKILL_DIR: &str = "skills";
 
-/// Sub-directories under `.claude/`.  Available through [`TactPath`] methods.
+/// Sub-directory names used under `.tact/`.  Available through [`TactPath`] methods.
 const TRANSCRIPT_SUBDIR: &str = "transcripts";
 const TOOL_RESULTS_SUBDIR: &str = "tool-results";
 const CRON_SUBDIR: &str = "cron";
@@ -133,27 +133,27 @@ impl TactPath {
     }
 
     // ----------------------------------------------------------------
-    // Subdirectories under `.claude/`
+    // Subdirectories under `.tact/`
     // ----------------------------------------------------------------
 
-    /// `<workdir>/.claude/memory`
+    /// `<workdir>/.tact/memory`
     pub fn memory_dir(&self) -> PathBuf {
-        self.claude_dir().join(MEMORY_DIR)
+        self.tact_dir().join(MEMORY_DIR)
     }
 
-    /// `<workdir>/.claude/transcripts`
+    /// `<workdir>/.tact/transcripts`
     pub fn transcript_dir(&self) -> PathBuf {
-        self.claude_dir().join(TRANSCRIPT_SUBDIR)
+        self.tact_dir().join(TRANSCRIPT_SUBDIR)
     }
 
-    /// `<workdir>/.claude/tool-results`
+    /// `<workdir>/.tact/tool-results`
     pub fn tool_results_dir(&self) -> PathBuf {
-        self.claude_dir().join(TOOL_RESULTS_SUBDIR)
+        self.tact_dir().join(TOOL_RESULTS_SUBDIR)
     }
 
-    /// `<workdir>/.claude/cron`
+    /// `<workdir>/.tact/cron`
     pub fn cron_dir(&self) -> PathBuf {
-        self.claude_dir().join(CRON_SUBDIR)
+        self.tact_dir().join(CRON_SUBDIR)
     }
 
     // ----------------------------------------------------------------

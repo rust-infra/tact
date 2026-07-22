@@ -23,7 +23,7 @@ flowchart TB
     Est -->|yes| CH[compact_history]
     Prompt -->|prompt too long| CH
     Prompt -->|successful compact tool| CH
-    CH --> Transcript[JSONL under .claude/transcripts/]
+    CH --> Transcript[JSONL under .tact/transcripts/]
     CH --> Sum[summarize up to 20k estimated tokens]
     Sum --> Replace[context ← recent users + summary]
     Replace --> Prompt
@@ -36,12 +36,12 @@ flowchart TB
 **Trigger**: any successful native or MCP tool result exceeds `PERSIST_THRESHOLD` (30,000 characters).
 
 **Process**:
-1. Full output → `.claude/tool-results/{tool_use_id}.txt`
+1. Full output → `.tact/tool-results/{tool_use_id}.txt`
 2. Context keeps a tagged envelope with path + first `PREVIEW_CHARS` (2,000) characters
 
 ```xml
 <persisted-output>
-Full output saved to: .claude/tool-results/abc123.txt
+Full output saved to: .tact/tool-results/abc123.txt
 Preview:
 [first 2000 characters...]
 </persisted-output>
@@ -91,7 +91,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 ### Steps
 
-1. **`write_transcript`** (async) → unique `.claude/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
+1. **`write_transcript`** (async) → unique `.tact/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
 2. **Recent window** — select from the tail within the model budget and a 20k estimated-token cap; oversized messages become valid text-only views and images become omission markers
 3. **Summarize** — window-aware `create_message`, at most 2k output tokens, with output/headroom reserved; transient failures retry up to three times; abnormal stop reasons and empty summaries fail without replacing context
 4. **Replace** — Codex-style `[recent real User…] + [SUMMARY_PREFIX + handoff]` (legacy: `compacted_context`); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits

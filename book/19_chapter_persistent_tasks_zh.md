@@ -2,7 +2,7 @@
 
 > 语言：[中文](./19_chapter_persistent_tasks_zh.md) · [English](./19_chapter_persistent_tasks.md)
 
-本章涵盖 Tact 的 **durable 工作项跟踪器**：`task/` 模块、`.claude/tasks/` 下的 JSON 文件存储，以及四个 agent 工具 `task_create`、`task_get`、`task_list`、`task_update`。
+本章涵盖 Tact 的 **durable 工作项跟踪器**：`task/` 模块、`.tact/tasks/` 下的 JSON 文件存储，以及四个 agent 工具 `task_create`、`task_get`、`task_list`、`task_update`。
 
 这与以下 **不是** 同一概念：
 
@@ -58,7 +58,7 @@ ID 从 `tasks/index.json` 中的 `next_id` 单调递增（从 1 开始）。
 ## 3. 存储布局
 
 ```text
-.claude/
+.tact/
 └── tasks/
     ├── index.json          # { "next_id": N }
     ├── task_1.json

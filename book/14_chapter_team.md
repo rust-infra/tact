@@ -67,7 +67,7 @@ inboxes: root.collection("team/inbox")?,     // CollectionStore<InboxMessage> �
 On disk:
 
 ```text
-.claude/
+.tact/
 └── team/
     ├── config.json          # roster: [{name, role, status}, …]
     └── inbox/
@@ -85,7 +85,7 @@ Messages are **appended** (JSONL) — inboxes only grow; there is no read-cursor
 sequenceDiagram
     participant Lead as Agent (lead)
     participant TM as TeammateManager
-    participant FS as .claude/team/
+    participant FS as .tact/team/
 
     Lead->>TM: spawn_teammate("alice", "reviewer")
     TM->>FS: config.json ← roster + alice (status: idle)

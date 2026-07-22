@@ -1,6 +1,6 @@
 //! Persistent memory (user preferences, project facts, feedback).
 //!
-//! Memories are stored as Markdown files under `.claude/memory/`, each
+//! Memories are stored as Markdown files under `.tact/memory/`, each
 //! with YAML frontmatter declaring `name`, `description`, and `type`.
 //!
 //! ## Memory types

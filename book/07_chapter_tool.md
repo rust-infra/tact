@@ -188,7 +188,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 
 Failure message: `"Path escapes workspace"`.
 
-This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.claude/` JSON files.
+This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.tact/` JSON files.
 
 ---
 
@@ -206,7 +206,7 @@ let exec = if is_mcp {
 
 `run_native_tool` first calls `ctx.for_invocation(tool_use_id)`, then
 `tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to
-`.claude/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
+`.tact/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
 exceeds context limits.
 
 `bash` uses concurrent Tokio readers for piped stdout and stderr. An aggregator

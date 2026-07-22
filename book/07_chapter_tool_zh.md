@@ -188,7 +188,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 
 失败消息：`"Path escapes workspace"`。
 
-这与 `StoreRoot` 路径规则（[Store 与持久化](./01_chapter_store_zh.md)，守护 `.claude/` JSON 文件）是分开的。
+这与 `StoreRoot` 路径规则（[Store 与持久化](./01_chapter_store_zh.md)，守护 `.tact/` JSON 文件）是分开的。
 
 ---
 
@@ -206,7 +206,7 @@ let exec = if is_mcp {
 
 `run_native_tool` 先调用 `ctx.for_invocation(tool_use_id)`，再调用
 `tools.call(ctx, name, input)`。特例：`bash` 输出超出上下文限制时，可能经
-`persist_large_output` 溢出到 `.claude/tool-results/{tool_use_id}.txt`。
+`persist_large_output` 溢出到 `.tact/tool-results/{tool_use_id}.txt`。
 
 `bash` 用两个并发 Tokio reader 读取 pipe stdout/stderr。Aggregator 按观察到的
 到达顺序合并 chunk、增量解码 UTF-8，并发送有界进度批次（首批立即发送，随后

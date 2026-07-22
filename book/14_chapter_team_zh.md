@@ -68,7 +68,7 @@ inboxes: root.collection("team/inbox")?,     // CollectionStore<InboxMessage> �
 磁盘上：
 
 ```text
-.claude/
+.tact/
 └── team/
     ├── config.json          # roster: [{name, role, status}, …]
     └── inbox/
@@ -86,7 +86,7 @@ inboxes: root.collection("team/inbox")?,     // CollectionStore<InboxMessage> �
 sequenceDiagram
     participant Lead as Agent (lead)
     participant TM as TeammateManager
-    participant FS as .claude/team/
+    participant FS as .tact/team/
 
     Lead->>TM: spawn_teammate("alice", "reviewer")
     TM->>FS: config.json ← roster + alice (status: idle)

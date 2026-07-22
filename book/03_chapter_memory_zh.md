@@ -2,7 +2,7 @@
 
 > 语言：[中文](./03_chapter_memory_zh.md) · [English](./03_chapter_memory.md)
 
-本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `.claude/memory/` 下带 YAML frontmatter 的 Markdown 文件。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
+本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `.tact/memory/` 下带 YAML frontmatter 的 Markdown 文件。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
 
 记忆如何融入提示词组装与动态边界，见 [系统提示词](./04_chapter_prompt_zh.md)。写入工具见 [工具系统](./07_chapter_tool_zh.md)。
 
@@ -31,7 +31,7 @@ graph TB
         TP[TactPath.memory_dir]
         MM[MemoryManager]
         TP --> MM
-        MM -->|load_all| Files[".claude/memory/*.md"]
+        MM -->|load_all| Files[".tact/memory/*.md"]
     end
 
     subgraph Agent["每个 LLM 回合"]
@@ -50,7 +50,7 @@ graph TB
     Files --> MM2
 ```
 
-启动时，`get_memory_manager(tact_path.memory_dir())` 构造 `MemoryManager`，扫描 `.claude/memory/`，将所有合法 `.md` 载入内存 `HashMap`。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。
+启动时，`get_memory_manager(tact_path.memory_dir())` 构造 `MemoryManager`，扫描 `.tact/memory/`，将所有合法 `.md` 载入内存 `HashMap`。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。
 
 ---
 
@@ -168,9 +168,9 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 
 | 路径 | 用途 |
 |------|------|
-| `<workdir>/.claude/memory/` | 记忆目录（`TactPath::memory_dir()`） |
-| `<workdir>/.claude/memory/{name}.md` | 单条记忆文件 |
-| `<workdir>/.claude/memory/MEMORY.md` | 自动生成索引（不作为记忆加载） |
+| `<workdir>/.tact/memory/` | 记忆目录（`TactPath::memory_dir()`） |
+| `<workdir>/.tact/memory/{name}.md` | 单条记忆文件 |
+| `<workdir>/.tact/memory/MEMORY.md` | 自动生成索引（不作为记忆加载） |
 
 记忆**直接使用 Markdown 文件**，而非 [存储与持久化](./01_chapter_store_zh.md) 中的 JSON `Store` 层。
 
@@ -185,7 +185,7 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`、系统提示词接线 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
 | `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时 `get_memory_manager()` |
-| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.claude/memory` |
+| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.tact/memory` |
 
 ---
 

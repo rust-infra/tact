@@ -1,7 +1,7 @@
 # Persistent Task Manager
 > Language: [English](./19_chapter_persistent_tasks.md) · [中文](./19_chapter_persistent_tasks_zh.md)
 
-This chapter covers Tact's **durable work-item tracker**: the `task/` module, JSON file storage under `.claude/tasks/`, and the four agent tools `task_create`, `task_get`, `task_list`, and `task_update`.
+This chapter covers Tact's **durable work-item tracker**: the `task/` module, JSON file storage under `.tact/tasks/`, and the four agent tools `task_create`, `task_get`, `task_list`, and `task_update`.
 
 This is **not** the same as:
 
@@ -57,7 +57,7 @@ IDs monotonically increase from `next_id` in `tasks/index.json` (starts at 1).
 ## 3. Storage Layout
 
 ```text
-.claude/
+.tact/
 └── tasks/
     ├── index.json          # { "next_id": N }
     ├── task_1.json

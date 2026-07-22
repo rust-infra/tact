@@ -602,7 +602,7 @@ mod tests {
             .unwrap();
 
         assert!(output.contains("Prefer Tabs") || output.contains("prefer_tabs"));
-        let memory_file = context.work_dir.join(".claude/memory/prefer_tabs.md");
+        let memory_file = context.work_dir.join(".tact/memory/prefer_tabs.md");
         assert!(memory_file.exists());
         let saved = std::fs::read_to_string(memory_file).unwrap();
         assert!(saved.contains("Use tabs by default."));

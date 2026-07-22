@@ -276,14 +276,21 @@ pub(crate) fn recent_messages_for_summary(
             break;
         }
     }
+    // Reverses the selected messages so they are in chronological order.
     selected.reverse();
 
     while !selected.is_empty() {
         let serialized = serde_json::to_string(&selected)
             .context("failed to serialize messages for compact prompt")?;
         if approx_text_tokens(&serialized) <= max_tokens {
+            tracing::warn!(
+                prompt_tokens = approx_text_tokens(&serialized),
+                needed_tokens = max_tokens,
+                "compact summary prompt too large, dropping the oldest message"
+            );
             return Ok(serialized);
         }
+        // Removes the oldest message and tries again.
         selected.remove(0);
     }
     Ok("[]".to_string())
@@ -312,7 +319,7 @@ fn take_last_tokens(text: &str, max_tokens: usize) -> String {
 
 /// Collect real user turns, skipping tool-result-only users and prior summaries.
 pub fn collect_user_messages(messages: &[Message]) -> Vec<Message> {
-    let mut kept = Vec::with_capacity(messages.len().min(64));
+    let mut kept = Vec::new();
     for message in messages {
         if !is_real_user_message(message) {
             continue;
@@ -370,7 +377,7 @@ pub fn build_compacted_history(
 }
 
 /// Writes the full conversation to a timestamped JSONL file under
-/// `<workdir>/.claude/transcripts/`.  Returns the written file path.
+/// `<workdir>/.tact/transcripts/`.  Returns the written file path.
 pub async fn write_transcript(
     tact_path: &TactPath,
     messages: &[Message],
@@ -421,7 +428,7 @@ pub async fn write_transcript(
 }
 
 /// If `output` exceeds [`PERSIST_THRESHOLD`] characters, writes it to disk
-/// under `<workdir>/.claude/tool-results/` and returns a preview with the file path.
+/// under `<workdir>/.tact/tool-results/` and returns a preview with the file path.
 /// Otherwise returns the output unchanged.
 pub async fn persist_large_output(
     tact_path: &TactPath,
@@ -450,6 +457,7 @@ pub async fn persist_large_output(
     ))
 }
 
+/// Prunes compact artifacts from the output directory, keeping only the most recent `max_files` files.
 async fn prune_compact_artifacts(
     dir: &Path,
     max_files: usize,
@@ -527,6 +535,7 @@ pub(crate) fn should_auto_compact(
     model_context_window: usize,
     estimated_context_tokens: usize,
     incoming_turn_tokens: usize,
+    max_tokens: usize,
 ) -> bool {
     if model_context_window == 0 {
         return false;
@@ -535,12 +544,17 @@ pub(crate) fn should_auto_compact(
         .saturating_mul(AUTO_COMPACT_THRESHOLD_PERCENT)
         .div_ceil(100);
     if last_token_total > 0 {
-        let projected = (last_token_total as usize).saturating_add(incoming_turn_tokens);
+        let projected = (last_token_total as usize)
+            .saturating_add(incoming_turn_tokens)
+            .saturating_add(max_tokens);
         if projected >= threshold {
             return true;
         }
     }
-    estimated_context_tokens.saturating_add(incoming_turn_tokens) >= threshold
+    estimated_context_tokens
+        .saturating_add(incoming_turn_tokens)
+        .saturating_add(max_tokens)
+        >= threshold
 }
 
 #[cfg(test)]
@@ -557,32 +571,48 @@ mod tests {
 
     #[test]
     fn should_auto_compact_uses_last_token_total_when_present() {
-        assert!(!should_auto_compact(79, 100, 0, 0));
-        assert!(should_auto_compact(80, 100, 0, 0));
-        assert!(should_auto_compact(150, 100, 0, 0));
-        assert!(!should_auto_compact(1, 0, 10_000, 0));
+        assert!(!should_auto_compact(79, 100, 0, 0, 0));
+        assert!(should_auto_compact(80, 100, 0, 0, 0));
+        assert!(should_auto_compact(150, 100, 0, 0, 0));
+        assert!(!should_auto_compact(1, 0, 10_000, 0, 0));
     }
 
     #[test]
     fn should_auto_compact_uses_estimated_tokens_when_no_usage() {
-        assert!(!should_auto_compact(0, 100, 79, 0));
-        assert!(should_auto_compact(0, 100, 80, 0));
-        assert!(!should_auto_compact(0, 0, 10_000, 0));
+        assert!(!should_auto_compact(0, 100, 79, 0, 0));
+        assert!(should_auto_compact(0, 100, 80, 0, 0));
+        assert!(!should_auto_compact(0, 0, 10_000, 0, 0));
     }
 
     #[test]
     fn should_auto_compact_token_estimate_covers_post_tool_growth() {
-        assert!(should_auto_compact(50, 100, 80, 0));
-        assert!(!should_auto_compact(50, 100, 25, 0));
+        assert!(should_auto_compact(50, 100, 80, 0, 0));
+        assert!(!should_auto_compact(50, 100, 25, 0, 0));
     }
 
     #[test]
     fn should_auto_compact_reserves_incoming_turn_tokens() {
-        assert!(!should_auto_compact(0, 100, 60, 0));
-        assert!(should_auto_compact(0, 100, 60, 20));
+        assert!(!should_auto_compact(0, 100, 60, 0, 0));
+        assert!(should_auto_compact(0, 100, 60, 20, 0));
         // Token path: last_token under window until incoming approx tokens added.
-        assert!(!should_auto_compact(70, 100, 0, 0));
-        assert!(should_auto_compact(70, 100, 0, 10));
+        assert!(!should_auto_compact(70, 100, 0, 0, 0));
+        assert!(should_auto_compact(70, 100, 0, 10, 0));
+    }
+
+    #[test]
+    fn should_auto_compact_reserves_max_output_tokens() {
+        // Estimate path: 60 + 0 + 20 = 80 >= 80, triggers because max_tokens pushes over.
+        assert!(!should_auto_compact(0, 100, 60, 0, 0));
+        assert!(should_auto_compact(0, 100, 60, 0, 20));
+        // Token path: last_token_total 60 + incoming 0 + max_tokens 20 = 80 >= 80.
+        assert!(!should_auto_compact(60, 100, 0, 0, 0));
+        assert!(should_auto_compact(60, 100, 0, 0, 20));
+        // Both axes together: 40 context + 10 incoming + 30 max = 80 >= 80.
+        assert!(!should_auto_compact(0, 100, 40, 0, 0));
+        assert!(!should_auto_compact(0, 100, 40, 10, 0));
+        assert!(should_auto_compact(0, 100, 40, 10, 30));
+        // max_tokens alone should not trigger when window is disabled.
+        assert!(!should_auto_compact(0, 0, 0, 0, 100));
     }
 
     #[test]
