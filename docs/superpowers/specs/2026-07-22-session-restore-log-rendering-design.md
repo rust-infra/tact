@@ -62,35 +62,26 @@ render_loop(&mut app, ...).await?;
 | `User` | `Image { source }` | 占位行 `[图片: {media_type}]` → `append_msg()` | 非 Text 块按序插入占位 |
 | `User` | 非 Image/Text 块 | 跳过 | User 侧不会出现 |
 | `Assistant` | `Text { text }` | `render_markdown_tui(text)` → `app.extend_msgs(...)` | 与流式最终产物一致的 markdown 渲染 |
-| `Assistant` | `ToolUse { name }` | 折叠为一行 `🔧 使用工具: {name}` → `append_msg()` | 摘要行，`RawMessageType::LLM` |
-| `Assistant` | `ToolResult { ... }` | 折叠为一行 `📎 工具返回` → `append_msg()` | 摘要行，用户不需要看完整返回 |
+| `Assistant` | `ToolUse { name }` | 跳过 | 工具调用细节不显示在历史视图中 |
+| `Assistant` | `ToolResult { ... }` | 跳过 | 同上 |
 | `Assistant` | `Thinking { ... }` | 跳过 | 推理过程不保留在历史视图中 |
 | `Assistant` | `RedactedThinking { ... }` | 跳过 | 同上 |
-| `Assistant` | `Image { source }` | 占位行 `[图片: {media_type}]` → `append_msg()` | 只标记存在，不显示内容 |
+| `Assistant` | `Image { source }` | 跳过 | 不显示图片占位 |
 
 #### 同一条 Assistant 消息包含多个块的渲染顺序
 
-按 `ContentBlock[]` 的顺序逐个处理：
-1. `Thinking` / `RedactedThinking` → 跳过
-2. `ToolUse` / `ToolResult` → 按序插入折叠摘要行
-3. `Text` → 渲染为 markdown
-
-最终在 Log 中表现为：
+按 `ContentBlock[]` 的顺序逐个处理，只保留 `Text` 块渲染为 markdown，其余全部跳过：
 
 ```
 >>> 用户的提问
 ... 用户的续行
-Assistant 的 markdown 回答（文字部分）   ← render_markdown_tui
-🔧 使用工具: bash                        ← ToolUse 折叠
-📎 工具返回                              ← ToolResult 折叠
-Assistant 继续回答（工具结果后的文字）     ← 另一个 Text block
+Assistant 的 markdown 回答（纯文字部分）   ← render_markdown_tui
 ```
 
 ### 边界情况
 
 - **空历史：** `load_history(Vec::new())` 是空操作，不修改 `app.messages`。
-- **只包含 Thinking 的消息：** 跳过所有块，不会增加 Log 行。
-- **纯 ToolUse/ToolResult 的消息：** 只显示折叠摘要行，不显示完整 JSON 输入。
+- **只包含非 Text 块的消息（ToolUse/ToolResult/Thinking/Image）：** 跳过所有块，不会增加 Log 行。
 - **多 User 消息连续（中间无 Assistant）：** 每个 `add_user_message()` 自动插入空行作为分隔。
 - **历史为空时不影响启动：** `if !messages.is_empty()` 守卫确保空历史不走渲染路径。
 
