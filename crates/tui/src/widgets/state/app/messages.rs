@@ -3,6 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use crate::{
     render::render_md::render_markdown_tui,
@@ -100,6 +101,64 @@ impl App {
             RawMessageType::LLM,
         );
         self.add_new_line();
+    }
+
+    /// Load persisted session messages into the Log area.
+    /// Converts stored `Message` objects into display lines.
+    /// Only `Text` blocks are rendered; `Thinking`, `ToolUse`, `ToolResult`,
+    /// and `Image` blocks are skipped.
+    pub(crate) fn load_history(&mut self, messages: Vec<Message>) {
+        for msg in messages {
+            let blocks: Vec<&ContentBlock> = match &msg.content {
+                MessageContent::Blocks { content } => content.iter().collect(),
+                MessageContent::Text { content } => {
+                    if content.trim().is_empty() {
+                        continue;
+                    }
+                    match msg.role {
+                        Role::User => self.add_user_message(content.clone()),
+                        Role::Assistant => {
+                            let (lines, raw_lines) =
+                                render_markdown_tui(content, &self.theme);
+                            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+                        }
+                    }
+                    continue;
+                }
+            };
+
+            match msg.role {
+                Role::User => {
+                    let texts: Vec<&str> = blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if texts.is_empty() {
+                        continue;
+                    }
+                    self.add_user_message(texts.join("\n"));
+                }
+                Role::Assistant => {
+                    let has_text = blocks
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { .. }));
+                    if !has_text {
+                        continue;
+                    }
+                    self.add_new_line();
+                    for block in &blocks {
+                        if let ContentBlock::Text { text } = block {
+                            let (lines, raw_lines) =
+                                render_markdown_tui(text, &self.theme);
+                            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Save current input state to undo stack and clear redo stack. Max 100 snapshots retained.
