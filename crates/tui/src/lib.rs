@@ -138,6 +138,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
     );
+
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
@@ -154,6 +155,14 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());
     app.add_system_message(msgs.startup_mode_hint.to_string());
+
+    // Restore session history into the Log area after startup messages
+    if let Some(store) = &app.session_store
+        && let Ok(messages) = store.load_session(&app.session_id).await
+        && !messages.is_empty()
+    {
+        app.load_history(messages);
+    }
 
     // Record the previous terminal size so we can recompute layout on resize
     let term_size = terminal.size()?;
