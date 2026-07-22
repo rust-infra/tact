@@ -1367,7 +1367,6 @@ mod tests {
                     },
                 },
                 tools: crate::config::ToolSettings {
-                    brave_search_api_key: None,
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                 },
                 permission_mode: None,

@@ -16,7 +16,6 @@
 | Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt.md)、[Ch 17 通知](./17_chapter_notify.md) |
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
 | UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
-| 工具密钥 | `tools.brave_search_api_key` | `web_search` 工具 |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
 
 每个二进制入口在启动时应**调用一次** `tact::config::init()`（或 `init_config()`）。
@@ -143,7 +142,6 @@ theme = "retro"
 [tools]
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
 bash_timeout_secs = 1800
-brave_search_api_key = "bsk-..."
 ```
 
 可选 `models` 是 TUI `/model` slash 命令的候选列表（仅限同一 provider）。为空/缺失 → `/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。

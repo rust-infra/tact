@@ -121,9 +121,6 @@ pub struct VisionImageTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ToolsTomlConfig {
-    /// Brave Search API key for the web_search tool.
-    pub brave_search_api_key: Option<String>,
-
     /// Bash wall-clock timeout in seconds. Zero disables the timeout.
     pub bash_timeout_secs: Option<u64>,
 }
@@ -190,7 +187,6 @@ pub struct UiSettings {
 
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
-    pub brave_search_api_key: Option<String>,
     pub bash_timeout_secs: u64,
 }
 
@@ -251,9 +247,6 @@ theme = "nord"
 vision_image.compress = false
 vision_image.max_edge = 1024
 vision_image.jpeg_quality = 75
-
-[tools]
-brave_search_api_key = "bsk-test"
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("openai"));
@@ -272,7 +265,6 @@ brave_search_api_key = "bsk-test"
         assert_eq!(cfg.ui.vision_image.compress, Some(false));
         assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));
         assert_eq!(cfg.ui.vision_image.jpeg_quality, Some(75));
-        assert_eq!(cfg.tools.brave_search_api_key.as_deref(), Some("bsk-test"));
     }
 
     #[test]

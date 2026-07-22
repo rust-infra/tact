@@ -91,9 +91,8 @@ Wave 按序执行；同一 wave 内工具并发运行。
 |------|----------|------|
 | `read_file` | `input.path` | read |
 | `batch_read` | `input.files[].path` | read |
-| `search_code` | directory scope | read |
 | `write_file`, `edit_file` | `input.path` | write |
-| `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent |
+| `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 
 路径规范化为绝对路径并 rooted 于 `work_dir`。两路径重叠当且仅当相等或一方为另一方祖先，因此对 `src/foo.rs` 的 write 与作用域为 `src/` 的 search 冲突。

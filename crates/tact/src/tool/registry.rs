@@ -11,10 +11,8 @@ use super::{
     cron::{CronCreateTool, CronDeleteTool, CronListTool},
     edit_file::EditFileTool,
     load_skill::LoadSkillTool,
-    lsp_tool::QueryLspTool,
     memory::SaveMemoryTool,
     read_file::ReadFileTool,
-    search_code::SearchCodeTool,
     sleep::SleepTool,
     subagent::TaskTool,
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
@@ -22,7 +20,6 @@ use super::{
         BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
         ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
     },
-    web::{WebFetchTool, WebSearchTool},
     worktree::{
         WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool,
         WorktreeStatusTool,
@@ -43,12 +40,10 @@ pub fn toolset() -> ToolRouter {
         .route(CronDeleteTool)
         .route(CronListTool)
         .route(ReadFileTool)
-        .route(SearchCodeTool)
         .route(SleepTool)
         .route(WriteFileTool)
         .route(EditFileTool)
         .route(LoadSkillTool)
-        .route(QueryLspTool)
         .route(SaveMemoryTool)
         .route(CompactTool)
         .route(TaskTool)
@@ -69,8 +64,6 @@ pub fn toolset() -> ToolRouter {
         .route(WorktreeStatusTool)
         .route(WorktreeRunTool)
         .route(WorktreeEventsTool)
-        .route(WebFetchTool)
-        .route(WebSearchTool)
 }
 
 /// Assembles the restricted tool set for sub-agents.
@@ -78,7 +71,6 @@ pub fn subagent_toolset() -> ToolRouter {
     ToolRouter::new()
         .route(BashTool)
         .route(ReadFileTool)
-        .route(SearchCodeTool)
         .route(SleepTool)
         .route(WriteFileTool)
         .route(EditFileTool)

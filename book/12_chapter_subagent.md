@@ -94,7 +94,7 @@ sequenceDiagram
 
 ## 4. Restricted Tool Set
 
-`subagent_toolset()` registers exactly six tools:
+`subagent_toolset()` registers exactly five tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -102,7 +102,6 @@ sequenceDiagram
 | `read_file` | Read workspace files |
 | `write_file` | Create or overwrite files |
 | `edit_file` | Exact string replace (first or all) |
-| `search_code` | Ripgrep search |
 | `sleep` | Timing / polling |
 
 Notable **omissions** compared to the main agent:
@@ -221,7 +220,7 @@ See [Team Coordination](./14_chapter_team.md).
 | Separate cancel flag | Parent Cancel may not abort a long-running subagent |
 | No session persistence | Subagent turns are lost if the process crashes mid-`task` |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |
-| Stale module comment | `subagent_toolset` doc says four tools; six are registered |
+| Stale module comment | `subagent_toolset` doc says four tools; five are registered |
 | Same LLM client | `get_llm_client()` — no model override for workers |
 
 ---

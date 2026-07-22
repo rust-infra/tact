@@ -289,42 +289,6 @@ pub fn batch_read_tool_use(id: &str, paths: &[&str]) -> ContentBlock {
     }
 }
 
-pub fn search_code_tool_use(id: &str, query: &str, path: Option<&str>) -> ContentBlock {
-    let mut input = serde_json::json!({ "query": query });
-    if let Some(p) = path {
-        input["path"] = serde_json::Value::String(p.to_string());
-    }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "search_code".to_string(),
-        input,
-    }
-}
-
-pub fn lsp_tool_use(
-    id: &str,
-    action: &str,
-    file: &str,
-    line: Option<u32>,
-    column: Option<u32>,
-) -> ContentBlock {
-    let mut input = serde_json::json!({
-        "action": action,
-        "file": file,
-    });
-    if let Some(l) = line {
-        input["line"] = serde_json::Value::Number(l.into());
-    }
-    if let Some(c) = column {
-        input["column"] = serde_json::Value::Number(c.into());
-    }
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "lsp".to_string(),
-        input,
-    }
-}
-
 pub fn web_search_tool_use(id: &str, query: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),

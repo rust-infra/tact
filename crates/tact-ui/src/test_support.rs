@@ -53,7 +53,6 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             },
         },
         tools: tact::config::ToolSettings {
-            brave_search_api_key: None,
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         },
         permission_mode: None,

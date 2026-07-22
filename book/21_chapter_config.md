@@ -15,7 +15,6 @@ Implementation: `crates/tact/src/config/` (`mod.rs`, `cli.rs`, `load.rs`, `resol
 | Agent limits | `agent.*` | [Ch 5 Compact](./05_chapter_compact.md), [Ch 4 Prompt](./04_chapter_prompt.md), [Ch 17 Notify](./17_chapter_notify.md) |
 | Permission mode string | `permission_mode: Option<String>` | Headless only — see [§6 Gaps](#6-current-gaps) |
 | UI theme | `ui.theme` | [Ch 23 TUI](./23_chapter_tui.md) |
-| Tool keys | `tools.brave_search_api_key` | `web_search` tool |
 | Debug | `tokio_console` | `tact-ui` `main()` |
 
 Every binary entry point should call `tact::config::init()` (or `init_config()`) **once** at startup.
@@ -145,7 +144,6 @@ theme = "retro"
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
-brave_search_api_key = "bsk-..."
 ```
 
 Optional `models` is the candidate list for the TUI `/model` slash command (same
