@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn skills_are_not_loaded_for_ordinary_conversation() {
         let generic_output = render_full();
-        assert!(!generic_output.contains(
+        assert!(generic_output.contains(
             "Do not call `load_skill` for greetings, small talk, or ordinary questions."
         ));
 
