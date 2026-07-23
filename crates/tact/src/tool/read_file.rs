@@ -1,13 +1,17 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::fs;
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tool_refactor_macros::tool;
 
 use crate::tool::{ToolContext, safe_path};
+use crate::utils::approx_token_count;
 
 const READ_FILE_MAX_OUTPUT_TOKENS: usize = 25_000;
 const READ_FILE_DEFAULT_MAX_LINES: usize = 2_000;
+/// Reserve room so a leading PARTIAL marker keeps the full result in budget.
+const READ_FILE_PARTIAL_MARKER_TOKEN_RESERVE: usize = 64;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadFileInput {
@@ -23,39 +27,137 @@ pub struct ReadFileInput {
     pub offset: Option<u64>,
 }
 
+fn partial_marker(start_line: usize, end_line: usize, next_offset: usize) -> String {
+    format!(
+        "[PARTIAL view — lines {start_line}-{end_line}; continue with offset={next_offset}]\n\n"
+    )
+}
+
 #[tool(name = "read_file", description = "Read file contents.")]
 pub async fn read_file(ctx: ToolContext, input: ReadFileInput) -> Result<String> {
     let path = safe_path(&ctx.work_dir, &input.path)?;
+    let explicit_range = input.offset.is_some() || input.limit.is_some();
+    let start_line = input.offset.map(|o| o.max(1) as usize).unwrap_or(1);
+    let max_lines = input
+        .limit
+        .map(|l| l as usize)
+        .unwrap_or(READ_FILE_DEFAULT_MAX_LINES);
 
-    let content = fs::read_to_string(path)
+    let file = File::open(&path)
         .await
-        .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+        .map_err(|e| anyhow!("Error: {}", e))?;
+    let mut reader = BufReader::new(file);
 
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-
-    let offset = input
-        .offset
-        .map(|o| o.saturating_sub(1) as usize)
-        .unwrap_or(0);
-    if offset > 0 {
-        if offset >= lines.len() {
+    // Skip to start_line (1-based).
+    let mut line_no: usize = 1;
+    let mut buf = String::new();
+    while line_no < start_line {
+        buf.clear();
+        let n = reader
+            .read_line(&mut buf)
+            .await
+            .map_err(|e| anyhow!("Error: {}", e))?;
+        if n == 0 {
             return Ok(String::new());
         }
-        lines = lines.into_iter().skip(offset).collect();
-        lines.insert(0, format!("... ({} lines skipped) ...", offset));
+        line_no = line_no.saturating_add(1);
     }
 
-    if let Some(limit) = input.limit
-        && (limit as usize) < lines.len()
-    {
-        let remaining = lines.len() - limit as usize;
-        lines.truncate(limit as usize);
-        lines.push(format!("... ({} more lines)", remaining));
+    if max_lines == 0 {
+        buf.clear();
+        let n = reader
+            .read_line(&mut buf)
+            .await
+            .map_err(|e| anyhow!("Error: {}", e))?;
+        if n == 0 {
+            return Ok(String::new());
+        }
+        return Ok(format!(
+            "[PARTIAL view — lines none; continue with offset={start_line}]\n\n"
+        ));
     }
 
-    let result = lines.join("\n");
+    let content_budget =
+        READ_FILE_MAX_OUTPUT_TOKENS.saturating_sub(READ_FILE_PARTIAL_MARKER_TOKEN_RESERVE);
+    let mut selected: Vec<String> = Vec::new();
+    let mut content_tokens: usize = 0;
+    let mut stopped_for_tokens = false;
+    let mut hit_line_cap = false;
 
-    Ok(result.chars().take(50000).collect())
+    while selected.len() < max_lines {
+        buf.clear();
+        let n = reader
+            .read_line(&mut buf)
+            .await
+            .map_err(|e| anyhow!("Error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        if buf.ends_with('\n') {
+            buf.pop();
+            if buf.ends_with('\r') {
+                buf.pop();
+            }
+        }
+        let line = std::mem::take(&mut buf);
+        let line_tokens = approx_token_count(&line);
+        let sep = if selected.is_empty() {
+            0
+        } else {
+            approx_token_count("\n")
+        };
+        let next_total = content_tokens
+            .saturating_add(sep)
+            .saturating_add(line_tokens);
+
+        if next_total > content_budget {
+            if selected.is_empty() {
+                return Err(anyhow!(
+                    "line {line_no} exceeds READ_FILE_MAX_OUTPUT_TOKENS (~{READ_FILE_MAX_OUTPUT_TOKENS} approx tokens); use search tools or split the file"
+                ));
+            }
+            if explicit_range {
+                return Err(anyhow!(
+                    "requested range exceeds READ_FILE_MAX_OUTPUT_TOKENS (~{READ_FILE_MAX_OUTPUT_TOKENS} approx tokens); reduce limit or choose a smaller section"
+                ));
+            }
+            stopped_for_tokens = true;
+            break;
+        }
+
+        content_tokens = next_total;
+        selected.push(line);
+        line_no = line_no.saturating_add(1);
+
+        if selected.len() == max_lines {
+            // One-line look-ahead to know whether more content exists.
+            buf.clear();
+            let n = reader
+                .read_line(&mut buf)
+                .await
+                .map_err(|e| anyhow!("Error: {}", e))?;
+            hit_line_cap = n > 0;
+            break;
+        }
+    }
+
+    if selected.is_empty() {
+        return Ok(String::new());
+    }
+
+    let end_line = start_line.saturating_add(selected.len()).saturating_sub(1);
+    let body = selected.join("\n");
+    let needs_partial = stopped_for_tokens || hit_line_cap;
+    if !needs_partial {
+        return Ok(body);
+    }
+
+    let next_offset = end_line.saturating_add(1);
+    Ok(format!(
+        "{}{}",
+        partial_marker(start_line, end_line, next_offset),
+        body
+    ))
 }
 
 #[cfg(test)]

@@ -392,9 +392,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.contains("... (1 lines skipped) ..."));
-        assert!(output.contains("line2"));
-        assert!(output.contains("... (2 more lines)"));
+        assert!(
+            output.starts_with("[PARTIAL view — lines 2-3; continue with offset=4]\n\n"),
+            "got: {output}"
+        );
+        assert!(output.contains("line2\nline3"));
+        assert!(!output.contains("line1"));
         assert!(!output.contains("line4"));
     }
 

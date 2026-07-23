@@ -1,7 +1,7 @@
-//! Shared utilities ported for future use.
+//! Shared utilities for approximate token budgets and middle truncation.
 //!
-//! Currently unused by production call sites; kept as a self-contained
-//! module so truncation helpers can be adopted without rewriting Codex logic.
+//! `approx_token_count` is used by `read_file` pagination; the middle-truncation
+//! helpers remain available for other tool-output paths.
 
 pub mod output_truncation;
 pub mod truncate;
