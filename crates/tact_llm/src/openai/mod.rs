@@ -607,65 +607,84 @@ impl OpenAiAdapter {
             .await
             .map_err(|e| LlmError::Other(e.to_string()))?;
 
-        let choice = json["choices"]
-            .as_array()
+        let choice = json
+            .get("choices")
+            .and_then(|v| v.as_array())
             .and_then(|a| a.first())
             .ok_or_else(|| LlmError::Other("No choices in response".to_string()))?;
 
-        let message = &choice["message"];
+        let message = choice.get("message");
         let mut blocks = Vec::new();
 
-        // reasoning_content
-        if let Some(reasoning) = message["reasoning_content"].as_str()
-            && !reasoning.is_empty()
-        {
-            blocks.push(ContentBlock::Thinking {
-                thinking: reasoning.to_string(),
-                signature: String::new(),
-            });
-        }
+        if let Some(msg) = message {
+            // reasoning_content
+            if let Some(reasoning) = msg.get("reasoning_content").and_then(|v| v.as_str())
+                && !reasoning.is_empty()
+            {
+                blocks.push(ContentBlock::Thinking {
+                    thinking: reasoning.to_string(),
+                    signature: String::new(),
+                });
+            }
 
-        // content
-        if let Some(content) = message["content"].as_str() {
-            blocks.push(ContentBlock::Text {
-                text: content.to_string(),
-            });
-        }
+            // content
+            if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+                blocks.push(ContentBlock::Text {
+                    text: content.to_string(),
+                });
+            }
 
-        // tool_calls
-        if let Some(tool_calls) = message["tool_calls"].as_array() {
-            for tc in tool_calls {
-                let id = tc["id"].as_str().unwrap_or("");
-                let name = tc["function"]["name"].as_str().unwrap_or("");
-                let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                if let Some(block) = tool_use_block_from_response(id, name, args) {
-                    blocks.push(block);
+            // tool_calls
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in tool_calls {
+                    let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let args = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
+                    if let Some(block) = tool_use_block_from_response(id, name, args) {
+                        blocks.push(block);
+                    }
                 }
             }
         }
 
-        let stop_reason = StopReason::from_openai(choice["finish_reason"].as_str());
+        let stop_reason =
+            StopReason::from_openai(choice.get("finish_reason").and_then(|v| v.as_str()));
 
-        let token_usage = json["usage"].as_object().map(|u| {
-            let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-            let completion = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
+        let token_usage = json.get("usage").and_then(|v| v.as_object()).map(|u| {
+            let prompt = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let completion = u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             TokenUsageInfo {
                 prompt,
                 completion,
-                total: u["total_tokens"]
-                    .as_u64()
+                total: u
+                    .get("total_tokens")
+                    .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
                     .unwrap_or(prompt + completion),
-                prompt_cache_hit_tokens: u["prompt_cache_hit_tokens"]
-                    .as_u64()
+                prompt_cache_hit_tokens: u
+                    .get("prompt_cache_hit_tokens")
+                    .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
                     .unwrap_or(0),
-                prompt_cache_miss_tokens: u["prompt_cache_miss_tokens"]
-                    .as_u64()
+                prompt_cache_miss_tokens: u
+                    .get("prompt_cache_miss_tokens")
+                    .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
                     .unwrap_or(0),
-                reasoning_tokens: u["completion_tokens_details"]
-                    .get("reasoning_tokens")
+                reasoning_tokens: u
+                    .get("completion_tokens_details")
+                    .and_then(|d| d.get("reasoning_tokens"))
                     .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
                     .unwrap_or(0),
