@@ -378,7 +378,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
-| **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end` | Rendered as a full-width dashed rule, not plain text |
+| **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end` | Rendered as a full-width accent-colored solid rule, not plain text |
 
 Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `messages[]`:
 

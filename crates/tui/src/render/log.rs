@@ -406,7 +406,7 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(phys) = phys_idx
             && super::cells::separator::is_task_end_separator(&app.raw_messages[phys])
         {
-            let sep = super::cells::separator::TaskEndSeparator::new(app.theme.border);
+            let sep = super::cells::separator::TaskEndSeparator::new(app.theme.accent);
             renderer.push(vs_cache[logical_i], sep);
             logical_i += 1;
             continue;

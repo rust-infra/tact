@@ -379,7 +379,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 | **Tool blocks** | Blank placeholder 行（`SysTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SysTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
-| **Task-end separator** | 魔法 raw `\x07tact-task-end` 的 sentinel 行 | 渲染为全宽虚线规则，非纯文本 |
+| **Task-end separator** | 魔法 raw `\x07tact-task-end` 的 sentinel 行 | 渲染为全宽强调色实线，非纯文本 |
 
 若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `messages[]` 重复文本：
 

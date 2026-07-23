@@ -14,6 +14,17 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         return;
     }
 
+    // ----- dynamic sizing based on terminal dimensions -----
+    // Width: 60% of terminal width, clamped to [60, 120]
+    let popup_width = ((area.width as f32 * 0.60) as u16).clamp(60, 120);
+    // Visible rows: ~45% of terminal height, clamped to [6, 22]
+    let max_visible = ((area.height as f32 * 0.45) as usize).clamp(6, 22);
+    // Inner width after block borders (left + right = 2)
+    let inner_width = popup_width.saturating_sub(2) as usize;
+    // Reserved overhead per item row: prefix("▶ "|"  ") 2 + "/" 1 + "  " separator 2 = 5 chars
+    const ROW_OVERHEAD: usize = 5;
+    // -----
+
     let msgs = app.msgs();
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
@@ -42,7 +53,6 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     }
 
     let selected = slash.selected.min(n.saturating_sub(1));
-    let max_visible = 10usize;
 
     // Build rows with section headers (headers are not selectable).
     let mut rows: Vec<SlashRow<'_>> = Vec::new();
@@ -71,7 +81,6 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         .unwrap_or(0);
 
     let list_height = rows.len().min(max_visible + 2) as u16;
-    let popup_width: u16 = 56;
     let popup_area = super::centered_list_popup_area(area, popup_width, list_height + 2);
 
     let offset = if rows.len() > max_visible + 2 && selected_row >= max_visible {
@@ -104,7 +113,9 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
             } => {
                 let is_sel = *global_idx == selected;
                 let prefix = if is_sel { "▶ " } else { "  " };
-                let desc_short = truncate_chars(desc, 28);
+                // Calculate available width for description: inner_width minus overhead minus command name length
+                let max_desc = inner_width.saturating_sub(ROW_OVERHEAD + cmd.chars().count()).max(5);
+                let desc_short = truncate_chars(desc, max_desc);
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{prefix}/{cmd}"),
