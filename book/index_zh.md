@@ -52,6 +52,7 @@
 | 23 | [终端 UI](./23_chapter_tui_zh.md) | `tui` crate、`AgentUpdate` / `UserCommand` 通道、`tact-ui` 接线 |
 | 24 | [测试策略](./24_chapter_testing_zh.md) | Mock LLM、tact-ui driver、TUI TestBackend、CI |
 | 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
+| 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
 
 英文目录与架构总览见 [index.md](./index.md)。
 
@@ -108,7 +109,7 @@ graph TB
 ## 如何阅读
 
 - **优先读 `_zh` 稿**；常量、代码地图以中英对齐为准。
-- **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 18** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机。
+- **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 18** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机；**26** 为工程优化 / bugfix日志（有行为变更时按 `AGENTS.md` 追加）。
 - **压缩与恢复**：[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)。
 
 ---

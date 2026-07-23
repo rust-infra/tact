@@ -1,6 +1,6 @@
 # Tact Book Mind Map
 
-**Right-hand tree layout** (root on the left → topic column → descriptions on the right). Works better than a radial mind map for all 25 chapters.
+**Right-hand tree layout** (root on the left → topic column → descriptions on the right). Works better than a radial mind map for all 26 chapters.
 
 ## Interactive version (recommended)
 
@@ -28,7 +28,7 @@ Mermaid cannot draw `{` braces; this `flowchart LR` approximates the same struct
 flowchart LR
     ROOT["Tact Book<br/>26 chapters"]
 
-    ROOT --> B1 & B2 & B3 & B4 & B5 & B6 & B7
+    ROOT --> B1 & B2 & B3 & B4 & B5 & B6 & B7 & B8
 
     B1["① Runtime order<br/>Ch 1–11"] --> D1["Store → Skill → Memory → Prompt<br/>→ Compact → Recovery → Tool<br/>→ MCP → Hook → Permission → Scheduling"]
 
@@ -43,6 +43,8 @@ flowchart LR
     B6["⑥ Bootstrap & UI<br/>Ch 21–25"] --> D6["Config → LLM → TUI → Protocol"]
 
     B7["⑦ Quality<br/>Ch 24"] --> D7["Mock LLM · driver tests · TestBackend"]
+
+    B8["⑧ Issue log<br/>Ch 26"] --> D8["Shipped optimizations · bug fixes"]
 ```
 
 ---
@@ -83,3 +85,4 @@ flowchart LR
 | 19–20 | [Tasks](./19_chapter_persistent_tasks.md) · [Hallucination](./20_chapter_hallucination.md) | ⑤ Deep topics |
 | 21–23, 25 | [Config](./21_chapter_config.md) … [Protocol](./25_chapter_protocol.md) | ⑥ Bootstrap & UI |
 | 24 | [Testing](./24_chapter_testing.md) | ⑦ Quality |
+| 26 | [Issue Log](./26_chapter_issue.md) | ⑧ Engineering changelog |

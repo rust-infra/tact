@@ -13,6 +13,18 @@ Update docs **in the same change** (or immediately after) when behavior or publi
 | TUI bottom-bar / token / cache display changes | `docs/token_usage_schema.md` (TUI display notes) and any book section that describes the bar |
 | New multi-step feature from brainstorming | Write `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` after design approval; add `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` before or with implementation |
 | Store / session persistence contracts change | `book/01_chapter_store*.md`, `docs/token_usage_schema.md` if usage tables change |
+| Shipped optimization or bug fix with user/API-visible behavior change | Append a newest-first entry to `book/26_chapter_issue.md` **and** `book/26_chapter_issue_zh.md` (same section id / heading hierarchy). Link the PR, design spec/plan if any, and related subsystem chapters. Do **not** replace subsystem chapters — Ch 26 is the changelog; Ch 5/7/… remain the how-it-works docs |
+
+### Issue log entry requirements (`book/26_chapter_issue*`)
+
+When the sync table requires a Ch 26 entry, include at least:
+
+- Date (`YYYY-MM-DD`), type (`optimization` / `bugfix` / `removal` / `docs`), optional PR URL
+- Symptom / motivation before the change
+- Final decision and observable post-change behavior
+- Code / spec / related chapter pointers
+
+Skip Ch 26 for pure refactors, test-only changes, and comment/typo-only edits (same as “When *not* required” below).
 
 ### Bilingual book chapters
 
