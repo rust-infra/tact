@@ -152,10 +152,7 @@ impl SessionStats {
             let _ = writeln!(
                 out,
                 "    {:<22} {:>4} ({}/{})",
-                "Total (s/f):",
-                total_tool,
-                total_success,
-                total_failure,
+                "Total (s/f):", total_tool, total_success, total_failure,
             );
 
             for (name, count) in counts {
@@ -169,9 +166,21 @@ impl SessionStats {
                     .get(name.as_str())
                     .copied()
                     .unwrap_or(0);
-                let total_ms = self.tool_total_durations_ms.get(name.as_str()).copied().unwrap_or(0);
-                let timing_count = self.tool_timing_counts.get(name.as_str()).copied().unwrap_or(0);
-                let avg_ms = if timing_count > 0 { total_ms as f64 / timing_count as f64 } else { 0.0 };
+                let total_ms = self
+                    .tool_total_durations_ms
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let timing_count = self
+                    .tool_timing_counts
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let avg_ms = if timing_count > 0 {
+                    total_ms as f64 / timing_count as f64
+                } else {
+                    0.0
+                };
                 let _ = writeln!(
                     out,
                     "    {:<22} {:>4} ({}/{})  {:>7}  {:>7.0}ms",
@@ -179,7 +188,11 @@ impl SessionStats {
                     count,
                     success,
                     failure,
-                    if total_ms >= 1000 { format!("{:>5.1}s", total_ms as f64 / 1000.0) } else { format!("{:>5}ms", total_ms) },
+                    if total_ms >= 1000 {
+                        format!("{:>5.1}s", total_ms as f64 / 1000.0)
+                    } else {
+                        format!("{:>5}ms", total_ms)
+                    },
                     avg_ms,
                 );
             }

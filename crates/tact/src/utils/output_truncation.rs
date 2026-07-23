@@ -153,6 +153,9 @@ mod tests {
         assert!(out.starts_with("Warning: truncated output"), "{out}");
         assert!(out.contains("Total output lines: 1"), "{out}");
         assert!(out.contains("chars truncated"), "{out}");
-        assert!(out.contains("中文") || out.contains("九十") || out.contains("处理"), "{out}");
+        assert!(
+            out.contains("中文") || out.contains("九十") || out.contains("处理"),
+            "{out}"
+        );
     }
 }

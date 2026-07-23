@@ -6,9 +6,8 @@ mod harness;
 use std::sync::{Arc, Mutex};
 
 use harness::{
-    assert_update_before, edit_file_tool_use, run_single_task, step_failed,
-    step_succeeded, task_completed_with, text_block, token_usage_total,
-    wire_permission_responder_with_counter,
+    assert_update_before, edit_file_tool_use, run_single_task, step_failed, step_succeeded,
+    task_completed_with, text_block, token_usage_total, wire_permission_responder_with_counter,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{LlmError, MockClient, StopReason};

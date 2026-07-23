@@ -218,8 +218,7 @@ impl App {
                 self.add_system_message(msg);
             }
             AgentUpdate::SessionStats(stats_text) => {
-                let (rendered, _) =
-                    render_markdown_tui(&stats_text, &self.theme);
+                let (rendered, _) = render_markdown_tui(&stats_text, &self.theme);
                 self.system_prompt_popup = Some(SystemPromptPopup {
                     title: "Session Statistics".to_string(),
                     rendered,

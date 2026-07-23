@@ -165,7 +165,11 @@ mod tests {
     #[test]
     fn split_string_works() {
         assert_eq!(
-            split_string("hello world", /*beginning_bytes*/ 5, /*end_bytes*/ 5),
+            split_string(
+                "hello world",
+                /*beginning_bytes*/ 5,
+                /*end_bytes*/ 5
+            ),
             (1, "hello", "world")
         );
         assert_eq!(
@@ -214,15 +218,27 @@ mod tests {
         );
 
         assert_eq!(
-            split_string("😀😀😀😀😀", /*beginning_bytes*/ 1, /*end_bytes*/ 1),
+            split_string(
+                "😀😀😀😀😀",
+                /*beginning_bytes*/ 1,
+                /*end_bytes*/ 1
+            ),
             (5, "", "")
         );
         assert_eq!(
-            split_string("😀😀😀😀😀", /*beginning_bytes*/ 7, /*end_bytes*/ 7),
+            split_string(
+                "😀😀😀😀😀",
+                /*beginning_bytes*/ 7,
+                /*end_bytes*/ 7
+            ),
             (3, "😀", "😀")
         );
         assert_eq!(
-            split_string("😀😀😀😀😀", /*beginning_bytes*/ 8, /*end_bytes*/ 8),
+            split_string(
+                "😀😀😀😀😀",
+                /*beginning_bytes*/ 8,
+                /*end_bytes*/ 8
+            ),
             (1, "😀😀", "😀😀")
         );
     }

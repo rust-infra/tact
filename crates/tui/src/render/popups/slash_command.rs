@@ -114,7 +114,9 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
                 let is_sel = *global_idx == selected;
                 let prefix = if is_sel { "▶ " } else { "  " };
                 // Calculate available width for description: inner_width minus overhead minus command name length
-                let max_desc = inner_width.saturating_sub(ROW_OVERHEAD + cmd.chars().count()).max(5);
+                let max_desc = inner_width
+                    .saturating_sub(ROW_OVERHEAD + cmd.chars().count())
+                    .max(5);
                 let desc_short = truncate_chars(desc, max_desc);
                 ListItem::new(Line::from(vec![
                     Span::styled(
