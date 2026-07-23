@@ -18,7 +18,7 @@ pub struct ReadFileInput {
     #[schemars(description = "Path to the file to read, relative to the current workspace.")]
     pub path: String,
     #[schemars(
-        description = "Optional maximum number of lines to return from the start of the file."
+        description = "Optional maximum number of lines to return (from offset if set; otherwise from the start of the file)."
     )]
     pub limit: Option<u64>,
     #[schemars(
@@ -293,6 +293,70 @@ mod tests {
         assert!(
             msg.contains("exceeds") && msg.contains("token"),
             "expected token budget error, got: {msg}"
+        );
+        assert!(
+            msg.contains("line 1 exceeds"),
+            "single oversized line should use the line-exceeds path, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_explicit_multiline_over_token_budget_errors() {
+        let context = test_context("read_file_explicit_multiline_over_token_budget");
+        // Several lines fit, but the full requested range does not — must Err, not PARTIAL.
+        let line = "y".repeat(4_000); // ~1000 approx tokens each
+        let body = (0..40)
+            .map(|_| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        write_workspace_file(&context.work_dir, "range.txt", &body);
+
+        let error = run_tool(
+            &context,
+            ReadFileTool,
+            "read_file",
+            serde_json::json!({ "path": "range.txt", "offset": 1, "limit": 40 }),
+        )
+        .await
+        .unwrap_err();
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("requested range exceeds") && msg.contains("token"),
+            "expected explicit-range token error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_utf8_partial_stays_within_token_budget() {
+        let context = test_context("read_file_utf8_partial_stays_within_token_budget");
+        // Each CJK char is 3 UTF-8 bytes → ceil(3/4)=1 approx token; 2000 chars ≈ 1500 tokens/line.
+        let line = "测".repeat(2_000);
+        let body = (0..30)
+            .map(|_| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        write_workspace_file(&context.work_dir, "cjk.txt", &body);
+
+        let output = run_tool(
+            &context,
+            ReadFileTool,
+            "read_file",
+            serde_json::json!({ "path": "cjk.txt" }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            output.starts_with("[PARTIAL view — lines "),
+            "expected PARTIAL for UTF-8 overflow, got: {output}"
+        );
+        assert!(output.contains('测'));
+        assert!(
+            crate::utils::approx_token_count(&output) <= READ_FILE_MAX_OUTPUT_TOKENS,
+            "UTF-8 PARTIAL must stay within token budget"
         );
     }
 

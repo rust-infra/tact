@@ -77,6 +77,36 @@ async fn large_read_file_output_is_not_persisted() {
 }
 
 #[tokio::test]
+async fn large_native_bash_output_is_persisted() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![bash_tool_use(
+                "bash_big",
+                "python3 -c \"print('x' * 30001, end='')\"",
+            )],
+            StopReason::ToolUse,
+        ),
+        mock_turn(
+            vec![text_block("Large bash output handled.")],
+            StopReason::EndTurn,
+        ),
+    ]);
+    let (updates, work_dir) = run_single_task(mock, "bash big", PermissionMode::Auto).await;
+
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::StepFinished { tool_id, result, .. }
+                if tool_id == "bash_big"
+                    && matches!(result.status, StepStatus::Success)
+                    && result.message.contains("<persisted-output>")
+        )),
+        "expected native bash spill via persist_large_output, got: {updates:?}"
+    );
+    assert!(work_dir.join(".tact/tool-results/bash_big.txt").exists());
+}
+
+#[tokio::test]
 async fn plan_mode_blocks_write_file() {
     let mock = MockClient::new(vec![
         mock_turn(
