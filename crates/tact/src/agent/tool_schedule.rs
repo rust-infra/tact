@@ -74,26 +74,10 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
             .into_iter()
             .collect()
     };
-    let list = |key: &str, item_key: &str| -> Vec<PathBuf> {
-        input
-            .get(key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item.get(item_key).and_then(|v| v.as_str()))
-                    .map(|s| normalize(work_dir, s))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
 
     match name {
         "read_file" => ToolResources {
             reads: single("path"),
-            ..Default::default()
-        },
-        "batch_read" => ToolResources {
-            reads: list("files", "path"),
             ..Default::default()
         },
         "write_file" | "edit_file" => ToolResources {
@@ -371,16 +355,6 @@ mod tests {
     fn resources_unknown_tool_is_barrier() {
         let r = tool_resources("some_new_tool", &serde_json::json!({}), Path::new("/work"));
         assert!(r.barrier);
-    }
-
-    #[test]
-    fn resources_batch_read_collects_all_reads() {
-        let input = serde_json::json!({"files": [{"path": "a.rs"}, {"path": "b.rs"}]});
-        let r = tool_resources("batch_read", &input, Path::new("/work"));
-        assert_eq!(
-            r.reads,
-            vec![PathBuf::from("/work/a.rs"), PathBuf::from("/work/b.rs")]
-        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ mod harness;
 use std::sync::{Arc, Mutex};
 
 use harness::{
-    assert_update_before, batch_read_tool_use, edit_file_tool_use, run_single_task, step_failed,
+    assert_update_before, edit_file_tool_use, run_single_task, step_failed,
     step_succeeded, task_completed_with, text_block, token_usage_total,
     wire_permission_responder_with_counter,
 };
@@ -101,30 +101,6 @@ async fn streaming_mock_emits_chunks() {
     let reconstructed = chunks.join("");
     assert_eq!(reconstructed, "Hello streaming world.");
     assert!(task_completed_with(&updates, "Hello streaming world."));
-}
-
-#[tokio::test]
-async fn batch_read_files_succeeds() {
-    let mock = MockClient::new(vec![
-        (
-            vec![batch_read_tool_use("batch1", &["a.txt", "b.txt"])],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![text_block("Batch read done.")],
-            Some(StopReason::EndTurn),
-        ),
-    ]);
-
-    let (updates, _work_dir) =
-        run_single_task_with_setup(mock, "batch read", PermissionMode::Auto, |dir| {
-            write_workspace_file(dir, "a.txt", "alpha");
-            write_workspace_file(dir, "b.txt", "beta");
-        })
-        .await;
-
-    assert!(step_succeeded(&updates, "batch1"));
-    assert!(task_completed_with(&updates, "Batch read done."));
 }
 
 #[tokio::test]

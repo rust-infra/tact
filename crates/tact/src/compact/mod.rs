@@ -84,7 +84,7 @@ pub fn micro_compact(messages: &mut [Message], enabled: bool) {
             continue;
         };
 
-        // TODO 120? if the tool is read_file, batch_read or some special tool, should be kept full or more content
+        // TODO 120? if the tool is read_file or some special tool, should be kept full or more content
         if tool_content.chars().count() > 120 {
             *tool_content = COMPACTED_TOOL_RESULT.to_string();
         }

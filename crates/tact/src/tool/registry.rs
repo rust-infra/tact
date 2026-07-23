@@ -6,7 +6,6 @@ use super::{
     ask_user::AskUserTool,
     background_run::{BackgroundRunTool, CheckBackgroundTool},
     bash::BashTool,
-    batch_read::BatchReadTool,
     compact::CompactTool,
     cron::{CronCreateTool, CronDeleteTool, CronListTool},
     edit_file::EditFileTool,
@@ -33,7 +32,6 @@ pub fn toolset() -> ToolRouter {
         .route(ApplyPatchTool)
         .route(AskUserTool)
         .route(BashTool)
-        .route(BatchReadTool)
         .route(BackgroundRunTool)
         .route(CheckBackgroundTool)
         .route(CronCreateTool)

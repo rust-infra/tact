@@ -134,14 +134,6 @@ fn recent_file_paths(name: &str, input: &serde_json::Value) -> Vec<String> {
             .and_then(serde_json::Value::as_str)
             .map(|path| vec![path.to_string()])
             .unwrap_or_default(),
-        "batch_read" => input
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
-            .map(ToOwned::to_owned)
-            .collect(),
         "apply_patch"
             if !input
                 .get("dry_run")
@@ -659,17 +651,14 @@ mod tests {
     }
 
     #[test]
-    fn recent_file_paths_cover_reads_writes_edits_batches_and_patches() {
+    fn recent_file_paths_cover_reads_writes_edits_and_patches() {
         assert_eq!(
             recent_file_paths("write_file", &serde_json::json!({"path": "src/a.rs"})),
             ["src/a.rs"]
         );
         assert_eq!(
-            recent_file_paths(
-                "batch_read",
-                &serde_json::json!({"files": [{"path": "a"}, {"path": "b"}]})
-            ),
-            ["a", "b"]
+            recent_file_paths("read_file", &serde_json::json!({"path": "src/b.rs"})),
+            ["src/b.rs"]
         );
         assert_eq!(
             recent_file_paths(
