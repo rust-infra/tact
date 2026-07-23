@@ -204,8 +204,10 @@ let exec = if is_mcp {
 ```
 
 `run_native_tool` 先调用 `ctx.for_invocation(tool_use_id)`，再调用
-`tools.call(ctx, name, input)`。特例：`bash` 输出超出上下文限制时，可能经
-`persist_large_output` 溢出到 `.tact/tool-results/{tool_use_id}.txt`。
+`tools.call(ctx, name, input)`。特例：超过 30,000 字符的原生/MCP 输出可能经
+`persist_large_output` 溢出到 `.tact/tool-results/{tool_use_id}.txt`——**`read_file` 除外**。
+`read_file` 以流式分页返回有界内容（默认 2,000 行 / `READ_FILE_MAX_OUTPUT_TOKENS` ≈ 25k 近似 token），
+更多内容时以 `[PARTIAL view — lines …; continue with offset=…]` 标记续读；显式范围仍超预算则报错而非静默截断。
 
 `bash` 用两个并发 Tokio reader 读取 pipe stdout/stderr。Aggregator 按观察到的
 到达顺序合并 chunk、增量解码 UTF-8，并发送有界进度批次（首批立即发送，随后
@@ -225,8 +227,7 @@ pipeline 来绕过应用缓冲。
 
 | 模块 | 工具名 | 备注 |
 |------|--------|------|
-| `read_file.rs`, `write_file.rs`, `edit_file.rs` | 文件 I/O | 路径安全 |
-| `batch_read.rs` | 批量操作 | 并行多文件读 |
+| `read_file.rs`, `write_file.rs`, `edit_file.rs` | 文件 I/O | 路径安全；`read_file` 流式 PARTIAL 分页 |
 | `bash.rs` | `bash` | 校验 shell；流式 pipe、超时、process-group 取消 |
 | `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory.md)（英文） |
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |
@@ -272,5 +273,4 @@ pipeline 来绕过应用缓冲。
 - [MCP 协议与 Agent 集成](./08_chapter_mcp_zh.md) — 外部工具
 - [团队协调](./14_chapter_team.md)、[Worktree 泳道](./15_chapter_worktree.md)、[后台任务](./13_chapter_background.md) — `ToolContext` 上由 manager 支撑的工具族（英文）
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI 工具块
-- [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read 流程
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — 宏概览

@@ -40,7 +40,7 @@ Tact’s answer is **progressive defense**: free local stubs first, then one pai
 
 | Level | Mechanism | Cost | When | What is lost from *context* |
 |-------|-----------|------|------|-----------------------------|
-| 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars | Full output (kept on disk + preview) |
+| 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars **except `read_file`** | Full output (kept on disk + preview) |
 | 2 | `micro_compact` | Free | Start of every LLM turn | Old tool-result bodies (stub left behind) |
 | 3 | `compact_history` | One extra LLM call | 80% threshold, prompt-too-long, or `compact` tool | Assistant/tool history (recent real users + summary remain; full JSONL on disk) |
 
@@ -420,7 +420,7 @@ flowchart TD
     Use1 --> Use2[appended to final summary message]
 ```
 
-`remember_recent_file` is fed only by successful final tool results for `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch`. It keeps the last five deduplicated paths as “amnesia insurance.”
+`remember_recent_file` is fed only by successful final tool results for `read_file`, `write_file`, `edit_file`, and non-dry-run `apply_patch`. It keeps the last five deduplicated paths as “amnesia insurance.”
 
 ### Before / After Comparison
 
@@ -558,10 +558,12 @@ The dispatcher sets `manual_compact = Some(focus)` only when the compact invocat
 
 ## 7. Large Output Spill (`persist_large_output`)
 
-Independent of history compaction, a **single** oversized tool result must not enter the context at full size. Dispatch applies this to every successful native and MCP call:
+Independent of history compaction, a **single** oversized tool result must not enter the context at full size. Dispatch applies this to every successful native and MCP call **except `read_file`** (which already returns a bounded PARTIAL page):
 
 ```rust
-persist_large_output(&tact_path, tool_use_id, &output)
+if name != "read_file" {
+    persist_large_output(&tact_path, tool_use_id, &output)
+}
 ```
 
 | Constant | Value |
@@ -713,7 +715,7 @@ The micro-compact stub (Tier 2) trades context size for availability, but has se
 | Idea | Description | Priority |
 |------|-------------|----------|
 | **Context-window-gated trigger** | Only run micro_compact when the current context usage exceeds a threshold (e.g., 50% of `model_context_window`), not on every turn. This preserves the prefix cache for most of the session and only truncates when memory pressure is real | High |
-| **Selective tool truncation** | Exclude certain tools from truncation (e.g., `read_file`, `batch_read`) since their outputs are likely to be referenced again. Only truncate transient tools like `ls`, `echo`, `bash` with ephemeral output. Also protects the prefix cache from frequent invalidation | High |
+| **Selective tool truncation** | Exclude already-bounded tools from truncation (e.g., `read_file` pages) since their outputs are likely to be referenced again. Only truncate transient tools like `ls`, `echo`, `bash` with ephemeral output. Also protects the prefix cache from frequent invalidation | High |
 | **Semantic importance** | Score tool results by importance (e.g., was the output referenced in a subsequent turn?) and keep important ones even if old | Medium |
 | **Configurable thresholds** | Make `KEEP_RECENT_TOOL_RESULTS` and the 120-char stub threshold configurable at runtime rather than compile-time constants | Low |
 | **Stub-aware prompt** | Improve system prompt guidance so the model consistently re-reads truncated content instead of guessing | Medium |

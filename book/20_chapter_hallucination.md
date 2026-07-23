@@ -144,7 +144,7 @@ The stub itself says "re-run the tool" but the system prompt guidance is insuffi
 
 ### 3.1 Trigger Condition
 
-The agent calls a tool (e.g., `bash`, `read_file`, `batch_read`) and the tool returns an error or is interrupted. In the next turn, the LLM may fabricate a successful result.
+The agent calls a tool (e.g., `bash`, `read_file`) and the tool returns an error or is interrupted. In the next turn, the LLM may fabricate a successful result.
 
 ### 3.2 Example
 

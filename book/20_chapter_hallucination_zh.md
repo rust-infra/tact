@@ -144,7 +144,7 @@ flowchart RL
 
 ### 3.1 触发条件
 
-Agent 调用工具（如 `bash`、`read_file`、`batch_read`），工具返回错误或被中断。下一回合 LLM 可能编造一个成功的结果。
+Agent 调用工具（如 `bash`、`read_file`），工具返回错误或被中断。下一回合 LLM 可能编造一个成功的结果。
 
 ### 3.2 示例
 

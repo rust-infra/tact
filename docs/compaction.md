@@ -33,7 +33,7 @@ flowchart TB
 
 ## Tier 1: Large Output Persist
 
-**Trigger**: any successful native or MCP tool result exceeds `PERSIST_THRESHOLD` (30,000 characters).
+**Trigger**: any successful native or MCP tool result exceeds `PERSIST_THRESHOLD` (30,000 characters), **except `read_file`**. `read_file` already returns a line/token-bounded page (default 2,000 lines / ~25k approx tokens) with an explicit `[PARTIAL view …]` continuation marker, so dispatch skips `persist_large_output` for that tool.
 
 **Process**:
 1. Full output → `.tact/tool-results/{tool_use_id}.txt`
@@ -99,7 +99,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 ### Recent files
 
-`CompactState.recent_files`: last 5 paths from successful `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
+`CompactState.recent_files`: last 5 paths from successful `read_file`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
 
 ---
 
@@ -140,7 +140,7 @@ If a tool result was truncated and you need the details, re-run the relevant too
 | Idea | Priority |
 |------|----------|
 | Context-window-gated trigger (e.g., only run when > 50% of window is used) | High |
-| Selective tool truncation (exempt `read_file`/`batch_read`, keep their outputs) | High |
+| Selective tool truncation (exempt already-bounded `read_file` pages; keep their outputs) | High |
 | Semantic importance scoring (keep results referenced in later turns) | Medium |
 | Configurable thresholds (runtime instead of compile-time constants) | Low |
 | Stub-aware prompt (better guidance to trigger re-reads consistently) | Medium |

@@ -204,9 +204,12 @@ let exec = if is_mcp {
 ```
 
 `run_native_tool` first calls `ctx.for_invocation(tool_use_id)`, then
-`tools.call(ctx, name, input)`. Special case: `bash` output may be spilled to
+`tools.call(ctx, name, input)`. Special case: oversized native/MCP output may be spilled to
 `.tact/tool-results/{tool_use_id}.txt` via `persist_large_output` when output
-exceeds context limits.
+exceeds 30,000 characters — **except `read_file`**, which streams a bounded page
+(default 2,000 lines / `READ_FILE_MAX_OUTPUT_TOKENS` ≈ 25k approx tokens) and returns a
+leading `[PARTIAL view — lines …; continue with offset=…]` marker when more content
+remains. Explicit ranges that still exceed the token budget fail instead of truncating.
 
 `bash` uses concurrent Tokio readers for piped stdout and stderr. An aggregator
 merges chunks in observed arrival order, incrementally decodes UTF-8, and sends
@@ -229,8 +232,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 
 | Module | Tool name(s) | Notes |
 |--------|--------------|-------|
-| `read_file.rs`, `write_file.rs`, `edit_file.rs` | file I/O | Path-safe |
-| `batch_read.rs` | batch ops | Parallel multi-file read |
+| `read_file.rs`, `write_file.rs`, `edit_file.rs` | file I/O | Path-safe; `read_file` streams with PARTIAL pagination |
 | `bash.rs` | `bash` | Validated shell; streamed pipes, timeout, process-group cancellation |
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
@@ -276,5 +278,4 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 - [MCP Protocol and Agent Integration](./08_chapter_mcp.md) — external tools
 - [Team Coordination](./14_chapter_team.md), [Worktree Lanes](./15_chapter_worktree.md), [Background Tasks](./13_chapter_background.md) — manager-backed tool families on `ToolContext`
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI tool blocks
-- [docs/batch_tools_flow.md](../docs/batch_tools_flow.md) — batch_read flow
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — macro overview

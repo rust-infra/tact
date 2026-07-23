@@ -62,7 +62,6 @@ Each cleared tool is mapped to the workspace files it touches:
 | Tool | Resource | Mode |
 |------|----------|------|
 | `read_file` | `input.path` | read |
-| `batch_read` | `input.files[].path` | read |
 | `search_code` | `input.path` or workspace root | read (directory scope) |
 | `write_file`, `edit_file` | `input.path` | write |
 | `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent (never conflicts) |

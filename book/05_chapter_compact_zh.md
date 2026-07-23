@@ -40,7 +40,7 @@ Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再
 
 | 层级 | 机制 | 成本 | 时机 | 从*上下文*中失去什么 |
 |------|------|------|------|----------------------|
-| 1 | `persist_large_output` | 免费（磁盘 I/O） | 任意成功的原生或 MCP 结果 > 30,000 字符 | 完整输出（磁盘保留 + 预览） |
+| 1 | `persist_large_output` | 免费（磁盘 I/O） | 任意成功的原生或 MCP 结果 > 30,000 字符（**`read_file` 除外**） | 完整输出（磁盘保留 + 预览） |
 | 2 | `micro_compact` | 免费 | 每个 LLM 回合开始 | 旧 tool-result 正文（留下 stub） |
 | 3 | `compact_history` | 一次额外 LLM 调用 | 80% 阈值、prompt-too-long、或 `compact` 工具 | Assistant/工具历史（保留近期真实 user + 摘要；完整 JSONL 在磁盘） |
 
@@ -417,7 +417,7 @@ flowchart TD
     Use1 --> Use2[追加到最终摘要消息]
 ```
 
-`remember_recent_file` 仅由最终状态成功的 `read_file`、`batch_read`、`write_file`、`edit_file` 与非 dry-run `apply_patch` 喂入，去重保留最近五个路径，作为「失忆保险」。
+`remember_recent_file` 仅由最终状态成功的 `read_file`、`write_file`、`edit_file` 与非 dry-run `apply_patch` 喂入，去重保留最近五个路径，作为「失忆保险」。
 
 ### 压缩前后对比
 
@@ -554,10 +554,12 @@ Dispatch 仅在 compact 调用**成功**时才设置 `manual_compact = Some(focu
 
 ## 7. 大输出溢出（`persist_large_output`）
 
-与历史压缩无关：单条过大的工具结果不得以全文进入 context。每个成功的原生或 MCP 调用都会应用：
+与历史压缩无关：单条过大的工具结果不得以全文进入 context。每个成功的原生或 MCP 调用都会应用——**`read_file` 除外**（它已返回有界 PARTIAL 页）：
 
 ```rust
-persist_large_output(&tact_path, tool_use_id, &output)
+if name != "read_file" {
+    persist_large_output(&tact_path, tool_use_id, &output)
+}
 ```
 
 | 常量 | 值 |
@@ -709,7 +711,7 @@ flowchart LR
 | 想法 | 描述 | 优先级 |
 |------|------|--------|
 | **上下文窗口阈值触发** | 仅在上下文使用量超过阈值（如 `model_context_window` 的 50%）时才运行 micro_compact，而非每轮都跑。这样在大部分会话中保持前缀缓存完整，只在真正有内存压力时才截断 | 高 |
-| **选择性工具截断** | 排除某些工具免于截断（如 `read_file`、`batch_read`），因它们的输出很可能被再次引用。仅截断 `ls`、`echo`、`bash` 等瞬态输出。同时保护前缀缓存不被频繁失效 | 高 |
+| **选择性工具截断** | 排除已自带边界的工具免于截断（如 `read_file` 分页结果），因它们的输出很可能被再次引用。仅截断 `ls`、`echo`、`bash` 等瞬态输出。同时保护前缀缓存不被频繁失效 | 高 |
 | **语义重要性评分** | 对工具结果按重要性打分（如后续是否有引用它的轮次），即使旧的也保留重要的 | 中 |
 | **可配置阈值** | 将 `KEEP_RECENT_TOOL_RESULTS` 和 120 字符 stub 阈值改为运行时可配置，而非编译期常量 | 低 |
 | **Stub 感知的提示** | 改进系统提示，让模型在面对截断内容时一致地重读而非猜测 | 中 |
