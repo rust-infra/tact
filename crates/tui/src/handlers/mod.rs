@@ -378,6 +378,13 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "stats" => {
+            let _ = app.user_cmd_tx.send(UserCommand::QueryStats);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "lang" => {
             app.toggle_language();
             CommandExecOutcome {

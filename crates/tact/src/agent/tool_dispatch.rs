@@ -530,6 +530,35 @@ impl Agent {
                         .map(ToOwned::to_owned)
                         .or_else(|| Some(String::new()));
                 }
+                // Record per-tool success/failure stat
+                if succeeded {
+                    *self
+                        .runtime
+                        .stats
+                        .tool_success_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
+                } else {
+                    *self
+                        .runtime
+                        .stats
+                        .tool_failure_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
+                }
+                // Record per-tool wall-clock duration
+                *self
+                    .runtime
+                    .stats
+                    .tool_total_durations_ms
+                    .entry(prep_name.clone())
+                    .or_insert(0) += duration_us / 1000;
+                *self
+                    .runtime
+                    .stats
+                    .tool_timing_counts
+                    .entry(prep_name.clone())
+                    .or_insert(0) += 1;
                 outputs[pi] = Some(exec_output);
             }
             drop(futures);

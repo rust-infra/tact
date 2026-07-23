@@ -166,6 +166,10 @@ async fn handle_user_command_with_account(
                 }
             }
         }
+        UserCommand::QueryStats => {
+            let stats_text = agent.runtime.stats.summary();
+            agent.emit_update(AgentUpdate::SessionStats(stats_text));
+        }
         _ => {}
     }
 }

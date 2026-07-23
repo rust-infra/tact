@@ -67,7 +67,7 @@ Each artifact directory retains at most the 100 newest files after a write.
 3. Older results with **> 120** characters → stub  
 
 ```
-[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]
+[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]
 ```
 
 Short results stay (high density, low cost). Assistant / thinking / user text are never stubbed.
@@ -119,7 +119,7 @@ Compile-time: 12 / 120 / 30k / 2k / 20k summary-input and retained-user tokens /
 ## Integration with System Prompt
 
 ```
-If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)
+If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)
 ```
 
 ---
@@ -128,4 +128,21 @@ If a tool result was compacted and you need the details, re-run the relevant too
 
 - Cold-start token estimation remains heuristic (ASCII ~4 chars/token, non-ASCII 1 char/token); the TUI still uses a simple `used/window` meter without Codex baseline/effective-window math; fixed thresholds are compile-time constants.
 
-See the book chapter for diagrams and loop ordering.
+### Micro Compact
+
+- **Model memory loss**: truncated tool results vanish from context; model may fabricate if it misses the stub
+- **False context mismatch**: diff/patch operations fail when model doesn't re-read truncated content
+- **Crude selection**: recency+length only (keep last 12, stub > 120 chars) — a critical file at position 13 is lost while trivial `ls` outputs at positions 1–12 survive
+- **Prefix cache pollution**: on auto-caching models (OpenAI, DeepSeek), stub replacement invalidates the cached prefix, causing a cache miss on every truncated result. See [OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching), [DeepSeek KV Cache](https://api-docs.deepseek.com/guides/kv_cache). Claude ([docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)) is less affected — its explicit `cache_control` breakpoints sit before tool results
+
+### Planned optimizations
+
+| Idea | Priority |
+|------|----------|
+| Context-window-gated trigger (e.g., only run when > 50% of window is used) | High |
+| Selective tool truncation (exempt `read_file`/`batch_read`, keep their outputs) | High |
+| Semantic importance scoring (keep results referenced in later turns) | Medium |
+| Configurable thresholds (runtime instead of compile-time constants) | Low |
+| Stub-aware prompt (better guidance to trigger re-reads consistently) | Medium |
+
+See the book chapter (§11) for the full list.

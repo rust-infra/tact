@@ -26,7 +26,7 @@ Mermaid cannot draw `{` braces; this `flowchart LR` approximates the same struct
 
 ```mermaid
 flowchart LR
-    ROOT["Tact Book<br/>25 chapters"]
+    ROOT["Tact Book<br/>26 chapters"]
 
     ROOT --> B1 & B2 & B3 & B4 & B5 & B6 & B7
 
@@ -38,7 +38,7 @@ flowchart LR
 
     B4["④ Capstone<br/>Ch 18"] --> D4["agent_loop · streaming · TaskComplete"]
 
-    B5["⑤ Deep topics<br/>Ch 19–20"] --> D5["Persistent Tasks · LSP"]
+    B5["⑤ Deep topics<br/>Ch 19–20"] --> D5["Persistent Tasks · Hallucination"]
 
     B6["⑥ Bootstrap & UI<br/>Ch 21–25"] --> D6["Config → LLM → TUI → Protocol"]
 
@@ -80,6 +80,6 @@ flowchart LR
 | 12–15 | [Subagent](./12_chapter_subagent.md) … [Worktree](./15_chapter_worktree.md) | ② Tool families |
 | 16–17 | [Cron](./16_chapter_cron.md) · [Notify](./17_chapter_notify.md) | ③ Off-path |
 | 18 | [Agent Loop](./18_chapter_agent_loop.md) | ④ Capstone |
-| 19–20 | [Tasks](./19_chapter_persistent_tasks.md) · [LSP](./20_chapter_lsp.md) | ⑤ Deep topics |
+| 19–20 | [Tasks](./19_chapter_persistent_tasks.md) · [Hallucination](./20_chapter_hallucination.md) | ⑤ Deep topics |
 | 21–23, 25 | [Config](./21_chapter_config.md) … [Protocol](./25_chapter_protocol.md) | ⑥ Bootstrap & UI |
 | 24 | [Testing](./24_chapter_testing.md) | ⑦ Quality |

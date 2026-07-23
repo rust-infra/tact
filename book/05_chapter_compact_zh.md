@@ -128,7 +128,7 @@ flowchart TD
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 const COMPACTED_TOOL_RESULT: &str =
-    "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+    "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
 ```
 
 ### 算法
@@ -180,7 +180,7 @@ flowchart LR
 
 Stub 文案是刻意的：告诉模型**如何恢复**（`read_file` / 重跑工具）。系统提示里也有同样约定：
 
-> If a tool result was compacted and you need the details, re-run the relevant tool (e.g., `read_file`)
+> If a tool result was truncated and you need the details, re-run the relevant tool (e.g., `read_file`)
 
 ---
 
@@ -690,6 +690,29 @@ flowchart LR
 | 简易用量百分比 | 用量条为 `used / model_context_window`（尚无 Codex 12K baseline / effective-window 算法） |
 | 只摘要近期 20k 估算 token | 早期回合在 transcript 里；替换消息未告知模型该路径 |
 | Stub 阈值固定 | 12 / 120 / 30k 是编译期常量 |
+
+### 11.1 Micro Compact 已知问题
+
+微截断（Tier 2）以节省上下文为代价换取可用性，但有以下副作用：
+
+| 问题 | 描述 |
+|------|------|
+| **模型失忆** | 之前读取过、后续还会引用的工具结果从上下文中消失，被替换为 stub。如果模型没注意到 stub，可能凭记忆编造内容 |
+| **虚假的上下文不匹配** | Diff/patch 操作会失败，因为模型缺少真实文件内容却以为知道——stub 说"请重跑工具"，但 patch 逻辑不一定会触发重读 |
+| **额外的不必要重读** | 模型必须 `read_file` 重新读取已截断的内容，浪费了本应节省的 token |
+| **悄无声息的正确性风险** | 最危险的情况：模型没意识到信息丢了，继续自信推理，得出错误结论 |
+| **粗略的选择策略** | 截断策略纯按新旧 + 长度（保留最近 12 条，更早的 > 120 字符截断）。第 13 条的关键配置文件被截掉，而 12 条无意义的 `ls` 输出反而保留 |
+| **前缀缓存污染** | 在支持自动前缀缓存的模型上（OpenAI、DeepSeek），stub 替换会改变某个位置的内容，导致缓存前缀断裂。第一条被截断的工具结果之后的所有前缀都会被失效，下一次请求必然 cache miss——截断"省下"的 token 远小于重建缓存的成本。参考：[OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching)、[DeepSeek KV Cache](https://api-docs.deepseek.com/guides/kv_cache)。Claude 受影响较小，因为它使用显式的 `cache_control` 断点（[Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)），且通常标记在 tool results 之前的位置 |
+
+### 11.2 规划中的优化
+
+| 想法 | 描述 | 优先级 |
+|------|------|--------|
+| **上下文窗口阈值触发** | 仅在上下文使用量超过阈值（如 `model_context_window` 的 50%）时才运行 micro_compact，而非每轮都跑。这样在大部分会话中保持前缀缓存完整，只在真正有内存压力时才截断 | 高 |
+| **选择性工具截断** | 排除某些工具免于截断（如 `read_file`、`batch_read`），因它们的输出很可能被再次引用。仅截断 `ls`、`echo`、`bash` 等瞬态输出。同时保护前缀缓存不被频繁失效 | 高 |
+| **语义重要性评分** | 对工具结果按重要性打分（如后续是否有引用它的轮次），即使旧的也保留重要的 | 中 |
+| **可配置阈值** | 将 `KEEP_RECENT_TOOL_RESULTS` 和 120 字符 stub 阈值改为运行时可配置，而非编译期常量 | 低 |
+| **Stub 感知的提示** | 改进系统提示，让模型在面对截断内容时一致地重读而非猜测 | 中 |
 
 ---
 
