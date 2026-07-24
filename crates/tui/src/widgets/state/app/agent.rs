@@ -268,6 +268,8 @@ impl App {
                 self.on_tool_progress(&tool_id, &chunks)
             }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
+            // Filled in by task-progress panel work (Task 3).
+            AgentUpdate::TasksChanged { .. } => {}
         }
         // Unified tail scroll state refresh, covering cases where helpers like
         // flush_and_close_thinking / flush_stream_pending inserted messages without

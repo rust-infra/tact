@@ -81,6 +81,40 @@ pub struct TokenUsageInfo {
     pub reasoning_tokens: u32,
 }
 
+/// UI-facing task status (excludes soft-deleted records).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatusSnapshot {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TaskStatusSnapshot {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::InProgress => "[>]",
+            Self::Completed => "[x]",
+        }
+    }
+}
+
+/// Why a [`AgentUpdate::TasksChanged`] was emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TasksChangeReason {
+    Created,
+    Updated,
+}
+
+/// One non-deleted persistent task for TUI progress surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSnapshot {
+    pub id: u64,
+    pub subject: String,
+    pub status: TaskStatusSnapshot,
+    pub owner: String,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
@@ -151,6 +185,12 @@ pub enum AgentUpdate {
     StreamChunk(String),
     /// Streaming thinking / reasoning lifecycle event
     ThinkingChunk(ThinkingChunk),
+    /// Persistent task list changed (`task_create` / `task_update`).
+    /// `tasks` excludes soft-deleted records.
+    TasksChanged {
+        tasks: Vec<TaskSnapshot>,
+        reason: TasksChangeReason,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -225,5 +265,39 @@ impl PlanStep {
                 .collect(),
             output: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentUpdate, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason};
+
+    #[test]
+    fn tasks_changed_snapshot_round_trips_fields() {
+        let update = AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "Fix auth".into(),
+                status: TaskStatusSnapshot::InProgress,
+                owner: String::new(),
+            }],
+            reason: TasksChangeReason::Created,
+        };
+        match update {
+            AgentUpdate::TasksChanged { tasks, reason } => {
+                assert_eq!(tasks.len(), 1);
+                assert_eq!(tasks[0].id, 1);
+                assert_eq!(tasks[0].status, TaskStatusSnapshot::InProgress);
+                assert!(matches!(reason, TasksChangeReason::Created));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_status_snapshot_markers() {
+        assert_eq!(TaskStatusSnapshot::Pending.marker(), "[ ]");
+        assert_eq!(TaskStatusSnapshot::InProgress.marker(), "[>]");
+        assert_eq!(TaskStatusSnapshot::Completed.marker(), "[x]");
     }
 }
