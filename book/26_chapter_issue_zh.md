@@ -29,7 +29,99 @@
 
 ---
 
-## 1. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
+## 1. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 2 章、第 23 章 |
+
+**现象 / 动机：** 恢复 Insert 模式 `Tab` 给 slash 弹出后，对 skill 来说 **Tab**
+与 **Enter** 仍相同（都只填 `/name `），分不清「补全」和「执行」。
+
+**决策：** Slash 弹出 **Tab** 始终只自动补全为 `/name `；**Enter** 立即 Invoke
+skill / 执行内置命令。需要子命令的 `/plugin` 仍只补全。命令面板对 skill 的
+Enter 仍预填 Insert（便于 undo）。
+
+**改后行为：** `/` 选中 skill → Tab 可改 args，或 Enter 立刻跑。
+
+**指针：** `crates/tui/src/handlers/insert.rs`、第 2 章 §7、第 23 章 slash skills。
+
+---
+
+## 2. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
+
+| Field | Value |
+|-------|-------|
+| **类型** | removal |
+| **相关** | Ch 23、Ch 25 |
+
+**症状 / 动机：** 左侧 plan 面板与 log 中已有信息重复（tool block 在
+`StepStarted` 时已出现在 log 中），却额外带来 `Tab` 焦点切换、`e` 可见性切换、
+可拖拽 divider，以及大多数用户从未用过的 `panel_split_ratio` 布局参数。面板
+焦点状态还让鼠标 hit test 与键盘处理更复杂。
+
+**决策：** 完全移除面板 UI；保留 `PlanStep` 追踪为无面板的内部存储
+（`app.plan.steps` / `steps_set`），以便未来消费者仍可用到 step 数据。Log
+现在永久单列。`FocusedPanel` 仅保留 `Log` variant。删除 `Tab` 焦点切换、`e`
+切换与 divider 拖拽/resize；`j`/`k`/`g`/`G`/`y`/`Y`/`V` 现在始终作用于 log。
+Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab` handler
+遮蔽）现在能正常触发，因为 `lib.rs` 中已无更早的 `Tab` 拦截。
+
+**变更后行为：** `render_main_area` 始终以全宽渲染 log 面板；顶栏或底栏都不再
+有 plan 面板、divider 或面板焦点指示。`StepAdded` 仍会更新 `app.plan.steps`
+作内部记录，但从不绘制专用面板。
+
+**指针：** `crates/tui/src/widgets/state/plan_panel.rs`、
+`crates/tui/src/render/layout.rs`、`crates/tui/src/widgets/state/mod.rs`
+（`FocusedPanel`）、`crates/tui/src/handlers/normal.rs`、
+`crates/tui/src/handlers/mouse.rs`、`book/23_chapter_tui*.md`。
+
+---
+
+## 3. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | docs |
+| **相关** | 第 21 章 |
+
+**现象 / 动机：** 自动发现列表里是 `./tact.toml`，而用户全局 / `.tact/` 路径已是
+`config.toml`，容易放错文件名。
+
+**决策：** 搜索 `./config.toml` 替代 `./tact.toml`；示例文件改名为
+`config.example.toml`。
+
+**改后行为：** 发现顺序为 `./.tact/config.toml`、`./config.toml`、
+`~/.tact/config.toml`。显式 `--config` 不变。
+
+**指针：** `crates/tact/src/config/load.rs`、`book/21_chapter_config*.md`、
+`config.example.toml`。
+
+---
+
+## 4. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+
+**现象 / 动机：** 会话结束时 `eprintln` 打印的 `SessionStats::summary()` 是未填充
+的 GFM（短标签与长标签混排），`tact-ui` 退出后终端里 `|` 列对不齐。
+
+**决策：** 仍用 GFM pipe 表供 tui-markdown 渲染；按列最大宽度填充单元格（数值列
+依分隔行 `:` 右对齐）。
+
+**改后行为：** CLI / headless / TUI 退出摘要在等宽字体下对齐；`/stats` 弹窗仍走
+tui-markdown 框线表。
+
+**指针：** `crates/tact/src/stats.rs`、`docs/token_usage_schema.md`
+（Session Stats Display）。
+
+---
+
+## 5. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
 
 | 字段 | 值 |
 |------|-----|
@@ -48,11 +140,11 @@
 `<workdir>/skills/`。
 
 **指针：** `crates/tact/src/consts.rs`、`crates/tact/src/skill/mod.rs`、
-`crates/tact/src/config/types.rs`、`tact.example.toml`、第 2 章。
+`crates/tact/src/config/types.rs`、`config.example.toml`、第 2 章。
 
 ---
 
-## 2. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
+## 6. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
 
 | 字段 | 值 |
 |------|-----|
@@ -73,7 +165,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 3. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
+## 7. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
 
 | 字段 | 值 |
 |------|-----|
@@ -96,18 +188,18 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 4. 2026-07-24 — Session Stats 用 comfy-table 排版
+## 8. 2026-07-24 — Session Stats 用 comfy-table 排版
 
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
 | **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
-| **被取代** | §3（GFM + tui-markdown） |
+| **被取代** | §7（GFM + tui-markdown） |
 
 **现象 / 动机：** 会话结束时的 Tool calls 行靠空格对齐，工具名与耗时变长后列错位。
 
-**决策：** 保持 `SessionStats::summary() -> String`。先输出 Metric/Value 表，再按需输出 Tool calls 表（`Tool | Count(s/f) | Total | Avg`），最后用尾部 Metric/Value 表放工具汇总 / cache / reasoning。*（最初用 `comfy-table` UTF8 框线；与 TUI markdown 冲突，见 §3。）*
+**决策：** 保持 `SessionStats::summary() -> String`。先输出 Metric/Value 表，再按需输出 Tool calls 表（`Tool | Count(s/f) | Total | Avg`），最后用尾部 Metric/Value 表放工具汇总 / cache / reasoning。*（最初用 `comfy-table` UTF8 框线；与 TUI markdown 冲突，见 §7。）*
 
 **改后行为：** 计数与显隐规则不变；排版改为对齐表格。
 
@@ -115,7 +207,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 5. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 9. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -133,7 +225,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 6. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 10. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -195,6 +287,28 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 | 近似 token | `crates/tact/src/utils/truncate.rs` |
 | 工具章 | [第 7 章](./07_chapter_tool_zh.md) |
 | 压缩 / spill | [第 5 章](./05_chapter_compact_zh.md)、`docs/compaction.md` |
+
+---
+
+## 11. 2026-07-24 — 底部栏视觉优化
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+
+**动机：** 底部栏混合使用 emoji、长双语标签（`Elapsed:`、`Balance:`、`cache hit:`）和混合分隔符（`│` / `|`）。两行均使用单一 `Paragraph` 样式，颜色层级扁平，难以快速浏览。
+
+**决策：** 用窄 Unicode 图标（`◷`、`⊙`、`⎇`、`¤`、`∑`、`▣`）替换 emoji。统一分隔符为 ` · `。模型限制压缩为 `8k/32k` 格式，余额/配额信息精简。使用 ratatui `Line` / `Span` 渲染：图标和分隔符暗色、主值亮色、分支强调色、余额成功/错误色。
+
+**变更后：** 双行底部栏具有一致的图标和颜色层级。纯格式化函数（`format_model_compact`、`format_balance_entry`、`format_quota_window`、`format_cache_pct`）可无终端进行单元测试。窄屏丢弃顺序：第 1 行去掉运行时间 → 路径；第 2 行去掉缓存 → 令牌总数 → 上下文计量器。
+
+| 区域 | 路径 |
+|------|------|
+| 设计规格 | `docs/superpowers/specs/2026-07-24-bottom-bar-polish-design.md` |
+| 实现计划 | `docs/superpowers/plans/2026-07-24-bottom-bar-polish.md` |
+| 实现 | `crates/tui/src/render/bar.rs`、`crates/tui/src/i18n.rs` |
+| 文档 | `docs/tui_rendering.md`（底部栏章节） |
+| 渲染框架 | [第 23 章](./23_chapter_tui_zh.md) |
 
 ---
 

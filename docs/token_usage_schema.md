@@ -167,7 +167,7 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
-**TUI cache display:** The bottom bar shows only the cache hit rate (e.g. `cache hit: 68%`), derived from the latest LLM call's `prompt_cache_hit_tokens / (hit + miss)`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
+**TUI cache display:** The bottom bar shows only the cache hit rate (e.g. `▣68%`), derived from the latest LLM call's `prompt_cache_hit_tokens / (hit + miss)`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
 
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 
@@ -176,39 +176,40 @@ Cached data is evicted after hours to days of inactivity.
 ## Session Stats Display
 
 At the end of every session (both CLI and TUI), a summary is emitted as **GFM
-pipe markdown**. The TUI runs it through `tui-markdown`, which draws Unicode box
-borders and honors column alignment. CLI / headless print the same markdown
-source to stderr:
+pipe markdown** with space-padded cells so columns line up in plain text.
+The TUI runs it through `tui-markdown`, which draws Unicode box borders and
+honors column alignment. CLI / headless print the same markdown source to
+stderr:
 
 ```
 ── Session Stats ─────────────────────────────
 
-| Metric | Value |
-|--------|------:|
-| Elapsed | XX.Xs |
-| LLM API calls | XX |
-| Total LLM time | XX.Xs |
-| Prompt chars sent | XX |
-| Response chars rcvd | XX |
-| Thinking blocks | XX |
-| Thinking chars | XX |
-| Compactions | XX |
+| Metric              | Value |
+| ------------------- | ----: |
+| Elapsed             | XX.Xs |
+| LLM API calls       |    XX |
+| Total LLM time      | XX.Xs |
+| Prompt chars sent   |    XX |
+| Response chars rcvd |    XX |
+| Thinking blocks     |    XX |
+| Thinking chars      |    XX |
+| Compactions          |    XX |
 
 Tool calls
 
-| Tool | Count(s/f) | Total | Avg |
-|------|-----------:|------:|----:|
-| Total | XX (s/f) |  |  |
-| tool_name | XX (s/f) | XX | XXms |
+| Tool      | Count(s/f) | Total |   Avg |
+| --------- | ---------: | ----: | ----: |
+| Total     |   XX (s/f) |       |       |
+| tool_name |   XX (s/f) |    XX | XXms  |
 
-| Metric | Value |
-|--------|------:|
-| Total tool time | XX.Xs |
-| Avg tool time | XX.Xms |
-| Cache hit tokens | XX |
-| Cache miss tokens | XX |
-| Cache hit rate | XX.X% |
-| Reasoning tokens | XX |
+| Metric           |   Value |
+| ---------------- | ------: |
+| Total tool time  |   XX.Xs |
+| Avg tool time    | XX.Xms  |
+| Cache hit tokens |      XX |
+| Cache miss tokens |      XX |
+| Cache hit rate   |   XX.X% |
+| Reasoning tokens |      XX |
 ─────────────────────────────────────────────
 ```
 

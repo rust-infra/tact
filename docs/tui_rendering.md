@@ -20,7 +20,6 @@ crates/tui/src/render/
 ├── input.rs            # input box and command line
 ├── log.rs              # log panel
 ├── log_column.rs       # log column renderer
-├── plan.rs             # execution plan panel
 ├── render_md.rs        # Markdown rendering
 ├── renderable.rs       # Renderable trait
 ├── slash_style.rs      # /skill-name vs args highlighting
@@ -89,10 +88,9 @@ terminal.draw(|f| {
 |---|---|
 | `show_history == true` | Full-screen history task panel |
 | `show_help == true` | Full-screen help panel |
-| `plan.visible == true` | Left 20% plan panel, right 80% log panel |
-| default | 100% log panel |
+| default | 100% log panel (single-column; no side panel or divider) |
 
-It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout result for later mouse hit testing.
+It also updates `app.mouse.log_area` from the layout result for later mouse hit testing.
 
 ---
 
@@ -101,7 +99,6 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 ### Top Status Bar (`render_status_bar`)
 
 - Shows current input mode (`Normal` / `Insert` / `Palette` / `Select` / `FilePicker`).
-- Shows current focus panel (`[Log]` / `[Plan]`).
 - Shows task status according to `Status`:
   - `Idle`: theme, language, shortcut hints
   - `Planning`: planning in progress
@@ -113,18 +110,47 @@ It also updates `app.mouse.plan_area` and `app.mouse.log_area` from the layout r
 
 ### Bottom Bar (`render_bottom_bar`)
 
-Always **2 rows**:
+Always **2 rows**, built from `Vec<Span>` with per-segment color hierarchy:
 
-- **Row 1**: focus panel hint; **Elapsed** (prompt elapsed, live while running; frozen after complete/fail until next prompt); **Up** (process uptime); working directory; Git branch; optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi)
-- **Row 2**: model (with optional `max=` / `think=`); context usage meter `[bar] pct% │ used/window`; token statistics (`📊 Tok:…` prompt / completion / cache / reasoning)
+**Row 1 — context:** focus panel label, elapsed time, process uptime, working directory, Git branch, account balance/quota.
 
-  Example shape:
+**Row 2 — usage:** model with compact limits (`8k/32k`), context usage meter, token total, cache hit percentage.
 
-  ```text
-  {model} │ [████░░░░░░] {pct}% │ {used}/{window} │ 📊 Tok:…
-  ```
+Target layout (wide terminal):
+```text
+◷ 00:03 · ⊙ 00:58 · ~/Projects/tact · ⎇ feat/web · ¤ CNY 9.60
+deepseek-v4-flash 8k/32k · [░░░░░░░░░░] 0% · 6.6K/1M · ∑6612 · ▣8%
+```
 
-  Meter denominator is `agent.model_context_window` (tokens); numerator is last `TokenUsageInfo.total` (`status_bar.token_total`). Before the first usage update, shows `0%` / `0/{window}`.
+**Icons (language-invariant Unicode):**
+
+| Meaning | Glyph |
+|---------|-------|
+| Task elapsed | `◷` |
+| Process uptime | `⊙` |
+| Git branch | `⎇` |
+| Balance / quota | `¤` |
+| Tokens | `∑` |
+| Cache hit % | `▣` |
+
+**Separators:** ` · ` (space-middot-space) only.
+
+**Color roles (all from existing `Theme`):**
+
+| Role | Content | Theme source |
+|------|---------|-------------|
+| Dim | icons, ` · ` | `theme.muted_fg()` |
+| Primary | elapsed, model, focus label | `theme.fg` |
+| Secondary | uptime, path, token count, cache % | `theme.bottom_bar_fg` |
+| Accent | branch (`⎇ name`) | `theme.accent` |
+| Success/Error | balance available vs not | `theme.success` / `theme.error` |
+| Meter | context usage bar | `theme.accent` |
+
+**Narrow-width drop order** (each row independently):
+Row 1 drops: uptime → path (in that order).
+Row 2 drops: cache → token total → context meter.
+
+**Helpers:** Pure formatting functions (`format_model_compact`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`, `format_context_meter_new`) are unit-tested in `bar.rs::render_tests`.
 
 ---
 
@@ -193,7 +219,7 @@ Key types:
 | `ActiveToolBlock` | `widgets/state/tool_state.rs` | In-flight tool; supports **concurrent** running tools (`tools.active: Vec<_>`) |
 | `ToolBlock` | `widgets/state/tool_state.rs` | Completed tool placeholder rows in the log |
 
-`StepAdded` updates the **plan panel only** (`description` = `tool (arg_summary)`); it no longer inserts a separate log line. The log block appears on `StepStarted`. Untruncated args are available in the detail popup via `StepResult.arg_full`.
+`StepAdded` only updates the internal `app.plan.steps` store (`description` = `tool (arg_summary)`); there is no dedicated plan panel, and it does not insert a separate log line. The log block appears on `StepStarted`. Untruncated args are available in the detail popup via `StepResult.arg_full`.
 
 One blank line separates tool blocks from preceding normal content (`ensure_gap_before_tools`). Thinking completion changes its existing card in place and does not add a separator.
 
@@ -260,7 +286,7 @@ Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 | Command palette | `command_palette.rs` | Triggered by `:`, fuzzy-filtered commands |
 | File picker | `file_picker.rs` | Triggered by `@`, directory-browsable file selector with query filtering |
 | Select popup | `select.rs` | Agent asks the user to choose |
-| Slash commands | `slash_command.rs` | Insert-mode `/`: Commands then Skills; skill Enter autocompletes `/name `, second Enter invokes |
+| Slash commands | `slash_command.rs` | Insert-mode `/`: Commands then Skills; **Tab** fills `/name `, **Enter** invokes skills / runs built-ins |
 | Skill slash style | `slash_style.rs` | Accent+bold skill token, theme.fg args — used by `input.rs` and user lines in `log.rs` |
 | Help panel | `help.rs` | Triggered by `Ctrl+?`, shortcut reference |
 | History panel | `history.rs` | Triggered by `Ctrl+H`, retry historical tasks |

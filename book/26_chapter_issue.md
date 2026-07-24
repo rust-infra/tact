@@ -29,7 +29,107 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
+## 1. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 2, Ch 23 |
+
+**Symptom / motivation:** After restoring Insert-mode `Tab` for the slash
+popup, **Tab** and **Enter** still did the same thing for skills (both only
+filled `/name `). Users could not tell complete vs run apart.
+
+**Decision:** Slash popup **Tab** always autocompletes to `/name `. **Enter**
+invokes skills and runs built-ins immediately. `/plugin` (needs a subcommand)
+still only autocompletes. Command palette Enter on a skill still prefills
+Insert (undo-friendly).
+
+**Behavior after:** Pick a skill in `/` → Tab to edit args, or Enter to run
+now.
+
+**Pointers:** `crates/tui/src/handlers/insert.rs`, Ch 2 §7, Ch 23 slash skills.
+
+---
+
+## 2. 2026-07-24 — TUI left Execution Plan panel removed
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | Ch 23, Ch 25 |
+
+**Symptom / motivation:** The left plan panel duplicated information already
+visible in the log (tool blocks appear on `StepStarted`), while adding
+`Tab` focus switching, an `e` visibility toggle, a draggable divider, and a
+`panel_split_ratio` layout knob that most users never touched. The extra
+panel-focus state also complicated mouse hit testing and keyboard handling.
+
+**Decision:** Remove the panel UI entirely; keep `PlanStep` tracking as an
+internal, panel-less store (`app.plan.steps` / `steps_set`) so step data
+stays available for future consumers. The log is now permanently
+single-column. `FocusedPanel` keeps only its `Log` variant. Delete `Tab`
+focus switching, the `e` toggle, and divider drag/resize; `j`/`k`/`g`/`G`/`y`/`Y`/`V`
+now always act on the log. `Insert`-mode `Tab` for slash-command
+autocompletion (previously shadowed by the global `Tab` handler) now fires
+correctly since nothing above it in `lib.rs` intercepts `Tab` first.
+
+**Behavior after:** `render_main_area` always renders the log panel at full
+width; there is no plan panel, divider, or panel-focus indicator in the top
+or bottom bar. `StepAdded` still updates `app.plan.steps` for internal
+bookkeeping but never draws a dedicated panel.
+
+**Pointers:** `crates/tui/src/widgets/state/plan_panel.rs`,
+`crates/tui/src/render/layout.rs`, `crates/tui/src/widgets/state/mod.rs`
+(`FocusedPanel`), `crates/tui/src/handlers/normal.rs`,
+`crates/tui/src/handlers/mouse.rs`, `book/23_chapter_tui*.md`.
+
+---
+
+## 3. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs |
+| **Related** | Ch 21 |
+
+**Symptom / motivation:** Auto-discovery listed `./tact.toml` while user-global /
+`.tact/` paths already used `config.toml`, which was easy to misplace.
+
+**Decision:** Search `./config.toml` instead of `./tact.toml`. Rename
+`tact.example.toml` → `config.example.toml`.
+
+**Behavior after:** Discovery order is `./.tact/config.toml`, `./config.toml`,
+`~/.tact/config.toml`. Explicit `--config` unchanged.
+
+**Pointers:** `crates/tact/src/config/load.rs`, `book/21_chapter_config*.md`,
+`config.example.toml`.
+
+---
+
+## 4. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+
+**Symptom / motivation:** End-of-session `eprintln` of `SessionStats::summary()`
+printed unpadded GFM (`| Elapsed | 1.2s |` next to longer metric names), so
+pipe columns did not line up in the terminal after `tact-ui` exited.
+
+**Decision:** Keep GFM pipe tables for tui-markdown. Pad header / body cells to
+the per-column max width (right-align numeric columns from `:` separators).
+
+**Behavior after:** CLI / headless / TUI exit summaries show aligned columns in
+monospace; `/stats` popup still renders via tui-markdown box tables.
+
+**Pointers:** `crates/tact/src/stats.rs`, `docs/token_usage_schema.md`
+(Session Stats Display).
+
+---
+
+## 5. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
 
 | Field | Value |
 |-------|-------|
@@ -49,11 +149,11 @@ order: `.tact/skills` → `~/.tact/skills` → `~/.agents/skills` → `.claude/s
 same-named standalone skills. Bare `<workdir>/skills/` is no longer scanned.
 
 **Pointers:** `crates/tact/src/consts.rs`, `crates/tact/src/skill/mod.rs`,
-`crates/tact/src/config/types.rs`, `tact.example.toml`, Ch 2.
+`crates/tact/src/config/types.rs`, `config.example.toml`, Ch 2.
 
 ---
 
-## 2. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
+## 6. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
 
 | Field | Value |
 |-------|-------|
@@ -76,7 +176,7 @@ text wraps cleanly at any panel width. Namespace names (`plugin:skill`) unchange
 
 ---
 
-## 3. 2026-07-24 — Session Stats as GFM tables via tui-markdown
+## 7. 2026-07-24 — Session Stats as GFM tables via tui-markdown
 
 | Field | Value |
 |-------|-------|
@@ -101,14 +201,14 @@ summaries are GFM markdown. Counters and visibility rules unchanged.
 
 ---
 
-## 4. 2026-07-24 — Session Stats rendered with comfy-table
+## 8. 2026-07-24 — Session Stats rendered with comfy-table
 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
 | **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
-| **Superseded by** | §3 (GFM + tui-markdown) |
+| **Superseded by** | §7 (GFM + tui-markdown) |
 
 **Symptom / motivation:** End-of-session Tool calls rows used ad-hoc space
 padding, so columns drifted as names and timings grew.
@@ -117,7 +217,7 @@ padding, so columns drifted as names and timings grew.
 Metric/Value table, an optional Tool calls table
 (`Tool | Count(s/f) | Total | Avg`), then a trailing Metric/Value table for
 tool aggregates / cache / reasoning. *(Originally used `comfy-table` UTF8
-boxes; that path conflicted with TUI markdown — see §3.)*
+boxes; that path conflicted with TUI markdown — see §7.)*
 
 **Behavior after:** Same counters and visibility rules; layout is aligned
 tables instead of free-form lines.
@@ -127,7 +227,7 @@ tables instead of free-form lines.
 
 ---
 
-## 5. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 9. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -149,7 +249,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 6. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 10. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -211,6 +311,28 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 | Approx tokens | `crates/tact/src/utils/truncate.rs` |
 | Tool chapter | [Ch 7](./07_chapter_tool.md) |
 | Compaction / spill | [Ch 5](./05_chapter_compact.md), `docs/compaction.md` |
+
+---
+
+## 11. 2026-07-24 — Bottom bar visual polish
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+
+**Symptom / motivation:** The bottom bar mixed emoji, long bilingual labels (`Elapsed:`, `Balance:`, `cache hit:`), and mixed separators (`│` / `|`). Both rows used a single `Paragraph` style, giving flat color hierarchy that was hard to scan.
+
+**Decision:** Replace emoji with narrow Unicode icons (`◷`, `⊙`, `⎇`, `¤`, `∑`, `▣`). Unify separators to ` · `. Compact model limits to `8k/32k` format and collapse verbose balance/quota strings. Render with ratatui `Line` / `Span` segments: dim icons & separators, bright primary values, accent branch, success/error balance.
+
+**Behavior after:** Two-row bottom bar with consistent iconography and color hierarchy. Pure formatting helpers (`format_model_compact`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`) are unit-testable without a terminal. Narrow-width drop order removes uptime → path on row 1, cache → tokens → meter on row 2.
+
+| Area | Path |
+|------|------|
+| Spec | `docs/superpowers/specs/2026-07-24-bottom-bar-polish-design.md` |
+| Plan | `docs/superpowers/plans/2026-07-24-bottom-bar-polish.md` |
+| Implementation | `crates/tui/src/render/bar.rs`, `crates/tui/src/i18n.rs` |
+| Docs | `docs/tui_rendering.md` (Bottom Bar section) |
+| Rendering framework | [Ch 23](./23_chapter_tui.md) |
 
 ---
 
