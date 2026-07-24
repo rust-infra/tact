@@ -35,6 +35,10 @@ pub use content::{
 pub use error::{LlmError, MessageError};
 pub use hook_select::body_hook_for;
 pub use mock::MockClient;
+pub use models::{
+    clear_models_cache_for_tests, ensure_api_model_ids, is_models_query_supported,
+    merge_model_candidates, seed_models_cache_for_tests,
+};
 pub use openai::{current_reasoning_effort_from_budget, reasoning_effort_from_budget};
 pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
