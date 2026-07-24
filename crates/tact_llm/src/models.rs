@@ -62,7 +62,8 @@ pub async fn ensure_api_model_ids() -> Vec<String> {
     {
         let guard = CACHE.lock().expect("models cache poisoned");
         if let Some(c) = guard.as_ref()
-            && c.base_url == base_url && c.api_key == api_key
+            && c.base_url == base_url
+            && c.api_key == api_key
         {
             return c.ids.clone();
         }

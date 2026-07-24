@@ -153,7 +153,11 @@ impl SessionStats {
 
         let mut head = new_stats_table();
         head.set_header(vec!["Metric", "Value"]);
-        add_metric_row(&mut head, "Elapsed", fmt_duration(self.start_time.elapsed()));
+        add_metric_row(
+            &mut head,
+            "Elapsed",
+            fmt_duration(self.start_time.elapsed()),
+        );
         add_metric_row(&mut head, "LLM API calls", self.prompt_count.to_string());
         add_metric_row(
             &mut head,
@@ -344,10 +348,22 @@ mod tests {
 
         let text = s.summary();
         assert!(text.contains("Metric"), "missing metrics header:\n{text}");
-        assert!(text.contains("Value"), "missing metrics Value header:\n{text}");
-        assert!(text.contains("Tool calls"), "missing Tool calls label:\n{text}");
-        assert!(text.contains("Count(s/f)"), "missing tools Count header:\n{text}");
+        assert!(
+            text.contains("Value"),
+            "missing metrics Value header:\n{text}"
+        );
+        assert!(
+            text.contains("Tool calls"),
+            "missing Tool calls label:\n{text}"
+        );
+        assert!(
+            text.contains("Count(s/f)"),
+            "missing tools Count header:\n{text}"
+        );
         assert!(text.contains("bash"), "missing tool row:\n{text}");
-        assert!(text.contains("Total"), "missing Total row or Total column:\n{text}");
+        assert!(
+            text.contains("Total"),
+            "missing Total row or Total column:\n{text}"
+        );
     }
 }

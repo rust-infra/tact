@@ -202,8 +202,7 @@ pub(crate) fn start_model_picker(app: &mut App) {
         Vec::new()
     };
 
-    let mut candidates =
-        tact_llm::merge_model_candidates(&settings.llm.models, &api_ids);
+    let mut candidates = tact_llm::merge_model_candidates(&settings.llm.models, &api_ids);
 
     if candidates.is_empty() {
         app.add_system_message(
@@ -365,11 +364,7 @@ mod tests {
     async fn model_picker_empty_then_confirm_sets_model() {
         let _lock = MODELS_TEST_LOCK.lock().await;
         tact_llm::clear_models_cache_for_tests();
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec![],
-        );
+        tact_llm::seed_models_cache_for_tests("https://api.moonshot.cn/v1", "sk-test", vec![]);
         install_models_config(vec![], "kimi-k2.5");
 
         let mut app = make_app();
@@ -413,7 +408,10 @@ mod tests {
         assert!(matches!(app.input_mode, InputMode::Select));
         let options = &app.select.options;
         assert_eq!(
-            options.iter().map(|o| o.trim_end_matches(" *")).collect::<Vec<_>>(),
+            options
+                .iter()
+                .map(|o| o.trim_end_matches(" *"))
+                .collect::<Vec<_>>(),
             vec!["cfg-a", "overlap", "api-only"]
         );
     }
