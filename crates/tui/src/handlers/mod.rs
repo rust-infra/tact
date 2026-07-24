@@ -415,7 +415,7 @@ fn show_skills_command(app: &mut App) {
     );
     app.add_new_line();
 
-    let md = skills_list_markdown(&app.skills_description);
+    let md = skills_list_markdown(&app.skills_data);
     if md.is_empty() {
         let empty = "(no skills available)";
         app.append_msg(
@@ -439,27 +439,25 @@ fn show_skills_command(app: &mut App) {
     }
 }
 
-/// Parse `describe_available` lines into markdown: bold name, then description.
-fn skills_list_markdown(description: &str) -> String {
+/// Build wrap-friendly markdown from structured skill entries.
+fn skills_list_markdown(skills: &[crate::widgets::state::SkillEntry]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut skills: Vec<_> = skills.iter().collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+
     let mut out = String::new();
-    for line in description.lines() {
-        let line = line.trim().trim_start_matches('-').trim();
-        if line.is_empty() || line == "(no skills available)" {
-            continue;
-        }
-        let (name, desc) = match line.split_once(": ") {
-            Some((name, desc)) => (name.trim(), desc.trim()),
-            None => (line, ""),
-        };
-        if !out.is_empty() {
+    for (i, skill) in skills.iter().enumerate() {
+        if i > 0 {
             out.push('\n');
         }
-        // Fenced-looking name as inline code so `/` and `:` stay literal.
+        // Inline code keeps `/` and `:` literal in namespaced skills.
         out.push_str("**`");
-        out.push_str(name);
+        out.push_str(&skill.name);
         out.push_str("`**\n\n");
-        if !desc.is_empty() {
-            out.push_str(desc);
+        if !skill.description.is_empty() {
+            out.push_str(&skill.description);
             out.push('\n');
         }
     }
@@ -547,9 +545,20 @@ mod tests {
     }
 
     #[test]
-    fn skills_list_markdown_parses_describe_available() {
-        let md =
-            skills_list_markdown("- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能");
+    fn skills_list_markdown_from_entries() {
+        let skills = vec![
+            crate::widgets::state::SkillEntry {
+                name: "code-reviewer".into(),
+                description: "代码审查专家".into(),
+                body: String::new(),
+            },
+            crate::widgets::state::SkillEntry {
+                name: "demo-test".into(),
+                description: "测试 skill 加载功能".into(),
+                body: String::new(),
+            },
+        ];
+        let md = skills_list_markdown(&skills);
         assert!(
             md.contains("**`code-reviewer`**"),
             "missing bold name:\n{md}"
@@ -568,7 +577,12 @@ mod tests {
 
     #[test]
     fn skills_list_markdown_preserves_namespaced_skill_name() {
-        let md = skills_list_markdown("- plugin:skill: Plugin-provided skill");
+        let skills = vec![crate::widgets::state::SkillEntry {
+            name: "plugin:skill".into(),
+            description: "Plugin-provided skill".into(),
+            body: String::new(),
+        }];
+        let md = skills_list_markdown(&skills);
         assert!(
             md.contains("**`plugin:skill`**"),
             "namespaced name broken:\n{md}"
@@ -580,15 +594,26 @@ mod tests {
     }
 
     #[test]
-    fn skills_list_markdown_empty_description_is_empty() {
-        let md = skills_list_markdown("(no skills available)");
+    fn skills_list_markdown_empty_is_empty() {
+        let md = skills_list_markdown(&[]);
         assert!(md.is_empty(), "expected empty markdown, got:\n{md}");
     }
 
     #[test]
     fn skills_command_adds_separators_around_list() {
         let (mut app, _rx) = make_app();
-        app.skills_description = "- code-reviewer: 代码审查专家\n- demo-test: 测试".to_string();
+        app.skills_data = vec![
+            crate::widgets::state::SkillEntry {
+                name: "code-reviewer".into(),
+                description: "代码审查专家".into(),
+                body: String::new(),
+            },
+            crate::widgets::state::SkillEntry {
+                name: "demo-test".into(),
+                description: "测试".into(),
+                body: String::new(),
+            },
+        ];
         let before = app.raw_messages.len();
         execute_palette_command(&mut app, "skills");
         let after_first = app.raw_messages.len();

@@ -147,7 +147,7 @@ pub(super) fn resolve_non_llm_settings(
     let skill_body_auto_inject =
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let skill_dirs = toml_cfg.agent.skill_dirs.clone().unwrap_or_default();
+    let skill_dirs = toml_cfg.agent.skill_dirs.clone();
 
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
@@ -265,7 +265,7 @@ pub(super) fn resolve_config(
     let skill_body_auto_inject =
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
-    let skill_dirs = toml_cfg.agent.skill_dirs.clone().unwrap_or_default();
+    let skill_dirs = toml_cfg.agent.skill_dirs.clone();
 
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())

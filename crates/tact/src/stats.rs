@@ -106,12 +106,30 @@ fn md_cell(s: &str) -> String {
     s.replace('|', "\\|")
 }
 
-fn write_metric_table(out: &mut String, rows: &[(&str, String)]) {
-    let _ = writeln!(out, "| Metric | Value |");
-    let _ = writeln!(out, "|--------|------:|");
-    for (metric, value) in rows {
-        let _ = writeln!(out, "| {} | {} |", md_cell(metric), md_cell(value));
+fn write_gfm_table(out: &mut String, headers: &[&str], aligns: &[&str], rows: &[Vec<String>]) {
+    debug_assert_eq!(headers.len(), aligns.len());
+    let _ = writeln!(
+        out,
+        "| {} |",
+        headers
+            .iter()
+            .map(|h| md_cell(h))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    let _ = writeln!(out, "|{}|", aligns.join("|"));
+    for row in rows {
+        let cells: Vec<String> = row.iter().map(|c| md_cell(c)).collect();
+        let _ = writeln!(out, "| {} |", cells.join(" | "));
     }
+}
+
+fn write_metric_table(out: &mut String, rows: &[(&str, String)]) {
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(metric, value)| vec![(*metric).to_string(), value.clone()])
+        .collect();
+    write_gfm_table(out, &["Metric", "Value"], &["--------", "------:"], &body);
 }
 
 impl SessionStats {
@@ -132,19 +150,12 @@ impl SessionStats {
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
         let _ = writeln!(out);
 
-        let total_llm_ms: f64 = self
-            .llm_call_durations
-            .iter()
-            .map(|d| d.as_secs_f64() * 1000.0)
-            .sum();
+        let total_llm: Duration = self.llm_call_durations.iter().copied().sum();
 
         let head_rows: Vec<(&str, String)> = vec![
             ("Elapsed", fmt_duration(self.start_time.elapsed())),
             ("LLM API calls", self.prompt_count.to_string()),
-            (
-                "Total LLM time",
-                fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0)),
-            ),
+            ("Total LLM time", fmt_duration(total_llm)),
             ("Prompt chars sent", self.total_prompt_chars.to_string()),
             ("Response chars rcvd", self.total_response_chars.to_string()),
             ("Thinking blocks", self.thinking_blocks.to_string()),
@@ -161,17 +172,12 @@ impl SessionStats {
             let total_success: u64 = self.tool_success_counts.values().sum();
             let total_failure: u64 = self.tool_failure_counts.values().sum();
 
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Tool calls");
-            let _ = writeln!(out);
-            let _ = writeln!(out, "| Tool | Count(s/f) | Total | Avg |");
-            let _ = writeln!(out, "|------|-----------:|------:|----:|");
-            let _ = writeln!(
-                out,
-                "| {} | {} |  |  |",
-                md_cell("Total"),
-                md_cell(&fmt_count_sf(total_tool, total_success, total_failure))
-            );
+            let mut tool_rows = vec![vec![
+                "Total".to_string(),
+                fmt_count_sf(total_tool, total_success, total_failure),
+                String::new(),
+                String::new(),
+            ]];
 
             for (name, count) in counts {
                 let success = self
@@ -199,15 +205,23 @@ impl SessionStats {
                 } else {
                     0.0
                 };
-                let _ = writeln!(
-                    out,
-                    "| {} | {} | {} | {} |",
-                    md_cell(name),
-                    md_cell(&fmt_count_sf(*count, success, failure)),
-                    md_cell(&fmt_tool_wall_ms(total_ms)),
-                    md_cell(&format!("{avg_ms:.0}ms"))
-                );
+                tool_rows.push(vec![
+                    name.clone(),
+                    fmt_count_sf(*count, success, failure),
+                    fmt_tool_wall_ms(total_ms),
+                    format!("{avg_ms:.0}ms"),
+                ]);
             }
+
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Tool calls");
+            let _ = writeln!(out);
+            write_gfm_table(
+                &mut out,
+                &["Tool", "Count(s/f)", "Total", "Avg"],
+                &["------", "-----------:", "------:", "----:"],
+                &tool_rows,
+            );
         }
 
         let has_tool_timings = !self.tool_durations_ms.is_empty();
@@ -229,11 +243,7 @@ impl SessionStats {
 
             if has_cache {
                 let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
-                let hit_rate = if cache_total > 0 {
-                    (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
-                } else {
-                    0.0
-                };
+                let hit_rate = (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0;
                 trail_rows.push(("Cache hit tokens", self.cache_hit_tokens.to_string()));
                 trail_rows.push(("Cache miss tokens", self.cache_miss_tokens.to_string()));
                 trail_rows.push(("Cache hit rate", format!("{hit_rate:.1}%")));

@@ -76,7 +76,10 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
             if trimmed.is_empty() {
                 continue;
             }
-            dirs.push(resolve_skill_dir(trimmed, workdir));
+            let path = resolve_skill_dir(trimmed, workdir);
+            if !dirs.iter().any(|d| d == &path) {
+                dirs.push(path);
+            }
         }
     }
     let mut registry = SkillRegistry::new(dirs);
@@ -89,16 +92,16 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
 }
 
 /// Resolve a configured skill root: `~` / `~/…` via `$HOME`, else relative to `workdir`.
-pub fn resolve_skill_dir(raw: &str, workdir: &Path) -> PathBuf {
-    if raw == "~" {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("~"));
-    }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(rest))
-            .unwrap_or_else(|| PathBuf::from(raw));
+fn resolve_skill_dir(raw: &str, workdir: &Path) -> PathBuf {
+    if raw == "~" || raw.starts_with("~/") {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return PathBuf::from(raw);
+        };
+        return if raw == "~" {
+            home
+        } else {
+            home.join(&raw[2..])
+        };
     }
     let path = PathBuf::from(raw);
     if path.is_absolute() {
@@ -134,7 +137,7 @@ impl SkillRegistry {
     pub fn load_skills(&mut self) -> Result<()> {
         self.skills.clear();
 
-        // Later directories win on name clash: legacy → user → project.
+        // Later directories in `skill_dirs` win on name clash.
         let dirs = self.skill_dirs.clone();
         for dir in dirs {
             self.load_skills_from_dir(&dir)?;

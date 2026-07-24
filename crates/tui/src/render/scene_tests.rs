@@ -361,8 +361,18 @@ fn status_bar_executing_shows_progress_hint() {
 fn full_frame_skills_command_renders_list_with_separator() {
     let mut app = make_app();
     app.plan.visible = false;
-    app.skills_description =
-        "- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能".to_string();
+    app.skills_data = vec![
+        crate::widgets::state::SkillEntry {
+            name: "code-reviewer".into(),
+            description: "代码审查专家".into(),
+            body: String::new(),
+        },
+        crate::widgets::state::SkillEntry {
+            name: "demo-test".into(),
+            description: "测试 skill 加载功能".into(),
+            body: String::new(),
+        },
+    ];
 
     execute_palette_command(&mut app, "skills");
     execute_palette_command(&mut app, "skills");

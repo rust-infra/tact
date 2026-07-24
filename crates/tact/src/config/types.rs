@@ -90,7 +90,8 @@ pub struct AgentTomlConfig {
 
     /// Extra skill root directories (optional). Each should contain `*/SKILL.md`.
     /// Relative paths are resolved against the workdir; `~` expands to `$HOME`.
-    pub skill_dirs: Option<Vec<String>>,
+    #[serde(default)]
+    pub skill_dirs: Vec<String>,
 
     /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
     ///
