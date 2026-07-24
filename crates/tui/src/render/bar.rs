@@ -123,7 +123,7 @@ fn format_cache_pct(hit: u64, miss: u64) -> String {
     if total == 0 {
         format!("{}--", ICON_CACHE)
     } else {
-        let pct = hit.saturating_mul(100) / total;
+        let pct = hit.saturating_mul(100).checked_div(total).unwrap_or(0);
         format!("{}{}%", ICON_CACHE, pct)
     }
 }
@@ -253,45 +253,48 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let mut row1_groups: Vec<DropGroup> = Vec::new();
-    // Focus
-    row1_groups.push(DropGroup {
-        droppable: false,
-        spans: vec![
-            Span::styled(focus.to_string(), primary),
-            Span::styled(" · ", dim),
-        ],
-    });
-    // Elapsed: ◷ MM:SS
-    row1_groups.push(DropGroup {
-        droppable: false,
-        spans: vec![
-            Span::styled(ICON_ELAPSED.to_string(), dim),
-            Span::styled(format!(" {} · ", elapsed), primary),
-        ],
-    });
-    // Path (droppable)
-    row1_groups.push(DropGroup {
-        droppable: true,
-        spans: vec![Span::styled(format!("{} · ", app.workspace_dir), secondary)],
-    });
-    // Uptime: ⊙ HH:MM:SS (droppable — dropped before path per spec)
-    row1_groups.push(DropGroup {
-        droppable: true,
-        spans: vec![Span::styled(
-            format!("{} {} · ", ICON_UPTIME, uptime),
-            secondary,
-        )],
-    });
-    // Branch: ⎇ branchname
-    row1_groups.push(DropGroup {
-        droppable: false,
-        spans: vec![
-            Span::styled(ICON_BRANCH.to_string(), dim),
-            Span::styled(format!(" {}", branch), accent),
-        ],
-    });
+    #[allow(clippy::vec_init_then_push)]
+    let mut row1_groups: Vec<DropGroup> = vec![
+        // Focus
+        DropGroup {
+            droppable: false,
+            spans: vec![
+                Span::styled(focus.to_string(), primary),
+                Span::styled(" · ", dim),
+            ],
+        },
+        // Elapsed: ◷ MM:SS
+        DropGroup {
+            droppable: false,
+            spans: vec![
+                Span::styled(ICON_ELAPSED.to_string(), dim),
+                Span::styled(format!(" {} · ", elapsed), primary),
+            ],
+        },
+        // Path (droppable)
+        DropGroup {
+            droppable: true,
+            spans: vec![Span::styled(format!("{} · ", app.workspace_dir), secondary)],
+        },
+        // Uptime: ⊙ HH:MM:SS (droppable — dropped before path per spec)
+        DropGroup {
+            droppable: true,
+            spans: vec![Span::styled(
+                format!("{} {} · ", ICON_UPTIME, uptime),
+                secondary,
+            )],
+        },
+        // Branch: ⎇ branchname
+        DropGroup {
+            droppable: false,
+            spans: vec![
+                Span::styled(ICON_BRANCH.to_string(), dim),
+                Span::styled(format!(" {}", branch), accent),
+            ],
+        },
+    ];
     // Account (if present, never dropped)
+    #[allow(clippy::vec_init_then_push)]
     if let Some(acct_spans) = build_account_spans(app, theme) {
         row1_groups.push(DropGroup {
             droppable: false,
@@ -316,26 +319,27 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         app.status_bar.token_cache_miss.into(),
     );
 
-    let mut row2_groups: Vec<DropGroup> = Vec::new();
-    // Model + context meter
-    row2_groups.push(DropGroup {
-        droppable: false,
-        spans: vec![Span::styled(model, primary)],
-    });
-    row2_groups.push(DropGroup {
-        droppable: true,
-        spans: vec![Span::styled(" · ", dim), Span::styled(meter, primary)],
-    });
-    // Token total (droppable after cache)
-    row2_groups.push(DropGroup {
-        droppable: true,
-        spans: vec![Span::styled(" · ", dim), Span::styled(token_str, secondary)],
-    });
-    // Cache hit (most droppable)
-    row2_groups.push(DropGroup {
-        droppable: true,
-        spans: vec![Span::styled(" · ", dim), Span::styled(cache_str, secondary)],
-    });
+    let mut row2_groups: Vec<DropGroup> = vec![
+        // Model + context meter
+        DropGroup {
+            droppable: false,
+            spans: vec![Span::styled(model, primary)],
+        },
+        DropGroup {
+            droppable: true,
+            spans: vec![Span::styled(" · ", dim), Span::styled(meter, primary)],
+        },
+        // Token total (droppable after cache)
+        DropGroup {
+            droppable: true,
+            spans: vec![Span::styled(" · ", dim), Span::styled(token_str, secondary)],
+        },
+        // Cache hit (most droppable)
+        DropGroup {
+            droppable: true,
+            spans: vec![Span::styled(" · ", dim), Span::styled(cache_str, secondary)],
+        },
+    ];
 
     fit_row_spans(area.width, &mut row1_groups);
     fit_row_spans(area.width, &mut row2_groups);
