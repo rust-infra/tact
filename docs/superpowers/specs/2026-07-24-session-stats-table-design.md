@@ -18,14 +18,17 @@ Related: `docs/token_usage_schema.md` (Session Stats Display), `crates/tact/src/
 - Changing which metrics are collected or persisted.
 - Changing zero-value hiding rules for cache / reasoning / empty tool list.
 - Color / ANSI styling in the summary string (must stay plain for logs and TUI).
-- Using `pretty-table` (rejected: stdout-oriented API; weaker fit for String
-  return). Using `tabled` (heavier than needed for this surface).
+- Using `pretty-table` / `tabled` / `comfy-table` for the summary string
+  (rejected for the TUI path: pre-drawn box characters collapse under
+  markdown soft-break rules).
 
 ## Approach
 
-Depend on **comfy-table**. Build two `Table`s inside `summary()`, format via
-`Display` (`format!("{table}")`), concatenate with the existing
-`── Session Stats ──` banner lines.
+Emit **GFM pipe tables** from `SessionStats::summary()`. The TUI passes the
+string through `render_markdown_tui` / [tui-markdown](https://github.com/joshka/tui-markdown),
+which renders GFM tables with Unicode box-drawing borders and column alignment.
+CLI / headless print the same markdown source. No table-drawing crate in
+`crates/tact`.
 
 ## Layout contract
 
@@ -33,11 +36,11 @@ Depend on **comfy-table**. Build two `Table`s inside `summary()`, format via
 
 ```text
 ── Session Stats ─────────────────────────────
-<metrics table>
+
+<metrics GFM table>
 [<blank line>]
-[<optional "Tool calls" label + tools table>]
-[optional total/avg tool time rows — see below]
-[optional cache / reasoning rows — see below]
+[<optional "Tool calls" label + tools GFM table>]
+[<optional trailing metrics GFM table>]
 ─────────────────────────────────────────────
 ```
 
@@ -73,9 +76,8 @@ table. Prefer **(b)** so headers stay clear and order matches current UX.
 | Metric | Left | Label strings matching today’s wording |
 | Value | Right | Same formatting as today (`fmt_duration`, counts, `%.1ms`, `%.1%`) |
 
-Style: UTF8 box preset, **no** colors / attributes. Call `force_no_tty()` (or
-equivalent) so width does not depend on ambient terminal size when the string
-is built off a TTY.
+Emit GFM with a right-aligned Value column (`|------:|`). No ANSI colors.
+Box drawing is left to tui-markdown at TUI render time.
 
 ### Tools table
 
@@ -89,29 +91,31 @@ Shown only when `tool_counts` is non-empty. Sorted by tool name (unchanged).
 | Avg | Right | Average ms; empty on Total row |
 
 Always print a short plain-text label `Tool calls` above the tools table
-(not a library caption).
+(not a library caption). Escape `|` inside cell text.
 
 ## Architecture
 
 | Piece | Responsibility |
 |-------|----------------|
-| Workspace / `crates/tact` dep | Add `comfy-table` |
-| `SessionStats::summary` | Build tables + banner; return `String` |
-| Small private helpers | Duration / count cell formatting; shared table style setup |
-| Call sites | Unchanged (`tact-ui` driver, TUI `AgentUpdate` handler) |
+| `SessionStats::summary` | Build GFM tables + banner; return `String` |
+| Small private helpers | Duration / count formatting; `md_cell` escape |
+| TUI `AgentUpdate::SessionStats` | `render_markdown_tui` (tui-markdown tables) |
+| Call sites | Unchanged (`tact-ui` driver, TUI handler) |
 
 ## Testing
 
 - Keep existing `fmt_duration` and `record_token_usage` smoke tests.
-- Extend smoke / add a focused test that a populated `SessionStats` summary
-  contains metrics header `Metric` and, when tools present, tools header
-  `Tool` / `Count(s/f)`.
+- Focused test: populated summary contains GFM headers
+  `| Metric | Value |` and, when tools present,
+  `| Tool | Count(s/f) | Total | Avg |`.
+- TUI popup test: GFM stats string expands to box-border lines via
+  `render_markdown_tui`.
 
 ## Docs sync
 
 - Update the Session Stats Display example in `docs/token_usage_schema.md`.
-- Append bilingual Ch 26 entries (`book/26_chapter_issue.md` + `_zh.md`) as
-  type `optimization` for the user-visible layout change.
+- Append bilingual Ch 26 entries (`book/26_chapter_issue.md` + `_zh.md`) for
+  the user-visible layout change.
 
 ## Out of scope for follow-ups
 

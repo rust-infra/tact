@@ -114,7 +114,7 @@ config::init()
   → dispatch headless or interactive
 Create LLM client
   → Resolve PermissionMode (permission.rs / TUI prompt)
-  → Scan skill roots (legacy skills/ → ~/.tact/skills → .claude/skills)
+  → Scan skill roots (.tact/skills → ~/.tact/skills → ~/.agents/skills → .claude/skills → agent.skill_dirs)
   → Create .claude StoreRoot
   → Initialize task/background/cron/team/worktree managers
   → Initialize memory manager
@@ -445,9 +445,11 @@ The main agent builds a dynamic prompt each loop. Subagents use a static prompt 
 The skill system scans (later root wins on name clash):
 
 ```text
-<workdir>/skills/*/SKILL.md          # legacy
+<workdir>/.tact/skills/*/SKILL.md    # project-local
 ~/.tact/skills/*/SKILL.md            # user
-<workdir>/.claude/skills/*/SKILL.md  # project (canonical)
+~/.agents/skills/*/SKILL.md          # global agents
+<workdir>/.claude/skills/*/SKILL.md  # project (Claude-compatible)
+# plus optional [agent].skill_dirs from config
 ```
 
 At startup, only skill summaries go into the system prompt (`describe_available`). Full content is loaded on demand via `load_skill`, or injected as a user task from the TUI when the user runs `/skill-name` (see book Ch 2 / Ch 23).

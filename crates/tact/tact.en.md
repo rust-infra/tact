@@ -103,7 +103,7 @@ config::init() + session store (main.rs)
   -> dispatch interactive or headless
 create LLM client
   -> resolve PermissionMode (permission.rs / TUI)
-  -> scan skill roots (legacy skills/ → ~/.tact/skills → .claude/skills)
+  -> scan skill roots (.tact/skills → ~/.tact/skills → ~/.agents/skills → .claude/skills → agent.skill_dirs)
   -> create .claude StoreRoot
   -> initialize task/background/cron/team/worktree managers
   -> initialize memory manager

@@ -4,7 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::UTF8_FULL};
 use tact_protocol::TokenUsageInfo;
 
 /// Tracks per-session statistics for the agent runtime.
@@ -90,36 +89,6 @@ fn fmt_duration(d: Duration) -> String {
     }
 }
 
-fn new_stats_table() -> Table {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Disabled)
-        .force_no_tty();
-    table
-}
-
-fn right_align_value_column(table: &mut Table) {
-    if let Some(col) = table.column_mut(1) {
-        col.set_cell_alignment(CellAlignment::Right);
-    }
-}
-
-fn right_align_tool_numeric_columns(table: &mut Table) {
-    for idx in 1..=3 {
-        if let Some(col) = table.column_mut(idx) {
-            col.set_cell_alignment(CellAlignment::Right);
-        }
-    }
-}
-
-fn add_metric_row(table: &mut Table, metric: &str, value: impl Into<String>) {
-    table.add_row(vec![
-        Cell::new(metric),
-        Cell::new(value.into()).set_alignment(CellAlignment::Right),
-    ]);
-}
-
 fn fmt_tool_wall_ms(total_ms: u64) -> String {
     if total_ms >= 1000 {
         format!("{:.1}s", total_ms as f64 / 1000.0)
@@ -132,6 +101,19 @@ fn fmt_count_sf(count: u64, success: u64, failure: u64) -> String {
     format!("{count} ({success}/{failure})")
 }
 
+/// Escape cell text for GFM pipe tables (consumed by tui-markdown in the TUI).
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|")
+}
+
+fn write_metric_table(out: &mut String, rows: &[(&str, String)]) {
+    let _ = writeln!(out, "| Metric | Value |");
+    let _ = writeln!(out, "|--------|------:|");
+    for (metric, value) in rows {
+        let _ = writeln!(out, "| {} | {} |", md_cell(metric), md_cell(value));
+    }
+}
+
 impl SessionStats {
     /// Accumulate token usage info from an LLM call (streaming or compaction).
     pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
@@ -141,9 +123,14 @@ impl SessionStats {
     }
 
     /// Produce a human-readable summary of all recorded statistics.
+    ///
+    /// Tables are GFM pipe markdown so the TUI can render them via
+    /// `tui-markdown` (Unicode box borders + alignment). CLI / headless
+    /// print the same markdown source.
     pub fn summary(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
+        let _ = writeln!(out);
 
         let total_llm_ms: f64 = self
             .llm_call_durations
@@ -151,42 +138,20 @@ impl SessionStats {
             .map(|d| d.as_secs_f64() * 1000.0)
             .sum();
 
-        let mut head = new_stats_table();
-        head.set_header(vec!["Metric", "Value"]);
-        add_metric_row(
-            &mut head,
-            "Elapsed",
-            fmt_duration(self.start_time.elapsed()),
-        );
-        add_metric_row(&mut head, "LLM API calls", self.prompt_count.to_string());
-        add_metric_row(
-            &mut head,
-            "Total LLM time",
-            fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0)),
-        );
-        add_metric_row(
-            &mut head,
-            "Prompt chars sent",
-            self.total_prompt_chars.to_string(),
-        );
-        add_metric_row(
-            &mut head,
-            "Response chars rcvd",
-            self.total_response_chars.to_string(),
-        );
-        add_metric_row(
-            &mut head,
-            "Thinking blocks",
-            self.thinking_blocks.to_string(),
-        );
-        add_metric_row(
-            &mut head,
-            "Thinking chars",
-            self.total_thinking_chars.to_string(),
-        );
-        add_metric_row(&mut head, "Compactions", self.compactions.to_string());
-        right_align_value_column(&mut head);
-        let _ = writeln!(out, "{head}");
+        let head_rows: Vec<(&str, String)> = vec![
+            ("Elapsed", fmt_duration(self.start_time.elapsed())),
+            ("LLM API calls", self.prompt_count.to_string()),
+            (
+                "Total LLM time",
+                fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0)),
+            ),
+            ("Prompt chars sent", self.total_prompt_chars.to_string()),
+            ("Response chars rcvd", self.total_response_chars.to_string()),
+            ("Thinking blocks", self.thinking_blocks.to_string()),
+            ("Thinking chars", self.total_thinking_chars.to_string()),
+            ("Compactions", self.compactions.to_string()),
+        ];
+        write_metric_table(&mut out, &head_rows);
 
         if !self.tool_counts.is_empty() {
             let mut counts: Vec<_> = self.tool_counts.iter().collect();
@@ -196,15 +161,17 @@ impl SessionStats {
             let total_success: u64 = self.tool_success_counts.values().sum();
             let total_failure: u64 = self.tool_failure_counts.values().sum();
 
-            let mut tools = new_stats_table();
-            tools.set_header(vec!["Tool", "Count(s/f)", "Total", "Avg"]);
-            tools.add_row(vec![
-                Cell::new("Total"),
-                Cell::new(fmt_count_sf(total_tool, total_success, total_failure))
-                    .set_alignment(CellAlignment::Right),
-                Cell::new(""),
-                Cell::new(""),
-            ]);
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Tool calls");
+            let _ = writeln!(out);
+            let _ = writeln!(out, "| Tool | Count(s/f) | Total | Avg |");
+            let _ = writeln!(out, "|------|-----------:|------:|----:|");
+            let _ = writeln!(
+                out,
+                "| {} | {} |  |  |",
+                md_cell("Total"),
+                md_cell(&fmt_count_sf(total_tool, total_success, total_failure))
+            );
 
             for (name, count) in counts {
                 let success = self
@@ -232,19 +199,15 @@ impl SessionStats {
                 } else {
                     0.0
                 };
-                tools.add_row(vec![
-                    Cell::new(name.as_str()),
-                    Cell::new(fmt_count_sf(*count, success, failure))
-                        .set_alignment(CellAlignment::Right),
-                    Cell::new(fmt_tool_wall_ms(total_ms)).set_alignment(CellAlignment::Right),
-                    Cell::new(format!("{avg_ms:.0}ms")).set_alignment(CellAlignment::Right),
-                ]);
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} |",
+                    md_cell(name),
+                    md_cell(&fmt_count_sf(*count, success, failure)),
+                    md_cell(&fmt_tool_wall_ms(total_ms)),
+                    md_cell(&format!("{avg_ms:.0}ms"))
+                );
             }
-            right_align_tool_numeric_columns(&mut tools);
-
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Tool calls");
-            let _ = writeln!(out, "{tools}");
         }
 
         let has_tool_timings = !self.tool_durations_ms.is_empty();
@@ -252,18 +215,16 @@ impl SessionStats {
         let has_reasoning = self.reasoning_tokens > 0;
 
         if has_tool_timings || has_cache || has_reasoning {
-            let mut trail = new_stats_table();
-            trail.set_header(vec!["Metric", "Value"]);
+            let mut trail_rows: Vec<(&str, String)> = Vec::new();
 
             if has_tool_timings {
                 let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
                 let avg_ms = total_tool_ms as f64 / self.tool_durations_ms.len() as f64;
-                add_metric_row(
-                    &mut trail,
+                trail_rows.push((
                     "Total tool time",
                     fmt_duration(Duration::from_millis(total_tool_ms)),
-                );
-                add_metric_row(&mut trail, "Avg tool time", format!("{avg_ms:.1}ms"));
+                ));
+                trail_rows.push(("Avg tool time", format!("{avg_ms:.1}ms")));
             }
 
             if has_cache {
@@ -273,29 +234,17 @@ impl SessionStats {
                 } else {
                     0.0
                 };
-                add_metric_row(
-                    &mut trail,
-                    "Cache hit tokens",
-                    self.cache_hit_tokens.to_string(),
-                );
-                add_metric_row(
-                    &mut trail,
-                    "Cache miss tokens",
-                    self.cache_miss_tokens.to_string(),
-                );
-                add_metric_row(&mut trail, "Cache hit rate", format!("{hit_rate:.1}%"));
+                trail_rows.push(("Cache hit tokens", self.cache_hit_tokens.to_string()));
+                trail_rows.push(("Cache miss tokens", self.cache_miss_tokens.to_string()));
+                trail_rows.push(("Cache hit rate", format!("{hit_rate:.1}%")));
             }
 
             if has_reasoning {
-                add_metric_row(
-                    &mut trail,
-                    "Reasoning tokens",
-                    self.reasoning_tokens.to_string(),
-                );
+                trail_rows.push(("Reasoning tokens", self.reasoning_tokens.to_string()));
             }
 
-            right_align_value_column(&mut trail);
-            let _ = writeln!(out, "{trail}");
+            let _ = writeln!(out);
+            write_metric_table(&mut out, &trail_rows);
         }
 
         let _ = writeln!(out, "─────────────────────────────────────────────");
@@ -336,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_uses_metric_and_tool_tables() {
+    fn summary_uses_gfm_metric_and_tool_tables() {
         let mut s = SessionStats {
             prompt_count: 1,
             ..Default::default()
@@ -349,23 +298,30 @@ mod tests {
         s.tool_durations_ms.extend([1000, 500]);
 
         let text = s.summary();
-        assert!(text.contains("Metric"), "missing metrics header:\n{text}");
         assert!(
-            text.contains("Value"),
-            "missing metrics Value header:\n{text}"
+            text.contains("| Metric | Value |"),
+            "missing metrics GFM header:\n{text}"
+        );
+        assert!(
+            text.contains("|--------|------:|"),
+            "missing metrics alignment row:\n{text}"
         );
         assert!(
             text.contains("Tool calls"),
             "missing Tool calls label:\n{text}"
         );
         assert!(
-            text.contains("Count(s/f)"),
-            "missing tools Count header:\n{text}"
+            text.contains("| Tool | Count(s/f) | Total | Avg |"),
+            "missing tools GFM header:\n{text}"
         );
         assert!(text.contains("bash"), "missing tool row:\n{text}");
         assert!(
-            text.contains("Total"),
-            "missing Total row or Total column:\n{text}"
+            text.contains("| Total |"),
+            "missing Total row:\n{text}"
+        );
+        assert!(
+            text.contains("Total tool time"),
+            "missing trailing metrics:\n{text}"
         );
     }
 }

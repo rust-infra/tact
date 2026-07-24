@@ -29,17 +29,85 @@
 
 ---
 
-## 1. 2026-07-24 — Session Stats 用 comfy-table 排版
+## 1. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-extra-skill-dirs-design.md` |
+
+**现象 / 动机：** 原先只有固定 skill 根；无法挂共享 / vendor 目录。旧的
+`<workdir>/skills/` 也落在 `.tact/` 之外。
+
+**决策：** `<workdir>/skills/` 改为 `<workdir>/.tact/skills/`。新增可选
+`[agent].skill_dirs = [...]`（相对 workdir；`~` 展开）。加载顺序：
+`.tact/skills` → `~/.tact/skills` → `~/.agents/skills` → `.claude/skills` →
+配置额外目录 → 插件 cache。缺失目录软跳过。
+
+**改后行为：** 配置可追加 skill 根并覆盖同名独立 skill。不再扫描裸
+`<workdir>/skills/`。
+
+**指针：** `crates/tact/src/consts.rs`、`crates/tact/src/skill/mod.rs`、
+`crates/tact/src/config/types.rs`、`tact.example.toml`、第 2 章。
+
+---
+
+## 2. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+
+**现象 / 动机：** `/skills` 经 `format_table` 画 Skill/Description 表。长
+frontmatter 描述使行宽超过 log 面板，视觉换行把 `|` 列拆碎，难以阅读。
+
+**决策：** 保留标题块与空行分隔。输出易换行的 markdown（`**\`name\`**` + 描述
+段落），经 `render_markdown_tui` / tui-markdown 渲染。此处**不用** GFM 表（与
+Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
+
+**改后行为：** `/skills` 每个 skill 一块名称 + 描述；任意面板宽度下自然折行。
+命名空间名（`plugin:skill`）不变。
+
+**指针：** `crates/tui/src/handlers/mod.rs`（`show_skills_command`、
+`skills_list_markdown`）。
+
+---
+
+## 3. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+
+**现象 / 动机：** `/stats` 把 comfy-table UTF8 框线文本丢进 `render_markdown_tui`。
+软换行变空格，整张表挤成一行再 wrap，弹窗里乱成一团。
+
+**决策：** 保持 `SessionStats::summary() -> String`。输出 **GFM pipe 表格**
+（数值列右对齐）。TUI 继续走 `render_markdown_tui` /
+[tui-markdown](https://github.com/joshka/tui-markdown) 的表格渲染（Unicode 框线）。
+移除 `comfy-table` 依赖。CLI / headless 打印同一份 markdown 源。
+
+**改后行为：** Session Statistics 弹窗显示对齐框线表；退出摘要为 GFM markdown。
+计数与显隐规则不变。
+
+**指针：** `crates/tact/src/stats.rs`、
+`crates/tui/src/widgets/state/app/agent.rs`、`docs/token_usage_schema.md`。
+
+---
+
+## 4. 2026-07-24 — Session Stats 用 comfy-table 排版
 
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
 | **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
+| **被取代** | §3（GFM + tui-markdown） |
 
 **现象 / 动机：** 会话结束时的 Tool calls 行靠空格对齐，工具名与耗时变长后列错位。
 
-**决策：** 保持 `SessionStats::summary() -> String`。先输出 Metric/Value 表，再按需输出 Tool calls 表（`Tool | Count(s/f) | Total | Avg`），最后用尾部 Metric/Value 表放工具汇总 / cache / reasoning。使用 `comfy-table` UTF8 框线、无 ANSI 色、`force_no_tty()`。
+**决策：** 保持 `SessionStats::summary() -> String`。先输出 Metric/Value 表，再按需输出 Tool calls 表（`Tool | Count(s/f) | Total | Avg`），最后用尾部 Metric/Value 表放工具汇总 / cache / reasoning。*（最初用 `comfy-table` UTF8 框线；与 TUI markdown 冲突，见 §3。）*
 
 **改后行为：** 计数与显隐规则不变；排版改为对齐表格。
 
@@ -47,7 +115,7 @@
 
 ---
 
-## 2. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 5. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -65,7 +133,7 @@
 
 ---
 
-## 3. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 6. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -74,13 +142,13 @@
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 3.1 现象
+### 6.1 现象
 
 `read_file` 用 `read_to_string` 整文件读入，再以 `chars().take(50000)` **静默**丢掉尾部。这与按行的 `offset` / `limit` 语义冲突，模型没有续读信号（幻觉风险见 [第 20 章](./20_chapter_hallucination_zh.md)），并与 dispatch 层的 `persist_large_output`（30k 字符 → `<persisted-output>`）形成双重、不一致的大小策略。
 
 `batch_read` 是第二套多文件 API，另有 200k 字符硬顶，并在调度 / recent-file 上重复特例。
 
-### 3.2 决策
+### 6.2 决策
 
 1. 删除 `batch_read`。多文件并行读取改为同一 wave 内多个 `read_file`。  
 2. 用 Tokio `BufReader` 按行流式读取（不为整页缓冲整文件）。  
@@ -105,7 +173,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 7. `run_native_tool` 在 `name == "read_file"` 时 **跳过** `persist_large_output`。  
 8. 工具 `description` 保持简短——限制在运行时强制，不在 schema 文案里重复。
 
-### 3.3 改后行为
+### 6.3 改后行为
 
 | 场景 | 结果 |
 |------|------|
@@ -117,7 +185,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 | offset 越过 EOF | 空字符串 |
 | 大 `read_file` vs bash / MCP | `read_file` 不会包 `<persisted-output>`；其它工具仍可能 |
 
-### 3.4 指针
+### 6.4 指针
 
 | 区域 | 路径 |
 |------|------|

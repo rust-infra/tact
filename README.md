@@ -227,7 +227,7 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 ### 🪝 Hooks & Skills
 
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
-- **Skills** — `SKILL.md` playbooks under `~/.tact/skills/` and `.claude/skills/` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
+- **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 🧩 Plugin Marketplace

@@ -88,6 +88,10 @@ pub struct AgentTomlConfig {
     /// Auto-inject full skill body into system prompt (default: false)
     pub skill_body_auto_inject: Option<bool>,
 
+    /// Extra skill root directories (optional). Each should contain `*/SKILL.md`.
+    /// Relative paths are resolved against the workdir; `~` expands to `$HOME`.
+    pub skill_dirs: Option<Vec<String>>,
+
     /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
     ///
     /// Supported values: `agents_md`, `claude_md` (all CLAUDE paths), `claude_md_user`,
@@ -163,6 +167,8 @@ pub struct AgentSettings {
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
     pub skill_body_auto_inject: bool,
+    /// Extra skill roots from `[agent].skill_dirs` (unresolved path strings).
+    pub skill_dirs: Vec<String>,
     pub instruction_sources: crate::config::InstructionSources,
 }
 

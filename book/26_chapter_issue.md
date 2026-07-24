@@ -29,13 +29,86 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — Session Stats rendered with comfy-table
+## 1. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-extra-skill-dirs-design.md` |
+
+**Symptom / motivation:** Only fixed skill roots existed; teams could not point at
+shared or vendor skill trees. The old `<workdir>/skills/` root also sat outside
+`.tact/`.
+
+**Decision:** Replace `<workdir>/skills/` with `<workdir>/.tact/skills/`. Add
+optional `[agent].skill_dirs = [...]` (relative to workdir; `~` expands). Load
+order: `.tact/skills` → `~/.tact/skills` → `~/.agents/skills` → `.claude/skills`
+→ config extras → plugin cache. Missing dirs soft-skipped.
+
+**Behavior after:** Config can append skill roots that override earlier
+same-named standalone skills. Bare `<workdir>/skills/` is no longer scanned.
+
+**Pointers:** `crates/tact/src/consts.rs`, `crates/tact/src/skill/mod.rs`,
+`crates/tact/src/config/types.rs`, `tact.example.toml`, Ch 2.
+
+---
+
+## 2. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+
+**Symptom / motivation:** `/skills` built a Skill/Description pipe table through
+`format_table`. Long frontmatter descriptions made each row wider than the log
+panel; visual wrap shattered `|` columns into unreadable fragments.
+
+**Decision:** Keep the titled block + blank separators. Emit wrap-friendly
+markdown (`**\`name\`**` then description paragraph) and render with
+`render_markdown_tui` / tui-markdown. Do **not** use a GFM table here (unlike
+Session Stats): catalog descriptions are too wide for fixed columns in the log.
+
+**Behavior after:** `/skills` shows one skill name + description block per entry;
+text wraps cleanly at any panel width. Namespace names (`plugin:skill`) unchanged.
+
+**Pointers:** `crates/tui/src/handlers/mod.rs` (`show_skills_command`,
+`skills_list_markdown`).
+
+---
+
+## 3. 2026-07-24 — Session Stats as GFM tables via tui-markdown
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+
+**Symptom / motivation:** `/stats` fed comfy-table UTF8 box output through
+`render_markdown_tui`. Soft breaks became spaces, so the whole table collapsed
+into one wrapped line and looked unreadable in the popup.
+
+**Decision:** Keep `SessionStats::summary() -> String`. Emit **GFM pipe tables**
+(with right-aligned numeric columns). TUI keeps using `render_markdown_tui` /
+[tui-markdown](https://github.com/joshka/tui-markdown) table rendering (Unicode
+box borders). Drop the `comfy-table` dependency. CLI / headless print the same
+markdown source.
+
+**Behavior after:** Session Statistics popup shows aligned box tables; exit
+summaries are GFM markdown. Counters and visibility rules unchanged.
+
+**Pointers:** `crates/tact/src/stats.rs`,
+`crates/tui/src/widgets/state/app/agent.rs`, `docs/token_usage_schema.md`.
+
+---
+
+## 4. 2026-07-24 — Session Stats rendered with comfy-table
 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
 | **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
+| **Superseded by** | §3 (GFM + tui-markdown) |
 
 **Symptom / motivation:** End-of-session Tool calls rows used ad-hoc space
 padding, so columns drifted as names and timings grew.
@@ -43,8 +116,8 @@ padding, so columns drifted as names and timings grew.
 **Decision:** Keep `SessionStats::summary() -> String`. Render a head
 Metric/Value table, an optional Tool calls table
 (`Tool | Count(s/f) | Total | Avg`), then a trailing Metric/Value table for
-tool aggregates / cache / reasoning. Use `comfy-table` with UTF8 boxes, no
-ANSI colors, `force_no_tty()`.
+tool aggregates / cache / reasoning. *(Originally used `comfy-table` UTF8
+boxes; that path conflicted with TUI markdown — see §3.)*
 
 **Behavior after:** Same counters and visibility rules; layout is aligned
 tables instead of free-form lines.
@@ -54,7 +127,7 @@ tables instead of free-form lines.
 
 ---
 
-## 2. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 5. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -76,7 +149,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 3. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 6. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -85,13 +158,13 @@ Ch 21, Ch 22 (account-style queries).
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 3.1 Symptom
+### 6.1 Symptom
 
 `read_file` loaded the whole file with `read_to_string`, then silently discarded the tail with `chars().take(50000)`. That conflicted with line-based `offset` / `limit`, gave the model no recovery signal (hallucination risk — see [Ch 20](./20_chapter_hallucination.md)), and competed with dispatch-level `persist_large_output` (30k characters → `<persisted-output>`).
 
 `batch_read` was a second multi-file API with its own 200k-character hard cap, duplicating schedule / recent-file special cases.
 
-### 3.2 Decision
+### 6.2 Decision
 
 1. Delete `batch_read`. Parallel multi-file reads use concurrent `read_file` waves.  
 2. Stream lines with Tokio `BufReader` (no whole-file buffer for the page).  
@@ -116,7 +189,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 7. `run_native_tool` **skips** `persist_large_output` when `name == "read_file"`.  
 8. Tool `description` stays short — limits are enforced at runtime, not duplicated in the schema blurb.
 
-### 3.3 Behavior after
+### 6.3 Behavior after
 
 | Case | Result |
 |------|--------|
@@ -128,7 +201,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 | Offset past EOF | Empty string |
 | Large `read_file` vs bash / MCP | `read_file` never gets `<persisted-output>`; others still may |
 
-### 3.4 Pointers
+### 6.4 Pointers
 
 | Area | Path |
 |------|------|

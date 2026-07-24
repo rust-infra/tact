@@ -175,41 +175,40 @@ Cached data is evicted after hours to days of inactivity.
 
 ## Session Stats Display
 
-At the end of every session (both CLI and TUI), a summary is printed to stderr
-as UTF8 box tables (via `comfy-table`):
+At the end of every session (both CLI and TUI), a summary is emitted as **GFM
+pipe markdown**. The TUI runs it through `tui-markdown`, which draws Unicode box
+borders and honors column alignment. CLI / headless print the same markdown
+source to stderr:
 
 ```
 ── Session Stats ─────────────────────────────
-+---------------------+---------+
-| Metric              | Value   |
-+=====================+=========+
-| Elapsed             | XX.Xs   |
-| LLM API calls       | XX      |
-| Total LLM time      | XX.Xs   |
-| Prompt chars sent   | XX      |
-| Response chars rcvd | XX      |
-| Thinking blocks     | XX      |
-| Thinking chars      | XX      |
-| Compactions         | XX      |
-+---------------------+---------+
+
+| Metric | Value |
+|--------|------:|
+| Elapsed | XX.Xs |
+| LLM API calls | XX |
+| Total LLM time | XX.Xs |
+| Prompt chars sent | XX |
+| Response chars rcvd | XX |
+| Thinking blocks | XX |
+| Thinking chars | XX |
+| Compactions | XX |
 
 Tool calls
-+-----------+------------+-------+--------+
-| Tool      | Count(s/f) | Total | Avg    |
-+===========+============+=======+========+
-| Total     | XX (s/f)   |       |        |
-| tool_name | XX (s/f)   | XX    | XXms   |
-+-----------+------------+-------+--------+
-+------------------+---------+
-| Metric           | Value   |
-+==================+=========+
-| Total tool time  | XX.Xs   |
-| Avg tool time    | XX.Xms  |
-| Cache hit tokens | XX      |
-| Cache miss tokens| XX      |
-| Cache hit rate   | XX.X%   |
-| Reasoning tokens | XX      |
-+------------------+---------+
+
+| Tool | Count(s/f) | Total | Avg |
+|------|-----------:|------:|----:|
+| Total | XX (s/f) |  |  |
+| tool_name | XX (s/f) | XX | XXms |
+
+| Metric | Value |
+|--------|------:|
+| Total tool time | XX.Xs |
+| Avg tool time | XX.Xms |
+| Cache hit tokens | XX |
+| Cache miss tokens | XX |
+| Cache hit rate | XX.X% |
+| Reasoning tokens | XX |
 ─────────────────────────────────────────────
 ```
 

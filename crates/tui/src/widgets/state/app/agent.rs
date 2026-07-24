@@ -218,6 +218,7 @@ impl App {
                 self.add_system_message(msg);
             }
             AgentUpdate::SessionStats(stats_text) => {
+                // GFM pipe tables from SessionStats::summary(); tui-markdown draws box borders.
                 let (rendered, _) = render_markdown_tui(&stats_text, &self.theme);
                 self.system_prompt_popup = Some(SystemPromptPopup {
                     title: "Session Statistics".to_string(),

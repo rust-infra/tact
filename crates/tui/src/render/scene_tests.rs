@@ -358,7 +358,7 @@ fn status_bar_executing_shows_progress_hint() {
 }
 
 #[test]
-fn full_frame_skills_command_renders_table_with_separator() {
+fn full_frame_skills_command_renders_list_with_separator() {
     let mut app = make_app();
     app.plan.visible = false;
     app.skills_description =
@@ -367,33 +367,6 @@ fn full_frame_skills_command_renders_table_with_separator() {
     execute_palette_command(&mut app, "skills");
     execute_palette_command(&mut app, "skills");
 
-    let text = render_app_text(&mut app, 100, 28);
-    // TestBackend emits a pad cell after each wide CJK glyph — strip spaces for
-    // content checks that include Chinese.
-    let compact = text.replace(' ', "");
-    let title_count = text.matches("Available skills").count();
-    assert!(
-        title_count >= 2,
-        "two /skills invocations should both render, got:\n{text}"
-    );
-    assert!(
-        text.contains("Skill") && text.contains("Description"),
-        "skills table header should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains("code-reviewer") && compact.contains("代码审查专家"),
-        "skills table rows should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains("demo-test") && compact.contains("测试skill加载功能"),
-        "second skill row should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains('|') && text.contains("---"),
-        "skills output should look like a table, got:\n{text}"
-    );
-
-    // Consecutive blocks must not sit flush: blank log row between titles.
     let title_idxs: Vec<_> = app
         .raw_messages
         .iter()
@@ -409,5 +382,36 @@ fn full_frame_skills_command_renders_table_with_separator() {
     assert!(
         between.iter().any(|m| m.is_empty()),
         "expected blank separator between skills blocks, messages: {between:?}"
+    );
+    assert!(
+        app.raw_messages
+            .iter()
+            .any(|m| m.contains("code-reviewer")),
+        "skills content missing code-reviewer: {:?}",
+        app.raw_messages
+    );
+    assert!(
+        app.raw_messages.iter().any(|m| m.contains("demo-test")),
+        "skills content missing demo-test: {:?}",
+        app.raw_messages
+    );
+    assert!(
+        app.raw_messages
+            .iter()
+            .all(|m| !m.contains("| Skill |") && !m.contains("|-------|")),
+        "skills should not emit a pipe table: {:?}",
+        app.raw_messages
+    );
+
+    // Tall frame so both blocks are visible; CJK glyphs pad in TestBackend.
+    let text = render_app_text(&mut app, 100, 48);
+    let compact = text.replace(' ', "");
+    assert!(
+        text.contains("Available skills"),
+        "title missing on screen:\n{text}"
+    );
+    assert!(
+        compact.contains("代码审查专家") || text.contains("code-reviewer"),
+        "skills should appear on screen, got:\n{text}"
     );
 }

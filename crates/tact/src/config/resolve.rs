@@ -147,6 +147,8 @@ pub(super) fn resolve_non_llm_settings(
     let skill_body_auto_inject =
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
+    let skill_dirs = toml_cfg.agent.skill_dirs.clone().unwrap_or_default();
+
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
             .expect("invalid instruction_sources in config");
@@ -187,6 +189,7 @@ pub(super) fn resolve_non_llm_settings(
             snapshot_max_items,
             micro_compact_enabled,
             skill_body_auto_inject,
+            skill_dirs,
             instruction_sources,
         },
         ui: UiSettings {
@@ -262,6 +265,8 @@ pub(super) fn resolve_config(
     let skill_body_auto_inject =
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
+    let skill_dirs = toml_cfg.agent.skill_dirs.clone().unwrap_or_default();
+
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -294,6 +299,7 @@ pub(super) fn resolve_config(
             snapshot_max_items,
             micro_compact_enabled,
             skill_body_auto_inject,
+            skill_dirs,
             instruction_sources,
         },
         ui: UiSettings {
@@ -495,6 +501,22 @@ instruction_sources = ["agents_md", "claude_md_project"]
         assert!(!resolved.agent.instruction_sources.claude_user);
         assert!(resolved.agent.instruction_sources.claude_project);
         assert!(!resolved.agent.instruction_sources.claude_subdir);
+    }
+
+    #[test]
+    fn resolve_skill_dirs_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[agent]
+skill_dirs = ["~/shared-skills", "./vendor/skills"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        assert_eq!(
+            resolved.agent.skill_dirs,
+            vec!["~/shared-skills".to_string(), "./vendor/skills".to_string()]
+        );
     }
 
     #[test]

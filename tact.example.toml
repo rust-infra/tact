@@ -91,6 +91,11 @@ mode = "default"
 # Desktop notifications on macOS (default: true)
 # notifications_enabled = true
 
+# Extra skill root directories (optional). Each should contain */SKILL.md.
+# Relative paths resolve against the workdir; ~ expands to $HOME.
+# Loaded after built-in roots; later entries override same-named skills.
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+
 # ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------

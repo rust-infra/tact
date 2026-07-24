@@ -374,7 +374,7 @@ Recovery mechanisms inside `agent_loop()`:
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
 | Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.tact/cron/`. |
 | Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
-| Skills | `skill/` | `SKILL.md` under legacy `skills/`, `~/.tact/skills/`, and `.claude/skills/`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
+| Skills | `skill/` | `SKILL.md` under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, plus optional `[agent].skill_dirs`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 
 ---
 

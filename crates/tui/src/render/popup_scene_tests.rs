@@ -520,6 +520,54 @@ fn main_area_system_message_renders_in_log() {
 }
 
 #[test]
+fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
+    let mut app = make_app();
+    let stats = concat!(
+        "── Session Stats ──\n",
+        "\n",
+        "| Metric | Value |\n",
+        "|--------|------:|\n",
+        "| Elapsed | 1.0s |\n",
+    );
+    app.handle_agent_update(tact_protocol::AgentUpdate::SessionStats(stats.into()));
+
+    let popup = app
+        .system_prompt_popup
+        .as_ref()
+        .expect("session stats popup");
+    let rendered = popup
+        .rendered
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains('┌') || rendered.contains('│'),
+        "tui-markdown should draw box borders:\n{rendered}"
+    );
+    assert!(
+        popup.rendered.len() > 3,
+        "GFM table must expand to multiple lines, got {}:\n{rendered}",
+        popup.rendered.len()
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Session Statistics"),
+        "popup title missing:\n{text}"
+    );
+    assert!(text.contains("Metric"), "header missing:\n{text}");
+    assert!(text.contains("Elapsed"), "row missing:\n{text}");
+
+    let metric_pos = text.find("Metric").expect("Metric");
+    let elapsed_pos = text.find("Elapsed").expect("Elapsed");
+    assert!(
+        text[metric_pos..elapsed_pos].contains('\n'),
+        "Metric and Elapsed must stay on separate rows:\n{text}"
+    );
+}
+
+#[test]
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 

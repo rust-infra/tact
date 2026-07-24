@@ -1356,6 +1356,7 @@ mod tests {
                     notifications_enabled: false,
                     micro_compact_enabled: true,
                     skill_body_auto_inject: false,
+                    skill_dirs: Vec::new(),
                     instruction_sources: crate::config::InstructionSources::default(),
                 },
                 ui: crate::config::UiSettings {
@@ -1402,6 +1403,7 @@ mod tests {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
         };
         let agent = Agent::new(
