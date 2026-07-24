@@ -194,7 +194,17 @@ pub(crate) fn start_model_picker(app: &mut App) {
         return;
     };
 
-    let mut candidates = settings.llm.models.clone();
+    let api_ids = if tact_llm::is_models_query_supported() {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(tact_llm::ensure_api_model_ids())
+        })
+    } else {
+        Vec::new()
+    };
+
+    let mut candidates =
+        tact_llm::merge_model_candidates(&settings.llm.models, &api_ids);
+
     if candidates.is_empty() {
         app.add_system_message(
             msgs.model_list_empty_tmpl
@@ -348,9 +358,20 @@ mod tests {
         assert_eq!(rx.try_recv(), Ok(None));
     }
 
-    #[test]
-    fn model_picker_empty_then_confirm_sets_model() {
+    /// Serialize model-picker tests that share global `CACHE` / `PROVIDER`.
+    static MODELS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn model_picker_empty_then_confirm_sets_model() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec![],
+        );
         install_models_config(vec![], "kimi-k2.5");
+
         let mut app = make_app();
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
@@ -374,5 +395,46 @@ mod tests {
         assert_eq!(app.status_bar.model_name, "kimi-for-coding");
         // No config_path → skip persist popup, return to Normal.
         assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn model_picker_merges_api_ids_after_config() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config(vec!["cfg-a", "overlap"], "cfg-a");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["overlap".into(), "api-only".into()],
+        );
+
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        assert!(matches!(app.input_mode, InputMode::Select));
+        let options = &app.select.options;
+        assert_eq!(
+            options.iter().map(|o| o.trim_end_matches(" *")).collect::<Vec<_>>(),
+            vec!["cfg-a", "overlap", "api-only"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn model_picker_api_only_when_config_empty() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config(vec![], "current-x");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["api-1".into(), "api-2".into()],
+        );
+
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        assert!(matches!(app.input_mode, InputMode::Select));
+        let options = &app.select.options;
+        // current-x prepended because it is not in the merged list
+        assert!(options[0].starts_with("current-x"));
+        assert!(options.iter().any(|o| o.contains("api-1")));
     }
 }
