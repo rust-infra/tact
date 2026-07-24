@@ -39,6 +39,21 @@ use crate::{
 ///                             + stream buffer           (may be many per logical)
 /// ```
 pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
+    render_log_panel_with_borders(frame, area, app, Borders::ALL);
+}
+
+/// Like [`render_log_panel`], but allows omitting the bottom border so a sticky
+/// task strip can continue the same chrome under the Log.
+pub(crate) fn render_log_panel_with_borders(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    borders: Borders,
+) {
+    let top = u16::from(borders.contains(Borders::TOP));
+    let bottom = u16::from(borders.contains(Borders::BOTTOM));
+    let left = u16::from(borders.contains(Borders::LEFT));
+    let right = u16::from(borders.contains(Borders::RIGHT));
     // 这行是算**面板内容区的实际可用高度**。
     // area.height = Border Block 的整个矩形高度
     // ┌─ Log ──────────────┐  ← area.y + 0  (上边框，占 1 行)
@@ -46,22 +61,22 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // │   actual content    │  ← ...
     // │                     │  ← area.y + area.height - 2 (内容区最后一行)
     // └─────────────────────┘  ← area.y + area.height - 1 (下边框，占 1 行)
-    // area.height.saturating_sub(2) = 内容区可用行数 = visible_height
+    // area.height.saturating_sub(top+bottom) = 内容区可用行数 = visible_height
     // ① Phase 2 视口裁剪 —— 决定屏幕上能显示多少行
     // let visible_height = app.log_scroll.height as usize;
     // let end_visual = (visual_scroll + visible_height).min(total_visual);
     // // ② 覆盖层裁剪 —— thinking/diff/code cards 也用它
     // saturating_sub` 防的是极端情况：如果 `area.height < 2`（面板被缩到极小），不会 panic，直接归零。
-    app.log_scroll.height = area.height.saturating_sub(2);
+    app.log_scroll.height = area.height.saturating_sub(top + bottom);
     let visible_height = app.log_scroll.height as usize;
     // 两行做两件事：
-    // 和 `height` 同样的 `saturating_sub(2)`：
+    // 和 `height` 同样的 `saturating_sub`：
     // area.width = 整个 Block 的列宽
     // ┌─ Log ──────────────────┐
-    // │                        │  ← area.width - 2 = 内容区可用列宽
+    // │                        │  ← area.width - left - right = 内容区可用列宽
     // └────────────────────────┘
-    //     ↑ 左边框(1列)         ↑ 右边框(1列)
-    let max_width = area.width.saturating_sub(2) as usize;
+    //     ↑ 左边框         ↑ 右边框
+    let max_width = area.width.saturating_sub(left + right) as usize;
     // 防止 `wrap_line` 拿到 0 宽度：
     let wrap_width = if max_width > 0 { max_width } else { 1 };
 
@@ -451,18 +466,18 @@ pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let panel_title = app.msgs().log_title.to_string();
 
-    // Render bordered log panel
+    // Render bordered log panel (bottom border may be omitted for sticky join).
     let log_block = Block::default()
-        .borders(Borders::ALL)
+        .borders(borders)
         .border_type(app.theme.block_border_type())
         .border_style(Style::default().fg(app.theme.border))
         .title(panel_title)
         .style(Style::default().bg(app.theme.bg));
     let inner = Rect::new(
-        area.x + 1,
-        area.y + 1,
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
+        area.x + left,
+        area.y + top,
+        area.width.saturating_sub(left + right),
+        area.height.saturating_sub(top + bottom),
     );
     frame.render_widget(log_block, area);
     frame.render_widget(

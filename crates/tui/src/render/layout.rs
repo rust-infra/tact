@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    widgets::Borders,
 };
 
 use crate::widgets::state::App;
@@ -22,7 +23,11 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let sticky_h = if app.task_panel.visible {
-        (app.task_panel.sticky_height() as u16).min(area.height.saturating_sub(1))
+        let content = app.task_panel.sticky_height() as u16;
+        // Content rows + bottom border so sticky continues the Log box.
+        content
+            .saturating_add(super::task_panel::STICKY_BORDER_ROWS)
+            .min(area.height.saturating_sub(2))
     } else {
         0
     };
@@ -38,8 +43,13 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
             .constraints([Constraint::Min(1), Constraint::Length(sticky_h)])
             .split(area);
         app.mouse.log_area = chunks[0];
-        app.log_scroll.height = chunks[0].height.saturating_sub(2);
-        super::log::render_log_panel(frame, chunks[0], app);
+        // Log omits bottom border; sticky draws LEFT|RIGHT|BOTTOM to close the box.
+        super::log::render_log_panel_with_borders(
+            frame,
+            chunks[0],
+            app,
+            Borders::TOP | Borders::LEFT | Borders::RIGHT,
+        );
         super::task_panel::render_task_panel(frame, chunks[1], app);
     }
 
