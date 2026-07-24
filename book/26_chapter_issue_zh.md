@@ -29,7 +29,32 @@
 
 ---
 
-## 1. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
+## 1. 2026-07-24 — 底栏可读性回补
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 23 章、`docs/token_usage_schema.md` |
+
+**现象 / 动机：** 图标-only polish 之后，底栏难解读（`8K/32K`、裸 `∑` / `▣`、
+偏淡的 ` · ` 分隔）。thinking 档位虽已有 `model_reasoning_effort`，却未外显。
+
+**决策：** 图标旁补短 i18n 标签；thinking 显示档位+budget（`high(32K)`）；第 1
+行用 ` │ `、第 2 行两个空格；缓存为 `缓存%` / `cache%`；上次合计为 `∑ₜₒₖ`；
+ctx 进度条填充改用中线高度 `■` / `·`，避免溢出 `[]`。
+
+**改后行为：** 两行底栏无需图例即可读；token/cache 计算不变。窄屏丢弃顺序：
+缓存 → 运行 → 路径 → ∑ → ctx。
+
+| 指针 | 路径 |
+|------|------|
+| Spec | `docs/superpowers/specs/2026-07-24-bottom-bar-readability-design.md` |
+| Plan | `docs/superpowers/plans/2026-07-24-bottom-bar-readability.md` |
+| 代码 | `crates/tui/src/render/bar.rs`、`crates/tui/src/i18n.rs` |
+
+---
+
+## 2. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
 
 | 字段 | 值 |
 |------|-----|
@@ -49,7 +74,7 @@ Enter 仍预填 Insert（便于 undo）。
 
 ---
 
-## 2. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
+## 3. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
 
 | Field | Value |
 |-------|-------|
@@ -79,7 +104,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 3. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
+## 4. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
 
 | 字段 | 值 |
 |------|-----|
@@ -100,7 +125,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 4. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
+## 5. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
 
 | 字段 | 值 |
 |------|-----|
@@ -121,7 +146,7 @@ tui-markdown 框线表。
 
 ---
 
-## 5. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
+## 6. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
 
 | 字段 | 值 |
 |------|-----|
@@ -144,7 +169,7 @@ tui-markdown 框线表。
 
 ---
 
-## 6. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
+## 7. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
 
 | 字段 | 值 |
 |------|-----|
@@ -165,7 +190,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 7. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
+## 8. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
 
 | 字段 | 值 |
 |------|-----|
@@ -188,7 +213,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 8. 2026-07-24 — Session Stats 用 comfy-table 排版
+## 9. 2026-07-24 — Session Stats 用 comfy-table 排版
 
 | 字段 | 值 |
 |------|-----|
@@ -207,7 +232,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 9. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 10. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -225,7 +250,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 10. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 11. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -290,7 +315,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 
 ---
 
-## 11. 2026-07-24 — 底部栏视觉优化
+## 12. 2026-07-24 — 底部栏视觉优化
 
 | 字段 | 值 |
 |------|-----|

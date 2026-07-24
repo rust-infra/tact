@@ -29,7 +29,34 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
+## 1. 2026-07-24 — Bottom bar readability restore
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23, `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** After the icon-only polish, the bottom bar was hard to
+decode (`8K/32K`, bare `∑` / `▣`, faint ` · ` separators). Thinking effort level
+was not shown even though `model_reasoning_effort` was already available.
+
+**Decision:** Short i18n labels beside icons; thinking shows effort+budget
+(`high(32K)`); row 1 uses ` │ `, row 2 uses two spaces; cache as `缓存%` /
+`cache%`; last-call total as `∑ₜₒₖ`; ctx meter fill uses mid-height `■` / `·`
+inside `[]`.
+
+**Behavior after:** Readable two-row bar without a legend; same underlying
+token/cache numbers. Narrow drop order: cache → uptime → path → ∑ → ctx.
+
+| Pointer | Path |
+|---------|------|
+| Spec | `docs/superpowers/specs/2026-07-24-bottom-bar-readability-design.md` |
+| Plan | `docs/superpowers/plans/2026-07-24-bottom-bar-readability.md` |
+| Code | `crates/tui/src/render/bar.rs`, `crates/tui/src/i18n.rs` |
+
+---
+
+## 2. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
 
 | Field | Value |
 |-------|-------|
@@ -52,7 +79,7 @@ now.
 
 ---
 
-## 2. 2026-07-24 — TUI left Execution Plan panel removed
+## 3. 2026-07-24 — TUI left Execution Plan panel removed
 
 | Field | Value |
 |-------|-------|
@@ -86,7 +113,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 3. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
+## 4. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
 
 | Field | Value |
 |-------|-------|
@@ -107,7 +134,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 4. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
+## 5. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
 
 | Field | Value |
 |-------|-------|
@@ -129,7 +156,7 @@ monospace; `/stats` popup still renders via tui-markdown box tables.
 
 ---
 
-## 5. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
+## 6. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
 
 | Field | Value |
 |-------|-------|
@@ -153,7 +180,7 @@ same-named standalone skills. Bare `<workdir>/skills/` is no longer scanned.
 
 ---
 
-## 6. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
+## 7. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
 
 | Field | Value |
 |-------|-------|
@@ -176,7 +203,7 @@ text wraps cleanly at any panel width. Namespace names (`plugin:skill`) unchange
 
 ---
 
-## 7. 2026-07-24 — Session Stats as GFM tables via tui-markdown
+## 8. 2026-07-24 — Session Stats as GFM tables via tui-markdown
 
 | Field | Value |
 |-------|-------|
@@ -201,7 +228,7 @@ summaries are GFM markdown. Counters and visibility rules unchanged.
 
 ---
 
-## 8. 2026-07-24 — Session Stats rendered with comfy-table
+## 9. 2026-07-24 — Session Stats rendered with comfy-table
 
 | Field | Value |
 |-------|-------|
@@ -227,7 +254,7 @@ tables instead of free-form lines.
 
 ---
 
-## 9. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 10. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -249,7 +276,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 10. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 11. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -314,7 +341,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 
 ---
 
-## 11. 2026-07-24 — Bottom bar visual polish
+## 12. 2026-07-24 — Bottom bar visual polish
 
 | Field | Value |
 |-------|-------|
