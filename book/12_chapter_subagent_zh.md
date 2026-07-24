@@ -226,6 +226,154 @@ let summary = subagent
 
 ---
 
+## 12. 实战案例：底部栏视觉优化
+
+`feat/web` 分支上的 3 任务 SDD 会话。计划：`docs/superpowers/plans/2026-07-24-bottom-bar-polish.md`。
+数据：6 个子代理（3 实现 + 2 评审 + 1 修复），400 测试，5 个 commit 推送。
+
+### 12.1 任务依赖——为什么串行
+
+```mermaid
+flowchart LR
+    T1["Task 1: 纯格式化函数 + i18n 清理<br/>产出: 6 个 icon 常量 + 5 个格式化函数"] --> T2
+    T2["Task 2: 重写 render_bottom_bar<br/>引用: T1 的 helper + Span + DropGroup"] --> T3
+    T3["Task 3: 文档 + Ch 26 日志<br/>反映: 最终代码状态"]
+```
+
+三个任务都改 `crates/tui/src/render/bar.rs`。SDD 禁止对共享文件并行 dispatch——控制器层面强制。
+
+### 12.2 文件传递（不走会话历史）
+
+```
+.superworks/sdd/
+├── progress.md                          # 进度锚点（compaction 后存活）
+├── task-1-brief.md                      # 从计划提取的需求
+├── task-1-report.md                     # 实现者产出
+├── review-task-1.diff                   # 评审用 git diff
+├── review-task-1-v2.diff                # 修复后重新评审
+├── task-2-brief.md / task-2-report.md   # 同样模式
+├── ...
+└── final-review.diff                    # 全局评审用完整分支 diff
+```
+
+每个 dispatch prompt 只有 5 行——brief 文件是**唯一的需求来源**：
+
+```
+┌── dispatch ─────────────────────────────────────────────────┐
+│ 实现 Task 1。                                               │
+│ 先读这个文件: .superworks/sdd/task-1-brief.md               │
+│ 工作目录: /Users/rg/Projects/tact, 分支 feat/web            │
+│ 验证: cargo check -p tact-tui; 然后 cargo test -p tact-ui   │
+│ 报告写入: .superworks/sdd/task-1-report.md                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**brief 文件里直接包含要写的代码**——不是文字描述。实现者照抄、写测试、commit。没有上下文继承，没有历史污染：
+
+```
+.superworks/sdd/task-1-brief.md（缩略）
+├── Part A: i18n.rs — 从 struct + 中英文构造器删除 7 个字段
+├── Part B: bar.rs — 添加 6 个 icon 常量
+├── Part C: bar.rs — 添加 5 个纯格式化函数（代码块已提供）
+├── Part D: bar.rs — 添加 10 个单元测试（代码块已提供）
+└── Commit: "feat(tui): add bottom-bar pure formatters ..."
+```
+
+**report 文件记录实际发生了什么**——子代理退出后控制器读取：
+
+```
+.superworks/sdd/task-1-report.md（缩略）
+├── Status: DONE
+├── Commits: 3a8a186
+├── 测试结果: cargo check 失败（预期——T2 会修复 bar.rs）
+├── 变更: Part A 完成, Part B 完成, Part C 完成, Part D 完成
+└── 注意事项: WindowEntry 不存在 → 改用 UsageQuotaWindow
+```
+
+如果不走文件传递，每个子代理的代码和报告都会永久膨胀控制器的上下文。用文件传递，控制器只读 SHA 和状态行——其余的都存在磁盘上。
+
+### 12.3 评审循环——每任务一个门禁
+
+```mermaid
+flowchart LR
+    I["实现者"] -->|DONE| C["控制器"]
+    C -->|"git diff BASE..HEAD"| D["task-N.diff"]
+    C -->|"dispatch brief + report + diff"| R["评审者"]
+    R -->|"2 个 verdict"| C
+    C -->|"Critical"| F["修复者"]
+    F -->|"修复 + amend"| C
+    C -->|"重新 dispatch"| R
+    R -->|"✅"| C
+    C -->|"追加到 progress.md"| N["下一个任务"]
+```
+
+每个评审者产出两个 verdict，每个二值：
+
+| Verdict | 通过条件 | 不通过 → |
+|---------|---------|----------|
+| **Spec compliance** | brief 所有要求满足。无多余功能 (YAGNI)。 | 修复者 dispatch |
+| **Task quality** | 测试覆盖边界。非测试代码无 unwrap。无死 import。 | 修复者 dispatch |
+
+**Severity 决定处理方式：**
+
+| 等级 | 含义 | 行动 |
+|------|------|------|
+| Critical | 阻止正确性，逻辑 bug | 必须修复，必须重新评审 |
+| Important | 可维护性风险，测试缺口 | 建议修复 |
+| Minor | 风格、命名 | 记录在 ledger，终审时处理 |
+
+### 12.4 Task 1 评审发现（Critical）
+
+```
+format_quota_window_with_pct  期望值 "75%"
+                              实际值   "25%"
+usage_pct() = (limit - remaining) / limit * 100
+            = (200 - 150) / 200 * 100
+            = 25    ← 不是 75
+```
+
+Brief 指定了不存在的 `WindowEntry`。实现者正确适配到 `UsageQuotaWindow`，但复制了 brief 里错误的期望值。修复：1 行测试改动，`git commit --amend`，重新评审通过。
+
+如果没有这个门禁：测试在第一次 CI 运行失败 → 开发者标注 flaky → 永远不被发现。
+
+### 12.5 计划-现实适配
+
+Plan 引用了 `FocusedPanel::Plan` 和 `focus_plan` / `bottom_focus_log_plan` 等 i18n 字段。实际代码没有 `Plan` 变体——之前的重构已删除。
+
+```mermaid
+flowchart LR
+    P["Plan 文档: FocusedPanel::Plan 存在"] -->|过时| A
+    C["仓库: 只有 FocusedPanel::Log, plan.rs 已删除"] -->|现实| A
+    A["实现者适配: FocusedPanel::Log => \"[Log]\""]
+    A --> R["评审者: ✅ 适配正确"]
+```
+
+实现者不是机械代码生成器——他们阅读真实代码库，检测偏差，适配。控制器判断适配是否可接受。
+
+### 12.6 全局评审——分支级门禁
+
+全分支 diff（`git merge-base main HEAD`..`HEAD`）：**5455 行，37 个文件**。
+
+| 发现 | 等级 | 行动 |
+|------|------|------|
+| `expect()` 锁——poison 时会 panic | Important | 暂缓 |
+| `display_width()` 用 `chars().count()` 不是 Unicode 宽度 | Important | 暂缓 |
+| Row 1 丢弃顺序是 path→uptime，规格要求 uptime→path | Important | **立即修复** |
+
+结论：**Ready to merge**。drop-order 修复最可行；其余两个风险较低。
+
+### 12.7 关键经验
+
+| # | 经验 | 证据 |
+|---|------|------|
+| 1 | 串行是必须的——同 crate 依赖阻止并行 | 3 个任务都改 `bar.rs` |
+| 2 | Brief 文件是唯一来源——不是 prompt 文本 | Dispatch 5 行；brief 200 行代码 |
+| 3 | 评审门禁抓到 CI 抓不到的 Critical bug | 75%→25% 测试会到达生产环境 |
+| 4 | BASE commit 必须是任务前的 SHA，不是 `HEAD~1` | 多 commit 任务会被截断 |
+| 5 | `.superworks/sdd/progress.md` 在 compaction 后存活 | compaction 后: `cat progress.md` + `git log` → 继续 |
+
+---
+
 ## Related Docs
 
 - [工具系统](./07_chapter_tool_zh.md) — `toolset` vs `subagent_toolset`、`ToolContext`

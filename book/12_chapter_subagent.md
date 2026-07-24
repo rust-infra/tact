@@ -225,6 +225,164 @@ See [Team Coordination](./14_chapter_team.md).
 
 ---
 
+## 12. Real-World Case Study: Bottom Bar Visual Polish
+
+A 3-task SDD session on `feat/web`. Plan: `docs/superpowers/plans/2026-07-24-bottom-bar-polish.md`.
+Stats: 6 subagents (3 implementers + 2 reviewers + 1 fixer), 400 tests, 5 commits pushed.
+
+### 12.1 Task Dependency — Why Serial
+
+```mermaid
+flowchart LR
+    T1["Task 1: Pure formatters + i18n cleanup<br/>adds: 6 icon consts + 5 format fns"] --> T2
+    T2["Task 2: Rewrite render_bottom_bar<br/>uses: T1's helpers + Span + DropGroup"] --> T3
+    T3["Task 3: Docs + Ch 26 log<br/>reflects: final code state"]
+```
+
+All three tasks modify `crates/tui/src/render/bar.rs`. SDD prohibits parallel dispatch on shared files — enforced at the controller level.
+
+### 12.2 File-Based Handoff (not conversation history)
+
+```
+.superworks/sdd/
+├── progress.md                          # Recovery anchor (survives compaction)
+├── task-1-brief.md                      # Requirements extracted from plan
+├── task-1-report.md                     # Implementer's output
+├── review-task-1.diff                   # git diff for reviewer
+├── review-task-1-v2.diff                # Re-review after fix
+├── task-2-brief.md / task-2-report.md   # Same pattern
+├── ...
+└── final-review.diff                    # Whole-branch diff for final review
+```
+
+Each dispatch prompt is a 5-line template — the brief file is the **single source of requirements**:
+
+```
+┌── dispatch ───────────────────────────────────────────────────────┐
+│ You are implementing Task 1.                                      │
+│ Read this file: .superworks/sdd/task-1-brief.md                  │
+│ Work in: /Users/rg/Projects/tact, branch feat/web                │
+│ Verify: cargo check -p tact-tui; then cargo test -p tact-ui      │
+│ Report to: .superworks/sdd/task-1-report.md                      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**A brief file contains exact code to write** — not prose instructions. The implementer copies verbatim, writes tests, commits. No context to inherit, no history to pollute:
+
+```
+.superworks/sdd/task-1-brief.md  (abbreviated)
+├── Part A: i18n.rs — delete 7 fields from struct + both locales
+├── Part B: bar.rs — add 6 icon constants
+├── Part C: bar.rs — add 5 pure helpers (code block provided)
+├── Part D: bar.rs — add 10 unit tests (code block provided)
+└── Commit: "feat(tui): add bottom-bar pure formatters ..."
+```
+
+**A report file captures what happened** — the controller reads this after the subagent exits:
+
+```
+.superworks/sdd/task-1-report.md  (abbreviated)
+├── Status: DONE
+├── Commits: 3a8a186
+├── Test results: cargo check fails (expected — T2 fixes bar.rs)
+├── Changes: Part A done, Part B done, Part C done, Part D done
+└── Concerns: WindowEntry doesn't exist → used UsageQuotaWindow
+```
+
+Without file handoff, every subagent's code and report would inflate the controller's context permanently. With it, the controller reads only the SHA and status line — the rest lives on disk.
+
+### 12.3 Review Loop — Gate Per Task
+
+```mermaid
+flowchart LR
+    I["Implementer"] -->|DONE| C["Controller"]
+    C -->|"git diff BASE..HEAD"| D["task-N.diff"]
+    C -->|"dispatch brief + report + diff"| R["Reviewer"]
+    R -->|"2 verdicts"| C
+    C -->|"Critical"| F["Fixer"]
+    F -->|"fixed + amend"| C
+    C -->|"re-dispatch"| R
+    R -->|"✅"| C
+    C -->|"append to progress.md"| N["Next task"]
+```
+
+Two verdicts, each binary:
+
+| Verdict | Pass if | Fail → |
+|---------|---------|--------|
+| **Spec compliance** | Every brief requirement present. No extras (YAGNI). | Fixer dispatched |
+| **Task quality** | Tests cover edge cases. No unwrap in non-test. No dead imports. | Fixer dispatched |
+
+**Severity determines response:**
+
+| Severity | Meaning | Action |
+|----------|---------|--------|
+| Critical | Blocks correctness, bug in logic | Must fix, must re-review |
+| Important | Maintainability risk, test gap | Recommend fix |
+| Minor | Style, naming | Record in ledger, triage at final review |
+
+### 12.4 What Task 1's Review Caught (Critical)
+
+```
+format_quota_window_with_pct  expects "75%"
+                              actual   "25%"
+usage_pct() = (limit - remaining) / limit * 100
+            = (200 - 150) / 200 * 100
+            = 25    ← not 75
+```
+
+The brief specified `WindowEntry` (doesn't exist). Implementer correctly adapted to `UsageQuotaWindow` but copied the brief's wrong expected value. Fix: 1-line test change, `git commit --amend`, re-review passes.
+
+Without this gate: test fails on first CI run → developer marks flaky → never caught.
+
+### 12.5 Plan-Reality Adaptation
+
+Plan referenced `FocusedPanel::Plan` and `focus_plan` / `bottom_focus_log_plan` i18n fields. Actual code has no `Plan` variant — deleted in a previous refactor.
+
+```mermaid
+flowchart LR
+    P["Plan doc: FocusedPanel::Plan exists"] -->|stale| A
+    C["Repo: only FocusedPanel::Log, plan.rs deleted"] -->|reality| A
+    A["Implementer adapts: FocusedPanel::Log => \"[Log]\""]
+    A --> R["Reviewer: ✅ adaptation correct"]
+```
+
+Implementers are not mechanical code generators — they read the real codebase, detect drift, and adapt. The controller adjudicates whether the adaptation is acceptable.
+
+### 12.6 Final Review — Branch-Level Gate
+
+Whole-branch diff (`git merge-base main HEAD`..`HEAD`): **5455 lines, 37 files**.
+
+| Finding | Severity | Action |
+|---------|----------|--------|
+| `expect()` on mutex — will panic if poisoned | Important | Deferred |
+| `display_width()` uses `chars().count()` not Unicode width | Important | Deferred |
+| Row 1 drop-order is path→uptime, spec says uptime→path | Important | **Fixed immediately** |
+
+Verdict: **Ready to merge**. The fixed drop-order was the most actionable; the other two are lower risk.
+
+### 12.7 Key Takeaways
+
+```mermaid
+flowchart TD
+    subgraph "SDD workflow"
+        F1["File handoff: briefs + reports on disk<br/>controller context stays compact"]
+        F2["Review gate per task<br/>each catches real bugs"]
+        F3["Implementers adapt to reality<br/>not bound by stale plan text"]
+        F4["Final review catches cross-task issues<br/>even after per-task gates pass"]
+    end
+```
+
+| # | Lesson | Evidence |
+|---|--------|----------|
+| 1 | Serial is required — same-crate deps prevent parallel | All 3 tasks touch `bar.rs` |
+| 2 | Brief file is the single source — not prompt text | Dispatch is 5 lines; brief has 200 lines of code |
+| 3 | Review gate catches Critical bugs that CI wouldn't | 75%→25% test would have shipped |
+| 4 | BASE commit must be pre-task SHA, not `HEAD~1` | Multi-commit tasks would be truncated |
+| 5 | `.superworks/sdd/progress.md` survives compaction | After compaction: `cat progress.md` + `git log` → resume |
+
+---
+
 ## Related Docs
 
 - [Tool System](./07_chapter_tool.md) — `toolset` vs `subagent_toolset`, `ToolContext`
