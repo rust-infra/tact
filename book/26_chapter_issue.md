@@ -29,7 +29,29 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 1. 2026-07-24 — `/model` supplements config from `/v1/models`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-openai-models-api-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-24-openai-models-api.md` |
+
+**Symptom / motivation:** `/model` required a hand-maintained `models = [...]`
+list; providers already expose `GET /v1/models`.
+
+**Decision:** Config remains primary; API appends missing ids; conflicts keep
+config; fetch once per `(base_url, api_key)` on first `/model`; Anthropic skipped;
+failures soft-fail to config-only / empty hint.
+
+**Behavior after:** See Ch 21 `/model` section.
+
+**Pointers:** `crates/tact_llm/src/models.rs`, `crates/tui/src/handlers/select.rs`,
+Ch 21, Ch 22 (account-style queries).
+
+---
+
+## 2. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -38,13 +60,13 @@ Newest entries first. Each entry should include:
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 1.1 Symptom
+### 2.1 Symptom
 
 `read_file` loaded the whole file with `read_to_string`, then silently discarded the tail with `chars().take(50000)`. That conflicted with line-based `offset` / `limit`, gave the model no recovery signal (hallucination risk — see [Ch 20](./20_chapter_hallucination.md)), and competed with dispatch-level `persist_large_output` (30k characters → `<persisted-output>`).
 
 `batch_read` was a second multi-file API with its own 200k-character hard cap, duplicating schedule / recent-file special cases.
 
-### 1.2 Decision
+### 2.2 Decision
 
 1. Delete `batch_read`. Parallel multi-file reads use concurrent `read_file` waves.  
 2. Stream lines with Tokio `BufReader` (no whole-file buffer for the page).  
@@ -69,7 +91,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 7. `run_native_tool` **skips** `persist_large_output` when `name == "read_file"`.  
 8. Tool `description` stays short — limits are enforced at runtime, not duplicated in the schema blurb.
 
-### 1.3 Behavior after
+### 2.3 Behavior after
 
 | Case | Result |
 |------|--------|
@@ -81,7 +103,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 | Offset past EOF | Empty string |
 | Large `read_file` vs bash / MCP | `read_file` never gets `<persisted-output>`; others still may |
 
-### 1.4 Pointers
+### 2.4 Pointers
 
 | Area | Path |
 |------|------|

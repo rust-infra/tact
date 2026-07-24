@@ -29,7 +29,25 @@
 
 ---
 
-## 1. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 1. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-openai-models-api-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-24-openai-models-api.md` |
+
+**现象 / 动机：** `/model` 需要手写维护 `models = [...]` 列表；而 providers 已经提供了 `GET /v1/models`。
+
+**决策：** Config 保持优先；API 附加不在 config 中的 id；冲突时 config 保持；每个 `(base_url, api_key)` 在首次 `/model` 时仅获取一次；跳过 Anthropic；失败时降级为仅用 config 或空提示。
+
+**改后行为：** 见第 21 章 `/model` 节。
+
+**指针：** `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`、第 21 章、第 22 章（账户类查询）。
+
+---
+
+## 2. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -38,13 +56,13 @@
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 1.1 现象
+### 2.1 现象
 
 `read_file` 用 `read_to_string` 整文件读入，再以 `chars().take(50000)` **静默**丢掉尾部。这与按行的 `offset` / `limit` 语义冲突，模型没有续读信号（幻觉风险见 [第 20 章](./20_chapter_hallucination_zh.md)），并与 dispatch 层的 `persist_large_output`（30k 字符 → `<persisted-output>`）形成双重、不一致的大小策略。
 
 `batch_read` 是第二套多文件 API，另有 200k 字符硬顶，并在调度 / recent-file 上重复特例。
 
-### 1.2 决策
+### 2.2 决策
 
 1. 删除 `batch_read`。多文件并行读取改为同一 wave 内多个 `read_file`。  
 2. 用 Tokio `BufReader` 按行流式读取（不为整页缓冲整文件）。  
@@ -69,7 +87,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 7. `run_native_tool` 在 `name == "read_file"` 时 **跳过** `persist_large_output`。  
 8. 工具 `description` 保持简短——限制在运行时强制，不在 schema 文案里重复。
 
-### 1.3 改后行为
+### 2.3 改后行为
 
 | 场景 | 结果 |
 |------|------|
@@ -81,7 +99,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 | offset 越过 EOF | 空字符串 |
 | 大 `read_file` vs bash / MCP | `read_file` 不会包 `<persisted-output>`；其它工具仍可能 |
 
-### 1.4 指针
+### 2.4 指针
 
 | 区域 | 路径 |
 |------|------|

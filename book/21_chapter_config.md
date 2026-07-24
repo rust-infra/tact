@@ -146,10 +146,14 @@ theme = "retro"
 bash_timeout_secs = 1800
 ```
 
-Optional `models` is the candidate list for the TUI `/model` slash command (same
-provider only). Empty/absent → `/model` prints a hint instead of opening the
-picker. Choosing a model applies immediately; you can optionally write it back
-to this provider’s `model` field in the loaded config file.
+Optional `models` is the **primary** candidate list for the TUI `/model` slash
+command (same provider only). On first `/model` in a session, OpenAI-compatible
+providers (`openai` / `deepseek` / `kimi`) also call `GET {base_url}/models` and
+append ids not already listed in config (config order and duplicate ids win).
+The API result is cached for the process for that `(base_url, api_key)`. If both
+config and API yield no candidates, `/model` prints a hint instead of opening
+the picker. Choosing a model applies immediately; you can optionally write it
+back to this provider’s `model` field in the loaded config file.
 
 Optional `protocol` defaults to `chat_completions`. `responses` is valid only
 for the `openai` provider; configuration resolution rejects it for Anthropic,
