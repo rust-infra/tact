@@ -23,7 +23,7 @@ mod select_popup;
 mod slash_command;
 mod status_bar_state;
 mod stream_state;
-mod task_panel;
+pub(crate) mod task_panel;
 mod thinking_state;
 mod tool_state;
 

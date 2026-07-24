@@ -1,10 +1,16 @@
-use ratatui::{Frame, layout::Rect};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+};
 
 use crate::widgets::state::App;
 
 /// Main content area layout, switching between history, help, or the Log panel
 /// based on current display state. The Log panel is always single-column and
 /// full-width — there is no side panel or draggable divider.
+///
+/// When persistent tasks are visible, the main area is split: scrollable Log on
+/// top, sticky task strip below (outer split — Log internals unchanged).
 pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.show_history {
         super::popups::history::render_history_panel(frame, area, app);
@@ -14,8 +20,28 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         super::popups::help::render_help_panel(frame, area, app);
         return;
     }
-    app.mouse.log_area = area;
-    super::log::render_log_panel(frame, area, app);
+
+    let sticky_h = if app.task_panel.visible {
+        (app.task_panel.sticky_height() as u16).min(area.height.saturating_sub(1))
+    } else {
+        0
+    };
+
+    if sticky_h == 0 {
+        app.mouse.task_panel_area = Rect::default();
+        app.mouse.log_area = area;
+        app.log_scroll.height = area.height.saturating_sub(2);
+        super::log::render_log_panel(frame, area, app);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(sticky_h)])
+            .split(area);
+        app.mouse.log_area = chunks[0];
+        app.log_scroll.height = chunks[0].height.saturating_sub(2);
+        super::log::render_log_panel(frame, chunks[0], app);
+        super::task_panel::render_task_panel(frame, chunks[1], app);
+    }
 
     if app.thinking.popup.is_some() {
         super::popups::thinking_popup::render_thinking_popup(frame, area, app);
