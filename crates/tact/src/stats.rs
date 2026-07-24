@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::UTF8_FULL};
 use tact_protocol::TokenUsageInfo;
 
 /// Tracks per-session statistics for the agent runtime.
@@ -89,6 +90,48 @@ fn fmt_duration(d: Duration) -> String {
     }
 }
 
+fn new_stats_table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Disabled)
+        .force_no_tty();
+    table
+}
+
+fn right_align_value_column(table: &mut Table) {
+    if let Some(col) = table.column_mut(1) {
+        col.set_cell_alignment(CellAlignment::Right);
+    }
+}
+
+fn right_align_tool_numeric_columns(table: &mut Table) {
+    for idx in 1..=3 {
+        if let Some(col) = table.column_mut(idx) {
+            col.set_cell_alignment(CellAlignment::Right);
+        }
+    }
+}
+
+fn add_metric_row(table: &mut Table, metric: &str, value: impl Into<String>) {
+    table.add_row(vec![
+        Cell::new(metric),
+        Cell::new(value.into()).set_alignment(CellAlignment::Right),
+    ]);
+}
+
+fn fmt_tool_wall_ms(total_ms: u64) -> String {
+    if total_ms >= 1000 {
+        format!("{:.1}s", total_ms as f64 / 1000.0)
+    } else {
+        format!("{total_ms}ms")
+    }
+}
+
+fn fmt_count_sf(count: u64, success: u64, failure: u64) -> String {
+    format!("{count} ({success}/{failure})")
+}
+
 impl SessionStats {
     /// Accumulate token usage info from an LLM call (streaming or compaction).
     pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
@@ -100,60 +143,64 @@ impl SessionStats {
     /// Produce a human-readable summary of all recorded statistics.
     pub fn summary(&self) -> String {
         let mut out = String::new();
-
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
-        let _ = writeln!(
-            out,
-            "  Elapsed:               {:>8}",
-            fmt_duration(self.start_time.elapsed())
-        );
-
-        let _ = writeln!(out, "  LLM API calls:         {:>8}", self.prompt_count);
 
         let total_llm_ms: f64 = self
             .llm_call_durations
             .iter()
             .map(|d| d.as_secs_f64() * 1000.0)
             .sum();
-        let _ = writeln!(
-            out,
-            "  Total LLM time:        {:>8}",
-            fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0))
-        );
 
-        let _ = writeln!(
-            out,
-            "  Prompt chars sent:     {:>8}",
-            self.total_prompt_chars
+        let mut head = new_stats_table();
+        head.set_header(vec!["Metric", "Value"]);
+        add_metric_row(&mut head, "Elapsed", fmt_duration(self.start_time.elapsed()));
+        add_metric_row(&mut head, "LLM API calls", self.prompt_count.to_string());
+        add_metric_row(
+            &mut head,
+            "Total LLM time",
+            fmt_duration(Duration::from_secs_f64(total_llm_ms / 1000.0)),
         );
-        let _ = writeln!(
-            out,
-            "  Response chars rcvd:  {:>8}",
-            self.total_response_chars
+        add_metric_row(
+            &mut head,
+            "Prompt chars sent",
+            self.total_prompt_chars.to_string(),
         );
-
-        let _ = writeln!(out, "  Thinking blocks:       {:>8}", self.thinking_blocks);
-        let _ = writeln!(
-            out,
-            "  Thinking chars:        {:>8}",
-            self.total_thinking_chars
+        add_metric_row(
+            &mut head,
+            "Response chars rcvd",
+            self.total_response_chars.to_string(),
         );
-
-        let _ = writeln!(out, "  Compactions:           {:>8}", self.compactions);
-
-        let total_tool: u64 = self.tool_counts.values().sum();
+        add_metric_row(
+            &mut head,
+            "Thinking blocks",
+            self.thinking_blocks.to_string(),
+        );
+        add_metric_row(
+            &mut head,
+            "Thinking chars",
+            self.total_thinking_chars.to_string(),
+        );
+        add_metric_row(&mut head, "Compactions", self.compactions.to_string());
+        right_align_value_column(&mut head);
+        let _ = writeln!(out, "{head}");
 
         if !self.tool_counts.is_empty() {
             let mut counts: Vec<_> = self.tool_counts.iter().collect();
             counts.sort_by_key(|(name, _)| *name);
-            let _ = writeln!(out, "  Tool calls:");
+
+            let total_tool: u64 = self.tool_counts.values().sum();
             let total_success: u64 = self.tool_success_counts.values().sum();
             let total_failure: u64 = self.tool_failure_counts.values().sum();
-            let _ = writeln!(
-                out,
-                "    {:<22} {:>4} ({}/{})",
-                "Total (s/f):", total_tool, total_success, total_failure,
-            );
+
+            let mut tools = new_stats_table();
+            tools.set_header(vec!["Tool", "Count(s/f)", "Total", "Avg"]);
+            tools.add_row(vec![
+                Cell::new("Total"),
+                Cell::new(fmt_count_sf(total_tool, total_success, total_failure))
+                    .set_alignment(CellAlignment::Right),
+                Cell::new(""),
+                Cell::new(""),
+            ]);
 
             for (name, count) in counts {
                 let success = self
@@ -181,52 +228,70 @@ impl SessionStats {
                 } else {
                     0.0
                 };
-                let _ = writeln!(
-                    out,
-                    "    {:<22} {:>4} ({}/{})  {:>7}  {:>7.0}ms",
-                    name,
-                    count,
-                    success,
-                    failure,
-                    if total_ms >= 1000 {
-                        format!("{:>5.1}s", total_ms as f64 / 1000.0)
-                    } else {
-                        format!("{:>5}ms", total_ms)
-                    },
-                    avg_ms,
+                tools.add_row(vec![
+                    Cell::new(name.as_str()),
+                    Cell::new(fmt_count_sf(*count, success, failure))
+                        .set_alignment(CellAlignment::Right),
+                    Cell::new(fmt_tool_wall_ms(total_ms)).set_alignment(CellAlignment::Right),
+                    Cell::new(format!("{avg_ms:.0}ms")).set_alignment(CellAlignment::Right),
+                ]);
+            }
+            right_align_tool_numeric_columns(&mut tools);
+
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Tool calls");
+            let _ = writeln!(out, "{tools}");
+        }
+
+        let has_tool_timings = !self.tool_durations_ms.is_empty();
+        let has_cache = self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0;
+        let has_reasoning = self.reasoning_tokens > 0;
+
+        if has_tool_timings || has_cache || has_reasoning {
+            let mut trail = new_stats_table();
+            trail.set_header(vec!["Metric", "Value"]);
+
+            if has_tool_timings {
+                let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
+                let avg_ms = total_tool_ms as f64 / self.tool_durations_ms.len() as f64;
+                add_metric_row(
+                    &mut trail,
+                    "Total tool time",
+                    fmt_duration(Duration::from_millis(total_tool_ms)),
+                );
+                add_metric_row(&mut trail, "Avg tool time", format!("{avg_ms:.1}ms"));
+            }
+
+            if has_cache {
+                let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
+                let hit_rate = if cache_total > 0 {
+                    (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                add_metric_row(
+                    &mut trail,
+                    "Cache hit tokens",
+                    self.cache_hit_tokens.to_string(),
+                );
+                add_metric_row(
+                    &mut trail,
+                    "Cache miss tokens",
+                    self.cache_miss_tokens.to_string(),
+                );
+                add_metric_row(&mut trail, "Cache hit rate", format!("{hit_rate:.1}%"));
+            }
+
+            if has_reasoning {
+                add_metric_row(
+                    &mut trail,
+                    "Reasoning tokens",
+                    self.reasoning_tokens.to_string(),
                 );
             }
-        }
 
-        if !self.tool_durations_ms.is_empty() {
-            let total_tool_ms: u64 = self.tool_durations_ms.iter().sum();
-            let _ = writeln!(
-                out,
-                "  Total tool time:       {:>8}",
-                fmt_duration(Duration::from_millis(total_tool_ms))
-            );
-            let avg_ms = total_tool_ms as f64 / self.tool_durations_ms.len() as f64;
-            let _ = writeln!(out, "  Avg tool time:         {:>8.1}ms", avg_ms);
-        }
-
-        if self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0 {
-            let cache_total = self.cache_hit_tokens + self.cache_miss_tokens;
-            let hit_rate = if cache_total > 0 {
-                (self.cache_hit_tokens as f64 / cache_total as f64) * 100.0
-            } else {
-                0.0
-            };
-            let _ = writeln!(out, "  Cache hit tokens:      {:>8}", self.cache_hit_tokens);
-            let _ = writeln!(
-                out,
-                "  Cache miss tokens:     {:>8}",
-                self.cache_miss_tokens
-            );
-            let _ = writeln!(out, "  Cache hit rate:        {:>8.1}%", hit_rate);
-        }
-
-        if self.reasoning_tokens > 0 {
-            let _ = writeln!(out, "  Reasoning tokens:      {:>8}", self.reasoning_tokens);
+            right_align_value_column(&mut trail);
+            let _ = writeln!(out, "{trail}");
         }
 
         let _ = writeln!(out, "─────────────────────────────────────────────");
@@ -264,5 +329,25 @@ mod tests {
         assert_eq!(fmt_duration(Duration::from_secs(7384)), "2h3m");
         assert_eq!(fmt_duration(Duration::from_secs(86_400)), "1d0h");
         assert_eq!(fmt_duration(Duration::from_secs(100_000)), "1d3h");
+    }
+
+    #[test]
+    fn summary_uses_metric_and_tool_tables() {
+        let mut s = SessionStats::default();
+        s.prompt_count = 1;
+        s.tool_counts.insert("bash".into(), 2);
+        s.tool_success_counts.insert("bash".into(), 2);
+        s.tool_failure_counts.insert("bash".into(), 0);
+        s.tool_total_durations_ms.insert("bash".into(), 1500);
+        s.tool_timing_counts.insert("bash".into(), 2);
+        s.tool_durations_ms.extend([1000, 500]);
+
+        let text = s.summary();
+        assert!(text.contains("Metric"), "missing metrics header:\n{text}");
+        assert!(text.contains("Value"), "missing metrics Value header:\n{text}");
+        assert!(text.contains("Tool calls"), "missing Tool calls label:\n{text}");
+        assert!(text.contains("Count(s/f)"), "missing tools Count header:\n{text}");
+        assert!(text.contains("bash"), "missing tool row:\n{text}");
+        assert!(text.contains("Total"), "missing Total row or Total column:\n{text}");
     }
 }
