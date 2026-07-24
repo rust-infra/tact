@@ -100,6 +100,12 @@ mod tests {
     /// Consolidated env-var-based test to avoid parallel test races on env vars.
     #[test]
     fn test_detect_terminal_theme_env_vars() {
+        // SAFETY: set_var/remove_var are unsafe because they can race with
+        // concurrent env::var reads in other threads. This test consolidates
+        // ALL env-var-dependent assertions into a single test function and
+        // runs them sequentially, so no other test can concurrently read or
+        // write COLORFGBG or COLORTERM. All env vars are cleaned up at the end.
+        //
         // 1. COLORFGBG dark (bg=0 ≤ 6)
         unsafe {
             std::env::set_var("COLORFGBG", "15;0");
@@ -118,7 +124,7 @@ mod tests {
         }
         assert_eq!(resolve_theme("auto"), ThemeName::Dark);
 
-        // 4. COLORTERM light hint (only verifiable on non-macOS or if macOS returns None)
+        // 4. COLORTERM light hint
         unsafe {
             std::env::remove_var("COLORFGBG");
         }

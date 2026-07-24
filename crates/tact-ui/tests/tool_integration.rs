@@ -50,7 +50,7 @@ async fn parallel_read_files_both_succeed() {
 }
 
 #[tokio::test]
-async fn large_non_bash_output_is_persisted() {
+async fn large_read_file_output_is_not_persisted() {
     let mock = MockClient::new(vec![
         mock_turn(
             vec![read_file_tool_use("read_big", "big.txt")],
@@ -58,6 +58,7 @@ async fn large_non_bash_output_is_persisted() {
         ),
         mock_turn(vec![text_block("Large read handled.")], StopReason::EndTurn),
     ]);
+    // Well under token budget as a single line page, but above the old 30k-char persist threshold.
     let (updates, work_dir) =
         run_single_task_with_setup(mock, "read big", PermissionMode::Auto, |dir| {
             write_workspace_file(dir, "big.txt", &"x".repeat(30_001));
@@ -69,9 +70,40 @@ async fn large_non_bash_output_is_persisted() {
         AgentUpdate::StepFinished { tool_id, result, .. }
             if tool_id == "read_big"
                 && matches!(result.status, StepStatus::Success)
-                && result.message.contains("<persisted-output>")
+                && !result.message.contains("<persisted-output>")
+                && result.message.contains(&"x".repeat(32)) // content returned directly
     )));
-    assert!(work_dir.join(".tact/tool-results/read_big.txt").exists());
+    assert!(!work_dir.join(".tact/tool-results/read_big.txt").exists());
+}
+
+#[tokio::test]
+async fn large_native_bash_output_is_persisted() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![bash_tool_use(
+                "bash_big",
+                "python3 -c \"print('x' * 30001, end='')\"",
+            )],
+            StopReason::ToolUse,
+        ),
+        mock_turn(
+            vec![text_block("Large bash output handled.")],
+            StopReason::EndTurn,
+        ),
+    ]);
+    let (updates, work_dir) = run_single_task(mock, "bash big", PermissionMode::Auto).await;
+
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::StepFinished { tool_id, result, .. }
+                if tool_id == "bash_big"
+                    && matches!(result.status, StepStatus::Success)
+                    && result.message.contains("<persisted-output>")
+        )),
+        "expected native bash spill via persist_large_output, got: {updates:?}"
+    );
+    assert!(work_dir.join(".tact/tool-results/bash_big.txt").exists());
 }
 
 #[tokio::test]

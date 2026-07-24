@@ -127,6 +127,8 @@ pub enum AgentUpdate {
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)
     Info(String),
+    /// Session statistics (triggered by the /stats command)
+    SessionStats(String),
 
     /// Request user to choose **one** option; returns option index (None = cancelled).
     /// Used by permission prompts and single-choice `ask_user`.
@@ -178,6 +180,8 @@ pub enum UserCommand {
     Cancel,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
+    /// Query session statistics (triggered by the /stats command)
+    QueryStats,
 }
 
 /// A single step in the execution plan.

@@ -62,8 +62,13 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
 
     let msgs = app.msgs();
     let count = filtered.len().max(1) as u16;
-    let popup_width = 64u16;
-    let popup_height = count + 6; // room for category headers
+
+    // Dynamic width: 60% of terminal, clamped to [60, 120]
+    let popup_width = ((area.width as f32 * 0.60) as u16).clamp(60, 120);
+    // Inner width after block borders (returned by render_list_popup_chrome)
+    let inner_width = popup_width.saturating_sub(2) as usize;
+
+    let popup_height = (count + 6).min(area.height.saturating_sub(4)); // cap to not exceed terminal
     let popup_area = super::centered_list_popup_area(area, popup_width, popup_height);
 
     let inner = super::render_list_popup_chrome(
@@ -105,7 +110,13 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let desc_short = truncate_chars(desc, 36);
+            // Calculate available width for description
+            // Row format: "  {emoji}  {cmd:<14} {desc}"
+            // Overhead: "  " (2) + emoji (~2) + "  " (2) + cmd_pad + " " (1)
+            let cmd_width = cmd.chars().count().max(14);
+            let reserved = 2 + 2 + 2 + cmd_width + 1; // spaces + emoji + spaces + cmd + space
+            let max_desc = inner_width.saturating_sub(reserved).max(5);
+            let desc_short = truncate_chars(desc, max_desc);
             let text = format!("  {emoji}  {cmd:<14} {desc_short}");
             results.push(ListItem::new(Span::styled(text, style)));
         }

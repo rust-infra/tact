@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -15,7 +15,7 @@ pub(crate) fn is_task_end_separator(raw: &str) -> bool {
     raw == TASK_END_SEPARATOR
 }
 
-/// Full-width dim dashed rule appended after a completed task response.
+/// Full-width accent-colored rule appended after a completed task response.
 pub(crate) struct TaskEndSeparator {
     fg: Color,
 }
@@ -25,10 +25,8 @@ impl TaskEndSeparator {
         Self { fg }
     }
 
-    fn dashed_line(width: u16) -> String {
-        (0..width as usize)
-            .map(|i| if i % 2 == 0 { '─' } else { ' ' })
-            .collect()
+    fn solid_line(width: u16) -> String {
+        "─".repeat(width as usize)
     }
 }
 
@@ -41,8 +39,8 @@ impl Renderable for TaskEndSeparator {
         if skip_lines >= 1 || area.height == 0 || area.width == 0 {
             return;
         }
-        let style = Style::default().fg(self.fg).add_modifier(Modifier::DIM);
-        let line = Line::from(Span::styled(Self::dashed_line(area.width), style));
+        let style = Style::default().fg(self.fg);
+        let line = Line::from(Span::styled(Self::solid_line(area.width), style));
         Paragraph::new(line).render(area, buf);
     }
 
@@ -92,7 +90,7 @@ mod render_tests {
     use super::*;
 
     #[test]
-    fn task_end_separator_renders_dashed_line() {
+    fn task_end_separator_renders_solid_line() {
         let sep = TaskEndSeparator::new(Color::Gray);
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
@@ -100,9 +98,9 @@ mod render_tests {
         let text: String = (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect();
-        assert!(
-            text.contains('─'),
-            "task end separator should draw dashes, got: {text}"
+        assert_eq!(
+            text, "────────────────────",
+            "task end separator should draw solid line, got: {text}"
         );
     }
 

@@ -186,7 +186,7 @@ fn log_assistant_reply_aligns_with_thinking_indent() {
 }
 
 #[test]
-fn log_task_end_separator_renders_dashed_rule() {
+fn log_task_end_separator_renders_solid_rule() {
     let mut app = make_app();
     app.add_system_message("task body".into());
     app.add_task_end_separator();
@@ -194,7 +194,7 @@ fn log_task_end_separator_renders_dashed_rule() {
     let text = render_log_panel_text(&mut app, 60, 12);
     assert!(
         text.contains('─'),
-        "task-end separator should render dashed rule, got:\n{text}"
+        "task-end separator should render solid rule, got:\n{text}"
     );
 }
 

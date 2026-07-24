@@ -28,7 +28,8 @@ const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 const PERSIST_THRESHOLD: usize = 30_000;
 /// Number of characters shown in the preview when persisting a large output.
 const PREVIEW_CHARS: usize = 2_000;
-const COMPACTED_TOOL_RESULT: &str = "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+const COMPACTED_TOOL_RESULT: &str =
+    "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
 const _: () = assert!(COMPACTED_TOOL_RESULT.len() < 120);
 const OMITTED_IMAGE: &str = "[Earlier image attachment omitted during compaction.]";
 const MAX_COMPACT_ARTIFACTS: usize = 100;
@@ -83,6 +84,7 @@ pub fn micro_compact(messages: &mut [Message], enabled: bool) {
             continue;
         };
 
+        // TODO 120? if the tool is read_file or some special tool, should be kept full or more content
         if tool_content.chars().count() > 120 {
             *tool_content = COMPACTED_TOOL_RESULT.to_string();
         }

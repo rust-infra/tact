@@ -90,7 +90,6 @@ Wave 按序执行；同一 wave 内工具并发运行。
 | Tool | Resource | Mode |
 |------|----------|------|
 | `read_file` | `input.path` | read |
-| `batch_read` | `input.files[].path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
 | `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
@@ -196,6 +195,5 @@ Hook（`PreToolUse`、`PostToolUse`）在 `crates/tact/src/hook/mod.rs`，可检
 - [后台任务](./13_chapter_background_zh.md) — 同步 `bash` 步骤的异步对应物
 - [子 Agent](./12_chapter_subagent_zh.md) — 嵌套 `task` 工具与调度 barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
-- [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)
 - [Token Usage Schema](../docs/token_usage_schema.md)

@@ -277,18 +277,6 @@ pub fn apply_patch_tool_use(id: &str, patch: &str) -> ContentBlock {
     }
 }
 
-pub fn batch_read_tool_use(id: &str, paths: &[&str]) -> ContentBlock {
-    let files: Vec<serde_json::Value> = paths
-        .iter()
-        .map(|p| serde_json::json!({ "path": p }))
-        .collect();
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "batch_read".to_string(),
-        input: serde_json::json!({ "files": files }),
-    }
-}
-
 pub fn web_search_tool_use(id: &str, query: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),

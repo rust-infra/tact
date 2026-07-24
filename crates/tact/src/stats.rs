@@ -23,6 +23,14 @@ pub struct SessionStats {
     pub compactions: u64,
     /// Tool call counts keyed by tool name.
     pub tool_counts: HashMap<String, u64>,
+    /// Successful tool call counts keyed by tool name.
+    pub tool_success_counts: HashMap<String, u64>,
+    /// Failed tool call counts keyed by tool name.
+    pub tool_failure_counts: HashMap<String, u64>,
+    /// Total wall-clock duration per tool in milliseconds.
+    pub tool_total_durations_ms: HashMap<String, u64>,
+    /// Number of timed executions per tool (for computing average).
+    pub tool_timing_counts: HashMap<String, u64>,
     /// Wall-clock duration of each LLM API call.
     pub llm_call_durations: Vec<Duration>,
     /// Per-tool-execution durations in milliseconds.
@@ -47,6 +55,10 @@ impl Default for SessionStats {
             total_thinking_chars: 0,
             compactions: 0,
             tool_counts: HashMap::new(),
+            tool_success_counts: HashMap::new(),
+            tool_failure_counts: HashMap::new(),
+            tool_total_durations_ms: HashMap::new(),
+            tool_timing_counts: HashMap::new(),
             llm_call_durations: Vec::new(),
             tool_durations_ms: Vec::new(),
             cache_hit_tokens: 0,
@@ -130,13 +142,59 @@ impl SessionStats {
         let _ = writeln!(out, "  Compactions:           {:>8}", self.compactions);
 
         let total_tool: u64 = self.tool_counts.values().sum();
-        let _ = writeln!(out, "  Tool calls:            {:>8}", total_tool);
 
         if !self.tool_counts.is_empty() {
             let mut counts: Vec<_> = self.tool_counts.iter().collect();
             counts.sort_by_key(|(name, _)| *name);
+            let _ = writeln!(out, "  Tool calls:");
+            let total_success: u64 = self.tool_success_counts.values().sum();
+            let total_failure: u64 = self.tool_failure_counts.values().sum();
+            let _ = writeln!(
+                out,
+                "    {:<22} {:>4} ({}/{})",
+                "Total (s/f):", total_tool, total_success, total_failure,
+            );
+
             for (name, count) in counts {
-                let _ = writeln!(out, "    {:<22} {:>4}", name, count);
+                let success = self
+                    .tool_success_counts
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let failure = self
+                    .tool_failure_counts
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let total_ms = self
+                    .tool_total_durations_ms
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let timing_count = self
+                    .tool_timing_counts
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let avg_ms = if timing_count > 0 {
+                    total_ms as f64 / timing_count as f64
+                } else {
+                    0.0
+                };
+                let _ = writeln!(
+                    out,
+                    "    {:<22} {:>4} ({}/{})  {:>7}  {:>7.0}ms",
+                    name,
+                    count,
+                    success,
+                    failure,
+                    if total_ms >= 1000 {
+                        format!("{:>5.1}s", total_ms as f64 / 1000.0)
+                    } else {
+                        format!("{:>5}ms", total_ms)
+                    },
+                    avg_ms,
+                );
             }
         }
 
@@ -147,6 +205,8 @@ impl SessionStats {
                 "  Total tool time:       {:>8}",
                 fmt_duration(Duration::from_millis(total_tool_ms))
             );
+            let avg_ms = total_tool_ms as f64 / self.tool_durations_ms.len() as f64;
+            let _ = writeln!(out, "  Avg tool time:         {:>8.1}ms", avg_ms);
         }
 
         if self.cache_hit_tokens > 0 || self.cache_miss_tokens > 0 {

@@ -72,6 +72,12 @@ async fn run_native_tool(
     let call_ctx = ctx.for_invocation(tool_use_id);
     match tools.call(&call_ctx, name, input.clone()).await {
         Ok(output) => {
+            if name == "read_file" {
+                return ExecResult {
+                    content: output,
+                    status: StepStatus::Success,
+                };
+            }
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match persist_large_output(&tact_path, tool_use_id, &output).await {
                 Ok(content) => ExecResult {
@@ -128,14 +134,6 @@ fn recent_file_paths(name: &str, input: &serde_json::Value) -> Vec<String> {
             .and_then(serde_json::Value::as_str)
             .map(|path| vec![path.to_string()])
             .unwrap_or_default(),
-        "batch_read" => input
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
-            .map(ToOwned::to_owned)
-            .collect(),
         "apply_patch"
             if !input
                 .get("dry_run")
@@ -530,6 +528,35 @@ impl Agent {
                         .map(ToOwned::to_owned)
                         .or_else(|| Some(String::new()));
                 }
+                // Record per-tool success/failure stat
+                if succeeded {
+                    *self
+                        .runtime
+                        .stats
+                        .tool_success_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
+                } else {
+                    *self
+                        .runtime
+                        .stats
+                        .tool_failure_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
+                }
+                // Record per-tool wall-clock duration
+                *self
+                    .runtime
+                    .stats
+                    .tool_total_durations_ms
+                    .entry(prep_name.clone())
+                    .or_insert(0) += duration_us / 1000;
+                *self
+                    .runtime
+                    .stats
+                    .tool_timing_counts
+                    .entry(prep_name.clone())
+                    .or_insert(0) += 1;
                 outputs[pi] = Some(exec_output);
             }
             drop(futures);
@@ -624,17 +651,14 @@ mod tests {
     }
 
     #[test]
-    fn recent_file_paths_cover_reads_writes_edits_batches_and_patches() {
+    fn recent_file_paths_cover_reads_writes_edits_and_patches() {
         assert_eq!(
             recent_file_paths("write_file", &serde_json::json!({"path": "src/a.rs"})),
             ["src/a.rs"]
         );
         assert_eq!(
-            recent_file_paths(
-                "batch_read",
-                &serde_json::json!({"files": [{"path": "a"}, {"path": "b"}]})
-            ),
-            ["a", "b"]
+            recent_file_paths("read_file", &serde_json::json!({"path": "src/b.rs"})),
+            ["src/b.rs"]
         );
         assert_eq!(
             recent_file_paths(

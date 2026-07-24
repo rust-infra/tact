@@ -125,7 +125,7 @@ sequenceDiagram
 
 ## Mind Map
 
-Right-hand tree of all 25 chapters. [Open full page](./mindmap.html) · [Mermaid source](./mindmap.md) · [PNG](./mindmap.png)
+Right-hand tree of all 26 chapters. [Open full page](./mindmap.html) · [Mermaid source](./mindmap.md) · [PNG](./mindmap.png)
 
 <!-- Embedded interactive mind map (renders in HTML/CHM export and VS Code preview; GitHub strips iframes) -->
 <iframe
@@ -166,24 +166,26 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 17 | [Desktop Notifications](./17_chapter_notify.md) ([中文](./17_chapter_notify_zh.md)) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
 | 18 | [Agent Main Loop](./18_chapter_agent_loop.md) ([中文](./18_chapter_agent_loop_zh.md)) | Capstone: `agent_loop` turn cycle, streaming, `cancel_flag`, `AgentUpdate`, TUI `TaskComplete` wiring |
 | 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) ([中文](./19_chapter_persistent_tasks_zh.md)) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.tact/tasks/` |
-| 20 | [Configuration](./21_chapter_config.md) ([中文](./21_chapter_config_zh.md)) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
-| 21 | [LLM Providers](./22_chapter_llm.md) ([中文](./22_chapter_llm_zh.md)) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
-| 22 | [Terminal UI](./23_chapter_tui.md) ([中文](./23_chapter_tui_zh.md)) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
-| 23 | [Testing Strategy](./24_chapter_testing.md) ([中文](./24_chapter_testing_zh.md)) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
-| 24 | [Agent–TUI Protocol](./25_chapter_protocol.md) ([中文](./25_chapter_protocol_zh.md)) | `tact_protocol` message types, plan step lifecycle, task-level state transitions |
+| 20 | [Hallucination in Agent Loops](./20_chapter_hallucination.md) ([中文](./20_chapter_hallucination_zh.md)) | LLM fabrication of files, summaries, and tool results; compaction summary hallucination case study; stub-induced content fabrication; mitigation strategies |
+| 21 | [Configuration](./21_chapter_config.md) ([中文](./21_chapter_config_zh.md)) | TOML/CLI merge, `ResolvedConfig`, `init()` → `tact_llm::init_provider` |
+| 22 | [LLM Providers](./22_chapter_llm.md) ([中文](./22_chapter_llm_zh.md)) | `tact_llm` adapters, streaming, thinking, `user_id`, balance queries |
+| 23 | [Terminal UI](./23_chapter_tui.md) ([中文](./23_chapter_tui_zh.md)) | `tui` crate, `AgentUpdate` / `UserCommand` channels, `tact-ui` wiring |
+| 24 | [Testing Strategy](./24_chapter_testing.md) ([中文](./24_chapter_testing_zh.md)) | Mock LLM harness, tact-ui driver tests, TUI TestBackend render tests, CI |
+| 25 | [Agent–TUI Protocol](./25_chapter_protocol.md) ([中文](./25_chapter_protocol_zh.md)) | `tact_protocol` message types, plan step lifecycle, task-level state transitions |
+| 26 | [Engineering Issue Log](./26_chapter_issue.md) ([中文](./26_chapter_issue_zh.md)) | Chronological log of shipped optimizations and bug fixes (problem → decision → pointers) |
 
 ---
 
 ## How to Read
 
-- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19** covers TaskManager in depth. **Ch 20–22** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 23** documents the integration test harness. **Ch 24** documents the `tact_protocol` message types and state transitions.
+- **Runtime order**: Chapters 1–11 follow one turn of `agent_loop` (store → prompt → compact → LLM → hooks → permissions → tool dispatch). Chapters 12–15 cover specific tool families; 16–17 are off-path systems. **Ch 18** ties the loop together; **19** covers TaskManager in depth; **20** documents LLM hallucination patterns. **Ch 21–22** cover bootstrap (config, LLM, TUI) — read them first if you are wiring a new binary or provider. **Ch 24** documents the integration test harness. **Ch 25** documents the `tact_protocol` message types and state transitions. **Ch 26** is the engineering issue / optimization log — append when shipping behavior changes (see `AGENTS.md`).
 - **Tact as the reference implementation**: Examples and code maps reflect this repository. Other agent frameworks follow similar ideas with different details.
 
 ---
 
 ## Planned Chapters
 
-Future additions may cover deployment or plugin APIs.
+Future additions may cover deployment or plugin APIs. Behavioral optimizations and bug fixes go into **Ch 26** as they ship rather than as separate planned chapters.
 
 ---
 

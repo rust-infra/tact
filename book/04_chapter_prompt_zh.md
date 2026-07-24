@@ -264,7 +264,7 @@ When a user message already contains a `<skill name="…">…</skill>` block, th
 - If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.
 - When editing files, always re-read the file first if its content may have changed since you last read it
 - For multi-line changes, prefer apply_patch; for exact string replacements, use edit_file (replace_all=true to change every occurrence in the file)
-- If a tool result was compacted and you need the details, re-run the relevant tool (e.g., read_file)
+- If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)
 - For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites
 
 # Memory guidance

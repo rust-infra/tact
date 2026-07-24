@@ -89,7 +89,6 @@ After all waves finish:
 | Tool | Resource | Mode |
 |------|----------|------|
 | `read_file` | `input.path` | read |
-| `batch_read` | `input.files[].path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
 | `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
@@ -195,6 +194,5 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 - [Background Tasks](./13_chapter_background.md) — async counterpart to synchronous `bash` steps
 - [Subagents](./12_chapter_subagent.md) — nested `task` tool and scheduling barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
-- [Batch Tools Flow](../docs/batch_tools_flow.md)
 - [Tool Rendering](../docs/tool_rendering.md)
 - [Token Usage Schema](../docs/token_usage_schema.md)

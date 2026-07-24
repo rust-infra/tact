@@ -141,7 +141,7 @@ pub(super) fn resolve_non_llm_settings(
     let micro_compact_enabled = if args.no_micro_compact {
         false
     } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
+        toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
     };
 
     let skill_body_auto_inject =
@@ -256,7 +256,7 @@ pub(super) fn resolve_config(
     let micro_compact_enabled = if args.no_micro_compact {
         false
     } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(true)
+        toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
     };
 
     let skill_body_auto_inject =
@@ -372,7 +372,7 @@ model = "gpt-4o"
             resolved.ui.vision_image.jpeg_quality,
             VisionImageSettings::DEFAULT_JPEG_QUALITY
         );
-        assert!(resolved.agent.micro_compact_enabled);
+        assert!(!resolved.agent.micro_compact_enabled);
         assert_eq!(
             resolved.agent.instruction_sources,
             InstructionSources::default()

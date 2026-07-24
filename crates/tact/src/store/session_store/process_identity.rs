@@ -63,6 +63,10 @@ fn macos_starttime(pid: u32) -> Option<String> {
         pbi_start_tvusec: u64,
     }
 
+    // SAFETY: proc_pidinfo is a well-documented macOS libproc function
+    // (part of the system library, not going away). It reads kernel task
+    // info and writes into the provided buffer — no side effects beyond
+    // filling the struct.
     unsafe extern "C" {
         fn proc_pidinfo(
             pid: i32,
@@ -73,7 +77,17 @@ fn macos_starttime(pid: u32) -> Option<String> {
         ) -> i32;
     }
 
+    // SAFETY: proc_bsdinfo is a POD struct containing only integers and
+    // fixed-size byte arrays. All-zeroes is a valid representation for
+    // every field (no enum discriminants, no NonZero, no bool, no references).
+    // After the call we check ret <= 0 and return None, so unmodified zeroed
+    // fields are never misinterpreted.
     let mut info: proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: info is a stack-allocated proc_bsdinfo of the exact size
+    // passed as buffersize. pid is cast from u32 to i32; proc_pidinfo
+    // accepts -1 for self or a valid pid, and we've guarded pid == 0
+    // above. The function writes into the buffer and returns the number
+    // of bytes written (or <= 0 on error).
     let ret = unsafe {
         proc_pidinfo(
             pid as i32,

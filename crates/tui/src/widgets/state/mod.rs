@@ -66,6 +66,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("plugin", "Manage plugins and marketplaces"),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
+    ("stats", "Show session statistics"),
 ];
 
 /// A skill available in the TUI slash / palette picker.

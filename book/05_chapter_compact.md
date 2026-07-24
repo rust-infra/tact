@@ -40,7 +40,7 @@ Tact’s answer is **progressive defense**: free local stubs first, then one pai
 
 | Level | Mechanism | Cost | When | What is lost from *context* |
 |-------|-----------|------|------|-----------------------------|
-| 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars | Full output (kept on disk + preview) |
+| 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars **except `read_file`** | Full output (kept on disk + preview) |
 | 2 | `micro_compact` | Free | Start of every LLM turn | Old tool-result bodies (stub left behind) |
 | 3 | `compact_history` | One extra LLM call | 80% threshold, prompt-too-long, or `compact` tool | Assistant/tool history (recent real users + summary remain; full JSONL on disk) |
 
@@ -128,7 +128,7 @@ Key ordering facts:
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 const COMPACTED_TOOL_RESULT: &str =
-    "[Earlier tool result compacted. If you need the full content to continue editing, re-read the relevant file.]";
+    "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
 ```
 
 ### Algorithm
@@ -180,7 +180,7 @@ Rules of thumb encoded in the constants:
 
 The stub text is deliberate: it tells the model **how to recover** (`read_file` / re-run tools). The system prompt reinforces the same idea:
 
-> If a tool result was compacted and you need the details, re-run the relevant tool (e.g., `read_file`)
+> If a tool result was truncated and you need the details, re-run the relevant tool (e.g., `read_file`)
 
 ---
 
@@ -420,7 +420,7 @@ flowchart TD
     Use1 --> Use2[appended to final summary message]
 ```
 
-`remember_recent_file` is fed only by successful final tool results for `read_file`, `batch_read`, `write_file`, `edit_file`, and non-dry-run `apply_patch`. It keeps the last five deduplicated paths as “amnesia insurance.”
+`remember_recent_file` is fed only by successful final tool results for `read_file`, `write_file`, `edit_file`, and non-dry-run `apply_patch`. It keeps the last five deduplicated paths as “amnesia insurance.”
 
 ### Before / After Comparison
 
@@ -558,10 +558,12 @@ The dispatcher sets `manual_compact = Some(focus)` only when the compact invocat
 
 ## 7. Large Output Spill (`persist_large_output`)
 
-Independent of history compaction, a **single** oversized tool result must not enter the context at full size. Dispatch applies this to every successful native and MCP call:
+Independent of history compaction, a **single** oversized tool result must not enter the context at full size. Dispatch applies this to every successful native and MCP call **except `read_file`** (which already returns a bounded PARTIAL page):
 
 ```rust
-persist_large_output(&tact_path, tool_use_id, &output)
+if name != "read_file" {
+    persist_large_output(&tact_path, tool_use_id, &output)
+}
 ```
 
 | Constant | Value |
@@ -694,6 +696,29 @@ flowchart LR
 | Simple usage % | Meter is `used / model_context_window` (no Codex 12K baseline / effective-window math yet) |
 | Only recent 20k estimated tokens summarized | Early turns live in transcript; model is not told that path in the replacement message |
 | Fixed stub thresholds | 12 / 120 / 30k are compile-time constants |
+
+### 11.1 Micro Compact Known Issues
+
+The micro-compact stub (Tier 2) trades context size for availability, but has several side-effects:
+
+| Issue | Description |
+|-------|-------------|
+| **Model memory loss** | A tool result that was read earlier and referenced later vanishes from context, replaced by a stub. If the model doesn't notice the stub, it may fabricate the content from memory |
+| **False context mismatch** | Diff/patch operations fail because the model lacks the real file content but thinks it knows it — the stub says "re-run the tool" but the patch logic doesn't always trigger a re-read |
+| **Unnecessary re-reads** | The model must `read_file` again to recover truncated content, wasting tokens that the stub was supposed to save |
+| **Silent correctness risk** | Most dangerous: the model doesn't realize information is missing and continues reasoning confidently on incomplete premises |
+| **Crude selection** | The truncation policy is purely recency+length based (keep last 12, stub older results > 120 chars). A critical config file at position 13 is stubbed, while 12 trivial `ls` outputs are kept |
+| **Prefix cache pollution** | On models with automatic prefix caching (OpenAI, DeepSeek), stub replacement changes the content at a given position, causing the cached prefix to break. The entire prefix after the first stubbed result is invalidated, forcing a cache miss on the next request — the tokens "saved" by truncation are dwarfed by the cost of rebuilding the cache. See: [OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching), [DeepSeek KV Cache](https://api-docs.deepseek.com/guides/kv_cache). Claude is less affected because its [prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) uses explicit `cache_control` breakpoints that typically sit before tool results |
+
+### 11.2 Planned Optimizations
+
+| Idea | Description | Priority |
+|------|-------------|----------|
+| **Context-window-gated trigger** | Only run micro_compact when the current context usage exceeds a threshold (e.g., 50% of `model_context_window`), not on every turn. This preserves the prefix cache for most of the session and only truncates when memory pressure is real | High |
+| **Selective tool truncation** | Exclude already-bounded tools from truncation (e.g., `read_file` pages) since their outputs are likely to be referenced again. Only truncate transient tools like `ls`, `echo`, `bash` with ephemeral output. Also protects the prefix cache from frequent invalidation | High |
+| **Semantic importance** | Score tool results by importance (e.g., was the output referenced in a subsequent turn?) and keep important ones even if old | Medium |
+| **Configurable thresholds** | Make `KEEP_RECENT_TOOL_RESULTS` and the 120-char stub threshold configurable at runtime rather than compile-time constants | Low |
+| **Stub-aware prompt** | Improve system prompt guidance so the model consistently re-reads truncated content instead of guessing | Medium |
 
 ---
 

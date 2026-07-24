@@ -134,7 +134,7 @@ agent.pre_tool(|agent, tool_use| {
 
 agent.post_tool(|_agent, tool_use, tool_result| {
     Box::pin(async move {
-        if tool_use.name == "read_file" && tool_result.content.len() > 50_000 {
+        if tool_use.name == "bash" && tool_result.content.len() > 50_000 {
             tool_result.content.truncate(50_000);
             tool_result.content.push_str("\n… (truncated by hook)");
         }

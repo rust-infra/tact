@@ -47,7 +47,6 @@ mod apply_patch;
 mod ask_user;
 mod background_run;
 mod bash;
-mod batch_read;
 mod compact;
 mod cron;
 mod edit_file;
@@ -70,8 +69,6 @@ mod write_file;
 use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
 use bash::BashTool;
-#[cfg(test)]
-use batch_read::BatchReadTool;
 #[cfg(test)]
 use cron::{CronCreateTool, CronDeleteTool, CronListTool};
 #[cfg(test)]
@@ -392,9 +389,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.contains("... (1 lines skipped) ..."));
-        assert!(output.contains("line2"));
-        assert!(output.contains("... (2 more lines)"));
+        assert!(
+            output.starts_with("[PARTIAL view — lines 2-3; continue with offset=4]\n\n"),
+            "got: {output}"
+        );
+        assert!(output.contains("line2\nline3"));
+        assert!(!output.contains("line1"));
         assert!(!output.contains("line4"));
     }
 
@@ -469,45 +469,6 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("Text not found"));
-    }
-
-    #[tokio::test]
-    async fn batch_read_reads_multiple_files() {
-        let router = ToolRouter::new().route(BatchReadTool);
-        let context = test_context("batch_read_reads_multiple_files");
-        write_workspace_file(&context.work_dir, "a.txt", "aaa");
-        write_workspace_file(&context.work_dir, "b.txt", "bbb");
-
-        let output = router
-            .call(
-                &context,
-                "batch_read",
-                serde_json::json!({
-                    "files": [
-                        { "path": "a.txt" },
-                        { "path": "b.txt" }
-                    ]
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.contains("BatchRead 2 files"));
-        assert!(output.contains("aaa"));
-        assert!(output.contains("bbb"));
-    }
-
-    #[tokio::test]
-    async fn batch_read_rejects_empty_files_array() {
-        let router = ToolRouter::new().route(BatchReadTool);
-        let context = test_context("batch_read_rejects_empty_files_array");
-
-        let error = router
-            .call(&context, "batch_read", serde_json::json!({ "files": [] }))
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("files array must not be empty"));
     }
 
     #[tokio::test]

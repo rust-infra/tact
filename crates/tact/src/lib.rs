@@ -40,6 +40,7 @@ pub mod store;
 pub mod task;
 pub mod team;
 pub mod tool;
+pub mod utils;
 pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};

@@ -201,7 +201,7 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 
 | Category | Tools |
 |----------|-------|
-| **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch`, `batch_read` |
+| **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch` |
 | **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
 | **Task Management** | `task`, `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
@@ -340,11 +340,10 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read file contents with optional offset/limit |
+| `read_file` | Read file contents with optional offset/limit; default page is 2000 lines / ~25k approx tokens with a PARTIAL continuation marker |
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `apply_patch` | Apply unified diff patches |
-| `batch_read` | Read multiple files in parallel |
 | `bash` | Run a shell command |
 | `background_run` | Run a command in the background |
 | `check_background` | Check background task status |
