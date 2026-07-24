@@ -188,12 +188,17 @@ fn log_assistant_reply_aligns_with_thinking_indent() {
 fn log_task_end_separator_renders_solid_rule() {
     let mut app = make_app();
     app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
     app.add_task_end_separator();
 
     let text = render_log_panel_text(&mut app, 60, 12);
     assert!(
         text.contains('─'),
         "task-end separator should render solid rule, got:\n{text}"
+    );
+    assert!(
+        text.contains("Elapsed 01:05"),
+        "task-end separator should embed frozen elapsed, got:\n{text}"
     );
 }
 

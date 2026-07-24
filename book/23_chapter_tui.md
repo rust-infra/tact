@@ -288,7 +288,7 @@ pub(crate) trait Renderable {
 **Top bar** (`render_status_bar`): input mode, `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`. No panel-focus label (single-column log only).
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
-- Row 1: `[Log]`, elapsed (`◷ Elapsed` / `耗时`), uptime (`⊙ Up` / `运行`), cwd, git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `.
+- Row 1: `[Log]`, uptime (`⊙ Up` / `运行`), cwd, git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
 - Row 2: model name, `out`/`输出`, `think high(32K)`/`思考 …`, `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
@@ -374,7 +374,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
-| **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end` | Rendered as a full-width accent-colored solid rule, not plain text |
+| **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end\x1f{secs}` | Rendered as a full-width accent-colored rule with centered `Elapsed MM:SS` / `耗时 MM:SS` |
 
 Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `messages[]`:
 
@@ -489,7 +489,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | **TextCell** | Inline | Wrapped line count from cache | Word select / line select |
 | **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` |
 | **ThinkingCell** | Inline | One blank row on each side; active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
-| **TaskEndSeparator** | Inline | 1 visual row (dynamic dashes) | — |
+| **TaskEndSeparator** | Inline | 1 visual row (rule + centered elapsed) | — |
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
 | **Loading spinner** | Overlay | 1 row at `loading_idx` if set | — (usually inactive — see `PlanGenerated` legacy) |

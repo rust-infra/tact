@@ -179,11 +179,21 @@ impl App {
         self.raw_message_types.remove(idx);
     }
 
-    /// Sentinel row — rendered as a full-width dashed rule at draw time.
+    /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
     pub(crate) fn add_task_end_separator(&mut self) {
+        let secs = if let Some(start) = self.task_start_time.take() {
+            let s = chrono::Local::now()
+                .signed_duration_since(start)
+                .num_seconds()
+                .max(0);
+            self.last_prompt_elapsed_secs = Some(s);
+            s
+        } else {
+            self.last_prompt_elapsed_secs.unwrap_or(0)
+        };
         self.append_msg(
             Line::default(),
-            crate::render::cells::separator::TASK_END_SEPARATOR.to_string(),
+            crate::render::cells::separator::task_end_separator_raw(secs),
             RawMessageType::LLM,
         );
     }

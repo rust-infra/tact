@@ -289,7 +289,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 **顶栏**（`render_status_bar`）：输入模式、`Status`（Idle / Planning / Executing / WaitingForUser / Done）、主题/语言提示。覆盖：临时 `flash_msg`。不再显示面板焦点标签（仅单栏 log）。
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
-- 第 1 行：`[Log]`、耗时（`◷ 耗时` / `Elapsed`）、运行（`⊙ 运行` / `Up`）、cwd、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。
+- 第 1 行：`[Log]`、运行（`⊙ 运行` / `Up`）、cwd、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
 - 第 2 行：模型名、`输出`/`out`、`思考 high(32K)`/`think …`、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。
@@ -375,7 +375,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 | **Tool blocks** | Blank placeholder 行（`SysTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SysTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
-| **Task-end separator** | 魔法 raw `\x07tact-task-end` 的 sentinel 行 | 渲染为全宽强调色实线，非纯文本 |
+| **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
 
 若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `messages[]` 重复文本：
 
@@ -493,7 +493,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | **TextCell** | Inline | Cache 换行数 | 词选 / 行选 |
 | **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup` |
 | **ThinkingCell** | Inline | 前后各一行空白；active 1→3 tail 行；completed 一行 summary | 打开 `thinking_popup` |
-| **TaskEndSeparator** | Inline | 1 visual 行（动态 dash） | — |
+| **TaskEndSeparator** | Inline | 1 visual 行（实线 + 居中耗时） | — |
 | **MessageSeparator** | Inline | user/system/assistant 组间 1 blank | — |
 | **Code card** | Overlay | `code_blocks[]` 中 placeholder 行 span | 打开 `code_popup` |
 | **Loading spinner** | Overlay | `loading_idx` 处 1 行（若设） | —（通常 inactive — 见 `PlanGenerated` legacy） |

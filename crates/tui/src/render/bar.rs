@@ -16,7 +16,6 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 const PROGRESS_BAR_WIDTH: u16 = 15;
 
 /// Bottom bar icons (language-invariant Unicode glyphs).
-const ICON_ELAPSED: &str = "◷";
 const ICON_UPTIME: &str = "⊙";
 const ICON_BRANCH: &str = "⎇";
 const ICON_BALANCE: &str = "¤";
@@ -27,11 +26,6 @@ const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
 const BAR_FILLED: char = '■'; // U+25A0
 const BAR_EMPTY: char = '·'; // U+00B7
-
-fn format_mm_ss(total_secs: i64) -> String {
-    let secs = total_secs.max(0);
-    format!("{:02}:{:02}", secs / 60, secs % 60)
-}
 
 const USAGE_BAR_WIDTH: u16 = 10;
 
@@ -232,8 +226,9 @@ fn fit_row_spans(target: u16, groups: &mut Vec<DropGroup>) {
     }
 }
 
-/// Render the bottom bar, showing focused panel, task elapsed time, TUI uptime, working
+/// Render the bottom bar, showing focused panel, TUI uptime, working
 /// directory, Git branch, model info, token stats, and account balance.
+/// Prompt elapsed is shown on the task-end separator, not here.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
 
@@ -253,17 +248,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         msgs.bottom_branch_unknown
     } else {
         &app.status_bar.git_branch
-    };
-    let elapsed = if let Some(start) = app.task_start_time {
-        let secs = chrono::Local::now()
-            .signed_duration_since(start)
-            .num_seconds()
-            .max(0);
-        format_mm_ss(secs)
-    } else if let Some(secs) = app.last_prompt_elapsed_secs {
-        format_mm_ss(secs)
-    } else {
-        "--:--".to_string()
     };
     let uptime = {
         let dur = chrono::Local::now().signed_duration_since(app.process_start_time);
@@ -288,18 +272,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             droppable: false,
             spans: vec![
                 Span::styled(focus.to_string(), primary),
-                Span::styled(SEP_ROW1.to_string(), dim),
-            ],
-        },
-        // Elapsed: ◷ 耗时/Elapsed MM:SS
-        DropGroup {
-            droppable: false,
-            spans: vec![
-                Span::styled(ICON_ELAPSED.to_string(), dim),
-                Span::styled(
-                    format!(" {} {}", msgs.bottom_elapsed, elapsed),
-                    primary,
-                ),
                 Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
@@ -764,9 +736,9 @@ mod render_tests {
     }
 
     #[test]
-    fn bottom_bar_shows_elapsed_and_uptime_on_row_1() {
+    fn bottom_bar_shows_uptime_on_row_1_without_elapsed() {
         let mut app = make_app();
-        app.last_prompt_elapsed_secs = Some(65); // 01:05
+        app.last_prompt_elapsed_secs = Some(65); // 01:05 — belongs on task-end separator now
         app.status_bar.model_name = "mock-model".into();
         app.status_bar.token_total = 42;
         app.workspace_dir = "/tmp/tact-ws".into();
@@ -787,8 +759,8 @@ mod render_tests {
         let row1 = lines[0];
         let row2 = lines[1];
         assert!(
-            row1.contains("01:05") && row1.contains("Elapsed"),
-            "elapsed time should be on row 1 with label, got:\n{row1}"
+            !row1.contains("Elapsed") && !row1.contains("01:05"),
+            "elapsed must not appear on bottom bar, got:\n{row1}"
         );
         assert!(
             row1.contains("│"),
