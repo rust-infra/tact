@@ -313,6 +313,40 @@ fn merge_unique(target: &mut Vec<u64>, mut additions: Vec<u64>) {
     target.dedup();
 }
 
+/// Map store records to TUI snapshots, dropping soft-deleted tasks.
+pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapshot> {
+    tasks
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Deleted)
+        .map(|t| tact_protocol::TaskSnapshot {
+            id: t.id,
+            subject: t.subject,
+            status: match t.status {
+                TaskStatus::Pending => tact_protocol::TaskStatusSnapshot::Pending,
+                TaskStatus::InProgress => tact_protocol::TaskStatusSnapshot::InProgress,
+                TaskStatus::Completed => tact_protocol::TaskStatusSnapshot::Completed,
+                TaskStatus::Deleted => unreachable!("filtered above"),
+            },
+            owner: t.owner,
+        })
+        .collect()
+}
+
+/// Notify the TUI that the persistent task list changed (no-op without `ui_tx`).
+pub fn emit_tasks_changed(
+    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+    tasks: Vec<TaskRecord>,
+    reason: tact_protocol::TasksChangeReason,
+) {
+    let Some(tx) = ui_tx else {
+        return;
+    };
+    let _ = tx.send(tact_protocol::AgentUpdate::TasksChanged {
+        tasks: to_ui_snapshots(tasks),
+        reason,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +472,21 @@ mod tests {
         assert!(json.contains("\"subject\": \"Test\""));
         assert!(json.contains("\"description\": \"desc\""));
         assert!(json.contains("\"status\": \"pending\""));
+    }
+
+    #[test]
+    fn to_ui_snapshots_filters_deleted_and_maps_status() {
+        let pending = TaskRecord::new(1, "a".into(), None);
+        let mut active = TaskRecord::new(2, "b".into(), None);
+        active.status = TaskStatus::InProgress;
+        let mut gone = TaskRecord::new(3, "c".into(), None);
+        gone.status = TaskStatus::Deleted;
+        let snaps = to_ui_snapshots(vec![pending, active, gone]);
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].id, 1);
+        assert_eq!(
+            snaps[1].status,
+            tact_protocol::TaskStatusSnapshot::InProgress
+        );
     }
 }
