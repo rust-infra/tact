@@ -212,7 +212,6 @@ mod tests {
         clear_models_cache_for_tests();
         // Closed port → connection error; soft-fail to empty, then cached.
         init_provider_for_test(ProviderKind::OpenAi, "http://127.0.0.1:1/v1");
-        drop(_guard);
         let first = ensure_api_model_ids().await;
         assert!(first.is_empty());
         let second = ensure_api_model_ids().await;
@@ -230,13 +229,10 @@ mod tests {
         clear_models_cache_for_tests();
         seed_models_cache_for_tests("https://a.example/v1", "sk-test", vec!["from-a".into()]);
         init_provider_for_test(ProviderKind::OpenAi, "https://a.example/v1");
-        drop(_guard);
         assert_eq!(ensure_api_model_ids().await, vec!["from-a".to_string()]);
 
         // Different base_url → cache miss → soft-fail empty (unreachable host).
-        let _guard2 = lock_provider_for_tests();
         init_provider_for_test(ProviderKind::OpenAi, "http://127.0.0.1:1/v1");
-        drop(_guard2);
         assert!(ensure_api_model_ids().await.is_empty());
     }
 }
