@@ -207,6 +207,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn ensure_api_model_ids_soft_fails_and_caches_empty() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
@@ -224,6 +225,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn ensure_refetches_when_base_url_changes() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
