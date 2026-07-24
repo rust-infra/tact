@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-07-25 — Task 工具标题、Log 短卡、sticky 树、`/tasks-dag`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 11 / 19 / 23 / 25 章；`docs/superpowers/specs/2026-07-25-task-tool-ui-redesign.md` |
+
+**现象 / 动机：** `task_*` 工具行是 raw JSON；Log 卡重复整板 checklist；终端里难看依赖关系。
+
+**决策：** 可读 tool 标题（`# Task.N · …`）；Log 发短变更卡；sticky 默认展开为 `blocks` 树并带 `#id`；`/tasks-dag` 用 meraid 弹窗渲 Mermaid Unicode（节点仅状态+id）。`TaskSnapshot` 携带 `blocks`/`blocked_by`。
+
+**改后行为：** tool 行可读；Log 只记变更；sticky 树形；slash 可看 DAG。
+
+**指针：** `crates/tact/src/task/display.rs`、`crates/tui/src/widgets/state/task_panel.rs`、`crates/tui/src/widgets/state/task_dag.rs`
+
+---
+
 ## 1. 2026-07-25 — 任务清单完整渲染（去掉 `… +N`）
 
 | 字段 | 值 |

@@ -385,6 +385,13 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "tasks-dag" => {
+            app.open_task_dag_popup();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "lang" => {
             app.toggle_language();
             CommandExecOutcome {

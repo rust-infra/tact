@@ -133,6 +133,8 @@ pub(crate) struct MouseState {
     pub(crate) popup_text_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
+    /// `/tasks-dag` popup area.
+    pub(crate) task_dag_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.
     pub(crate) last_click_time: Option<std::time::Instant>,
     pub(crate) last_click_pos: Option<(u16, u16)>,

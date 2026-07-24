@@ -113,6 +113,10 @@ pub struct TaskSnapshot {
     pub subject: String,
     pub status: TaskStatusSnapshot,
     pub owner: String,
+    /// Task ids that this task blocks (outgoing edges for DAG).
+    pub blocks: Vec<u64>,
+    /// Task ids that block this task (incoming edges).
+    pub blocked_by: Vec<u64>,
 }
 
 /// Status update messages sent from the Agent to the TUI.
@@ -280,6 +284,8 @@ mod tests {
                 subject: "Fix auth".into(),
                 status: TaskStatusSnapshot::InProgress,
                 owner: String::new(),
+                blocks: vec![2],
+                blocked_by: vec![],
             }],
             reason: TasksChangeReason::Created,
         };

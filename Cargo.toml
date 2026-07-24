@@ -5,7 +5,7 @@ members = [
     "crates/tact",
     "crates/tact-ui",
     "crates/tact_llm",
-    "crates/tool_refactor_macros",
+    "crates/tool_refactor_macros", ".tmp/meraid-probe",
 ]
 resolver = "2"
 
@@ -34,6 +34,7 @@ futures-util = "0.3"
 globset = "0.4"
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 libc = "0.2"
+meraid = "0.2"
 proc-macro2 = "1.0"
 pulldown-cmark = "0.13"
 quote = "1.0"

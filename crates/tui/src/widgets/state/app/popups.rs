@@ -35,6 +35,7 @@ impl App {
         self.thinking.popup.is_some()
             || self.tools.popup.is_some()
             || self.code_popup.is_some()
+            || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
     }
 
@@ -44,6 +45,8 @@ impl App {
         } else if let Some(p) = self.tools.popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.code_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.task_dag_popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.system_prompt_popup.as_mut() {
             Some(&mut p.scroll)
@@ -71,6 +74,8 @@ impl App {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
+        } else if self.task_dag_popup.is_some() {
+            self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
             self.system_prompt_popup = None;
         }
@@ -85,6 +90,8 @@ impl App {
             Some(self.mouse.diff_popup_area)
         } else if self.code_popup.is_some() {
             Some(self.mouse.code_popup_area)
+        } else if self.task_dag_popup.is_some() {
+            Some(self.mouse.task_dag_popup_area)
         } else {
             None
         };
@@ -104,7 +111,23 @@ impl App {
             self.copy_diff_popup();
         } else if self.code_popup.is_some() {
             self.copy_code_popup();
+        } else if self.task_dag_popup.is_some() {
+            let src = self
+                .task_dag_popup
+                .as_ref()
+                .map(|p| p.mermaid_source.clone())
+                .unwrap_or_default();
+            self.copy_text(&src);
         }
+    }
+
+    pub(crate) fn open_task_dag_popup(&mut self) {
+        let (mermaid_source, lines) = render_task_dag_lines(&self.task_panel.snapshot);
+        self.task_dag_popup = Some(TaskDagPopup {
+            lines,
+            scroll: 0,
+            mermaid_source,
+        });
     }
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.

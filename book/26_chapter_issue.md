@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-25 — Task tool titles, short Log cards, sticky tree, `/tasks-dag`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 11, 19, 23, 25; `docs/superpowers/specs/2026-07-25-task-tool-ui-redesign.md` |
+
+**Symptom / motivation:** `task_*` tools dumped raw JSON; Log cards repeated full checklists; dependency graph was hard to see in-terminal.
+
+**Decision:** Human tool titles (`# Task.N · …`); Log emits short change cards; sticky defaults expanded as a `blocks` tree with `#id`; `/tasks-dag` opens a meraid Mermaid Unicode popup (nodes: status + id only). `TaskSnapshot` carries `blocks`/`blocked_by`.
+
+**Behavior after:** Readable tool rows; compact Log diffs; tree sticky; slash DAG viewer.
+
+**Pointers:** `crates/tact/src/task/display.rs`, `crates/tui/src/widgets/state/task_panel.rs`, `crates/tui/src/widgets/state/task_dag.rs`
+
+---
+
 ## 1. 2026-07-25 — Task checklist renders fully (no `… +N`)
 
 | Field | Value |

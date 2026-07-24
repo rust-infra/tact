@@ -27,13 +27,19 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('y') => app.copy_overlay_popup(),
         KeyCode::Char('j') | KeyCode::Down => app.overlay_popup_scroll_down(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_popup_scroll_up(),
-        KeyCode::Char('G') if app.code_popup.is_some() => {
+        KeyCode::Char('G') if app.code_popup.is_some() || app.task_dag_popup.is_some() => {
             if let Some(ref mut p) = app.code_popup {
                 p.scroll = u16::MAX;
             }
+            if let Some(ref mut p) = app.task_dag_popup {
+                p.scroll = u16::MAX;
+            }
         }
-        KeyCode::Char('g') if app.code_popup.is_some() => {
+        KeyCode::Char('g') if app.code_popup.is_some() || app.task_dag_popup.is_some() => {
             if let Some(ref mut p) = app.code_popup {
+                p.scroll = 0;
+            }
+            if let Some(ref mut p) = app.task_dag_popup {
                 p.scroll = 0;
             }
         }

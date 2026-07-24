@@ -105,6 +105,7 @@ impl App {
             tools: ToolState::default(),
             code_blocks: Vec::new(),
             code_popup: None,
+            task_dag_popup: None,
             system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),

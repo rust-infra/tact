@@ -43,6 +43,7 @@ pub enum ToolDisplayKind {
     FileRead,
     FileEdit,
     Command,
+    Task,
     Generic,
 }
 
@@ -52,6 +53,7 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
         "read_file" => ToolDisplayKind::FileRead,
         "edit_file" => ToolDisplayKind::FileEdit,
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
+        "task_create" | "task_update" | "task_get" | "task_list" => ToolDisplayKind::Task,
         _ => ToolDisplayKind::Generic,
     }
 }
@@ -425,6 +427,14 @@ impl<'a> ToolWidget<'a> {
                     format!("{label} ({})", self.arg_summary)
                 }
             }
+            ToolDisplayKind::Task => {
+                // Human title already includes "# Task.N · …"; do not prefix tool name.
+                if self.arg_summary.is_empty() {
+                    tool_display_name(&self.tool_name)
+                } else {
+                    self.arg_summary.clone()
+                }
+            }
             _ => {
                 let label = tool_display_name(&self.tool_name);
                 if self.arg_summary.is_empty() {
@@ -624,7 +634,9 @@ impl<'a> ToolWidget<'a> {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Generic => format!("{} output", self.tool_name),
+            ToolDisplayKind::Task | ToolDisplayKind::Generic => {
+                format!("{} output", self.tool_name)
+            }
         }
     }
 }

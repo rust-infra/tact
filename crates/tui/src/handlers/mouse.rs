@@ -361,6 +361,8 @@ mod tests {
             subject: "Fix auth".into(),
             status: TaskStatusSnapshot::InProgress,
             owner: String::new(),
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
         }];
         app.mouse.task_panel_area = Rect::new(0, 10, 40, 1);
 

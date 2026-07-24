@@ -935,3 +935,43 @@ fn open_diff_popup_after_read_file_step_finish() {
         "open_diff_popup should render file content from StepFinished tool block, got:\n{text}"
     );
 }
+
+#[test]
+fn tasks_dag_popup_renders_mermaid_unicode() {
+    use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+    let mut app = make_app();
+    app.task_panel.snapshot = vec![
+        TaskSnapshot {
+            id: 1,
+            subject: "root".into(),
+            status: TaskStatusSnapshot::Completed,
+            owner: String::new(),
+            blocks: vec![2],
+            blocked_by: Vec::new(),
+        },
+        TaskSnapshot {
+            id: 2,
+            subject: "child".into(),
+            status: TaskStatusSnapshot::Pending,
+            owner: String::new(),
+            blocks: Vec::new(),
+            blocked_by: vec![1],
+        },
+    ];
+    app.open_task_dag_popup();
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("tasks-dag") || text.contains("DAG"),
+        "popup chrome missing, got:\n{text}"
+    );
+    assert!(
+        text.contains('#') || text.contains('─') || text.contains("[x]") || text.contains("[ ]"),
+        "expected dag content, got:\n{text}"
+    );
+    assert!(
+        !text.contains("root") && !text.contains("child"),
+        "node labels must omit subjects, got:\n{text}"
+    );
+}
+

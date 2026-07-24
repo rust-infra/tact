@@ -24,6 +24,7 @@ mod slash_command;
 mod status_bar_state;
 mod stream_state;
 pub(crate) mod task_panel;
+mod task_dag;
 mod thinking_state;
 mod tool_state;
 
@@ -38,6 +39,7 @@ pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 pub(crate) use task_panel::TaskPanelState;
+pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
 pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
 
@@ -69,6 +71,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
     ("stats", "Show session statistics"),
+    ("tasks-dag", "Show task dependency DAG"),
 ];
 
 /// A skill available in the TUI slash / palette picker.
@@ -233,6 +236,8 @@ pub struct App {
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
+    /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
+    pub(crate) task_dag_popup: Option<TaskDagPopup>,
     pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,

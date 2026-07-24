@@ -20,6 +20,13 @@ use strum_macros::{Display, EnumProperty as EnumPropertyDerive, EnumString};
 
 use crate::store::{CollectionStore, Store, StoreRoot};
 
+pub use display::{
+    format_id_list, format_id_transition, format_task_tool_title,
+    format_task_tool_title_with_manager, is_task_tool,
+};
+
+mod display;
+
 /// Task lifecycle states.
 ///
 /// Each state has a visual marker for LLM-friendly list rendering
@@ -328,6 +335,8 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
                 TaskStatus::Deleted => unreachable!("filtered above"),
             },
             owner: t.owner,
+            blocks: t.blocks,
+            blocked_by: t.blocked_by,
         })
         .collect()
 }

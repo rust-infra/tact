@@ -281,11 +281,13 @@ impl App {
     }
 
     fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, reason: TasksChangeReason) {
+        let prev = self.task_panel.snapshot.clone();
         self.task_panel.apply_snapshot(tasks);
         let msgs = self.msgs();
         let card = crate::widgets::state::task_panel::format_tasks_log_card(
             &msgs,
             reason,
+            &prev,
             &self.task_panel.snapshot,
         );
         // Blank row so the checklist does not sit flush against the tool card.
@@ -846,28 +848,33 @@ mod lifecycle_tests {
                 subject: "Fix auth".into(),
                 status: TaskStatusSnapshot::InProgress,
                 owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
             }],
             reason: TasksChangeReason::Created,
         });
         assert!(app.task_panel.session_seen);
         assert!(app.task_panel.visible);
-        assert!(!app.task_panel.expanded);
+        assert!(
+            app.task_panel.expanded,
+            "sticky should default to expanded on first show"
+        );
         assert!(
             app.raw_messages.iter().any(|m| m.contains("Fix auth")),
             "Log detail should mention subject"
         );
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.starts_with("📋 ") && m.contains("created")),
-            "header row should be a plain system line, got:\n{:?}",
+            app.raw_messages.iter().any(|m| {
+                m.starts_with("📋 ") && (m.contains("创建任务") || m.contains("Task.1"))
+            }),
+            "short Log card expected, got:\n{:?}",
             app.raw_messages
         );
         assert!(
             app.raw_messages
                 .iter()
-                .any(|m| m.trim_start().starts_with("[>] Fix auth")),
-            "checklist should be its own Log row, got:\n{:?}",
+                .any(|m| m.contains("任务名: Fix auth") || m.contains("Fix auth")),
+            "short card should include subject, got:\n{:?}",
             app.raw_messages
         );
         assert!(
@@ -888,6 +895,8 @@ mod lifecycle_tests {
                 subject: "done".into(),
                 status: TaskStatusSnapshot::Completed,
                 owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
             }],
             reason: TasksChangeReason::Updated,
         });

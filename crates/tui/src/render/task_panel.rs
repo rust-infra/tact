@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::widgets::state::{
     App,
-    task_panel::{format_checklist_lines, format_sticky_title_line},
+    task_panel::{format_sticky_title_line, format_tree_lines},
 };
 
 /// Extra rows for sticky chrome: bottom border joins the Log box (sides continue).
@@ -59,7 +59,7 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         title.replace('▼', "▲").replace('▸', "▾"),
         title_style,
     ))];
-    for row in format_checklist_lines(&app.task_panel.snapshot) {
+    for row in format_tree_lines(&app.task_panel.snapshot) {
         lines.push(Line::from(Span::styled(row, row_style)));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -80,6 +80,8 @@ mod tests {
                 subject: "Fix auth".into(),
                 status: TaskStatusSnapshot::InProgress,
                 owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
             }],
             reason: TasksChangeReason::Created,
         });
@@ -104,12 +106,16 @@ mod tests {
                     subject: "design schema".into(),
                     status: TaskStatusSnapshot::InProgress,
                     owner: "alice".into(),
+                    blocks: Vec::new(),
+                    blocked_by: Vec::new(),
                 },
                 TaskSnapshot {
                     id: 2,
                     subject: "build api".into(),
                     status: TaskStatusSnapshot::Pending,
                     owner: String::new(),
+                    blocks: Vec::new(),
+                    blocked_by: Vec::new(),
                 },
             ],
             reason: TasksChangeReason::Created,
