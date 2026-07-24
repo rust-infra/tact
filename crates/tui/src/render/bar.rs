@@ -2,10 +2,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
 };
 use tact_protocol::BalanceEntry;
-use unicode_width::UnicodeWidthStr;
 
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
 
@@ -26,28 +26,6 @@ const ICON_CACHE: &str = "▣";
 fn format_mm_ss(total_secs: i64) -> String {
     let secs = total_secs.max(0);
     format!("{:02}:{:02}", secs / 60, secs % 60)
-}
-
-fn append_account_suffix(prefix: &str, account: &str, width: u16) -> String {
-    let available = width as usize;
-    let account_width = UnicodeWidthStr::width(account);
-    if account_width >= available {
-        return account.chars().take(available).collect();
-    }
-
-    let separator = " │ ";
-    let prefix_width = available.saturating_sub(account_width + separator.len());
-    let mut truncated = String::new();
-    let mut used = 0;
-    for ch in prefix.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > prefix_width {
-            break;
-        }
-        truncated.push(ch);
-        used += ch_width;
-    }
-    format!("{truncated}{separator}{account}")
 }
 
 const USAGE_BAR_WIDTH: u16 = 10;
@@ -130,7 +108,7 @@ fn format_quota_window(window: &tact_protocol::UsageQuotaWindow) -> String {
     let remaining = format_quota_value(window.remaining);
     let limit = format_quota_value(window.limit);
     if let Some(pct) = window.usage_pct() {
-        format!("{} {} {}%", ICON_BALANCE, window.label, pct)
+        format!("{} {} {:.0}%", ICON_BALANCE, window.label, pct)
     } else {
         format!("{} {} {}/{}", ICON_BALANCE, window.label, remaining, limit)
     }
@@ -170,16 +148,6 @@ fn context_usage_pct(used: u32, window: usize) -> u8 {
     }
 }
 
-fn format_context_meter(used: u32, window: usize) -> String {
-    let pct = context_usage_pct(used, window);
-    let bar = render_usage_bar(pct as f64);
-    format!(
-        "{bar} {pct}% │ {}/{}",
-        format_tokens_compact(used as u64),
-        format_tokens_compact(window as u64)
-    )
-}
-
 /// Render a text-based progress bar like `[█████░░░░░] 50%`
 /// Uses a smooth formula: (current + 0.5) / total, so the current step
 /// is treated as half-done. This avoids showing 0% on the first step
@@ -207,98 +175,51 @@ fn render_progress_bar(current: usize, total: usize, _theme: &crate::theme::Them
     bar
 }
 
-/// Format balance or usage quota for the bottom bar (appended to row 1).
-fn format_account_suffix(app: &App) -> Option<String> {
-    let msgs = app.msgs();
-    app.account_rx.as_ref()?;
-    if let Some(bi) = &app.account.balance {
-        let status = if bi.is_available {
-            msgs.bottom_balance_ok
+/// Drop group: if `droppable`, the segment can be removed when space is tight.
+struct DropGroup {
+    droppable: bool,
+    spans: Vec<Span<'static>>,
+}
+
+/// Compute total unicode width of concatenated Span text content.
+fn group_total_width(groups: &[DropGroup]) -> u16 {
+    groups.iter().flat_map(|g| &g.spans).map(|s| {
+        unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16
+    }).sum()
+}
+
+/// Remove droppable groups (from end) until total width ≤ target.
+fn fit_row_spans(target: u16, groups: &mut Vec<DropGroup>) {
+    while !groups.is_empty() && group_total_width(groups) > target {
+        if let Some(pos) = groups.iter().rposition(|g| g.droppable) {
+            groups.remove(pos);
         } else {
-            msgs.bottom_balance_err
-        };
-        let entries: String = bi
-            .balance_infos
-            .iter()
-            .map(|e| {
-                format!(
-                    " {}:total={:.2} grant={:.2} topup={:.2}",
-                    e.currency, e.total_balance, e.granted_balance, e.topped_up_balance
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" |");
-        return Some(
-            msgs.bottom_balance_tmpl
-                .replacen("{}", status, 1)
-                .replacen("{}", &entries, 1),
-        );
+            break;
+        }
     }
-    if let Some(quota) = &app.account.quota {
-        let status = if quota.is_available {
-            msgs.bottom_balance_ok
-        } else {
-            msgs.bottom_balance_err
-        };
-        let entries: String = quota
-            .windows
-            .iter()
-            .map(|w| {
-                let remaining = format_quota_value(w.remaining);
-                let limit = format_quota_value(w.limit);
-                if let Some(pct) = w.usage_pct() {
-                    format!(
-                        " {}:{:.0}% {} {}/{}",
-                        w.label,
-                        pct,
-                        render_usage_bar(pct),
-                        remaining,
-                        limit
-                    )
-                } else {
-                    format!(" {}:{}/{}", w.label, remaining, limit)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" |");
-        return Some(
-            msgs.bottom_usage_tmpl
-                .replacen("{}", status, 1)
-                .replacen("{}", &entries, 1),
-        );
-    }
-    None
 }
 
 /// Render the bottom bar, showing focused panel, task elapsed time, TUI uptime, working
 /// directory, Git branch, model info, token stats, and account balance.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
+
     let msgs = app.msgs();
+    let theme = &app.theme;
+    let dim = Style::default().fg(theme.muted_fg());
+    let primary = Style::default().fg(theme.fg);
+    let secondary = Style::default().fg(theme.bottom_bar_fg);
+    let accent = Style::default().fg(theme.accent);
+
     let focus = match app.focused_panel {
-        FocusedPanel::Plan => msgs.bottom_focus_log_plan,
-        FocusedPanel::Log => msgs.bottom_focus_log,
+        FocusedPanel::Log => "[Log]",
     };
+
+    // --- Row 1 ---
     let branch = if app.status_bar.git_branch.is_empty() {
         msgs.bottom_branch_unknown
     } else {
         &app.status_bar.git_branch
-    };
-    let model = if app.status_bar.model_name.is_empty() {
-        msgs.bottom_model_unknown.to_string()
-    } else {
-        let mut info = app.status_bar.model_name.clone();
-        if app.status_bar.model_max_tokens > 0 {
-            info.push_str(&format!(" | max={}", app.status_bar.model_max_tokens));
-        }
-        if let Some(budget) = app.status_bar.model_thinking_budget {
-            if let Some(effort) = app.status_bar.model_reasoning_effort.as_deref() {
-                info.push_str(&format!(" | think={budget} ({effort})"));
-            } else {
-                info.push_str(&format!(" | think={budget}"));
-            }
-        }
-        info
     };
     let elapsed = if let Some(start) = app.task_start_time {
         let secs = chrono::Local::now()
@@ -311,7 +232,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         "--:--".to_string()
     };
-
     let uptime = {
         let dur = chrono::Local::now().signed_duration_since(app.process_start_time);
         let secs = dur.num_seconds().max(0) as u64;
@@ -328,51 +248,109 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    {
-        let row_count = area.height.max(1) as usize;
-        let constraints: Vec<Constraint> = (0..row_count).map(|_| Constraint::Length(1)).collect();
-        let areas = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(area);
-        let top_area = areas[0];
-        let mid_area = areas.get(1).copied().unwrap_or(top_area);
-        let mut top_text = msgs
-            .bottom_top_tmpl
-            .replacen("{}", focus, 1)
-            .replacen("{}", &elapsed, 1)
-            .replacen("{}", &uptime, 1)
-            .replacen("{}", &app.workspace_dir, 1)
-            .replacen("{}", branch, 1);
-        if let Some(account) = format_account_suffix(app) {
-            top_text = append_account_suffix(&top_text, &account, area.width);
-        }
-        // Placeholder "--" before the first LLM call reports cache data.
-        let cache_total = app.status_bar.token_cache_hit + app.status_bar.token_cache_miss;
-        let hit_pct_str = app
-            .status_bar
-            .token_cache_hit
-            .saturating_mul(100)
-            .checked_div(cache_total)
-            .map_or("--".to_string(), |pct| pct.to_string());
-        let cache_str = msgs.bottom_cache_tmpl.replacen("{}", &hit_pct_str, 1);
-        let meter = format_context_meter(app.status_bar.token_total, app.model_context_window);
-        let mid_text = msgs
-            .bottom_mid_tmpl
-            .replacen("{}", &model, 1)
-            .replacen("{}", &meter, 1)
-            .replacen("{}", &app.status_bar.token_total.to_string(), 1)
-            .replacen("{}", &app.status_bar.token_prompt.to_string(), 1)
-            .replacen("{}", &app.status_bar.token_completion.to_string(), 1)
-            .replacen("{}", &cache_str, 1);
-        let style = Style::default()
-            .bg(app.theme.bottom_bar_bg)
-            .fg(app.theme.bottom_bar_fg);
-        let bar1 = Paragraph::new(top_text).style(style);
-        let bar2 = Paragraph::new(mid_text).style(style);
-        frame.render_widget(bar1, top_area);
-        frame.render_widget(bar2, mid_area);
+    let mut row1_groups: Vec<DropGroup> = Vec::new();
+    // Focus
+    row1_groups.push(DropGroup { droppable: false, spans: vec![
+        Span::styled(focus.to_string(), primary),
+        Span::styled(" · ", dim),
+    ]});
+    // Elapsed: ◷ MM:SS
+    row1_groups.push(DropGroup { droppable: false, spans: vec![
+        Span::styled(ICON_ELAPSED.to_string(), dim),
+        Span::styled(format!(" {} · ", elapsed), primary),
+    ]});
+    // Path (droppable)
+    row1_groups.push(DropGroup { droppable: true, spans: vec![
+        Span::styled(format!("{} · ", app.workspace_dir), secondary),
+    ]});
+    // Uptime: ⊙ HH:MM:SS (droppable — dropped before path per spec)
+    row1_groups.push(DropGroup { droppable: true, spans: vec![
+        Span::styled(format!("{} {} · ", ICON_UPTIME, uptime), secondary),
+    ]});
+    // Branch: ⎇ branchname
+    row1_groups.push(DropGroup { droppable: false, spans: vec![
+        Span::styled(ICON_BRANCH.to_string(), dim),
+        Span::styled(format!(" {}", branch), accent),
+    ]});
+    // Account (if present, never dropped)
+    if let Some(acct_spans) = build_account_spans(app, theme) {
+        row1_groups.push(DropGroup { droppable: false, spans: vec![
+            Span::styled(" · ", dim),
+        ]});
+        row1_groups.push(DropGroup { droppable: false, spans: acct_spans });
     }
+
+    // --- Row 2 ---
+    let model = format_model_compact(
+        &app.status_bar.model_name,
+        app.status_bar.model_max_tokens,
+        app.status_bar.model_thinking_budget,
+    );
+    let meter = format_context_meter_new(app.status_bar.token_total, app.model_context_window);
+    let token_str = format!("{}{}", ICON_TOKENS, app.status_bar.token_total);
+    let cache_str = format_cache_pct(
+        app.status_bar.token_cache_hit.into(),
+        app.status_bar.token_cache_miss.into(),
+    );
+
+    let mut row2_groups: Vec<DropGroup> = Vec::new();
+    // Model + context meter
+    row2_groups.push(DropGroup { droppable: false, spans: vec![
+        Span::styled(model, primary),
+    ]});
+    row2_groups.push(DropGroup { droppable: true, spans: vec![
+        Span::styled(" · ", dim),
+        Span::styled(meter, primary),
+    ]});
+    // Token total (droppable after cache)
+    row2_groups.push(DropGroup { droppable: true, spans: vec![
+        Span::styled(" · ", dim),
+        Span::styled(token_str, secondary),
+    ]});
+    // Cache hit (most droppable)
+    row2_groups.push(DropGroup { droppable: true, spans: vec![
+        Span::styled(" · ", dim),
+        Span::styled(cache_str, secondary),
+    ]});
+
+    fit_row_spans(area.width, &mut row1_groups);
+    fit_row_spans(area.width, &mut row2_groups);
+
+    let row1_spans: Vec<Span> = row1_groups.into_iter().flat_map(|g| g.spans).collect();
+    let row2_spans: Vec<Span> = row2_groups.into_iter().flat_map(|g| g.spans).collect();
+
+    let row_count = area.height.max(1) as usize;
+    let constraints: Vec<Constraint> = (0..row_count).map(|_| Constraint::Length(1)).collect();
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+    let top_area = areas[0];
+    let mid_area = areas.get(1).copied().unwrap_or(top_area);
+
+    let bg = Style::default().bg(theme.bottom_bar_bg);
+    frame.render_widget(Paragraph::new(Line::from(row1_spans)).style(bg), top_area);
+    frame.render_widget(Paragraph::new(Line::from(row2_spans)).style(bg), mid_area);
+}
+
+/// Build account balance/quota spans for row 1. Returns None when no account.
+fn build_account_spans(app: &App, theme: &crate::theme::Theme) -> Option<Vec<Span<'static>>> {
+    app.account_rx.as_ref()?;
+    if let Some(bi) = &app.account.balance {
+        let fg = if bi.is_available { theme.success } else { theme.error };
+        let entries: Vec<String> = bi.balance_infos.iter()
+            .map(format_balance_entry)
+            .collect();
+        return Some(vec![Span::styled(entries.join(" · "), Style::default().fg(fg))]);
+    }
+    if let Some(quota) = &app.account.quota {
+        let fg = if quota.is_available { theme.success } else { theme.error };
+        let entries: Vec<String> = quota.windows.iter()
+            .map(format_quota_window)
+            .collect();
+        return Some(vec![Span::styled(entries.join(" · "), Style::default().fg(fg))]);
+    }
+    None
 }
 
 /// Render the top status bar, showing current mode, focused panel, and Agent execution state.
@@ -390,8 +368,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let mode_str = format!("{} {}", mode_emoji, mode_indicator);
 
     let focus_str = match app.focused_panel {
-        FocusedPanel::Plan => msgs.focus_plan,
-        FocusedPanel::Log => msgs.focus_log,
+        FocusedPanel::Log => "Log",
     };
 
     let (status_text, status_style) = match &app.status {
@@ -617,8 +594,8 @@ mod render_tests {
         let row1 = lines[0];
         let row2 = lines[1];
         assert!(
-            row1.contains("Elapsed:01:05") && row1.contains("Up:"),
-            "elapsed and uptime should be on row 1, got:\n{row1}"
+            row1.contains("01:05"),
+            "elapsed time should be on row 1, got:\n{row1}"
         );
         assert!(
             row1.contains("/tmp/tact-ws") && row1.contains("main"),
@@ -629,15 +606,16 @@ mod render_tests {
             "elapsed/uptime must not appear on row 2, got:\n{row2}"
         );
         assert!(
-            row2.contains("Tok:42"),
+            row2.contains("∑42"),
             "token stats should stay on row 2, got:\n{row2}"
         );
     }
 
     #[test]
-    fn bottom_bar_shows_reasoning_effort_with_thinking_budget() {
+    fn bottom_bar_shows_compact_model_with_limits() {
         let mut app = make_app();
         app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_max_tokens = 128_000;
         app.status_bar.model_thinking_budget = Some(32_000);
         app.status_bar.model_reasoning_effort = Some("high".into());
         let backend = TestBackend::new(120, 2);
@@ -649,15 +627,16 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("think=32000 (high)"),
-            "bottom bar should show budget and effort, got:\n{text}"
+            text.contains("mock-model") && text.contains("128K/32K"),
+            "bottom bar should show compact model with max/think, got:\n{text}"
         );
     }
 
     #[test]
-    fn bottom_bar_preserves_thinking_budget_when_effort_is_unavailable() {
+    fn bottom_bar_shows_compact_model_when_effort_is_absent() {
         let mut app = make_app();
         app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_max_tokens = 128_000;
         app.status_bar.model_thinking_budget = Some(32_000);
         let backend = TestBackend::new(120, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -668,12 +647,8 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("think=32000"),
-            "bottom bar should preserve the budget display, got:\n{text}"
-        );
-        assert!(
-            !text.contains("think=32000 ("),
-            "bottom bar should omit a missing effort, got:\n{text}"
+            text.contains("128K/32K"),
+            "bottom bar should show compact model limits even without effort, got:\n{text}"
         );
     }
 
