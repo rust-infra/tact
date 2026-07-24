@@ -219,6 +219,8 @@ pub struct App {
     pub(crate) task_done_time: Option<chrono::DateTime<chrono::Local>>,
     /// Process start time (for bottom status bar showing total TUI uptime).
     pub(crate) process_start_time: chrono::DateTime<chrono::Local>,
+    /// Last uptime whole-second that triggered an idle dirty tick (dedupe redraws).
+    pub(crate) last_uptime_tick_secs: Option<i64>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// Tool invocation blocks and diff popup state.

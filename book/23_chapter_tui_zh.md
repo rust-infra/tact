@@ -336,7 +336,7 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 | `Done` 或 `flash_msg` | 200 ms | 定时 revert 到 `Idle` |
 | `dirty` | 10 ms | 快速重绘 |
 | Planning / Executing / Waiting | 150 ms | Spinner 动画 |
-| Idle | 1000 ms | 静止时低 CPU |
+| Idle | 1000 ms | 最多每秒刷新一次 `Up`（显示秒未变则不 dirty） |
 
 活跃 tool 行也强制重绘，使 duration 计数器在无新 `AgentUpdate` 时仍 tick。
 

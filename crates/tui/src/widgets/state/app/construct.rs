@@ -95,6 +95,7 @@ impl App {
             last_prompt_elapsed_secs: None,
             task_done_time: None,
             process_start_time: chrono::Local::now(),
+            last_uptime_tick_secs: None,
             workspace_dir,
             select: SelectPopup::default(),
             select_kind: SelectKind::Agent,

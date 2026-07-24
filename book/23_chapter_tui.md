@@ -335,7 +335,7 @@ The tool/file and Thinking detail popups support left-button text selection. Mou
 | `Done` or `flash_msg` | 200 ms | Timed revert to `Idle` |
 | `dirty` | 10 ms | Fast redraw |
 | Planning / Executing / Waiting | 150 ms | Spinner animation |
-| Idle | 1000 ms | Low CPU when quiescent |
+| Idle | 1000 ms | At most one Up tick/sec (dirty only when displayed second changes) |
 
 Active tool rows also force redraw so duration counters tick without new `AgentUpdate`s.
 
