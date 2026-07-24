@@ -195,9 +195,13 @@ pub(crate) fn start_model_picker(app: &mut App) {
     };
 
     let api_ids = if tact_llm::is_models_query_supported() {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(tact_llm::ensure_api_model_ids())
-        })
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(tact_llm::ensure_api_model_ids()))
+            }
+            // Sync call sites (e.g. unit tests without a runtime) keep config-only.
+            Err(_) => Vec::new(),
+        }
     } else {
         Vec::new()
     };
