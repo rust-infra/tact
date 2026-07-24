@@ -9,11 +9,13 @@ use crate::widgets::state::{
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MousePanelHit {
     pub in_log: bool,
+    pub in_task_panel: bool,
 }
 
 fn panel_hit(app: &App, column: u16, row: u16) -> MousePanelHit {
     MousePanelHit {
         in_log: point_in_rect(column, row, app.mouse.log_area),
+        in_task_panel: point_in_rect(column, row, app.mouse.task_panel_area),
     }
 }
 
@@ -78,6 +80,11 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
+        return;
+    }
+    if hit.in_task_panel && app.task_panel.visible {
+        app.task_panel.expanded = !app.task_panel.expanded;
+        app.dirty = true;
         return;
     }
     if hit.in_log {
@@ -342,6 +349,28 @@ mod tests {
         mouse_event(MouseEventKind::Up(MouseButton::Left), column, row)
     }
 
+    #[test]
+    fn click_task_panel_toggles_expanded() {
+        use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+        let mut app = make_app();
+        app.task_panel.visible = true;
+        app.task_panel.expanded = false;
+        app.task_panel.snapshot = vec![TaskSnapshot {
+            id: 1,
+            subject: "Fix auth".into(),
+            status: TaskStatusSnapshot::InProgress,
+            owner: String::new(),
+        }];
+        app.mouse.task_panel_area = Rect::new(0, 10, 40, 1);
+
+        handle_mouse_event(&mut app, mouse_down(5, 10));
+        assert!(app.task_panel.expanded);
+
+        handle_mouse_event(&mut app, mouse_down(5, 10));
+        assert!(!app.task_panel.expanded);
+    }
+
     fn popup_hit_row(screen_y: u16, text_x: u16, line_start: usize, text: &str) -> PopupHitRow {
         let cells = text
             .char_indices()
@@ -583,7 +612,7 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 3;
 
-        handle_mouse_scroll_up(&mut app, MousePanelHit { in_log: true });
+        handle_mouse_scroll_up(&mut app, MousePanelHit { in_log: true, in_task_panel: false });
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -593,7 +622,7 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 1;
 
-        handle_mouse_scroll_down(&mut app, MousePanelHit { in_log: true });
+        handle_mouse_scroll_down(&mut app, MousePanelHit { in_log: true, in_task_panel: false });
 
         assert_eq!(app.log_scroll.offset, 2);
     }
