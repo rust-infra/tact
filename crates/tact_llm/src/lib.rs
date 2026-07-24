@@ -14,6 +14,7 @@ pub mod hook_select;
 pub mod inject;
 pub mod kimi;
 pub mod mock;
+pub mod models;
 pub mod openai;
 pub mod provider;
 pub mod types;
