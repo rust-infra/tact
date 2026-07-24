@@ -29,7 +29,29 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — Slash popup Esc hint + priority over overlay
+## 1. 2026-07-24 — Remove redundant `[Log]` from bottom bar
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | Ch 23 |
+
+**Symptom / motivation:** Bottom bar Row 1 always started with `[Log]` even
+though the UI is permanently single-column log-only, so the focus label added
+noise without information.
+
+**Decision:** Drop the focus segment from `render_bottom_bar` Row 1. Top status
+bar may still mention Log where useful; bottom bar starts with cwd / uptime.
+
+**Behavior after:** Row 1 no longer shows `[Log]`; first segment is workspace
+path (then uptime, branch, optional account).
+
+| Pointer | Path |
+|---------|------|
+| Code | `crates/tui/src/render/bar.rs` |
+
+---
+## 2. 2026-07-24 — Slash popup Esc hint + priority over overlay
 
 | Field | Value |
 |-------|-------|
@@ -52,7 +74,7 @@ without clearing typed input; overlay Esc only after slash is closed.
 | Code | `crates/tui/src/render/popups/slash_command.rs`, `crates/tui/src/lib.rs` |
 
 ---
-## 2. 2026-07-24 — Idle bottom-bar `Up` ticks without CPU spin
+## 3. 2026-07-24 — Idle bottom-bar `Up` ticks without CPU spin
 
 | Field | Value |
 |-------|-------|
@@ -74,7 +96,7 @@ redraw loop.
 | Code | `crates/tui/src/lib.rs` (`on_poll_timeout`) |
 
 ---
-## 3. 2026-07-24 — Prompt elapsed moves to task-end separator
+## 4. 2026-07-24 — Prompt elapsed moves to task-end separator
 
 | Field | Value |
 |-------|-------|
@@ -97,7 +119,7 @@ trailing separator; bottom row 1 no longer shows `Elapsed`.
 
 ---
 
-## 4. 2026-07-24 — Bottom bar readability restore
+## 5. 2026-07-24 — Bottom bar readability restore
 
 | Field | Value |
 |-------|-------|
@@ -124,7 +146,7 @@ token/cache numbers. Narrow drop order: cache → uptime → path → ∑ → ct
 
 ---
 
-## 5. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
+## 6. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
 
 | Field | Value |
 |-------|-------|
@@ -147,7 +169,7 @@ now.
 
 ---
 
-## 6. 2026-07-24 — TUI left Execution Plan panel removed
+## 7. 2026-07-24 — TUI left Execution Plan panel removed
 
 | Field | Value |
 |-------|-------|
@@ -181,7 +203,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 7. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
+## 8. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
 
 | Field | Value |
 |-------|-------|
@@ -202,7 +224,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 8. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
+## 9. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
 
 | Field | Value |
 |-------|-------|
@@ -224,7 +246,7 @@ monospace; `/stats` popup still renders via tui-markdown box tables.
 
 ---
 
-## 9. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
+## 10. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
 
 | Field | Value |
 |-------|-------|
@@ -248,7 +270,7 @@ same-named standalone skills. Bare `<workdir>/skills/` is no longer scanned.
 
 ---
 
-## 10. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
+## 11. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
 
 | Field | Value |
 |-------|-------|
@@ -271,7 +293,7 @@ text wraps cleanly at any panel width. Namespace names (`plugin:skill`) unchange
 
 ---
 
-## 11. 2026-07-24 — Session Stats as GFM tables via tui-markdown
+## 12. 2026-07-24 — Session Stats as GFM tables via tui-markdown
 
 | Field | Value |
 |-------|-------|
@@ -296,7 +318,7 @@ summaries are GFM markdown. Counters and visibility rules unchanged.
 
 ---
 
-## 12. 2026-07-24 — Session Stats rendered with comfy-table
+## 13. 2026-07-24 — Session Stats rendered with comfy-table
 
 | Field | Value |
 |-------|-------|
@@ -322,7 +344,7 @@ tables instead of free-form lines.
 
 ---
 
-## 13. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 14. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -344,7 +366,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 14. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 15. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -409,7 +431,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 
 ---
 
-## 15. 2026-07-24 — Bottom bar visual polish
+## 16. 2026-07-24 — Bottom bar visual polish
 
 | Field | Value |
 |-------|-------|

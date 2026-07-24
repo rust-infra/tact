@@ -226,8 +226,8 @@ fn fit_row_spans(target: u16, groups: &mut Vec<DropGroup>) {
     }
 }
 
-/// Render the bottom bar, showing focused panel, TUI uptime, working
-/// directory, Git branch, model info, token stats, and account balance.
+/// Render the bottom bar, showing TUI uptime, working directory, Git branch,
+/// model info, token stats, and account balance.
 /// Prompt elapsed is shown on the task-end separator, not here.
 pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
@@ -238,10 +238,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     let primary = Style::default().fg(theme.fg);
     let secondary = Style::default().fg(theme.bottom_bar_fg);
     let accent = Style::default().fg(theme.accent);
-
-    let focus = match app.focused_panel {
-        FocusedPanel::Log => "[Log]",
-    };
 
     // --- Row 1 ---
     let branch = if app.status_bar.git_branch.is_empty() {
@@ -267,14 +263,6 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     #[allow(clippy::vec_init_then_push)]
     let mut row1_groups: Vec<DropGroup> = vec![
-        // Focus
-        DropGroup {
-            droppable: false,
-            spans: vec![
-                Span::styled(focus.to_string(), primary),
-                Span::styled(SEP_ROW1.to_string(), dim),
-            ],
-        },
         // Path (droppable)
         DropGroup {
             droppable: true,

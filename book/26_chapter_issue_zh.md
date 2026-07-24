@@ -29,7 +29,25 @@
 
 ---
 
-## 1. 2026-07-24 — Slash 弹窗 Esc 提示 + 优先于 overlay
+## 1. 2026-07-24 — 底栏去掉冗余 `[Log]`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | removal |
+| **相关** | 第 23 章 |
+
+**现象 / 动机：** 底栏第 1 行总是以 `[Log]` 开头，但界面已永久单列日志，焦点标签无信息量，只占空间。
+
+**决策：** 从 `render_bottom_bar` 第 1 行去掉 focus 段。顶栏如需仍可提 Log；底栏从 cwd / 运行时间起排。
+
+**改后行为：** 第 1 行不再显示 `[Log]`；首段为工作区路径（随后 uptime、分支、可选账户）。
+
+| 指针 | 路径 |
+|------|------|
+| 代码 | `crates/tui/src/render/bar.rs` |
+
+---
+## 2. 2026-07-24 — Slash 弹窗 Esc 提示 + 优先于 overlay
 
 | 字段 | 值 |
 |------|-----|
@@ -50,7 +68,7 @@ Insert + slash 活跃时，按键路由优先于 `handle_overlay_key`，保证 E
 | 代码 | `crates/tui/src/render/popups/slash_command.rs`、`crates/tui/src/lib.rs` |
 
 ---
-## 2. 2026-07-24 — 空闲底栏 `Up` 低开销走秒
+## 3. 2026-07-24 — 空闲底栏 `Up` 低开销走秒
 
 | 字段 | 值 |
 |------|-----|
@@ -70,7 +88,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 | 代码 | `crates/tui/src/lib.rs`（`on_poll_timeout`） |
 
 ---
-## 3. 2026-07-24 — 任务耗时挪到 task-end 分隔线
+## 4. 2026-07-24 — 任务耗时挪到 task-end 分隔线
 
 | 字段 | 值 |
 |------|-----|
@@ -92,7 +110,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 
 ---
 
-## 4. 2026-07-24 — 底栏可读性回补
+## 5. 2026-07-24 — 底栏可读性回补
 
 | 字段 | 值 |
 |------|-----|
@@ -117,7 +135,7 @@ ctx 进度条填充改用中线高度 `■` / `·`，避免溢出 `[]`。
 
 ---
 
-## 5. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
+## 6. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
 
 | 字段 | 值 |
 |------|-----|
@@ -137,7 +155,7 @@ Enter 仍预填 Insert（便于 undo）。
 
 ---
 
-## 6. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
+## 7. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
 
 | Field | Value |
 |-------|-------|
@@ -167,7 +185,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 7. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
+## 8. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
 
 | 字段 | 值 |
 |------|-----|
@@ -188,7 +206,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 8. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
+## 9. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
 
 | 字段 | 值 |
 |------|-----|
@@ -209,7 +227,7 @@ tui-markdown 框线表。
 
 ---
 
-## 9. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
+## 10. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
 
 | 字段 | 值 |
 |------|-----|
@@ -232,7 +250,7 @@ tui-markdown 框线表。
 
 ---
 
-## 10. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
+## 11. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
 
 | 字段 | 值 |
 |------|-----|
@@ -253,7 +271,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 11. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
+## 12. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
 
 | 字段 | 值 |
 |------|-----|
@@ -276,7 +294,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 12. 2026-07-24 — Session Stats 用 comfy-table 排版
+## 13. 2026-07-24 — Session Stats 用 comfy-table 排版
 
 | 字段 | 值 |
 |------|-----|
@@ -295,7 +313,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 13. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 14. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -313,7 +331,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 14. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 15. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -378,7 +396,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 
 ---
 
-## 15. 2026-07-24 — 底部栏视觉优化
+## 16. 2026-07-24 — 底部栏视觉优化
 
 | 字段 | 值 |
 |------|-----|
