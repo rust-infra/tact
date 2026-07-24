@@ -4,6 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Paragraph,
 };
+use tact_protocol::BalanceEntry;
 use unicode_width::UnicodeWidthStr;
 
 use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
@@ -13,6 +14,14 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 
 /// Progress bar width in cells.
 const PROGRESS_BAR_WIDTH: u16 = 15;
+
+/// Bottom bar icons (language-invariant Unicode glyphs).
+const ICON_ELAPSED: &str = "◷";
+const ICON_UPTIME: &str = "⊙";
+const ICON_BRANCH: &str = "⎇";
+const ICON_BALANCE: &str = "¤";
+const ICON_TOKENS: &str = "∑";
+const ICON_CACHE: &str = "▣";
 
 fn format_mm_ss(total_secs: i64) -> String {
     let secs = total_secs.max(0);
@@ -92,6 +101,61 @@ fn format_tokens_compact(n: u64) -> String {
             format!("{:.1}M", m)
         }
     }
+}
+
+/// Compact model string: `"modelname 8k/32k"` or `"-"`.
+fn format_model_compact(name: &str, max_tokens: u32, thinking_budget: Option<u32>) -> String {
+    if name.is_empty() {
+        return "-".to_string();
+    }
+    let mut s = name.to_string();
+    if max_tokens > 0 {
+        s.push(' ');
+        s.push_str(&format_tokens_compact(max_tokens as u64));
+        if let Some(budget) = thinking_budget.filter(|b| *b > 0) {
+            s.push('/');
+            s.push_str(&format_tokens_compact(budget as u64));
+        }
+    }
+    s
+}
+
+/// Format one balance entry: `"¤ CNY 9.60"`.
+fn format_balance_entry(entry: &BalanceEntry) -> String {
+    format!("{} {} {:.2}", ICON_BALANCE, entry.currency, entry.total_balance)
+}
+
+/// Format one quota window: `"¤ label 75%"` or `"¤ label 150/200"`.
+fn format_quota_window(window: &tact_protocol::UsageQuotaWindow) -> String {
+    let remaining = format_quota_value(window.remaining);
+    let limit = format_quota_value(window.limit);
+    if let Some(pct) = window.usage_pct() {
+        format!("{} {} {}%", ICON_BALANCE, window.label, pct)
+    } else {
+        format!("{} {} {}/{}", ICON_BALANCE, window.label, remaining, limit)
+    }
+}
+
+/// Format cache hit percentage: `"▣45%"` or `"▣--"`.
+fn format_cache_pct(hit: u64, miss: u64) -> String {
+    let total = hit + miss;
+    if total == 0 {
+        format!("{}--", ICON_CACHE)
+    } else {
+        let pct = hit.saturating_mul(100) / total;
+        format!("{}{}%", ICON_CACHE, pct)
+    }
+}
+
+/// Context usage meter with ` · ` separator: `"[████░░░░] 0% · 6.6K/1M"`.
+fn format_context_meter_new(used: u32, window: usize) -> String {
+    let pct = context_usage_pct(used, window);
+    let bar = render_usage_bar(pct as f64);
+    format!(
+        "{bar} {pct}% · {}/{}",
+        format_tokens_compact(used as u64),
+        format_tokens_compact(window as u64)
+    )
 }
 
 /// Context usage vs model_context_window.
@@ -611,5 +675,79 @@ mod render_tests {
             !text.contains("think=32000 ("),
             "bottom bar should omit a missing effort, got:\n{text}"
         );
+    }
+
+    #[test]
+    fn format_model_compact_empty() {
+        assert_eq!(super::format_model_compact("", 0, None), "-");
+    }
+    #[test]
+    fn format_model_compact_name_only() {
+        assert_eq!(super::format_model_compact("gpt4", 0, None), "gpt4");
+    }
+    #[test]
+    fn format_model_compact_with_max() {
+        assert_eq!(
+            super::format_model_compact("claude", 8_000, None),
+            "claude 8K"
+        );
+    }
+    #[test]
+    fn format_model_compact_with_max_and_think() {
+        assert_eq!(
+            super::format_model_compact("deepseek", 32_000, Some(8_000)),
+            "deepseek 32K/8K"
+        );
+    }
+    #[test]
+    fn format_cache_pct_before_first_sample() {
+        assert_eq!(super::format_cache_pct(0, 0), "▣--");
+    }
+    #[test]
+    fn format_cache_pct_with_data() {
+        assert_eq!(super::format_cache_pct(30, 70), "▣30%");
+    }
+    #[test]
+    fn format_cache_pct_full_hit() {
+        assert_eq!(super::format_cache_pct(100, 0), "▣100%");
+    }
+    #[test]
+    fn format_balance_entry_renders() {
+        let entry = BalanceEntry {
+            currency: "USD".into(),
+            total_balance: 12.50,
+            granted_balance: 10.0,
+            topped_up_balance: 2.50,
+        };
+        let result = super::format_balance_entry(&entry);
+        assert!(result.contains("¤"), "expected ¤, got {result}");
+        assert!(result.contains("USD"), "expected USD, got {result}");
+        assert!(result.contains("12.50"), "expected 12.50, got {result}");
+    }
+    #[test]
+    fn format_quota_window_with_pct() {
+        use tact_protocol::UsageQuotaWindow;
+        let w = UsageQuotaWindow {
+            label: "daily".into(),
+            remaining: Some(150.0),
+            limit: Some(200.0),
+            reset_time: None,
+        };
+        let result = super::format_quota_window(&w);
+        assert!(result.contains("¤"), "expected ¤, got {result}");
+        assert!(result.contains("daily"), "expected daily, got {result}");
+        assert!(result.contains("25%"), "expected 25%, got {result}");
+    }
+    #[test]
+    fn format_quota_window_infinite() {
+        use tact_protocol::UsageQuotaWindow;
+        let w = UsageQuotaWindow {
+            label: "monthly".into(),
+            remaining: Some(500.0),
+            limit: None,
+            reset_time: None,
+        };
+        let result = super::format_quota_window(&w);
+        assert!(result.contains("500/∞"), "expected 500/∞, got {result}");
     }
 }
