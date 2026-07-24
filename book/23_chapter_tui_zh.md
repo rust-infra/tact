@@ -173,13 +173,12 @@ flowchart TB
 | 路径 | 角色 |
 |------|------|
 | `render/mod.rs` | Re-export 面板入口 |
-| `render/layout.rs` | 主内容路由（history、help、plan+log、popups） |
+| `render/layout.rs` | 主内容路由（history、help、log、popups） |
 | `render/bar.rs` | 顶栏 + 底栏统计 |
 | `render/input.rs` | 多行输入框、批准横幅、palette 命令行 |
 | `render/log.rs` | Log 面板：wrap cache、scroll、overlays、scrollbar |
 | `render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
 | `render/log_style.rs` | 共享 log 文本样式 |
-| `render/plan.rs` | plan 可见时左侧面板 |
 | `render/render_md.rs` | Markdown → ratatui `Line`s（`tui-markdown`） |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`、tool 缩进常量 |
@@ -196,9 +195,7 @@ flowchart TB
 ```text
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
-│    ├─ optional plan panel (left)
-│    ├─ draggable divider
-│    └─ log panel (right or full width)
+│    └─ log panel (always full width)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
@@ -223,10 +220,9 @@ Popups 在基础布局**之后**绘制以置顶。多数先用 `Clear`（无 dro
 |------|------|
 | `show_history` | 全屏 history 面板（`popups/history.rs`） |
 | `show_help` | 全屏 help（`popups/help.rs`） |
-| `plan.visible` | 水平分割：plan（左）+ 2 列 divider + log（右）；比例来自 `panel_split_ratio`（10–70%），可拖拽 |
-| default | 仅 log 面板 |
+| default | Log 面板，始终全宽（单列；无侧边面板或 divider） |
 
-plan+log 活跃时设置 `app.mouse.plan_area`、`divider_area`、`log_area` 供 hit test 与面板 resize。
+`app.mouse.log_area` 设为整个主区域，供 hit test 使用。
 
 锚定在主区域上的 detail popups（非独立输入模式）：
 
@@ -286,14 +282,14 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | `CodeCell` | `cells/code.rs` | 语法着色 code block card |
 | Separator | `cells/separator.rs` | block 间视觉间隙 |
 
-**Tool 渲染拆分：** `ToolWidget`（`widgets/`）借用 theme/i18n 构建 `ToolRenderOutput`；`ToolCell` 复制 owned 数据存入 renderer 列表。避免跨帧 lifetime 问题。`StepAdded` 仅更新 plan panel；log block 在 `StepStarted` 出现。并发工具用 `tools.active: Vec<_>`，经 `find_tool_at_logical()` 逐行 hit test。
+**Tool 渲染拆分：** `ToolWidget`（`widgets/`）借用 theme/i18n 构建 `ToolRenderOutput`；`ToolCell` 复制 owned 数据存入 renderer 列表。避免跨帧 lifetime 问题。`StepAdded` 仅更新内部 `app.plan.steps`（无面板）；log block 在 `StepStarted` 出现。并发工具用 `tools.active: Vec<_>`，经 `find_tool_at_logical()` 逐行 hit test。
 
 ### 6.6 状态栏与输入
 
-**顶栏**（`render_status_bar`）：输入模式、焦点面板（`Log` / `Plan`）、`Status`（Idle / Planning / Executing / WaitingForUser / Done）、主题/语言提示。覆盖：临时 `flash_msg`。
+**顶栏**（`render_status_bar`）：输入模式、`Status`（Idle / Planning / Executing / WaitingForUser / Done）、主题/语言提示。覆盖：临时 `flash_msg`。不再显示面板焦点标签（仅单栏 log）。
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
-- 第 1 行：焦点提示、prompt elapsed（运行中实时；完成/失败后冻结至下次 prompt）、进程 uptime、cwd、git 分支，及可选账户后缀（DeepSeek / Kimi 可用时 `💰 Balance…` 或 `📊 Quota…`）。
+- 第 1 行：prompt elapsed（运行中实时；完成/失败后冻结至下次 prompt）、进程 uptime、cwd、git 分支，及可选账户后缀（DeepSeek / Kimi 可用时 `💰 Balance…` 或 `📊 Quota…`）。
 - 第 2 行：模型 + token 限制、token 用量（prompt / completion / cache / reasoning）。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。
@@ -399,7 +395,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 1. **Thinking gate** — 产出内容的 update *除* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `ToolProgress` 外，若 thinking 区域仍开则调用 `flush_and_close_thinking()` 作安全网。优先显式 `ThinkingChunk::Finished`。
 2. **Loading gate** — 多数 update 调用 `remove_loading_placeholder()`。信息性或类元数据 update（`TokenUsage`、`ModelInfo`、`ToolProgress`）跳过移除。Legacy `PlanGenerated` handler 也跳过，但 agent 从不发出 — loading 行路径 inactive。
 
-**当前 agent 路径：** `StepAdded` 仅更新 plan panel（无 log 行）。`StepStarted` 创建 tool placeholder 并驱动 `Planning → Executing`。当前运行勿期望 `PlanGenerated`。
+**当前 agent 路径：** `StepAdded` 仅更新内部 `app.plan.steps`（无 log 行、无专用面板）。`StepStarted` 创建 tool placeholder 并驱动 `Planning → Executing`。当前运行勿期望 `PlanGenerated`。
 
 | `AgentUpdate` | 插入/更新的 physical 行 | 副作用 |
 |---------------|-------------------------|--------|
@@ -408,7 +404,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 | **`ThinkingChunk::Delta`** | 修改 active card buffer；placeholder 范围只在 body 1→2→3 行时增长 | 自动 scroll；若漏 `Started` 则打开 card |
 | **`ThinkingChunk::Finished`** | 同一 placeholder 变为带 1 行 summary 的 completed `ThinkingBlock` | 关闭 active card |
 | **`PlanGenerated`** | *（legacy handler）* 系统行 + loading 行 | Agent **不发**；会 flush stream、cancel tools、设 `loading_idx` |
-| **`StepAdded`** | *（log 无）* | 仅 plan panel；flush stream；首 step 转 `Planning → Executing` |
+| **`StepAdded`** | *（log 无）* | 仅更新内部 `app.plan.steps`（无面板）；flush stream；首 step 转 `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder + `ActiveToolBlock` | Flush stream；取消 stale 同 `tool_id` block |
 | **`ToolProgress`** | 修改匹配的 `ActiveToolBlock.live_output`；首个输出仅 resize 一次 | 不关闭 thinking/loading；忽略未知或迟到 ID；保留 scroll 意图 |
 | **`StepFinished`** | Resize placeholder → `ToolBlock` | Flush stream；更新 plan step output |
@@ -577,7 +573,9 @@ sequenceDiagram
 
 | 输入 | 行为 |
 |------|------|
-| Slash popup Enter 于 **skill** | 仅自动补全到 `/name `（同 Tab）— 加可选 args，再 Enter 运行 |
+| Slash popup Enter 于 **skill** | **立即 Invoke**（无额外 args，除非已输入） |
+| Slash popup **Tab** 于 skill | 仅自动补全到 `/name ` — 可加可选 args，再 Enter 运行 |
+| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` …）；`/plugin` 仍只补全以便写子命令 |
 | Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等） |
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |

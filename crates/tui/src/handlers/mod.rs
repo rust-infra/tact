@@ -564,7 +564,10 @@ mod tests {
             "missing bold name:\n{md}"
         );
         assert!(md.contains("代码审查专家"), "missing desc:\n{md}");
-        assert!(md.contains("**`demo-test`**"), "missing second skill:\n{md}");
+        assert!(
+            md.contains("**`demo-test`**"),
+            "missing second skill:\n{md}"
+        );
         assert!(
             md.contains("测试 skill 加载功能"),
             "missing second desc:\n{md}"

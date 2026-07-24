@@ -71,9 +71,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
 
 /// A skill available in the TUI slash / palette picker.
 ///
-/// Enter on a skill autocompletes `/name `; a second Enter invokes (body wrapped
-/// in `<skill>`, with optional `$ARGUMENTS` handling). Built-in command names
-/// take priority and exclude colliding skills from [`App::palette_commands`].
+/// Enter on a skill **invokes** immediately from the `/` popup (body wrapped
+/// in `<skill>`, with optional `$ARGUMENTS` handling). **Tab** only fills
+/// `/name ` so args can be edited first. Built-in command names take priority
+/// and exclude colliding skills from [`App::palette_commands`].
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     pub name: String,
@@ -97,7 +98,6 @@ pub(crate) enum SelectKind {
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FocusedPanel {
-    Plan,
     Log,
 }
 
@@ -253,8 +253,6 @@ pub struct App {
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).
     pub(crate) loading_idx: Option<usize>,
-    /// Panel split ratio (0.0–1.0) for the Plan panel width. 0.20 = 20% plan, 80% log.
-    pub(crate) panel_split_ratio: f64,
     /// Current interface language.
     pub(crate) language: Language,
     /// Brief status bar notification (auto-clears after 3s).

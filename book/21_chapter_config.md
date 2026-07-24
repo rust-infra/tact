@@ -70,7 +70,7 @@ When `--config` is **not** passed, `load_toml_config` scans in order and uses th
 | Order | Path |
 |-------|------|
 | 1 | `./.tact/config.toml` |
-| 2 | `./tact.toml` |
+| 2 | `./config.toml` |
 | 3 | `~/.tact/config.toml` |
 
 If none exist, an empty `TactTomlConfig::default()` is used.

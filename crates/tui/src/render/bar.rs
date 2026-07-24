@@ -100,7 +100,10 @@ fn format_model_compact(name: &str, max_tokens: u32, thinking_budget: Option<u32
 
 /// Format one balance entry: `"¤ CNY 9.60"`.
 fn format_balance_entry(entry: &BalanceEntry) -> String {
-    format!("{} {} {:.2}", ICON_BALANCE, entry.currency, entry.total_balance)
+    format!(
+        "{} {} {:.2}",
+        ICON_BALANCE, entry.currency, entry.total_balance
+    )
 }
 
 /// Format one quota window: `"¤ label 75%"` or `"¤ label 150/200"`.
@@ -183,9 +186,11 @@ struct DropGroup {
 
 /// Compute total unicode width of concatenated Span text content.
 fn group_total_width(groups: &[DropGroup]) -> u16 {
-    groups.iter().flat_map(|g| &g.spans).map(|s| {
-        unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16
-    }).sum()
+    groups
+        .iter()
+        .flat_map(|g| &g.spans)
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16)
+        .sum()
 }
 
 /// Remove droppable groups (from end) until total width ≤ target.
@@ -250,34 +255,52 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut row1_groups: Vec<DropGroup> = Vec::new();
     // Focus
-    row1_groups.push(DropGroup { droppable: false, spans: vec![
-        Span::styled(focus.to_string(), primary),
-        Span::styled(" · ", dim),
-    ]});
+    row1_groups.push(DropGroup {
+        droppable: false,
+        spans: vec![
+            Span::styled(focus.to_string(), primary),
+            Span::styled(" · ", dim),
+        ],
+    });
     // Elapsed: ◷ MM:SS
-    row1_groups.push(DropGroup { droppable: false, spans: vec![
-        Span::styled(ICON_ELAPSED.to_string(), dim),
-        Span::styled(format!(" {} · ", elapsed), primary),
-    ]});
+    row1_groups.push(DropGroup {
+        droppable: false,
+        spans: vec![
+            Span::styled(ICON_ELAPSED.to_string(), dim),
+            Span::styled(format!(" {} · ", elapsed), primary),
+        ],
+    });
     // Path (droppable)
-    row1_groups.push(DropGroup { droppable: true, spans: vec![
-        Span::styled(format!("{} · ", app.workspace_dir), secondary),
-    ]});
+    row1_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![Span::styled(format!("{} · ", app.workspace_dir), secondary)],
+    });
     // Uptime: ⊙ HH:MM:SS (droppable — dropped before path per spec)
-    row1_groups.push(DropGroup { droppable: true, spans: vec![
-        Span::styled(format!("{} {} · ", ICON_UPTIME, uptime), secondary),
-    ]});
+    row1_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![Span::styled(
+            format!("{} {} · ", ICON_UPTIME, uptime),
+            secondary,
+        )],
+    });
     // Branch: ⎇ branchname
-    row1_groups.push(DropGroup { droppable: false, spans: vec![
-        Span::styled(ICON_BRANCH.to_string(), dim),
-        Span::styled(format!(" {}", branch), accent),
-    ]});
+    row1_groups.push(DropGroup {
+        droppable: false,
+        spans: vec![
+            Span::styled(ICON_BRANCH.to_string(), dim),
+            Span::styled(format!(" {}", branch), accent),
+        ],
+    });
     // Account (if present, never dropped)
     if let Some(acct_spans) = build_account_spans(app, theme) {
-        row1_groups.push(DropGroup { droppable: false, spans: vec![
-            Span::styled(" · ", dim),
-        ]});
-        row1_groups.push(DropGroup { droppable: false, spans: acct_spans });
+        row1_groups.push(DropGroup {
+            droppable: false,
+            spans: vec![Span::styled(" · ", dim)],
+        });
+        row1_groups.push(DropGroup {
+            droppable: false,
+            spans: acct_spans,
+        });
     }
 
     // --- Row 2 ---
@@ -295,23 +318,24 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut row2_groups: Vec<DropGroup> = Vec::new();
     // Model + context meter
-    row2_groups.push(DropGroup { droppable: false, spans: vec![
-        Span::styled(model, primary),
-    ]});
-    row2_groups.push(DropGroup { droppable: true, spans: vec![
-        Span::styled(" · ", dim),
-        Span::styled(meter, primary),
-    ]});
+    row2_groups.push(DropGroup {
+        droppable: false,
+        spans: vec![Span::styled(model, primary)],
+    });
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![Span::styled(" · ", dim), Span::styled(meter, primary)],
+    });
     // Token total (droppable after cache)
-    row2_groups.push(DropGroup { droppable: true, spans: vec![
-        Span::styled(" · ", dim),
-        Span::styled(token_str, secondary),
-    ]});
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![Span::styled(" · ", dim), Span::styled(token_str, secondary)],
+    });
     // Cache hit (most droppable)
-    row2_groups.push(DropGroup { droppable: true, spans: vec![
-        Span::styled(" · ", dim),
-        Span::styled(cache_str, secondary),
-    ]});
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![Span::styled(" · ", dim), Span::styled(cache_str, secondary)],
+    });
 
     fit_row_spans(area.width, &mut row1_groups);
     fit_row_spans(area.width, &mut row2_groups);
@@ -337,18 +361,28 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 fn build_account_spans(app: &App, theme: &crate::theme::Theme) -> Option<Vec<Span<'static>>> {
     app.account_rx.as_ref()?;
     if let Some(bi) = &app.account.balance {
-        let fg = if bi.is_available { theme.success } else { theme.error };
-        let entries: Vec<String> = bi.balance_infos.iter()
-            .map(format_balance_entry)
-            .collect();
-        return Some(vec![Span::styled(entries.join(" · "), Style::default().fg(fg))]);
+        let fg = if bi.is_available {
+            theme.success
+        } else {
+            theme.error
+        };
+        let entries: Vec<String> = bi.balance_infos.iter().map(format_balance_entry).collect();
+        return Some(vec![Span::styled(
+            entries.join(" · "),
+            Style::default().fg(fg),
+        )]);
     }
     if let Some(quota) = &app.account.quota {
-        let fg = if quota.is_available { theme.success } else { theme.error };
-        let entries: Vec<String> = quota.windows.iter()
-            .map(format_quota_window)
-            .collect();
-        return Some(vec![Span::styled(entries.join(" · "), Style::default().fg(fg))]);
+        let fg = if quota.is_available {
+            theme.success
+        } else {
+            theme.error
+        };
+        let entries: Vec<String> = quota.windows.iter().map(format_quota_window).collect();
+        return Some(vec![Span::styled(
+            entries.join(" · "),
+            Style::default().fg(fg),
+        )]);
     }
     None
 }

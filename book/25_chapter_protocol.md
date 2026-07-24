@@ -210,7 +210,7 @@ stateDiagram-v2
 
 | From | To | Trigger | Notes |
 |------|-----|---------|-------|
-| `Idle` | `Planning` | User presses `Enter` in Insert mode | Clears plan panel; sends `UserCommand::SubmitTask` |
+| `Idle` | `Planning` | User presses `Enter` in Insert mode | Clears `app.plan.steps`; sends `UserCommand::SubmitTask` |
 | `Planning` | `Executing` | First `AgentUpdate::StepAdded` | `ensure_executing_status`; `total` from plan length |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | Updates `current_step`; may have concurrent `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | Sets `task_done_time`; freezes cost timer |
@@ -408,7 +408,7 @@ Text timeline (same turn):
 ThinkingChunk*          ← LLM reasoning stream (optional)
 StreamChunk*            ← assistant text before / between tools
 ModelInfo               ← model name / max_tokens (metadata)
-StepAdded               ← plan panel entry
+StepAdded               ← internal plan step entry (no dedicated panel)
 StepStarted             ← running tool card (arg_summary + arg_full)
 RequestSelect?          ← permission Ask (optional)
 StepFinished | StepFailed
@@ -428,7 +428,7 @@ Streaming chunks may arrive between step events. `TokenUsage` is usually emitted
 | `AgentUpdate` | `agent.rs` | Agent → TUI event enum |
 | `ThinkingChunk` | `agent.rs` | Thinking stream lifecycle (`Started` / `Delta` / `Finished`) |
 | `UserCommand` | `agent.rs` | TUI → agent command enum |
-| `PlanStep` | `agent.rs` | Plan panel row; serde for session persistence |
+| `PlanStep` | `agent.rs` | Internal plan step entry (no dedicated panel); serde for session persistence |
 | `StepResult` / `StepStatus` | `agent.rs` | Structured tool outcome |
 | `TokenUsageInfo` | `agent.rs` | LLM token counters (incl. cache / reasoning) |
 | `ModelCallParams` | `agent.rs` | Active model configuration snapshot |

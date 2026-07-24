@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::widgets::state::{App, FocusedPanel, InputMode, Status};
+use crate::widgets::state::{App, InputMode, Status};
 
 pub(crate) fn handle_normal_mode(
     app: &mut App,
@@ -10,53 +10,21 @@ pub(crate) fn handle_normal_mode(
     _user_cmd_tx: &UnboundedSender<UserCommand>,
 ) {
     match key.code {
-        KeyCode::Tab => {
-            app.focused_panel = match app.focused_panel {
-                FocusedPanel::Log => FocusedPanel::Plan,
-                FocusedPanel::Plan => FocusedPanel::Log,
-            };
+        KeyCode::Char('j') => {
+            // Don't check upper bound; render uniformly clamps
+            app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
         }
-        KeyCode::Char('e') => {
-            app.plan.visible = !app.plan.visible;
-            if !app.plan.visible && app.focused_panel == FocusedPanel::Plan {
-                app.focused_panel = FocusedPanel::Log;
+        KeyCode::Char('k') => {
+            if app.log_scroll.offset > 0 {
+                app.log_scroll.offset -= 1;
             }
         }
-        KeyCode::Char('j') => match app.focused_panel {
-            FocusedPanel::Log => {
-                // Don't check upper bound; render uniformly clamps
-                app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
-            }
-            FocusedPanel::Plan => {
-                if !app.plan.steps.is_empty() && app.plan.selected + 1 < app.plan.steps.len() {
-                    app.plan.selected += 1;
-                    app.plan.list_state.select(Some(app.plan.selected));
-                }
-            }
-        },
-        KeyCode::Char('k') => match app.focused_panel {
-            FocusedPanel::Log => {
-                if app.log_scroll.offset > 0 {
-                    app.log_scroll.offset -= 1;
-                }
-            }
-            FocusedPanel::Plan => {
-                if app.plan.selected > 0 {
-                    app.plan.selected -= 1;
-                    app.plan.list_state.select(Some(app.plan.selected));
-                }
-            }
-        },
         KeyCode::Char('g') => {
-            if app.focused_panel == FocusedPanel::Log {
-                app.log_scroll.offset = 0;
-            }
+            app.log_scroll.offset = 0;
         }
         KeyCode::Char('G') => {
-            if app.focused_panel == FocusedPanel::Log {
-                // Set to a large enough value; render clamps to actual max_scroll
-                app.log_scroll.offset = u16::MAX;
-            }
+            // Set to a large enough value; render clamps to actual max_scroll
+            app.log_scroll.offset = u16::MAX;
         }
         KeyCode::Char('/') => {
             app.input_mode = InputMode::Palette;
@@ -70,45 +38,20 @@ pub(crate) fn handle_normal_mode(
             app.input_mode = InputMode::Insert;
         }
         KeyCode::Char('y') => {
-            let text = match app.focused_panel {
-                FocusedPanel::Plan => {
-                    if let Some((s, e)) = app.mouse.plan_selection {
-                        let start = s.min(e);
-                        let end = s.max(e);
-                        if start < app.plan.steps.len() {
-                            let selected: Vec<String> = app.plan.steps
-                                [start..=end.min(app.plan.steps.len().saturating_sub(1))]
-                                .iter()
-                                .map(|step| step.description.clone())
-                                .collect();
-                            Some(selected.join("\n"))
-                        } else {
-                            None
-                        }
-                    } else {
-                        app.plan
-                            .steps
-                            .get(app.plan.selected)
-                            .map(|s| s.description.clone())
-                    }
-                }
-                FocusedPanel::Log => {
-                    // Prefer character-level mouse selection over last message
-                    if let Some(sel) = app.mouse.log_selection {
-                        let (start, end) = sel.normalized();
-                        Some(app.extract_selected_text(start, end))
-                    } else {
-                        // Last visible message
-                        let total = app.total_log_lines();
-                        if total > 0 && app.stream.buffer.is_empty() {
-                            app.visible_message_index(total - 1)
-                                .and_then(|idx| app.raw_messages.get(idx).cloned())
-                        } else if !app.stream.buffer.is_empty() {
-                            Some(app.stream.buffer.clone())
-                        } else {
-                            None
-                        }
-                    }
+            // Prefer character-level mouse selection over last message
+            let text = if let Some(sel) = app.mouse.log_selection {
+                let (start, end) = sel.normalized();
+                Some(app.extract_selected_text(start, end))
+            } else {
+                // Last visible message
+                let total = app.total_log_lines();
+                if total > 0 && app.stream.buffer.is_empty() {
+                    app.visible_message_index(total - 1)
+                        .and_then(|idx| app.raw_messages.get(idx).cloned())
+                } else if !app.stream.buffer.is_empty() {
+                    Some(app.stream.buffer.clone())
+                } else {
+                    None
                 }
             };
             if let Some(t) = text {
@@ -117,9 +60,7 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('Y') => {
-            if app.focused_panel == FocusedPanel::Log
-                && let Some(code) = app.extract_last_code_block()
-            {
+            if let Some(code) = app.extract_last_code_block() {
                 app.copy_text(&code);
                 app.add_new_line();
             }
@@ -128,7 +69,7 @@ pub(crate) fn handle_normal_mode(
             // Open the most visible code block popup
             if app.code_popup.is_some() {
                 app.close_code_popup();
-            } else if !app.code_blocks.is_empty() && app.focused_panel == FocusedPanel::Log {
+            } else if !app.code_blocks.is_empty() {
                 let logical_offset = app.log_scroll.offset as usize;
                 // Find the code block whose start_idx is closest to (and not exceeding) the current scroll position
                 let best = app
@@ -171,7 +112,6 @@ pub(crate) fn handle_normal_mode(
         }
         KeyCode::Esc => {
             app.mouse.log_selection = None;
-            app.mouse.plan_selection = None;
         }
         _ => {}
     }
@@ -193,19 +133,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_focus_between_log_and_plan() {
-        let mut app = make_app();
-        let (tx, _rx) = unbounded_channel();
-        assert!(matches!(app.focused_panel, FocusedPanel::Log));
-
-        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
-        assert!(matches!(app.focused_panel, FocusedPanel::Plan));
-
-        handle_normal_mode(&mut app, key(KeyCode::Tab), &tx);
-        assert!(matches!(app.focused_panel, FocusedPanel::Log));
-    }
-
-    #[test]
     fn slash_enters_palette_mode() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
@@ -214,19 +141,6 @@ mod tests {
 
         assert!(matches!(app.input_mode, InputMode::Palette));
         assert_eq!(app.palette_selected, 0);
-    }
-
-    #[test]
-    fn e_toggles_plan_panel_visibility() {
-        let mut app = make_app();
-        let (tx, _rx) = unbounded_channel();
-        app.plan.visible = true;
-
-        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
-        assert!(!app.plan.visible);
-
-        handle_normal_mode(&mut app, key(KeyCode::Char('e')), &tx);
-        assert!(app.plan.visible);
     }
 
     #[test]
@@ -328,10 +242,9 @@ mod tests {
     }
 
     #[test]
-    fn j_and_k_scroll_log_when_log_focused() {
+    fn j_and_k_scroll_log() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
-        app.focused_panel = FocusedPanel::Log;
         app.log_scroll.offset = 5;
 
         handle_normal_mode(&mut app, key(KeyCode::Char('j')), &tx);

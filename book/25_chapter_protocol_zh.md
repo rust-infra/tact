@@ -207,7 +207,7 @@ stateDiagram-v2
 
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
-| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 plan panel；发送 `UserCommand::SubmitTask` |
+| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 `app.plan.steps`；发送 `UserCommand::SubmitTask` |
 | `Planning` | `Executing` | 首个 `AgentUpdate::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
@@ -405,7 +405,7 @@ sequenceDiagram
 ThinkingChunk*          ← LLM 推理流（可选）
 StreamChunk*            ← 工具前/之间的 assistant 文本
 ModelInfo               ← 模型名 / max_tokens（元数据）
-StepAdded               ← plan panel 条目
+StepAdded               ← 内部 plan step 条目（无专用面板）
 StepStarted             ← 运行中 tool card（arg_summary + arg_full）
 RequestSelect?          ← permission Ask（可选）
 StepFinished | StepFailed
@@ -425,7 +425,7 @@ TaskComplete            ← agent_loop Ok 后 driver
 | `AgentUpdate` | `agent.rs` | Agent → TUI 事件 enum |
 | `ThinkingChunk` | `agent.rs` | Thinking 流生命周期（`Started` / `Delta` / `Finished`） |
 | `UserCommand` | `agent.rs` | TUI → agent 命令 enum |
-| `PlanStep` | `agent.rs` | Plan panel 行；serde 供 session 持久化 |
+| `PlanStep` | `agent.rs` | 内部 plan step 条目（无专用面板）；serde 供 session 持久化 |
 | `StepResult` / `StepStatus` | `agent.rs` | 结构化工具结果 |
 | `TokenUsageInfo` | `agent.rs` | LLM token 计数（含 cache / reasoning） |
 | `ModelCallParams` | `agent.rs` | 活跃模型配置快照 |

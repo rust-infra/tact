@@ -17,7 +17,6 @@ fn seed_many_numbered_lines(app: &mut App, count: usize) {
 }
 
 fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
-    app.plan.visible = true;
     let output: String = (1..=line_count)
         .map(|n| format!("bash-out-{n:02}"))
         .collect::<Vec<_>>()

@@ -116,10 +116,7 @@ impl LogSelection {
 /// Mouse interaction state: manages panel areas, selection ranges, and drag flags.
 #[derive(Default)]
 pub(crate) struct MouseState {
-    pub(crate) plan_area: Rect,
     pub(crate) log_area: Rect,
-    pub(crate) plan_selection: Option<(usize, usize)>,
-    pub(crate) dragging_plan: bool,
     pub(crate) log_selection: Option<LogSelection>,
     pub(crate) dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).
@@ -145,10 +142,6 @@ pub(crate) struct MouseState {
     pub(crate) last_click_tool: Option<usize>,
     /// Index of the code block hit by the last click (used for double-click popup open).
     pub(crate) last_click_code: Option<usize>,
-    /// Divider area between Plan and Log panels (for drag-to-resize).
-    pub(crate) divider_area: Rect,
-    /// Whether the user is currently dragging the panel divider.
-    pub(crate) is_resizing_panel: bool,
 }
 
 impl MouseState {

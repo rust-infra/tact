@@ -27,8 +27,10 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 let cmd = commands[filtered[idx]].0.clone();
                 app.cmd_line.clear();
                 // Skills and arg-taking built-ins: jump to Insert with `/name `
-                // so the user can add args before a second Enter runs them.
-                // Built-ins win even if a same-named skill exists on disk.
+                // Skills (and arg-taking built-ins) prefills Insert so the user
+                // can add args / restore a prior draft via undo. Other built-ins
+                // execute immediately. Built-ins win even if a same-named skill
+                // exists on disk.
                 if (is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd))
                     || command_needs_args(&cmd)
                 {

@@ -115,7 +115,6 @@ impl App {
             session_store: None,
             spinner_frame: 0,
             loading_idx: None,
-            panel_split_ratio: 0.20,
             language: Language::English,
             flash_msg: None,
             undo_stack: Vec::new(),

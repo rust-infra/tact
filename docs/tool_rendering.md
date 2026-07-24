@@ -62,7 +62,7 @@ Helper functions:
 - `tool_arg_summary(name, input)` — same extraction, truncated to 120 chars for display
 - `tool_detail_content(name, input, output)` — full stdout for bash/read; written content for `write_file`
 
-TUI note: `StepAdded` updates the **plan panel only** — it no longer inserts a separate log line. The log block appears on `StepStarted`.
+TUI note: `StepAdded` only updates the internal `app.plan.steps` store — there is no dedicated plan panel, and it does not insert a separate log line. The log block appears on `StepStarted`.
 
 ### Legacy `Info` lines
 

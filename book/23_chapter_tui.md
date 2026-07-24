@@ -172,13 +172,12 @@ flowchart TB
 | Path | Role |
 |------|------|
 | `render/mod.rs` | Re-exports panel entry points |
-| `render/layout.rs` | Main content routing (history, help, plan+log, popups) |
+| `render/layout.rs` | Main content routing (history, help, log, popups) |
 | `render/bar.rs` | Top status bar + bottom stats bar |
 | `render/input.rs` | Multi-line input box, approval banner, palette command line |
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
 | `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `render/log_style.rs` | Shared log text styles |
-| `render/plan.rs` | Left plan panel when visible |
 | `render/render_md.rs` | Markdown → ratatui `Line`s (`tui-markdown`) |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`, tool indent constants |
@@ -195,9 +194,7 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 ```text
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
-│    ├─ optional plan panel (left)
-│    ├─ draggable divider
-│    └─ log panel (right or full width)
+│    └─ log panel (always full width)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
@@ -222,10 +219,9 @@ Popups are drawn **after** the base layout so they paint on top. Most use `Clear
 |-----------|--------|
 | `show_history` | Full-screen history panel (`popups/history.rs`) |
 | `show_help` | Full-screen help (`popups/help.rs`) |
-| `plan.visible` | Horizontal split: plan (left) + 2-col divider + log (right); ratio from `panel_split_ratio` (10–70%), draggable |
-| default | Log panel only |
+| default | Log panel, always full width (single-column; no side panel or divider) |
 
-When plan+log is active, `app.mouse.plan_area`, `divider_area`, and `log_area` are set for hit testing and panel resize.
+`app.mouse.log_area` is set to the full main area for hit testing.
 
 Detail popups anchored over the main area (not separate input modes):
 
@@ -285,14 +281,14 @@ pub(crate) trait Renderable {
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
 
-**Tool rendering split:** `ToolWidget` (`widgets/`) borrows theme/i18n and builds a `ToolRenderOutput`; `ToolCell` copies owned data for storage in the renderer list. This avoids lifetime issues across frames. `StepAdded` updates the plan panel only; the log block appears on `StepStarted`. Concurrent tools use `tools.active: Vec<_>` with per-row hit testing via `find_tool_at_logical()`.
+**Tool rendering split:** `ToolWidget` (`widgets/`) borrows theme/i18n and builds a `ToolRenderOutput`; `ToolCell` copies owned data for storage in the renderer list. This avoids lifetime issues across frames. `StepAdded` only updates the internal `app.plan.steps` step store (no dedicated panel); the log block appears on `StepStarted`. Concurrent tools use `tools.active: Vec<_>` with per-row hit testing via `find_tool_at_logical()`.
 
 ### 6.6 Status bars and input
 
-**Top bar** (`render_status_bar`): input mode, focused panel (`Log` / `Plan`), `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`.
+**Top bar** (`render_status_bar`): input mode, `Status` (Idle / Planning / Executing / WaitingForUser / Done), theme/language hints. Overrides: temporary `flash_msg`. No panel-focus label (single-column log only).
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
-- Row 1: focus hint, prompt elapsed time (live while running; frozen after complete/fail until next prompt), process uptime, cwd, git branch, plus optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi when available).
+- Row 1: prompt elapsed time (live while running; frozen after complete/fail until next prompt), process uptime, cwd, git branch, plus optional account suffix (`💰 Balance…` or `📊 Quota…` for DeepSeek / Kimi when available).
 - Row 2: model + token limits, token usage (prompt / completion / cache / reasoning).
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
@@ -398,7 +394,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 1. **Thinking gate** — content-producing updates *except* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `ToolProgress` call `flush_and_close_thinking()` as a safety net if a thinking region is still open. Prefer explicit `ThinkingChunk::Finished` from producers.
 2. **Loading gate** — most updates call `remove_loading_placeholder()`. Informational or metadata-like updates (`TokenUsage`, `ModelInfo`, `ToolProgress`) skip removal. Legacy `PlanGenerated` handler also skips removal, but the agent never emits it — the loading row path is inactive.
 
-**Active agent path:** `StepAdded` updates the plan panel only (no log row). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
+**Active agent path:** `StepAdded` only updates `app.plan.steps` (no log row, no dedicated panel). `StepStarted` creates tool placeholder rows and drives `Planning → Executing`. Do not expect `PlanGenerated` in current runs.
 
 | `AgentUpdate` | Physical rows inserted / updated | Side effects |
 |---------------|----------------------------------|--------------|
@@ -407,7 +403,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | **`ThinkingChunk::Delta`** | Mutates active card buffer; placeholder range grows only 1→2→3 body lines | Auto-scroll; opens card if `Started` was missed |
 | **`ThinkingChunk::Finished`** | Same placeholder becomes completed `ThinkingBlock` with one summary row | Closes active card |
 | **`PlanGenerated`** | *(legacy handler)* System lines + loading row | Agent **does not emit**; would flush stream, cancel tools, set `loading_idx` |
-| **`StepAdded`** | *(none in log)* | Plan panel only; flushes stream; first step transitions `Planning → Executing` |
+| **`StepAdded`** | *(none in log)* | Updates internal `app.plan.steps` only (no panel); flushes stream; first step transitions `Planning → Executing` |
 | **`StepStarted`** | `N` blank placeholder rows + `ActiveToolBlock` | Flushes stream; cancels stale same-`tool_id` block |
 | **`ToolProgress`** | Mutate matching `ActiveToolBlock.live_output`; first output resizes once | Does not close thinking/loading; ignores unknown or late IDs; preserves scroll intent |
 | **`StepFinished`** | Resize placeholders → `ToolBlock` | Flushes stream; plan step output updated |
@@ -573,8 +569,9 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 
 | Input | Behavior |
 |-------|----------|
-| Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) — add optional args, then Enter to run |
-| Slash popup Enter on a **built-in** | Execute immediately (`/quit`, `/cancel`, …) |
+| Slash popup Enter on a **skill** | **Invoke** immediately (empty args unless already typed) |
+| Slash popup **Tab** on a skill | Autocomplete to `/name ` only — add optional args, then Enter to run |
+| Slash popup Enter on a **built-in** | Execute immediately (`/quit`, `/cancel`, …); `/plugin` still autocompletes for subcommand |
 | `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (bare `$ARGUMENTS` substituted, else Claude-style `ARGUMENTS:` appended when args present) |
 | Palette Enter on a skill | Insert mode with `/name ` prefilled (undo checkpoint preserved) |
 | `/skill-reload` | Rescan roots into shared registry (TUI + agent), invalidate visual cache |

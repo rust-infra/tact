@@ -9,15 +9,11 @@ use crate::widgets::state::{
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MousePanelHit {
     pub in_log: bool,
-    pub in_plan: bool,
-    pub in_divider: bool,
 }
 
 fn panel_hit(app: &App, column: u16, row: u16) -> MousePanelHit {
     MousePanelHit {
         in_log: point_in_rect(column, row, app.mouse.log_area),
-        in_plan: point_in_rect(column, row, app.mouse.plan_area),
-        in_divider: point_in_rect(column, row, app.mouse.divider_area),
     }
 }
 
@@ -57,8 +53,6 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) => {
             app.mouse.popup_text_drag_origin = None;
             app.mouse.dragging_log = false;
-            app.mouse.dragging_plan = false;
-            end_panel_resize(app);
         }
         _ => {}
     }
@@ -70,9 +64,6 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if hit.in_log && app.log_scroll.offset > 0 {
         app.log_scroll.offset -= 1;
-    } else if hit.in_plan && app.plan.selected > 0 {
-        app.plan.selected -= 1;
-        app.plan.list_state.select(Some(app.plan.selected));
     }
 }
 
@@ -82,12 +73,6 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if hit.in_log {
         app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
-    } else if hit.in_plan
-        && !app.plan.steps.is_empty()
-        && app.plan.selected + 1 < app.plan.steps.len()
-    {
-        app.plan.selected += 1;
-        app.plan.list_state.select(Some(app.plan.selected));
     }
 }
 
@@ -95,23 +80,8 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
-    if hit.in_divider {
-        begin_panel_resize(app);
-        return;
-    }
     if hit.in_log {
         handle_log_click(app, mouse);
-        return;
-    }
-    if hit.in_plan {
-        app.focused_panel = FocusedPanel::Plan;
-        let item_idx = (mouse.row.saturating_sub(app.mouse.plan_area.y + 1)) as usize;
-        if item_idx < app.plan.steps.len() {
-            app.plan.selected = item_idx;
-            app.plan.list_state.select(Some(app.plan.selected));
-            app.mouse.plan_selection = Some((item_idx, item_idx));
-            app.mouse.dragging_plan = true;
-        }
     }
 }
 
@@ -255,11 +225,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 }
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
-    if app.mouse.is_resizing_panel {
-        let total_width =
-            app.mouse.plan_area.width + app.mouse.divider_area.width + app.mouse.log_area.width;
-        update_panel_resize(app, mouse.column, app.mouse.plan_area.x, total_width);
-    } else if app.mouse.dragging_log && hit.in_log {
+    if app.mouse.dragging_log && hit.in_log {
         let visual_base = app
             .log_scroll
             .visual_start
@@ -274,13 +240,6 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             && let Some(ref mut sel) = app.mouse.log_selection
         {
             sel.end = TextPosition::new(phys, byte);
-        }
-    } else if app.mouse.dragging_plan && hit.in_plan {
-        let item_idx = (mouse.row.saturating_sub(app.mouse.plan_area.y + 1)) as usize;
-        if item_idx < app.plan.steps.len()
-            && let Some((start, _)) = app.mouse.plan_selection
-        {
-            app.mouse.plan_selection = Some((start, item_idx));
         }
     }
 }
@@ -302,31 +261,6 @@ fn handle_text_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
     } else if let Some(popup) = app.tools.popup.as_mut() {
         popup.selection = Some(selection);
     }
-}
-
-/// Begin dragging the Plan/Log divider to resize panels.
-pub(crate) fn begin_panel_resize(app: &mut App) {
-    app.mouse.is_resizing_panel = true;
-}
-
-/// Update `panel_split_ratio` while the divider is being dragged.
-pub(crate) fn update_panel_resize(
-    app: &mut App,
-    mouse_column: u16,
-    plan_area_x: u16,
-    total_width: u16,
-) {
-    if !app.mouse.is_resizing_panel || total_width == 0 {
-        return;
-    }
-    let mouse_x = mouse_column.saturating_sub(plan_area_x);
-    let new_ratio = mouse_x as f64 / total_width as f64;
-    app.panel_split_ratio = new_ratio.clamp(0.10, 0.70);
-}
-
-/// End panel divider drag resize.
-pub(crate) fn end_panel_resize(app: &mut App) {
-    app.mouse.is_resizing_panel = false;
 }
 
 /// Triple-click on a log line selects the line (or whole code block when enabled).
@@ -649,14 +583,7 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 3;
 
-        handle_mouse_scroll_up(
-            &mut app,
-            MousePanelHit {
-                in_log: true,
-                in_plan: false,
-                in_divider: false,
-            },
-        );
+        handle_mouse_scroll_up(&mut app, MousePanelHit { in_log: true });
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -666,14 +593,7 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 1;
 
-        handle_mouse_scroll_down(
-            &mut app,
-            MousePanelHit {
-                in_log: true,
-                in_plan: false,
-                in_divider: false,
-            },
-        );
+        handle_mouse_scroll_down(&mut app, MousePanelHit { in_log: true });
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -704,7 +624,6 @@ mod tests {
     #[test]
     fn double_click_tool_block_opens_diff_popup() {
         let mut app = make_app();
-        app.plan.visible = true;
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
             "run",
             "bash",
@@ -747,7 +666,6 @@ mod tests {
     #[test]
     fn double_click_tool_header_does_not_open_diff_popup() {
         let mut app = make_app();
-        app.plan.visible = true;
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
             "run",
             "bash",
@@ -783,37 +701,6 @@ mod tests {
         assert!(app.tools.popup.is_none());
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1);
         assert!(app.tools.popup.is_none());
-    }
-
-    #[test]
-    fn divider_drag_updates_panel_split_ratio() {
-        let mut app = make_app();
-        app.panel_split_ratio = 0.20;
-
-        begin_panel_resize(&mut app);
-        assert!(app.mouse.is_resizing_panel);
-
-        update_panel_resize(&mut app, 60, 0, 120);
-        assert!(
-            (app.panel_split_ratio - 0.50).abs() < 0.01,
-            "expected ~0.50, got {}",
-            app.panel_split_ratio
-        );
-
-        end_panel_resize(&mut app);
-        assert!(!app.mouse.is_resizing_panel);
-    }
-
-    #[test]
-    fn divider_drag_clamps_split_ratio() {
-        let mut app = make_app();
-        begin_panel_resize(&mut app);
-
-        update_panel_resize(&mut app, 5, 0, 100);
-        assert_eq!(app.panel_split_ratio, 0.10);
-
-        update_panel_resize(&mut app, 95, 0, 100);
-        assert_eq!(app.panel_split_ratio, 0.70);
     }
 
     #[test]

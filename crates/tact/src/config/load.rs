@@ -9,7 +9,7 @@ fn config_search_paths() -> Vec<PathBuf> {
 
     let cwd = std::env::current_dir().unwrap_or_default();
     paths.push(cwd.join(".tact").join("config.toml"));
-    paths.push(cwd.join("tact.toml"));
+    paths.push(cwd.join("config.toml"));
 
     if let Some(home) = dirs_next_home() {
         paths.push(home.join(".tact").join("config.toml"));
@@ -34,7 +34,7 @@ pub(super) fn load_toml_config(
             .with_context(|| format!("cannot read config file {:?}", p))?;
         let cfg: TactTomlConfig = toml::from_str(&content)
             .with_context(|| format!("parse error in config file {:?}", p))?;
-        eprintln!("[config] loaded {:?}", p);
+        // eprintln!("[config] loaded {:?}", p);
         return Ok((cfg, Some(p.clone())));
     }
 
@@ -46,7 +46,7 @@ pub(super) fn load_toml_config(
             .with_context(|| format!("cannot read config file {:?}", p))?;
         let cfg: TactTomlConfig = toml::from_str(&content)
             .with_context(|| format!("parse error in config file {:?}", p))?;
-        eprintln!("[config] loaded {:?}", p);
+        // eprintln!("[config] loaded {:?}", p);
         return Ok((cfg, Some(p)));
     }
 

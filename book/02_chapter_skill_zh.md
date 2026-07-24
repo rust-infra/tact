@@ -222,10 +222,11 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 步骤 | 行为 |
 |------|------|
-| 斜杠弹出菜单对 **skill** 按 Enter | 仅自动补全为 `/name `（同 Tab） |
-| 第二次 Enter（可带参数） | 经 `handlers/skills.rs` **调用** |
+| 斜杠弹出菜单对 **skill** 按 Enter | **立即 Invoke** |
+| 斜杠弹出菜单对 skill 按 **Tab** | 仅自动补全为 `/name ` |
+| Tab 后再 Enter（可带可选 args） | 经 `handlers/skills.rs` **Invoke** |
 | 面板对 skill 按 Enter | 切到 Insert 并预填 `/name `（+ undo checkpoint） |
-| 内置命令 Enter | 立即执行（`/quit`、`/cancel` 等） |
+| 内置命令 Enter | 立即执行（`/quit`、`/cancel` 等）；`/plugin` 仍只补全 |
 
 **发给 agent 的载荷**
 

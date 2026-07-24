@@ -9,7 +9,7 @@ Update docs **in the same change** (or immediately after) when behavior or publi
 | Trigger | Sync these |
 |---------|------------|
 | Agent loop / compaction / recovery behavior changes | `book/05_chapter_compact.md` **and** `book/05_chapter_compact_zh.md`; skim `ARCHITECTURE.md` §6 and `docs/compaction.md` if the overview drifts |
-| Config / CLI flags rename or semantics change | `book/` chapter that documents them, `tact.example.toml`, relevant `docs/superpowers/specs/` or plans |
+| Config / CLI flags rename or semantics change | `book/` chapter that documents them, `config.example.toml`, relevant `docs/superpowers/specs/` or plans |
 | TUI bottom-bar / token / cache display changes | `docs/token_usage_schema.md` (TUI display notes) and any book section that describes the bar |
 | New multi-step feature from brainstorming | Write `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` after design approval; add `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` before or with implementation |
 | Store / session persistence contracts change | `book/01_chapter_store*.md`, `docs/token_usage_schema.md` if usage tables change |

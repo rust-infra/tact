@@ -286,11 +286,9 @@ impl App {
         self.plan
             .steps_set
             .insert(step.tool_id.clone(), step.clone());
-        self.plan.collapsed.push(false);
         // Don't change current_step or total — the step hasn't started yet.
         // Ensure there is an Executing status before StepStarted arrives.
         self.ensure_executing_status(idx);
-        self.plan.scroll_state = ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
     }
 
     fn on_step_started(

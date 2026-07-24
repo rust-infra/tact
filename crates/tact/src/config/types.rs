@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
-/// Top-level TOML config (`tact.toml` or `.tact/config.toml`).
+/// Top-level TOML config (`.tact/config.toml` or `config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TactTomlConfig {

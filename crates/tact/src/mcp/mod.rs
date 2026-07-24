@@ -433,12 +433,7 @@ fn build_tool_specs(server_name: &str, tools: &[McpTool]) -> Vec<ToolSpec> {
 pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     let cwd = std::env::current_dir()?;
     let mut loader = PluginLoader::new(vec![cwd]);
-    let plugins = loader.scan()?;
-    if plugins.is_empty() {
-        println!("[Plugins: none]");
-    } else {
-        println!("[Plugins: {}]", plugins.join(", "));
-    }
+    let _ = loader.scan()?;
 
     let mut router = MCPToolRouter::new();
     let mut connections = FuturesUnordered::new();

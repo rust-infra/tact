@@ -71,7 +71,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 | 顺序 | 路径 |
 |------|------|
 | 1 | `./.tact/config.toml` |
-| 2 | `./tact.toml` |
+| 2 | `./config.toml` |
 | 3 | `~/.tact/config.toml` |
 
 若均不存在，使用空的 `TactTomlConfig::default()`。

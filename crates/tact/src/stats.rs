@@ -106,21 +106,108 @@ fn md_cell(s: &str) -> String {
     s.replace('|', "\\|")
 }
 
+#[derive(Clone, Copy)]
+enum ColAlign {
+    Left,
+    Right,
+    Center,
+}
+
+fn parse_align(spec: &str) -> ColAlign {
+    let s = spec.trim();
+    match (s.starts_with(':'), s.ends_with(':')) {
+        (true, true) => ColAlign::Center,
+        (false, true) => ColAlign::Right,
+        _ => ColAlign::Left,
+    }
+}
+
+fn display_width(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn pad_cell(text: &str, width: usize, align: ColAlign) -> String {
+    let w = display_width(text);
+    if w >= width {
+        return text.to_string();
+    }
+    let pad = width - w;
+    match align {
+        ColAlign::Left => format!("{text}{}", " ".repeat(pad)),
+        ColAlign::Right => format!("{}{text}", " ".repeat(pad)),
+        ColAlign::Center => {
+            let left = pad / 2;
+            let right = pad - left;
+            format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
+        }
+    }
+}
+
+fn separator_cell(width: usize, align: ColAlign) -> String {
+    let width = width.max(3);
+    match align {
+        ColAlign::Left => "-".repeat(width),
+        ColAlign::Right => format!("{}:", "-".repeat(width - 1)),
+        ColAlign::Center => format!(":{}:", "-".repeat(width - 2)),
+    }
+}
+
+/// Write a GFM pipe table with space-padded cells so plain-text (CLI / exit
+/// `eprintln`) columns line up; tui-markdown still accepts the same source.
 fn write_gfm_table(out: &mut String, headers: &[&str], aligns: &[&str], rows: &[Vec<String>]) {
     debug_assert_eq!(headers.len(), aligns.len());
+    let cols = headers.len();
+    let aligns: Vec<ColAlign> = aligns.iter().map(|a| parse_align(a)).collect();
+
+    let headers: Vec<String> = headers.iter().map(|h| md_cell(h)).collect();
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            debug_assert_eq!(row.len(), cols);
+            row.iter().map(|c| md_cell(c)).collect()
+        })
+        .collect();
+
+    let mut widths: Vec<usize> = headers.iter().map(|h| display_width(h)).collect();
+    for row in &body {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(display_width(cell));
+        }
+    }
+    for w in &mut widths {
+        *w = (*w).max(3);
+    }
+
     let _ = writeln!(
         out,
         "| {} |",
         headers
             .iter()
-            .map(|h| md_cell(h))
+            .enumerate()
+            .map(|(i, h)| pad_cell(h, widths[i], ColAlign::Left))
             .collect::<Vec<_>>()
             .join(" | ")
     );
-    let _ = writeln!(out, "|{}|", aligns.join("|"));
-    for row in rows {
-        let cells: Vec<String> = row.iter().map(|c| md_cell(c)).collect();
-        let _ = writeln!(out, "| {} |", cells.join(" | "));
+    let _ = writeln!(
+        out,
+        "| {} |",
+        widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| separator_cell(w, aligns[i]))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    for row in &body {
+        let _ = writeln!(
+            out,
+            "| {} |",
+            row.iter()
+                .enumerate()
+                .map(|(i, c)| pad_cell(c, widths[i], aligns[i]))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
     }
 }
 
@@ -129,7 +216,7 @@ fn write_metric_table(out: &mut String, rows: &[(&str, String)]) {
         .iter()
         .map(|(metric, value)| vec![(*metric).to_string(), value.clone()])
         .collect();
-    write_gfm_table(out, &["Metric", "Value"], &["--------", "------:"], &body);
+    write_gfm_table(out, &["Metric", "Value"], &["---", "---:"], &body);
 }
 
 impl SessionStats {
@@ -143,8 +230,8 @@ impl SessionStats {
     /// Produce a human-readable summary of all recorded statistics.
     ///
     /// Tables are GFM pipe markdown so the TUI can render them via
-    /// `tui-markdown` (Unicode box borders + alignment). CLI / headless
-    /// print the same markdown source.
+    /// `tui-markdown` (Unicode box borders + alignment). Cells are
+    /// space-padded so CLI / headless exit `eprintln` also lines up.
     pub fn summary(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "── Session Stats ─────────────────────────────");
@@ -219,7 +306,7 @@ impl SessionStats {
             write_gfm_table(
                 &mut out,
                 &["Tool", "Count(s/f)", "Total", "Avg"],
-                &["------", "-----------:", "------:", "----:"],
+                &["---", "---:", "---:", "---:"],
                 &tool_rows,
             );
         }
@@ -309,29 +396,74 @@ mod tests {
 
         let text = s.summary();
         assert!(
-            text.contains("| Metric | Value |"),
+            text.contains("| Metric"),
             "missing metrics GFM header:\n{text}"
         );
         assert!(
-            text.contains("|--------|------:|"),
+            text.contains("| Value |"),
+            "missing Value column header:\n{text}"
+        );
+        assert!(
+            text.contains("| ---") || text.contains("|-----"),
             "missing metrics alignment row:\n{text}"
         );
         assert!(
             text.contains("Tool calls"),
             "missing Tool calls label:\n{text}"
         );
+        assert!(text.contains("| Tool"), "missing tools GFM header:\n{text}");
         assert!(
-            text.contains("| Tool | Count(s/f) | Total | Avg |"),
-            "missing tools GFM header:\n{text}"
+            text.contains("Count(s/f)"),
+            "missing tools Count header:\n{text}"
         );
         assert!(text.contains("bash"), "missing tool row:\n{text}");
-        assert!(
-            text.contains("| Total |"),
-            "missing Total row:\n{text}"
-        );
+        assert!(text.contains("| Total"), "missing Total row:\n{text}");
         assert!(
             text.contains("Total tool time"),
             "missing trailing metrics:\n{text}"
+        );
+    }
+
+    #[test]
+    fn gfm_table_pads_columns_for_plain_text_alignment() {
+        let mut out = String::new();
+        write_gfm_table(
+            &mut out,
+            &["Metric", "Value"],
+            &["---", "---:"],
+            &[
+                vec!["Elapsed".into(), "1.2s".into()],
+                vec!["Response chars rcvd".into(), "0".into()],
+            ],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() >= 4, "expected header/sep/2 rows:\n{out}");
+        let pipe_cols: Vec<Vec<usize>> = lines
+            .iter()
+            .take(4)
+            .map(|line| {
+                line.char_indices()
+                    .filter_map(|(i, c)| (c == '|').then_some(i))
+                    .collect()
+            })
+            .collect();
+        for cols in &pipe_cols[1..] {
+            assert_eq!(
+                cols, &pipe_cols[0],
+                "pipe columns must align across rows:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("| Response chars rcvd |"),
+            "metric column should be left-padded to max width:\n{out}"
+        );
+        let value_row = lines
+            .iter()
+            .find(|l| l.contains("Response chars rcvd"))
+            .expect("missing response row");
+        assert!(
+            value_row.ends_with("|     0 |") || value_row.contains("|     0 |"),
+            "value column should be right-aligned in:\n{value_row}"
         );
     }
 }

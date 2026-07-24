@@ -129,7 +129,7 @@ GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<ta
 
 ### 2. Configure
 
-Create `tact.toml` in your project root (or `~/.tact/config.toml` for user-level defaults):
+Create `config.toml` in your project root (or `~/.tact/config.toml` for user-level defaults):
 
 ```toml
 [llm]
@@ -381,7 +381,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 tact merges config from two sources (priority: high → low):
 
 ```
-CLI args  >  tact.toml
+CLI args  >  config.toml
 ```
 
 Use `--config /path/to/config.toml` to point at a specific file instead of auto-discovery.
@@ -390,7 +390,7 @@ Use `--config /path/to/config.toml` to point at a specific file instead of auto-
 
 ```
 <project>/.tact/config.toml      # project-level
-<project>/tact.toml               # project-level (alt)
+<project>/config.toml             # project-level (alt)
 ~/.tact/config.toml               # user-level
 ```
 

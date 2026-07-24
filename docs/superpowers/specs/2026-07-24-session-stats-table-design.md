@@ -24,10 +24,12 @@ Related: `docs/token_usage_schema.md` (Session Stats Display), `crates/tact/src/
 
 ## Approach
 
-Emit **GFM pipe tables** from `SessionStats::summary()`. The TUI passes the
-string through `render_markdown_tui` / [tui-markdown](https://github.com/joshka/tui-markdown),
-which renders GFM tables with Unicode box-drawing borders and column alignment.
-CLI / headless print the same markdown source. No table-drawing crate in
+Emit **GFM pipe tables** from `SessionStats::summary()`. Pad each cell to the
+per-column max width (left / right / center from separator `:` markers) so CLI
+/ headless exit `eprintln` lines up in monospace. The TUI passes the same
+string through `render_markdown_tui` /
+[tui-markdown](https://github.com/joshka/tui-markdown), which renders GFM
+tables with Unicode box-drawing borders. No table-drawing crate in
 `crates/tact`.
 
 ## Layout contract

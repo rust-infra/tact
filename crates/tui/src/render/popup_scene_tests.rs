@@ -574,7 +574,6 @@ fn main_area_loading_spinner_when_executing() {
     use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
-    app.plan.visible = true;
     app.status = crate::widgets::state::Status::Executing {
         current_step: 0,
         total: 1,

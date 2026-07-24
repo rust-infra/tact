@@ -221,10 +221,11 @@ Discovered skills appear in the Insert-mode `/` popup and Normal-mode command pa
 
 | Step | Behavior |
 |------|----------|
-| Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) |
-| Second Enter (with optional args) | **Invoke** via `handlers/skills.rs` |
+| Slash popup Enter on a **skill** | **Invoke** immediately |
+| Slash popup **Tab** on a skill | Autocomplete to `/name ` only |
+| Second Enter after Tab (with optional args) | **Invoke** via `handlers/skills.rs` |
 | Palette Enter on a skill | Switch to Insert with `/name ` prefilled (+ undo checkpoint) |
-| Built-in Enter | Execute immediately (`/quit`, `/cancel`, …) |
+| Built-in Enter | Execute immediately (`/quit`, `/cancel`, …); `/plugin` still autocompletes |
 
 **Invoke payload for the agent**
 

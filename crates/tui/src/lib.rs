@@ -230,11 +230,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     app.log_scroll.state =
                         ScrollbarState::new(app.messages.len().saturating_sub(1));
                 }
-                let main_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(log_area);
-                app.log_scroll.height = main_chunks[1].height.saturating_sub(2);
+                app.log_scroll.height = log_area.height.saturating_sub(2);
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -316,11 +312,6 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                             }
                         } else if handle_overlay_key(&mut app, key) {
                             // Overlay popup consumed the key.
-                        } else if key.code == KeyCode::Tab {
-                            app.focused_panel = match app.focused_panel {
-                                crate::widgets::state::FocusedPanel::Log => crate::widgets::state::FocusedPanel::Plan,
-                                crate::widgets::state::FocusedPanel::Plan => crate::widgets::state::FocusedPanel::Log,
-                            };
                         } else if (app.show_help || app.show_history) && key.code == KeyCode::Esc {
                             app.show_help = false;
                             app.show_history = false;

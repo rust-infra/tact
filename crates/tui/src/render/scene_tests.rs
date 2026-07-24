@@ -378,9 +378,7 @@ fn full_frame_skills_command_renders_list_with_separator() {
         "expected blank separator between skills blocks, messages: {between:?}"
     );
     assert!(
-        app.raw_messages
-            .iter()
-            .any(|m| m.contains("code-reviewer")),
+        app.raw_messages.iter().any(|m| m.contains("code-reviewer")),
         "skills content missing code-reviewer: {:?}",
         app.raw_messages
     );

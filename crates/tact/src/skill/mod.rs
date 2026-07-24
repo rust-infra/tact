@@ -466,7 +466,12 @@ mod tests {
     #[test]
     fn bare_workdir_skills_dir_is_not_scanned() {
         let dir = tempdir().unwrap();
-        write_skill(&dir.path().join("skills"), "old", "Legacy skill", "legacy body");
+        write_skill(
+            &dir.path().join("skills"),
+            "old",
+            "Legacy skill",
+            "legacy body",
+        );
 
         let registry = get_skill_registry(dir.path()).unwrap();
         assert!(!registry.skills().contains_key("old"));

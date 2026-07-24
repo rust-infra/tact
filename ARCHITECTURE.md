@@ -210,7 +210,7 @@ Key `AgentUpdate` variants used today:
 |---|---|
 | `PlanGenerated(Vec<PlanStep>)` | **Deprecated (0.19.0).** TUI handler retained; agent emits `StepAdded` / `StepStarted` instead. |
 | `NeedApproval(...)` | **Deprecated (0.19.0).** TUI handler retained; agent uses `RequestSelect` instead. |
-| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
+| `StepAdded(PlanStep)` | A new tool-use step is appended to the internal `app.plan.steps` store (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). There is no dedicated plan panel; does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `ToolProgress { tool_id, chunks }` | Informational ordered stdout/stderr progress for an active tool. It does not close thinking/loading gates or finalize the step; unknown or late IDs are ignored. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
@@ -497,9 +497,7 @@ flowchart TD
 
 | Key | Action |
 |---|---|
-| `Tab` | Switch focus between Plan and Log panels. |
-| `e` | Toggle plan panel visibility. |
-| `j` / `k` | Scroll log or move plan selection. |
+| `j` / `k` | Scroll log. |
 | `g` / `G` | Jump to top / bottom of log. |
 | `i` / `Enter` | Enter insert mode. |
 | `/` | Open command palette. |
@@ -602,7 +600,7 @@ flowchart TD
 `tact::config::init()` merges configuration from (highest priority first):
 
 1. CLI arguments (`--model`, `--permission-mode`, positional prompt, etc.).
-2. TOML config files: `<project>/.tact/config.toml`, `<project>/tact.toml`, `~/.tact/config.toml`, or `--config`.
+2. TOML config files: `<project>/.tact/config.toml`, `<project>/config.toml`, `~/.tact/config.toml`, or `--config`.
 
 Resolved settings are stored in a process-global `ResolvedConfig` (via `config::install()`) and accessed at runtime through `config::settings()`. LLM provider credentials are passed to `tact_llm::init_provider()` at startup.
 
