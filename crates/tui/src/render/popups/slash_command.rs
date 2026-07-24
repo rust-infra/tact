@@ -32,8 +32,14 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
     let n = filtered.len();
     if n == 0 {
-        let hint_area = super::centered_list_popup_area(area, 30, 5);
+        let hint_area = super::centered_list_popup_area(area, 40, 5);
         let hint_block = Block::default()
+            .title(Span::styled(
+                format!("{}{}", msgs.slash_title_mixed, msgs.popup_close_hint),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::DarkGray));
@@ -154,7 +160,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
 
     let block = Block::default()
         .title(Span::styled(
-            title,
+            format!("{title}{}", msgs.popup_close_hint),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)

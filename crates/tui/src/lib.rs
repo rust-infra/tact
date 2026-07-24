@@ -334,6 +334,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 }
                                 _ => {}
                             }
+                        } else if app.slash_command.active
+                            && matches!(app.input_mode, InputMode::Insert)
+                        {
+                            // Slash popup must stay dismissible (Esc) even if a
+                            // thinking/diff/code overlay is also open.
+                            handle_insert_mode(&mut app, key, &user_cmd_tx);
                         } else if handle_overlay_key(&mut app, key) {
                             // Overlay popup consumed the key.
                         } else if (app.show_help || app.show_history) && key.code == KeyCode::Esc {

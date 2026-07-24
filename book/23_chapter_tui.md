@@ -302,7 +302,7 @@ pub(crate) trait Renderable {
 | Popup | Trigger | File |
 |-------|---------|------|
 | Command palette | `/` in Normal mode / `InputMode::Palette` | `popups/command_palette.rs` |
-| Slash commands | `/` while typing in Insert | `popups/slash_command.rs` |
+| Slash commands | `/` while typing in Insert; title shows `[Esc] Close`; Esc closes slash even if a thinking/diff overlay is open | `popups/slash_command.rs` |
 | File picker | `@` attachment flow | `popups/file_picker.rs` |
 | Select | `RequestSelect` permission / agent choice | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |

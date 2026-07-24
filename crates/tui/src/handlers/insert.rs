@@ -1054,4 +1054,26 @@ mod tests {
             "user bubble should show slash + args"
         );
     }
+
+    #[test]
+    fn slash_popup_esc_closes_without_clearing_input() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/he".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            !app.slash_command.active,
+            "Esc should dismiss slash popup"
+        );
+        assert_eq!(app.input, "/he", "Esc should keep typed input");
+    }
 }

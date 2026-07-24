@@ -114,6 +114,10 @@ fn full_frame_slash_command_popup_lists_help() {
         text.contains("help"),
         "slash popup should list help command, got:\n{text}"
     );
+    assert!(
+        text.contains("[Esc]") || text.contains("Close") || text.contains("关闭"),
+        "slash popup title should hint Esc closes, got:\n{text}"
+    );
 }
 
 #[test]

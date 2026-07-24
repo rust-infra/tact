@@ -303,7 +303,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Popup | 触发 | 文件 |
 |-------|------|------|
 | Command palette | Normal 模式 `/` / `InputMode::Palette` | `popups/command_palette.rs` |
-| Slash commands | Insert 模式输入 `/` | `popups/slash_command.rs` |
+| Slash commands | Insert 模式输入 `/`；标题含 `[Esc] 关闭`；即使 thinking/diff overlay 打开，Esc 也先关 slash | `popups/slash_command.rs` |
 | File picker | `@` 附件流程 | `popups/file_picker.rs` |
 | Select | `RequestSelect` 权限 / agent 选择 | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
