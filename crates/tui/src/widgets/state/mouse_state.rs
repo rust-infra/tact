@@ -117,6 +117,8 @@ impl LogSelection {
 #[derive(Default)]
 pub(crate) struct MouseState {
     pub(crate) log_area: Rect,
+    /// Sticky task progress strip under the Log (empty when hidden).
+    pub(crate) task_panel_area: Rect,
     pub(crate) log_selection: Option<LogSelection>,
     pub(crate) dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).

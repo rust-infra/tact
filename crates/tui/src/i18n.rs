@@ -224,6 +224,11 @@ pub struct Messages {
     pub input_busy_msg: &'static str,
     pub cancel_noop_msg: &'static str,
 
+    // ---- 持久任务进度 ----
+    pub tasks_sticky_title: &'static str,
+    pub tasks_log_created_tmpl: &'static str, // "Tasks · {}/{} created"
+    pub tasks_log_updated_tmpl: &'static str, // "Tasks · {}/{} updated"
+
     // ---- 启动/退出 ----
     pub startup_welcome: &'static str,
     pub startup_mode_hint: &'static str,
@@ -423,6 +428,10 @@ impl Messages {
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
             cancel_noop_msg: "Nothing to cancel",
 
+            tasks_sticky_title: "Tasks",
+            tasks_log_created_tmpl: "Tasks · {}/{} created",
+            tasks_log_updated_tmpl: "Tasks · {}/{} updated",
+
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
             startup_quotes: &[
@@ -619,6 +628,10 @@ impl Messages {
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
             cancel_noop_msg: "当前没有可取消的任务",
+
+            tasks_sticky_title: "任务",
+            tasks_log_created_tmpl: "任务 · {}/{} 已创建",
+            tasks_log_updated_tmpl: "任务 · {}/{} 已更新",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

@@ -23,6 +23,7 @@ mod select_popup;
 mod slash_command;
 mod status_bar_state;
 mod stream_state;
+mod task_panel;
 mod thinking_state;
 mod tool_state;
 
@@ -36,6 +37,7 @@ pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
+pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
 pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
 
@@ -214,6 +216,8 @@ pub struct App {
     /// Frozen elapsed seconds from the most recent submitted prompt.
     /// Kept until a new prompt is submitted.
     pub(crate) last_prompt_elapsed_secs: Option<i64>,
+    /// Persistent task progress sticky (under Log).
+    pub(crate) task_panel: TaskPanelState,
     /// Task completion time (for top status bar Done highlight timer;
     /// auto-reverts to Idle display after 2s).
     pub(crate) task_done_time: Option<chrono::DateTime<chrono::Local>>,

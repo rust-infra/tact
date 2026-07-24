@@ -13,7 +13,7 @@ use crate::{
     widgets::state::{
         AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
         MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
-        StatusBarState, StreamState, ThinkingState, ToolState,
+        StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState,
     },
 };
 
@@ -93,6 +93,7 @@ impl App {
             status_bar: StatusBarState::new(git_branch),
             task_start_time: None,
             last_prompt_elapsed_secs: None,
+            task_panel: TaskPanelState::default(),
             task_done_time: None,
             process_start_time: chrono::Local::now(),
             last_uptime_tick_secs: None,

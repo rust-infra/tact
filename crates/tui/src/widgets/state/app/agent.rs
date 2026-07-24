@@ -7,8 +7,8 @@ use ratatui::{
 };
 use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
-    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
-    ToolOutputBuffer, ToolOutputChunk,
+    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot,
+    TasksChangeReason, ThinkingChunk, ToolOutputBuffer, ToolOutputChunk,
 };
 
 use crate::{
@@ -268,8 +268,9 @@ impl App {
                 self.on_tool_progress(&tool_id, &chunks)
             }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
-            // Filled in by task-progress panel work (Task 3).
-            AgentUpdate::TasksChanged { .. } => {}
+            AgentUpdate::TasksChanged { tasks, reason } => {
+                self.on_tasks_changed(tasks, reason);
+            }
         }
         // Unified tail scroll state refresh, covering cases where helpers like
         // flush_and_close_thinking / flush_stream_pending inserted messages without
@@ -277,6 +278,17 @@ impl App {
         // StreamChunk / ThinkingChunk also update separately; this redundant call is
         // cheap and harmless).
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+    }
+
+    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, reason: TasksChangeReason) {
+        self.task_panel.apply_snapshot(tasks);
+        let msgs = self.msgs();
+        let card = crate::widgets::state::task_panel::format_tasks_log_card(
+            &msgs,
+            reason,
+            &self.task_panel.snapshot,
+        );
+        self.add_system_message(card);
     }
 
     fn on_step_added(&mut self, step: PlanStep) {
@@ -790,7 +802,7 @@ mod lifecycle_tests {
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
-        ThinkingChunk, ToolOutputChunk,
+        TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -820,6 +832,45 @@ mod lifecycle_tests {
             String::new(),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn tasks_changed_shows_panel_and_appends_log() {
+        let mut app = make_app();
+        assert!(!app.task_panel.visible);
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "Fix auth".into(),
+                status: TaskStatusSnapshot::InProgress,
+                owner: String::new(),
+            }],
+            reason: TasksChangeReason::Created,
+        });
+        assert!(app.task_panel.session_seen);
+        assert!(app.task_panel.visible);
+        assert!(!app.task_panel.expanded);
+        assert!(
+            app.raw_messages.iter().any(|m| m.contains("Fix auth")),
+            "Log detail should mention subject"
+        );
+    }
+
+    #[test]
+    fn tasks_changed_hides_when_no_open_items() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "done".into(),
+                status: TaskStatusSnapshot::Completed,
+                owner: String::new(),
+            }],
+            reason: TasksChangeReason::Updated,
+        });
+        assert!(app.task_panel.session_seen);
+        assert!(!app.task_panel.visible);
+        assert!(!app.task_panel.expanded);
     }
 
     fn write_skill(work_dir: &std::path::Path, name: &str) {
