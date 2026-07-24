@@ -175,29 +175,47 @@ Cached data is evicted after hours to days of inactivity.
 
 ## Session Stats Display
 
-At the end of every session (both CLI and TUI), a summary is printed to stderr:
+At the end of every session (both CLI and TUI), a summary is printed to stderr
+as UTF8 box tables (via `comfy-table`):
 
 ```
 ── Session Stats ─────────────────────────────
-  Elapsed:                  XX.Xs
-  LLM API calls:            XX
-  Total LLM time:           XX.Xs
-  Prompt chars sent:        XX
-  Response chars rcvd:      XX
-  Thinking blocks:          XX
-  Thinking chars:           XX
-  Compactions:              XX
-  Tool calls:               XX
-    tool_name               XX
-  Total tool time:          XX.Xs
-  Cache hit tokens:         XX
-  Cache miss tokens:        XX
-  Cache hit rate:           XX.X%
-  Reasoning tokens:         XX
++---------------------+---------+
+| Metric              | Value   |
++=====================+=========+
+| Elapsed             | XX.Xs   |
+| LLM API calls       | XX      |
+| Total LLM time      | XX.Xs   |
+| Prompt chars sent   | XX      |
+| Response chars rcvd | XX      |
+| Thinking blocks     | XX      |
+| Thinking chars      | XX      |
+| Compactions         | XX      |
++---------------------+---------+
+
+Tool calls
++-----------+------------+-------+--------+
+| Tool      | Count(s/f) | Total | Avg    |
++===========+============+=======+========+
+| Total     | XX (s/f)   |       |        |
+| tool_name | XX (s/f)   | XX    | XXms   |
++-----------+------------+-------+--------+
++------------------+---------+
+| Metric           | Value   |
++==================+=========+
+| Total tool time  | XX.Xs   |
+| Avg tool time    | XX.Xms  |
+| Cache hit tokens | XX      |
+| Cache miss tokens| XX      |
+| Cache hit rate   | XX.X%   |
+| Reasoning tokens | XX      |
++------------------+---------+
 ─────────────────────────────────────────────
 ```
 
-The cache and reasoning lines are only shown when non-zero.
+The tools table is omitted when there were no tool calls. Cache and reasoning
+rows (and the trailing metrics table that holds them / tool timing aggregates)
+are only shown when those counters are non-zero / present.
 
 ## Code Locations
 

@@ -29,7 +29,32 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 1. 2026-07-24 — Session Stats rendered with comfy-table
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
+
+**Symptom / motivation:** End-of-session Tool calls rows used ad-hoc space
+padding, so columns drifted as names and timings grew.
+
+**Decision:** Keep `SessionStats::summary() -> String`. Render a head
+Metric/Value table, an optional Tool calls table
+(`Tool | Count(s/f) | Total | Avg`), then a trailing Metric/Value table for
+tool aggregates / cache / reasoning. Use `comfy-table` with UTF8 boxes, no
+ANSI colors, `force_no_tty()`.
+
+**Behavior after:** Same counters and visibility rules; layout is aligned
+tables instead of free-form lines.
+
+**Pointers:** `crates/tact/src/stats.rs`, `docs/token_usage_schema.md`
+(Session Stats Display).
+
+---
+
+## 2. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -51,7 +76,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 2. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 3. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -60,13 +85,13 @@ Ch 21, Ch 22 (account-style queries).
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 2.1 Symptom
+### 3.1 Symptom
 
 `read_file` loaded the whole file with `read_to_string`, then silently discarded the tail with `chars().take(50000)`. That conflicted with line-based `offset` / `limit`, gave the model no recovery signal (hallucination risk — see [Ch 20](./20_chapter_hallucination.md)), and competed with dispatch-level `persist_large_output` (30k characters → `<persisted-output>`).
 
 `batch_read` was a second multi-file API with its own 200k-character hard cap, duplicating schedule / recent-file special cases.
 
-### 2.2 Decision
+### 3.2 Decision
 
 1. Delete `batch_read`. Parallel multi-file reads use concurrent `read_file` waves.  
 2. Stream lines with Tokio `BufReader` (no whole-file buffer for the page).  
@@ -91,7 +116,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 7. `run_native_tool` **skips** `persist_large_output` when `name == "read_file"`.  
 8. Tool `description` stays short — limits are enforced at runtime, not duplicated in the schema blurb.
 
-### 2.3 Behavior after
+### 3.3 Behavior after
 
 | Case | Result |
 |------|--------|
@@ -103,7 +128,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 | Offset past EOF | Empty string |
 | Large `read_file` vs bash / MCP | `read_file` never gets `<persisted-output>`; others still may |
 
-### 2.4 Pointers
+### 3.4 Pointers
 
 | Area | Path |
 |------|------|

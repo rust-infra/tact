@@ -29,7 +29,25 @@
 
 ---
 
-## 1. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 1. 2026-07-24 — Session Stats 用 comfy-table 排版
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **Spec** | `docs/superpowers/specs/2026-07-24-session-stats-table-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-24-session-stats-table.md` |
+
+**现象 / 动机：** 会话结束时的 Tool calls 行靠空格对齐，工具名与耗时变长后列错位。
+
+**决策：** 保持 `SessionStats::summary() -> String`。先输出 Metric/Value 表，再按需输出 Tool calls 表（`Tool | Count(s/f) | Total | Avg`），最后用尾部 Metric/Value 表放工具汇总 / cache / reasoning。使用 `comfy-table` UTF8 框线、无 ANSI 色、`force_no_tty()`。
+
+**改后行为：** 计数与显隐规则不变；排版改为对齐表格。
+
+**指针：** `crates/tact/src/stats.rs`、`docs/token_usage_schema.md`（Session Stats Display）。
+
+---
+
+## 2. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -47,7 +65,7 @@
 
 ---
 
-## 2. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 3. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -56,13 +74,13 @@
 | **Spec** | `docs/superpowers/specs/2026-07-24-read-file-pagination-design.md` |
 | **Plan** | `docs/superpowers/plans/2026-07-24-read-file-pagination.md` |
 
-### 2.1 现象
+### 3.1 现象
 
 `read_file` 用 `read_to_string` 整文件读入，再以 `chars().take(50000)` **静默**丢掉尾部。这与按行的 `offset` / `limit` 语义冲突，模型没有续读信号（幻觉风险见 [第 20 章](./20_chapter_hallucination_zh.md)），并与 dispatch 层的 `persist_large_output`（30k 字符 → `<persisted-output>`）形成双重、不一致的大小策略。
 
 `batch_read` 是第二套多文件 API，另有 200k 字符硬顶，并在调度 / recent-file 上重复特例。
 
-### 2.2 决策
+### 3.2 决策
 
 1. 删除 `batch_read`。多文件并行读取改为同一 wave 内多个 `read_file`。  
 2. 用 Tokio `BufReader` 按行流式读取（不为整页缓冲整文件）。  
@@ -87,7 +105,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 7. `run_native_tool` 在 `name == "read_file"` 时 **跳过** `persist_large_output`。  
 8. 工具 `description` 保持简短——限制在运行时强制，不在 schema 文案里重复。
 
-### 2.3 改后行为
+### 3.3 改后行为
 
 | 场景 | 结果 |
 |------|------|
@@ -99,7 +117,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 | offset 越过 EOF | 空字符串 |
 | 大 `read_file` vs bash / MCP | `read_file` 不会包 `<persisted-output>`；其它工具仍可能 |
 
-### 2.4 指针
+### 3.4 指针
 
 | 区域 | 路径 |
 |------|------|
