@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn summary_uses_metric_and_tool_tables() {
-        let mut s = SessionStats::default();
-        s.prompt_count = 1;
+        let mut s = SessionStats {
+            prompt_count: 1,
+            ..Default::default()
+        };
         s.tool_counts.insert("bash".into(), 2);
         s.tool_success_counts.insert("bash".into(), 2);
         s.tool_failure_counts.insert("bash".into(), 0);
