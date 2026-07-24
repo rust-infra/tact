@@ -111,9 +111,12 @@ pub(crate) fn format_tasks_log_card(
             format_two_placeholders(msgs.tasks_log_updated_tmpl, done, total)
         }
     };
-    let mut out = header;
+    // Leading 📋 keeps `add_system_message` on the plain-line path (not Markdown),
+    // so newlines stay as separate Log rows instead of collapsing to spaces.
+    let mut out = format!("📋 {header}");
     for line in format_checklist_lines(tasks, STICKY_BODY_CAP) {
         out.push('\n');
+        out.push_str("  ");
         out.push_str(&line);
     }
     out
@@ -174,7 +177,15 @@ mod tests {
             snap(2, TaskStatusSnapshot::InProgress),
         ];
         let text = format_tasks_log_card(&msgs, TasksChangeReason::Updated, &tasks);
+        assert!(text.starts_with("📋 "), "got:\n{text}");
         assert!(text.contains("1/2"), "got:\n{text}");
-        assert!(text.contains("task-2"), "got:\n{text}");
+        assert!(
+            text.contains("\n  [>] task-2"),
+            "checklist must be on its own indented line, got:\n{text}"
+        );
+        assert!(
+            !text.contains("updated [>]"),
+            "header and checklist must not collapse onto one line, got:\n{text}"
+        );
     }
 }

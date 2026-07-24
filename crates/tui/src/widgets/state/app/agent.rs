@@ -288,6 +288,8 @@ impl App {
             reason,
             &self.task_panel.snapshot,
         );
+        // Blank row so the checklist does not sit flush against the tool card.
+        self.add_new_line();
         self.add_system_message(card);
     }
 
@@ -853,6 +855,27 @@ mod lifecycle_tests {
         assert!(
             app.raw_messages.iter().any(|m| m.contains("Fix auth")),
             "Log detail should mention subject"
+        );
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.starts_with("📋 ") && m.contains("created")),
+            "header row should be a plain system line, got:\n{:?}",
+            app.raw_messages
+        );
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.trim_start().starts_with("[>] Fix auth")),
+            "checklist should be its own Log row, got:\n{:?}",
+            app.raw_messages
+        );
+        assert!(
+            !app.raw_messages
+                .iter()
+                .any(|m| m.contains("created [>]") || m.contains("updated [>]")),
+            "header and checklist must not share one row, got:\n{:?}",
+            app.raw_messages
         );
     }
 
