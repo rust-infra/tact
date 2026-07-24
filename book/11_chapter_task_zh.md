@@ -91,6 +91,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 |------|----------|------|
 | `read_file` | `input.path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
+| `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write（彼此串行） |
 | `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 

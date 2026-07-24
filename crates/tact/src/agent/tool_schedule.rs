@@ -84,6 +84,13 @@ pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> Tool
             writes: single("path"),
             ..Default::default()
         },
+        // Persistent TaskManager mutates shared `.tact/tasks/` state. All four
+        // tools serialize with each other via a synthetic write scope, but do
+        // not barrier the whole turn (e.g. may still overlap `read_file`).
+        "task_create" | "task_update" | "task_get" | "task_list" => ToolResources {
+            writes: vec![PathBuf::from("__tact_tasks__")],
+            ..Default::default()
+        },
         // Side-effect-free tools that touch no workspace file: safe to run
         // concurrently with anything.
         "sleep" => ToolResources::independent(),
@@ -349,6 +356,32 @@ mod tests {
             Path::new("/work"),
         );
         assert!(r.barrier);
+    }
+
+    #[test]
+    fn task_tools_serialize_with_each_other() {
+        let work = Path::new("/work");
+        let create = tool_resources("task_create", &serde_json::json!({"subject": "a"}), work);
+        let update = tool_resources(
+            "task_update",
+            &serde_json::json!({"task_id": 1, "status": "completed"}),
+            work,
+        );
+        let list = tool_resources("task_list", &serde_json::json!({}), work);
+        let get = tool_resources("task_get", &serde_json::json!({"task_id": 1}), work);
+        assert!(!create.barrier && !update.barrier);
+        assert_eq!(
+            schedule_waves(&[create.clone(), update.clone(), list.clone(), get]),
+            vec![0, 1, 2, 3],
+            "all task_* tools must run in separate waves"
+        );
+        // Still allowed to overlap a disjoint file read.
+        let read = tool_resources(
+            "read_file",
+            &serde_json::json!({"path": "src/a.rs"}),
+            work,
+        );
+        assert_eq!(schedule_waves(&[create, read, update]), vec![0, 0, 1]);
     }
 
     #[test]

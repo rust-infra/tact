@@ -126,7 +126,7 @@ pub task_manager: SharedTaskManager,
 
 只在主 `toolset()` 注册——**不在** `subagent_toolset()` 中。
 
-调度：在 `crates/tact/src/agent/tool_schedule.rs` 中视为 **独立**（可与其他无冲突读/写并行）。
+调度：四个工具在 `crates/tact/src/agent/tool_schedule.rs` 中共享合成写作用域（`__tact_tasks__`），因此在同一 LLM turn 内**彼此串行**（避免并行 `task_update` 竞态），但仍可与无关的文件读并行。
 
 ---
 

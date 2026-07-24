@@ -29,6 +29,40 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-25 — Task checklist renders fully (no `… +N`)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 19, Ch 23 |
+
+**Symptom / motivation:** Log detail cards and sticky expand capped the checklist at 6 rows (`… +N`), so an 8-task board looked incomplete even when all items were updated.
+
+**Decision:** Drop `STICKY_BODY_CAP`; sticky height and Log cards list every task.
+
+**Behavior after:** Full checklist in both sticky expand and each `TasksChanged` Log card.
+
+**Pointers:** `crates/tui/src/widgets/state/task_panel.rs`
+
+---
+
+## 1. 2026-07-25 — Serialize persistent `task_*` tools in one turn
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 11, Ch 19 |
+
+**Symptom / motivation:** Models often emit many `task_update` / `task_create` calls in one turn. When those ran in the same wave, TaskManager updates and `TasksChanged` UI events interleaved, producing a jammed Log and a single incomplete progress card.
+
+**Decision:** Classify `task_create` / `task_update` / `task_get` / `task_list` as writers of a synthetic `__tact_tasks__` resource so they always land in separate waves (order preserved) while still overlapping unrelated `read_file` calls.
+
+**Behavior after:** Within one assistant tool batch, task tools run one-at-a-time; each mutating call can emit its own `TasksChanged` in order.
+
+**Pointers:** `crates/tact/src/agent/tool_schedule.rs`
+
+---
+
 ## 1. 2026-07-24 — Persistent task progress sticky + Log card
 
 | Field | Value |
@@ -42,7 +76,7 @@ Newest entries first. Each entry should include:
 
 **Behavior after:**
 
-- Sticky one-liner: `▸ Tasks done/total · focus` (click expands up to 6 rows)
+- Sticky one-liner: `▸ Tasks done/total · focus` (click expands full checklist)
 - Each `TasksChanged` adds a system Log checklist card
 - `task_get` / `task_list` do not emit
 

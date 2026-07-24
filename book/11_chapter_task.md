@@ -90,6 +90,7 @@ After all waves finish:
 |------|----------|------|
 | `read_file` | `input.path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
+| `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write (serialize with each other) |
 | `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 

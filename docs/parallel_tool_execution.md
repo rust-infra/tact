@@ -64,6 +64,7 @@ Each cleared tool is mapped to the workspace files it touches:
 | `read_file` | `input.path` | read |
 | `search_code` | `input.path` or workspace root | read (directory scope) |
 | `write_file`, `edit_file` | `input.path` | write |
+| `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write (serialize with each other) |
 | `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent (never conflicts) |
 | **everything else** (`bash`, `apply_patch`, `task`/subagent, MCP, state mutations, unknown) | — | **barrier** (conflicts with all) |
 

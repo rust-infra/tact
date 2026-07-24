@@ -29,6 +29,40 @@
 
 ---
 
+## 1. 2026-07-25 — 任务清单完整渲染（去掉 `… +N`）
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 19 / 23 章 |
+
+**现象 / 动机：** Log 详情卡与 sticky 展开最多只显示 6 行（`… +N`），8 条任务时即使已全部更新也像未完成。
+
+**决策：** 去掉 `STICKY_BODY_CAP`；sticky 高度与 Log 卡列出全部任务。
+
+**改后行为：** sticky 展开与每次 `TasksChanged` Log 卡均显示完整清单。
+
+**指针：** `crates/tui/src/widgets/state/task_panel.rs`
+
+---
+
+## 1. 2026-07-25 — 同一 turn 内串行持久化 `task_*` 工具
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 11 / 19 章 |
+
+**现象 / 动机：** 模型常在一轮里发出大量 `task_update` / `task_create`。若落在同一 wave 并行执行，TaskManager 更新与 `TasksChanged` UI 事件会交错，Log 挤成一团，进度卡也不完整。
+
+**决策：** 将 `task_create` / `task_update` / `task_get` / `task_list` 标为合成资源 `__tact_tasks__` 的写者，保证分属不同 wave（保序），但仍可与无关的 `read_file` 重叠。
+
+**改后行为：** 同一 assistant 工具批次内，task 工具逐个执行；每次 mutating 调用可按序各自发出 `TasksChanged`。
+
+**指针：** `crates/tact/src/agent/tool_schedule.rs`
+
+---
+
 ## 1. 2026-07-24 — 持久任务 sticky 进度 + Log 详情卡
 
 | 字段 | 值 |
@@ -42,7 +76,7 @@
 
 **改后行为：**
 
-- sticky 一行：`▸ 任务 done/total · 当前项`（点击最多展开 6 行）
+- sticky 一行：`▸ 任务 done/total · 当前项`（点击展开完整清单）
 - 每次 `TasksChanged` 追加 system Log checklist
 - `task_get` / `task_list` 不发射
 

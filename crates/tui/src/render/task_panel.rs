@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::widgets::state::{
     App,
-    task_panel::{STICKY_BODY_CAP, format_checklist_lines, format_sticky_title_line},
+    task_panel::{format_checklist_lines, format_sticky_title_line},
 };
 
 /// Extra rows for sticky chrome: bottom border joins the Log box (sides continue).
@@ -59,7 +59,7 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         title.replace('▼', "▲").replace('▸', "▾"),
         title_style,
     ))];
-    for row in format_checklist_lines(&app.task_panel.snapshot, STICKY_BODY_CAP) {
+    for row in format_checklist_lines(&app.task_panel.snapshot) {
         lines.push(Line::from(Span::styled(row, row_style)));
     }
     frame.render_widget(Paragraph::new(lines), inner);

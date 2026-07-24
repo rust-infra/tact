@@ -4,9 +4,6 @@ use tact_protocol::{TaskSnapshot, TaskStatusSnapshot, TasksChangeReason};
 
 use crate::i18n::Messages;
 
-/// Max checklist body rows in sticky expand / Log card.
-pub(crate) const STICKY_BODY_CAP: usize = 6;
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TaskPanelState {
     pub(crate) snapshot: Vec<TaskSnapshot>,
@@ -44,7 +41,7 @@ pub(crate) fn sticky_height(expanded: bool, snapshot: &[TaskSnapshot]) -> usize 
     if !expanded {
         return 1;
     }
-    1 + snapshot.len().min(STICKY_BODY_CAP)
+    1 + snapshot.len()
 }
 
 pub(crate) fn completed_count(tasks: &[TaskSnapshot]) -> usize {
@@ -66,11 +63,10 @@ pub(crate) fn focus_subject(tasks: &[TaskSnapshot]) -> Option<&str> {
         .map(|t| t.subject.as_str())
 }
 
-/// Checklist lines capped at `cap`, with `… +K` when truncated.
-pub(crate) fn format_checklist_lines(tasks: &[TaskSnapshot], cap: usize) -> Vec<String> {
-    let mut lines: Vec<String> = tasks
+/// Full checklist lines (no truncation).
+pub(crate) fn format_checklist_lines(tasks: &[TaskSnapshot]) -> Vec<String> {
+    tasks
         .iter()
-        .take(cap)
         .map(|t| {
             let owner = if t.owner.is_empty() {
                 String::new()
@@ -79,11 +75,7 @@ pub(crate) fn format_checklist_lines(tasks: &[TaskSnapshot], cap: usize) -> Vec<
             };
             format!("{} {}{}", t.status.marker(), t.subject, owner)
         })
-        .collect();
-    if tasks.len() > cap {
-        lines.push(format!("… +{}", tasks.len() - cap));
-    }
-    lines
+        .collect()
 }
 
 pub(crate) fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) -> String {
@@ -114,7 +106,7 @@ pub(crate) fn format_tasks_log_card(
     // Leading 📋 keeps `add_system_message` on the plain-line path (not Markdown),
     // so newlines stay as separate Log rows instead of collapsing to spaces.
     let mut out = format!("📋 {header}");
-    for line in format_checklist_lines(tasks, STICKY_BODY_CAP) {
+    for line in format_checklist_lines(tasks) {
         out.push('\n');
         out.push_str("  ");
         out.push_str(&line);
@@ -154,19 +146,21 @@ mod tests {
     }
 
     #[test]
-    fn sticky_height_collapsed_and_expanded_cap() {
+    fn sticky_height_collapsed_and_expanded_full() {
         let many: Vec<_> = (0..10).map(|i| snap(i, TaskStatusSnapshot::Pending)).collect();
         assert_eq!(sticky_height(false, &many), 1);
-        assert_eq!(sticky_height(true, &many), 1 + STICKY_BODY_CAP);
+        assert_eq!(sticky_height(true, &many), 1 + many.len());
     }
 
     #[test]
-    fn format_checklist_caps_with_ellipsis() {
+    fn format_checklist_lists_all_tasks() {
         let many: Vec<_> = (0..8)
             .map(|i| snap(i, TaskStatusSnapshot::Pending))
             .collect();
-        let text = format_checklist_lines(&many, 6).join("\n");
-        assert!(text.contains("… +2"), "got:\n{text}");
+        let lines = format_checklist_lines(&many);
+        assert_eq!(lines.len(), 8);
+        assert!(!lines.iter().any(|l| l.contains('…')), "got:\n{}", lines.join("\n"));
+        assert!(lines.last().unwrap().contains("task-7"));
     }
 
     #[test]

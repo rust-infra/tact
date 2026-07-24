@@ -125,7 +125,7 @@ pub task_manager: SharedTaskManager,
 
 Registered in main `toolset()` only — **not** in `subagent_toolset()`.
 
-Scheduling: treated as **independent** in `crates/tact/src/agent/tool_schedule.rs` (safe to parallelize with other non-conflicting reads/writes).
+Scheduling: all four tools share a synthetic write scope (`__tact_tasks__`) in `crates/tact/src/agent/tool_schedule.rs`, so they **serialize with each other** in one LLM turn (no parallel `task_update` races) while still allowing overlap with unrelated file reads.
 
 ---
 

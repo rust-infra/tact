@@ -128,7 +128,7 @@ Implementation touchpoints:
 Sticky height:
 
 - Collapsed: **1** row (title summary)
-- Expanded: **1 + min(snapshot.len(), CAP)** with `CAP = 6` (snapshot is already non-deleted; includes completed items for context); overflow shown as `… +K`
+- Expanded: **1 + snapshot.len()** (snapshot is already non-deleted; includes completed items for context; no body-row cap / no `… +K`)
 
 ---
 
@@ -149,7 +149,6 @@ Expanded: title row + lines using existing markers:
 [x] …
 [>] …
 [ ] …
-… +K
 ```
 
 v1: rows are display-only (no per-row click actions).
@@ -161,7 +160,7 @@ v1: rows are display-only (no per-row click actions).
 On each `TasksChanged`, append a dedicated Log entry (system/card style — follow nearest existing pattern for non-tool structured rows):
 
 - Title like `Tasks · {completed}/{total_non_deleted} updated` (adjust for `Created` vs `Updated` if i18n needs distinct strings)
-- Body: compact checklist, same markers, same cap / `… +K`
+- Body: full checklist, same markers (no row cap)
 - Prefer highlighting the in-progress / just-changed subject when cheap; full diff UI is out of scope
 - Does **not** replace or suppress the normal `task_*` tool cell
 
