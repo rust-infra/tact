@@ -91,6 +91,12 @@ pub struct Messages {
     pub bottom_tips_log: &'static str,
     pub bottom_branch_unknown: &'static str,
     pub bottom_model_unknown: &'static str,
+    pub bottom_elapsed: &'static str,
+    pub bottom_uptime: &'static str,
+    pub bottom_out: &'static str,
+    pub bottom_think: &'static str,
+    pub bottom_ctx: &'static str,
+    pub bottom_cache_pct: &'static str,
 
     // ---- 弹窗通用 ----
     pub popup_copy_hint: &'static str,
@@ -292,6 +298,12 @@ impl Messages {
             bottom_tips_log: "[j/k scroll] [g/G top/bottom] [y copy] [Y copy code]",
             bottom_branch_unknown: "unknown",
             bottom_model_unknown: "-",
+            bottom_elapsed: "Elapsed",
+            bottom_uptime: "Up",
+            bottom_out: "out",
+            bottom_think: "think",
+            bottom_ctx: "ctx",
+            bottom_cache_pct: "cache%",
 
             popup_copy_hint: " [y] Copy ",
             popup_close_hint: " [Esc] Close ",
@@ -483,6 +495,12 @@ impl Messages {
             bottom_tips_log: "[j/k 滚动] [g/G 顶部/底部] [y 复制] [Y 复制代码]",
             bottom_branch_unknown: "未知",
             bottom_model_unknown: "-",
+            bottom_elapsed: "耗时",
+            bottom_uptime: "运行",
+            bottom_out: "输出",
+            bottom_think: "思考",
+            bottom_ctx: "ctx",
+            bottom_cache_pct: "缓存%",
 
             popup_copy_hint: " [y] 复制 ",
             popup_close_hint: " [Esc] 关闭 ",

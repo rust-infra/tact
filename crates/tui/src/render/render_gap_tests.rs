@@ -596,8 +596,8 @@ fn usage_quota_update_renders_in_bottom_bar() {
         "usage quota should render label and percentage on bottom bar row 1, got:\n{text}"
     );
     assert!(
-        text.contains('█') || text.contains('░'),
-        "usage quota should render an ASCII progress bar, got:\n{text}"
+        text.contains('¤'),
+        "usage quota should use balance/quota icon, got:\n{text}"
     );
 }
 

@@ -20,8 +20,13 @@ const ICON_ELAPSED: &str = "◷";
 const ICON_UPTIME: &str = "⊙";
 const ICON_BRANCH: &str = "⎇";
 const ICON_BALANCE: &str = "¤";
-const ICON_TOKENS: &str = "∑";
+/// U+2211 + subscript t/o/k (U+209C U+2092 U+2096).
+const ICON_TOKENS: &str = "∑ₜₒₖ";
 const ICON_CACHE: &str = "▣";
+const SEP_ROW1: &str = " │ ";
+const SEP_ROW2: &str = "  ";
+const BAR_FILLED: char = '■'; // U+25A0
+const BAR_EMPTY: char = '·'; // U+00B7
 
 fn format_mm_ss(total_secs: i64) -> String {
     let secs = total_secs.max(0);
@@ -51,9 +56,9 @@ fn render_usage_bar(pct: f64) -> String {
     let mut bar = String::from("[");
     for i in 0..inner_width {
         if i < fill_chars {
-            bar.push('█');
+            bar.push(BAR_FILLED);
         } else {
-            bar.push('░');
+            bar.push(BAR_EMPTY);
         }
     }
     bar.push(']');
@@ -81,21 +86,39 @@ fn format_tokens_compact(n: u64) -> String {
     }
 }
 
-/// Compact model string: `"modelname 8k/32k"` or `"-"`.
-fn format_model_compact(name: &str, max_tokens: u32, thinking_budget: Option<u32>) -> String {
+/// Model name only: `"modelname"` or `"-"`.
+fn format_model_name(name: &str) -> String {
     if name.is_empty() {
-        return "-".to_string();
+        "-".to_string()
+    } else {
+        name.to_string()
     }
-    let mut s = name.to_string();
-    if max_tokens > 0 {
-        s.push(' ');
-        s.push_str(&format_tokens_compact(max_tokens as u64));
-        if let Some(budget) = thinking_budget.filter(|b| *b > 0) {
-            s.push('/');
-            s.push_str(&format_tokens_compact(budget as u64));
-        }
+}
+
+/// Labeled max-output segment: `"out 8K"` / `None` when max is 0.
+fn format_out_tokens(label: &str, max_tokens: u32) -> Option<String> {
+    if max_tokens == 0 {
+        None
+    } else {
+        Some(format!(
+            "{label} {}",
+            format_tokens_compact(max_tokens as u64)
+        ))
     }
-    s
+}
+
+/// Thinking segment: `"think high(32K)"`, `"think 32K"`, or `None`.
+fn format_think_segment(
+    label: &str,
+    effort: Option<&str>,
+    budget: Option<u32>,
+) -> Option<String> {
+    let budget = budget.filter(|b| *b > 0)?;
+    let b = format_tokens_compact(budget as u64);
+    match effort.filter(|e| !e.is_empty()) {
+        Some(level) => Some(format!("{label} {level}({b})")),
+        None => Some(format!("{label} {b}")),
+    }
 }
 
 /// Format one balance entry: `"¤ CNY 9.60"`.
@@ -117,26 +140,31 @@ fn format_quota_window(window: &tact_protocol::UsageQuotaWindow) -> String {
     }
 }
 
-/// Format cache hit percentage: `"▣45%"` or `"▣--"`.
-fn format_cache_pct(hit: u64, miss: u64) -> String {
+/// Format cache hit percentage: `"▣ cache% 45%"` or `"▣ cache% --"`.
+fn format_cache_pct(hit: u64, miss: u64, label: &str) -> String {
     let total = hit + miss;
     if total == 0 {
-        format!("{}--", ICON_CACHE)
+        format!("{ICON_CACHE} {label} --")
     } else {
         let pct = hit.saturating_mul(100).checked_div(total).unwrap_or(0);
-        format!("{}{}%", ICON_CACHE, pct)
+        format!("{ICON_CACHE} {label} {pct}%")
     }
 }
 
-/// Context usage meter with ` · ` separator: `"[████░░░░] 0% · 6.6K/1M"`.
-fn format_context_meter_new(used: u32, window: usize) -> String {
+/// Context usage meter: `"ctx [■■····] 0% 6.6K/1M"`.
+fn format_context_meter(label: &str, used: u32, window: usize) -> String {
     let pct = context_usage_pct(used, window);
     let bar = render_usage_bar(pct as f64);
     format!(
-        "{bar} {pct}% · {}/{}",
+        "{label} {bar} {pct}% {}/{}",
         format_tokens_compact(used as u64),
         format_tokens_compact(window as u64)
     )
+}
+
+/// Last-call total tokens: `"∑ₜₒₖ 6584"`.
+fn format_token_total(total: u32) -> String {
+    format!("{ICON_TOKENS} {total}")
 }
 
 /// Context usage vs model_context_window.
@@ -260,29 +288,40 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             droppable: false,
             spans: vec![
                 Span::styled(focus.to_string(), primary),
-                Span::styled(" · ", dim),
+                Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
-        // Elapsed: ◷ MM:SS
+        // Elapsed: ◷ 耗时/Elapsed MM:SS
         DropGroup {
             droppable: false,
             spans: vec![
                 Span::styled(ICON_ELAPSED.to_string(), dim),
-                Span::styled(format!(" {} · ", elapsed), primary),
+                Span::styled(
+                    format!(" {} {}", msgs.bottom_elapsed, elapsed),
+                    primary,
+                ),
+                Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
         // Path (droppable)
         DropGroup {
             droppable: true,
-            spans: vec![Span::styled(format!("{} · ", app.workspace_dir), secondary)],
+            spans: vec![
+                Span::styled(app.workspace_dir.clone(), secondary),
+                Span::styled(SEP_ROW1.to_string(), dim),
+            ],
         },
-        // Uptime: ⊙ HH:MM:SS (droppable — dropped before path per spec)
+        // Uptime: last droppable on row1 so it drops before path
         DropGroup {
             droppable: true,
-            spans: vec![Span::styled(
-                format!("{} {} · ", ICON_UPTIME, uptime),
-                secondary,
-            )],
+            spans: vec![
+                Span::styled(ICON_UPTIME.to_string(), dim),
+                Span::styled(
+                    format!(" {} {}", msgs.bottom_uptime, uptime),
+                    secondary,
+                ),
+                Span::styled(SEP_ROW1.to_string(), dim),
+            ],
         },
         // Branch: ⎇ branchname
         DropGroup {
@@ -298,7 +337,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(acct_spans) = build_account_spans(app, theme) {
         row1_groups.push(DropGroup {
             droppable: false,
-            spans: vec![Span::styled(" · ", dim)],
+            spans: vec![Span::styled(SEP_ROW1.to_string(), dim)],
         });
         row1_groups.push(DropGroup {
             droppable: false,
@@ -307,39 +346,70 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // --- Row 2 ---
-    let model = format_model_compact(
-        &app.status_bar.model_name,
-        app.status_bar.model_max_tokens,
+    let model = format_model_name(&app.status_bar.model_name);
+    let out = format_out_tokens(msgs.bottom_out, app.status_bar.model_max_tokens);
+    let think = format_think_segment(
+        msgs.bottom_think,
+        app.status_bar.model_reasoning_effort.as_deref(),
         app.status_bar.model_thinking_budget,
     );
-    let meter = format_context_meter_new(app.status_bar.token_total, app.model_context_window);
-    let token_str = format!("{}{}", ICON_TOKENS, app.status_bar.token_total);
+    let meter = format_context_meter(
+        msgs.bottom_ctx,
+        app.status_bar.token_total,
+        app.model_context_window,
+    );
+    let token_str = format_token_total(app.status_bar.token_total);
     let cache_str = format_cache_pct(
         app.status_bar.token_cache_hit.into(),
         app.status_bar.token_cache_miss.into(),
+        msgs.bottom_cache_pct,
     );
 
-    let mut row2_groups: Vec<DropGroup> = vec![
-        // Model + context meter
-        DropGroup {
+    #[allow(clippy::vec_init_then_push)]
+    let mut row2_groups: Vec<DropGroup> = vec![DropGroup {
+        droppable: false,
+        spans: vec![Span::styled(model, primary)],
+    }];
+    if let Some(out) = out {
+        row2_groups.push(DropGroup {
             droppable: false,
-            spans: vec![Span::styled(model, primary)],
-        },
-        DropGroup {
-            droppable: true,
-            spans: vec![Span::styled(" · ", dim), Span::styled(meter, primary)],
-        },
-        // Token total (droppable after cache)
-        DropGroup {
-            droppable: true,
-            spans: vec![Span::styled(" · ", dim), Span::styled(token_str, secondary)],
-        },
-        // Cache hit (most droppable)
-        DropGroup {
-            droppable: true,
-            spans: vec![Span::styled(" · ", dim), Span::styled(cache_str, secondary)],
-        },
-    ];
+            spans: vec![
+                Span::styled(SEP_ROW2.to_string(), dim),
+                Span::styled(out, primary),
+            ],
+        });
+    }
+    if let Some(think) = think {
+        row2_groups.push(DropGroup {
+            droppable: false,
+            spans: vec![
+                Span::styled(SEP_ROW2.to_string(), dim),
+                Span::styled(think, primary),
+            ],
+        });
+    }
+    // Drop order from end: cache → ∑ → ctx
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![
+            Span::styled(SEP_ROW2.to_string(), dim),
+            Span::styled(meter, primary),
+        ],
+    });
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![
+            Span::styled(SEP_ROW2.to_string(), dim),
+            Span::styled(token_str, secondary),
+        ],
+    });
+    row2_groups.push(DropGroup {
+        droppable: true,
+        spans: vec![
+            Span::styled(SEP_ROW2.to_string(), dim),
+            Span::styled(cache_str, secondary),
+        ],
+    });
 
     fit_row_spans(area.width, &mut row1_groups);
     fit_row_spans(area.width, &mut row2_groups);
@@ -541,9 +611,87 @@ mod render_tests {
 
     #[test]
     fn render_usage_bar_scales_to_width() {
-        assert_eq!(render_usage_bar(0.0), "[░░░░░░░░]");
-        assert_eq!(render_usage_bar(50.0), "[████░░░░]");
-        assert_eq!(render_usage_bar(100.0), "[████████]");
+        assert_eq!(render_usage_bar(0.0), "[········]");
+        assert_eq!(render_usage_bar(50.0), "[■■■■····]");
+        assert_eq!(render_usage_bar(100.0), "[■■■■■■■■]");
+    }
+
+    #[test]
+    fn render_usage_bar_uses_mid_height_glyphs() {
+        assert_eq!(super::render_usage_bar(0.0), "[········]");
+        assert_eq!(super::render_usage_bar(50.0), "[■■■■····]");
+        assert_eq!(super::render_usage_bar(100.0), "[■■■■■■■■]");
+    }
+
+    #[test]
+    fn format_out_tokens_labeled() {
+        assert_eq!(super::format_out_tokens("输出", 8_000), Some("输出 8K".into()));
+        assert_eq!(super::format_out_tokens("out", 8_000), Some("out 8K".into()));
+        assert_eq!(super::format_out_tokens("out", 0), None);
+    }
+
+    #[test]
+    fn format_think_with_effort_and_budget() {
+        assert_eq!(
+            super::format_think_segment("思考", Some("high"), Some(32_000)),
+            Some("思考 high(32K)".into())
+        );
+        assert_eq!(
+            super::format_think_segment("think", Some("medium"), Some(8_000)),
+            Some("think medium(8K)".into())
+        );
+    }
+
+    #[test]
+    fn format_think_budget_only() {
+        assert_eq!(
+            super::format_think_segment("思考", None, Some(32_000)),
+            Some("思考 32K".into())
+        );
+    }
+
+    #[test]
+    fn format_think_omitted_without_budget() {
+        assert_eq!(
+            super::format_think_segment("think", Some("high"), None),
+            None
+        );
+        assert_eq!(
+            super::format_think_segment("think", None, Some(0)),
+            None
+        );
+        assert_eq!(super::format_think_segment("think", None, None), None);
+    }
+
+    #[test]
+    fn format_cache_pct_with_label() {
+        assert_eq!(super::format_cache_pct(0, 0, "缓存%"), "▣ 缓存% --");
+        assert_eq!(super::format_cache_pct(30, 70, "cache%"), "▣ cache% 30%");
+        assert_eq!(super::format_cache_pct(100, 0, "缓存%"), "▣ 缓存% 100%");
+    }
+
+    #[test]
+    fn format_context_meter_labeled() {
+        let s = super::format_context_meter("ctx", 0, 1_000_000);
+        assert!(s.starts_with("ctx ["), "got {s}");
+        assert!(s.contains("0%"), "got {s}");
+        assert!(s.contains("0/1M"), "got {s}");
+        assert!(!s.contains('█') && !s.contains('░'), "old glyphs present: {s}");
+        assert!(s.contains('·') || s.contains('■'), "expected mid-height glyphs: {s}");
+    }
+
+    #[test]
+    fn format_token_total_icon() {
+        assert_eq!(super::format_token_total(6584), "∑ₜₒₖ 6584");
+    }
+
+    #[test]
+    fn sigma_tok_unicode_width_is_sane() {
+        let w = unicode_width::UnicodeWidthStr::width(super::ICON_TOKENS);
+        assert!(
+            (1..=8).contains(&w),
+            "∑ₜₒₖ width {w} looks pathological; consider ∑_tok fallback"
+        );
     }
 
     #[test]
@@ -599,12 +747,19 @@ mod render_tests {
         assert!(lines.len() >= 2, "expected 2 rows, got:\n{text}");
         let row2 = lines[1];
         assert!(
-            row2.contains("mock-model") && row2.contains("590/200K") && row2.contains("%"),
-            "row 2 should show model + meter + ratio, got:\n{row2}"
+            row2.contains("mock-model")
+                && row2.contains("ctx [")
+                && row2.contains("590/200K")
+                && row2.contains("%"),
+            "row 2 should show model + labeled meter + ratio, got:\n{row2}"
         );
         assert!(
             row2.contains('[') && row2.contains(']'),
             "row 2 should include progress bar brackets, got:\n{row2}"
+        );
+        assert!(
+            !row2.contains('█') && !row2.contains('░'),
+            "row 2 should use mid-height bar glyphs, got:\n{row2}"
         );
     }
 
@@ -632,8 +787,12 @@ mod render_tests {
         let row1 = lines[0];
         let row2 = lines[1];
         assert!(
-            row1.contains("01:05"),
-            "elapsed time should be on row 1, got:\n{row1}"
+            row1.contains("01:05") && row1.contains("Elapsed"),
+            "elapsed time should be on row 1 with label, got:\n{row1}"
+        );
+        assert!(
+            row1.contains("│"),
+            "row 1 should use box-drawing separators, got:\n{row1}"
         );
         assert!(
             row1.contains("/tmp/tact-ws") && row1.contains("main"),
@@ -644,7 +803,7 @@ mod render_tests {
             "elapsed/uptime must not appear on row 2, got:\n{row2}"
         );
         assert!(
-            row2.contains("∑42"),
+            row2.contains("∑ₜₒₖ 42"),
             "token stats should stay on row 2, got:\n{row2}"
         );
     }
@@ -665,8 +824,10 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("mock-model") && text.contains("128K/32K"),
-            "bottom bar should show compact model with max/think, got:\n{text}"
+            text.contains("mock-model")
+                && text.contains("out 128K")
+                && text.contains("think high(32K)"),
+            "bottom bar should show model + out + think effort, got:\n{text}"
         );
     }
 
@@ -685,45 +846,59 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("128K/32K"),
-            "bottom bar should show compact model limits even without effort, got:\n{text}"
+            text.contains("out 128K") && text.contains("think 32K"),
+            "bottom bar should show out/think without effort label, got:\n{text}"
         );
     }
 
     #[test]
-    fn format_model_compact_empty() {
-        assert_eq!(super::format_model_compact("", 0, None), "-");
+    fn format_model_name_empty() {
+        assert_eq!(super::format_model_name(""), "-");
     }
     #[test]
-    fn format_model_compact_name_only() {
-        assert_eq!(super::format_model_compact("gpt4", 0, None), "gpt4");
-    }
-    #[test]
-    fn format_model_compact_with_max() {
-        assert_eq!(
-            super::format_model_compact("claude", 8_000, None),
-            "claude 8K"
-        );
-    }
-    #[test]
-    fn format_model_compact_with_max_and_think() {
-        assert_eq!(
-            super::format_model_compact("deepseek", 32_000, Some(8_000)),
-            "deepseek 32K/8K"
-        );
+    fn format_model_name_only() {
+        assert_eq!(super::format_model_name("gpt4"), "gpt4");
     }
     #[test]
     fn format_cache_pct_before_first_sample() {
-        assert_eq!(super::format_cache_pct(0, 0), "▣--");
+        assert_eq!(super::format_cache_pct(0, 0, "cache%"), "▣ cache% --");
     }
     #[test]
     fn format_cache_pct_with_data() {
-        assert_eq!(super::format_cache_pct(30, 70), "▣30%");
+        assert_eq!(super::format_cache_pct(30, 70, "cache%"), "▣ cache% 30%");
     }
     #[test]
     fn format_cache_pct_full_hit() {
-        assert_eq!(super::format_cache_pct(100, 0), "▣100%");
+        assert_eq!(super::format_cache_pct(100, 0, "cache%"), "▣ cache% 100%");
     }
+    #[test]
+    fn bottom_bar_drops_cache_before_model_on_narrow_width() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_max_tokens = 8_000;
+        app.status_bar.model_thinking_budget = Some(32_000);
+        app.status_bar.model_reasoning_effort = Some("high".into());
+        app.status_bar.token_total = 100;
+        app.status_bar.token_cache_hit = 50;
+        app.status_bar.token_cache_miss = 50;
+        app.model_context_window = 200_000;
+
+        let backend = TestBackend::new(40, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 40, 2), &app))
+            .expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("mock-model"),
+            "model should remain, got:\n{text}"
+        );
+        assert!(
+            !text.contains("cache%") && !text.contains("缓存%"),
+            "cache segment should drop first on narrow width, got:\n{text}"
+        );
+    }
+
     #[test]
     fn format_balance_entry_renders() {
         let entry = BalanceEntry {
