@@ -50,6 +50,11 @@ pub enum AgentUpdate {
     RequestMultiSelect { prompt, options, respond },         // multi; ask_user only (`multi_select`)
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
+    /// Persistent task list changed (`task_create` / `task_update`)
+    TasksChanged {
+        tasks: Vec<TaskSnapshot>, // non-deleted
+        reason: TasksChangeReason, // Created | Updated
+    },
 }
 
 pub enum ThinkingChunk {
@@ -60,6 +65,8 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` is a lifecycle enum: producers emit `Started`, zero or more `Delta` fragments, then `Finished`. OpenAI-compatible adapters that only expose `reasoning_content` deltas synthesize `Started` / `Finished` around the stream.
+
+`TasksChanged` carries UI snapshots (`id`, `subject`, `status`, `owner`) after successful mutating task tools. The TUI refreshes a sticky strip under the Log and appends a Log detail card. Read-only `task_get` / `task_list` do not emit. Soft-deleted tasks are omitted from `tasks`.
 
 `ToolOutputChunk` carries incrementally decoded text plus a
 `ToolOutputStream` (`Stdout`, `Stderr`, or `Other`). A chunk batch preserves the
@@ -314,7 +321,7 @@ stateDiagram-v2
 
 | Category | Variants | TUI side effects |
 |----------|----------|------------------|
-| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `TaskCancelled`, `Error`, `RequestSelect` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
+| **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `TaskCancelled`, `Error`, `RequestSelect`, `TasksChanged` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
 | **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder; **do not** close an open thinking region |
 | **Request–response** | `RequestSelect { respond }` | Blocks on user choice via oneshot channel |
 

@@ -173,7 +173,8 @@ flowchart TB
 | 路径 | 角色 |
 |------|------|
 | `render/mod.rs` | Re-export 面板入口 |
-| `render/layout.rs` | 主内容路由（history、help、log、popups） |
+| `render/layout.rs` | 主内容路由（history、help、log + 可选 sticky tasks、popups） |
+| `render/task_panel.rs` | Log 下方持久任务 sticky 条（收起 / 展开） |
 | `render/bar.rs` | 顶栏 + 底栏统计 |
 | `render/input.rs` | 多行输入框、批准横幅、palette 命令行 |
 | `render/log.rs` | Log 面板：wrap cache、scroll、overlays、scrollbar |
@@ -195,11 +196,14 @@ flowchart TB
 ```text
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
-│    └─ log panel (always full width)
+│    ├─ log panel (可滚动)
+│    └─ sticky tasks?（隐藏时 0 行；点击展开）
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
+
+当 `task_panel.visible` 为真时，`render_main_area` 对外层主区做 **outer-split**（上 Log、下 sticky），不改动 Log wrap/scroll 内核。可见性要求本会话出现过 `TasksChanged`，且仍有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、[第 25 章](./25_chapter_protocol_zh.md)）。
 
 `lib.rs` 中垂直约束：
 

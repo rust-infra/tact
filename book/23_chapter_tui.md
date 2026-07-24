@@ -172,7 +172,8 @@ flowchart TB
 | Path | Role |
 |------|------|
 | `render/mod.rs` | Re-exports panel entry points |
-| `render/layout.rs` | Main content routing (history, help, log, popups) |
+| `render/layout.rs` | Main content routing (history, help, log + optional sticky tasks, popups) |
+| `render/task_panel.rs` | Sticky persistent-task strip (collapsed / expand) under Log |
 | `render/bar.rs` | Top status bar + bottom stats bar |
 | `render/input.rs` | Multi-line input box, approval banner, palette command line |
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
@@ -194,11 +195,14 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 ```text
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
-│    └─ log panel (always full width)
+│    ├─ log panel (scrollable)
+│    └─ sticky tasks? (0 rows if hidden; click to expand)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
+
+When `task_panel.visible` is true, `render_main_area` **outer-splits** the main Rect (Log above, sticky below) without changing Log wrap/scroll internals. Visibility requires a `TasksChanged` in this session and at least one pending/in_progress item ([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
 
 Vertical constraints in `lib.rs`:
 

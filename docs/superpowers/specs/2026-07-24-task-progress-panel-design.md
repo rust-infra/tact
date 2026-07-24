@@ -1,7 +1,7 @@
 # Task Progress Panel Design
 
 > Date: 2026-07-24  
-> Status: approved — plan ready  
+> Status: implemented  
 > Related: `book/19_chapter_persistent_tasks.md`, `book/23_chapter_tui.md`, `book/25_chapter_protocol.md`  
 > Plan: `docs/superpowers/plans/2026-07-24-task-progress-panel.md`
 

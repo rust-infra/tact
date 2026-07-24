@@ -29,6 +29,27 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-24 — Persistent task progress sticky + Log card
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 19, Ch 23, Ch 25; `docs/superpowers/specs/2026-07-24-task-progress-panel-design.md` |
+
+**Symptom / motivation:** Persistent tasks (`task_create` / `task_update`) only appeared as ordinary tool JSON/text in the Log. There was no always-visible checklist and no structured timeline card for mutations.
+
+**Decision:** Emit `AgentUpdate::TasksChanged` after successful mutating tools. TUI keeps a sticky strip under the Log via an **outer layout split** (Log internals unchanged), collapsed by default with click-to-expand, and appends a Log detail card on each change. Hide the sticky when no pending/in_progress items remain; do not show on resume until the first `TasksChanged` this session.
+
+**Behavior after:**
+
+- Sticky one-liner: `▸ Tasks done/total · focus` (click expands up to 6 rows)
+- Each `TasksChanged` adds a system Log checklist card
+- `task_get` / `task_list` do not emit
+
+**Pointers:** `crates/protocol/src/agent.rs`, `crates/tact/src/tool/task.rs`, `crates/tui/src/render/task_panel.rs`, `crates/tui/src/render/layout.rs`
+
+---
+
 ## 1. 2026-07-24 — Remove redundant `[Log]` from bottom bar
 
 | Field | Value |

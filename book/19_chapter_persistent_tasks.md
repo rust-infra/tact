@@ -138,6 +138,8 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 
 Tools return these strings directly as tool results (JSON for create/get/update, text list for `task_list`).
 
+Successful `task_create` / `task_update` also emit [`AgentUpdate::TasksChanged`](./25_chapter_protocol.md) (filtered non-deleted snapshots) so the TUI can refresh a sticky progress strip under the Log and append a Log detail card. `task_get` / `task_list` do not emit. Spec: `docs/superpowers/specs/2026-07-24-task-progress-panel-design.md`.
+
 ---
 
 ## 8. Code Map

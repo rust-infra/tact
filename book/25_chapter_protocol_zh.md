@@ -51,6 +51,11 @@ pub enum AgentUpdate {
     RequestMultiSelect { prompt, options, respond },         // 多选；仅 ask_user（`multi_select`）
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
+    /// 持久任务列表变更（`task_create` / `task_update`）
+    TasksChanged {
+        tasks: Vec<TaskSnapshot>, // 不含已删除
+        reason: TasksChangeReason, // Created | Updated
+    },
 }
 
 pub enum ThinkingChunk {
@@ -61,6 +66,8 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` 是生命周期 enum：生产者发出 `Started`、零或多个 `Delta` 片段，然后 `Finished`。仅暴露 `reasoning_content` delta 的 OpenAI 兼容 adapter 在流周围合成 `Started` / `Finished`。
+
+`TasksChanged` 在 mutating 任务工具成功后携带 UI 快照（`id`、`subject`、`status`、`owner`）。TUI 刷新 Log 下 sticky 条并追加 Log 详情卡片。只读的 `task_get` / `task_list` 不发射。软删除项不出现在 `tasks` 中。
 
 `ToolOutputChunk` 携带增量解码文本与 `ToolOutputStream`（`Stdout`、
 `Stderr` 或 `Other`）。一个 chunk batch 保留 aggregator 观察到的跨 stream 顺序。
@@ -311,7 +318,7 @@ stateDiagram-v2
 
 | 类别 | Variants | TUI 副作用 |
 |------|----------|------------|
-| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
+| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
 | **请求–响应** | `RequestSelect { respond }` | 经 oneshot channel 阻塞等待用户选择 |
 

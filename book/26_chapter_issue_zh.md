@@ -29,6 +29,27 @@
 
 ---
 
+## 1. 2026-07-24 — 持久任务 sticky 进度 + Log 详情卡
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 19 / 23 / 25 章；`docs/superpowers/specs/2026-07-24-task-progress-panel-design.md` |
+
+**现象 / 动机：** 持久任务（`task_create` / `task_update`）只以普通 tool JSON/文本出现在 Log，没有常驻 checklist，也没有结构化变更时间线。
+
+**决策：** mutating 工具成功后发射 `AgentUpdate::TasksChanged`。TUI 用 **外层切分** 在 Log 下挂 sticky 条（不改 Log wrap/scroll 内核），默认收起、点击展开；每次变更追加 Log 详情卡。无 pending/in_progress 时隐藏；resume 后等到本会话首次 `TasksChanged` 再显示。
+
+**改后行为：**
+
+- sticky 一行：`▸ 任务 done/total · 当前项`（点击最多展开 6 行）
+- 每次 `TasksChanged` 追加 system Log checklist
+- `task_get` / `task_list` 不发射
+
+**指针：** `crates/protocol/src/agent.rs`、`crates/tact/src/tool/task.rs`、`crates/tui/src/render/task_panel.rs`、`crates/tui/src/render/layout.rs`
+
+---
+
 ## 1. 2026-07-24 — 底栏去掉冗余 `[Log]`
 
 | 字段 | 值 |
