@@ -11,11 +11,18 @@ pub(crate) fn handle_normal_mode(
 ) {
     match key.code {
         KeyCode::Char('j') => {
-            // Don't check upper bound; render uniformly clamps
-            app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
+            if app.mouse.in_task_panel && app.task_panel.visible && app.task_panel.expanded {
+                app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
+            } else {
+                app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
+            }
         }
         KeyCode::Char('k') => {
-            if app.log_scroll.offset > 0 {
+            if app.mouse.in_task_panel && app.task_panel.visible && app.task_panel.expanded {
+                if app.task_panel.scroll > 0 {
+                    app.task_panel.scroll -= 1;
+                }
+            } else if app.log_scroll.offset > 0 {
                 app.log_scroll.offset -= 1;
             }
         }

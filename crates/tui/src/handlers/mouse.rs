@@ -64,7 +64,13 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
 pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_up();
+    } else if hit.in_task_panel && app.task_panel.visible && app.task_panel.expanded {
+        app.mouse.in_task_panel = true;
+        if app.task_panel.scroll > 0 {
+            app.task_panel.scroll -= 1;
+        }
     } else if hit.in_log && app.log_scroll.offset > 0 {
+        app.mouse.in_task_panel = false;
         app.log_scroll.offset -= 1;
     }
 }
@@ -73,7 +79,11 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
 pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_down();
+    } else if hit.in_task_panel && app.task_panel.visible && app.task_panel.expanded {
+        app.mouse.in_task_panel = true;
+        app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
     } else if hit.in_log {
+        app.mouse.in_task_panel = false;
         app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
     }
 }
@@ -84,10 +94,12 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     }
     if hit.in_task_panel && app.task_panel.visible {
         app.task_panel.expanded = !app.task_panel.expanded;
+        app.mouse.in_task_panel = app.task_panel.expanded;
         app.dirty = true;
         return;
     }
     if hit.in_log {
+        app.mouse.in_task_panel = false;
         handle_log_click(app, mouse);
     }
 }

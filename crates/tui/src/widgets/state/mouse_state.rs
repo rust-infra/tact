@@ -119,6 +119,8 @@ pub(crate) struct MouseState {
     pub(crate) log_area: Rect,
     /// Sticky task progress strip under the Log (empty when hidden).
     pub(crate) task_panel_area: Rect,
+    /// Whether the cursor is hovering over the task panel (used for keyboard scrolling).
+    pub(crate) in_task_panel: bool,
     pub(crate) log_selection: Option<LogSelection>,
     pub(crate) dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).
