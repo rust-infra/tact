@@ -16,6 +16,10 @@ pub struct WorktreeCreateInput {
     name = "worktree_create",
     description = "Create an isolated git worktree lane."
 )]
+/// # Errors
+///
+/// Returns an error if the git worktree cannot be created (e.g., invalid
+/// branch reference, name conflict, or git error).
 pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Result<String> {
     ctx.worktree_manager.create(
         input.name,
@@ -28,6 +32,9 @@ pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Re
 pub struct WorktreeListInput {}
 
 #[tool(name = "worktree_list", description = "List tracked worktree lanes.")]
+/// # Errors
+///
+/// Returns an error if the worktree manager fails to retrieve the list.
 pub async fn worktree_list(ctx: ToolContext, _input: WorktreeListInput) -> Result<String> {
     ctx.worktree_manager.list()
 }
@@ -41,6 +48,10 @@ pub struct WorktreeNameInput {
     name = "worktree_status",
     description = "Show git status for a worktree lane."
 )]
+/// # Errors
+///
+/// Returns an error if the worktree name does not exist or the git
+/// status command fails.
 pub async fn worktree_status(ctx: ToolContext, input: WorktreeNameInput) -> Result<String> {
     ctx.worktree_manager.status(&input.name)
 }
@@ -55,6 +66,10 @@ pub struct WorktreeRunInput {
     name = "worktree_run",
     description = "Run one shell command inside a named worktree."
 )]
+/// # Errors
+///
+/// Returns an error if the worktree name does not exist or the
+/// command execution fails.
 pub async fn worktree_run(ctx: ToolContext, input: WorktreeRunInput) -> Result<String> {
     ctx.worktree_manager.run(&input.name, &input.command)
 }
@@ -68,6 +83,9 @@ pub struct WorktreeEventsInput {
     name = "worktree_events",
     description = "List recent worktree lifecycle events."
 )]
+/// # Errors
+///
+/// Returns an error if the worktree manager fails to retrieve events.
 pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Result<String> {
     ctx.worktree_manager.events(input.limit.unwrap_or(20))
 }

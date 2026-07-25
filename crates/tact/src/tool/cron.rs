@@ -18,6 +18,10 @@ pub struct CronCreateInput {
 }
 
 #[tool(name = "cron_create", description = "Create a scheduled prompt.")]
+/// # Errors
+///
+/// Returns an error if the cron expression is invalid or the scheduler
+/// encounters an internal error.
 pub async fn cron_create(ctx: ToolContext, input: CronCreateInput) -> Result<String> {
     ctx.cron_scheduler
         .create(input.cron, input.prompt, input.recurring, input.durable)
@@ -30,6 +34,10 @@ pub struct CronDeleteInput {
 }
 
 #[tool(name = "cron_delete", description = "Delete a scheduled prompt.")]
+/// # Errors
+///
+/// Returns an error if the task ID does not exist or the scheduler
+/// encounters an internal error.
 pub async fn cron_delete(ctx: ToolContext, input: CronDeleteInput) -> Result<String> {
     ctx.cron_scheduler.delete(&input.id)
 }
@@ -38,6 +46,9 @@ pub async fn cron_delete(ctx: ToolContext, input: CronDeleteInput) -> Result<Str
 pub struct CronListInput {}
 
 #[tool(name = "cron_list", description = "List scheduled prompts.")]
+/// # Errors
+///
+/// Returns an error if the scheduler encounters an internal error.
 pub async fn cron_list(ctx: ToolContext, _input: CronListInput) -> Result<String> {
     ctx.cron_scheduler.list()
 }

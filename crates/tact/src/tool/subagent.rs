@@ -24,6 +24,12 @@ pub struct SubagentInput {
     name = "task",
     description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The LLM client cannot be obtained.
+/// - The permission manager cannot be created.
+/// - The subagent agent loop encounters an error.
 pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let client = get_llm_client()?;
     let system_prompt = format!(

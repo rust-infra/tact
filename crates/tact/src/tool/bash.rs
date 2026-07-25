@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
@@ -248,6 +248,15 @@ pub struct BashInput {
     name = "bash",
     description = "Run a shell command in the current workspace."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The shell command is invalid or potentially dangerous.
+/// - The shell process cannot be spawned.
+/// - The stdout or stderr pipes cannot be captured.
+/// - The command times out (configured via `ctx.bash_timeout_secs`).
+/// - The command is cancelled by the user.
+/// - The command exits with a failure or the pipe readers encounter an error.
 pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let command = input.command;
 
@@ -262,20 +271,19 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     configure_process_group(&mut process);
-    let mut child = match process.spawn() {
-        Ok(c) => c,
-        Err(e) => return Err(anyhow::anyhow!("Error: {}", e)),
-    };
+    let mut child = process
+        .spawn()
+        .context("failed to spawn shell process")?;
     let process_group_id = child.id();
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow::anyhow!("Error: stdout pipe unavailable"))?;
+        .context("stdout pipe unavailable")?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| anyhow::anyhow!("Error: stderr pipe unavailable"))?;
+        .context("stderr pipe unavailable")?;
     let (pipe_tx, mut pipe_rx) = mpsc::channel(PIPE_CHANNEL_CAPACITY);
     let stdout_task = tokio::spawn(read_pipe(stdout, ToolOutputStream::Stdout, pipe_tx.clone()));
     let stderr_task = tokio::spawn(read_pipe(stderr, ToolOutputStream::Stderr, pipe_tx.clone()));

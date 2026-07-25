@@ -12,6 +12,9 @@ pub struct SpawnTeammateInput {
 }
 
 #[tool(name = "spawn_teammate", description = "Create a named teammate.")]
+/// # Errors
+///
+/// Returns an error if a teammate with the same name already exists.
 pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Result<String> {
     ctx.teammate_manager.spawn_teammate(input.name, input.role)
 }
@@ -20,6 +23,9 @@ pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Resu
 pub struct ListTeammatesInput {}
 
 #[tool(name = "list_teammates", description = "List teammates.")]
+/// # Errors
+///
+/// Returns an error if the teammate manager fails to retrieve the list.
 pub async fn list_teammates(ctx: ToolContext, _input: ListTeammatesInput) -> Result<String> {
     ctx.teammate_manager.list_teammates()
 }
@@ -35,6 +41,10 @@ pub struct SendMessageInput {
     name = "send_message",
     description = "Send a message to a teammate inbox."
 )]
+/// # Errors
+///
+/// Returns an error if the recipient does not exist or the teammate
+/// manager fails to send the message.
 pub async fn send_message(ctx: ToolContext, input: SendMessageInput) -> Result<String> {
     ctx.teammate_manager
         .send_message(input.from, input.to, input.body)
@@ -50,6 +60,9 @@ pub struct BroadcastInput {
     name = "broadcast",
     description = "Broadcast a message to all teammates."
 )]
+/// # Errors
+///
+/// Returns an error if the teammate manager fails to deliver the broadcast.
 pub async fn broadcast(ctx: ToolContext, input: BroadcastInput) -> Result<String> {
     ctx.teammate_manager.broadcast(input.from, input.body)
 }
@@ -60,6 +73,10 @@ pub struct ReadInboxInput {
 }
 
 #[tool(name = "read_inbox", description = "Read a teammate inbox.")]
+/// # Errors
+///
+/// Returns an error if the owner does not exist or the teammate
+/// manager fails to read the inbox.
 pub async fn read_inbox(ctx: ToolContext, input: ReadInboxInput) -> Result<String> {
     ctx.teammate_manager.read_inbox(&input.owner)
 }
@@ -75,6 +92,10 @@ pub struct ProtocolInput {
     name = "plan_approval",
     description = "Send a durable plan approval protocol message."
 )]
+/// # Errors
+///
+/// Returns an error if the recipient does not exist or the teammate
+/// manager fails to send the protocol request.
 pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
     ctx.teammate_manager.protocol_request(
         input.from,
@@ -88,6 +109,10 @@ pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<Str
     name = "shutdown_request",
     description = "Send a shutdown request protocol message."
 )]
+/// # Errors
+///
+/// Returns an error if the recipient does not exist or the teammate
+/// manager fails to send the protocol request.
 pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
     ctx.teammate_manager.protocol_request(
         input.from,
@@ -101,6 +126,10 @@ pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<
     name = "shutdown_response",
     description = "Send a shutdown response protocol message."
 )]
+/// # Errors
+///
+/// Returns an error if the recipient does not exist or the teammate
+/// manager fails to send the protocol request.
 pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
     ctx.teammate_manager.protocol_request(
         input.from,

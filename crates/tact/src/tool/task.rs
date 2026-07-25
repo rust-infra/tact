@@ -19,6 +19,10 @@ pub struct TaskCreateInput {
 }
 
 #[tool(name = "task_create", description = "Create a new persistent task.")]
+/// # Errors
+///
+/// Returns an error if the task manager fails to create the task
+/// (e.g., storage error).
 pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<String> {
     let task = ctx.task_manager.create(
         input.subject,
@@ -43,6 +47,9 @@ pub struct TaskGetInput {
 }
 
 #[tool(name = "task_get", description = "Get full details of a task by ID.")]
+/// # Errors
+///
+/// Returns an error if the task ID does not exist.
 pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
     let task = ctx.task_manager.get(input.task_id)?;
     render_task_json(&task)
@@ -55,6 +62,9 @@ pub struct TaskListInput {}
     name = "task_list",
     description = "List all tasks with status summary."
 )]
+/// # Errors
+///
+/// Returns an error if the task manager fails to retrieve the task list.
 pub async fn task_list(ctx: ToolContext, _input: TaskListInput) -> Result<String> {
     Ok(render_task_list(ctx.task_manager.list()?))
 }
@@ -79,6 +89,12 @@ pub struct TaskUpdateInput {
     name = "task_update",
     description = "Update a task's status, owner, or dependencies."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The status string is invalid (must be one of: pending, in_progress, completed, or deleted).
+/// - The task ID does not exist.
+/// - The task manager fails to update the task.
 pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<String> {
     let status = input
         .status

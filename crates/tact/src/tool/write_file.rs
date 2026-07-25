@@ -26,6 +26,12 @@ const WRITE_CHUNK_SIZE: usize = 64 * 1024;
 const SINGLE_WRITE_THRESHOLD: usize = 256 * 1024;
 
 #[tool(name = "write_file", description = "Write content to file.")]
+/// # Errors
+///
+/// Returns an error if:
+/// - The file path is invalid or escapes the workspace.
+/// - The parent directories cannot be created.
+/// - The file cannot be written or flushed (I/O error).
 pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<String> {
     let path = safe_path_allow_missing(&ctx.work_dir, &input.path)?;
 

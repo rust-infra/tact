@@ -38,10 +38,10 @@ fn terminal_stop_reason(
             match reason {
                 Some("max_output_tokens") => Ok(Some(StopReason::MaxTokens)),
                 Some("content_filter") => Ok(Some(StopReason::StopSequence)),
-                Some(other) => Err(LlmError::Other(format!(
+                Some(other) => Err(LlmError::Unsupported(format!(
                     "OpenAI Responses incomplete for unsupported reason '{other}'"
                 ))),
-                None => Err(LlmError::Other(
+                None => Err(LlmError::Unsupported(
                     "OpenAI Responses incomplete without a reason".to_string(),
                 )),
             }
@@ -52,12 +52,12 @@ fn terminal_stop_reason(
                 .as_ref()
                 .map(|error| format!("{}: {}", error.code, error.message))
                 .unwrap_or_else(|| "response failed without error details".to_string());
-            Err(LlmError::Other(format!(
+            Err(LlmError::Unsupported(format!(
                 "OpenAI Responses failed: {detail}"
             )))
         }
-        Status::Cancelled => Err(LlmError::Other("OpenAI Responses request cancelled".into())),
-        Status::InProgress | Status::Queued => Err(LlmError::Other(format!(
+        Status::Cancelled => Err(LlmError::Unsupported("OpenAI Responses request cancelled".into())),
+        Status::InProgress | Status::Queued => Err(LlmError::Unsupported(format!(
             "OpenAI Responses ended with non-terminal status {:?}",
             response.status
         ))),
@@ -133,7 +133,7 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
                     continue;
                 }
                 let input = serde_json::from_str(&call.arguments).map_err(|error| {
-                    LlmError::Other(format!(
+                    LlmError::Unsupported(format!(
                         "parse arguments for OpenAI function '{}' call '{}': {error}",
                         call.name, call.call_id
                     ))

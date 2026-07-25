@@ -39,6 +39,10 @@ pub struct AskUserInput {
                     Without options, the question is shown in the log and the user's next \
                     message is treated as the answer."
 )]
+/// # Errors
+///
+/// This function always returns `Ok`. Communication failures with the UI
+/// channel are silently handled and produce user-facing messages instead of errors.
 pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
     debug!(question = %input.question, multi = input.multi_select, "Asking user");
     let question = input.question;

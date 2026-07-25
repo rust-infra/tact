@@ -20,8 +20,7 @@ pub(crate) fn encode(
     let json = serde_json::to_string(&ResponsesHistoryState {
         reasoning,
         function_call_item_ids,
-    })
-    .map_err(|error| LlmError::Other(format!("serialize Responses history state: {error}")))?;
+    })?;
     Ok(format!("{PREFIX}{json}"))
 }
 
@@ -30,6 +29,6 @@ pub(crate) fn decode(signature: &str) -> Result<Option<ResponsesHistoryState>, L
         return Ok(None);
     };
     serde_json::from_str(json).map(Some).map_err(|error| {
-        LlmError::Other(format!("parse persisted Responses history state: {error}"))
+        LlmError::Unsupported(format!("parse persisted Responses history state: {error}"))
     })
 }

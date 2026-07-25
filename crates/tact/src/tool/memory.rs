@@ -22,6 +22,12 @@ pub struct SaveMemoryInput {
     name = "save_memory",
     description = "Save a persistent memory that survives across sessions."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The memory type string is invalid (must be one of: user, feedback, project, or reference).
+/// - The memory manager lock is poisoned.
+/// - The memory cannot be saved (e.g., file I/O failure).
 pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<String> {
     let memory_type = input.memory_type.parse::<MemoryType>()?;
     let mut manager = ctx

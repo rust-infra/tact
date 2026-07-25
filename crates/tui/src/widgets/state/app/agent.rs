@@ -294,19 +294,19 @@ impl App {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
     }
 
-    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, reason: TasksChangeReason) {
-        let prev = self.task_panel.snapshot.clone();
+    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
+        // let prev = self.task_panel.snapshot.clone();
         self.task_panel.apply_snapshot(tasks);
-        let msgs = self.msgs();
-        let card = crate::widgets::state::task_panel::format_tasks_log_card(
-            &msgs,
-            reason,
-            &prev,
-            &self.task_panel.snapshot,
-        );
+        // let msgs = self.msgs();
+        // let card = crate::widgets::state::task_panel::format_tasks_log_card(
+        //     &msgs,
+        //     reason,
+        //     &prev,
+        //     &self.task_panel.snapshot,
+        // );
         // Blank row so the checklist does not sit flush against the tool card.
-        self.add_new_line();
-        self.add_system_message(card);
+        // self.add_new_line();
+        // self.add_system_message(card);
     }
 
     fn on_step_added(&mut self, step: PlanStep) {

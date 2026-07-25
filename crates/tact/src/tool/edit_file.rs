@@ -27,6 +27,14 @@ pub struct EditFileInput {
     description = "Replace exact text in a file. By default replaces only the first match; \
                     set replace_all=true to replace every occurrence."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The file path is invalid or outside the workspace.
+/// - The file does not exist or cannot be read.
+/// - `old_text` is empty.
+/// - `old_text` is not found in the file.
+/// - The modified file cannot be written.
 pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String> {
     let path = safe_path(&ctx.work_dir, &input.path)?;
 
