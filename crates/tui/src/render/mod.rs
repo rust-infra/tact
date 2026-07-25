@@ -11,7 +11,7 @@ pub(crate) mod popups;
 pub(crate) mod render_md;
 pub(crate) mod renderable;
 pub(crate) mod slash_style;
-mod task_panel;
+pub(crate) mod task_panel;
 pub(crate) mod util;
 
 pub(super) use bar::{render_bottom_bar, render_status_bar};

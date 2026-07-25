@@ -22,8 +22,8 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let sticky_h = if app.task_panel.visible {
-        let content = app.task_panel.sticky_height() as u16;
+    let sticky_h = if super::task_panel::sticky_host_visible(app) {
+        let content = super::task_panel::sticky_host_content_height(app) as u16;
         // Content rows + bottom border so sticky continues the Log box.
         content
             .saturating_add(super::task_panel::STICKY_BORDER_ROWS)

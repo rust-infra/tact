@@ -171,6 +171,9 @@ This means consecutive multi-turn conversations typically achieve high cache hit
 
 - **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
   main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
+  Subagent LLM calls persist under their own `sessions.id` (linked via
+  `sessions.ref_id`); the bottom bar still shows the latest `TokenUsage` event
+  received on the shared UI channel (parent or child).
 - **Last-call total** — `∑ₜₒₖ {total}` from the **same** `TokenUsageInfo.total`
   (precise integer; droppable when narrow).
 - **Cache hit rate** — `▣ 缓存%` / `▣ cache%` plus `pct%` or `--`, from

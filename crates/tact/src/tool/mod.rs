@@ -58,6 +58,7 @@ mod read_file;
 mod registry;
 mod sleep;
 mod subagent;
+mod subagent_ui;
 mod task;
 mod team;
 #[cfg(any(test, feature = "test-support"))]
@@ -110,6 +111,10 @@ pub struct ToolContext {
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub bash_timeout_secs: u64,
+    /// Parent agent session id when persistence is wired (`with_session`).
+    pub session_id: Option<String>,
+    /// Shared SQLite session store from the parent agent, if any.
+    pub session_store: Option<crate::store::DynSessionStore>,
 }
 
 impl ToolContext {

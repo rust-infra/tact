@@ -149,7 +149,7 @@ TaskManager 持久化在本章说明；**`task_*` 工具与依赖模型**见 [�
 
 | 表 | 用途 |
 |----|------|
-| `sessions` | 会话 id、`root_dir`、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
+| `sessions` | 会话 id、`root_dir`、`ref_id`（父会话 id；`''` = 顶层）、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
 | `messages` | 序列化的 `MessageContent` JSON、序号排序 |
 | `token_usages` | 每次 LLM 调用的 token 计数、可选 `request_body` blob、可选 `tool_schedule` JSON |
 | `input_history` | TUI 召回用的用户输入字符串（每会话最多 100 条） |
@@ -165,7 +165,7 @@ TaskManager 持久化在本章说明；**`task_*` 工具与依赖模型**见 [�
 | `compact_history()` | `replace_session_messages` — 重写 SQLite `messages` 以匹配压缩后的 context |
 | `execute_tool_call`（调度后） | 在由 `llm_call_last_message_id` 定位的 token 行上 `record_tool_schedule` |
 
-若未附加 session store（未调用 `with_session`），持久化方法为 no-op——便于测试。
+若未附加 session store（未调用 `with_session`），持久化方法为 no-op——便于测试。`list_sessions` 只返回 `ref_id = ''` 的顶层会话；`delete_session` 会级联删除 `ref_id = 该 id` 的子会话及其附属表。
 
 ### 输入历史裁剪
 
@@ -220,7 +220,7 @@ sequenceDiagram
 |------|------|
 | JSON store 无跨进程锁 | JSON 文件读-改-写无文件锁（SQLite 会话使用进程锁） |
 | `CollectionStore::list()` 顺序 | 目录迭代未排序——顺序依赖文件系统 |
-| 全新 SQLite schema | 无旧 DB 路径迁移或 `ALTER TABLE` 升级——仅新安装 |
+| 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id` |
 | Session store 可选 | 测试与部分调用方可不附加 SQLite |
 | 每 workdir 一个 Session DB | SQLite 当前位于 `<workdir>/.tact/tact.db`；`sessions.root_dir` 记录项目路径，供未来共享 `$HOME/.tact/tact.db` |
 | `index.json` 特例 | `list()` 会跳过——新增 index 文件时容易遗漏 |

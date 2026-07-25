@@ -29,6 +29,7 @@ impl Default for TaskPanelState {
 }
 
 impl TaskPanelState {
+    #[allow(dead_code)] // retained for tests / callers that still query panel-only height
     pub(crate) fn sticky_height(&self) -> usize {
         sticky_height(self.expanded, &self.snapshot)
     }

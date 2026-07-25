@@ -199,6 +199,13 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
+    /// Update from a nested `task` subagent. TUI routes this to the Subagent
+    /// sticky pane; must not drive main Log / main task lifecycle.
+    Subagent {
+        parent_tool_id: String,
+        session_id: String,
+        update: Box<AgentUpdate>,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.

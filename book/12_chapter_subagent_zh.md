@@ -2,7 +2,7 @@
 
 > 语言：[中文](./12_chapter_subagent_zh.md) · [English](./12_chapter_subagent.md)
 
-本章说明 Tact 如何通过 `task` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、共享文件系统与 `ToolContext` 服务，但无父级历史、hook、MCP 工具或 SQLite 会话持久化。
+本章说明 Tact 如何通过 `task` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、共享文件系统与 `ToolContext` 服务，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
 
 实现：`crates/tact/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact/src/tool/registry.rs`。
 
@@ -20,9 +20,9 @@
 | Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（6 个） |
 | MCP 工具 | 自 config 加载 | **无**（`MCPToolRouter::new()`） |
 | Hook | 父级已注册 hook | 空 hook 列表 |
-| Session SQLite | 有（在 `tui.rs` 接线时） | **无** — `session_store` 保持 `None` |
+| Session SQLite | 有（在 `tui.rs` 接线时） | **有** — 新建子 session；`sessions.ref_id` = 父 id（父无 session 时为 `''`） |
 | Permission manager | 父级模式 | 新 manager，始终 `PermissionMode::Default` |
-| TUI 通道 | 父级 `ui_tx` | **继承** — 审批弹窗仍可用 |
+| TUI 通道 | 父级 `ui_tx` | **打标** — 流式/步骤进 Subagent sticky；`RequestSelect*` 透传 |
 | Cancel 标志 | 主 runtime 共享 | **独立** — 用户对父级 Cancel 不会停止进行中的子 agent |
 | 返回父级 | N/A | 最后一条 assistant 文本块作为 tool result 字符串 |
 
@@ -68,9 +68,9 @@ sequenceDiagram
     Parent->>Task: ToolUse(name=task, input)
     Note over Parent,Task: PreToolUse + permission (High risk)
     Task->>Sub: Agent::new(static prompt, subagent_toolset, empty MCP)
-    Task->>Sub: with_ui_channel(parent ui_tx) if present
-    Task->>Sub: context.push(User, prompt)
-    Task->>Sub: agent_loop(None)
+    Task->>Sub: ensure_session_row(child_id, ref_id) + with_session
+    Task->>Sub: with_ui_channel(tagged) if present
+    Task->>Sub: agent_loop(Some(prompt))
 
     loop until stop ≠ ToolUse
         Sub->>LLM: stream_message + 6 tool specs
@@ -89,7 +89,7 @@ sequenceDiagram
 
 **阻塞语义：** `task` 为 `async` 并 await 完整子 agent 循环。从父级视角它是一个 tool call，内部可能运行多轮 LLM。父级 `agent_loop` 在 summary 字符串返回前暂停。
 
-**消息播种：** handler 直接将 user 消息 push 到 `runtime.context`（非经 `push_message`），再调用 `agent_loop(None)`。因 context 已非空，循环不会注入第二份。无 `session_store` 时 nothing 写入 SQLite。
+**消息播种：** handler 调用 `agent_loop(Some(user_prompt))`，经 `push_message` 写入并持久化到子 session。循环前 `task` 分配子 session id，将 `ref_id` 设为父 session id（或 `''`），并调用 `with_session`。UI 使用打标 `ui_tx`（`with_ui_channel` 同步 `tool_context.ui_tx`，使 `ToolProgress` 也被打标）。
 
 ---
 
@@ -138,15 +138,7 @@ let system_prompt = format!(
 
 子 agent 构造 **自己的** `PermissionManager::try_new(PermissionMode::Default)?`。不继承父级 Plan/Auto 模式或 allowlist。
 
-若父级有 TUI 通道，子 agent 复用之：
-
-```rust
-if let Some(tx) = ctx.ui_tx {
-    subagent = subagent.with_ui_channel(tx);
-}
-```
-
-因此子 agent 的权限提示与流更新出现在同一终端会话。见 [权限模型](./10_chapter_permission_zh.md)。
+若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel`）：流式、步骤、思考与 token 用量变为 `AgentUpdate::Subagent`，渲染在 sticky 的 **Subagent** tab。`RequestSelect` / `RequestMultiSelect` 仍透传，权限弹窗走主 TUI。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
 
 ---
 
@@ -188,7 +180,7 @@ let summary = subagent
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
 | 隔离 | 全新 context，6 个工具 | N/A |
-| 持久化 | 仅内存 | `.tact/team/` JSON |
+| 持久化 | 独立 SQLite session（`ref_id`→父） | `.tact/team/` JSON |
 | 用例 | 委托聚焦的编码工作 | 多 agent 协调协议 |
 
 见 [团队协调](./14_chapter_team_zh.md)。
@@ -219,7 +211,7 @@ let summary = subagent
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
 | 独立 cancel 标志 | 父级 Cancel 可能无法中止长时间运行的子 agent |
-| 无会话持久化 | 进程在 `task` 中途崩溃则子 agent 轮次丢失 |
+| 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |
 | 模块注释过时 | `subagent_toolset` 文档写四个工具；实际注册五个 |
 | 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖 |

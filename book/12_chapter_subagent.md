@@ -1,7 +1,7 @@
 # Subagents
 > Language: [English](./12_chapter_subagent.md) · [中文](./12_chapter_subagent_zh.md)
 
-This chapter explains how Tact spawns **isolated worker agents** through the `task` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, MCP tools, or SQLite session persistence.
+This chapter explains how Tact spawns **isolated worker agents** through the `task` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, or MCP tools. Each subagent gets its own SQLite session row linked via `sessions.ref_id`.
 
 Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/registry.rs`.
 
@@ -19,9 +19,9 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 | Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (6 tools) |
 | MCP tools | Loaded from config | **None** (`MCPToolRouter::new()`) |
 | Hooks | Parent's registered hooks | Empty hook list |
-| Session SQLite | Yes (when wired in `tui.rs`) | **No** — `session_store` stays `None` |
+| Session SQLite | Yes (when wired in `tui.rs`) | **Yes** — new child session; `sessions.ref_id` = parent id (or `''` if parent has none) |
 | Permission manager | Parent's mode | New manager, always `PermissionMode::Default` |
-| TUI channel | Parent's `ui_tx` | **Inherited** — approval popups still work |
+| TUI channel | Parent's `ui_tx` | **Tagged** — stream/steps go to Subagent sticky; `RequestSelect*` passthrough |
 | Cancel flag | Shared on main runtime | **Separate** — user Cancel on parent does not stop an in-flight subagent |
 | Return to parent | N/A | Last assistant text block as tool result string |
 
@@ -67,9 +67,9 @@ sequenceDiagram
     Parent->>Task: ToolUse(name=task, input)
     Note over Parent,Task: PreToolUse + permission (High risk)
     Task->>Sub: Agent::new(static prompt, subagent_toolset, empty MCP)
-    Task->>Sub: with_ui_channel(parent ui_tx) if present
-    Task->>Sub: context.push(User, prompt)
-    Task->>Sub: agent_loop(None)
+    Task->>Sub: ensure_session_row(child_id, ref_id) + with_session
+    Task->>Sub: with_ui_channel(tagged) if present
+    Task->>Sub: agent_loop(Some(prompt))
 
     loop until stop ≠ ToolUse
         Sub->>LLM: stream_message + 6 tool specs
@@ -88,7 +88,7 @@ sequenceDiagram
 
 **Blocking semantics:** `task` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
 
-**Message seeding:** the handler pushes the user message directly onto `runtime.context` (not via `push_message`), then calls `agent_loop(None)`. Because context is already non-empty, the loop does not inject a second copy. With no `session_store`, nothing is written to SQLite.
+**Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `task` allocates a child session id, sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
 
 ---
 
@@ -137,15 +137,7 @@ Compaction and recovery **do** still run inside the subagent loop ([Context Comp
 
 The subagent constructs its **own** `PermissionManager::try_new(PermissionMode::Default)?`. It does not inherit the parent's Plan/Auto mode or allowlist.
 
-If the parent has a TUI channel, the subagent reuses it:
-
-```rust
-if let Some(tx) = ctx.ui_tx {
-    subagent = subagent.with_ui_channel(tx);
-}
-```
-
-Permission prompts and stream updates from the subagent therefore appear in the same terminal session. See [Permission Model](./10_chapter_permission.md).
+If the parent has a TUI channel, the subagent gets a **tagged** channel (`tagged_ui_channel`): stream, steps, thinking, and token usage become `AgentUpdate::Subagent` and render in the sticky **Subagent** tab. `RequestSelect` / `RequestMultiSelect` still pass through so permission popups work on the main TUI. See [Permission Model](./10_chapter_permission.md) and [TUI](./23_chapter_tui.md).
 
 ---
 
@@ -187,7 +179,7 @@ That string becomes the `task` tool's JSON/text result and is appended to the **
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
 | Isolation | Fresh context, 6 tools | N/A |
-| Persistence | In-memory only | `.tact/team/` JSON |
+| Persistence | Own SQLite session (`ref_id` → parent) | `.tact/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 
 See [Team Coordination](./14_chapter_team.md).
@@ -218,7 +210,7 @@ See [Team Coordination](./14_chapter_team.md).
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
 | Separate cancel flag | Parent Cancel may not abort a long-running subagent |
-| No session persistence | Subagent turns are lost if the process crashes mid-`task` |
+| Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |
 | Stale module comment | `subagent_toolset` doc says four tools; five are registered |
 | Same LLM client | `get_llm_client()` — no model override for workers |

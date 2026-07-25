@@ -202,7 +202,7 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-When `task_panel.visible` is true, `render_main_area` **outer-splits** the main Rect (Log above, sticky below) without changing Log wrap/scroll internals. Visibility requires a `TasksChanged` in this session and at least one pending/in_progress item ([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
+When `task_panel.visible` **or** the Subagent pane has content, `render_main_area` **outer-splits** the main Rect (Log above, unified sticky below) without changing Log wrap/scroll internals. The sticky host shows tabs **Tasks | Subagent**: persistent-task checklist vs nested `task` mini-log. Subagent stream/steps never enter the main Log. First `task` in a UI session auto-focuses the Subagent tab; later runs only increment a badge. Visibility for Tasks still requires a `TasksChanged` with pending/in_progress items ([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
 
 Vertical constraints in `lib.rs`:
 

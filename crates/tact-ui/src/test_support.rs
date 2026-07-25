@@ -186,7 +186,7 @@ pub async fn build_test_agent_with_session(
     let session_id = "integration-session".to_string();
     let root_dir = work_dir.display().to_string();
     session_store
-        .ensure_session_row(&session_id, &root_dir)
+        .ensure_session_row(&session_id, &root_dir, "")
         .await
         .expect("ensure session row");
 

@@ -127,6 +127,18 @@ impl App {
 
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
+
+        // Nested subagent traffic → sticky Subagent pane only (not main Log / bar).
+        if let AgentUpdate::Subagent {
+            parent_tool_id,
+            session_id,
+            update: inner,
+        } = update
+        {
+            self.on_subagent_update(parent_tool_id, session_id, *inner);
+            return;
+        }
+
         // Safety net: close an open thinking region on content-producing updates
         // that are not ThinkingChunk. Explicit ThinkingChunk::Finished is preferred;
         // TokenUsage / ModelInfo must not close the region (they can arrive mid-stream).
@@ -285,6 +297,9 @@ impl App {
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed(tasks, reason);
             }
+            AgentUpdate::Subagent { .. } => {
+                // Handled at the top of `handle_agent_update`.
+            }
         }
         // Unified tail scroll state refresh, covering cases where helpers like
         // flush_and_close_thinking / flush_stream_pending inserted messages without
@@ -294,9 +309,54 @@ impl App {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
     }
 
+    fn on_subagent_update(
+        &mut self,
+        parent_tool_id: String,
+        session_id: String,
+        update: AgentUpdate,
+    ) {
+        let is_new_run = self.subagent_pane.session_id != session_id
+            || self.subagent_pane.parent_tool_id != parent_tool_id
+            || !self.subagent_pane.has_content;
+        if is_new_run {
+            self.subagent_pane
+                .begin_run(parent_tool_id.clone(), session_id.clone());
+        }
+
+        // First `task` in this UI session auto-focuses Subagent; later only badge.
+        if !self.sticky_auto_switched_once {
+            self.sticky_tab = StickyTab::Subagent;
+            self.sticky_auto_switched_once = true;
+            self.sticky_expanded = true;
+            self.subagent_badge = 0;
+        } else if self.sticky_tab != StickyTab::Subagent {
+            self.subagent_badge = self.subagent_badge.saturating_add(1);
+        }
+
+        // Fatal agent errors end the nested run visually; tool StepFailed does not
+        // (the subagent loop continues). Idle is also set when the parent `task`
+        // tool finishes (see `on_step_finished`).
+        if matches!(&update, AgentUpdate::Error(_)) {
+            self.subagent_pane.apply_update(update);
+            self.subagent_pane.mark_idle();
+            return;
+        }
+
+        self.subagent_pane.apply_update(update);
+    }
+
     fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
         // let prev = self.task_panel.snapshot.clone();
+        let was_visible = self.task_panel.visible;
         self.task_panel.apply_snapshot(tasks);
+        if self.task_panel.visible && !was_visible {
+            self.sticky_expanded = true;
+            if self.sticky_tab == StickyTab::Subagent && !self.subagent_pane.has_content {
+                self.sticky_tab = StickyTab::Tasks;
+            }
+        }
+        // Mirror expand into legacy field used by older tests / scroll paths.
+        self.task_panel.expanded = self.sticky_expanded;
         // let msgs = self.msgs();
         // let card = crate::widgets::state::task_panel::format_tasks_log_card(
         //     &msgs,
@@ -418,6 +478,9 @@ impl App {
 
         if let Some(step) = self.plan.steps.get_mut(idx) {
             step.output = Some(result.message);
+        }
+        if self.subagent_pane.parent_tool_id == tool_id {
+            self.subagent_pane.mark_idle();
         }
     }
 
@@ -827,7 +890,7 @@ mod lifecycle_tests {
     use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::{
         render::test_harness::render_log_panel_text,
-        widgets::state::{App, Status},
+        widgets::state::{App, Status, StickyTab},
     };
 
     fn make_app() -> App {
@@ -1575,6 +1638,90 @@ mod lifecycle_tests {
         assert_eq!(app.status_bar.token_completion, 50);
         assert_eq!(app.status_bar.token_total, 150);
         assert_eq!(app.status_bar.token_reasoning, 5);
+    }
+
+    #[test]
+    fn subagent_stream_stays_out_of_main_log_and_bar() {
+        let mut app = make_app();
+        let before_msgs = app.raw_messages.len();
+        let before_total = app.status_bar.token_total;
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-1".into(),
+            session_id: "child-sess".into(),
+            update: Box::new(AgentUpdate::StreamChunk("sub says hi\n".into())),
+        });
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-1".into(),
+            session_id: "child-sess".into(),
+            update: Box::new(AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
+                total: 9999,
+                ..Default::default()
+            })),
+        });
+        assert_eq!(app.raw_messages.len(), before_msgs);
+        assert_eq!(app.status_bar.token_total, before_total);
+        assert!(app.subagent_pane.has_content);
+        assert!(
+            app.subagent_pane
+                .lines
+                .iter()
+                .any(|l| l.contains("sub says hi"))
+        );
+        assert_eq!(app.subagent_pane.last_token_total, 9999);
+        assert_eq!(app.sticky_tab, StickyTab::Subagent);
+        assert!(app.sticky_auto_switched_once);
+    }
+
+    #[test]
+    fn second_subagent_run_badges_when_on_tasks_tab() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-1".into(),
+            session_id: "s1".into(),
+            update: Box::new(AgentUpdate::Info("first".into())),
+        });
+        assert!(app.sticky_auto_switched_once);
+        app.sticky_tab = StickyTab::Tasks;
+        app.task_panel.visible = true;
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-2".into(),
+            session_id: "s2".into(),
+            update: Box::new(AgentUpdate::Info("second".into())),
+        });
+        assert_eq!(app.sticky_tab, StickyTab::Tasks);
+        assert!(app.subagent_badge >= 1);
+    }
+
+    #[test]
+    fn subagent_step_failed_keeps_running() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-1".into(),
+            session_id: "s1".into(),
+            update: Box::new(AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "b1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "false".into(),
+                arg_full: "false".into(),
+            }),
+        });
+        app.handle_agent_update(AgentUpdate::Subagent {
+            parent_tool_id: "task-1".into(),
+            session_id: "s1".into(),
+            update: Box::new(AgentUpdate::StepFailed {
+                idx: 0,
+                tool_id: "b1".into(),
+                error: "exit 1".into(),
+            }),
+        });
+        assert!(app.subagent_pane.running);
+        assert!(
+            app.subagent_pane
+                .lines
+                .iter()
+                .any(|l| l.contains("exit 1"))
+        );
     }
 
     #[test]
