@@ -5,8 +5,9 @@ use tact_llm::{Message, Role, get_llm_client};
 use tool_refactor_macros::tool;
 
 use crate::{
-    Agent, AgentSystemPrompt, extract_text,
+    Agent, AgentSystemPrompt,
     consts::TactPath,
+    extract_text,
     mcp::MCPToolRouter,
     permission::{PermissionManager, PermissionMode},
     store::open_sqlite_session_store,
@@ -23,7 +24,7 @@ pub struct SubagentInput {
 }
 
 #[tool(
-    name = "task",
+    name = "spawn_subagent",
     description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
 )]
 /// # Errors
@@ -33,7 +34,7 @@ pub struct SubagentInput {
 /// - The permission manager cannot be created.
 /// - The session store cannot be opened.
 /// - The subagent agent loop encounters an error.
-pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String> {
+pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let client = get_llm_client()?;
     let system_prompt = format!(
         "You are a coding subagent at {}. Complete the given task, then summarize your findings.",

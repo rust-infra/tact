@@ -141,7 +141,7 @@ let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_ro
 - 接收者是否存在（发给未知名会静默创建 `inbox/{name}.json`），
 - teammate 是否 ever 读 inbox。
 
-预期模式是协调 agent 将 roster 作共享状态、inbox 作 durable mailbox，供 eventual worker 抽象消费（[子 agent](./12_chapter_subagent_zh.md) 经 `task` 工具运行是最接近的现有类比，但未与 inbox 接线）。
+预期模式是协调 agent 将 roster 作共享状态、inbox 作 durable mailbox，供 eventual worker 抽象消费（[子 agent](./12_chapter_subagent_zh.md) 经 `spawn_subagent` 工具运行是最接近的现有类比，但未与 inbox 接线）。
 
 ---
 
@@ -176,6 +176,6 @@ let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_ro
 
 - [Store 与持久化](./01_chapter_store_zh.md) — `Store` / `CollectionStore` 原语与 `team/` 路径
 - [工具系统](./07_chapter_tool_zh.md) — `ToolContext`  plumbing 与子 agent 工具集
-- [子 Agent](./12_chapter_subagent_zh.md) — `task` 运行真实嵌套 agent；teammate 不运行
+- [子 Agent](./12_chapter_subagent_zh.md) — `spawn_subagent` 运行真实嵌套 agent；teammate 不运行
 - [Worktree Lanes](./15_chapter_worktree_zh.md) — 真实多 agent 团队会配对的隔离原语
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 子 agent、team、tasks、worktrees

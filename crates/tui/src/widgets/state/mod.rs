@@ -23,9 +23,9 @@ mod select_popup;
 mod slash_command;
 mod status_bar_state;
 mod stream_state;
+pub(crate) mod subagent_pane;
 mod task_dag;
 pub(crate) mod task_panel;
-pub(crate) mod subagent_pane;
 mod thinking_state;
 mod tool_state;
 
@@ -39,9 +39,9 @@ pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
+pub(crate) use subagent_pane::{StickyTab, SubagentPaneState};
 pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
-pub(crate) use subagent_pane::{StickyTab, SubagentPaneState};
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
 pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
 
@@ -228,7 +228,7 @@ pub struct App {
     pub(crate) sticky_tab: StickyTab,
     /// Shared expand flag for the unified sticky host.
     pub(crate) sticky_expanded: bool,
-    /// Nested `task` subagent mini-log.
+    /// Nested `spawn_subagent` mini-log.
     pub(crate) subagent_pane: SubagentPaneState,
     /// Unread subagent events while Tasks tab is focused.
     pub(crate) subagent_badge: u32,

@@ -28,7 +28,7 @@ pub trait Tool: Send + Sync {
 | `ToolContext` | 传给每次调用的共享会话状态 |
 | `ToolRouter` | 名称 → handler 映射；`call()` 分发 |
 | `toolset()` | 主 agent 的完整原生工具列表 |
-| `subagent_toolset()` | `task` 子 agent 的受限列表 |
+| `subagent_toolset()` | `spawn_subagent` 子 agent 的受限列表 |
 | `tool_dispatch.rs` | Agent 侧路由：原生 vs MCP、hooks、权限 |
 
 Agent 构造时，原生 spec 与 MCP spec 合并：
@@ -128,7 +128,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 
 ### 子 agent（`subagent_toolset()`）
 
-`task` 工具 spawn 的隔离 worker 使用受限集合：
+`spawn_subagent` 工具 spawn 的隔离 worker 使用受限集合：
 
 | 工具 | 用途 |
 |------|------|
@@ -218,6 +218,8 @@ pipeline 来绕过应用缓冲。
 墙钟超时默认 1,800 秒；`[tools].bash_timeout_secs = 0` 禁用超时。超时或取消
 在 Unix 终止 shell process group；在非 Unix 终止 child 并 abort 本地 pipe reader，
 避免继承的 handle 让调用一直等待。两条路径都会排空已入队输出，并在返回前 flush 进度。
+进程非 0 退出也会使工具失败（`StepStatus::Failed`），并附带已捕获的 stdout/stderr
+作为 partial output，供模型继续阅读命令输出。
 
 权限与 hooks 在 Phase 1 运行，**早于** `ToolRouter::call`——见 [权限模型](./10_chapter_permission.md)（英文）与 [Agent 生命周期钩子](./09_chapter_hook_zh.md)。
 
@@ -231,7 +233,7 @@ pipeline 来绕过应用缓冲。
 | `bash.rs` | `bash` | 校验 shell；流式 pipe、超时、process-group 取消 |
 | `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory.md)（英文） |
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |
-| `task.rs`, `subagent.rs` | `task` | 用 `subagent_toolset()` spawn 子 agent |
+| `task.rs`, `subagent.rs` | `spawn_subagent` | 用 `subagent_toolset()` spawn 子 agent |
 | `cron.rs` | `cron_*` | 见 [Cron 调度](./16_chapter_cron.md)（英文） |
 | `compact/mod.rs` | `compact` | 上下文压缩触发 |
 

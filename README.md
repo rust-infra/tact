@@ -203,8 +203,8 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 |----------|-------|
 | **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch` |
 | **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
-| **Task Management** | `task`, `task_create`, `task_get`, `task_list`, `task_update` |
-| **Team & Sub-agents** | `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
+| **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
+| **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
 | **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
 | **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events` |
 | **Scheduling** | `cron_create`, `cron_list`, `cron_delete` |
@@ -348,7 +348,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `background_run` | Run a command in the background |
 | `check_background` | Check background task status |
 | `sleep` | Wait for N milliseconds |
-| `task` | Spawn a sub-agent with fresh context |
+| `spawn_subagent` | Spawn a sub-agent with fresh context |
 | `task_create` | Create a persistent task |
 | `task_get` | Get task details by ID |
 | `task_list` | List all tasks with status |

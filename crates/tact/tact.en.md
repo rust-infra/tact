@@ -193,7 +193,7 @@ The full toolset includes:
 - skill: `load_skill`
 - memory: `save_memory`
 - compact: `compact`
-- subagent: `task`
+- subagent: `spawn_subagent`
 - tasks: `task_create`, `task_get`, `task_list`, `task_update`
 - background: `background_run`, `background_check`
 - cron: `cron_create`, `cron_delete`, `cron_list`

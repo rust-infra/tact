@@ -2,19 +2,19 @@
 
 > 语言：[中文](./12_chapter_subagent_zh.md) · [English](./12_chapter_subagent.md)
 
-本章说明 Tact 如何通过 `task` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、共享文件系统与 `ToolContext` 服务，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
+本章说明 Tact 如何通过 `spawn_subagent` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、共享文件系统与 `ToolContext` 服务，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
 
 实现：`crates/tact/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact/src/tool/registry.rs`。
 
-勿与 [团队协调](./14_chapter_team_zh.md) 混淆 —— `spawn_teammate` 仅写入 roster/inbox 记录；`task` 实际运行嵌套的 `Agent::agent_loop`。
+勿与 [团队协调](./14_chapter_team_zh.md) 混淆 —— `spawn_teammate` 仅写入 roster/inbox 记录；`spawn_subagent` 实际运行嵌套的 `Agent::agent_loop`。
 
 ---
 
 ## 1. 子 Agent 是什么
 
-| 属性 | 主 Agent | 子 Agent（`task` 工具） |
+| 属性 | 主 Agent | 子 Agent（`spawn_subagent` 工具） |
 |------|----------|-------------------------|
-| 入口 | TUI / headless `agent_loop` | 父级在工具执行期间调用 `task` |
+| 入口 | TUI / headless `agent_loop` | 父级在工具执行期间调用 `spawn_subagent` |
 | 对话历史 | 完整会话 context | 仅单条 user prompt（无父级消息） |
 | System prompt | 动态 Tera 模板（skills、memory、CLAUDE.md） | 固定静态字符串 |
 | Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（6 个） |
@@ -30,7 +30,7 @@
 
 ---
 
-## 2. `task` 工具
+## 2. `spawn_subagent` 工具
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -40,10 +40,10 @@ pub struct SubagentInput {
 }
 
 #[tool(
-    name = "task",
+    name = "spawn_subagent",
     description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
 )]
-pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String>
+pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String>
 ```
 
 | 字段 | 角色 |
@@ -51,7 +51,7 @@ pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String>
 | `prompt` | 成为子 agent 的唯一 user 消息 |
 | `description` | 仅 schema 提示给模型；**handler 不读取** |
 
-仅主 agent 的 `toolset()` 注册 `TaskTool`。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `task`。
+仅主 agent 的 `toolset()` 注册 `SpawnSubagentTool`。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
 
 ---
 
@@ -87,9 +87,9 @@ sequenceDiagram
     Task-->>Parent: Ok(summary) as ToolResult
 ```
 
-**阻塞语义：** `task` 为 `async` 并 await 完整子 agent 循环。从父级视角它是一个 tool call，内部可能运行多轮 LLM。父级 `agent_loop` 在 summary 字符串返回前暂停。
+**阻塞语义：** `spawn_subagent` 为 `async` 并 await 完整子 agent 循环。从父级视角它是一个 tool call，内部可能运行多轮 LLM。父级 `agent_loop` 在 summary 字符串返回前暂停。
 
-**消息播种：** handler 调用 `agent_loop(Some(user_prompt))`，经 `push_message` 写入并持久化到子 session。循环前 `task` 分配子 session id，将 `ref_id` 设为父 session id（或 `''`），并调用 `with_session`。UI 使用打标 `ui_tx`（`with_ui_channel` 同步 `tool_context.ui_tx`，使 `ToolProgress` 也被打标）。
+**消息播种：** handler 调用 `agent_loop(Some(user_prompt))`，经 `push_message` 写入并持久化到子 session。循环前 `spawn_subagent` 分配子 session id，将 `ref_id` 设为父 session id（或 `''`），并调用 `with_session`。UI 使用打标 `ui_tx`（`with_ui_channel` 同步 `tool_context.ui_tx`，使 `ToolProgress` 也被打标）。
 
 ---
 
@@ -107,7 +107,7 @@ sequenceDiagram
 
 与主 agent 相比 notable **省略**：
 
-- 无 `task`、`load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
+- 无 `spawn_subagent`、`load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
 - 无 cron、team、worktree 或持久任务管理工具
 - 无 MCP 前缀工具
 
@@ -134,7 +134,7 @@ let system_prompt = format!(
 
 ## 6. 权限与 UI
 
-`task` 在 `PermissionManager::classify_risk` 中分类为 **High** 风险 —— Default 模式始终触发 Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌套 agent。
+`spawn_subagent` 在 `PermissionManager::classify_risk` 中分类为 **High** 风险 —— Default 模式始终触发 Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌套 agent。
 
 子 agent 构造 **自己的** `PermissionManager::try_new(PermissionMode::Default)?`。不继承父级 Plan/Auto 模式或 allowlist。
 
@@ -144,7 +144,7 @@ let system_prompt = format!(
 
 ## 7. 调度交互
 
-在 `crates/tact/src/agent/tool_schedule.rs` 中，`task` 落入默认 `_ => ToolResources::barrier()` 分支。`task` 调用 never 与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。
+在 `crates/tact/src/agent/tool_schedule.rs` 中，`spawn_subagent` 落入默认 `_ => ToolResources::barrier()` 分支。`spawn_subagent` 调用 never 与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。
 
 ---
 
@@ -170,13 +170,13 @@ let summary = subagent
 - 若模型在 tool-use 轮结束而无最终文本回复，父级可能收到 `(no summary)`。
 - 中间 assistant 推理不返回 —— 仅最后 assistant 文本快照。
 
-该字符串成为 `task` 工具的 JSON/text 结果，作为普通 `ToolResult` 追加到 **父级** context。
+该字符串成为 `spawn_subagent` 工具的 JSON/text 结果，作为普通 `ToolResult` 追加到 **父级** context。
 
 ---
 
 ## 9. 子 Agent vs Teammate
 
-| | `task`（子 agent） | `spawn_teammate`（team） |
+| | `spawn_subagent`（子 agent） | `spawn_teammate`（team） |
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
 | 隔离 | 全新 context，6 个工具 | N/A |
@@ -191,12 +191,12 @@ let summary = subagent
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `task` 工具 handler — spawn、循环、summary 提取 |
-| `crates/tact/src/tool/mod.rs` | `TaskTool` 实现 |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `TaskTool`；`subagent_toolset()` |
+| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` 工具 handler — spawn、循环、summary 提取 |
+| `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` 实现 |
+| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `SpawnSubagentTool`；`subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`、`agent_loop`、`build_system_prompt`、`ensure_session` |
-| `crates/tact/src/permission/mod.rs` | `task` → `CapabilityRisk::High` |
-| `crates/tact/src/agent/tool_schedule.rs` | `task` 作为调度 barrier |
+| `crates/tact/src/permission/mod.rs` | `spawn_subagent` → `CapabilityRisk::High` |
+| `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` 作为调度 barrier |
 | `ARCHITECTURE.md` | 工具表中的一行摘要 |
 
 ---
@@ -205,7 +205,7 @@ let summary = subagent
 
 | 缺口 | 详情 |
 |------|------|
-| 无嵌套 `task` | 工具集设计如此，限制分解深度 |
+| 无嵌套 `spawn_subagent` | 工具集设计如此，限制分解深度 |
 | 子 agent 无 MCP | worker 内不可用外部工具 |
 | 无父级 hook | PreToolUse / PostToolUse 策略不包裹子 agent 工具 |
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
@@ -370,7 +370,7 @@ flowchart LR
 
 - [工具系统](./07_chapter_tool_zh.md) — `toolset` vs `subagent_toolset`、`ToolContext`
 - [任务与工具调度](./11_chapter_task_zh.md) — barrier 语义
-- [权限模型](./10_chapter_permission_zh.md) — 高风险 `task`、继承 `ui_tx`
+- [权限模型](./10_chapter_permission_zh.md) — 高风险 `spawn_subagent`、继承 `ui_tx`
 - [System Prompt](./04_chapter_prompt_zh.md) — 主 agent 动态 prompt
 - [Skill Registry](./02_chapter_skill_zh.md) — 子 agent 不可用 `load_skill`
 - [团队协调](./14_chapter_team_zh.md) — 仅 roster 的 teammate

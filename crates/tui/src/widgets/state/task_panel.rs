@@ -1,6 +1,6 @@
 //! Sticky task-progress panel state and pure format helpers.
 
-use tact_protocol::{TaskSnapshot, TaskStatusSnapshot, TasksChangeReason};
+use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
 use crate::i18n::Messages;
 
@@ -245,107 +245,9 @@ pub(crate) fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) 
     }
 }
 
-/// Short Log card: primary action + changed fields only.
-#[allow(dead_code)]
-#[allow(clippy::collapsible_if)]
-pub(crate) fn format_tasks_log_card(
-    _msgs: &Messages,
-    reason: TasksChangeReason,
-    prev: &[TaskSnapshot],
-    next: &[TaskSnapshot],
-) -> String {
-    let focus = focus_changed_task(reason, prev, next);
-    let Some(curr) = focus else {
-        return "📋 Tasks updated".into();
-    };
-    let prev_t = prev.iter().find(|t| t.id == curr.id);
-    let primary = primary_action_for_change(reason, prev_t, curr);
-    let mut out = format!("📋 # Task.{} · {primary}", curr.id);
-
-    if prev_t.map(|p| p.subject.as_str()) != Some(curr.subject.as_str())
-        || matches!(reason, TasksChangeReason::Created)
-    {
-        if !curr.subject.is_empty() {
-            out.push_str(&format!("\n  任务名: {}", curr.subject));
-        }
-    }
-    let prev_owner = prev_t.map(|p| p.owner.as_str()).unwrap_or("");
-    if prev_owner != curr.owner && !curr.owner.is_empty() {
-        out.push_str(&format!("\n  负责人:{}", curr.owner));
-    }
-    let prev_bb = prev_t.map(|p| p.blocked_by.as_slice()).unwrap_or(&[]);
-    if prev_bb != curr.blocked_by.as_slice() {
-        out.push_str(&format!(
-            "\n  被阻塞于: {}",
-            tact::task::format_id_transition(prev_bb, &curr.blocked_by)
-        ));
-    }
-    let prev_bl = prev_t.map(|p| p.blocks.as_slice()).unwrap_or(&[]);
-    if prev_bl != curr.blocks.as_slice() {
-        out.push_str(&format!(
-            "\n  阻塞: {}",
-            tact::task::format_id_transition(prev_bl, &curr.blocks)
-        ));
-    }
-    out
-}
-
-#[allow(dead_code)]
-fn focus_changed_task<'a>(
-    reason: TasksChangeReason,
-    prev: &[TaskSnapshot],
-    next: &'a [TaskSnapshot],
-) -> Option<&'a TaskSnapshot> {
-    match reason {
-        TasksChangeReason::Created => next
-            .iter()
-            .find(|t| prev.iter().all(|p| p.id != t.id))
-            .or_else(|| next.last()),
-        TasksChangeReason::Updated => next
-            .iter()
-            .find(|t| {
-                prev.iter()
-                    .find(|p| p.id == t.id)
-                    .map(|p| p != *t)
-                    .unwrap_or(true)
-            })
-            .or_else(|| next.last()),
-    }
-}
-
-#[allow(dead_code)]
-fn primary_action_for_change(
-    reason: TasksChangeReason,
-    prev: Option<&TaskSnapshot>,
-    curr: &TaskSnapshot,
-) -> &'static str {
-    if matches!(reason, TasksChangeReason::Created) || prev.is_none() {
-        return "创建任务";
-    }
-    let prev = prev.unwrap();
-    if prev.status != curr.status {
-        return match curr.status {
-            TaskStatusSnapshot::InProgress => "执行任务",
-            TaskStatusSnapshot::Completed => "完成任务",
-            TaskStatusSnapshot::Pending => "重置任务",
-        };
-    }
-    if prev.owner != curr.owner {
-        return "设置负责人";
-    }
-    if prev.blocked_by != curr.blocked_by {
-        return "被阻塞于";
-    }
-    if prev.blocks != curr.blocks {
-        return "阻塞";
-    }
-    "空更新"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::{Language, Messages};
 
     fn snap(id: u64, status: TaskStatusSnapshot) -> TaskSnapshot {
         TaskSnapshot {
@@ -385,16 +287,6 @@ mod tests {
         let lines = format_checklist_lines(&many);
         assert!(lines[0].contains("#0"), "{lines:?}");
         assert!(lines[2].contains("#2"), "{lines:?}");
-    }
-
-    #[test]
-    fn format_tasks_log_card_short_diff() {
-        let msgs = Messages::by_language(Language::English);
-        let prev = vec![snap(1, TaskStatusSnapshot::InProgress)];
-        let mut next = snap(1, TaskStatusSnapshot::Completed);
-        next.subject = "后端接口".into();
-        let text = format_tasks_log_card(&msgs, TasksChangeReason::Updated, &prev, &[next]);
-        assert!(text.starts_with("📋 # Task.1 · 完成任务"), "got:\n{text}");
     }
 
     #[test]

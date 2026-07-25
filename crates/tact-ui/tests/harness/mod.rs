@@ -293,14 +293,14 @@ pub fn web_fetch_tool_use(id: &str, url: &str) -> ContentBlock {
     }
 }
 
-pub fn task_tool_use(id: &str, prompt: &str, description: Option<&str>) -> ContentBlock {
+pub fn spawn_subagent_tool_use(id: &str, prompt: &str, description: Option<&str>) -> ContentBlock {
     let mut input = serde_json::json!({ "prompt": prompt });
     if let Some(d) = description {
         input["description"] = serde_json::Value::String(d.to_string());
     }
     ContentBlock::ToolUse {
         id: id.to_string(),
-        name: "task".to_string(),
+        name: "spawn_subagent".to_string(),
         input,
     }
 }

@@ -228,7 +228,7 @@ sequenceDiagram
 
 ## Related Docs
 
-- [Ch 11 Tool Scheduling](./11_chapter_task.md) — wave/barrier model (includes `task` tool as barrier, not TaskManager API)
+- [Ch 11 Tool Scheduling](./11_chapter_task.md) — wave/barrier model (includes `spawn_subagent` tool as barrier, not TaskManager API)
 - [Cron Scheduling](./16_chapter_cron.md) — cron index file layout
 - [Persistent Memory](./03_chapter_memory.md) — Markdown memories (not JSON store)
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store and token usage notes

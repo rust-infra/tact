@@ -323,7 +323,7 @@ impl App {
                 .begin_run(parent_tool_id.clone(), session_id.clone());
         }
 
-        // First `task` in this UI session auto-focuses Subagent; later only badge.
+        // First `spawn_subagent` in this UI session auto-focuses Subagent; later only badge.
         if !self.sticky_auto_switched_once {
             self.sticky_tab = StickyTab::Subagent;
             self.sticky_auto_switched_once = true;
@@ -334,8 +334,8 @@ impl App {
         }
 
         // Fatal agent errors end the nested run visually; tool StepFailed does not
-        // (the subagent loop continues). Idle is also set when the parent `task`
-        // tool finishes (see `on_step_finished`).
+        // (the subagent loop continues). Idle is also set when the parent
+        // `spawn_subagent` tool finishes (see `on_step_finished`).
         if matches!(&update, AgentUpdate::Error(_)) {
             self.subagent_pane.apply_update(update);
             self.subagent_pane.mark_idle();
@@ -345,8 +345,9 @@ impl App {
         self.subagent_pane.apply_update(update);
     }
 
+    /// Snapshot changes only drive the sticky panel; the Log already shows the
+    /// originating `task_*` tool row, so no extra system message is appended.
     fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
-        // let prev = self.task_panel.snapshot.clone();
         let was_visible = self.task_panel.visible;
         self.task_panel.apply_snapshot(tasks);
         if self.task_panel.visible && !was_visible {
@@ -357,16 +358,6 @@ impl App {
         }
         // Mirror expand into legacy field used by older tests / scroll paths.
         self.task_panel.expanded = self.sticky_expanded;
-        // let msgs = self.msgs();
-        // let card = crate::widgets::state::task_panel::format_tasks_log_card(
-        //     &msgs,
-        //     reason,
-        //     &prev,
-        //     &self.task_panel.snapshot,
-        // );
-        // Blank row so the checklist does not sit flush against the tool card.
-        // self.add_new_line();
-        // self.add_system_message(card);
     }
 
     fn on_step_added(&mut self, step: PlanStep) {
@@ -916,9 +907,10 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn tasks_changed_shows_panel_and_appends_log() {
+    fn tasks_changed_shows_panel_without_touching_log() {
         let mut app = make_app();
         assert!(!app.task_panel.visible);
+        let log_len_before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::TasksChanged {
             tasks: vec![TaskSnapshot {
                 id: 1,
@@ -937,29 +929,15 @@ mod lifecycle_tests {
             app.task_panel.expanded,
             "sticky should default to expanded on first show"
         );
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("Fix auth")),
-            "Log detail should mention subject"
+        assert_eq!(
+            app.task_panel.snapshot.first().map(|t| t.subject.as_str()),
+            Some("Fix auth"),
+            "sticky snapshot should carry the subject"
         );
-        assert!(
-            app.raw_messages.iter().any(|m| {
-                m.starts_with("📋 ") && (m.contains("创建任务") || m.contains("Task.1"))
-            }),
-            "short Log card expected, got:\n{:?}",
-            app.raw_messages
-        );
-        assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("任务名: Fix auth") || m.contains("Fix auth")),
-            "short card should include subject, got:\n{:?}",
-            app.raw_messages
-        );
-        assert!(
-            !app.raw_messages
-                .iter()
-                .any(|m| m.contains("created [>]") || m.contains("updated [>]")),
-            "header and checklist must not share one row, got:\n{:?}",
+        assert_eq!(
+            app.raw_messages.len(),
+            log_len_before,
+            "the task_* tool row already covers this in the Log, got:\n{:?}",
             app.raw_messages
         );
     }
@@ -1716,12 +1694,7 @@ mod lifecycle_tests {
             }),
         });
         assert!(app.subagent_pane.running);
-        assert!(
-            app.subagent_pane
-                .lines
-                .iter()
-                .any(|l| l.contains("exit 1"))
-        );
+        assert!(app.subagent_pane.lines.iter().any(|l| l.contains("exit 1")));
     }
 
     #[test]

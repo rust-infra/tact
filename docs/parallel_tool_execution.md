@@ -66,7 +66,7 @@ Each cleared tool is mapped to the workspace files it touches:
 | `write_file`, `edit_file` | `input.path` | write |
 | `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write (serialize with each other) |
 | `web_search`, `web_fetch`, `lsp`, `sleep` | — | independent (never conflicts) |
-| **everything else** (`bash`, `apply_patch`, `task`/subagent, MCP, state mutations, unknown) | — | **barrier** (conflicts with all) |
+| **everything else** (`bash`, `apply_patch`, `spawn_subagent`, MCP, state mutations, unknown) | — | **barrier** (conflicts with all) |
 
 Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths
 **overlap** when they are equal or one is an ancestor of the other (so a write

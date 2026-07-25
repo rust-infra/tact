@@ -203,7 +203,7 @@ flowchart TB
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-当 `task_panel.visible` **或** Subagent pane 有内容时，`render_main_area` 对外层主区做 **outer-split**（上 Log、下统一 sticky），不改动 Log wrap/scroll 内核。sticky 主机显示 tab **Tasks | Subagent**：持久任务清单 vs 嵌套 `task` 迷你 Log。子 agent 流式/步骤不进主 Log。本 UI 会话第一次 `task` 自动切到 Subagent tab；之后仅角标。Tasks 可见性仍要求本会话出现过 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、[第 25 章](./25_chapter_protocol_zh.md)）。
+当 `task_panel.visible` **或** Subagent pane 有内容时，`render_main_area` 对外层主区做 **outer-split**（上 Log、下统一 sticky），不改动 Log wrap/scroll 内核。sticky 主机显示 tab **Tasks | Subagent**：持久任务清单 vs 嵌套 `spawn_subagent` 迷你 Log。子 agent 流式/步骤不进主 Log。本 UI 会话第一次 `spawn_subagent` 自动切到 Subagent tab；之后仅角标。Tasks 可见性仍要求本会话出现过 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、[第 25 章](./25_chapter_protocol_zh.md)）。
 
 `lib.rs` 中垂直约束：
 

@@ -399,6 +399,14 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     if let Some(reason) = failure_reason {
         return Err(error_with_partial(&reason, &capture));
     }
+    let status = exit_status.unwrap_or_default();
+    if !status.success() {
+        let reason = match status.code() {
+            Some(code) => format!("exit code {code}"),
+            None => "terminated by signal".to_string(),
+        };
+        return Err(error_with_partial(&reason, &capture));
+    }
     let output = capture.detail_text();
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -427,6 +435,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn bash_fails_on_nonzero_exit_and_keeps_output() {
+        let context = test_context("bash_nonzero_exit");
+
+        let error = run_tool(
+            &context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": "printf 'boom\\n' >&2; exit 7" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("exit code 7"),
+            "expected exit code in error: {error}"
+        );
+        assert!(
+            error.contains("boom"),
+            "expected partial stderr in error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_zero_exit_still_succeeds() {
+        let context = test_context("bash_zero_exit");
+
+        let output = run_tool(
+            &context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": "printf 'ok\\n'" }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "ok");
     }
 
     #[test]

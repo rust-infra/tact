@@ -268,7 +268,7 @@ flowchart TD
 Special cases:
 
 - `read_file` and tools whose names start with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, or `find` are classified as `Read`.
-- `task` is always `High` because it spawns a sub-agent with full filesystem/shell access.
+- `spawn_subagent` is always `High` because it spawns a sub-agent with full filesystem/shell access.
 - `bash` commands containing `rm -rf`, `sudo`, `shutdown`, or `reboot` are always `High`.
 - Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read`.
 
@@ -367,7 +367,7 @@ Recovery mechanisms inside `agent_loop()`:
 
 | Feature | Module | Description |
 |---|---|---|
-| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `sleep`). |
+| `spawn_subagent` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `sleep`). |
 | Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.tact/tasks/`. |
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.tact/worktrees/`. |

@@ -229,7 +229,7 @@ sequenceDiagram
 
 ## 相关文档
 
-- [第 11 章 工具调度](./11_chapter_task_zh.md) — wave/barrier 模型（含 `task` 工具作为 barrier，非 TaskManager API）
+- [第 11 章 工具调度](./11_chapter_task_zh.md) — wave/barrier 模型（含 `spawn_subagent` 工具作为 barrier，非 TaskManager API）
 - [Cron 调度](./16_chapter_cron_zh.md) — cron 索引文件布局
 - [持久化记忆](./03_chapter_memory_zh.md) — Markdown 记忆（非 JSON store）
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store 与 token 用量说明

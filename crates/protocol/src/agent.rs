@@ -199,7 +199,7 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
-    /// Update from a nested `task` subagent. TUI routes this to the Subagent
+    /// Update from a nested `spawn_subagent` run. TUI routes this to the Subagent
     /// sticky pane; must not drive main Log / main task lifecycle.
     Subagent {
         parent_tool_id: String,

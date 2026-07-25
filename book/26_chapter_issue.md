@@ -29,6 +29,74 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-26 — Subagent tool renamed `task` → `spawn_subagent`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 7, Ch 10, Ch 11, Ch 12, Ch 19 |
+
+**Symptom / motivation:** The subagent spawn tool was named `task`, sharing a prefix with the four persistent-task tools (`task_create` / `task_get` / `task_list` / `task_update`) while meaning something entirely different. Models and readers conflated "the `task` tool finished" with "the task record is complete" — an observed failure left a checklist item Pending after its subagent had returned. Ch 1 / 11 / 12 / 19 each carried a disambiguation note as a workaround.
+
+**Decision:** Rename the tool to `spawn_subagent` (verb + object, matching its description); wrapper type `TaskTool` → `SpawnSubagentTool`, handler `task()` → `spawn_subagent()`. The persistent-task tools keep the `task_*` prefix. `spawn_subagent` remains `CapabilityRisk::High` and remains a scheduling barrier.
+
+**Behavior after:** The model-facing tool name is `spawn_subagent`; no tool named `task` exists. Restored sessions containing historical `task` tool_use blocks still load — `load_history` renders only `Text` blocks and the router resolves names only for live dispatch, so an absent name causes no error. The in-memory `always_allowed_tools` list is session-scoped, so nothing needs migrating.
+
+**Pointers:** `crates/tact/src/tool/subagent.rs`, `crates/tact/src/tool/registry.rs`, `crates/tact/src/permission/mod.rs`
+
+---
+
+## 1. 2026-07-26 — `TasksChanged` no longer appends a Log card
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | Ch 19, Ch 23 |
+
+**Symptom / motivation:** `on_tasks_changed` used to append a `📋 # Task.N · …` system message, duplicating the `task_*` tool row that already renders the same title. Commit `4116c23` commented the emission out as collateral damage rather than removing it, leaving `format_tasks_log_card` behind `#[allow(dead_code)]` and `tasks_changed_shows_panel_and_appends_log` red.
+
+**Decision:** Keep the tool row as the only Log representation. Delete `format_tasks_log_card`, `focus_changed_task`, and `primary_action_for_change`; rewrite the test to assert the sticky updates while the Log length stays unchanged. `AgentUpdate::TasksChanged` keeps its `reason` field — producers and the protocol are unchanged.
+
+**Behavior after:** A `task_create` / `task_update` call produces one Log row (the tool card) plus a sticky refresh, never two.
+
+**Pointers:** `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/state/task_panel.rs`
+
+---
+
+## 1. 2026-07-26 — Sticky host separates tabs from body
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 |
+
+**Symptom / motivation:** `sticky_host_content_height` reserved `1 + body` rows and the renderer drew the body at `inner.y + 1`, so the tab row (`[Tasks] [Subagent] …`) sat flush against `── Pending ──` / the subagent log, with the Log box border immediately above. Everything read as one crowded block.
+
+**Decision:** Reserve one extra row (`2 + body` for Tasks, `3 + header + lines` for Subagent) and draw a muted full-width `─` rule between the tab row and the body.
+
+**Behavior after:** The expanded sticky shows tabs, a hairline, then content. Collapsed height is unchanged at one row.
+
+**Pointers:** `crates/tui/src/render/task_panel.rs`
+
+---
+
+## 1. 2026-07-26 — Bash non-zero exit is Failed
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 7 |
+
+**Symptom / motivation:** `bash` collected `ExitStatus` but ignored it, so `cargo test` failures and other non-zero exits still rendered as `Success · …` while stdout/stderr showed the error.
+
+**Decision:** After the process exits cleanly (no timeout/cancel/pipe failure), `!status.success()` returns `Err` via `error_with_partial` (`exit code N` or `terminated by signal`), mapping to `StepStatus::Failed` with captured output retained for the model.
+
+**Behavior after:** Non-zero shell exits show Failed in the TUI; zero exits unchanged.
+
+**Pointers:** `crates/tact/src/tool/bash.rs`
+
+---
+
 ## 1. 2026-07-25 — Subagent sticky tab (clean main Log)
 
 | Field | Value |

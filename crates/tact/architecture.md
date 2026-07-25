@@ -59,7 +59,7 @@ graph TB
         BackgroundRun
     end
     subgraph TaskTools["Task / Subagent"]
-        TaskSubagent
+        SpawnSubagent
         TaskCreate
         TaskGet
         TaskList

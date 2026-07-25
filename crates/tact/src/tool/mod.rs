@@ -58,6 +58,9 @@ mod read_file;
 mod registry;
 mod sleep;
 mod subagent;
+#[cfg(feature = "test-support")]
+pub mod subagent_ui;
+#[cfg(not(feature = "test-support"))]
 mod subagent_ui;
 mod task;
 mod team;

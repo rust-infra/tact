@@ -248,7 +248,7 @@ These belong to the agent runtime. This boundary prevents the tool layer from in
 - Skill: `load_skill`
 - Memory: `save_memory`
 - Compact: `compact`
-- Subagent: `task`
+- Subagent: `spawn_subagent`
 - Task: `task_create`, `task_get`, `task_list`, `task_update`
 - Background: `background_run`, `background_check`
 - Cron: `cron_create`, `cron_delete`, `cron_list`
@@ -481,7 +481,7 @@ Both tool categories pass through permission checks before execution, and result
 
 ## Worktree & Subagents
 
-The `task` tool can launch fresh-context subagents. A subagent has its own `Agent` instance and independent context but shares the base dependencies in `ToolContext`.
+The `spawn_subagent` tool can launch fresh-context subagents. A subagent has its own `Agent` instance and independent context but shares the base dependencies in `ToolContext`.
 
 Worktree tools let the agent place tasks into isolated git worktrees:
 

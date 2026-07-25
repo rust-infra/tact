@@ -61,7 +61,7 @@ MCP 名使用前缀 `mcp__`，随后 `server__tool`，以 **最右侧** 的 `__`
 |------|------|
 | **Read** | `read_file`；以 `read`、`list`、`get`、`show`、`search`、`query`、`inspect`、`find` 开头的名称 |
 | **Read**（bash） | 简单只读命令：`ls`、`pwd`、`cat`、`head`、`tail`、`wc`、`rg`、`grep`；或 `git status` / `diff` / `log` / `show` / `branch`——仅当命令无 shell 元字符（`;`、 `&`、 `\|`、 `` ` ``、`$`、`>`、`<`） |
-| **High** | `task`（spawn 具备完整文件系统与 shell 访问的子 agent）；以 `delete`、`remove`、`drop`、`shutdown` 开头；bash 匹配高风险模式（见 [§7 Shell 高风险检测](#7-shell-高风险检测)） |
+| **High** | `spawn_subagent`（spawn 具备完整文件系统与 shell 访问的子 agent）；以 `delete`、`remove`、`drop`、`shutdown` 开头；bash 匹配高风险模式（见 [§7 Shell 高风险检测](#7-shell-高风险检测)） |
 | **Write** | 其余一切（未知 native 工具与非 read bash 的默认） |
 
 MCP 工具在解析后的 **短** 工具名上遵循相同前缀规则。例如 `mcp__demo__db__query` 因 `query` 匹配 read 前缀而分类为 **Read**。
@@ -308,7 +308,7 @@ sequenceDiagram
     end
 ```
 
-`PermissionManager` 在 `AgentRuntime`（`crates/tact/src/agent/mod.rs`）上，不在 `ToolContext`。`task` 工具创建的子 agent 有独立 manager（始终 `PermissionMode::Default`），但继承主 agent 的 `ui_tx`，权限弹窗仍可用。
+`PermissionManager` 在 `AgentRuntime`（`crates/tact/src/agent/mod.rs`）上，不在 `ToolContext`。`spawn_subagent` 工具创建的子 agent 有独立 manager（始终 `PermissionMode::Default`），但继承主 agent 的 `ui_tx`，权限弹窗仍可用。
 
 ---
 
@@ -370,7 +370,7 @@ mode = "default"   # "default" | "plan" | "auto"
 ## Related Docs
 
 - [任务与工具调度](./11_chapter_task_zh.md) — 权限所在的三阶段流水线
-- [子 Agent](./12_chapter_subagent_zh.md) — `task` 为 High 风险、独立 `PermissionManager`、继承 `ui_tx`
+- [子 Agent](./12_chapter_subagent_zh.md) — `spawn_subagent` 为 High 风险、独立 `PermissionManager`、继承 `ui_tx`
 - [Agent 生命周期 Hook](./09_chapter_hook_zh.md) — PreToolUse 紧接在权限检查之前
 - [ARCHITECTURE.md](../ARCHITECTURE.md#3-permission-system) — 架构图与模式表
 - [docs/state_machines.md](../docs/state_machines.md) — 权限决策状态机

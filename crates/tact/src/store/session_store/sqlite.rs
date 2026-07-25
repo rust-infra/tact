@@ -27,12 +27,10 @@ impl SqliteSessionStore {
                 .unwrap_or(false)
         });
         if !has_ref_id {
-            sqlx::query(
-                "ALTER TABLE sessions ADD COLUMN ref_id TEXT NOT NULL DEFAULT ''",
-            )
-            .execute(pool)
-            .await
-            .context("failed to add sessions.ref_id column")?;
+            sqlx::query("ALTER TABLE sessions ADD COLUMN ref_id TEXT NOT NULL DEFAULT ''")
+                .execute(pool)
+                .await
+                .context("failed to add sessions.ref_id column")?;
         }
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_ref_id ON sessions(ref_id)")
             .execute(pool)

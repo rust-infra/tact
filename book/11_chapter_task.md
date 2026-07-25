@@ -3,7 +3,7 @@
 
 This chapter walks through what happens after the LLM decides to act: how Tact turns a set of `ToolUse` blocks into executed commands, results, and the next conversation turn.
 
-**Not to be confused with** [Persistent Task Manager](./19_chapter_persistent_tasks.md) (`task_create` / `task_list` tools) or the [Subagents](./12_chapter_subagent.md) `task` spawn tool.
+**Not to be confused with** [Persistent Task Manager](./19_chapter_persistent_tasks.md) (`task_create` / `task_list` tools) or the [Subagents](./12_chapter_subagent.md) `spawn_subagent` spawn tool.
 
 ---
 
@@ -126,7 +126,7 @@ Before a tool enters scheduling, `PermissionManager` classifies its intent:
 
 - **Read-only**: generally allowed.
 - **Write**: asks in Default mode (unless allowlisted); auto-approved in Auto mode; denied in Plan mode.
-- **High-risk**: always asks (even if allowlisted); includes `task`, destructive tool names, and dangerous bash patterns.
+- **High-risk**: always asks (even if allowlisted); includes `spawn_subagent`, destructive tool names, and dangerous bash patterns.
 
 See [Permission Model](./10_chapter_permission.md) for classification rules, modes, and the TUI approval flow.
 
@@ -193,7 +193,7 @@ If a tool has global side effects (shell commands, subagents, MCP state), leave 
 - [Tool System](./07_chapter_tool.md) — `ToolRouter` and native tool dispatch
 - [Context Compaction](./05_chapter_compact.md) — `persist_large_output` and manual `compact` detection in dispatch
 - [Background Tasks](./13_chapter_background.md) — async counterpart to synchronous `bash` steps
-- [Subagents](./12_chapter_subagent.md) — nested `task` tool and scheduling barrier
+- [Subagents](./12_chapter_subagent.md) — nested `spawn_subagent` tool and scheduling barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Tool Rendering](../docs/tool_rendering.md)
 - [Token Usage Schema](../docs/token_usage_schema.md)

@@ -13,7 +13,7 @@ use super::{
     memory::SaveMemoryTool,
     read_file::ReadFileTool,
     sleep::SleepTool,
-    subagent::TaskTool,
+    subagent::SpawnSubagentTool,
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
     team::{
         BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
@@ -44,7 +44,7 @@ pub fn toolset() -> ToolRouter {
         .route(LoadSkillTool)
         .route(SaveMemoryTool)
         .route(CompactTool)
-        .route(TaskTool)
+        .route(SpawnSubagentTool)
         .route(TaskCreateTool)
         .route(TaskGetTool)
         .route(TaskListTool)

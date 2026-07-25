@@ -27,7 +27,7 @@ pub trait Tool: Send + Sync {
 | `ToolContext` | Shared session state passed to every call |
 | `ToolRouter` | Name → handler map; `call()` dispatch |
 | `toolset()` | Full native tool list for the main agent |
-| `subagent_toolset()` | Restricted list for `task` sub-agents |
+| `subagent_toolset()` | Restricted list for `spawn_subagent` sub-agents |
 | `tool_dispatch.rs` | Agent-side routing: native vs MCP, hooks, permissions |
 
 At agent construction, native specs are merged with MCP specs:
@@ -128,7 +128,7 @@ Registers 40+ tools including filesystem, shell, web, tasks, cron, team, worktre
 
 ### Sub-agent (`subagent_toolset()`)
 
-Restricted set for isolated workers spawned by the `task` tool:
+Restricted set for isolated workers spawned by the `spawn_subagent` tool:
 
 | Tool | Purpose |
 |------|---------|
@@ -222,7 +222,9 @@ The wall-clock timeout defaults to 1,800 seconds; `[tools].bash_timeout_secs =
 0` disables it. Timeout or cancellation kills the shell process group on Unix.
 On non-Unix it kills the child and aborts the local pipe readers so inherited
 handles cannot keep the call open. Both paths drain already-queued output and
-flush progress before returning.
+flush progress before returning. A non-zero process exit also fails the tool
+(`StepStatus::Failed`), with captured stdout/stderr attached as partial output
+so the model can still read what the command printed.
 
 Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Permission Model](./10_chapter_permission.md) and [Agent Lifecycle Hooks](./09_chapter_hook.md).
 
@@ -236,7 +238,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `bash.rs` | `bash` | Validated shell; streamed pipes, timeout, process-group cancellation |
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
-| `task.rs`, `subagent.rs` | `task` | Spawns sub-agent with `subagent_toolset()` |
+| `task.rs`, `subagent.rs` | `spawn_subagent` | Spawns sub-agent with `subagent_toolset()` |
 | `cron.rs` | `cron_*` | See [Cron Scheduling](./16_chapter_cron.md) |
 | `compact/mod.rs` | `compact` | Context compaction trigger |
 

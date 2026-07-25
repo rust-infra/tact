@@ -1,19 +1,19 @@
 # Subagents
 > Language: [English](./12_chapter_subagent.md) · [中文](./12_chapter_subagent_zh.md)
 
-This chapter explains how Tact spawns **isolated worker agents** through the `task` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, or MCP tools. Each subagent gets its own SQLite session row linked via `sessions.ref_id`.
+This chapter explains how Tact spawns **isolated worker agents** through the `spawn_subagent` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, or MCP tools. Each subagent gets its own SQLite session row linked via `sessions.ref_id`.
 
 Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/registry.rs`.
 
-Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_teammate` only writes roster/inbox records; `task` actually runs a nested `Agent::agent_loop`.
+Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_teammate` only writes roster/inbox records; `spawn_subagent` actually runs a nested `Agent::agent_loop`.
 
 ---
 
 ## 1. What a Subagent Is
 
-| Property | Main agent | Subagent (`task` tool) |
+| Property | Main agent | Subagent (`spawn_subagent` tool) |
 |----------|------------|------------------------|
-| Entry | TUI / headless `agent_loop` | Parent calls `task` during tool execution |
+| Entry | TUI / headless `agent_loop` | Parent calls `spawn_subagent` during tool execution |
 | Conversation history | Full session context | Single user prompt only (no parent messages) |
 | System prompt | Dynamic Tera template (skills, memory, CLAUDE.md) | Fixed static string |
 | Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (6 tools) |
@@ -29,7 +29,7 @@ The subagent shares `ToolContext` (cloned): same `work_dir`, managers for backgr
 
 ---
 
-## 2. The `task` Tool
+## 2. The `spawn_subagent` Tool
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -39,10 +39,10 @@ pub struct SubagentInput {
 }
 
 #[tool(
-    name = "task",
+    name = "spawn_subagent",
     description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
 )]
-pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String>
+pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String>
 ```
 
 | Field | Role |
@@ -50,7 +50,7 @@ pub async fn task(ctx: ToolContext, input: SubagentInput) -> Result<String>
 | `prompt` | Becomes the subagent's sole user message |
 | `description` | Schema-only hint for the model; **not read by the handler** |
 
-Only the main agent's `toolset()` registers `TaskTool`. Subagents cannot spawn nested subagents — `task` is absent from `subagent_toolset()`.
+Only the main agent's `toolset()` registers `SpawnSubagentTool`. Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
 
 ---
 
@@ -86,9 +86,9 @@ sequenceDiagram
     Task-->>Parent: Ok(summary) as ToolResult
 ```
 
-**Blocking semantics:** `task` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
+**Blocking semantics:** `spawn_subagent` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
 
-**Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `task` allocates a child session id, sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
+**Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `spawn_subagent` allocates a child session id, sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
 
 ---
 
@@ -106,7 +106,7 @@ sequenceDiagram
 
 Notable **omissions** compared to the main agent:
 
-- No `task`, `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
+- No `spawn_subagent`, `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
 - No cron, team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
@@ -133,7 +133,7 @@ Compaction and recovery **do** still run inside the subagent loop ([Context Comp
 
 ## 6. Permissions and UI
 
-`task` is classified as **High** risk in `PermissionManager::classify_risk` — it always triggers Ask in Default mode, even if allowlisted, because it delegates full shell and filesystem access to a nested agent.
+`spawn_subagent` is classified as **High** risk in `PermissionManager::classify_risk` — it always triggers Ask in Default mode, even if allowlisted, because it delegates full shell and filesystem access to a nested agent.
 
 The subagent constructs its **own** `PermissionManager::try_new(PermissionMode::Default)?`. It does not inherit the parent's Plan/Auto mode or allowlist.
 
@@ -143,7 +143,7 @@ If the parent has a TUI channel, the subagent gets a **tagged** channel (`tagged
 
 ## 7. Scheduling Interaction
 
-In `crates/tact/src/agent/tool_schedule.rs`, `task` falls through to the default `_ => ToolResources::barrier()` branch. A `task` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
+In `crates/tact/src/agent/tool_schedule.rs`, `spawn_subagent` falls through to the default `_ => ToolResources::barrier()` branch. A `spawn_subagent` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
 
 ---
 
@@ -169,13 +169,13 @@ Implications:
 - If the model ends on a tool-use turn without a final text reply, the parent may receive `(no summary)`.
 - Intermediate assistant reasoning is not returned — only the last assistant text snapshot.
 
-That string becomes the `task` tool's JSON/text result and is appended to the **parent** context as a normal `ToolResult`.
+That string becomes the `spawn_subagent` tool's JSON/text result and is appended to the **parent** context as a normal `ToolResult`.
 
 ---
 
 ## 9. Subagent vs Teammate
 
-| | `task` (subagent) | `spawn_teammate` (team) |
+| | `spawn_subagent` (subagent) | `spawn_teammate` (team) |
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
 | Isolation | Fresh context, 6 tools | N/A |
@@ -190,12 +190,12 @@ See [Team Coordination](./14_chapter_team.md).
 
 | File | Role |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `task` tool handler — spawn, loop, summary extraction |
-| `crates/tact/src/tool/mod.rs` | `TaskTool` implementation |
-| `crates/tact/src/tool/registry.rs` | `TaskTool` in `toolset()`; `subagent_toolset()` |
+| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` tool handler — spawn, loop, summary extraction |
+| `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` implementation |
+| `crates/tact/src/tool/registry.rs` | `SpawnSubagentTool` in `toolset()`; `subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop`, `build_system_prompt`, `ensure_session` |
-| `crates/tact/src/permission/mod.rs` | `task` → `CapabilityRisk::High` |
-| `crates/tact/src/agent/tool_schedule.rs` | `task` as scheduling barrier |
+| `crates/tact/src/permission/mod.rs` | `spawn_subagent` → `CapabilityRisk::High` |
+| `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` as scheduling barrier |
 | `ARCHITECTURE.md` | One-line summary in tools table |
 
 ---
@@ -204,7 +204,7 @@ See [Team Coordination](./14_chapter_team.md).
 
 | Gap | Detail |
 |-----|--------|
-| No nested `task` | By design in toolset, but limits decomposition depth |
+| No nested `spawn_subagent` | By design in toolset, but limits decomposition depth |
 | No MCP on subagents | External tools unavailable inside workers |
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
@@ -379,7 +379,7 @@ flowchart TD
 
 - [Tool System](./07_chapter_tool.md) — `toolset` vs `subagent_toolset`, `ToolContext`
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — barrier semantics
-- [Permission Model](./10_chapter_permission.md) — High-risk `task`, inherited `ui_tx`
+- [Permission Model](./10_chapter_permission.md) — High-risk `spawn_subagent`, inherited `ui_tx`
 - [System Prompt](./04_chapter_prompt.md) — dynamic main-agent prompt
 - [Skill Registry](./02_chapter_skill.md) — `load_skill` unavailable to subagents
 - [Team Coordination](./14_chapter_team.md) — roster-only teammates

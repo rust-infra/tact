@@ -29,6 +29,74 @@
 
 ---
 
+## 1. 2026-07-26 — 子 agent 工具改名 `task` → `spawn_subagent`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 7、10、11、12、19 章 |
+
+**现象 / 动机：** spawn 子 agent 的工具原名 `task`，与四个持久化任务工具（`task_create` / `task_get` / `task_list` / `task_update`）共享前缀，语义却完全不同。模型与读者会把「`task` 工具跑完」当成「任务记录已完成」——实际观测到一次：子 agent 已返回，清单项仍停在 Pending。第 1、11、12、19 章各挂一句免责说明作为绕过。
+
+**决策：** 工具改名 `spawn_subagent`（动词 + 对象，与 description 一致）；包装类型 `TaskTool` → `SpawnSubagentTool`，handler `task()` → `spawn_subagent()`。持久化任务工具保留 `task_*` 前缀。`spawn_subagent` 仍为 `CapabilityRisk::High`，仍是调度 barrier。
+
+**改后行为：** 面向模型的工具名为 `spawn_subagent`，不再存在名为 `task` 的工具。含历史 `task` tool_use 块的旧 session 仍可恢复 —— `load_history` 只渲染 `Text` 块，router 仅在实时 dispatch 时按名解析，缺名不会报错。内存态 `always_allowed_tools` 按会话重建，无需迁移。
+
+**指针：** `crates/tact/src/tool/subagent.rs`、`crates/tact/src/tool/registry.rs`、`crates/tact/src/permission/mod.rs`
+
+---
+
+## 1. 2026-07-26 — `TasksChanged` 不再追加 Log 卡片
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | removal |
+| **相关** | 第 19、23 章 |
+
+**现象 / 动机：** `on_tasks_changed` 原会追加一条 `📋 # Task.N · …` 系统消息，与已渲染同样标题的 `task_*` 工具行重复。commit `4116c23` 把这段发送逻辑注释掉（属于该 commit 的误伤）而非删除，于是 `format_tasks_log_card` 挂着 `#[allow(dead_code)]` 空转，`tasks_changed_shows_panel_and_appends_log` 长期变红。
+
+**决策：** Log 中只保留工具行这一种表示。删除 `format_tasks_log_card`、`focus_changed_task`、`primary_action_for_change`；测试改为断言 sticky 已更新且 Log 长度不变。`AgentUpdate::TasksChanged` 保留 `reason` 字段 —— 生产端与协议不变。
+
+**改后行为：** 一次 `task_create` / `task_update` 只产生一条 Log 行（工具卡）加一次 sticky 刷新，不会出现两条。
+
+**指针：** `crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/widgets/state/task_panel.rs`
+
+---
+
+## 1. 2026-07-26 — sticky 主机分隔 tab 与正文
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 23 章 |
+
+**现象 / 动机：** `sticky_host_content_height` 只预留 `1 + body` 行，渲染器把正文画在 `inner.y + 1`，于是 tab 行（`[Tasks] [Subagent] …`）紧贴 `── Pending ──` / 子 agent 日志，上方又紧邻 Log 框边框，整体挤成一块。
+
+**决策：** 多预留一行（Tasks 为 `2 + body`，Subagent 为 `3 + header + lines`），并在 tab 行与正文之间画一条全宽淡色 `─` 分隔线。
+
+**改后行为：** 展开的 sticky 依次为 tab、分隔线、内容。折叠高度仍为 1 行。
+
+**指针：** `crates/tui/src/render/task_panel.rs`
+
+---
+
+## 1. 2026-07-26 — Bash 非 0 退出记为 Failed
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 7 章 |
+
+**现象 / 动机：** `bash` 收集了 `ExitStatus` 却未使用，`cargo test` 失败等非 0 退出仍显示 `Success · …`，而输出里已是错误信息。
+
+**决策：** 进程正常结束后若 `!status.success()`，经 `error_with_partial` 返回 `Err`（`exit code N` 或 `terminated by signal`），映射为 `StepStatus::Failed`，并保留已捕获输出给模型。
+
+**改后行为：** shell 非 0 退出在 TUI 显示 Failed；0 退出不变。
+
+**指针：** `crates/tact/src/tool/bash.rs`
+
+---
+
 ## 1. 2026-07-25 — Subagent sticky tab（主 Log 保持干净）
 
 | 字段 | 值 |

@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// How a subagent update should be forwarded onto the parent UI channel.
 #[derive(Debug)]
-pub(crate) enum SubagentForward {
+pub enum SubagentForward {
     /// Wrap as [`AgentUpdate::Subagent`].
     Tag(AgentUpdate),
     /// Send unchanged (permission / ask_user popups).
@@ -15,7 +15,7 @@ pub(crate) enum SubagentForward {
 }
 
 /// Classify an update emitted by a nested subagent.
-pub(crate) fn classify_subagent_update(update: AgentUpdate) -> SubagentForward {
+pub fn classify_subagent_update(update: AgentUpdate) -> SubagentForward {
     match update {
         AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
             SubagentForward::Passthrough(update)
@@ -30,7 +30,7 @@ pub(crate) fn classify_subagent_update(update: AgentUpdate) -> SubagentForward {
 /// Spawn a forwarder that tags subagent updates onto `inner`.
 ///
 /// Returns a new sender for the subagent to use as `ui_tx`.
-pub(crate) fn tagged_ui_channel(
+pub fn tagged_ui_channel(
     inner: UnboundedSender<AgentUpdate>,
     parent_tool_id: String,
     session_id: String,

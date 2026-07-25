@@ -158,7 +158,7 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 9 | [Agent Lifecycle Hooks](./09_chapter_hook.md) ([中文](./09_chapter_hook_zh.md)) | PreToolUse / PostToolUse extension points, `HookControl`, registration API, and where hooks sit in the tool pipeline |
 | 10 | [Permission Model](./10_chapter_permission.md) ([中文](./10_chapter_permission_zh.md)) | Capability risk classification, permission modes, allowlist, TUI approval flow, and shell high-risk detection |
 | 11 | [Tasks and Tool Scheduling](./11_chapter_task.md) ([中文](./11_chapter_task_zh.md)) | **Tool** parallel scheduling (waves/barriers) — not [Ch 19 Persistent Tasks](./19_chapter_persistent_tasks.md) |
-| 12 | [Subagents](./12_chapter_subagent.md) ([中文](./12_chapter_subagent_zh.md)) | The `task` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
+| 12 | [Subagents](./12_chapter_subagent.md) ([中文](./12_chapter_subagent_zh.md)) | The `spawn_subagent` tool: nested `agent_loop`, restricted toolset, static prompt, permission inheritance, and summary return |
 | 13 | [Background Tasks](./13_chapter_background.md) ([中文](./13_chapter_background_zh.md)) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
 | 14 | [Team Coordination](./14_chapter_team.md) ([中文](./14_chapter_team_zh.md)) | Teammate roster under `.tact/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
 | 15 | [Worktree Lanes](./15_chapter_worktree.md) ([中文](./15_chapter_worktree_zh.md)) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |

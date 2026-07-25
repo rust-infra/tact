@@ -7,7 +7,7 @@
 这与以下 **不是** 同一概念：
 
 - [第 11 章 工具调度](./11_chapter_task.md) — 一个 LLM turn 内的并行 **工具** wave 执行
-- [第 12 章 Subagents](./12_chapter_subagent.md) — 生成嵌套 agent 的 `task` **工具**
+- [第 12 章 Subagents](./12_chapter_subagent.md) — 生成嵌套 agent 的 `spawn_subagent` **工具**
 
 实现：`crates/tact/src/task/mod.rs`，工具封装在 `crates/tact/src/tool/task.rs`。
 
@@ -150,7 +150,7 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 | `crates/tact/src/task/mod.rs` | `TaskManager`、`TaskRecord`、依赖逻辑、渲染辅助 |
 | `crates/tact/src/tool/task.rs` | 四个 `#[tool]` 处理器 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 task 工具 |
+| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `task_*` 工具 |
 | `crates/tact/src/store/` | `CollectionStore`、`Store` 原语 |
 
 ---
@@ -171,6 +171,6 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 
 - [Store 与持久化](./01_chapter_store_zh.md) — `CollectionStore` / `Store` 支撑
 - [任务与工具调度](./11_chapter_task.md) — 无关的并行 tool wave
-- [Subagents](./12_chapter_subagent.md) — `task` 工具名碰撞
+- [Subagents](./12_chapter_subagent.md) — `spawn_subagent` 运行嵌套 agent；它跑完并**不会**完成任务记录
 - [团队协调](./14_chapter_team.md) — 可选 owner 命名约定
 - [Worktree 泳道](./15_chapter_worktree_zh.md) — worktree create 上可选 `task_id` 链接
