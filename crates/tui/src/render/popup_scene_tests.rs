@@ -949,6 +949,7 @@ fn tasks_dag_popup_renders_mermaid_unicode() {
             owner: String::new(),
             blocks: vec![2],
             blocked_by: Vec::new(),
+            ..Default::default()
         },
         TaskSnapshot {
             id: 2,
@@ -957,6 +958,7 @@ fn tasks_dag_popup_renders_mermaid_unicode() {
             owner: String::new(),
             blocks: Vec::new(),
             blocked_by: vec![1],
+            ..Default::default()
         },
     ];
     app.open_task_dag_popup();

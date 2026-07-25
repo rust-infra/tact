@@ -253,6 +253,9 @@ mod tests {
             blocked_by: vec![12],
             blocks: vec![20],
             owner: "张2".into(),
+            created_at: None,
+            started_at: None,
+            completed_at: None,
         };
         let after = TaskRecord {
             blocked_by: vec![12, 24],

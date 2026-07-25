@@ -280,19 +280,9 @@ impl App {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
     }
 
-    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, reason: TasksChangeReason) {
-        let prev = self.task_panel.snapshot.clone();
+    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _reason: TasksChangeReason) {
+        // Sticky / `/tasks-dag` only — do not spam Log with task system cards.
         self.task_panel.apply_snapshot(tasks);
-        let msgs = self.msgs();
-        let card = crate::widgets::state::task_panel::format_tasks_log_card(
-            &msgs,
-            reason,
-            &prev,
-            &self.task_panel.snapshot,
-        );
-        // Blank row so the checklist does not sit flush against the tool card.
-        self.add_new_line();
-        self.add_system_message(card);
     }
 
     fn on_step_added(&mut self, step: PlanStep) {
@@ -839,9 +829,10 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn tasks_changed_shows_panel_and_appends_log() {
+    fn tasks_changed_shows_panel_without_log_card() {
         let mut app = make_app();
         assert!(!app.task_panel.visible);
+        let log_before = app.raw_messages.len();
         app.handle_agent_update(AgentUpdate::TasksChanged {
             tasks: vec![TaskSnapshot {
                 id: 1,
@@ -850,6 +841,7 @@ mod lifecycle_tests {
                 owner: String::new(),
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
+                ..Default::default()
             }],
             reason: TasksChangeReason::Created,
         });
@@ -859,29 +851,14 @@ mod lifecycle_tests {
             app.task_panel.expanded,
             "sticky should default to expanded on first show"
         );
-        assert!(
-            app.raw_messages.iter().any(|m| m.contains("Fix auth")),
-            "Log detail should mention subject"
+        assert_eq!(
+            app.task_panel.snapshot[0].subject, "Fix auth",
+            "snapshot should update"
         );
-        assert!(
-            app.raw_messages.iter().any(|m| {
-                m.starts_with("📋 ") && (m.contains("创建任务") || m.contains("Task.1"))
-            }),
-            "short Log card expected, got:\n{:?}",
-            app.raw_messages
-        );
-        assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("任务名: Fix auth") || m.contains("Fix auth")),
-            "short card should include subject, got:\n{:?}",
-            app.raw_messages
-        );
-        assert!(
-            !app.raw_messages
-                .iter()
-                .any(|m| m.contains("created [>]") || m.contains("updated [>]")),
-            "header and checklist must not share one row, got:\n{:?}",
+        assert_eq!(
+            app.raw_messages.len(),
+            log_before,
+            "TasksChanged must not append Log system cards, got:\n{:?}",
             app.raw_messages
         );
     }
@@ -897,6 +874,7 @@ mod lifecycle_tests {
                 owner: String::new(),
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
+                ..Default::default()
             }],
             reason: TasksChangeReason::Updated,
         });

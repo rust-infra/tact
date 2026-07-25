@@ -82,6 +82,7 @@ mod tests {
                 owner: String::new(),
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
+                ..Default::default()
             }],
             reason: TasksChangeReason::Created,
         });
@@ -108,6 +109,7 @@ mod tests {
                     owner: "alice".into(),
                     blocks: Vec::new(),
                     blocked_by: Vec::new(),
+                    ..Default::default()
                 },
                 TaskSnapshot {
                     id: 2,
@@ -116,6 +118,7 @@ mod tests {
                     owner: String::new(),
                     blocks: Vec::new(),
                     blocked_by: Vec::new(),
+                    ..Default::default()
                 },
             ],
             reason: TasksChangeReason::Created,

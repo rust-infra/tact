@@ -38,9 +38,9 @@ Newest entries first. Each entry should include:
 
 **Symptom / motivation:** `task_*` tools dumped raw JSON; Log cards repeated full checklists; dependency graph was hard to see in-terminal.
 
-**Decision:** Human tool titles (`# Task.N · …`); Log emits short change cards; sticky defaults expanded as a `blocks` tree with `#id`; `/tasks-dag` opens a meraid Mermaid Unicode popup (nodes: status + id only). `TaskSnapshot` carries `blocks`/`blocked_by`.
+**Decision:** Human tool titles (`# Task.N · …`); sticky defaults expanded as a `blocks` tree with `#id`; `/tasks-dag` opens a meraid Mermaid Unicode popup (nodes: status + id only). `TaskSnapshot` carries `blocks`/`blocked_by`. Log does **not** append task system cards (progress lives in sticky + tool rows).
 
-**Behavior after:** Readable tool rows; compact Log diffs; tree sticky; slash DAG viewer.
+**Behavior after:** Readable tool rows; sticky tree; slash DAG viewer; no task system spam in Log.
 
 **Pointers:** `crates/tact/src/task/display.rs`, `crates/tui/src/widgets/state/task_panel.rs`, `crates/tui/src/widgets/state/task_dag.rs`
 

@@ -43,18 +43,7 @@ N. # Task.24 · 完成任务 * 任务名: 后端接口 * 负责人:张2 * 被阻
 
 ## 2. Log short card
 
-On each `TasksChanged` (create/update only):
-
-```text
-# Task.24 · 完成任务
-被阻塞于: [12] -> [12, 24]
-负责人:张2
-```
-
-- Line 1: `# Task.{id} · {primary}` (or `# Task · 创建任务` when id known post-create)
-- Following lines: **fields that changed** vs previous TUI snapshot only
-- Leading `📋` plain-text path retained so newlines stay
-- No full board checklist in Log
+**Removed.** `TasksChanged` updates sticky / DAG data only — it does **not** append system Log cards. Progress is visible via tool titles + sticky (+ `/tasks-dag`).
 
 ---
 

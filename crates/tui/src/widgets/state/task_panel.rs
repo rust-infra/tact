@@ -313,6 +313,7 @@ mod tests {
             owner: String::new(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),
+            ..Default::default()
         }
     }
 

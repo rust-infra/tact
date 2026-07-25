@@ -38,9 +38,9 @@
 
 **现象 / 动机：** `task_*` 工具行是 raw JSON；Log 卡重复整板 checklist；终端里难看依赖关系。
 
-**决策：** 可读 tool 标题（`# Task.N · …`）；Log 发短变更卡；sticky 默认展开为 `blocks` 树并带 `#id`；`/tasks-dag` 用 meraid 弹窗渲 Mermaid Unicode（节点仅状态+id）。`TaskSnapshot` 携带 `blocks`/`blocked_by`。
+**决策：** 可读 tool 标题（`# Task.N · …`）；sticky 默认展开为 `blocks` 树并带 `#id`；`/tasks-dag` 用 meraid 弹窗渲 Mermaid Unicode（节点仅状态+id）。`TaskSnapshot` 携带 `blocks`/`blocked_by`。Log **不再**追加任务系统卡（进度看 sticky + tool 行）。
 
-**改后行为：** tool 行可读；Log 只记变更；sticky 树形；slash 可看 DAG。
+**改后行为：** tool 行可读；sticky 树形；slash 可看 DAG；Log 不再刷任务系统消息。
 
 **指针：** `crates/tact/src/task/display.rs`、`crates/tui/src/widgets/state/task_panel.rs`、`crates/tui/src/widgets/state/task_dag.rs`
 

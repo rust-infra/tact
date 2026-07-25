@@ -76,6 +76,12 @@ pub struct TaskRecord {
     pub blocks: Vec<u64>,
     #[serde(default)]
     pub owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
 }
 
 impl TaskRecord {
@@ -89,6 +95,14 @@ impl TaskRecord {
             blocked_by: Vec::new(),
             blocks: Vec::new(),
             owner: String::new(),
+            created_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64,
+            ),
+            started_at: None,
+            completed_at: None,
         }
     }
 }
@@ -160,7 +174,16 @@ impl TaskManager {
         }
 
         if let Some(status) = update.status {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
             task.status = status;
+            if status == TaskStatus::InProgress {
+                task.started_at = Some(now);
+            } else if status == TaskStatus::Completed {
+                task.completed_at = Some(now);
+            }
             if status == TaskStatus::Completed {
                 self.clear_dependency(task_id)?;
             }
@@ -337,6 +360,9 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
             owner: t.owner,
             blocks: t.blocks,
             blocked_by: t.blocked_by,
+            created_at: t.created_at,
+            started_at: t.started_at,
+            completed_at: t.completed_at,
         })
         .collect()
 }
@@ -467,6 +493,9 @@ mod tests {
             blocked_by: vec![2],
             blocks: vec![],
             owner: "bob".to_string(),
+            created_at: None,
+            started_at: None,
+            completed_at: None,
         };
         let rendered = render_task_list(vec![task]);
         assert!(rendered.contains("[>] #1: Ship"));

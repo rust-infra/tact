@@ -87,6 +87,7 @@ mod tests {
             owner: String::new(),
             blocks,
             blocked_by: Vec::new(),
+            ..Default::default()
         }
     }
 

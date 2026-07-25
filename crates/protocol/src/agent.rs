@@ -82,8 +82,9 @@ pub struct TokenUsageInfo {
 }
 
 /// UI-facing task status (excludes soft-deleted records).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskStatusSnapshot {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -107,7 +108,7 @@ pub enum TasksChangeReason {
 }
 
 /// One non-deleted persistent task for TUI progress surfaces.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaskSnapshot {
     pub id: u64,
     pub subject: String,
@@ -117,6 +118,9 @@ pub struct TaskSnapshot {
     pub blocks: Vec<u64>,
     /// Task ids that block this task (incoming edges).
     pub blocked_by: Vec<u64>,
+    pub created_at: Option<i64>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
 }
 
 /// Status update messages sent from the Agent to the TUI.
@@ -286,6 +290,7 @@ mod tests {
                 owner: String::new(),
                 blocks: vec![2],
                 blocked_by: vec![],
+                ..Default::default()
             }],
             reason: TasksChangeReason::Created,
         };

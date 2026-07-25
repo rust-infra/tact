@@ -363,6 +363,7 @@ mod tests {
             owner: String::new(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),
+            ..Default::default()
         }];
         app.mouse.task_panel_area = Rect::new(0, 10, 40, 1);
 
