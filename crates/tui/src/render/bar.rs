@@ -467,10 +467,11 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         Status::Planning => {
             let spinner = SPINNER_FRAMES[app.spinner_frame as usize];
+            let elapsed = app.format_task_elapsed();
             (
                 format!(
-                    "{} {} │ {} {}",
-                    mode_str, focus_str, spinner, msgs.status_planning
+                    "{} {} │ {} {}  {}",
+                    mode_str, focus_str, spinner, msgs.status_planning, elapsed
                 ),
                 Style::default()
                     .bg(app.theme.status_bar_bg)
@@ -525,7 +526,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 format!("{} {}", step_label, progress_bar)
             };
             (
-                format!("{} {} │ {} {}", mode_str, focus_str, spinner, exec_right),
+                format!("{} {} │ {} {}  {}", mode_str, focus_str, spinner, exec_right, app.format_task_elapsed()),
                 Style::default()
                     .bg(app.theme.status_bar_bg)
                     .fg(app.theme.warning),

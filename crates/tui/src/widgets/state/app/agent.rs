@@ -105,6 +105,20 @@ fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
 }
 
 impl App {
+    /// Short elapsed label for status bar during active runs.
+    pub(crate) fn format_task_elapsed(&self) -> String {
+        let start = match self.task_start_time {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let secs = chrono::Local::now()
+            .signed_duration_since(start)
+            .num_seconds()
+            .max(0);
+        let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
+        format!("⏱ {} {}", self.msgs().bottom_elapsed, mm_ss)
+    }
+
     fn freeze_last_prompt_cost(&mut self) {
         if let Some(start) = self.task_start_time.take() {
             self.last_prompt_elapsed_secs = Some(elapsed_secs_since(start));
