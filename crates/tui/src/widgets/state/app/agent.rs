@@ -280,13 +280,13 @@ impl App {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
     }
 
-    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _reason: TasksChangeReason) {
+    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, reason: TasksChangeReason) {
         let prev = self.task_panel.snapshot.clone();
         self.task_panel.apply_snapshot(tasks);
         let msgs = self.msgs();
         let card = crate::widgets::state::task_panel::format_tasks_log_card(
             &msgs,
-            _reason,
+            reason,
             &prev,
             &self.task_panel.snapshot,
         );

@@ -63,7 +63,7 @@ pub(crate) fn sticky_height(expanded: bool, snapshot: &[TaskSnapshot]) -> usize 
     if !expanded {
         return 1;
     }
-    2 + format_grouped_lines(snapshot, 0, usize::MAX).len().max(1)
+    2 + format_grouped_lines(snapshot, 0, 10).len().max(1)
 }
 
 pub(crate) fn completed_count(tasks: &[TaskSnapshot]) -> usize {
