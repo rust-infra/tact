@@ -55,12 +55,29 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    let dim_style = Style::default()
+        .fg(app.theme.muted_fg())
+        .bg(bg);
+    let accent_style = Style::default()
+        .fg(app.theme.accent)
+        .bg(bg);
+
     let mut lines = vec![Line::from(Span::styled(
         title.replace('▼', "▲").replace('▸', "▾"),
         title_style,
     ))];
+    // Blank line separator between title and grouped content.
+    lines.push(Line::from(Span::raw("")));
+
     for row in format_grouped_lines(&app.task_panel.snapshot, app.task_panel.scroll, app.task_panel.max_visible) {
-        lines.push(Line::from(Span::styled(row, row_style)));
+        let style = if row.starts_with("──") {
+            accent_style  // group header
+        } else if row.starts_with("[x]") || row.starts_with("⋯") {
+            dim_style     // completed task or scroll indicator
+        } else {
+            row_style     // normal task row
+        };
+        lines.push(Line::from(Span::styled(row, style)));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -132,6 +149,20 @@ mod tests {
         assert!(
             text.contains('▾') || text.contains('▲'),
             "expanded sticky title marker should render, got:\n{text}"
+        );
+        // Verify group headers render.
+        assert!(
+            text.contains("In Progress"),
+            "group header 'In Progress' should render, got:\n{text}"
+        );
+        assert!(
+            text.contains("Pending"),
+            "group header 'Pending' should render, got:\n{text}"
+        );
+        // Verify owner display.
+        assert!(
+            text.contains("alice"),
+            "owner 'alice' should show, got:\n{text}"
         );
         // Input placeholder should still appear below the joined panel.
         assert!(
