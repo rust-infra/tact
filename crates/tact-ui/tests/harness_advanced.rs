@@ -58,7 +58,7 @@ async fn dynamic_mock_inspects_request_and_branches() {
 async fn mock_timeout_retries_then_succeeds() {
     let mock = MockClient::with_responder(move |_request, idx| {
         if idx == 0 {
-            Err(LlmError::Other("request timeout".to_string()))
+            Err(LlmError::Unsupported("request timeout".to_string()))
         } else {
             Ok((
                 vec![text_block("Recovered after timeout.")],
