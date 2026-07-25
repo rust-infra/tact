@@ -102,11 +102,7 @@ fn format_out_tokens(label: &str, max_tokens: u32) -> Option<String> {
 }
 
 /// Thinking segment: `"think high(32K)"`, `"think 32K"`, or `None`.
-fn format_think_segment(
-    label: &str,
-    effort: Option<&str>,
-    budget: Option<u32>,
-) -> Option<String> {
+fn format_think_segment(label: &str, effort: Option<&str>, budget: Option<u32>) -> Option<String> {
     let budget = budget.filter(|b| *b > 0)?;
     let b = format_tokens_compact(budget as u64);
     match effort.filter(|e| !e.is_empty()) {
@@ -276,10 +272,7 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
             droppable: true,
             spans: vec![
                 Span::styled(ICON_UPTIME.to_string(), dim),
-                Span::styled(
-                    format!(" {} {}", msgs.bottom_uptime, uptime),
-                    secondary,
-                ),
+                Span::styled(format!(" {} {}", msgs.bottom_uptime, uptime), secondary),
                 Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
@@ -526,7 +519,14 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 format!("{} {}", step_label, progress_bar)
             };
             (
-                format!("{} {} │ {} {}  {}", mode_str, focus_str, spinner, exec_right, app.format_task_elapsed()),
+                format!(
+                    "{} {} │ {} {}  {}",
+                    mode_str,
+                    focus_str,
+                    spinner,
+                    exec_right,
+                    app.format_task_elapsed()
+                ),
                 Style::default()
                     .bg(app.theme.status_bar_bg)
                     .fg(app.theme.warning),
@@ -586,8 +586,14 @@ mod render_tests {
 
     #[test]
     fn format_out_tokens_labeled() {
-        assert_eq!(super::format_out_tokens("输出", 8_000), Some("输出 8K".into()));
-        assert_eq!(super::format_out_tokens("out", 8_000), Some("out 8K".into()));
+        assert_eq!(
+            super::format_out_tokens("输出", 8_000),
+            Some("输出 8K".into())
+        );
+        assert_eq!(
+            super::format_out_tokens("out", 8_000),
+            Some("out 8K".into())
+        );
         assert_eq!(super::format_out_tokens("out", 0), None);
     }
 
@@ -617,10 +623,7 @@ mod render_tests {
             super::format_think_segment("think", Some("high"), None),
             None
         );
-        assert_eq!(
-            super::format_think_segment("think", None, Some(0)),
-            None
-        );
+        assert_eq!(super::format_think_segment("think", None, Some(0)), None);
         assert_eq!(super::format_think_segment("think", None, None), None);
     }
 
@@ -637,8 +640,14 @@ mod render_tests {
         assert!(s.starts_with("ctx ["), "got {s}");
         assert!(s.contains("0%"), "got {s}");
         assert!(s.contains("0/1M"), "got {s}");
-        assert!(!s.contains('█') && !s.contains('░'), "old glyphs present: {s}");
-        assert!(s.contains('·') || s.contains('■'), "expected mid-height glyphs: {s}");
+        assert!(
+            !s.contains('█') && !s.contains('░'),
+            "old glyphs present: {s}"
+        );
+        assert!(
+            s.contains('·') || s.contains('■'),
+            "expected mid-height glyphs: {s}"
+        );
     }
 
     #[test]

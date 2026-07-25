@@ -376,11 +376,7 @@ mod tests {
             "all task_* tools must run in separate waves"
         );
         // Still allowed to overlap a disjoint file read.
-        let read = tool_resources(
-            "read_file",
-            &serde_json::json!({"path": "src/a.rs"}),
-            work,
-        );
+        let read = tool_resources("read_file", &serde_json::json!({"path": "src/a.rs"}), work);
         assert_eq!(schedule_waves(&[create, read, update]), vec![0, 0, 1]);
     }
 

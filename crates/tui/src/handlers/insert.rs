@@ -1070,10 +1070,7 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert!(
-            !app.slash_command.active,
-            "Esc should dismiss slash popup"
-        );
+        assert!(!app.slash_command.active, "Esc should dismiss slash popup");
         assert_eq!(app.input, "/he", "Esc should keep typed input");
     }
 }

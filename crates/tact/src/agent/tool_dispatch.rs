@@ -176,12 +176,12 @@ fn truncate_tool_arg_summary(s: &str) -> String {
     )
 }
 
-    /// Used by unit tests in this module.
-    #[cfg(test)]
-    fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
-        let raw = tool_arg_full(name, input);
-        truncate_tool_arg_summary(&raw)
-    }
+/// Used by unit tests in this module.
+#[cfg(test)]
+fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
+    let raw = tool_arg_full(name, input);
+    truncate_tool_arg_summary(&raw)
+}
 
 fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
     match name {
@@ -557,15 +557,11 @@ impl Agent {
                                 .get("subject")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            self.tool_context
-                                .task_manager
-                                .list()
-                                .ok()
-                                .and_then(|list| {
-                                    list.into_iter()
-                                        .filter(|t| t.subject == subject)
-                                        .max_by_key(|t| t.id)
-                                })
+                            self.tool_context.task_manager.list().ok().and_then(|list| {
+                                list.into_iter()
+                                    .filter(|t| t.subject == subject)
+                                    .max_by_key(|t| t.id)
+                            })
                         }
                         "task_update" | "task_get" => prep_input
                             .get("task_id")

@@ -271,19 +271,11 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     configure_process_group(&mut process);
-    let mut child = process
-        .spawn()
-        .context("failed to spawn shell process")?;
+    let mut child = process.spawn().context("failed to spawn shell process")?;
     let process_group_id = child.id();
 
-    let stdout = child
-        .stdout
-        .take()
-        .context("stdout pipe unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("stderr pipe unavailable")?;
+    let stdout = child.stdout.take().context("stdout pipe unavailable")?;
+    let stderr = child.stderr.take().context("stderr pipe unavailable")?;
     let (pipe_tx, mut pipe_rx) = mpsc::channel(PIPE_CHANNEL_CAPACITY);
     let stdout_task = tokio::spawn(read_pipe(stdout, ToolOutputStream::Stdout, pipe_tx.clone()));
     let stderr_task = tokio::spawn(read_pipe(stderr, ToolOutputStream::Stderr, pipe_tx.clone()));

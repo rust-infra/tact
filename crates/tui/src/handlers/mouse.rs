@@ -627,7 +627,13 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 3;
 
-        handle_mouse_scroll_up(&mut app, MousePanelHit { in_log: true, in_task_panel: false });
+        handle_mouse_scroll_up(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_task_panel: false,
+            },
+        );
 
         assert_eq!(app.log_scroll.offset, 2);
     }
@@ -637,7 +643,13 @@ mod tests {
         let mut app = make_app();
         app.log_scroll.offset = 1;
 
-        handle_mouse_scroll_down(&mut app, MousePanelHit { in_log: true, in_task_panel: false });
+        handle_mouse_scroll_down(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_task_panel: false,
+            },
+        );
 
         assert_eq!(app.log_scroll.offset, 2);
     }

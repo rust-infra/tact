@@ -55,12 +55,8 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let dim_style = Style::default()
-        .fg(app.theme.muted_fg())
-        .bg(bg);
-    let accent_style = Style::default()
-        .fg(app.theme.accent)
-        .bg(bg);
+    let dim_style = Style::default().fg(app.theme.muted_fg()).bg(bg);
+    let accent_style = Style::default().fg(app.theme.accent).bg(bg);
 
     let mut lines = vec![Line::from(Span::styled(
         title.replace('▼', "▲").replace('▸', "▾"),
@@ -69,13 +65,17 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // Blank line separator between title and grouped content.
     lines.push(Line::from(Span::raw("")));
 
-    for row in format_grouped_lines(&app.task_panel.snapshot, app.task_panel.scroll, app.task_panel.max_visible) {
+    for row in format_grouped_lines(
+        &app.task_panel.snapshot,
+        app.task_panel.scroll,
+        app.task_panel.max_visible,
+    ) {
         let style = if row.starts_with("──") {
-            accent_style  // group header
+            accent_style // group header
         } else if row.starts_with("[x]") || row.starts_with("⋯") {
-            dim_style     // completed task or scroll indicator
+            dim_style // completed task or scroll indicator
         } else {
-            row_style     // normal task row
+            row_style // normal task row
         };
         lines.push(Line::from(Span::styled(row, style)));
     }

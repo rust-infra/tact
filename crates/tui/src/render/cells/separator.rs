@@ -20,7 +20,10 @@ pub(crate) fn is_task_end_separator(raw: &str) -> bool {
 
 /// Build raw sentinel with frozen elapsed seconds.
 pub(crate) fn task_end_separator_raw(elapsed_secs: i64) -> String {
-    format!("{TASK_END_SEPARATOR}{TASK_END_ELAPSED_SEP}{}", elapsed_secs.max(0))
+    format!(
+        "{TASK_END_SEPARATOR}{TASK_END_ELAPSED_SEP}{}",
+        elapsed_secs.max(0)
+    )
 }
 
 /// Parse elapsed seconds from a task-end sentinel, if present.

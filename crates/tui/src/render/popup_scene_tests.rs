@@ -976,4 +976,3 @@ fn tasks_dag_popup_renders_mermaid_unicode() {
         "node labels must omit subjects, got:\n{text}"
     );
 }
-

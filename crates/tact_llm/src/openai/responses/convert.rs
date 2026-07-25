@@ -241,9 +241,9 @@ pub(crate) fn create_response(
         });
     }
 
-    let typed_request = builder
-        .build()
-        .map_err(|error| LlmError::Unsupported(format!("build OpenAI Responses request: {error}")))?;
+    let typed_request = builder.build().map_err(|error| {
+        LlmError::Unsupported(format!("build OpenAI Responses request: {error}"))
+    })?;
     let mut body = serde_json::to_value(typed_request)?;
     normalize_assistant_history_items(&mut body);
     let budget_tokens = request

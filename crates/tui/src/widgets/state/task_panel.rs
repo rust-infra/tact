@@ -109,6 +109,7 @@ pub(crate) fn focus_subject(tasks: &[TaskSnapshot]) -> Option<&str> {
         .map(|t| t.subject.as_str())
 }
 
+#[allow(dead_code)]
 fn format_task_row(t: &TaskSnapshot) -> String {
     let owner = if t.owner.is_empty() {
         String::new()
@@ -152,8 +153,12 @@ pub(crate) fn format_grouped_lines(
         let start = t.started_at.unwrap_or(0);
         (now - start).max(0)
     });
-    pending.sort_by(|a, b| b.created_at.unwrap_or(0).cmp(&a.created_at.unwrap_or(0)));
-    completed.sort_by(|a, b| b.completed_at.unwrap_or(0).cmp(&a.completed_at.unwrap_or(0)));
+    pending.sort_by_key(|b| std::cmp::Reverse(b.created_at.unwrap_or(0)));
+    completed.sort_by(|a, b| {
+        b.completed_at
+            .unwrap_or(0)
+            .cmp(&a.completed_at.unwrap_or(0))
+    });
 
     let mut all_lines: Vec<String> = Vec::new();
 
@@ -164,15 +169,23 @@ pub(crate) fn format_grouped_lines(
         out.push(format!("── {} ──", header));
         for t in items {
             let meta_parts: Vec<String> = [
-                if t.owner.is_empty() { None } else { Some(t.owner.clone()) },
+                if t.owner.is_empty() {
+                    None
+                } else {
+                    Some(t.owner.clone())
+                },
                 if t.blocked_by.is_empty() {
                     None
                 } else {
-                    let ids: Vec<String> = t.blocked_by.iter().map(|id| format!("#{}", id)).collect();
+                    let ids: Vec<String> =
+                        t.blocked_by.iter().map(|id| format!("#{}", id)).collect();
                     Some(format!("⏳ {}", ids.join(", ")))
                 },
                 format_duration(t.started_at, t.completed_at).map(|d| format!("⏱ {}", d)),
-            ].into_iter().flatten().collect();
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
 
             let meta = if meta_parts.is_empty() {
                 String::new()
@@ -200,7 +213,12 @@ pub(crate) fn format_grouped_lines(
     }
 
     let scroll = scroll.min(total.saturating_sub(max_visible));
-    let mut visible: Vec<String> = all_lines.iter().skip(scroll).take(max_visible).cloned().collect();
+    let mut visible: Vec<String> = all_lines
+        .iter()
+        .skip(scroll)
+        .take(max_visible)
+        .cloned()
+        .collect();
     let remaining = total.saturating_sub(scroll + max_visible);
     if remaining > 0 {
         visible.push(format!("⋯ +{} more · scroll ▼", remaining));
@@ -211,6 +229,7 @@ pub(crate) fn format_grouped_lines(
 }
 
 /// Flat checklist (legacy helper / tests).
+#[allow(dead_code)]
 pub(crate) fn format_checklist_lines(tasks: &[TaskSnapshot]) -> Vec<String> {
     tasks.iter().map(format_task_row).collect()
 }
@@ -226,6 +245,8 @@ pub(crate) fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) 
 }
 
 /// Short Log card: primary action + changed fields only.
+#[allow(dead_code)]
+#[allow(clippy::collapsible_if)]
 pub(crate) fn format_tasks_log_card(
     _msgs: &Messages,
     reason: TasksChangeReason,
@@ -268,6 +289,7 @@ pub(crate) fn format_tasks_log_card(
     out
 }
 
+#[allow(dead_code)]
 fn focus_changed_task<'a>(
     reason: TasksChangeReason,
     prev: &[TaskSnapshot],
@@ -290,6 +312,7 @@ fn focus_changed_task<'a>(
     }
 }
 
+#[allow(dead_code)]
 fn primary_action_for_change(
     reason: TasksChangeReason,
     prev: Option<&TaskSnapshot>,
@@ -345,7 +368,9 @@ mod tests {
 
     #[test]
     fn sticky_height_collapsed_and_expanded_full() {
-        let many: Vec<_> = (0..10).map(|i| snap(i, TaskStatusSnapshot::Pending)).collect();
+        let many: Vec<_> = (0..10)
+            .map(|i| snap(i, TaskStatusSnapshot::Pending))
+            .collect();
         assert_eq!(sticky_height(false, &many), 1);
         // format_grouped_lines adds 1 header + N items = N+1 lines; sticky_height adds 2 (title + blank)
         assert_eq!(sticky_height(true, &many), 2 + (1 + many.len()));
@@ -367,12 +392,7 @@ mod tests {
         let prev = vec![snap(1, TaskStatusSnapshot::InProgress)];
         let mut next = snap(1, TaskStatusSnapshot::Completed);
         next.subject = "后端接口".into();
-        let text = format_tasks_log_card(
-            &msgs,
-            TasksChangeReason::Updated,
-            &prev,
-            &[next],
-        );
+        let text = format_tasks_log_card(&msgs, TasksChangeReason::Updated, &prev, &[next]);
         assert!(text.starts_with("📋 # Task.1 · 完成任务"), "got:\n{text}");
     }
 
@@ -404,21 +424,34 @@ mod tests {
     #[test]
     fn format_grouped_lines_produces_grouped_output() {
         let ip = TaskSnapshot {
-            id: 1, subject: "work".into(), status: TaskStatusSnapshot::InProgress,
-            owner: "alice".into(), ..Default::default()
+            id: 1,
+            subject: "work".into(),
+            status: TaskStatusSnapshot::InProgress,
+            owner: "alice".into(),
+            ..Default::default()
         };
         let pd = TaskSnapshot {
-            id: 2, subject: "todo".into(), status: TaskStatusSnapshot::Pending,
+            id: 2,
+            subject: "todo".into(),
+            status: TaskStatusSnapshot::Pending,
             ..Default::default()
         };
         let done = TaskSnapshot {
-            id: 3, subject: "done".into(), status: TaskStatusSnapshot::Completed,
-            owner: "bob".into(), ..Default::default()
+            id: 3,
+            subject: "done".into(),
+            status: TaskStatusSnapshot::Completed,
+            owner: "bob".into(),
+            ..Default::default()
         };
 
         let lines = format_grouped_lines(&[pd.clone(), done.clone(), ip.clone()], 0, 10);
-        assert!(lines.len() >= 3, "should have at least 3 content lines, got {}:\n{:#?}", lines.len(), lines);
-        
+        assert!(
+            lines.len() >= 3,
+            "should have at least 3 content lines, got {}:\n{:#?}",
+            lines.len(),
+            lines
+        );
+
         // Groups should be in order: In Progress, Pending, Completed
         let text = lines.join("\n");
         let ip_pos = text.find("In Progress").unwrap();
@@ -426,12 +459,12 @@ mod tests {
         let done_pos = text.find("Completed").unwrap();
         assert!(ip_pos < pd_pos, "InProgress before Pending");
         assert!(pd_pos < done_pos, "Pending before Completed");
-        
+
         // Each task should be present
         assert!(text.contains("#1 work"), "ip task");
         assert!(text.contains("#2 todo"), "pd task");
         assert!(text.contains("#3 done"), "completed task");
-        
+
         // Owner should show
         assert!(text.contains("alice"), "owner alice");
         assert!(text.contains("bob"), "owner bob");
@@ -441,15 +474,24 @@ mod tests {
     fn format_grouped_lines_scroll_caps_at_max_visible() {
         let many: Vec<_> = (0..15)
             .map(|i| TaskSnapshot {
-                id: i, subject: format!("t-{i}"), status: TaskStatusSnapshot::Pending,
+                id: i,
+                subject: format!("t-{i}"),
+                status: TaskStatusSnapshot::Pending,
                 ..Default::default()
             })
             .collect();
-        
+
         // max_visible = 10
         let lines = format_grouped_lines(&many, 0, 10);
         // 1 group header + 10 task rows + 1 "more" line
-        assert!(lines.len() <= 12, "capped at ~12 lines, got {}", lines.len());
-        assert!(lines.last().unwrap().contains("more"), "should show remaining count");
+        assert!(
+            lines.len() <= 12,
+            "capped at ~12 lines, got {}",
+            lines.len()
+        );
+        assert!(
+            lines.last().unwrap().contains("more"),
+            "should show remaining count"
+        );
     }
 }

@@ -269,9 +269,7 @@ mod tests {
     #[tokio::test]
     async fn task_list_does_not_emit_tasks_changed() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let router = ToolRouter::new()
-            .route(TaskCreateTool)
-            .route(TaskListTool);
+        let router = ToolRouter::new().route(TaskCreateTool).route(TaskListTool);
         let mut context = test_context("task_list_no_emit");
         context.ui_tx = Some(tx.clone());
         let _ = router

@@ -419,7 +419,10 @@ impl OpenAiAdapter {
                 request_body = %String::from_utf8_lossy(&json_body),
                 "LLM HTTP request failed"
             );
-            return Err(LlmError::HttpError { status: status.as_u16(), body: resp_body });
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: resp_body,
+            });
         }
 
         let mut event_stream = response.bytes_stream().eventsource();
@@ -598,7 +601,10 @@ impl OpenAiAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let resp_body = response.text().await.unwrap_or_default();
-            return Err(LlmError::HttpError { status: status.as_u16(), body: resp_body });
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: resp_body,
+            });
         }
 
         let json: serde_json::Value = response

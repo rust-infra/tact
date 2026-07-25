@@ -107,10 +107,7 @@ mod tests {
 
     #[test]
     fn meraid_renders_non_empty_unicode() {
-        let tasks = vec![
-            snap(1, "root", vec![2]),
-            snap(2, "child", vec![]),
-        ];
+        let tasks = vec![snap(1, "root", vec![2]), snap(2, "child", vec![])];
         let (src, lines) = render_task_dag_lines(&tasks);
         assert!(src.contains("T1 --> T2"));
         assert!(lines.len() > 1, "{lines:?}");

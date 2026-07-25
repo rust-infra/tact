@@ -56,7 +56,9 @@ fn terminal_stop_reason(
                 "OpenAI Responses failed: {detail}"
             )))
         }
-        Status::Cancelled => Err(LlmError::Unsupported("OpenAI Responses request cancelled".into())),
+        Status::Cancelled => Err(LlmError::Unsupported(
+            "OpenAI Responses request cancelled".into(),
+        )),
         Status::InProgress | Status::Queued => Err(LlmError::Unsupported(format!(
             "OpenAI Responses ended with non-terminal status {:?}",
             response.status

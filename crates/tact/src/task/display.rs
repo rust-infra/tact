@@ -99,19 +99,18 @@ pub fn format_task_tool_title_with_manager(
     let id = input.get("task_id").and_then(|v| v.as_u64());
     let before = id.and_then(|id| manager.get(id).ok());
     let after = if prefer_after {
-        id.and_then(|id| manager.get(id).ok())
-            .or_else(|| {
-                // create: try newest matching subject
-                if name == "task_create" {
-                    let subject = input.get("subject").and_then(|v| v.as_str())?;
-                    let list = manager.list().ok()?;
-                    list.into_iter()
-                        .filter(|t| t.subject == subject)
-                        .max_by_key(|t| t.id)
-                } else {
-                    None
-                }
-            })
+        id.and_then(|id| manager.get(id).ok()).or_else(|| {
+            // create: try newest matching subject
+            if name == "task_create" {
+                let subject = input.get("subject").and_then(|v| v.as_str())?;
+                let list = manager.list().ok()?;
+                list.into_iter()
+                    .filter(|t| t.subject == subject)
+                    .max_by_key(|t| t.id)
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
@@ -138,14 +137,15 @@ fn primary_action(
         "task_list" => "列出任务",
         "task_get" => "查看任务",
         "task_update" => {
-            let status = input
-                .get("status")
-                .and_then(|v| v.as_str())
-                .or_else(|| match (before, after) {
-                    (Some(b), Some(a)) if b.status != a.status => Some(status_str(a.status)),
-                    (None, Some(a)) => Some(status_str(a.status)),
-                    _ => None,
-                });
+            let status =
+                input
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| match (before, after) {
+                        (Some(b), Some(a)) if b.status != a.status => Some(status_str(a.status)),
+                        (None, Some(a)) => Some(status_str(a.status)),
+                        _ => None,
+                    });
             if let Some(s) = status {
                 return match s {
                     "in_progress" => "执行任务",
@@ -267,10 +267,7 @@ mod tests {
         assert!(title.starts_with("# Task.24 · 完成任务"), "{title}");
         assert!(title.contains("任务名: 后端接口"), "{title}");
         assert!(title.contains("负责人:张2"), "{title}");
-        assert!(
-            title.contains("被阻塞于: [12] -> [12, 24]"),
-            "{title}"
-        );
+        assert!(title.contains("被阻塞于: [12] -> [12, 24]"), "{title}");
         assert!(title.contains("阻塞: [20]"), "{title}");
     }
 
