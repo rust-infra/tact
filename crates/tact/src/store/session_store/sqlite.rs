@@ -800,8 +800,8 @@ fn is_process_alive(pid: u32) -> bool {
         // well-defined behavior. OpenProcess returns null on failure (which we
         // check); CloseHandle is always safe to call with any value including null.
         unsafe extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
-            fn CloseHandle(handle: *mut c_void) -> i32;
+            safe fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            safe fn CloseHandle(handle: *mut c_void) -> i32;
         }
 
         // SAFETY: The PID argument comes from a valid u32; OpenProcess returns

@@ -214,6 +214,15 @@ fn apply_hunk(lines: Vec<String>, hunk: &Hunk) -> Result<Vec<String>, String> {
     description = "Apply a unified diff patch to files. Accepts standard unified diff \
                     format. Use dry_run=true to validate without modifying files."
 )]
+/// # Errors
+///
+/// Returns an error if:
+/// - The patch text cannot be parsed (invalid unified diff format).
+/// - No files are found in the patch.
+/// - Any target file path is invalid or outside the workspace.
+/// - A target file does not exist or cannot be read.
+/// - The patch context does not match the file contents.
+/// - Writing the patched file fails (rolls back already-written files on failure).
 pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<String> {
     debug!(dry_run = input.dry_run, "Applying patch");
 

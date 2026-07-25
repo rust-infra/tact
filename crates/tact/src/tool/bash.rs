@@ -353,6 +353,10 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                     sent_progress = true;
                 }
                 if failure_reason.is_none() && ctx.cancel_flag.load(Ordering::Relaxed) {
+                    // Relaxed ordering is sufficient here: the cancel flag is a
+                    // plain boolean signal set by the parent task and consumed
+                    // periodically by this select loop — there is no need for
+                    // synchronization with other atomic operations.
                     failure_reason = Some("Cancelled by user".to_string());
                     terminate_process(
                         &mut child,

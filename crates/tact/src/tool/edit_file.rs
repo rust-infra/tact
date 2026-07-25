@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::fs;
@@ -32,7 +32,7 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
 
     let content = fs::read_to_string(&path)
         .await
-        .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+        .with_context(|| format!("failed to read {}", path.display()))?;
 
     if input.old_text.is_empty() {
         return Err(anyhow::anyhow!("Error: old_text must not be empty"));
@@ -54,7 +54,7 @@ pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String>
 
     fs::write(&path, updated)
         .await
-        .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+        .with_context(|| format!("failed to write {}", path.display()))?;
 
     Ok(format!(
         "Edited {}: replaced {} occurrence{}",

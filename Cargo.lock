@@ -4455,6 +4455,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tact_protocol",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
