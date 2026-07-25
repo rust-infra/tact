@@ -28,7 +28,7 @@ const BAR_FILLED: char = '■'; // U+25A0
 const BAR_EMPTY: char = '·'; // U+00B7
 
 /// Partial block characters from 1/8 to 7/8 width (U+258F … U+2589).
-/// Used at the boundary of the usage bar so 1% shows visible progress.
+/// Low usage clamps to at least `▍` — see `partial_block_char`.
 const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 const USAGE_BAR_WIDTH: u16 = 10;
@@ -76,15 +76,21 @@ fn render_usage_bar(pct: f64) -> String {
     bar
 }
 
-/// Map a fraction [0, 1) to the closest partial-block character.
+/// Map a fraction (0, 1] to the closest partial-block character.
+///
+/// Any positive fraction paints at least `▍` (3/8). Terminal fonts often
+/// render `▏`/`▎` as a hairline that reads as empty next to `·`, so 1% of a
+/// large context window looked like no progress despite the numeric label.
 fn partial_block_char(frac: f64) -> char {
-    // frac is 0.0..1.0; map to 0..8 bucket
-    let idx = (frac * 8.0).round() as usize;
+    if frac <= 0.0 {
+        return BAR_EMPTY;
+    }
+    // frac is (0, 1]; map to 1..=8, then floor at 3 for visibility.
+    let idx = ((frac * 8.0).round() as usize).clamp(3, 8);
     match idx {
-        0 => BAR_EMPTY,
-        1..=7 => PARTIAL_BLOCKS[idx - 1],
+        3..=7 => PARTIAL_BLOCKS[idx - 1],
         8 => BAR_FILLED,
-        _ => BAR_EMPTY,
+        _ => PARTIAL_BLOCKS[2], // ▍
     }
 }
 
@@ -615,20 +621,18 @@ mod render_tests {
 
     #[test]
     fn render_usage_bar_partial_block_at_low_percent() {
-        // 1% → partial block boundary instead of invisible
+        // 1% → at least ▍ (hairline ▏ was effectively invisible in terminals)
         let bar = super::render_usage_bar(1.0);
-        assert!(bar.starts_with('['));
-        assert!(bar.ends_with(']'));
+        assert_eq!(bar, "[▍·······]");
         assert_ne!(bar, "[········]", "1% must differ from 0%");
-        // First character after '[' should not be empty
-        let inner = &bar[1..bar.len() - 1];
-        assert!(
-            !inner.starts_with('·'),
-            "1% must show partial block, got {bar}"
-        );
+        // Sub-1% still shows the minimum visible partial (not empty)
+        let bar_half = super::render_usage_bar(0.5);
+        assert_eq!(bar_half, "[▍·······]");
         // 6% and 10% show progressively wider partial blocks
         let bar6 = super::render_usage_bar(6.0);
         let bar10 = super::render_usage_bar(10.0);
+        assert_eq!(bar6, "[▌·······]");
+        assert_eq!(bar10, "[▊·······]");
         assert_ne!(bar6, bar, "6% must differ from 1%");
         assert_ne!(bar10, bar6, "10% must differ from 6%");
     }

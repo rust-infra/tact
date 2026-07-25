@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-25 — Ctx meter visible at low usage
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** With a 1M context window, ~1% usage (`13.7K/1M`) painted `▏` (1/8 block). Next to `·` that hairline read as an empty bar, so the numeric `1%` looked wrong.
+
+**Decision:** Any positive fractional cell clamps to at least `▍` (3/8); never fall back to `·` for `frac > 0`.
+
+**Behavior after:** Non-zero ctx usage always shows a clearly filled partial in `[…]` (e.g. 1% → `[▍·······]`).
+
+**Pointers:** `crates/tui/src/render/bar.rs` (`partial_block_char` / `render_usage_bar`)
+
+---
+
 ## 1. 2026-07-25 — Task tool titles, short Log cards, sticky tree, `/tasks-dag`
 
 | Field | Value |
