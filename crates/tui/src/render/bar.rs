@@ -27,6 +27,10 @@ const SEP_ROW2: &str = "  ";
 const BAR_FILLED: char = '■'; // U+25A0
 const BAR_EMPTY: char = '·'; // U+00B7
 
+/// Partial block characters from 1/8 to 7/8 width (U+258F … U+2589).
+/// Used at the boundary of the usage bar so 1% shows visible progress.
+const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
 const USAGE_BAR_WIDTH: u16 = 10;
 
 /// Render a text-based usage progress bar like `[█████░░░░░]`.
@@ -46,17 +50,42 @@ fn format_quota_value(value: Option<f64>) -> String {
 
 fn render_usage_bar(pct: f64) -> String {
     let inner_width = USAGE_BAR_WIDTH.saturating_sub(2) as usize;
-    let fill_chars = ((pct / 100.0) * inner_width as f64).round() as usize;
+    let exact = (pct / 100.0) * inner_width as f64;
+    let full_blocks = exact.floor() as usize;
+    let fractional = exact - full_blocks as f64;
+
     let mut bar = String::from("[");
-    for i in 0..inner_width {
-        if i < fill_chars {
-            bar.push(BAR_FILLED);
+    // Full blocks
+    for _ in 0..full_blocks.min(inner_width) {
+        bar.push(BAR_FILLED);
+    }
+    // Boundary partial block + remaining empty
+    if full_blocks < inner_width {
+        if fractional > 0.0 {
+            bar.push(partial_block_char(fractional));
+            for _ in (full_blocks + 1)..inner_width {
+                bar.push(BAR_EMPTY);
+            }
         } else {
-            bar.push(BAR_EMPTY);
+            for _ in full_blocks..inner_width {
+                bar.push(BAR_EMPTY);
+            }
         }
     }
     bar.push(']');
     bar
+}
+
+/// Map a fraction [0, 1) to the closest partial-block character.
+fn partial_block_char(frac: f64) -> char {
+    // frac is 0.0..1.0; map to 0..8 bucket
+    let idx = (frac * 8.0).round() as usize;
+    match idx {
+        0 => BAR_EMPTY,
+        1..=7 => PARTIAL_BLOCKS[idx - 1],
+        8 => BAR_FILLED,
+        _ => BAR_EMPTY,
+    }
 }
 
 /// Compact token count for status display (`590`, `12.5K`, `200K`).
@@ -582,6 +611,23 @@ mod render_tests {
         assert_eq!(super::render_usage_bar(0.0), "[········]");
         assert_eq!(super::render_usage_bar(50.0), "[■■■■····]");
         assert_eq!(super::render_usage_bar(100.0), "[■■■■■■■■]");
+    }
+
+    #[test]
+    fn render_usage_bar_partial_block_at_low_percent() {
+        // 1% → partial block boundary instead of invisible
+        let bar = super::render_usage_bar(1.0);
+        assert!(bar.starts_with('['));
+        assert!(bar.ends_with(']'));
+        assert_ne!(bar, "[········]", "1% must differ from 0%");
+        // First character after '[' should not be empty
+        let inner = &bar[1..bar.len() - 1];
+        assert!(!inner.starts_with('·'), "1% must show partial block, got {bar}");
+        // 6% and 10% show progressively wider partial blocks
+        let bar6 = super::render_usage_bar(6.0);
+        let bar10 = super::render_usage_bar(10.0);
+        assert_ne!(bar6, bar, "6% must differ from 1%");
+        assert_ne!(bar10, bar6, "10% must differ from 6%");
     }
 
     #[test]
