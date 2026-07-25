@@ -226,6 +226,10 @@ pub enum UserCommand {
     /// emit `TaskComplete`. The command driver emits [`AgentUpdate::TaskCancelled`]
     /// so the TUI can leave the busy state. The next `SubmitTask` clears the flag.
     Cancel,
+    /// Compact the session history (triggered by `/compact` slash command).
+    /// Runs compaction on the existing context and stops — does not start a
+    /// new task.
+    Compact,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)

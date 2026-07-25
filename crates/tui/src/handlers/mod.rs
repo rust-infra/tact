@@ -365,6 +365,21 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "compact" => {
+            // Only compact when idle; active tasks cannot be compacted
+            // from slash since compact_history synchronously rewrites
+            // the session context.
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+                let msg = app.msgs().input_busy_msg.to_string();
+                app.flash_msg = Some((msg, std::time::Instant::now()));
+            } else {
+                let _ = app.user_cmd_tx.send(UserCommand::Compact);
+            }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "balance" => {
             if app.account_rx.is_none() {
                 return CommandExecOutcome {

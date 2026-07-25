@@ -61,6 +61,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model for current provider"),
     ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
+    ("compact", "Compact conversation history"),
     ("cancel", "Cancel current task"),
     ("quit", "Quit application"),
     ("help", "Show help panel"),

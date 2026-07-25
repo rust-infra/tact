@@ -150,6 +150,16 @@ async fn handle_user_command_with_account(
                 }
             }
         }
+        UserCommand::Compact => {
+            agent.emit_update(AgentUpdate::Info("[compacting]".into()));
+            if let Err(error) = agent.compact_history(None).await {
+                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                    "Compaction failed: {error}"
+                ))));
+            } else {
+                agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
+            }
+        }
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
                 return;
