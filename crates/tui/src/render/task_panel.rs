@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::widgets::state::{
     App,
-    task_panel::{format_sticky_title_line, format_tree_lines},
+    task_panel::{format_grouped_lines, format_sticky_title_line},
 };
 
 /// Extra rows for sticky chrome: bottom border joins the Log box (sides continue).
@@ -59,7 +59,7 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         title.replace('▼', "▲").replace('▸', "▾"),
         title_style,
     ))];
-    for row in format_tree_lines(&app.task_panel.snapshot) {
+    for row in format_grouped_lines(&app.task_panel.snapshot, app.task_panel.scroll, app.task_panel.max_visible) {
         lines.push(Line::from(Span::styled(row, row_style)));
     }
     frame.render_widget(Paragraph::new(lines), inner);
