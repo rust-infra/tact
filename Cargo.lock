@@ -4507,7 +4507,6 @@ dependencies = [
  "anyhow",
  "async-openai 0.20.0",
  "async-openai 0.41.1",
- "async-trait",
  "dotenvy",
  "eventsource-stream",
  "futures-util",

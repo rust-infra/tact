@@ -242,7 +242,6 @@ impl MockClient {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for MockClient {
     async fn stream_message(
         &self,

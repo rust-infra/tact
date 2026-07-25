@@ -114,7 +114,6 @@ impl KimiAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for KimiAdapter {
     async fn stream_message(
         &self,

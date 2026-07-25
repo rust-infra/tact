@@ -155,7 +155,6 @@ impl OpenAiResponsesAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for OpenAiResponsesAdapter {
     async fn stream_message(
         &self,

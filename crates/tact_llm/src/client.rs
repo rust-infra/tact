@@ -12,7 +12,7 @@ use crate::{
 pub type LlmRequestBody = Vec<u8>;
 
 /// Abstract interface for streaming and non-streaming LLM calls.
-#[async_trait::async_trait]
+#[allow(async_fn_in_trait)]
 pub trait LlmClient: Send + Sync {
     /// Stream a message request, emitting real-time updates via `ui_tx`.
     ///
@@ -60,7 +60,6 @@ pub enum LlmProvider {
     Mock(MockClient),
 }
 
-#[async_trait::async_trait]
 impl LlmClient for LlmProvider {
     async fn stream_message(
         &self,
