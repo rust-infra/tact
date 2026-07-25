@@ -622,7 +622,10 @@ mod render_tests {
         assert_ne!(bar, "[········]", "1% must differ from 0%");
         // First character after '[' should not be empty
         let inner = &bar[1..bar.len() - 1];
-        assert!(!inner.starts_with('·'), "1% must show partial block, got {bar}");
+        assert!(
+            !inner.starts_with('·'),
+            "1% must show partial block, got {bar}"
+        );
         // 6% and 10% show progressively wider partial blocks
         let bar6 = super::render_usage_bar(6.0);
         let bar10 = super::render_usage_bar(10.0);
