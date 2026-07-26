@@ -5,7 +5,7 @@ members = [
     "crates/tact",
     "crates/tact-ui",
     "crates/tact_llm",
-    "crates/tool_refactor_macros", ".tmp/meraid-probe",
+    "crates/tool_refactor_macros",
 ]
 resolver = "2"
 

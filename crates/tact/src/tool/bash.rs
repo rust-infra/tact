@@ -199,6 +199,9 @@ fn configure_process_group(command: &mut Command) {
 #[cfg(unix)]
 fn set_process_group_priority(process_group_id: u32, nice: i32) {
     if nice > 0 {
+        // SAFETY: process_group_id comes from Child::id() which always
+        // returns a valid OS PID. PRIO_PGRP with our own PGRP is safe;
+        // setpriority is not a memory-safety operation.
         unsafe {
             libc::setpriority(libc::PRIO_PGRP, process_group_id, nice);
         }
