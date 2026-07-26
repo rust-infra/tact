@@ -461,11 +461,11 @@ impl<'a> ToolWidget<'a> {
             }
             ToolDisplayKind::Sleep => {
                 if let Ok(ms) = self.arg_summary.parse::<u64>() {
-                    format!("Sleep · {}", sleep_duration(ms))
+                    format!("⏳ Sleep · {}", sleep_duration(ms))
                 } else if self.arg_summary.is_empty() {
-                    "Sleep".to_string()
+                    "⏳ Sleep".to_string()
                 } else {
-                    format!("Sleep · {}", self.arg_summary)
+                    format!("⏳ Sleep · {}", self.arg_summary)
                 }
             }
             ToolDisplayKind::Task => {
@@ -1046,7 +1046,7 @@ mod tests {
             .with_arg_summary("5000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(5_000_000);
-        assert_eq!(widget.title_text(), "Sleep · 5.0s");
+        assert_eq!(widget.title_text(), "⏳ Sleep · 5.0s");
     }
 
     #[test]
@@ -1057,7 +1057,7 @@ mod tests {
             .with_arg_summary("0")
             .with_phase(ToolPhase::Success)
             .with_duration_us(1);
-        assert_eq!(widget.title_text(), "Sleep · 0ms");
+        assert_eq!(widget.title_text(), "⏳ Sleep · 0ms");
     }
 
     #[test]
@@ -1068,6 +1068,6 @@ mod tests {
             .with_arg_summary("125000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(125_000_000);
-        assert_eq!(widget.title_text(), "Sleep · 2m 5s");
+        assert_eq!(widget.title_text(), "⏳ Sleep · 2m 5s");
     }
 }
