@@ -70,8 +70,31 @@ pub fn tool_display_name(tool: &str) -> String {
         "edit_file" => "✏️ Edit".to_string(),
         "bash" | "shell" => "Bash".to_string(),
         "run_command" => "Command".to_string(),
-        "spawn_subagent" => "Subagent".to_string(),
+        "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
+        "sleep" => "⏳ Sleep".to_string(),
+        "apply_patch" => "📝 Patch".to_string(),
+        "background_run" => "Background".to_string(),
+        "check_background" => "Background".to_string(),
+        "cron_create" => "Cron".to_string(),
+        "cron_delete" => "Cron".to_string(),
+        "cron_list" => "Cron".to_string(),
+        "load_skill" => "Skill".to_string(),
+        "save_memory" => "Memory".to_string(),
+        "compact" => "Compact".to_string(),
+        "spawn_teammate" => "Teammate".to_string(),
+        "list_teammates" => "Teammate".to_string(),
+        "send_message" => "Message".to_string(),
+        "broadcast" => "Broadcast".to_string(),
+        "read_inbox" => "Inbox".to_string(),
+        "plan_approval" => "Plan".to_string(),
+        "shutdown_request" => "Shutdown".to_string(),
+        "shutdown_response" => "Shutdown".to_string(),
+        "worktree_create" => "Worktree".to_string(),
+        "worktree_list" => "Worktree".to_string(),
+        "worktree_status" => "Worktree".to_string(),
+        "worktree_run" => "Worktree".to_string(),
+        "worktree_events" => "Worktree".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()
@@ -102,12 +125,23 @@ fn sleep_duration(ms: u64) -> String {
         return "0ms".to_string();
     }
     if ms < 1000 {
-        format!("{ms}ms")
-    } else if ms < 60_000 {
-        format!("{:.1}s", ms as f64 / 1000.0)
+        return format!("{ms}ms");
+    }
+    if ms < 60_000 {
+        let secs = ms as f64 / 1000.0;
+        // Strip trailing ".0" for whole-second durations.
+        if secs.fract() == 0.0 {
+            return format!("{}s", secs as u64);
+        }
+        return format!("{:.1}s", secs);
+    }
+    let total_secs = ms / 1000;
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+    if seconds == 0 {
+        format!("{}m", minutes)
     } else {
-        let secs = ms / 1000;
-        format!("{}m {}s", secs / 60, secs % 60)
+        format!("{}m {}s", minutes, seconds)
     }
 }
 
@@ -1048,7 +1082,7 @@ mod tests {
             .with_arg_summary("5000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(5_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 5.0s");
+        assert_eq!(widget.title_text(), "⏳ Sleep · 5s");
     }
 
     #[test]
@@ -1071,5 +1105,27 @@ mod tests {
             .with_phase(ToolPhase::Success)
             .with_duration_us(125_000_000);
         assert_eq!(widget.title_text(), "⏳ Sleep · 2m 5s");
+    }
+
+    #[test]
+    fn sleep_exact_minute_drops_zero_seconds() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("60000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(60_000_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 1m");
+    }
+
+    #[test]
+    fn sleep_fractional_second_keeps_decimal() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("1500")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1_500_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 1.5s");
     }
 }

@@ -104,6 +104,12 @@ pub(crate) struct SubagentPopup {
     pub scroll: u16,
     /// Tool id of the spawn_subagent invocation this popup belongs to.
     pub tool_id: String,
+    /// Cached rendered markdown lines (populated once on first render after completion).
+    pub cached_markdown: Option<Vec<Line<'static>>>,
+    /// Full plaintext content for selection normalization.
+    pub selection_text: String,
+    /// Current text selection (mouse-drag), if any.
+    pub selection: Option<PopupTextSelection>,
 }
 
 #[cfg(test)]

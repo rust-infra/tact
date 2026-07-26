@@ -127,6 +127,8 @@ pub(crate) struct MouseState {
     pub(crate) thinking_popup_area: Rect,
     /// diff popup area (used to determine if click is inside the popup).
     pub(crate) diff_popup_area: Rect,
+    /// subagent popup area (used to determine if click is inside the popup).
+    pub(crate) subagent_popup_area: Rect,
     /// Selectable body area inside the active text popup border.
     pub(crate) popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.

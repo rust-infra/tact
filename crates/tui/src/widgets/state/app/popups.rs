@@ -83,6 +83,10 @@ impl App {
             self.system_prompt_popup = None;
         } else if self.subagent_popup.is_some() {
             self.subagent_popup = None;
+            self.mouse.subagent_popup_area = Rect::default();
+            self.mouse.popup_text_body_area = Rect::default();
+            self.mouse.popup_text_hit_rows.clear();
+            self.mouse.popup_text_drag_origin = None;
         }
     }
 
@@ -97,6 +101,8 @@ impl App {
             Some(self.mouse.code_popup_area)
         } else if self.task_dag_popup.is_some() {
             Some(self.mouse.task_dag_popup_area)
+        } else if self.subagent_popup.is_some() {
+            Some(self.mouse.subagent_popup_area)
         } else {
             None
         };
@@ -163,6 +169,9 @@ impl App {
             title: output.title_raw.clone(),
             scroll: 0,
             tool_id,
+            cached_markdown: None,
+            selection_text: String::new(),
+            selection: None,
         });
     }
 
@@ -171,7 +180,7 @@ impl App {
         let Some(popup) = self.subagent_popup.as_ref() else {
             return;
         };
-        let text = self
+        let full_text = self
             .tools
             .active
             .iter()
@@ -185,9 +194,15 @@ impl App {
                     .and_then(|b| b.output.detail_full.clone())
             })
             .unwrap_or_default();
-        if !text.is_empty() {
-            self.copy_text(&text);
+        if full_text.is_empty() {
+            return;
         }
+        let text = popup
+            .selection
+            .and_then(|s| s.normalized_non_empty(&full_text))
+            .map(|range| full_text[range].to_string())
+            .unwrap_or(full_text);
+        self.copy_text(&text);
     }
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.

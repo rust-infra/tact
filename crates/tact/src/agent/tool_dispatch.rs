@@ -184,17 +184,100 @@ fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
 }
 
 fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
+    fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+        input.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn patch_title(input: &serde_json::Value) -> String {
+        let patch = str_field(input, "patch");
+        let dry = input.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let label = if dry { "dry-run" } else { "patch" };
+        let first_line = patch.lines().next().unwrap_or("").trim().to_string();
+        if first_line.is_empty() {
+            label.to_string()
+        } else if first_line.len() <= 78 {
+            format!("{label}: {first_line}")
+        } else {
+            format!("{label}: {}...", &first_line[..75])
+        }
+    }
+    fn body_preview(input: &serde_json::Value) -> String {
+        let b = str_field(input, "body").trim().to_string();
+        if b.is_empty() { return b; }
+        if b.len() <= 40 { b } else { format!("{}...", &b[..37]) }
+    }
+
     match name {
-        "read_file" | "write_file" => input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "run_command" | "bash" | "shell" => input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        "read_file" | "write_file" => str_field(input, "path").to_string(),
+        "run_command" | "bash" | "shell" => str_field(input, "command").to_string(),
+        "sleep" => input
+            .get("ms")
+            .and_then(|v| v.as_u64())
+            .or_else(|| input.get("duration_ms").and_then(|v| v.as_u64()))
+            .map(|ms| ms.to_string())
+            .unwrap_or_default(),
+        "edit_file" => str_field(input, "path").to_string(),
+        "apply_patch" => patch_title(input),
+        "ask_user" => str_field(input, "question").to_string(),
+        "background_run" => str_field(input, "command").to_string(),
+        "check_background" => {
+            let id = str_field(input, "task_id");
+            if id.is_empty() { "all".to_string() } else { id.to_string() }
+        }
+        "cron_create" => {
+            let cron = str_field(input, "cron");
+            let prompt = str_field(input, "prompt");
+            if prompt.is_empty() { cron.to_string() } else { format!("{cron}  {prompt}") }
+        }
+        "cron_delete" => str_field(input, "id").to_string(),
+        "load_skill" => str_field(input, "name").to_string(),
+        "save_memory" => {
+            let mname = str_field(input, "name");
+            let mtype = str_field(input, "memory_type");
+            let mtype = if mtype.is_empty() { str_field(input, "type") } else { mtype };
+            if mname.is_empty() { mtype.to_string() }
+            else if mtype.is_empty() { mname.to_string() }
+            else { format!("{mname} [{mtype}]") }
+        }
+        "compact" => {
+            let focus = str_field(input, "focus");
+            if focus.is_empty() { String::new() } else { format!("focus: {focus}") }
+        }
+        "spawn_subagent" => str_field(input, "prompt").to_string(),
+        "spawn_teammate" => {
+            let name = str_field(input, "name");
+            let role = str_field(input, "role");
+            if role.is_empty() { name.to_string() } else { format!("{name} ({role})") }
+        }
+        "send_message" => {
+            let to = str_field(input, "to");
+            let preview = body_preview(input);
+            if preview.is_empty() { format!("→ {to}") } else { format!("→ {to}: {preview}") }
+        }
+        "broadcast" => {
+            let preview = body_preview(input);
+            if preview.is_empty() { "→ all".to_string() } else { format!("→ all: {preview}") }
+        }
+        "read_inbox" => {
+            let owner = str_field(input, "owner");
+            if owner.is_empty() { String::new() } else { format!("{owner}'s inbox") }
+        }
+        "plan_approval" | "shutdown_request" | "shutdown_response" => {
+            let to = str_field(input, "to");
+            let preview = body_preview(input);
+            if preview.is_empty() { format!("→ {to}") } else { format!("→ {to}: {preview}") }
+        }
+        "worktree_create" => str_field(input, "name").to_string(),
+        "worktree_status" => str_field(input, "name").to_string(),
+        "worktree_run" => {
+            let name = str_field(input, "name");
+            let cmd = str_field(input, "command");
+            if cmd.is_empty() { name.to_string() } else { format!("{name}: {cmd}") }
+        }
+        "worktree_events" => input
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| format!("last {n}"))
+            .unwrap_or_default(),
         _ => input.to_string(),
     }
 }
