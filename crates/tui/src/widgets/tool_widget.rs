@@ -44,6 +44,7 @@ pub enum ToolDisplayKind {
     FileEdit,
     Command,
     Task,
+    Subagent,
     Generic,
 }
 
@@ -54,6 +55,7 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
         "edit_file" => ToolDisplayKind::FileEdit,
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
         "task_create" | "task_update" | "task_get" | "task_list" => ToolDisplayKind::Task,
+        "spawn_subagent" => ToolDisplayKind::Subagent,
         _ => ToolDisplayKind::Generic,
     }
 }
@@ -64,6 +66,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "read_file" => "Read".to_string(),
         "bash" | "shell" => "Bash".to_string(),
         "run_command" => "Command".to_string(),
+        "spawn_subagent" => "Subagent".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()
@@ -427,6 +430,13 @@ impl<'a> ToolWidget<'a> {
                     format!("{label} ({})", self.arg_summary)
                 }
             }
+            ToolDisplayKind::Subagent => {
+                if self.arg_summary.is_empty() {
+                    "Subagent".to_string()
+                } else {
+                    format!("Subagent · {}", self.arg_summary)
+                }
+            }
             ToolDisplayKind::Task => {
                 // Human title already includes "# Task.N · …"; do not prefix tool name.
                 if self.arg_summary.is_empty() {
@@ -602,8 +612,10 @@ impl<'a> ToolWidget<'a> {
             return true;
         }
         if self.live_detail {
-            return matches!(display_kind(&self.tool_name), ToolDisplayKind::Command)
-                && matches!(self.phase, ToolPhase::Running);
+            return matches!(
+                display_kind(&self.tool_name),
+                ToolDisplayKind::Command | ToolDisplayKind::Subagent
+            ) && matches!(self.phase, ToolPhase::Running);
         }
         matches!(
             display_kind(&self.tool_name),
@@ -611,6 +623,7 @@ impl<'a> ToolWidget<'a> {
                 | ToolDisplayKind::FileRead
                 | ToolDisplayKind::FileEdit
                 | ToolDisplayKind::Command
+                | ToolDisplayKind::Subagent
         ) && matches!(self.phase, ToolPhase::Success)
     }
 
@@ -624,6 +637,9 @@ impl<'a> ToolWidget<'a> {
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
         }
+        if matches!(display_kind(&self.tool_name), ToolDisplayKind::Subagent) {
+            return format!("Summary ({} lines)", total_lines);
+        }
         match display_kind(&self.tool_name) {
             ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit => self
                 .msgs
@@ -634,7 +650,7 @@ impl<'a> ToolWidget<'a> {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Task | ToolDisplayKind::Generic => {
+            ToolDisplayKind::Task | ToolDisplayKind::Generic | ToolDisplayKind::Subagent => {
                 format!("{} output", self.tool_name)
             }
         }

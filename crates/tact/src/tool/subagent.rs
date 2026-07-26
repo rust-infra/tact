@@ -65,13 +65,12 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         .await?;
     subagent = subagent.with_session(child_id.clone(), store);
 
-    // Tag UI traffic so the TUI routes stream/steps into the Subagent sticky.
-    // RequestSelect* still passes through for permission popups.
+    // Tag UI traffic so the TUI routes stream/steps into the parent tool-card
+    // via ToolProgress. RequestSelect* still passes through for permission popups.
     if let Some(tx) = ctx.ui_tx {
-        let tagged = crate::tool::subagent_ui::tagged_ui_channel(
+        let tagged = crate::tool::subagent_ui::tagged_ui_channel_with_progress(
             tx,
-            ctx.progress_reporter.tool_id().to_string(),
-            child_id,
+            ctx.progress_reporter.clone(),
         );
         subagent = subagent.with_ui_channel(tagged);
     }

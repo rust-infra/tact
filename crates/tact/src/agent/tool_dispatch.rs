@@ -241,7 +241,9 @@ fn tool_arg_summary_contextual(
 
 fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str) -> Option<String> {
     match name {
-        "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
+        "read_file" | "run_command" | "bash" | "shell" | "spawn_subagent" => {
+            Some(exec_output.to_string())
+        }
         "write_file" => input
             .get("content")
             .and_then(|v| v.as_str())
