@@ -81,7 +81,7 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
         frame,
         popup_area,
         &app.theme,
-        app.msgs().thinking_popup_title,
+        &popup.title,
         Some(footer),
     );
     let body_area = inner;
