@@ -317,7 +317,26 @@ pub(crate) fn handle_tool_block_click(
     relative_row: usize,
 ) {
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
-        app.open_diff_popup_at_row(phys_idx, relative_row);
+        // Subagent tools open a dedicated live/markdown popup.
+        let is_subagent = app
+            .tools
+            .active
+            .iter()
+            .find(|a| a.phys_idx == phys_idx)
+            .map(|a| a.output.tool_name.as_str() == "spawn_subagent")
+            .or_else(|| {
+                app.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| b.output.tool_name.as_str() == "spawn_subagent")
+            })
+            .unwrap_or(false);
+        if is_subagent {
+            app.open_subagent_popup(phys_idx);
+        } else {
+            app.open_diff_popup_at_row(phys_idx, relative_row);
+        }
         return;
     }
     if app.mouse.click_count == 1 {

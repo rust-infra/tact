@@ -37,6 +37,7 @@ impl App {
             || self.code_popup.is_some()
             || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
+            || self.subagent_popup.is_some()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -49,6 +50,8 @@ impl App {
         } else if let Some(p) = self.task_dag_popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.system_prompt_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.subagent_popup.as_mut() {
             Some(&mut p.scroll)
         } else {
             None
@@ -78,6 +81,8 @@ impl App {
             self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
             self.system_prompt_popup = None;
+        } else if self.subagent_popup.is_some() {
+            self.subagent_popup = None;
         }
     }
 
@@ -111,6 +116,8 @@ impl App {
             self.copy_diff_popup();
         } else if self.code_popup.is_some() {
             self.copy_code_popup();
+        } else if self.subagent_popup.is_some() {
+            self.copy_subagent_popup();
         } else if self.task_dag_popup.is_some() {
             let src = self
                 .task_dag_popup
@@ -128,6 +135,50 @@ impl App {
             scroll: 0,
             mermaid_source,
         });
+    }
+
+    /// Open a subagent live-output / markdown-summary popup for a tool card.
+    pub(crate) fn open_subagent_popup(&mut self, phys_idx: usize) {
+        let output = match self.tool_output_at(phys_idx) {
+            Some(o) if o.tool_name == "spawn_subagent" => o.clone(),
+            _ => return,
+        };
+        let live = self
+            .tools
+            .active
+            .iter()
+            .any(|a| a.phys_idx == phys_idx);
+        self.subagent_popup = Some(crate::widgets::state::SubagentPopup {
+            title: output.title_raw.clone(),
+            scroll: 0,
+            live,
+        });
+    }
+
+    /// Copy the visible subagent popup content to clipboard.
+    pub(crate) fn copy_subagent_popup(&mut self) {
+        if self.subagent_popup.is_none() {
+            return;
+        }
+        // Find the raw text from the active or completed block.
+        let text = self
+            .tools
+            .active
+            .iter()
+            .find(|a| a.output.tool_name == "spawn_subagent")
+            .map(|a| a.live_output.detail_text())
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .rev()
+                    .find(|b| b.output.tool_name == "spawn_subagent")
+                    .and_then(|b| b.output.detail_full.clone())
+            })
+            .unwrap_or_default();
+        if !text.is_empty() {
+            self.copy_text(&text);
+        }
     }
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.

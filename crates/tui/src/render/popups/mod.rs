@@ -7,6 +7,7 @@ pub(crate) mod history;
 pub(crate) mod select;
 pub(crate) mod selectable_text;
 pub(crate) mod slash_command;
+pub(crate) mod subagent_popup;
 pub(crate) mod system_prompt_popup;
 pub(crate) mod task_dag_popup;
 pub(crate) mod thinking_popup;

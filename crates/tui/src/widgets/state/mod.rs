@@ -43,7 +43,7 @@ pub(crate) use stream_state::StreamState;
 pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
-pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
+pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState};
 
 // ========== Basic Types ==========
 
@@ -241,6 +241,8 @@ pub struct App {
     pub(crate) code_popup: Option<CodePopup>,
     /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
     pub(crate) task_dag_popup: Option<TaskDagPopup>,
+    /// Subagent live-output / markdown summary popup.
+    pub(crate) subagent_popup: Option<SubagentPopup>,
     pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,

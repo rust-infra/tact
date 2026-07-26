@@ -96,6 +96,15 @@ pub(crate) struct DiffPopup {
     pub highlighted_lines: Vec<Line<'static>>,
 }
 
+/// Popup preview state for subagent live output / markdown summary.
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentPopup {
+    pub title: String,
+    pub scroll: u16,
+    /// True while the parent `spawn_subagent` tool is still running.
+    pub live: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::PopupTextSelection;

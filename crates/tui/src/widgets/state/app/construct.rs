@@ -106,6 +106,7 @@ impl App {
             code_blocks: Vec::new(),
             code_popup: None,
             task_dag_popup: None,
+            subagent_popup: None,
             system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),

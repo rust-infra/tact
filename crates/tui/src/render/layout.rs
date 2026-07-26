@@ -68,6 +68,9 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.task_dag_popup.is_some() {
         super::popups::task_dag_popup::render_task_dag_popup(frame, area, app);
     }
+    if app.subagent_popup.is_some() {
+        super::popups::subagent_popup::render_subagent_popup(frame, area, app);
+    }
 }
 
 #[cfg(test)]
