@@ -67,6 +67,7 @@ pub fn tool_display_name(tool: &str) -> String {
     match tool {
         "write_file" => "Write".to_string(),
         "read_file" => "Read".to_string(),
+        "edit_file" => "✏️ Edit".to_string(),
         "bash" | "shell" => "Bash".to_string(),
         "run_command" => "Command".to_string(),
         "spawn_subagent" => "Subagent".to_string(),
