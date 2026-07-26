@@ -46,6 +46,7 @@ pub enum ToolDisplayKind {
     Command,
     Task,
     Subagent,
+    Sleep,
     Generic,
 }
 
@@ -57,6 +58,7 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
         "task_create" | "task_update" | "task_get" | "task_list" => ToolDisplayKind::Task,
         "spawn_subagent" => ToolDisplayKind::Subagent,
+        "sleep" => ToolDisplayKind::Sleep,
         _ => ToolDisplayKind::Generic,
     }
 }
@@ -90,6 +92,20 @@ pub fn format_duration_us(us: u64) -> String {
         format!("{ms:.2}ms")
     } else {
         format!("{:.2}s", us as f64 / 1_000_000.0)
+    }
+}
+
+fn sleep_duration(ms: u64) -> String {
+    if ms == 0 {
+        return "0ms".to_string();
+    }
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let secs = ms / 1000;
+        format!("{}m {}s", secs / 60, secs % 60)
     }
 }
 
@@ -443,6 +459,15 @@ impl<'a> ToolWidget<'a> {
                     format!("Subagent · {}", self.arg_summary)
                 }
             }
+            ToolDisplayKind::Sleep => {
+                if let Ok(ms) = self.arg_summary.parse::<u64>() {
+                    format!("Sleep · {}", sleep_duration(ms))
+                } else if self.arg_summary.is_empty() {
+                    "Sleep".to_string()
+                } else {
+                    format!("Sleep · {}", self.arg_summary)
+                }
+            }
             ToolDisplayKind::Task => {
                 // Human title already includes "# Task.N · …"; do not prefix tool name.
                 if self.arg_summary.is_empty() {
@@ -656,7 +681,7 @@ impl<'a> ToolWidget<'a> {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Task | ToolDisplayKind::Generic | ToolDisplayKind::Subagent => {
+            ToolDisplayKind::Task | ToolDisplayKind::Generic | ToolDisplayKind::Sleep | ToolDisplayKind::Subagent => {
                 format!("{} output", self.tool_name)
             }
         }
@@ -1011,5 +1036,38 @@ mod tests {
             .with_duration_us(7_000);
 
         assert_eq!(widget.layout().visual_rows, TOOL_HEADER_ROWS);
+    }
+
+    #[test]
+    fn sleep_title_formats_duration() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("5000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(5_000_000);
+        assert_eq!(widget.title_text(), "Sleep · 5.0s");
+    }
+
+    #[test]
+    fn sleep_zero_ms_shows_zero() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("0")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1);
+        assert_eq!(widget.title_text(), "Sleep · 0ms");
+    }
+
+    #[test]
+    fn sleep_minutes_format() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("125000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(125_000_000);
+        assert_eq!(widget.title_text(), "Sleep · 2m 5s");
     }
 }
