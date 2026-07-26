@@ -12,7 +12,7 @@ pub(crate) fn resolve_theme(configured: &str) -> ThemeName {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         return detect_terminal_theme();
     }
-    trimmed.parse::<ThemeName>().unwrap_or(ThemeName::Retro)
+    trimmed.parse::<ThemeName>().unwrap_or(ThemeName::Ink)
 }
 
 /// Detect terminal background brightness and return a matching ThemeName.
@@ -56,8 +56,8 @@ pub(crate) fn detect_terminal_theme() -> ThemeName {
         }
     }
 
-    // Fallback: Retro (a warm dark theme)
-    ThemeName::Retro
+    // Fallback: Ink (a modern dark theme)
+    ThemeName::Ink
 }
 
 /// On macOS, read `AppleInterfaceStyle` via `defaults` to detect

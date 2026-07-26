@@ -157,7 +157,7 @@ pub(super) fn resolve_non_llm_settings(
         .theme
         .clone()
         .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+        .unwrap_or_else(|| "ink".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -283,7 +283,7 @@ pub(super) fn resolve_config(
         .theme
         .clone()
         .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+        .unwrap_or_else(|| "ink".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -381,7 +381,7 @@ model = "gpt-4o"
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
-        assert_eq!(resolved.ui.theme, "retro");
+        assert_eq!(resolved.ui.theme, "ink");
         assert_eq!(
             resolved.ui.vision_image.compress,
             VisionImageSettings::DEFAULT_COMPRESS

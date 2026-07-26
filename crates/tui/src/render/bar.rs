@@ -480,6 +480,8 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 crate::theme::ThemeName::Kawaii => msgs.theme_kawaii,
                 crate::theme::ThemeName::Japanese => msgs.theme_japanese,
                 crate::theme::ThemeName::Brutal => msgs.theme_brutal,
+                crate::theme::ThemeName::Ink => msgs.theme_ink,
+                crate::theme::ThemeName::InkLight => msgs.theme_ink_light,
             };
             let lang_label = app.language.label();
             (

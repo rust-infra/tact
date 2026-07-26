@@ -19,6 +19,8 @@ pub enum ThemeName {
     Kawaii,
     Japanese,
     Brutal,
+    Ink,
+    InkLight,
 }
 
 impl ThemeName {
@@ -34,6 +36,8 @@ impl ThemeName {
             ThemeName::Kawaii,
             ThemeName::Japanese,
             ThemeName::Brutal,
+            ThemeName::Ink,
+            ThemeName::InkLight,
         ]
     }
     /// Cycle to the next theme.
@@ -61,6 +65,8 @@ impl FromStr for ThemeName {
             "brutal" | "neo-brutal" | "neo-brutalism" | "neobrutal" | "neobrutalism" => {
                 Ok(Self::Brutal)
             }
+            "ink" => Ok(Self::Ink),
+            "ink-light" | "ink_light" | "inklight" => Ok(Self::InkLight),
             other => Err(format!("unknown theme: {other}")),
         }
     }
@@ -84,6 +90,9 @@ pub struct Theme {
     pub bottom_bar_fg: Color, // Bottom bar foreground
     pub input_box_bg: Color,  // Input box background
     pub input_box_fg: Color,  // Input box foreground
+    pub heading: Color,       // Heading text color
+    pub version: Color,       // Version text color
+    pub muted: Color,         // Muted/secondary text color
 }
 
 impl From<ThemeName> for Theme {
@@ -104,6 +113,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(180, 180, 190),
                 input_box_bg: Color::Black,
                 input_box_fg: Color::Green,
+                heading: Color::Cyan,
+                version: Color::Green,
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::Light => Self {
                 name,
@@ -120,6 +132,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(80, 80, 80),
                 input_box_bg: Color::White,
                 input_box_fg: Color::Green,
+                heading: Color::Blue,
+                version: Color::Blue,
+                muted: Color::Rgb(120, 120, 120),
             },
             ThemeName::SolarizedDark => Self {
                 name,
@@ -136,6 +151,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(131, 148, 150),
                 input_box_bg: Color::Rgb(0, 43, 54),
                 input_box_fg: Color::Rgb(133, 153, 0),
+                heading: Color::Rgb(38, 139, 210),
+                version: Color::Rgb(133, 153, 0),
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::SolarizedLight => Self {
                 name,
@@ -152,6 +170,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(101, 123, 131),
                 input_box_bg: Color::Rgb(253, 246, 227),
                 input_box_fg: Color::Rgb(133, 153, 0),
+                heading: Color::Rgb(38, 139, 210),
+                version: Color::Rgb(38, 139, 210),
+                muted: Color::Rgb(120, 120, 120),
             },
             ThemeName::GruvboxDark => Self {
                 name,
@@ -168,6 +189,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(235, 219, 178),
                 input_box_bg: Color::Rgb(40, 40, 40),
                 input_box_fg: Color::Rgb(152, 151, 26),
+                heading: Color::Rgb(214, 93, 14),
+                version: Color::Rgb(152, 151, 26),
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::Nord => Self {
                 name,
@@ -184,6 +208,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(216, 222, 233),
                 input_box_bg: Color::Rgb(46, 52, 64),
                 input_box_fg: Color::Rgb(163, 190, 140),
+                heading: Color::Rgb(136, 192, 208),
+                version: Color::Rgb(163, 190, 140),
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::Retro => Self {
                 name,
@@ -200,6 +227,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(255, 180, 50),
                 input_box_bg: Color::Rgb(15, 12, 6),
                 input_box_fg: Color::Rgb(255, 210, 80),
+                heading: Color::Rgb(255, 210, 80),
+                version: Color::Rgb(200, 255, 80),
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::Kawaii => Self {
                 name,
@@ -216,6 +246,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(140, 100, 120),
                 input_box_bg: Color::Rgb(255, 245, 250),
                 input_box_fg: Color::Rgb(255, 105, 180),
+                heading: Color::Rgb(255, 105, 180),
+                version: Color::Rgb(255, 105, 180),
+                muted: Color::Rgb(120, 120, 120),
             },
             ThemeName::Japanese => Self {
                 name,
@@ -232,6 +265,9 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(230, 220, 200),
                 input_box_bg: Color::Rgb(25, 30, 45),
                 input_box_fg: Color::Rgb(200, 60, 40),
+                heading: Color::Rgb(200, 60, 40),
+                version: Color::Rgb(100, 160, 70),
+                muted: Color::Rgb(128, 128, 128),
             },
             ThemeName::Brutal => Self {
                 name,
@@ -248,6 +284,47 @@ impl From<ThemeName> for Theme {
                 bottom_bar_fg: Color::Rgb(20, 20, 20),
                 input_box_bg: Color::Rgb(255, 255, 255),
                 input_box_fg: Color::Rgb(20, 20, 20),
+                heading: Color::Rgb(255, 221, 87),
+                version: Color::Rgb(170, 240, 150),
+                muted: Color::Rgb(128, 128, 128),
+            },
+            ThemeName::Ink => Self {
+                name,
+                bg: Color::Rgb(13, 13, 13),
+                fg: Color::Rgb(232, 232, 232),
+                accent: Color::Rgb(125, 211, 252),
+                heading: Color::Rgb(125, 211, 252),
+                version: Color::Rgb(45, 212, 191),
+                border: Color::Rgb(58, 58, 58),
+                highlight: Color::Rgb(40, 48, 64),
+                muted: Color::Rgb(128, 128, 128),
+                status_bar_bg: Color::Rgb(18, 18, 18),
+                bottom_bar_bg: Color::Rgb(20, 20, 20),
+                bottom_bar_fg: Color::Rgb(160, 160, 168),
+                input_box_bg: Color::Rgb(13, 13, 13),
+                input_box_fg: Color::Rgb(232, 232, 232),
+                warning: Color::Rgb(255, 200, 50),
+                error: Color::Rgb(255, 70, 70),
+                success: Color::Rgb(80, 200, 120),
+            },
+            ThemeName::InkLight => Self {
+                name,
+                bg: Color::Rgb(248, 248, 248),
+                fg: Color::Rgb(30, 30, 30),
+                accent: Color::Rgb(30, 100, 200),
+                heading: Color::Rgb(20, 80, 180),
+                version: Color::Rgb(20, 150, 140),
+                border: Color::Rgb(200, 200, 200),
+                highlight: Color::Rgb(220, 230, 250),
+                muted: Color::Rgb(120, 120, 120),
+                status_bar_bg: Color::Rgb(240, 240, 240),
+                bottom_bar_bg: Color::Rgb(245, 245, 245),
+                bottom_bar_fg: Color::Rgb(80, 80, 80),
+                input_box_bg: Color::Rgb(248, 248, 248),
+                input_box_fg: Color::Rgb(30, 30, 30),
+                warning: Color::Rgb(200, 150, 30),
+                error: Color::Rgb(200, 50, 50),
+                success: Color::Rgb(60, 160, 90),
             },
         }
     }
@@ -257,7 +334,7 @@ impl Theme {
     /// Panel/card border style. Neo-Brutal uses square corners instead of rounded.
     pub fn block_border_type(&self) -> BorderType {
         match self.name {
-            ThemeName::Brutal => BorderType::Plain,
+            ThemeName::Brutal | ThemeName::Ink | ThemeName::InkLight => BorderType::Plain,
             _ => BorderType::Rounded,
         }
     }
@@ -274,6 +351,7 @@ impl Theme {
                     | ThemeName::SolarizedLight
                     | ThemeName::Kawaii
                     | ThemeName::Brutal
+                    | ThemeName::InkLight
             ),
         }
     }
@@ -331,10 +409,33 @@ impl Theme {
     }
 
     pub fn muted_fg(&self) -> Color {
-        if self.is_light() {
-            Color::Rgb(120, 120, 120)
-        } else {
-            Color::Rgb(128, 128, 128)
-        }
+        self.muted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ink_and_ink_light() {
+        assert_eq!("ink".parse::<ThemeName>().unwrap(), ThemeName::Ink);
+        assert_eq!("ink-light".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
+        assert_eq!("ink_light".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
+        assert_eq!("inklight".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
+    }
+
+    #[test]
+    fn ink_border_type_is_plain() {
+        assert_eq!(Theme::from(ThemeName::Ink).block_border_type(), BorderType::Plain);
+        assert_eq!(Theme::from(ThemeName::InkLight).block_border_type(), BorderType::Plain);
+    }
+
+    #[test]
+    fn muted_fg_returns_muted_field() {
+        let theme = Theme::from(ThemeName::Ink);
+        assert_eq!(theme.muted_fg(), Color::Rgb(128, 128, 128));
+        let theme = Theme::from(ThemeName::Dark);
+        assert_eq!(theme.muted_fg(), Color::Rgb(128, 128, 128));
     }
 }
