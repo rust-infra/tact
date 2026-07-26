@@ -122,6 +122,7 @@ async fn run_interactive_locked(
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
+        bash_nice: tact::config::settings().tools.bash_nice,
         session_id: None,
         session_store: None,
     };

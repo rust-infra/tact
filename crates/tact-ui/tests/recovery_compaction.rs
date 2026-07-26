@@ -47,6 +47,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+            bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
         },
         permission_mode: None,
         tokio_console: false,

@@ -1374,6 +1374,7 @@ mod tests {
                 },
                 tools: crate::config::ToolSettings {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+                    bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
                 },
                 permission_mode: None,
                 tokio_console: false,

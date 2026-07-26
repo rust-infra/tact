@@ -194,8 +194,20 @@ fn configure_process_group(command: &mut Command) {
     command.process_group(0);
 }
 
+/// Lower the scheduling priority of the child's entire process group so
+/// TUI stays responsive during CPU-heavy commands like `cargo test`.
+#[cfg(unix)]
+fn set_process_group_priority(process_group_id: u32, nice: i32) {
+    if nice > 0 {
+        unsafe { libc::setpriority(libc::PRIO_PGRP, process_group_id, nice); }
+    }
+}
+
 #[cfg(not(unix))]
 fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(not(unix))]
+fn set_process_group_priority(_process_group_id: u32, _nice: i32) {}
 
 async fn terminate_child(child: &mut Child, process_group_id: Option<u32>) {
     #[cfg(unix)]
@@ -273,6 +285,9 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     configure_process_group(&mut process);
     let mut child = process.spawn().context("failed to spawn shell process")?;
     let process_group_id = child.id();
+    if let Some(pgid) = process_group_id {
+        set_process_group_priority(pgid, ctx.bash_nice);
+    }
 
     let stdout = child.stdout.take().context("stdout pipe unavailable")?;
     let stderr = child.stderr.take().context("stderr pipe unavailable")?;

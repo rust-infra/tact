@@ -118,3 +118,7 @@ theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 # bash_timeout_secs = 1800
+# Nice (scheduling priority) for bash sub-process group, 0-19 (default: 10).
+# Higher values mean lower priority, keeping TUI responsive during cargo test etc.
+# Set to 0 to disable (bash child processes run at normal priority).
+# bash_nice = 10

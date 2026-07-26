@@ -166,6 +166,11 @@ pub(super) fn resolve_non_llm_settings(
         .bash_timeout_secs
         .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
+    let bash_nice = toml_cfg
+        .tools
+        .bash_nice
+        .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -196,7 +201,7 @@ pub(super) fn resolve_non_llm_settings(
             theme,
             vision_image,
         },
-        tools: ToolSettings { bash_timeout_secs },
+        tools: ToolSettings { bash_timeout_secs, bash_nice },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -284,6 +289,11 @@ pub(super) fn resolve_config(
         .bash_timeout_secs
         .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
 
+    let bash_nice = toml_cfg
+        .tools
+        .bash_nice
+        .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -306,7 +316,7 @@ pub(super) fn resolve_config(
             theme,
             vision_image,
         },
-        tools: ToolSettings { bash_timeout_secs },
+        tools: ToolSettings { bash_timeout_secs, bash_nice },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,

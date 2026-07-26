@@ -128,6 +128,9 @@ pub struct VisionImageTomlConfig {
 pub struct ToolsTomlConfig {
     /// Bash wall-clock timeout in seconds. Zero disables the timeout.
     pub bash_timeout_secs: Option<u64>,
+    /// Nice increment (0–19) applied to the bash sub-process group so TUI stays
+    /// responsive during heavy commands (e.g. `cargo test`). 0 disables.
+    pub bash_nice: Option<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,10 +198,12 @@ pub struct UiSettings {
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
     pub bash_timeout_secs: u64,
+    pub bash_nice: i32,
 }
 
 impl ToolSettings {
     pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 1_800;
+    pub const DEFAULT_BASH_NICE: i32 = 10;
 }
 
 #[derive(Debug, Clone)]
