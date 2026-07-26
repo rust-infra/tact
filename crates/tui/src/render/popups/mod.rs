@@ -67,7 +67,10 @@ pub(crate) fn render_popup_chrome(
     frame.render_widget(Clear, popup_area);
 
     let title_spans = vec![
-        Span::styled(title, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            title,
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled("[x]", Style::default().fg(theme.muted)),
     ];

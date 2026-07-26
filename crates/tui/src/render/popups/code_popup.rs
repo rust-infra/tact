@@ -40,9 +40,18 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         &popup.lang
     };
     let footer: &[super::FooterHint] = &[
-        super::FooterHint { key: "y", label: " copy " },
-        super::FooterHint { key: "j/k", label: " scroll " },
-        super::FooterHint { key: "Esc", label: " close " },
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
     ];
     let inner = super::render_popup_chrome(
         frame,
@@ -78,8 +87,7 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )));
     }
 
-    let para = Paragraph::new(text)
-        .wrap(Wrap { trim: false });
+    let para = Paragraph::new(text).wrap(Wrap { trim: false });
 
     frame.render_widget(para, inner);
 

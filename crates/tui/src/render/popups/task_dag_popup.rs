@@ -22,17 +22,21 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
 
     let popup_area = super::centered_popup_area(area);
     let footer: &[super::FooterHint] = &[
-        super::FooterHint { key: "y", label: " copy " },
-        super::FooterHint { key: "j/k", label: " scroll " },
-        super::FooterHint { key: "Esc", label: " close " },
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
     ];
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        &app.theme,
-        " tasks-dag ",
-        Some(footer),
-    );
+    let inner =
+        super::render_popup_chrome(frame, popup_area, &app.theme, " tasks-dag ", Some(footer));
 
     let content_height = inner.height as usize;
     let max_scroll = total.saturating_sub(1);
@@ -58,8 +62,7 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
         )));
     }
 
-    let para = Paragraph::new(text)
-        .wrap(Wrap { trim: false });
+    let para = Paragraph::new(text).wrap(Wrap { trim: false });
 
     frame.render_widget(para, inner);
 

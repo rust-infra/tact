@@ -420,15 +420,30 @@ mod tests {
     #[test]
     fn parse_ink_and_ink_light() {
         assert_eq!("ink".parse::<ThemeName>().unwrap(), ThemeName::Ink);
-        assert_eq!("ink-light".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
-        assert_eq!("ink_light".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
-        assert_eq!("inklight".parse::<ThemeName>().unwrap(), ThemeName::InkLight);
+        assert_eq!(
+            "ink-light".parse::<ThemeName>().unwrap(),
+            ThemeName::InkLight
+        );
+        assert_eq!(
+            "ink_light".parse::<ThemeName>().unwrap(),
+            ThemeName::InkLight
+        );
+        assert_eq!(
+            "inklight".parse::<ThemeName>().unwrap(),
+            ThemeName::InkLight
+        );
     }
 
     #[test]
     fn ink_border_type_is_plain() {
-        assert_eq!(Theme::from(ThemeName::Ink).block_border_type(), BorderType::Plain);
-        assert_eq!(Theme::from(ThemeName::InkLight).block_border_type(), BorderType::Plain);
+        assert_eq!(
+            Theme::from(ThemeName::Ink).block_border_type(),
+            BorderType::Plain
+        );
+        assert_eq!(
+            Theme::from(ThemeName::InkLight).block_border_type(),
+            BorderType::Plain
+        );
     }
 
     #[test]

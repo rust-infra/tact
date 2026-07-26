@@ -91,17 +91,20 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     };
 
     let footer: &[super::FooterHint] = &[
-        super::FooterHint { key: "y", label: " copy " },
-        super::FooterHint { key: "Esc", label: " close " },
-        super::FooterHint { key: "j/k", label: " scroll " },
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
     ];
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        &app.theme,
-        &header,
-        Some(footer),
-    );
+    let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &header, Some(footer));
     let body_area = inner;
 
     let selection_range = selection.and_then(|sel| sel.normalized_non_empty(raw_text));

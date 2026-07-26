@@ -196,13 +196,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
             err,
             Style::default().fg(app.theme.error).bg(code_bg),
         )));
-        let inner = super::render_popup_chrome(
-            frame,
-            popup_area,
-            &app.theme,
-            &popup_title,
-            None,
-        );
+        let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &popup_title, None);
         frame.render_widget(Paragraph::new(body), inner);
         app.mouse.diff_popup_area = popup_area;
         app.mouse.popup_text_body_area = body_area;
@@ -300,13 +294,7 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        &app.theme,
-        &title,
-        None,
-    );
+    let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &title, None);
     frame.render_widget(Paragraph::new(text), inner);
 
     let scrollbar =

@@ -73,17 +73,21 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
 
     let popup_area = super::centered_popup_area(area);
     let footer: &[super::FooterHint] = &[
-        super::FooterHint { key: "y", label: " copy " },
-        super::FooterHint { key: "Esc", label: " close " },
-        super::FooterHint { key: "j/k", label: " scroll " },
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
     ];
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        &app.theme,
-        &popup.title,
-        Some(footer),
-    );
+    let inner =
+        super::render_popup_chrome(frame, popup_area, &app.theme, &popup.title, Some(footer));
     let body_area = inner;
     let selection_text = styled_lines
         .iter()
