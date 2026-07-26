@@ -170,8 +170,8 @@ impl App {
             scroll: 0,
             tool_id,
             cached_markdown: None,
-            selection_text: String::new(),
             selection: None,
+            layout_cache: None,
         });
     }
 
@@ -180,12 +180,19 @@ impl App {
         let Some(popup) = self.subagent_popup.as_ref() else {
             return;
         };
-        let full_text = self
-            .tools
-            .active
-            .iter()
-            .find(|a| a.tool_id == popup.tool_id)
-            .map(|a| a.live_output.full_detail_text())
+        // Prefer the text the popup actually laid out (markdown-rendered when
+        // completed) so mouse-selection byte offsets stay valid.
+        let full_text = popup
+            .layout_cache
+            .as_ref()
+            .map(|c| c.raw_text.clone())
+            .or_else(|| {
+                self.tools
+                    .active
+                    .iter()
+                    .find(|a| a.tool_id == popup.tool_id)
+                    .map(|a| a.live_output.full_detail_text())
+            })
             .or_else(|| {
                 self.tools
                     .blocks

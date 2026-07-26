@@ -244,7 +244,7 @@ async fn terminate_process(
 }
 
 fn error_with_partial(reason: &str, capture: &ToolOutputBuffer) -> anyhow::Error {
-    let partial = capture.detail_text();
+    let partial = capture.full_detail_text();
     if partial.trim().is_empty() {
         anyhow::anyhow!("Error: {reason}")
     } else {
@@ -303,7 +303,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         Utf8Decoder::default(),
         Utf8Decoder::default(),
     ];
-    let mut capture = ToolOutputBuffer::new(OUTPUT_LIMIT_CHARS);
+    let mut capture = ToolOutputBuffer::new_full(OUTPUT_LIMIT_CHARS);
     let mut pending = PendingProgress::default();
     let mut progress_tick = interval(PROGRESS_INTERVAL);
     progress_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -424,8 +424,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         };
         return Err(error_with_partial(&reason, &capture));
     }
-    let output = capture.full_detail_text();
-    capture.clear_full_detail();
+    let output = capture.take_full_detail();
     let trimmed = output.trim();
     if trimmed.is_empty() {
         Ok("(no output)".to_string())

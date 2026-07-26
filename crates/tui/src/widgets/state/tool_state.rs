@@ -3,6 +3,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 use tact_protocol::ToolOutputBuffer;
 
+use crate::render::popups::selectable_text::PopupLayoutCache;
 use crate::widgets::tool_widget::ToolRenderOutput;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
@@ -106,10 +107,10 @@ pub(crate) struct SubagentPopup {
     pub tool_id: String,
     /// Cached rendered markdown lines (populated once on first render after completion).
     pub cached_markdown: Option<Vec<Line<'static>>>,
-    /// Full plaintext content for selection normalization.
-    pub selection_text: String,
     /// Current text selection (mouse-drag), if any.
     pub selection: Option<PopupTextSelection>,
+    /// Wrapped-layout cache reused while content length and width are stable.
+    pub layout_cache: Option<PopupLayoutCache>,
 }
 
 #[cfg(test)]

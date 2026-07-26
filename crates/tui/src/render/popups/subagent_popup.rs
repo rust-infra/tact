@@ -3,6 +3,8 @@
 //! During live execution the content is read from the active tool block's
 //! `live_output` and rendered as plain wrapped text. After completion the
 //! content is rendered as Markdown (with a one-shot cache in the popup struct).
+//! Layout is always driven by the text actually shown (plain live text, or the
+//! markdown renderer's line text) so styles and grapheme positions stay in sync.
 
 use ratatui::{
     Frame,
@@ -12,70 +14,46 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
-use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
+use super::selectable_text::{PopupLayoutCache, layout_all_display_rows};
 use crate::{render::render_md::render_markdown_tui, widgets::state::App};
 
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
 pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Snapshot what we need before any mutable borrows.
-    let popup_snapshot = match app.subagent_popup.as_ref() {
-        Some(p) => (
-            p.tool_id.clone(),
-            p.scroll,
-            p.selection,
-            p.cached_markdown.clone(),
-        ),
-        None => return,
+    let Some((tool_id, scroll, selection, title)) = app
+        .subagent_popup
+        .as_ref()
+        .map(|p| (p.tool_id.clone(), p.scroll, p.selection, p.title.clone()))
+    else {
+        return;
     };
-    let (tool_id, scroll, selection, cached_markdown) = popup_snapshot;
 
     let is_live = app.tools.active.iter().any(|a| a.tool_id == tool_id);
-
-    // Get the content: live output or finished detail_full.
-    let raw_text = if is_live {
+    // Cheap fingerprint (byte length) so we can skip the clone + full re-wrap
+    // when neither the content nor the body width changed.
+    let content_len = if is_live {
         app.tools
             .active
             .iter()
             .find(|a| a.tool_id == tool_id)
-            .map(|a| a.live_output.full_detail_text())
-            .unwrap_or_default()
+            .map(|a| a.live_output.full_detail_len())
+            .unwrap_or(0)
     } else {
         app.tools
             .blocks
             .iter()
             .find(|b| b.tool_id == tool_id)
-            .and_then(|b| b.output.detail_full.clone())
-            .unwrap_or_default()
+            .and_then(|b| b.output.detail_full.as_ref().map(String::len))
+            .unwrap_or(0)
     };
-
-    if raw_text.is_empty() {
+    if content_len == 0 {
         return;
     }
-
-    // Build styled lines: plain during live, markdown after completion.
-    let styled_lines: Vec<Line<'static>> = if is_live {
-        raw_text
-            .lines()
-            .map(|l| Line::from(l.to_string()))
-            .collect()
-    } else {
-        if let Some(cached) = cached_markdown {
-            cached
-        } else {
-            let (styled, _) = render_markdown_tui(&raw_text, &app.theme);
-            // Store the cache back in the popup for next frame.
-            if let Some(popup) = app.subagent_popup.as_mut()
-                && popup.tool_id == tool_id
-            {
-                popup.cached_markdown = Some(styled.clone());
-            }
-            styled
-        }
-    };
-
-    let title = match app.subagent_popup.as_ref() {
-        Some(p) => p.title.clone(),
-        None => return,
-    };
 
     let popup_area = super::centered_popup_area(area);
     let body_area = Rect::new(
@@ -85,25 +63,24 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
         popup_area.height.saturating_sub(4),
     );
 
-    let source = source_lines(&raw_text);
-    let fallback = Style::default()
-        .fg(app.theme.fg)
-        .bg(app.theme.code_block_bg());
-    let mut display_rows = Vec::new();
-    for (index, source_line) in source.iter().enumerate() {
-        let styles = scalar_styles(
-            styled_lines.get(index),
-            fallback,
-            source_line.text.chars().count(),
-        );
-        display_rows.extend(layout_display_rows(
-            source_line.text,
-            source_line.start,
-            &styles,
-            body_area.width as usize,
-            true, // wrap
-        ));
+    let cache_valid = app
+        .subagent_popup
+        .as_ref()
+        .and_then(|p| p.layout_cache.as_ref())
+        .is_some_and(|c| c.is_valid(is_live, content_len, body_area.width));
+    if !cache_valid {
+        rebuild_layout_cache(app, &tool_id, is_live, content_len, body_area.width);
     }
+
+    let Some(cache) = app
+        .subagent_popup
+        .as_ref()
+        .and_then(|p| p.layout_cache.as_ref())
+    else {
+        return;
+    };
+    let display_rows = &cache.display_rows;
+    let raw_text = &cache.raw_text;
 
     let total = display_rows.len();
     let content_height = body_area.height as usize;
@@ -113,9 +90,9 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     let code_bg = app.theme.code_block_bg();
 
     let header = if is_live {
-        format!(" {} (live, {} lines) ", title, raw_text.lines().count())
+        format!(" {} (live, {} lines) ", title, cache.line_count)
     } else {
-        format!(" {} ({} lines) ", title, raw_text.lines().count())
+        format!(" {} ({} lines) ", title, cache.line_count)
     };
 
     let title_style = Style::default()
@@ -147,7 +124,7 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
 
     frame.render_widget(block, popup_area);
 
-    let selection_range = selection.and_then(|sel| sel.normalized_non_empty(&raw_text));
+    let selection_range = selection.and_then(|sel| sel.normalized_non_empty(raw_text));
 
     let mut hit_rows = Vec::new();
     for (visible_row, display) in display_rows
@@ -171,14 +148,82 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
         .position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
-    // Update selection_text for copy-with-selection support.
-    if let Some(active_popup) = app.subagent_popup.as_mut()
-        && active_popup.tool_id == tool_id
-    {
-        active_popup.selection_text = raw_text;
-    }
-
     app.mouse.subagent_popup_area = popup_area;
     app.mouse.popup_text_body_area = body_area;
     app.mouse.popup_text_hit_rows = hit_rows;
+}
+
+/// Clone the current content once, wrap it, and store the result on the popup.
+/// Called only when the cached layout is missing or stale (content grew, width
+/// changed, or a live→completed transition).
+fn rebuild_layout_cache(
+    app: &mut App,
+    tool_id: &str,
+    is_live: bool,
+    content_len: usize,
+    width: u16,
+) {
+    let source = if is_live {
+        app.tools
+            .active
+            .iter()
+            .find(|a| a.tool_id == tool_id)
+            .map(|a| a.live_output.full_detail_text())
+            .unwrap_or_default()
+    } else {
+        app.tools
+            .blocks
+            .iter()
+            .find(|b| b.tool_id == tool_id)
+            .and_then(|b| b.output.detail_full.clone())
+            .unwrap_or_default()
+    };
+    if source.is_empty() {
+        return;
+    }
+
+    // Live: plain lines. Completed: markdown render — layout must use the
+    // rendered line text (not the markdown source), matching thinking_popup,
+    // otherwise style spans and grapheme positions drift apart.
+    let (styled_lines, display_text) = if is_live {
+        let styled: Vec<Line<'static>> =
+            source.lines().map(|l| Line::from(l.to_string())).collect();
+        (styled, source)
+    } else if let Some(cached) = app
+        .subagent_popup
+        .as_ref()
+        .and_then(|p| p.cached_markdown.clone())
+    {
+        let display_text = cached.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        (cached, display_text)
+    } else {
+        let (styled, raw_lines) = render_markdown_tui(&source, &app.theme);
+        if let Some(popup) = app.subagent_popup.as_mut().filter(|p| p.tool_id == tool_id) {
+            popup.cached_markdown = Some(styled.clone());
+        }
+        let display_text = raw_lines.join("\n");
+        (styled, display_text)
+    };
+
+    if display_text.is_empty() {
+        return;
+    }
+
+    let fallback = Style::default()
+        .fg(app.theme.fg)
+        .bg(app.theme.code_block_bg());
+    let display_rows =
+        layout_all_display_rows(&display_text, &styled_lines, fallback, width as usize);
+    let line_count = display_text.lines().count();
+
+    if let Some(popup) = app.subagent_popup.as_mut().filter(|p| p.tool_id == tool_id) {
+        popup.layout_cache = Some(PopupLayoutCache {
+            is_live,
+            content_len,
+            width,
+            raw_text: display_text,
+            display_rows,
+            line_count,
+        });
+    }
 }

@@ -331,6 +331,9 @@ impl App {
         self.flush_stream_pending();
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
+        // Only subagents need the full conversation preserved for the popup;
+        // other tools keep just the capped live preview.
+        let is_subagent = tool_name == "spawn_subagent";
         if let Status::Executing {
             current_step,
             total,
@@ -355,7 +358,11 @@ impl App {
             phys_idx,
             tool_id,
             output,
-            live_output: ToolOutputBuffer::new(50_000),
+            live_output: if is_subagent {
+                ToolOutputBuffer::new_full(50_000)
+            } else {
+                ToolOutputBuffer::new(50_000)
+            },
             started_at: Instant::now(),
         });
         self.refresh_tool_log_scroll();
@@ -376,24 +383,21 @@ impl App {
             return;
         }
 
-        let active = &self.tools.active[pos];
-        let phys_idx = active.phys_idx;
-        let old_rows = active.output.visual_rows(false);
-        let tool_name = active.output.tool_name.clone();
-        let arg_summary = active.output.arg_summary.clone();
-        let arg_full = active.output.arg_full.clone();
-        let live_output = active.live_output.clone();
-        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
         let msgs = self.msgs();
-        let output = ToolWidget::new(&self.theme, &msgs)
-            .with_tool(tool_name)
-            .with_arg_summary(arg_summary)
-            .with_arg_full(arg_full)
-            .with_step_index(step_idx)
-            .with_phase(ToolPhase::Running)
-            .with_duration_us(0)
-            .with_live_output(&live_output)
-            .build();
+        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let (phys_idx, old_rows, output) = {
+            let active = &self.tools.active[pos];
+            let output = ToolWidget::new(&self.theme, &msgs)
+                .with_tool(active.output.tool_name.clone())
+                .with_arg_summary(active.output.arg_summary.clone())
+                .with_arg_full(active.output.arg_full.clone())
+                .with_step_index(step_idx)
+                .with_phase(ToolPhase::Running)
+                .with_duration_us(0)
+                .with_live_output(&active.live_output)
+                .build();
+            (active.phys_idx, active.output.visual_rows(false), output)
+        };
         let new_rows = output.visual_rows(false);
         self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
         self.tools.active[pos].output = output;
@@ -412,13 +416,13 @@ impl App {
             .with_step_index(idx)
             .build();
 
-        // Subagent: the live output contains the full conversation but
-        // detail_full only holds the final summary.  Capture the live text
-        // before the active block is removed so the popup always shows the
-        // complete conversation.
-        if is_subagent && let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id)
+        // Subagent: live output holds the full conversation; detail_full would
+        // otherwise only keep the final summary. Take it before the active block
+        // is removed so the popup always shows the complete conversation.
+        if is_subagent
+            && let Some(active) = self.tools.active.iter_mut().find(|a| a.tool_id == tool_id)
         {
-            let full_text = active.live_output.full_detail_text();
+            let full_text = active.live_output.take_full_detail();
             if !full_text.is_empty() {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);
