@@ -134,7 +134,7 @@ snapshot_max_items = 80
 micro_compact_enabled = true
 
 [ui]
-theme = "retro"
+theme = "ink"
 # Attached images (`@file.png`, `![alt](path)`); compress only reduces tokens —
 # the model/endpoint must still support vision (see Ch 22 / Ch 23).
 # vision_image.compress = true
@@ -183,7 +183,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
 | `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
-| `ui.theme` | `"retro"` | — |
+| `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
 | `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |

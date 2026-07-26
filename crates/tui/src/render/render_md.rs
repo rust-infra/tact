@@ -25,12 +25,12 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
     fn heading(&self, level: u8) -> Style {
         match level {
             1 => Style::new()
-                .fg(self.theme.accent)
+                .fg(self.theme.heading)
                 .bg(self.theme.highlight)
                 .bold()
                 .underlined(),
-            2 => Style::new().fg(self.theme.accent).bold(),
-            3 => Style::new().fg(self.theme.accent).bold().italic(),
+            2 => Style::new().fg(self.theme.heading).bold(),
+            3 => Style::new().fg(self.theme.heading).bold().italic(),
             4 => Style::new().fg(self.theme.fg).bold().italic(),
             5 => Style::new().fg(self.theme.fg).italic(),
             _ => Style::new().fg(self.theme.fg).italic(),

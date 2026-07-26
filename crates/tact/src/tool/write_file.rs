@@ -11,7 +11,7 @@ use crate::tool::{ToolContext, safe_path_allow_missing};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileInput {
-    #[schemars(description = "Path to the file to write, relative to the current workspace.")]
+    #[schemars(description = "**Required.** Path to the file to write, relative to the current workspace. Must not be empty.")]
     pub path: String,
     #[schemars(description = "Complete file content to write.")]
     pub content: String,

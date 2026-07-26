@@ -53,7 +53,7 @@ Five unbounded MPSC channel pairs bridge the agent task, account service, plugin
 4. Spawn `tui::run_tui(...)` on a separate tokio task.
 5. Loop on `user_cmd_rx` — dispatch `SubmitTask`, `Cancel`, `QueryBalance`.
 
-Theme comes from `config::settings().ui.theme` (default `"retro"`).
+Theme comes from `config::settings().ui.theme` (default `"ink"`).
 
 ### Headless (`tact-ui headless "prompt"`)
 
@@ -319,7 +319,18 @@ Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_are
 
 The tool/file and Thinking detail popups support left-button text selection. Mouse hits map each rendered extended grapheme cluster to byte offsets, so combining and emoji sequences remain indivisible while line numbers, diff gutters, borders, titles, footers, metadata, and other display-only prefixes are excluded. The selection survives popup scrolling; dragging above or below the body clamps to the first or last visible source boundary without auto-scrolling. `y` copies selected original text in tool popups and selected visible text in Thinking popups; without a non-empty selection it copies the popup's complete original content. Code detail popups keep their existing mouse behavior.
 
-### 6.9 Performance
+### 6.9 Unified Popup Chrome
+
+All overlay popups (palette, select, file picker, slash commands, help, history, thinking/diff/code detail) use a shared `render_popup_chrome` function that provides consistent visual framing:
+
+| Element | Style |
+|---------|-------|
+| **Title bar** | Left-aligned title in bold primary foreground; right-aligned `[x]` close hint in muted decorative style |
+| **Footer** | Centered hint text: keys in accent color, labels in muted color, separated by ` \| ` |
+| **Border** | Uses `theme.border` color via `block_border_type()` |
+| **Background** | `Clear` before draw (no drop shadow) |
+
+The chrome is rendered as a ratatui `Block` wrapped around the popup content area. This ensures all overlays feel like a unified family regardless of their internal content.
 
 **Dirty rendering:** `terminal.draw` runs only when `app.dirty`, `Status::Done`, or `!tools.active.is_empty()`. After draw, `dirty` is cleared.
 
@@ -345,7 +356,7 @@ Active tool rows also force redraw so duration counters tick without new `AgentU
 
 ### 6.10 Theme and i18n in rendering
 
-Colors come from `Theme` in `theme.rs` (11 themes; default `retro` from config). `Ctrl+T` cycles themes at runtime; cache invalidation on theme change prevents stale styled lines.
+Colors come from `Theme` in `theme.rs` (12 themes; default `ink` from config). `Ctrl+T` cycles themes at runtime; cache invalidation on theme change prevents stale styled lines.
 
 UI strings are centralized in `i18n.rs` (`English` / `Chinese`); render code pulls labels via `app.msgs()`. `Ctrl+L` toggles language.
 
@@ -583,7 +594,7 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 
 Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 
-Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
+Twelve built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro`, `kawaii`, `japanese`, `brutal`, `ink`, `ink-light`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 
 ---
 

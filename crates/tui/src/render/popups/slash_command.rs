@@ -33,22 +33,16 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let n = filtered.len();
     if n == 0 {
         let hint_area = super::centered_list_popup_area(area, 40, 5);
-        let hint_block = Block::default()
-            .title(Span::styled(
-                format!("{}{}", msgs.slash_title_mixed, msgs.popup_close_hint),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(Clear, hint_area);
-        frame.render_widget(&hint_block, hint_area);
-        let inner = hint_block.inner(hint_area);
+        let inner = super::render_popup_chrome(
+            frame,
+            hint_area,
+            &app.theme,
+            &format!("{}{}", msgs.slash_title_mixed, msgs.popup_close_hint),
+            None,
+        );
         frame.buffer_mut().set_line(
             inner.x,
-            inner.y + 1,
+            inner.y,
             &Line::from(Span::styled(
                 msgs.palette_empty,
                 Style::default().fg(Color::Gray),

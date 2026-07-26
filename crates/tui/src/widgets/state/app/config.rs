@@ -100,12 +100,12 @@ mod tests {
     use crate::{render::test_harness::make_app, theme::ThemeName};
 
     #[test]
-    fn toggle_theme_cycles_from_retro() {
+    fn toggle_theme_cycles_from_ink() {
         let mut app = make_app();
-        assert_eq!(app.theme.name, ThemeName::Retro);
+        assert_eq!(app.theme.name, ThemeName::Ink);
 
         app.toggle_theme();
-        assert_ne!(app.theme.name, ThemeName::Retro);
+        assert_ne!(app.theme.name, ThemeName::Ink);
         assert!(
             app.raw_messages
                 .iter()

@@ -132,7 +132,7 @@ snapshot_max_items = 80
 micro_compact_enabled = true
 
 [ui]
-theme = "retro"
+theme = "ink"
 # 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
 # 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
 # vision_image.compress = true
@@ -170,7 +170,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
-| `ui.theme` | `"retro"` | — |
+| `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |

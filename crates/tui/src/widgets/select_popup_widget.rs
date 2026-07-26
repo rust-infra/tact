@@ -22,6 +22,8 @@ pub struct SelectPopupWidget<'a> {
     empty_text: &'static str,
     /// Selected item prefix arrow.
     arrow: &'static str,
+    /// Border type for the popup frame.
+    border_type: BorderType,
 }
 
 impl<'a> SelectPopupWidget<'a> {
@@ -40,7 +42,14 @@ impl<'a> SelectPopupWidget<'a> {
             bg_color,
             empty_text,
             arrow,
+            border_type: BorderType::Rounded,
         }
+    }
+
+    /// Set a custom border type.
+    pub fn with_border_type(mut self, border_type: BorderType) -> Self {
+        self.border_type = border_type;
+        self
     }
 }
 
@@ -111,7 +120,7 @@ impl Widget for SelectPopupWidget<'_> {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(self.border_type)
             .title(title)
             .style(Style::default().bg(self.bg_color));
         block.render(popup_area, buf);

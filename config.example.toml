@@ -101,9 +101,7 @@ mode = "default"
 # ---------------------------------------------------------------------------
 [ui]
 # Theme name, or "auto" for terminal/system detection.
-# Supported: dark, light, solarized-dark, solarized-light, gruvbox-dark,
-#            nord, retro (default), kawaii, japanese
-theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
+theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 
 # User-attached images (`@file.png`, `![alt](path)`).
 # Requires a vision-capable model/endpoint; compress only reduces tokens.

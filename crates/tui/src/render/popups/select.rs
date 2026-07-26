@@ -11,6 +11,7 @@ pub(crate) fn render_select_popup(frame: &mut Frame, area: Rect, app: &App) {
         app.theme.bottom_bar_bg,
         app.msgs().select_empty,
         app.msgs().select_arrow,
-    );
+    )
+    .with_border_type(app.theme.block_border_type());
     frame.render_widget(widget, area);
 }

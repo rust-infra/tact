@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 use crate::{i18n::Messages, theme::Theme};
@@ -18,7 +18,7 @@ impl<'a> Widget for HelpWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let msgs = self.msgs;
         let header_style = Style::default()
-            .fg(Color::Rgb(140, 170, 220))
+            .fg(self.theme.heading)
             .add_modifier(Modifier::BOLD);
         let normal_style = Style::default().fg(self.theme.fg);
         let dim_style = Style::default().fg(Color::Rgb(120, 120, 140));
@@ -60,7 +60,7 @@ impl<'a> Widget for HelpWidget<'a> {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(self.theme.block_border_type())
                     .title(msgs.help_title),
             )
             .style(Style::default().fg(self.theme.fg).bg(self.theme.bg));

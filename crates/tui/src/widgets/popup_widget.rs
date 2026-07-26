@@ -39,7 +39,7 @@ impl<'a> Widget for PopupWidget<'a> {
         let list = List::new(self.list).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(self.theme.map(|t| t.block_border_type()).unwrap_or(BorderType::Rounded))
                 .border_style(Style::default().fg(border_color))
                 .title(title),
         );

@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 21、23 章；`docs/tui_rendering.md` |
+
+**现象 / 动机：** 默认主题为 `retro`；弹出层覆窗口边框类型不一致、颜色硬编码、缺乏共享 chrome。
+
+**决策：** 添加 `ink`/`ink-light` 主题，颜色精确匹配像素；新增 `heading`/`version`/`muted` Theme 字段；所有 overlay 统一使用 `render_popup_chrome`。默认主题改为 `ink`。
+
+**改后行为：** 默认主题为 `ink`；所有 overlay 弹窗共享一致的边框、标题栏（粗体标题、`[x]` 提示）与底栏布局；弹窗代码 DRY。
+
+**指针：** `crates/tui/src/theme.rs`、`crates/tui/src/render/popups/mod.rs`、`crates/tui/src/render/render_md.rs`、`crates/tact/src/config/resolve.rs`
+
+---
+
 ## 1. 2026-07-26 — 子 agent 工具改名 `task` → `spawn_subagent`
 
 | 字段 | 值 |

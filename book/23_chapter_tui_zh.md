@@ -54,7 +54,7 @@ sequenceDiagram
 4. 在独立 tokio task 上 spawn `tui::run_tui(...)`。
 5. 循环 `user_cmd_rx` — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
 
-主题来自 `config::settings().ui.theme`（默认 `"retro"`）。
+主题来自 `config::settings().ui.theme`（默认 `"ink"`）。
 
 ### Headless（`tact-ui headless "prompt"`）
 
@@ -320,7 +320,18 @@ Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击�
 
 Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit 将每个渲染出的扩展字素簇映射至 byte offset，因此组合字符与 emoji 序列保持不可分割，行号、diff gutter、边框、标题、底栏、元数据及其他仅用于显示的前缀不会进入选择。Popup 滚动时选择保留；拖拽到 body 上方或下方会 clamp 到首个或末个可见 source boundary，且不会自动滚动。`y` 在 tool popup 中复制选中的原始文本，在 Thinking popup 中复制选中的可见文本；没有非空选择时复制 popup 的完整原始内容。Code detail popup 保持原有鼠标行为。
 
-### 6.9 性能
+### 6.9 统一弹出层 Chrome
+
+所有覆层弹窗（palette、select、file picker、slash commands、help、history、thinking/diff/code detail）使用共享的 `render_popup_chrome` 函数，提供一致的视觉框架：
+
+| 元素 | 样式 |
+|------|------|
+| **标题栏** | 左对齐标题用粗体 primary foreground；右对齐 `[x]` 关闭提示用 muted 装饰风格 |
+| **底栏** | 居中提示文本：快捷键用 accent 色，标签用 muted 色，` \| ` 分隔 |
+| **边框** | 使用 `theme.border` 颜色，通过 `block_border_type()` 设置 |
+| **背景** | 绘制前 `Clear`（无 drop shadow） |
+
+Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overlay 无论内容如何，外观上都属于统一家族。
 
 **Dirty 渲染：** 仅当 `app.dirty`、`Status::Done` 或 `!tools.active.is_empty()` 时运行 `terminal.draw`。绘制后清除 `dirty`。
 
@@ -346,7 +357,7 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 
 ### 6.10 渲染中的主题与 i18n
 
-颜色来自 `theme.rs` 的 `Theme`（11 主题；config 默认 `retro`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale  styled 行。
+颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale styled 行。
 
 UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
 
@@ -588,7 +599,7 @@ sequenceDiagram
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十一个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`（默认）、`kawaii`、`japanese`、`brutal`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
 
 ---
 

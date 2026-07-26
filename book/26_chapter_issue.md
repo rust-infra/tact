@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-27 — Ink themes + unified popup chrome
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 21, Ch 23; `docs/tui_rendering.md` |
+
+**Symptom / motivation:** Default theme was `retro`; popup overlays had inconsistent border types, hardcoded colors, no shared chrome.
+
+**Decision:** Added `ink`/`ink-light` themes with pixel-matched colors, `heading`/`version`/`muted` Theme fields, unified `render_popup_chrome` for all overlays. Default changed to `ink`.
+
+**Behavior after:** Default theme is `ink`; all overlay popups share a consistent border, title bar (bold title, `[x]` hint), and footer layout; popup code is DRY.
+
+**Pointers:** `crates/tui/src/theme.rs`, `crates/tui/src/render/popups/mod.rs`, `crates/tui/src/render/render_md.rs`, `crates/tact/src/config/resolve.rs`
+
+---
+
 ## 1. 2026-07-26 — Subagent tool renamed `task` → `spawn_subagent`
 
 | Field | Value |

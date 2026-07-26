@@ -12,12 +12,20 @@ pub(crate) mod system_prompt_popup;
 pub(crate) mod task_dag_popup;
 pub(crate) mod thinking_popup;
 
+use crate::theme::Theme;
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::Style,
+    layout::{Alignment, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear},
 };
+
+/// A single footer hint: key + label, e.g. ("↑/↓", "scroll"), ("Esc", "close").
+pub(crate) struct FooterHint {
+    pub key: &'static str,
+    pub label: &'static str,
+}
 
 /// Centered popup geometry (80% of parent, minimum 40×10).
 pub(crate) fn centered_popup_area(area: Rect) -> Rect {
@@ -45,6 +53,46 @@ pub(crate) fn popup_inner(area: Rect) -> Rect {
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     )
+}
+
+/// RN-style popup chrome: Clear + styled border block + title row + optional footer.
+/// Returns the inner content Rect.
+pub(crate) fn render_popup_chrome(
+    frame: &mut Frame,
+    popup_area: Rect,
+    theme: &Theme,
+    title: &str,
+    footer: Option<&[FooterHint]>,
+) -> Rect {
+    frame.render_widget(Clear, popup_area);
+
+    let title_spans = vec![
+        Span::styled(title, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled("[x]", Style::default().fg(theme.muted)),
+    ];
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(theme.block_border_type())
+        .border_style(Style::default().fg(theme.border))
+        .title(Line::from(title_spans))
+        .style(Style::default().bg(theme.bg));
+
+    if let Some(hints) = footer {
+        let mut footer_spans: Vec<Span<'static>> = Vec::new();
+        for (i, hint) in hints.iter().enumerate() {
+            if i > 0 {
+                footer_spans.push(Span::styled(" | ", Style::default().fg(theme.muted)));
+            }
+            footer_spans.push(Span::styled(hint.key, Style::default().fg(theme.accent)));
+            footer_spans.push(Span::styled(hint.label, Style::default().fg(theme.muted)));
+        }
+        block = block.title_bottom(Line::from(footer_spans).alignment(Alignment::Center));
+    }
+
+    frame.render_widget(block, popup_area);
+    popup_inner(popup_area)
 }
 
 /// Clear + bordered frame for a list-style popup; returns the inner content area.
