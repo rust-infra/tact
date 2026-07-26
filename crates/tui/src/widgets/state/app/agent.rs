@@ -418,7 +418,7 @@ impl App {
         // complete conversation.
         if is_subagent && let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id)
         {
-            let full_text = active.live_output.detail_text();
+            let full_text = active.live_output.full_detail_text();
             if !full_text.is_empty() {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);

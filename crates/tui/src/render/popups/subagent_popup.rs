@@ -36,7 +36,7 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
             .active
             .iter()
             .find(|a| a.tool_id == tool_id)
-            .map(|a| a.live_output.detail_text())
+            .map(|a| a.live_output.full_detail_text())
             .unwrap_or_default()
     } else {
         app.tools

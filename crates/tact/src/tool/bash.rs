@@ -424,7 +424,8 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         };
         return Err(error_with_partial(&reason, &capture));
     }
-    let output = capture.detail_text();
+    let output = capture.full_detail_text();
+    capture.clear_full_detail();
     let trimmed = output.trim();
     if trimmed.is_empty() {
         Ok("(no output)".to_string())

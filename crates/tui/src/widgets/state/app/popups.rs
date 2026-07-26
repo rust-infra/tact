@@ -185,7 +185,7 @@ impl App {
             .active
             .iter()
             .find(|a| a.tool_id == popup.tool_id)
-            .map(|a| a.live_output.detail_text())
+            .map(|a| a.live_output.full_detail_text())
             .or_else(|| {
                 self.tools
                     .blocks

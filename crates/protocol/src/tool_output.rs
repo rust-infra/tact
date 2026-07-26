@@ -158,6 +158,11 @@ pub struct ToolOutputBuffer {
     current_detail_truncated: bool,
     detail_truncated: bool,
     detail_limit: usize,
+    /// Unlimited accumulation of all characters received (after ANSI stripping).
+    /// Populated in parallel with the capped `detail`/`current_detail`.
+    full_detail: String,
+    /// Current (uncommitted) line for the unlimited path.
+    full_current_detail: String,
     total_committed: usize,
     ansi: [AnsiState; 3],
 }
@@ -175,6 +180,8 @@ impl ToolOutputBuffer {
             current_detail_truncated: false,
             detail_truncated: false,
             detail_limit,
+            full_detail: String::new(),
+            full_current_detail: String::new(),
             total_committed: 0,
             ansi: [AnsiState::default(); 3],
         }
@@ -219,6 +226,22 @@ impl ToolOutputBuffer {
         text
     }
 
+    /// Returns the complete (un-truncated) accumulated output.
+    /// After extracting, call [`clear_full_detail`] if the buffer will not
+    /// receive further chunks (e.g. after persisting to disk).
+    pub fn full_detail_text(&self) -> String {
+        let mut text = self.full_detail.clone();
+        text.push_str(&self.full_current_detail);
+        text
+    }
+
+    /// Clears the unlimited full-detail buffers to free memory after the
+    /// content has been consumed (persisted to disk, stored in detail_full, etc.).
+    pub fn clear_full_detail(&mut self) {
+        self.full_detail.clear();
+        self.full_current_detail.clear();
+    }
+
     pub fn logical_line_count(&self) -> usize {
         self.total_committed + usize::from(!self.current.is_empty())
     }
@@ -238,6 +261,9 @@ impl ToolOutputBuffer {
             self.current.push_char(stream, ch);
             self.current_chars += 1;
         }
+        // Unlimited full-detail accumulation (always runs regardless of limit).
+        self.full_current_detail.push(ch);
+        // Capped detail path (existing logic, unchanged).
         if !self.detail_truncated && !self.current_detail_truncated {
             if self.detail_chars + self.current_detail_chars < self.detail_limit {
                 self.current_detail.push(ch);
@@ -254,6 +280,7 @@ impl ToolOutputBuffer {
         self.current_detail.clear();
         self.current_detail_chars = 0;
         self.current_detail_truncated = false;
+        self.full_current_detail.clear();
     }
 
     fn commit_current(&mut self) {
@@ -266,6 +293,10 @@ impl ToolOutputBuffer {
         } else {
             self.append_detail("\n");
         }
+        // Unlimited full-detail: flush the current line + newline.
+        self.full_detail.push_str(&self.full_current_detail);
+        self.full_detail.push('\n');
+        self.full_current_detail.clear();
         self.committed.push_back(std::mem::take(&mut self.current));
         self.current_chars = 0;
         while self.committed.len() > INLINE_HISTORY_LINES {
