@@ -189,7 +189,10 @@ fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
     }
     fn patch_title(input: &serde_json::Value) -> String {
         let patch = str_field(input, "patch");
-        let dry = input.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry = input
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let label = if dry { "dry-run" } else { "patch" };
         let first_line = patch.lines().next().unwrap_or("").trim().to_string();
         if first_line.is_empty() {
@@ -202,8 +205,14 @@ fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
     }
     fn body_preview(input: &serde_json::Value) -> String {
         let b = str_field(input, "body").trim().to_string();
-        if b.is_empty() { return b; }
-        if b.len() <= 40 { b } else { format!("{}...", &b[..37]) }
+        if b.is_empty() {
+            return b;
+        }
+        if b.len() <= 40 {
+            b
+        } else {
+            format!("{}...", &b[..37])
+        }
     }
 
     match name {
@@ -221,57 +230,101 @@ fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
         "background_run" => str_field(input, "command").to_string(),
         "check_background" => {
             let id = str_field(input, "task_id");
-            if id.is_empty() { "all".to_string() } else { id.to_string() }
+            if id.is_empty() {
+                "all".to_string()
+            } else {
+                id.to_string()
+            }
         }
         "cron_create" => {
             let cron = str_field(input, "cron");
             let prompt = str_field(input, "prompt");
-            if prompt.is_empty() { cron.to_string() } else { format!("{cron}  {prompt}") }
+            if prompt.is_empty() {
+                cron.to_string()
+            } else {
+                format!("{cron}  {prompt}")
+            }
         }
         "cron_delete" => str_field(input, "id").to_string(),
         "load_skill" => str_field(input, "name").to_string(),
         "save_memory" => {
             let mname = str_field(input, "name");
             let mtype = str_field(input, "memory_type");
-            let mtype = if mtype.is_empty() { str_field(input, "type") } else { mtype };
-            if mname.is_empty() { mtype.to_string() }
-            else if mtype.is_empty() { mname.to_string() }
-            else { format!("{mname} [{mtype}]") }
+            let mtype = if mtype.is_empty() {
+                str_field(input, "type")
+            } else {
+                mtype
+            };
+            if mname.is_empty() {
+                mtype.to_string()
+            } else if mtype.is_empty() {
+                mname.to_string()
+            } else {
+                format!("{mname} [{mtype}]")
+            }
         }
         "compact" => {
             let focus = str_field(input, "focus");
-            if focus.is_empty() { String::new() } else { format!("focus: {focus}") }
+            if focus.is_empty() {
+                String::new()
+            } else {
+                format!("focus: {focus}")
+            }
         }
         "spawn_subagent" => str_field(input, "prompt").to_string(),
         "spawn_teammate" => {
             let name = str_field(input, "name");
             let role = str_field(input, "role");
-            if role.is_empty() { name.to_string() } else { format!("{name} ({role})") }
+            if role.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} ({role})")
+            }
         }
         "send_message" => {
             let to = str_field(input, "to");
             let preview = body_preview(input);
-            if preview.is_empty() { format!("→ {to}") } else { format!("→ {to}: {preview}") }
+            if preview.is_empty() {
+                format!("→ {to}")
+            } else {
+                format!("→ {to}: {preview}")
+            }
         }
         "broadcast" => {
             let preview = body_preview(input);
-            if preview.is_empty() { "→ all".to_string() } else { format!("→ all: {preview}") }
+            if preview.is_empty() {
+                "→ all".to_string()
+            } else {
+                format!("→ all: {preview}")
+            }
         }
         "read_inbox" => {
             let owner = str_field(input, "owner");
-            if owner.is_empty() { String::new() } else { format!("{owner}'s inbox") }
+            if owner.is_empty() {
+                String::new()
+            } else {
+                format!("{owner}'s inbox")
+            }
         }
         "plan_approval" | "shutdown_request" | "shutdown_response" => {
             let to = str_field(input, "to");
             let preview = body_preview(input);
-            if preview.is_empty() { format!("→ {to}") } else { format!("→ {to}: {preview}") }
+            if preview.is_empty() {
+                format!("→ {to}")
+            } else {
+                format!("→ {to}: {preview}")
+            }
         }
         "worktree_create" => str_field(input, "name").to_string(),
         "worktree_status" => str_field(input, "name").to_string(),
         "worktree_run" => {
             let name = str_field(input, "name");
             let cmd = str_field(input, "command");
-            if cmd.is_empty() { name.to_string() } else { format!("{name}: {cmd}") }
+            if cmd.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}: {cmd}")
+            }
         }
         "worktree_events" => input
             .get("limit")

@@ -201,7 +201,10 @@ pub(super) fn resolve_non_llm_settings(
             theme,
             vision_image,
         },
-        tools: ToolSettings { bash_timeout_secs, bash_nice },
+        tools: ToolSettings {
+            bash_timeout_secs,
+            bash_nice,
+        },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -316,7 +319,10 @@ pub(super) fn resolve_config(
             theme,
             vision_image,
         },
-        tools: ToolSettings { bash_timeout_secs, bash_nice },
+        tools: ToolSettings {
+            bash_timeout_secs,
+            bash_nice,
+        },
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,

@@ -68,7 +68,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "write_file" => "✍️ Write".to_string(),
         "read_file" => "📖 Read".to_string(),
         "edit_file" => "✏️ Edit".to_string(),
-        "bash" | "shell" => "Bash".to_string(),
+        "bash" | "shell" => "$ Bash".to_string(),
         "run_command" => "Command".to_string(),
         "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
@@ -481,11 +481,11 @@ impl<'a> ToolWidget<'a> {
     pub fn title_text(&self) -> String {
         let base = match display_kind(&self.tool_name) {
             ToolDisplayKind::Command => {
-                let label = self.tool_name.to_lowercase();
+                let label = tool_display_name(&self.tool_name);
                 if self.arg_summary.is_empty() {
                     label
                 } else {
-                    format!("{label} ({})", self.arg_summary)
+                    format!("{label}  {}", self.arg_summary)
                 }
             }
             ToolDisplayKind::Subagent => {
@@ -717,7 +717,10 @@ impl<'a> ToolWidget<'a> {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Task | ToolDisplayKind::Generic | ToolDisplayKind::Sleep | ToolDisplayKind::Subagent => {
+            ToolDisplayKind::Task
+            | ToolDisplayKind::Generic
+            | ToolDisplayKind::Sleep
+            | ToolDisplayKind::Subagent => {
                 format!("{} output", self.tool_name)
             }
         }
@@ -754,7 +757,7 @@ mod tests {
             .with_arg_summary("echo hello")
             .with_phase(ToolPhase::Running);
 
-        assert_eq!(widget.title_text(), "bash (echo hello)");
+        assert_eq!(widget.title_text(), "$ Bash  echo hello");
     }
 
     #[test]

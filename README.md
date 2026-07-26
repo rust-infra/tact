@@ -12,14 +12,13 @@
   <a href="#quick-start"><strong>Quick Start</strong></a> ·
   <a href="#features"><strong>Features</strong></a> ·
   <a href="#architecture"><strong>Architecture</strong></a> ·
-  <a href="#comparison"><strong>Comparison</strong></a> ·
   <a href="#configuration"><strong>Configuration</strong></a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-0.19.0-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.0.8-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
 </p>
 
@@ -27,18 +26,18 @@
 
 ## What is tact?
 
-tact is a **terminal-first AI coding agent** that lives inside your terminal. It reads your codebase, understands your intent, and executes — editing files, running commands, searching code, and coordinating with sub-agents. Think Claude Code or Cursor, but:
+tact is a **terminal-first AI coding agent** that lives inside your terminal. It reads your codebase, understands your intent, and executes — editing files, running commands, searching code, and coordinating with sub-agents.
 
-- 🦀 **Written in Rust** — a single small binary, no Electron, no Node.js
-- 🏠 **Fully self-hosted** — your code never leaves your machine
-- 🔓 **MIT licensed** — truly open source, not "source available"
+- 🦀 **Written in Rust** — a single small binary, no Electron, no Node.js runtime
+- 🏠 **Fully self-hosted** — your code never leaves your machine (only LLM API traffic)
+- 🔓 **MIT licensed** — open source
 - 🧩 **Extensible** — MCP plugins, custom skills, hooks, and tool macros
 
 ```
 $ tact-ui headless "Add a --verbose flag to the CLI and update the README"
 ```
 
-That's it. No YAML config wizard. No "sign up for waitlist." Just a prompt and a terminal.
+That's it. Configure a provider, open a terminal, and prompt.
 
 ---
 
@@ -121,8 +120,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v0.19.0
-git push origin v0.19.0
+git tag v1.0.8
+git push origin v1.0.8
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
@@ -191,13 +190,13 @@ Multi-turn conversation loop with progressive context management:
 
 1. **Large-output spill** — oversized tool results land on disk with a short preview in context
 2. **Micro-compact** — before each LLM call, stub old tool results (keep the last 12 intact)
-3. **Full compact** — when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary** (Codex-style)
+3. **Full compact** — when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary**
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
 Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](./book/05_chapter_compact_zh.md)), [`docs/compaction.md`](./docs/compaction.md).
 
-### 🔧 40+ Built-in Tools
+### 🔧 Built-in Tools
 
 | Category | Tools |
 |----------|-------|
@@ -232,7 +231,7 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 
 ### 🧩 Plugin Marketplace
 
-Tact installs skill-only plugins natively; it does not require the Claude Code CLI. The built-in `claude-plugins-official` marketplace is available in every installation:
+Tact installs skill-only plugins natively. The built-in `claude-plugins-official` marketplace is available in every installation:
 
 ```text
 /plugin install superpowers@claude-plugins-official
@@ -314,25 +313,6 @@ The agent loop:
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop).
-
----
-
-## Comparison
-
-| | **tact** | Claude Code | Cursor | Aider | Open Interpreter |
-|---|---|---|---|---|---|
-| **Language** | Rust | TypeScript | TypeScript | Python | Python |
-| **Interface** | Terminal / TUI | Terminal | Editor (VSCode fork) | Terminal | Terminal |
-| **License** | MIT | Proprietary | Proprietary | Apache 2.0 | AGPL |
-| **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Multi-model** | Anthropic + OpenAI + DeepSeek + Kimi | Anthropic only | Multi | Multi | Multi |
-| **Permission system** | 3 modes + hooks | ✅ | ✅ | ✅ | ✅ |
-| **Sub-agents** | ✅ (team + inbox) | ✅ | ❌ | ❌ | ❌ |
-| **Worktree isolation** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **MCP support** | ✅ (native) | ✅ | ✅ (via extension) | ❌ | ❌ |
-| **Cron / scheduled** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Binary size** | ~15MB | Hundreds MB | Hundreds MB | ~50MB+ | ~200MB+ |
-| **Skills system** | ✅ (file-based) | ✅ | ✅ (rules) | ❌ | ❌ |
 
 ---
 
@@ -461,7 +441,7 @@ crates/
 ## Roadmap
 
 - [ ] Publish to crates.io
-- [ ] Pre-built binary releases (GitHub Actions)
+- [x] Pre-built binary releases (GitHub Actions)
 - [ ] Web dashboard for task/tool monitoring
 - [ ] More MCP transports (SSE, WebSocket)
 - [ ] Llama / Ollama support for fully local operation

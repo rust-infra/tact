@@ -138,28 +138,21 @@ pub(crate) fn format_grouped_lines(
 
     let mut in_progress: Vec<&TaskSnapshot> = Vec::new();
     let mut pending: Vec<&TaskSnapshot> = Vec::new();
-    let mut completed: Vec<&TaskSnapshot> = Vec::new();
 
     for t in tasks {
         match t.status {
             TaskStatusSnapshot::InProgress => in_progress.push(t),
             TaskStatusSnapshot::Pending => pending.push(t),
-            TaskStatusSnapshot::Completed => completed.push(t),
+            TaskStatusSnapshot::Completed => {} // completed tasks are hidden from the sticky
         }
     }
 
-    // Sort: InProgress by duration ascending, Pending by created_at descending,
-    // Completed by completed_at descending
+    // Sort: InProgress by duration ascending, Pending by created_at descending
     in_progress.sort_by_key(|t| {
         let start = t.started_at.unwrap_or(0);
         (now - start).max(0)
     });
     pending.sort_by_key(|b| std::cmp::Reverse(b.created_at.unwrap_or(0)));
-    completed.sort_by(|a, b| {
-        b.completed_at
-            .unwrap_or(0)
-            .cmp(&a.completed_at.unwrap_or(0))
-    });
 
     let mut all_lines: Vec<String> = Vec::new();
 
@@ -206,7 +199,6 @@ pub(crate) fn format_grouped_lines(
 
     push_group(&mut all_lines, "In Progress", &in_progress);
     push_group(&mut all_lines, "Pending", &pending);
-    push_group(&mut all_lines, "Completed", &completed);
 
     let total = all_lines.len();
     if total <= max_visible {
@@ -345,22 +337,23 @@ mod tests {
             lines
         );
 
-        // Groups should be in order: In Progress, Pending, Completed
+        // Groups: In Progress, Pending. Completed is hidden.
         let text = lines.join("\n");
         let ip_pos = text.find("In Progress").unwrap();
         let pd_pos = text.find("Pending").unwrap();
-        let done_pos = text.find("Completed").unwrap();
         assert!(ip_pos < pd_pos, "InProgress before Pending");
-        assert!(pd_pos < done_pos, "Pending before Completed");
+        assert!(
+            !text.contains("Completed"),
+            "completed group should be hidden"
+        );
 
-        // Each task should be present
+        // Only non-completed tasks should be present
         assert!(text.contains("#1 work"), "ip task");
         assert!(text.contains("#2 todo"), "pd task");
-        assert!(text.contains("#3 done"), "completed task");
+        assert!(!text.contains("#3 done"), "completed task should be hidden");
 
-        // Owner should show
+        // Owner should show (only alice — bob's task is completed and hidden)
         assert!(text.contains("alice"), "owner alice");
-        assert!(text.contains("bob"), "owner bob");
     }
 
     #[test]

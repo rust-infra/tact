@@ -678,11 +678,16 @@ impl App {
             self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
             self.tools.blocks.push(ToolBlock {
                 phys_idx: active.phys_idx,
+                tool_id: tool_id.to_string(),
                 output,
             });
         } else {
             let phys_idx = self.push_tool_placeholder_rows(&output);
-            self.tools.blocks.push(ToolBlock { phys_idx, output });
+            self.tools.blocks.push(ToolBlock {
+                phys_idx,
+                tool_id: tool_id.to_string(),
+                output,
+            });
         }
         self.refresh_tool_log_scroll();
     }

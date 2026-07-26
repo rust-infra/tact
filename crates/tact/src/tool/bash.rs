@@ -199,7 +199,9 @@ fn configure_process_group(command: &mut Command) {
 #[cfg(unix)]
 fn set_process_group_priority(process_group_id: u32, nice: i32) {
     if nice > 0 {
-        unsafe { libc::setpriority(libc::PRIO_PGRP, process_group_id, nice); }
+        unsafe {
+            libc::setpriority(libc::PRIO_PGRP, process_group_id, nice);
+        }
     }
 }
 

@@ -416,13 +416,12 @@ impl App {
         // detail_full only holds the final summary.  Capture the live text
         // before the active block is removed so the popup always shows the
         // complete conversation.
-        if is_subagent {
-            if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
-                let full_text = active.live_output.detail_text();
-                if !full_text.is_empty() {
-                    output.detail_total_lines = full_text.lines().count();
-                    output.detail_full = Some(full_text);
-                }
+        if is_subagent && let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id)
+        {
+            let full_text = active.live_output.detail_text();
+            if !full_text.is_empty() {
+                output.detail_total_lines = full_text.lines().count();
+                output.detail_full = Some(full_text);
             }
         }
 

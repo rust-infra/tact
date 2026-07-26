@@ -225,7 +225,10 @@ mod tests {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.starts_with("✗ "));
                 assert!(chunks[0].text.contains("not found"));
-                assert!(matches!(chunks[0].stream, tact_protocol::ToolOutputStream::Stderr));
+                assert!(matches!(
+                    chunks[0].stream,
+                    tact_protocol::ToolOutputStream::Stderr
+                ));
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -379,9 +382,7 @@ mod tests {
         tagged
             .send(AgentUpdate::TaskComplete("done".into()))
             .unwrap();
-        tagged
-            .send(AgentUpdate::TaskCancelled)
-            .unwrap();
+        tagged.send(AgentUpdate::TaskCancelled).unwrap();
         tokio::task::yield_now().await;
 
         assert!(progress_rx.try_recv().is_err());

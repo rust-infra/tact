@@ -76,10 +76,11 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .trim_start_matches('▸')
         .trim_start()
         .to_string();
-    let mut title_spans = Vec::new();
-    title_spans.push(Span::styled("[Tasks]", accent));
-    title_spans.push(Span::styled(" ", row_style));
-    title_spans.push(Span::styled(rest, row_style));
+    let title_spans = vec![
+        Span::styled("[Tasks]", accent),
+        Span::styled(" ", row_style),
+        Span::styled(rest, row_style),
+    ];
     let title_line = Line::from(title_spans);
 
     if !app.task_panel.expanded || inner.height == 1 {

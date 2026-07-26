@@ -18,7 +18,12 @@ use crate::{render::render_md::render_markdown_tui, widgets::state::App};
 pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot what we need before any mutable borrows.
     let popup_snapshot = match app.subagent_popup.as_ref() {
-        Some(p) => (p.tool_id.clone(), p.scroll, p.selection, p.cached_markdown.clone()),
+        Some(p) => (
+            p.tool_id.clone(),
+            p.scroll,
+            p.selection,
+            p.cached_markdown.clone(),
+        ),
         None => return,
     };
     let (tool_id, scroll, selection, cached_markdown) = popup_snapshot;
@@ -81,7 +86,9 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     );
 
     let source = source_lines(&raw_text);
-    let fallback = Style::default().fg(app.theme.fg).bg(app.theme.code_block_bg());
+    let fallback = Style::default()
+        .fg(app.theme.fg)
+        .bg(app.theme.code_block_bg());
     let mut display_rows = Vec::new();
     for (index, source_line) in source.iter().enumerate() {
         let styles = scalar_styles(
@@ -140,8 +147,7 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
 
     frame.render_widget(block, popup_area);
 
-    let selection_range = selection
-        .and_then(|sel| sel.normalized_non_empty(&raw_text));
+    let selection_range = selection.and_then(|sel| sel.normalized_non_empty(&raw_text));
 
     let mut hit_rows = Vec::new();
     for (visible_row, display) in display_rows
