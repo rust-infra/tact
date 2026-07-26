@@ -407,9 +407,25 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
-        let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+        let is_subagent = result.tool == "spawn_subagent";
+        let mut output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
             .with_step_index(idx)
             .build();
+
+        // Subagent: the live output contains the full conversation but
+        // detail_full only holds the final summary.  Capture the live text
+        // before the active block is removed so the popup always shows the
+        // complete conversation.
+        if is_subagent {
+            if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
+                let full_text = active.live_output.detail_text();
+                if !full_text.is_empty() {
+                    output.detail_total_lines = full_text.lines().count();
+                    output.detail_full = Some(full_text);
+                }
+            }
+        }
+
         self.finalize_tool_block(&tool_id, output);
 
         if let Some(step) = self.plan.steps.get_mut(idx) {

@@ -1,4 +1,8 @@
-//! Subagent popup: live text during run, markdown after completion.
+//! Subagent popup: full conversation text during run and after completion.
+//!
+//! During live execution the content is read from the active tool block's
+//! `live_output`. After completion [`detail_full`] contains the preserved
+//! full conversation (populated in `on_step_finished`).
 
 use ratatui::{
     Frame,
@@ -8,10 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
 };
 
-use crate::{
-    render::render_md::render_markdown_tui,
-    widgets::state::App,
-};
+use crate::widgets::state::App;
 
 pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = match app.subagent_popup.as_ref() {
@@ -22,72 +23,44 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     let code_bg = app.theme.code_block_bg();
     let code_fg = app.theme.code_block_fg();
 
-    // Resolve content: live from active tool block, or finished from completed block.
-    let (raw_text, is_live) = if popup.live {
-        // Running — read live output from active block.
-        let text = app
-            .tools
+    // Determine live/finished dynamically from current state.
+    let is_live = app.tools.active.iter().any(|a| a.tool_id == popup.tool_id);
+
+    let raw_text = if is_live {
+        app.tools
             .active
             .iter()
-            .find(|a| {
-                !popup.title.is_empty() && a.output.tool_name == "spawn_subagent"
-            })
+            .find(|a| a.tool_id == popup.tool_id)
             .map(|a| a.live_output.detail_text())
-            .unwrap_or_default();
-        (text, true)
+            .unwrap_or_default()
     } else {
-        // Finished — read detail_full from completed block.
-        let text = app
-            .tools
+        app.tools
             .blocks
             .iter()
-            .find(|b| b.output.tool_name == "spawn_subagent")
+            .find(|b| b.tool_id == popup.tool_id)
             .and_then(|b| b.output.detail_full.clone())
-            .unwrap_or_default();
-        (text, false)
+            .unwrap_or_default()
     };
 
     let total_lines = raw_text.lines().count();
 
-    // Render markdown for finished popups (cached via a simple mutable reassign).
-    let body: Text = if is_live {
-        // Plain text with line numbers for live mode.
-        let num_width = (total_lines + 1).to_string().len().max(3);
-        let num_style = Style::default().fg(app.theme.muted_fg()).bg(code_bg);
-        let text_style = Style::default().fg(code_fg).bg(code_bg);
+    // Plain text with line numbers for both live and finished states.
+    let num_width = (total_lines + 1).to_string().len().max(3);
+    let num_style = Style::default().fg(app.theme.muted_fg()).bg(code_bg);
+    let text_style = Style::default().fg(code_fg).bg(code_bg);
 
-        let mut lines = Vec::new();
-        for (i, line) in raw_text.lines().enumerate() {
-            let num = format!("{:>nw$} ", i + 1, nw = num_width);
-            lines.push(Line::from(vec![
-                Span::styled(num, num_style),
-                Span::styled(line.to_string(), text_style),
-            ]));
-        }
-        Text::from(lines)
-    } else {
-        // Markdown rendering for finished output.
-        let (styled, _) = render_markdown_tui(&raw_text, &app.theme);
-        // Re-style lines to use popup background.
-        let styled: Vec<Line> = styled
-            .into_iter()
-            .map(|line| {
-                let spans: Vec<Span> = line
-                    .spans
-                    .into_iter()
-                    .map(|s| {
-                        let mut style = s.style;
-                        if style.bg.is_none() || style.bg == Some(ratatui::style::Color::Reset) {
-                            style = style.bg(code_bg);
-                        }
-                        Span::styled(s.content.into_owned(), style)
-                    })
-                    .collect();
-                Line::from(spans)
-            })
-            .collect();
-        Text::from(styled)
-    };
+    let mut body_lines = Vec::new();
+    for (i, line) in raw_text.lines().enumerate() {
+        let num = format!("{:>nw$} ", i + 1, nw = num_width);
+        body_lines.push(Line::from(vec![
+            Span::styled(num, num_style),
+            Span::styled(line.to_string(), text_style),
+        ]));
+    }
+    if raw_text.ends_with('\n') {
+        body_lines.push(Line::from(Span::styled("", text_style)));
+    }
+    let body = Text::from(body_lines);
 
     let popup_area = super::centered_popup_area(area);
     frame.render_widget(Clear, popup_area);

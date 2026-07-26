@@ -31,6 +31,7 @@ pub(crate) struct ActiveToolBlock {
 pub(crate) struct ToolBlock {
     /// Physical index of the first placeholder row in `messages` / `raw_messages`.
     pub phys_idx: usize,
+    pub tool_id: String,
     pub output: ToolRenderOutput,
 }
 
@@ -101,8 +102,8 @@ pub(crate) struct DiffPopup {
 pub(crate) struct SubagentPopup {
     pub title: String,
     pub scroll: u16,
-    /// True while the parent `spawn_subagent` tool is still running.
-    pub live: bool,
+    /// Tool id of the spawn_subagent invocation this popup belongs to.
+    pub tool_id: String,
 }
 
 #[cfg(test)]

@@ -143,36 +143,45 @@ impl App {
             Some(o) if o.tool_name == "spawn_subagent" => o.clone(),
             _ => return,
         };
-        let live = self
+        let tool_id = self
             .tools
             .active
             .iter()
-            .any(|a| a.phys_idx == phys_idx);
+            .find(|a| a.phys_idx == phys_idx)
+            .map(|a| a.tool_id.clone())
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| b.tool_id.clone())
+            });
+        let Some(tool_id) = tool_id else {
+            return;
+        };
         self.subagent_popup = Some(crate::widgets::state::SubagentPopup {
             title: output.title_raw.clone(),
             scroll: 0,
-            live,
+            tool_id,
         });
     }
 
     /// Copy the visible subagent popup content to clipboard.
     pub(crate) fn copy_subagent_popup(&mut self) {
-        if self.subagent_popup.is_none() {
+        let Some(popup) = self.subagent_popup.as_ref() else {
             return;
-        }
-        // Find the raw text from the active or completed block.
+        };
         let text = self
             .tools
             .active
             .iter()
-            .find(|a| a.output.tool_name == "spawn_subagent")
+            .find(|a| a.tool_id == popup.tool_id)
             .map(|a| a.live_output.detail_text())
             .or_else(|| {
                 self.tools
                     .blocks
                     .iter()
-                    .rev()
-                    .find(|b| b.output.tool_name == "spawn_subagent")
+                    .find(|b| b.tool_id == popup.tool_id)
                     .and_then(|b| b.output.detail_full.clone())
             })
             .unwrap_or_default();
