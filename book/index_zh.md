@@ -38,7 +38,7 @@
 | 9 | [Agent 生命周期 Hooks](./09_chapter_hook_zh.md) | PreToolUse / PostToolUse、`HookControl`、注册 API、在工具管线中的位置 |
 | 10 | [权限模型](./10_chapter_permission_zh.md) | 能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测 |
 | 11 | [任务与工具调度](./11_chapter_task_zh.md) | **工具**并行调度（waves/barriers）— 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md) |
-| 12 | [子 Agent](./12_chapter_subagent_zh.md) | `task` 工具：嵌套 `agent_loop`、受限工具集、静态 prompt、权限继承、摘要返回 |
+| 12 | [子 Agent](./12_chapter_subagent_zh.md) | `spawn_subagent` 工具：嵌套 `agent_loop`、受限工具集、静态 prompt、权限继承、摘要返回 |
 | 13 | [后台任务](./13_chapter_background_zh.md) | `background_run` / `check_background`、tokio spawn、超时、启动修复 |
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
 | 15 | [Worktree 泳道](./15_chapter_worktree_zh.md) | 隔离 `git worktree`：`create` / `list` / `status` / `run` / `events`、索引与审计日志 |

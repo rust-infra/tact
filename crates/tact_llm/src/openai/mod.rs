@@ -391,7 +391,7 @@ impl OpenAiAdapter {
         ),
         LlmError,
     > {
-        let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
+        let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -403,7 +403,7 @@ impl OpenAiAdapter {
             .json(body)
             .send()
             .await
-            .map_err(|e| LlmError::Other(e.to_string()))?;
+            .map_err(|e| LlmError::Unsupported(format!("HTTP request failed: {e}")))?;
 
         // Read the full response body on non-2xx so the actual API error
         // message is surfaced, not just the HTTP status code.
@@ -419,7 +419,10 @@ impl OpenAiAdapter {
                 request_body = %String::from_utf8_lossy(&json_body),
                 "LLM HTTP request failed"
             );
-            return Err(LlmError::Other(format!("http {status}: {resp_body}")));
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: resp_body,
+            });
         }
 
         let mut event_stream = response.bytes_stream().eventsource();
@@ -443,15 +446,14 @@ impl OpenAiAdapter {
                         request_body = %String::from_utf8_lossy(&json_body),
                         "SSE stream failed; logging request body for diagnostics"
                     );
-                    return Err(LlmError::Other(format!("SSE error: {e}")));
+                    return Err(LlmError::StreamParse(format!("SSE error: {e}")));
                 }
                 Ok(msg) => {
                     if msg.data == "[DONE]" {
                         break;
                     }
 
-                    let chunk: StreamChunk = serde_json::from_str(&msg.data)
-                        .map_err(|e| LlmError::Other(format!("JSON parse: {e}")))?;
+                    let chunk: StreamChunk = serde_json::from_str(&msg.data)?;
 
                     // ── choices ──
                     for choice in &chunk.choices {
@@ -582,7 +584,7 @@ impl OpenAiAdapter {
         ),
         LlmError,
     > {
-        let json_body = serde_json::to_vec(body).map_err(|e| LlmError::Other(e.to_string()))?;
+        let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
         let headers = self.config.headers();
@@ -594,24 +596,27 @@ impl OpenAiAdapter {
             .json(body)
             .send()
             .await
-            .map_err(|e| LlmError::Other(e.to_string()))?;
+            .map_err(|e| LlmError::Unsupported(format!("HTTP request failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let resp_body = response.text().await.unwrap_or_default();
-            return Err(LlmError::Other(format!("HTTP {status}: {resp_body}")));
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: resp_body,
+            });
         }
 
         let json: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| LlmError::Other(e.to_string()))?;
+            .map_err(|e| LlmError::Unsupported(format!("response deserialization failed: {e}")))?;
 
         let choice = json
             .get("choices")
             .and_then(|v| v.as_array())
             .and_then(|a| a.first())
-            .ok_or_else(|| LlmError::Other("No choices in response".to_string()))?;
+            .ok_or_else(|| LlmError::Unsupported("No choices in response".to_string()))?;
 
         let message = choice.get("message");
         let mut blocks = Vec::new();

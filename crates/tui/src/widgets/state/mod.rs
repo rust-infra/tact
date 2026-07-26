@@ -23,6 +23,9 @@ mod select_popup;
 mod slash_command;
 mod status_bar_state;
 mod stream_state;
+
+mod task_dag;
+pub(crate) mod task_panel;
 mod thinking_state;
 mod tool_state;
 
@@ -36,8 +39,13 @@ pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
+
+pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
+pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
-pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, PopupTextSelection, ToolBlock, ToolState};
+pub(crate) use tool_state::{
+    ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState,
+};
 
 // ========== Basic Types ==========
 
@@ -57,6 +65,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model for current provider"),
     ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
+    ("compact", "Compact conversation history"),
     ("cancel", "Cancel current task"),
     ("quit", "Quit application"),
     ("help", "Show help panel"),
@@ -67,13 +76,15 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
     ("stats", "Show session statistics"),
+    ("tasks-dag", "Show task dependency DAG"),
 ];
 
 /// A skill available in the TUI slash / palette picker.
 ///
-/// Enter on a skill autocompletes `/name `; a second Enter invokes (body wrapped
-/// in `<skill>`, with optional `$ARGUMENTS` handling). Built-in command names
-/// take priority and exclude colliding skills from [`App::palette_commands`].
+/// Enter on a skill **invokes** immediately from the `/` popup (body wrapped
+/// in `<skill>`, with optional `$ARGUMENTS` handling). **Tab** only fills
+/// `/name ` so args can be edited first. Built-in command names take priority
+/// and exclude colliding skills from [`App::palette_commands`].
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     pub name: String,
@@ -97,7 +108,6 @@ pub(crate) enum SelectKind {
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FocusedPanel {
-    Plan,
     Log,
 }
 
@@ -214,11 +224,15 @@ pub struct App {
     /// Frozen elapsed seconds from the most recent submitted prompt.
     /// Kept until a new prompt is submitted.
     pub(crate) last_prompt_elapsed_secs: Option<i64>,
+    /// Persistent task progress sticky (under Log).
+    pub(crate) task_panel: TaskPanelState,
     /// Task completion time (for top status bar Done highlight timer;
     /// auto-reverts to Idle display after 2s).
     pub(crate) task_done_time: Option<chrono::DateTime<chrono::Local>>,
     /// Process start time (for bottom status bar showing total TUI uptime).
     pub(crate) process_start_time: chrono::DateTime<chrono::Local>,
+    /// Last uptime whole-second that triggered an idle dirty tick (dedupe redraws).
+    pub(crate) last_uptime_tick_secs: Option<i64>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// Tool invocation blocks and diff popup state.
@@ -227,6 +241,10 @@ pub struct App {
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
+    /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
+    pub(crate) task_dag_popup: Option<TaskDagPopup>,
+    /// Subagent live-output / markdown summary popup.
+    pub(crate) subagent_popup: Option<SubagentPopup>,
     pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
@@ -253,8 +271,6 @@ pub struct App {
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).
     pub(crate) loading_idx: Option<usize>,
-    /// Panel split ratio (0.0–1.0) for the Plan panel width. 0.20 = 20% plan, 80% log.
-    pub(crate) panel_split_ratio: f64,
     /// Current interface language.
     pub(crate) language: Language,
     /// Brief status bar notification (auto-clears after 3s).

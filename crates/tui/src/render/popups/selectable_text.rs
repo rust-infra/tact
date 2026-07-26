@@ -21,12 +21,33 @@ struct DisplayGrapheme {
     style: Style,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DisplayRow {
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
     graphemes: Vec<DisplayGrapheme>,
     pub(crate) cells: Vec<PopupTextHit>,
+}
+
+/// Wrapped-layout snapshot reused across frames while the popup content and
+/// body width are unchanged. Avoids re-wrapping the whole conversation (which
+/// can be tens of thousands of lines for a live subagent) on every render.
+#[derive(Debug, Clone)]
+pub(crate) struct PopupLayoutCache {
+    /// Live output grows over time; markdown vs plain styling differs. Both are
+    /// part of the key so a live→completed transition invalidates the cache.
+    pub(crate) is_live: bool,
+    pub(crate) content_len: usize,
+    pub(crate) width: u16,
+    pub(crate) raw_text: String,
+    pub(crate) display_rows: Vec<DisplayRow>,
+    pub(crate) line_count: usize,
+}
+
+impl PopupLayoutCache {
+    pub(crate) fn is_valid(&self, is_live: bool, content_len: usize, width: u16) -> bool {
+        self.is_live == is_live && self.content_len == content_len && self.width == width
+    }
 }
 
 fn hit_intersects(hit: PopupTextHit, selection: &std::ops::Range<usize>) -> bool {
@@ -133,6 +154,32 @@ pub(crate) fn scalar_styles(
     styles
 }
 
+/// Wrap every source line of `raw_text` into display rows, applying the styles
+/// from `styled_lines` (falling back to `fallback` where a line is missing).
+pub(crate) fn layout_all_display_rows(
+    raw_text: &str,
+    styled_lines: &[Line<'_>],
+    fallback: Style,
+    max_width: usize,
+) -> Vec<DisplayRow> {
+    let mut display_rows = Vec::new();
+    for (index, source_line) in source_lines(raw_text).iter().enumerate() {
+        let styles = scalar_styles(
+            styled_lines.get(index),
+            fallback,
+            source_line.text.chars().count(),
+        );
+        display_rows.extend(layout_display_rows(
+            source_line.text,
+            source_line.start,
+            &styles,
+            max_width,
+            true,
+        ));
+    }
+    display_rows
+}
+
 pub(crate) fn layout_display_rows(
     text: &str,
     line_start: usize,
@@ -141,8 +188,8 @@ pub(crate) fn layout_display_rows(
     wrap: bool,
 ) -> Vec<DisplayRow> {
     let mut rows = Vec::new();
-    let mut graphemes = Vec::new();
-    let mut cells = Vec::new();
+    let mut graphemes: Vec<DisplayGrapheme> = Vec::new();
+    let mut cells: Vec<PopupTextHit> = Vec::new();
     let mut row_start = line_start;
     let mut row_end = line_start;
     let mut row_width = 0;
@@ -160,6 +207,14 @@ pub(crate) fn layout_display_rows(
         });
     };
 
+    let grapheme_cells = |g: &DisplayGrapheme| -> usize {
+        if g.symbol.contains(char::is_control) {
+            0
+        } else {
+            usize::from(g.symbol.cell_width())
+        }
+    };
+
     let mut scalar_index = 0;
     for (relative_start, symbol) in text.grapheme_indices(true) {
         let start = line_start + relative_start;
@@ -172,9 +227,36 @@ pub(crate) fn layout_display_rows(
 
         if width > 0 && row_width + width > max_width {
             if wrap && !graphemes.is_empty() {
-                push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
-                row_start = start;
-                row_width = 0;
+                // Soft-break at the last whitespace when possible so words like
+                // "outside" stay intact instead of splitting mid-word.
+                let break_at = graphemes
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, g)| g.symbol.chars().all(char::is_whitespace))
+                    .map(|(i, _)| i)
+                    .filter(|&i| i > 0);
+
+                if let Some(idx) = break_at {
+                    let keep_width: usize = graphemes[..idx].iter().map(grapheme_cells).sum();
+                    let mut rest = graphemes.split_off(idx);
+                    let _space = rest.remove(0); // drop the break whitespace
+                    let mut rest_cells = cells.split_off(keep_width);
+                    let space_width = grapheme_cells(&_space);
+                    if space_width > 0 && rest_cells.len() >= space_width {
+                        rest_cells.drain(..space_width);
+                    }
+                    let kept_end = graphemes.last().map(|g| g.hit.end).unwrap_or(row_start);
+                    push_row(&mut rows, &mut graphemes, &mut cells, row_start, kept_end);
+                    graphemes = rest;
+                    cells = rest_cells;
+                    row_width = graphemes.iter().map(grapheme_cells).sum();
+                    row_start = graphemes.first().map(|g| g.hit.start).unwrap_or(start);
+                } else {
+                    push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
+                    row_start = start;
+                    row_width = 0;
+                }
             } else if !wrap {
                 break;
             }
@@ -229,4 +311,39 @@ pub(crate) fn layout_display_rows(
         push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    fn row_text(row: &DisplayRow) -> String {
+        row.spans(None).into_iter().map(|s| s.content).collect()
+    }
+
+    #[test]
+    fn wrap_breaks_on_word_boundaries() {
+        // "If you are outside" is 18 cells; width 14 forces a wrap.
+        // Soft-break should keep "outside" intact: "If you are" / "outside".
+        let rows = layout_display_rows("If you are outside", 0, &[], 14, true);
+        let texts: Vec<String> = rows.iter().map(row_text).collect();
+        assert_eq!(texts, vec!["If you are", "outside"]);
+    }
+
+    #[test]
+    fn wrap_hard_breaks_unbroken_token_when_needed() {
+        let rows = layout_display_rows("abcdef", 0, &[], 3, true);
+        let texts: Vec<String> = rows.iter().map(row_text).collect();
+        assert_eq!(texts, vec!["abc", "def"]);
+    }
+
+    #[test]
+    fn wrap_preserves_styles_across_soft_break() {
+        let styles = vec![Style::default(); 18];
+        let rows = layout_display_rows("If you are outside", 0, &styles, 14, true);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(row_text(&rows[0]), "If you are");
+        assert_eq!(row_text(&rows[1]), "outside");
+    }
 }

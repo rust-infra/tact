@@ -167,7 +167,18 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
-**TUI cache display:** The bottom bar shows only the cache hit rate (e.g. `cache hit: 68%`), derived from the latest LLM call's `prompt_cache_hit_tokens / (hit + miss)`. These counts cover the **entire prompt input** sent to the provider — including system prompt, tool schemas, and conversation history — not just the latest user message.
+**TUI bottom-bar usage display:** The second row shows:
+
+- **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
+  main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
+  Subagent LLM calls persist under their own `sessions.id` (linked via
+  `sessions.ref_id`); the bottom bar still shows the latest `TokenUsage` event
+  received on the shared UI channel (parent or child).
+- **Last-call total** — `∑ₜₒₖ {total}` from the **same** `TokenUsageInfo.total`
+  (precise integer; droppable when narrow).
+- **Cache hit rate** — `▣ 缓存%` / `▣ cache%` plus `pct%` or `--`, from
+  `prompt_cache_hit_tokens / (hit + miss)` on that latest call. Counts cover the
+  entire prompt (system, tools, history), not only the latest user message.
 
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 
@@ -175,29 +186,47 @@ Cached data is evicted after hours to days of inactivity.
 
 ## Session Stats Display
 
-At the end of every session (both CLI and TUI), a summary is printed to stderr:
+At the end of every session (both CLI and TUI), a summary is emitted as **GFM
+pipe markdown** with space-padded cells so columns line up in plain text.
+The TUI runs it through `tui-markdown`, which draws Unicode box borders and
+honors column alignment. CLI / headless print the same markdown source to
+stderr:
 
 ```
 ── Session Stats ─────────────────────────────
-  Elapsed:                  XX.Xs
-  LLM API calls:            XX
-  Total LLM time:           XX.Xs
-  Prompt chars sent:        XX
-  Response chars rcvd:      XX
-  Thinking blocks:          XX
-  Thinking chars:           XX
-  Compactions:              XX
-  Tool calls:               XX
-    tool_name               XX
-  Total tool time:          XX.Xs
-  Cache hit tokens:         XX
-  Cache miss tokens:        XX
-  Cache hit rate:           XX.X%
-  Reasoning tokens:         XX
+
+| Metric              | Value |
+| ------------------- | ----: |
+| Elapsed             | XX.Xs |
+| LLM API calls       |    XX |
+| Total LLM time      | XX.Xs |
+| Prompt chars sent   |    XX |
+| Response chars rcvd |    XX |
+| Thinking blocks     |    XX |
+| Thinking chars      |    XX |
+| Compactions          |    XX |
+
+Tool calls
+
+| Tool      | Count(s/f) | Total |   Avg |
+| --------- | ---------: | ----: | ----: |
+| Total     |   XX (s/f) |       |       |
+| tool_name |   XX (s/f) |    XX | XXms  |
+
+| Metric           |   Value |
+| ---------------- | ------: |
+| Total tool time  |   XX.Xs |
+| Avg tool time    | XX.Xms  |
+| Cache hit tokens |      XX |
+| Cache miss tokens |      XX |
+| Cache hit rate   |   XX.X% |
+| Reasoning tokens |      XX |
 ─────────────────────────────────────────────
 ```
 
-The cache and reasoning lines are only shown when non-zero.
+The tools table is omitted when there were no tool calls. Cache and reasoning
+rows (and the trailing metrics table that holds them / tool timing aggregates)
+are only shown when those counters are non-zero / present.
 
 ## Code Locations
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
-/// Top-level TOML config (`tact.toml` or `.tact/config.toml`).
+/// Top-level TOML config (`.tact/config.toml` or `config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TactTomlConfig {
@@ -88,6 +88,11 @@ pub struct AgentTomlConfig {
     /// Auto-inject full skill body into system prompt (default: false)
     pub skill_body_auto_inject: Option<bool>,
 
+    /// Extra skill root directories (optional). Each should contain `*/SKILL.md`.
+    /// Relative paths are resolved against the workdir; `~` expands to `$HOME`.
+    #[serde(default)]
+    pub skill_dirs: Vec<String>,
+
     /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
     ///
     /// Supported values: `agents_md`, `claude_md` (all CLAUDE paths), `claude_md_user`,
@@ -123,6 +128,9 @@ pub struct VisionImageTomlConfig {
 pub struct ToolsTomlConfig {
     /// Bash wall-clock timeout in seconds. Zero disables the timeout.
     pub bash_timeout_secs: Option<u64>,
+    /// Nice increment (0–19) applied to the bash sub-process group so TUI stays
+    /// responsive during heavy commands (e.g. `cargo test`). 0 disables.
+    pub bash_nice: Option<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +171,8 @@ pub struct AgentSettings {
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
     pub skill_body_auto_inject: bool,
+    /// Extra skill roots from `[agent].skill_dirs` (unresolved path strings).
+    pub skill_dirs: Vec<String>,
     pub instruction_sources: crate::config::InstructionSources,
 }
 
@@ -188,10 +198,12 @@ pub struct UiSettings {
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
     pub bash_timeout_secs: u64,
+    pub bash_nice: i32,
 }
 
 impl ToolSettings {
     pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 1_800;
+    pub const DEFAULT_BASH_NICE: i32 = 10;
 }
 
 #[derive(Debug, Clone)]

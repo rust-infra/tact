@@ -51,6 +51,11 @@ pub enum AgentUpdate {
     RequestMultiSelect { prompt, options, respond },         // 多选；仅 ask_user（`multi_select`）
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
+    /// 持久任务列表变更（`task_create` / `task_update`）
+    TasksChanged {
+        tasks: Vec<TaskSnapshot>, // 不含已删除
+        reason: TasksChangeReason, // Created | Updated
+    },
 }
 
 pub enum ThinkingChunk {
@@ -61,6 +66,8 @@ pub enum ThinkingChunk {
 ```
 
 `ThinkingChunk` 是生命周期 enum：生产者发出 `Started`、零或多个 `Delta` 片段，然后 `Finished`。仅暴露 `reasoning_content` delta 的 OpenAI 兼容 adapter 在流周围合成 `Started` / `Finished`。
+
+`TasksChanged` 在 mutating 任务工具成功后携带 UI 快照（`id`、`subject`、`status`、`owner`）。TUI 刷新 Log 下 sticky 条并追加 Log 详情卡片。只读的 `task_get` / `task_list` 不发射。软删除项不出现在 `tasks` 中。
 
 `ToolOutputChunk` 携带增量解码文本与 `ToolOutputStream`（`Stdout`、
 `Stderr` 或 `Other`）。一个 chunk batch 保留 aggregator 观察到的跨 stream 顺序。
@@ -207,7 +214,7 @@ stateDiagram-v2
 
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
-| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 plan panel；发送 `UserCommand::SubmitTask` |
+| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 `app.plan.steps`；发送 `UserCommand::SubmitTask` |
 | `Planning` | `Executing` | 首个 `AgentUpdate::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
@@ -311,7 +318,7 @@ stateDiagram-v2
 
 | 类别 | Variants | TUI 副作用 |
 |------|----------|------------|
-| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
+| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
 | **请求–响应** | `RequestSelect { respond }` | 经 oneshot channel 阻塞等待用户选择 |
 
@@ -405,7 +412,7 @@ sequenceDiagram
 ThinkingChunk*          ← LLM 推理流（可选）
 StreamChunk*            ← 工具前/之间的 assistant 文本
 ModelInfo               ← 模型名 / max_tokens（元数据）
-StepAdded               ← plan panel 条目
+StepAdded               ← 内部 plan step 条目（无专用面板）
 StepStarted             ← 运行中 tool card（arg_summary + arg_full）
 RequestSelect?          ← permission Ask（可选）
 StepFinished | StepFailed
@@ -425,7 +432,7 @@ TaskComplete            ← agent_loop Ok 后 driver
 | `AgentUpdate` | `agent.rs` | Agent → TUI 事件 enum |
 | `ThinkingChunk` | `agent.rs` | Thinking 流生命周期（`Started` / `Delta` / `Finished`） |
 | `UserCommand` | `agent.rs` | TUI → agent 命令 enum |
-| `PlanStep` | `agent.rs` | Plan panel 行；serde 供 session 持久化 |
+| `PlanStep` | `agent.rs` | 内部 plan step 条目（无专用面板）；serde 供 session 持久化 |
 | `StepResult` / `StepStatus` | `agent.rs` | 结构化工具结果 |
 | `TokenUsageInfo` | `agent.rs` | LLM token 计数（含 cache / reasoning） |
 | `ModelCallParams` | `agent.rs` | 活跃模型配置快照 |

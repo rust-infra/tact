@@ -18,7 +18,7 @@ Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.r
 
 File: `crates/tui/src/widgets/state/mod.rs`
 
-This is the highest-level UI state. It drives the status bar, the plan panel, and whether the user is being asked for approval.
+This is the highest-level UI state. It drives the status bar, the internal plan step store (`app.plan.steps`), and whether the user is being asked for approval.
 
 ```rust
 pub(crate) enum Status {
@@ -57,7 +57,7 @@ stateDiagram-v2
 
 | From | To | Trigger | Notes |
 |---|---|---|---|
-| `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; plan panel is cleared. |
+| `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; `app.plan.steps` is cleared. |
 | `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `ensure_executing_status` sets `total` from plan length. |
 | `Executing` | `Executing` | `AgentUpdate::StepStarted { idx, tool_id, … }`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
 | `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by `interactive.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false. |

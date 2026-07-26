@@ -81,6 +81,48 @@ pub struct TokenUsageInfo {
     pub reasoning_tokens: u32,
 }
 
+/// UI-facing task status (excludes soft-deleted records).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskStatusSnapshot {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TaskStatusSnapshot {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::InProgress => "[>]",
+            Self::Completed => "[x]",
+        }
+    }
+}
+
+/// Why a [`AgentUpdate::TasksChanged`] was emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TasksChangeReason {
+    Created,
+    Updated,
+}
+
+/// One non-deleted persistent task for TUI progress surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TaskSnapshot {
+    pub id: u64,
+    pub subject: String,
+    pub status: TaskStatusSnapshot,
+    pub owner: String,
+    /// Task ids that this task blocks (outgoing edges for DAG).
+    pub blocks: Vec<u64>,
+    /// Task ids that block this task (incoming edges).
+    pub blocked_by: Vec<u64>,
+    pub created_at: Option<i64>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
@@ -151,6 +193,12 @@ pub enum AgentUpdate {
     StreamChunk(String),
     /// Streaming thinking / reasoning lifecycle event
     ThinkingChunk(ThinkingChunk),
+    /// Persistent task list changed (`task_create` / `task_update`).
+    /// `tasks` excludes soft-deleted records.
+    TasksChanged {
+        tasks: Vec<TaskSnapshot>,
+        reason: TasksChangeReason,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -178,6 +226,10 @@ pub enum UserCommand {
     /// emit `TaskComplete`. The command driver emits [`AgentUpdate::TaskCancelled`]
     /// so the TUI can leave the busy state. The next `SubmitTask` clears the flag.
     Cancel,
+    /// Compact the session history (triggered by `/compact` slash command).
+    /// Runs compaction on the existing context and stops — does not start a
+    /// new task.
+    Compact,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)
@@ -225,5 +277,42 @@ impl PlanStep {
                 .collect(),
             output: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentUpdate, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason};
+
+    #[test]
+    fn tasks_changed_snapshot_round_trips_fields() {
+        let update = AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "Fix auth".into(),
+                status: TaskStatusSnapshot::InProgress,
+                owner: String::new(),
+                blocks: vec![2],
+                blocked_by: vec![],
+                ..Default::default()
+            }],
+            reason: TasksChangeReason::Created,
+        };
+        match update {
+            AgentUpdate::TasksChanged { tasks, reason } => {
+                assert_eq!(tasks.len(), 1);
+                assert_eq!(tasks[0].id, 1);
+                assert_eq!(tasks[0].status, TaskStatusSnapshot::InProgress);
+                assert!(matches!(reason, TasksChangeReason::Created));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_status_snapshot_markers() {
+        assert_eq!(TaskStatusSnapshot::Pending.marker(), "[ ]");
+        assert_eq!(TaskStatusSnapshot::InProgress.marker(), "[>]");
+        assert_eq!(TaskStatusSnapshot::Completed.marker(), "[x]");
     }
 }

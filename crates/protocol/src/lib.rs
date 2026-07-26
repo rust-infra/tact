@@ -11,8 +11,8 @@ pub mod biz;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, ThinkingChunk,
-    TokenUsageInfo, UserCommand,
+    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, TaskSnapshot,
+    TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, TokenUsageInfo, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

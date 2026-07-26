@@ -114,7 +114,7 @@ config::init()
   → dispatch headless or interactive
 Create LLM client
   → Resolve PermissionMode (permission.rs / TUI prompt)
-  → Scan skill roots (legacy skills/ → ~/.tact/skills → .claude/skills)
+  → Scan skill roots (.tact/skills → ~/.tact/skills → ~/.agents/skills → .claude/skills → agent.skill_dirs)
   → Create .claude StoreRoot
   → Initialize task/background/cron/team/worktree managers
   → Initialize memory manager
@@ -248,7 +248,7 @@ These belong to the agent runtime. This boundary prevents the tool layer from in
 - Skill: `load_skill`
 - Memory: `save_memory`
 - Compact: `compact`
-- Subagent: `task`
+- Subagent: `spawn_subagent`
 - Task: `task_create`, `task_get`, `task_list`, `task_update`
 - Background: `background_run`, `background_check`
 - Cron: `cron_create`, `cron_delete`, `cron_list`
@@ -445,9 +445,11 @@ The main agent builds a dynamic prompt each loop. Subagents use a static prompt 
 The skill system scans (later root wins on name clash):
 
 ```text
-<workdir>/skills/*/SKILL.md          # legacy
+<workdir>/.tact/skills/*/SKILL.md    # project-local
 ~/.tact/skills/*/SKILL.md            # user
-<workdir>/.claude/skills/*/SKILL.md  # project (canonical)
+~/.agents/skills/*/SKILL.md          # global agents
+<workdir>/.claude/skills/*/SKILL.md  # project (Claude-compatible)
+# plus optional [agent].skill_dirs from config
 ```
 
 At startup, only skill summaries go into the system prompt (`describe_available`). Full content is loaded on demand via `load_skill`, or injected as a user task from the TUI when the user runs `/skill-name` (see book Ch 2 / Ch 23).
@@ -479,7 +481,7 @@ Both tool categories pass through permission checks before execution, and result
 
 ## Worktree & Subagents
 
-The `task` tool can launch fresh-context subagents. A subagent has its own `Agent` instance and independent context but shares the base dependencies in `ToolContext`.
+The `spawn_subagent` tool can launch fresh-context subagents. A subagent has its own `Agent` instance and independent context but shares the base dependencies in `ToolContext`.
 
 Worktree tools let the agent place tasks into isolated git worktrees:
 

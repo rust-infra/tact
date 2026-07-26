@@ -210,7 +210,7 @@ Key `AgentUpdate` variants used today:
 |---|---|
 | `PlanGenerated(Vec<PlanStep>)` | **Deprecated (0.19.0).** TUI handler retained; agent emits `StepAdded` / `StepStarted` instead. |
 | `NeedApproval(...)` | **Deprecated (0.19.0).** TUI handler retained; agent uses `RequestSelect` instead. |
-| `StepAdded(PlanStep)` | A new tool-use step is appended to the plan panel (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). Does not add a log line. |
+| `StepAdded(PlanStep)` | A new tool-use step is appended to the internal `app.plan.steps` store (`description` = `tool (arg_summary)`; full args in `PlanStep.args`). There is no dedicated plan panel; does not add a log line. |
 | `StepStarted(usize, tool_id, tool_name, arg_summary)` | Step `idx` has begun; TUI renders a running tool block with truncated title args. |
 | `ToolProgress { tool_id, chunks }` | Informational ordered stdout/stderr progress for an active tool. It does not close thinking/loading gates or finalize the step; unknown or late IDs are ignored. |
 | `StepFinished(usize, tool_id, StepResult)` | Step succeeded — summary, detail, duration, optional `permission_label`, optional `arg_full` for popups. |
@@ -268,7 +268,7 @@ flowchart TD
 Special cases:
 
 - `read_file` and tools whose names start with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, or `find` are classified as `Read`.
-- `task` is always `High` because it spawns a sub-agent with full filesystem/shell access.
+- `spawn_subagent` is always `High` because it spawns a sub-agent with full filesystem/shell access.
 - `bash` commands containing `rm -rf`, `sudo`, `shutdown`, or `reboot` are always `High`.
 - Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read`.
 
@@ -367,14 +367,14 @@ Recovery mechanisms inside `agent_loop()`:
 
 | Feature | Module | Description |
 |---|---|---|
-| `task` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `sleep`). |
+| `spawn_subagent` tool | `tool/subagent.rs` | Spawns an isolated sub-agent with a restricted toolset (`bash`, `read_file`, `write_file`, `edit_file`, `sleep`). |
 | Persistent tasks | `task/` | `TaskManager` stores task records with status and dependency tracking under `.tact/tasks/`. |
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.tact/worktrees/`. |
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
 | Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.tact/cron/`. |
 | Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
-| Skills | `skill/` | `SKILL.md` under legacy `skills/`, `~/.tact/skills/`, and `.claude/skills/`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
+| Skills | `skill/` | `SKILL.md` under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, plus optional `[agent].skill_dirs`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 
 ---
 
@@ -497,9 +497,7 @@ flowchart TD
 
 | Key | Action |
 |---|---|
-| `Tab` | Switch focus between Plan and Log panels. |
-| `e` | Toggle plan panel visibility. |
-| `j` / `k` | Scroll log or move plan selection. |
+| `j` / `k` | Scroll log. |
 | `g` / `G` | Jump to top / bottom of log. |
 | `i` / `Enter` | Enter insert mode. |
 | `/` | Open command palette. |
@@ -602,7 +600,7 @@ flowchart TD
 `tact::config::init()` merges configuration from (highest priority first):
 
 1. CLI arguments (`--model`, `--permission-mode`, positional prompt, etc.).
-2. TOML config files: `<project>/.tact/config.toml`, `<project>/tact.toml`, `~/.tact/config.toml`, or `--config`.
+2. TOML config files: `<project>/.tact/config.toml`, `<project>/config.toml`, `~/.tact/config.toml`, or `--config`.
 
 Resolved settings are stored in a process-global `ResolvedConfig` (via `config::install()`) and accessed at runtime through `config::settings()`. LLM provider credentials are passed to `tact_llm::init_provider()` at startup.
 

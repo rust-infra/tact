@@ -97,7 +97,7 @@ fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
             } => {
                 flush_message_content(*role, &mut message_content, &mut input);
                 let arguments = serde_json::to_string(args).map_err(|error| {
-                    LlmError::Other(format!("serialize arguments for tool '{name}': {error}"))
+                    LlmError::Unsupported(format!("serialize arguments for tool '{name}': {error}"))
                 })?;
                 input.push(InputItem::Item(Item::FunctionCall(FunctionToolCall {
                     arguments,
@@ -241,11 +241,10 @@ pub(crate) fn create_response(
         });
     }
 
-    let typed_request = builder
-        .build()
-        .map_err(|error| LlmError::Other(format!("build OpenAI Responses request: {error}")))?;
-    let mut body = serde_json::to_value(typed_request)
-        .map_err(|error| LlmError::Other(format!("serialize OpenAI Responses request: {error}")))?;
+    let typed_request = builder.build().map_err(|error| {
+        LlmError::Unsupported(format!("build OpenAI Responses request: {error}"))
+    })?;
+    let mut body = serde_json::to_value(typed_request)?;
     normalize_assistant_history_items(&mut body);
     let budget_tokens = request
         .thinking

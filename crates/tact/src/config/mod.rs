@@ -2,7 +2,7 @@
 //!
 //! Merges configuration from two sources (priority: high to low):
 //! 1. CLI arguments
-//! 2. TOML config file (`.tact/config.toml`, `tact.toml`, or `--config`)
+//! 2. TOML config file (`.tact/config.toml`, `config.toml`, or `--config`)
 //!
 //! Resolved settings are stored in a process-global [`ResolvedConfig`] via
 //! [`install`] and accessed through [`settings`].

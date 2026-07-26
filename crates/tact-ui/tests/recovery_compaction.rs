@@ -34,6 +34,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            skill_dirs: Vec::new(),
             instruction_sources: tact::config::InstructionSources::default(),
         },
         ui: tact::config::UiSettings {
@@ -46,6 +47,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+            bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
         },
         permission_mode: None,
         tokio_console: false,
@@ -193,7 +195,7 @@ async fn failed_compact_tool_does_not_trigger_manual_compaction() {
 async fn prompt_too_long_recovery_compacts_and_retries() {
     let mock = MockClient::with_responder(move |request, idx| {
         match idx {
-            0 => Err(LlmError::Other("prompt is too long".to_string())),
+            0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
             // compact_history's create_message consumes this turn.
             1 => Ok((
                 vec![text_block("Compacted summary.")],
@@ -240,8 +242,8 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
 #[tokio::test]
 async fn compact_summary_retries_transient_transport_error() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Other("prompt is too long".to_string())),
-        1 => Err(LlmError::Other(
+        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        1 => Err(LlmError::Unsupported(
             "service temporarily unavailable".to_string(),
         )),
         2 => Ok((
@@ -272,7 +274,7 @@ async fn compact_summary_retries_transient_transport_error() {
 #[tokio::test]
 async fn compact_summary_rejects_empty_text_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
         _ => Ok((Vec::new(), Some(StopReason::EndTurn), None)),
     });
     let mut config = tiny_context_config();
@@ -294,7 +296,7 @@ async fn compact_summary_rejects_empty_text_response() {
 #[tokio::test]
 async fn compact_summary_rejects_truncated_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
         _ => Ok((
             vec![text_block("partial summary")],
             Some(StopReason::MaxTokens),
@@ -313,7 +315,7 @@ async fn compact_summary_rejects_truncated_response() {
 async fn compact_summary_request_is_window_aware_for_oversized_turn() {
     let task = "x".repeat(100_000);
     let mock = MockClient::with_responder(|request, idx| match idx {
-        0 => Err(LlmError::Other("prompt is too long".to_string())),
+        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
         1 => {
             let prompt = serde_json::to_string(&request.messages).unwrap();
             assert_eq!(request.max_tokens, 2_000);

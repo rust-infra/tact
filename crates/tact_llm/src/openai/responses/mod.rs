@@ -79,8 +79,8 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
 
 fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmError> {
     let Some(event_type) = event.get("type").and_then(Value::as_str) else {
-        return Err(LlmError::Other(
-            "deserialize OpenAI Responses stream event: missing field `type`".to_string(),
+        return Err(LlmError::StreamParse(
+            "missing field `type` in OpenAI Responses stream event".to_string(),
         ));
     };
     let consumed = matches!(
@@ -100,7 +100,7 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
     serde_json::from_value(normalize_stream_event_json(event))
         .map(Some)
         .map_err(|error| {
-            LlmError::Other(format!(
+            LlmError::StreamParse(format!(
                 "deserialize OpenAI Responses stream event: {error}"
             ))
         })
@@ -155,7 +155,6 @@ impl OpenAiResponsesAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for OpenAiResponsesAdapter {
     async fn stream_message(
         &self,
@@ -172,8 +171,7 @@ impl LlmClient for OpenAiResponsesAdapter {
     > {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
-        let request_body = serde_json::to_vec(&wire_request)
-            .map_err(|error| LlmError::Other(format!("serialize Responses request: {error}")))?;
+        let request_body = serde_json::to_vec(&wire_request)?;
         let mut response_stream = self
             .client
             .responses()
@@ -243,8 +241,7 @@ impl LlmClient for OpenAiResponsesAdapter {
     > {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
-        let request_body = serde_json::to_vec(&wire_request)
-            .map_err(|error| LlmError::Other(format!("serialize Responses request: {error}")))?;
+        let request_body = serde_json::to_vec(&wire_request)?;
         let response = self
             .client
             .responses()

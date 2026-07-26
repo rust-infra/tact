@@ -34,6 +34,13 @@ fn partial_marker(start_line: usize, end_line: usize, next_offset: usize) -> Str
 }
 
 #[tool(name = "read_file", description = "Read file contents.")]
+/// # Errors
+///
+/// Returns an error if:
+/// - The file path is invalid or outside the workspace.
+/// - The file does not exist or cannot be opened.
+/// - The file cannot be read (I/O error).
+/// - A single line or requested range exceeds `READ_FILE_MAX_OUTPUT_TOKENS` (~25,000 approx tokens).
 pub async fn read_file(ctx: ToolContext, input: ReadFileInput) -> Result<String> {
     let path = safe_path(&ctx.work_dir, &input.path)?;
     let explicit_range = input.offset.is_some() || input.limit.is_some();

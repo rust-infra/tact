@@ -148,7 +148,7 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 
 | Table | Purpose |
 |-------|---------|
-| `sessions` | Session id, `root_dir`, `locked_by` + `lock_epoch` (process lock), timestamps |
+| `sessions` | Session id, `root_dir`, `ref_id` (parent session id; `''` = top-level), `locked_by` + `lock_epoch` (process lock), timestamps |
 | `messages` | Serialized `MessageContent` JSON, ordinal ordering |
 | `token_usages` | Per-LLM-call token counts, optional `request_body` blob, optional `tool_schedule` JSON |
 | `input_history` | User input strings for TUI recall (max 100 per session) |
@@ -164,7 +164,7 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 | `compact_history()` | `replace_session_messages` — rewrite SQLite `messages` to match post-compaction context |
 | `execute_tool_call` (post-schedule) | `record_tool_schedule` on the token row keyed by `llm_call_last_message_id` |
 
-If no session store is attached (`with_session` not called), persistence methods no-op — useful for tests.
+If no session store is attached (`with_session` not called), persistence methods no-op — useful for tests. `list_sessions` returns only top-level rows (`ref_id = ''`); `delete_session` cascades to children with `ref_id = that id` and their dependent tables.
 
 ### Input history trimming
 
@@ -219,7 +219,7 @@ sequenceDiagram
 |-----|--------|
 | No cross-process locking on JSON store | JSON files use read-modify-write without file locks (SQLite sessions use process lock) |
 | `CollectionStore::list()` order | Unsorted directory iteration — order is filesystem-dependent |
-| Greenfield SQLite schema | No legacy DB path migration or `ALTER TABLE` upgrades — new installs only |
+| Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id` is added via `PRAGMA` + `ALTER TABLE` for older DBs |
 | Session store optional | Tests and some callers may run without SQLite attached |
 | Session DB per workdir | SQLite lives at `<workdir>/.tact/tact.db` today; `sessions.root_dir` records the project path for a future shared `$HOME/.tact/tact.db` |
 | `index.json` special case | Skipped in `list()` — easy to forget when adding new index files |
@@ -228,7 +228,7 @@ sequenceDiagram
 
 ## Related Docs
 
-- [Ch 11 Tool Scheduling](./11_chapter_task.md) — wave/barrier model (includes `task` tool as barrier, not TaskManager API)
+- [Ch 11 Tool Scheduling](./11_chapter_task.md) — wave/barrier model (includes `spawn_subagent` tool as barrier, not TaskManager API)
 - [Cron Scheduling](./16_chapter_cron.md) — cron index file layout
 - [Persistent Memory](./03_chapter_memory.md) — Markdown memories (not JSON store)
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store and token usage notes

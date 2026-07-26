@@ -2,11 +2,11 @@
 #
 # Copy to one of these locations (auto-discovered):
 #   ./.tact/config.toml      project-level
-#   ./tact.toml              project-level (alternative)
+#   ./config.toml            project-level (alternative)
 #   ~/.tact/config.toml      user-global
 #
 # Or pass an explicit path:
-#   tact-ui --config /path/to/tact.toml
+#   tact-ui --config /path/to/config.toml
 #
 # Interactive TUI (default):
 #   tact-ui
@@ -91,6 +91,11 @@ mode = "default"
 # Desktop notifications on macOS (default: true)
 # notifications_enabled = true
 
+# Extra skill root directories (optional). Each should contain */SKILL.md.
+# Relative paths resolve against the workdir; ~ expands to $HOME.
+# Loaded after built-in roots; later entries override same-named skills.
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+
 # ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------
@@ -113,3 +118,7 @@ theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 # bash_timeout_secs = 1800
+# Nice (scheduling priority) for bash sub-process group, 0-19 (default: 10).
+# Higher values mean lower priority, keeping TUI responsive during cargo test etc.
+# Set to 0 to disable (bash child processes run at normal priority).
+# bash_nice = 10

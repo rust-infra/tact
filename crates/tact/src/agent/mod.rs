@@ -192,7 +192,10 @@ impl Agent {
     /// Attaches a TUI update channel so the agent can stream events
     /// (token usage, thinking blocks, tool results) to the terminal.
     pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
-        self.runtime.ui_tx = Some(tx);
+        self.runtime.ui_tx = Some(tx.clone());
+        // Keep tool_context in sync so ToolProgress / tool helpers use the same
+        // channel (critical for tagged subagent ui_tx).
+        self.tool_context.ui_tx = Some(tx);
         self
     }
 
@@ -202,6 +205,8 @@ impl Agent {
     /// this (startup path). Also wires DeepSeek `user_id` for KV cache isolation.
     pub fn with_session(mut self, session_id: String, store: DynSessionStore) -> Self {
         self.runtime.client.set_user_id(&session_id);
+        self.tool_context.session_id = Some(session_id.clone());
+        self.tool_context.session_store = Some(store.clone());
         self.runtime.session_store = Some(store);
         self.runtime.session_id = Some(session_id);
         self
@@ -247,7 +252,7 @@ impl Agent {
 
         // Idempotent: startup normally created the row already.
         let root_dir = self.tool_context.work_dir.display().to_string();
-        store.ensure_session_row(&session_id, &root_dir).await?;
+        store.ensure_session_row(&session_id, &root_dir, "").await?;
 
         if self.runtime.context.is_empty() {
             let history = store.load_session(&session_id).await?;
@@ -1356,6 +1361,7 @@ mod tests {
                     notifications_enabled: false,
                     micro_compact_enabled: true,
                     skill_body_auto_inject: false,
+                    skill_dirs: Vec::new(),
                     instruction_sources: crate::config::InstructionSources::default(),
                 },
                 ui: crate::config::UiSettings {
@@ -1368,6 +1374,7 @@ mod tests {
                 },
                 tools: crate::config::ToolSettings {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+                    bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
                 },
                 permission_mode: None,
                 tokio_console: false,
@@ -1402,6 +1409,7 @@ mod tests {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
         };
         let agent = Agent::new(
@@ -1592,6 +1600,30 @@ mod tests {
         );
 
         assert_eq!(agent.tool_context.work_dir, expected);
+    }
+
+    #[test]
+    fn with_ui_channel_syncs_tool_context_ui_tx() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = test_context("ui_tx_sync");
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        assert!(agent.runtime.ui_tx.is_some());
+        assert!(agent.tool_context.ui_tx.is_some());
     }
 
     #[tokio::test]

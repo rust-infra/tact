@@ -35,10 +35,12 @@ pub struct MessageCountByPeriod {
 
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    async fn create_session(&self, id: &str, root_dir: &str) -> Result<()>;
+    /// Create or refresh a session. `ref_id` is the parent session id (`""` = top-level).
+    async fn create_session(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()>;
 
     /// Insert a session row if missing; does not update metadata for existing rows.
-    async fn ensure_session_row(&self, id: &str, root_dir: &str) -> Result<()>;
+    /// `ref_id` is the parent session id (`""` = top-level).
+    async fn ensure_session_row(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()>;
 
     /// Refresh `updated_at` and `root_dir` after the process lock is held.
     async fn touch_session(&self, id: &str, root_dir: &str) -> Result<()>;

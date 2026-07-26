@@ -49,8 +49,7 @@ pub(crate) fn assemble_chat_completion_body(
         openai_request.stream_options = None;
     }
 
-    let mut body =
-        serde_json::to_value(&openai_request).map_err(|e| LlmError::Other(e.to_string()))?;
+    let mut body = serde_json::to_value(&openai_request)?;
 
     let ctx = BodyHookCtx {
         request,

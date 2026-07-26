@@ -7,8 +7,8 @@ use ratatui::{
 };
 use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
-    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, ThinkingChunk,
-    ToolOutputBuffer, ToolOutputChunk,
+    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot,
+    TasksChangeReason, ThinkingChunk, ToolOutputBuffer, ToolOutputChunk,
 };
 
 use crate::{
@@ -105,6 +105,20 @@ fn elapsed_secs_since(start: chrono::DateTime<chrono::Local>) -> i64 {
 }
 
 impl App {
+    /// Short elapsed label for status bar during active runs.
+    pub(crate) fn format_task_elapsed(&self) -> String {
+        let start = match self.task_start_time {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let secs = chrono::Local::now()
+            .signed_duration_since(start)
+            .num_seconds()
+            .max(0);
+        let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
+        format!("⏱ {} {}", self.msgs().bottom_elapsed, mm_ss)
+    }
+
     fn freeze_last_prompt_cost(&mut self) {
         if let Some(start) = self.task_start_time.take() {
             self.last_prompt_elapsed_secs = Some(elapsed_secs_since(start));
@@ -113,6 +127,7 @@ impl App {
 
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
+
         // Safety net: close an open thinking region on content-producing updates
         // that are not ThinkingChunk. Explicit ThinkingChunk::Finished is preferred;
         // TokenUsage / ModelInfo must not close the region (they can arrive mid-stream).
@@ -218,6 +233,7 @@ impl App {
                 self.add_system_message(msg);
             }
             AgentUpdate::SessionStats(stats_text) => {
+                // GFM pipe tables from SessionStats::summary(); tui-markdown draws box borders.
                 let (rendered, _) = render_markdown_tui(&stats_text, &self.theme);
                 self.system_prompt_popup = Some(SystemPromptPopup {
                     title: "Session Statistics".to_string(),
@@ -267,6 +283,9 @@ impl App {
                 self.on_tool_progress(&tool_id, &chunks)
             }
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
+            AgentUpdate::TasksChanged { tasks, reason } => {
+                self.on_tasks_changed(tasks, reason);
+            }
         }
         // Unified tail scroll state refresh, covering cases where helpers like
         // flush_and_close_thinking / flush_stream_pending inserted messages without
@@ -274,6 +293,16 @@ impl App {
         // StreamChunk / ThinkingChunk also update separately; this redundant call is
         // cheap and harmless).
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+    }
+
+    /// Snapshot changes only drive the sticky panel; the Log already shows the
+    /// originating `task_*` tool row, so no extra system message is appended.
+    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
+        let was_visible = self.task_panel.visible;
+        self.task_panel.apply_snapshot(tasks);
+        if self.task_panel.visible && !was_visible {
+            self.task_panel.expanded = true;
+        }
     }
 
     fn on_step_added(&mut self, step: PlanStep) {
@@ -285,11 +314,9 @@ impl App {
         self.plan
             .steps_set
             .insert(step.tool_id.clone(), step.clone());
-        self.plan.collapsed.push(false);
         // Don't change current_step or total — the step hasn't started yet.
         // Ensure there is an Executing status before StepStarted arrives.
         self.ensure_executing_status(idx);
-        self.plan.scroll_state = ScrollbarState::new(self.plan.steps.len().saturating_sub(1));
     }
 
     fn on_step_started(
@@ -304,6 +331,9 @@ impl App {
         self.flush_stream_pending();
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
+        // Only subagents need the full conversation preserved for the popup;
+        // other tools keep just the capped live preview.
+        let is_subagent = tool_name == "spawn_subagent";
         if let Status::Executing {
             current_step,
             total,
@@ -328,7 +358,11 @@ impl App {
             phys_idx,
             tool_id,
             output,
-            live_output: ToolOutputBuffer::new(50_000),
+            live_output: if is_subagent {
+                ToolOutputBuffer::new_full(50_000)
+            } else {
+                ToolOutputBuffer::new(50_000)
+            },
             started_at: Instant::now(),
         });
         self.refresh_tool_log_scroll();
@@ -349,24 +383,21 @@ impl App {
             return;
         }
 
-        let active = &self.tools.active[pos];
-        let phys_idx = active.phys_idx;
-        let old_rows = active.output.visual_rows(false);
-        let tool_name = active.output.tool_name.clone();
-        let arg_summary = active.output.arg_summary.clone();
-        let arg_full = active.output.arg_full.clone();
-        let live_output = active.live_output.clone();
-        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
         let msgs = self.msgs();
-        let output = ToolWidget::new(&self.theme, &msgs)
-            .with_tool(tool_name)
-            .with_arg_summary(arg_summary)
-            .with_arg_full(arg_full)
-            .with_step_index(step_idx)
-            .with_phase(ToolPhase::Running)
-            .with_duration_us(0)
-            .with_live_output(&live_output)
-            .build();
+        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let (phys_idx, old_rows, output) = {
+            let active = &self.tools.active[pos];
+            let output = ToolWidget::new(&self.theme, &msgs)
+                .with_tool(active.output.tool_name.clone())
+                .with_arg_summary(active.output.arg_summary.clone())
+                .with_arg_full(active.output.arg_full.clone())
+                .with_step_index(step_idx)
+                .with_phase(ToolPhase::Running)
+                .with_duration_us(0)
+                .with_live_output(&active.live_output)
+                .build();
+            (active.phys_idx, active.output.visual_rows(false), output)
+        };
         let new_rows = output.visual_rows(false);
         self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
         self.tools.active[pos].output = output;
@@ -380,9 +411,24 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
-        let output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
+        let is_subagent = result.tool == "spawn_subagent";
+        let mut output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
             .with_step_index(idx)
             .build();
+
+        // Subagent: live output holds the full conversation; detail_full would
+        // otherwise only keep the final summary. Take it before the active block
+        // is removed so the popup always shows the complete conversation.
+        if is_subagent
+            && let Some(active) = self.tools.active.iter_mut().find(|a| a.tool_id == tool_id)
+        {
+            let full_text = active.live_output.take_full_detail();
+            if !full_text.is_empty() {
+                output.detail_total_lines = full_text.lines().count();
+                output.detail_full = Some(full_text);
+            }
+        }
+
         self.finalize_tool_block(&tool_id, output);
 
         if let Some(step) = self.plan.steps.get_mut(idx) {
@@ -789,7 +835,7 @@ mod lifecycle_tests {
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
-        ThinkingChunk, ToolOutputChunk,
+        TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -819,6 +865,62 @@ mod lifecycle_tests {
             String::new(),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn tasks_changed_shows_panel_without_touching_log() {
+        let mut app = make_app();
+        assert!(!app.task_panel.visible);
+        let log_len_before = app.raw_messages.len();
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "Fix auth".into(),
+                status: TaskStatusSnapshot::InProgress,
+                owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
+                ..Default::default()
+            }],
+            reason: TasksChangeReason::Created,
+        });
+        assert!(app.task_panel.session_seen);
+        assert!(app.task_panel.visible);
+        assert!(
+            app.task_panel.expanded,
+            "sticky should default to expanded on first show"
+        );
+        assert_eq!(
+            app.task_panel.snapshot.first().map(|t| t.subject.as_str()),
+            Some("Fix auth"),
+            "sticky snapshot should carry the subject"
+        );
+        assert_eq!(
+            app.raw_messages.len(),
+            log_len_before,
+            "the task_* tool row already covers this in the Log, got:\n{:?}",
+            app.raw_messages
+        );
+    }
+
+    #[test]
+    fn tasks_changed_hides_when_no_open_items() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "done".into(),
+                status: TaskStatusSnapshot::Completed,
+                owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
+                ..Default::default()
+            }],
+            reason: TasksChangeReason::Updated,
+        });
+        assert!(app.task_panel.session_seen);
+        assert!(!app.task_panel.visible);
+        assert!(!app.task_panel.expanded);
     }
 
     fn write_skill(work_dir: &std::path::Path, name: &str) {

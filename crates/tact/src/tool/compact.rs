@@ -15,6 +15,9 @@ pub struct CompactInput {
     name = "compact",
     description = "Summarize earlier conversation so work can continue in a smaller context."
 )]
+/// # Errors
+///
+/// This function always returns `Ok`.
 pub async fn compact(_ctx: ToolContext, input: CompactInput) -> Result<String> {
     let focus = input
         .focus

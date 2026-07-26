@@ -29,8 +29,6 @@ impl<'a> Widget for HelpWidget<'a> {
             Line::from(""),
             // ── Normal Mode ──
             Line::from(Span::styled(msgs.help_normal_header, dim_style)),
-            Line::from(Span::styled(msgs.help_tab, normal_style)),
-            Line::from(Span::styled(msgs.help_e, normal_style)),
             Line::from(Span::styled(msgs.help_jk, normal_style)),
             Line::from(Span::styled(msgs.help_gg, normal_style)),
             Line::from(Span::styled(msgs.help_G, normal_style)),

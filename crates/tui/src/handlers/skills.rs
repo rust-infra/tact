@@ -1,10 +1,12 @@
-//! Slash / palette skill invocation (complete first, Enter to run).
+//! Slash / palette skill invocation.
 //!
-//! Built-ins win over same-named skills. Invoke wraps the body in `<skill>` and
-//! applies Claude Code–style bare `$ARGUMENTS` substitution (or appends
-//! `ARGUMENTS:` when the placeholder is absent and args are present). Indexed
-//! `$ARGUMENTS[N]` is left unchanged. Shared [`submit_user_task`] matches a
-//! normal Insert Enter submit (Planning / log / history).
+//! Built-ins win over same-named skills. From the `/` popup, **Enter** invokes
+//! immediately; **Tab** only fills `/name ` for optional args. Invoke wraps the
+//! body in `<skill>` and applies Claude Code–style bare `$ARGUMENTS`
+//! substitution (or appends `ARGUMENTS:` when the placeholder is absent and
+//! args are present). Indexed `$ARGUMENTS[N]` is left unchanged. Shared
+//! [`submit_user_task`] matches a normal Insert Enter submit (Planning / log /
+//! history).
 
 use tact_protocol::UserCommand;
 

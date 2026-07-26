@@ -26,6 +26,8 @@ struct PreparedTool {
     step_idx: usize,
     permission_label: Option<String>,
     state: PreparedState,
+    /// Pre-mutation task record for `task_update` / `task_get` titles.
+    task_before: Option<crate::task::TaskRecord>,
 }
 
 enum PreparedState {
@@ -174,30 +176,210 @@ fn truncate_tool_arg_summary(s: &str) -> String {
     )
 }
 
+/// Used by unit tests in this module.
+#[cfg(test)]
 fn tool_arg_summary(name: &str, input: &serde_json::Value) -> String {
     let raw = tool_arg_full(name, input);
     truncate_tool_arg_summary(&raw)
 }
 
 fn tool_arg_full(name: &str, input: &serde_json::Value) -> String {
+    fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+        input.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn patch_title(input: &serde_json::Value) -> String {
+        let patch = str_field(input, "patch");
+        let dry = input
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let label = if dry { "dry-run" } else { "patch" };
+        let first_line = patch.lines().next().unwrap_or("").trim().to_string();
+        if first_line.is_empty() {
+            label.to_string()
+        } else if first_line.len() <= 78 {
+            format!("{label}: {first_line}")
+        } else {
+            format!("{label}: {}...", &first_line[..75])
+        }
+    }
+    fn body_preview(input: &serde_json::Value) -> String {
+        let b = str_field(input, "body").trim().to_string();
+        if b.is_empty() {
+            return b;
+        }
+        if b.len() <= 40 {
+            b
+        } else {
+            format!("{}...", &b[..37])
+        }
+    }
+
     match name {
-        "read_file" | "write_file" => input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "run_command" | "bash" | "shell" => input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        "read_file" | "write_file" => str_field(input, "path").to_string(),
+        "run_command" | "bash" | "shell" => str_field(input, "command").to_string(),
+        "sleep" => input
+            .get("ms")
+            .and_then(|v| v.as_u64())
+            .or_else(|| input.get("duration_ms").and_then(|v| v.as_u64()))
+            .map(|ms| ms.to_string())
+            .unwrap_or_default(),
+        "edit_file" => str_field(input, "path").to_string(),
+        "apply_patch" => patch_title(input),
+        "ask_user" => str_field(input, "question").to_string(),
+        "background_run" => str_field(input, "command").to_string(),
+        "check_background" => {
+            let id = str_field(input, "task_id");
+            if id.is_empty() {
+                "all".to_string()
+            } else {
+                id.to_string()
+            }
+        }
+        "cron_create" => {
+            let cron = str_field(input, "cron");
+            let prompt = str_field(input, "prompt");
+            if prompt.is_empty() {
+                cron.to_string()
+            } else {
+                format!("{cron}  {prompt}")
+            }
+        }
+        "cron_delete" => str_field(input, "id").to_string(),
+        "load_skill" => str_field(input, "name").to_string(),
+        "save_memory" => {
+            let mname = str_field(input, "name");
+            let mtype = str_field(input, "memory_type");
+            let mtype = if mtype.is_empty() {
+                str_field(input, "type")
+            } else {
+                mtype
+            };
+            if mname.is_empty() {
+                mtype.to_string()
+            } else if mtype.is_empty() {
+                mname.to_string()
+            } else {
+                format!("{mname} [{mtype}]")
+            }
+        }
+        "compact" => {
+            let focus = str_field(input, "focus");
+            if focus.is_empty() {
+                String::new()
+            } else {
+                format!("focus: {focus}")
+            }
+        }
+        "spawn_subagent" => str_field(input, "prompt").to_string(),
+        "spawn_teammate" => {
+            let name = str_field(input, "name");
+            let role = str_field(input, "role");
+            if role.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} ({role})")
+            }
+        }
+        "send_message" => {
+            let to = str_field(input, "to");
+            let preview = body_preview(input);
+            if preview.is_empty() {
+                format!("→ {to}")
+            } else {
+                format!("→ {to}: {preview}")
+            }
+        }
+        "broadcast" => {
+            let preview = body_preview(input);
+            if preview.is_empty() {
+                "→ all".to_string()
+            } else {
+                format!("→ all: {preview}")
+            }
+        }
+        "read_inbox" => {
+            let owner = str_field(input, "owner");
+            if owner.is_empty() {
+                String::new()
+            } else {
+                format!("{owner}'s inbox")
+            }
+        }
+        "plan_approval" | "shutdown_request" | "shutdown_response" => {
+            let to = str_field(input, "to");
+            let preview = body_preview(input);
+            if preview.is_empty() {
+                format!("→ {to}")
+            } else {
+                format!("→ {to}: {preview}")
+            }
+        }
+        "worktree_create" => str_field(input, "name").to_string(),
+        "worktree_status" => str_field(input, "name").to_string(),
+        "worktree_run" => {
+            let name = str_field(input, "name");
+            let cmd = str_field(input, "command");
+            if cmd.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}: {cmd}")
+            }
+        }
+        "worktree_events" => input
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| format!("last {n}"))
+            .unwrap_or_default(),
         _ => input.to_string(),
     }
 }
 
+fn tool_arg_full_contextual(
+    agent: &Agent,
+    name: &str,
+    input: &serde_json::Value,
+    prefer_after: bool,
+) -> String {
+    if crate::task::is_task_tool(name) {
+        return crate::task::format_task_tool_title_with_manager(
+            &agent.tool_context.task_manager,
+            name,
+            input,
+            prefer_after,
+        );
+    }
+    tool_arg_full(name, input)
+}
+
+fn tool_arg_summary_contextual(
+    agent: &Agent,
+    name: &str,
+    input: &serde_json::Value,
+    prefer_after: bool,
+) -> String {
+    let raw = tool_arg_full_contextual(agent, name, input, prefer_after);
+    // Task titles are meant to be read in full; allow a wider budget.
+    if crate::task::is_task_tool(name) {
+        const TASK_SUMMARY_CHARS: usize = 240;
+        if raw.chars().count() <= TASK_SUMMARY_CHARS {
+            return raw;
+        }
+        return format!(
+            "{}...",
+            raw.chars()
+                .take(TASK_SUMMARY_CHARS.saturating_sub(3))
+                .collect::<String>()
+        );
+    }
+    truncate_tool_arg_summary(&raw)
+}
+
 fn tool_detail_content(name: &str, input: &serde_json::Value, exec_output: &str) -> Option<String> {
     match name {
-        "read_file" | "run_command" | "bash" | "shell" => Some(exec_output.to_string()),
+        "read_file" | "run_command" | "bash" | "shell" | "spawn_subagent" => {
+            Some(exec_output.to_string())
+        }
         "write_file" => input
             .get("content")
             .and_then(|v| v.as_str())
@@ -263,8 +445,8 @@ impl Agent {
             }
 
             let step_idx = self.next_step_idx();
-            let arg_full = tool_arg_full(name, input);
-            let arg_summary = truncate_tool_arg_summary(&arg_full);
+            let arg_full = tool_arg_full_contextual(self, name, input, false);
+            let arg_summary = tool_arg_summary_contextual(self, name, input, false);
             let step_description = if arg_summary.is_empty() {
                 name.clone()
             } else {
@@ -383,6 +565,14 @@ impl Agent {
                 }
             };
 
+            let task_before = match name.as_str() {
+                "task_update" | "task_get" => input
+                    .get("task_id")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|id| self.tool_context.task_manager.get(id).ok()),
+                _ => None,
+            };
+
             prepared.push(PreparedTool {
                 id: tool_use.id,
                 name: tool_use.name,
@@ -390,6 +580,7 @@ impl Agent {
                 step_idx,
                 permission_label,
                 state,
+                task_before,
             });
         }
 
@@ -496,8 +687,48 @@ impl Agent {
                     };
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
-                let arg_summary = tool_arg_summary(&prep_name, &prep_input);
-                let arg_full = tool_arg_full(&prep_name, &prep_input);
+                let task_before = prepared[pi].task_before.clone();
+                let (arg_full, arg_summary) = if crate::task::is_task_tool(&prep_name) {
+                    let after = match prep_name.as_str() {
+                        "task_create" => {
+                            let subject = prep_input
+                                .get("subject")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            self.tool_context.task_manager.list().ok().and_then(|list| {
+                                list.into_iter()
+                                    .filter(|t| t.subject == subject)
+                                    .max_by_key(|t| t.id)
+                            })
+                        }
+                        "task_update" | "task_get" => prep_input
+                            .get("task_id")
+                            .and_then(|v| v.as_u64())
+                            .and_then(|id| self.tool_context.task_manager.get(id).ok()),
+                        _ => None,
+                    };
+                    let full = crate::task::format_task_tool_title(
+                        &prep_name,
+                        &prep_input,
+                        task_before.as_ref(),
+                        after.as_ref(),
+                    );
+                    const TASK_SUMMARY_CHARS: usize = 240;
+                    let summary = if full.chars().count() <= TASK_SUMMARY_CHARS {
+                        full.clone()
+                    } else {
+                        format!(
+                            "{}...",
+                            full.chars()
+                                .take(TASK_SUMMARY_CHARS.saturating_sub(3))
+                                .collect::<String>()
+                        )
+                    };
+                    (full, summary)
+                } else {
+                    let full = tool_arg_full(&prep_name, &prep_input);
+                    (full.clone(), truncate_tool_arg_summary(&full))
+                };
                 let detail =
                     step_result_detail(&prep_name, &prep_input, &exec_output, &final_status);
                 let succeeded = matches!(final_status, StepStatus::Success);
@@ -597,6 +828,7 @@ impl Agent {
                 step_idx,
                 permission_label: None,
                 state: PreparedState::Resolved(TOOL_CANCELLED_MSG.to_string()),
+                task_before: None,
             });
         }
     }

@@ -6,7 +6,6 @@ use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
 use super::{
-    plan::render_plan_panel,
     render_status_bar,
     test_harness::{buffer_text, make_app, render_app_text},
 };
@@ -16,7 +15,6 @@ use crate::{
 };
 
 fn seed_executing_read_step(app: &mut App) {
-    app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
         "read config",
         "read_file",
@@ -44,16 +42,15 @@ fn full_frame_idle_renders_status_and_input_placeholder() {
 }
 
 #[test]
-fn full_frame_executing_renders_plan_and_tool() {
+fn full_frame_executing_renders_step_tracking_and_tool() {
     let mut app = make_app();
     seed_executing_read_step(&mut app);
 
+    assert_eq!(app.plan.steps.len(), 1, "step should be tracked internally");
+    assert_eq!(app.plan.steps[0].description, "read config");
+
     let text = render_app_text(&mut app, 120, 30);
 
-    assert!(
-        text.contains("Execution Plan") || text.contains("read config"),
-        "executing frame should show plan panel, got:\n{text}"
-    );
     assert!(
         text.contains("read_file") || text.contains("config.toml"),
         "executing frame should show active tool, got:\n{text}"
@@ -61,16 +58,15 @@ fn full_frame_executing_renders_plan_and_tool() {
 }
 
 #[test]
-fn full_frame_log_only_without_plan_panel() {
+fn full_frame_log_only_layout() {
     let mut app = make_app();
-    app.plan.visible = false;
     app.handle_agent_update(AgentUpdate::StreamChunk("Log-only content.".into()));
 
     let text = render_app_text(&mut app, 100, 24);
 
     assert!(
         !text.contains("Execution Plan"),
-        "log-only mode should not render plan title, got:\n{text}"
+        "there is no plan panel to render, got:\n{text}"
     );
     assert!(
         text.contains("Log-only content"),
@@ -81,7 +77,6 @@ fn full_frame_log_only_without_plan_panel() {
 #[test]
 fn full_frame_failed_tool_shows_in_log() {
     let mut app = make_app();
-    app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
         "read missing",
         "read_file",
@@ -314,9 +309,8 @@ fn full_frame_history_panel_lists_tasks() {
 }
 
 #[test]
-fn plan_panel_direct_render_shows_steps() {
+fn plan_step_added_tracks_step_description() {
     let mut app = make_app();
-    app.plan.visible = true;
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
         "write tests",
         "write_file",
@@ -324,17 +318,8 @@ fn plan_panel_direct_render_shows_steps() {
         HashMap::from([("path".to_string(), "test.rs".to_string())]),
     )));
 
-    let backend = TestBackend::new(60, 10);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| render_plan_panel(frame, Rect::new(0, 0, 60, 10), &mut app))
-        .expect("draw");
-
-    let text = buffer_text(terminal.backend().buffer());
-    assert!(
-        text.contains("write tests") || text.contains("write_file"),
-        "plan panel should list step, got:\n{text}"
-    );
+    assert_eq!(app.plan.steps.len(), 1);
+    assert_eq!(app.plan.steps[0].description, "write tests");
 }
 
 #[test]
@@ -358,42 +343,24 @@ fn status_bar_executing_shows_progress_hint() {
 }
 
 #[test]
-fn full_frame_skills_command_renders_table_with_separator() {
+fn full_frame_skills_command_renders_list_with_separator() {
     let mut app = make_app();
-    app.plan.visible = false;
-    app.skills_description =
-        "- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能".to_string();
+    app.skills_data = vec![
+        crate::widgets::state::SkillEntry {
+            name: "code-reviewer".into(),
+            description: "代码审查专家".into(),
+            body: String::new(),
+        },
+        crate::widgets::state::SkillEntry {
+            name: "demo-test".into(),
+            description: "测试 skill 加载功能".into(),
+            body: String::new(),
+        },
+    ];
 
     execute_palette_command(&mut app, "skills");
     execute_palette_command(&mut app, "skills");
 
-    let text = render_app_text(&mut app, 100, 28);
-    // TestBackend emits a pad cell after each wide CJK glyph — strip spaces for
-    // content checks that include Chinese.
-    let compact = text.replace(' ', "");
-    let title_count = text.matches("Available skills").count();
-    assert!(
-        title_count >= 2,
-        "two /skills invocations should both render, got:\n{text}"
-    );
-    assert!(
-        text.contains("Skill") && text.contains("Description"),
-        "skills table header should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains("code-reviewer") && compact.contains("代码审查专家"),
-        "skills table rows should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains("demo-test") && compact.contains("测试skill加载功能"),
-        "second skill row should appear, got:\n{text}"
-    );
-    assert!(
-        text.contains('|') && text.contains("---"),
-        "skills output should look like a table, got:\n{text}"
-    );
-
-    // Consecutive blocks must not sit flush: blank log row between titles.
     let title_idxs: Vec<_> = app
         .raw_messages
         .iter()
@@ -409,5 +376,34 @@ fn full_frame_skills_command_renders_table_with_separator() {
     assert!(
         between.iter().any(|m| m.is_empty()),
         "expected blank separator between skills blocks, messages: {between:?}"
+    );
+    assert!(
+        app.raw_messages.iter().any(|m| m.contains("code-reviewer")),
+        "skills content missing code-reviewer: {:?}",
+        app.raw_messages
+    );
+    assert!(
+        app.raw_messages.iter().any(|m| m.contains("demo-test")),
+        "skills content missing demo-test: {:?}",
+        app.raw_messages
+    );
+    assert!(
+        app.raw_messages
+            .iter()
+            .all(|m| !m.contains("| Skill |") && !m.contains("|-------|")),
+        "skills should not emit a pipe table: {:?}",
+        app.raw_messages
+    );
+
+    // Tall frame so both blocks are visible; CJK glyphs pad in TestBackend.
+    let text = render_app_text(&mut app, 100, 48);
+    let compact = text.replace(' ', "");
+    assert!(
+        text.contains("Available skills"),
+        "title missing on screen:\n{text}"
+    );
+    assert!(
+        compact.contains("代码审查专家") || text.contains("code-reviewer"),
+        "skills should appear on screen, got:\n{text}"
     );
 }

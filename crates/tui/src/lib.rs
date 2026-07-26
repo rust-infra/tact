@@ -62,6 +62,30 @@ pub(crate) fn should_repaint(app: &App) -> bool {
     app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
 }
 
+/// Handle event-loop poll timeout without spinning the CPU.
+///
+/// - Active statuses: dirty for spinner (caller already uses ~150ms poll).
+/// - Idle: dirty only when bottom-bar `Up` whole-second changes (≤1 redraw/s).
+/// - Done: no-op here — `should_repaint` already force-draws for the 2s highlight.
+pub(crate) fn on_poll_timeout(app: &mut App) {
+    match app.status {
+        Status::Idle => {
+            let secs = chrono::Local::now()
+                .signed_duration_since(app.process_start_time)
+                .num_seconds()
+                .max(0);
+            if app.last_uptime_tick_secs != Some(secs) {
+                app.last_uptime_tick_secs = Some(secs);
+                app.dirty = true;
+            }
+        }
+        Status::Done => {}
+        _ => {
+            app.dirty = true;
+        }
+    }
+}
+
 /// Configuration for launching the TUI.
 pub struct TuiConfig {
     pub agent_rx: UnboundedReceiver<AgentUpdate>,
@@ -230,11 +254,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     app.log_scroll.state =
                         ScrollbarState::new(app.messages.len().saturating_sub(1));
                 }
-                let main_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(log_area);
-                app.log_scroll.height = main_chunks[1].height.saturating_sub(2);
+                app.log_scroll.height = log_area.height.saturating_sub(2);
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -314,13 +334,14 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 }
                                 _ => {}
                             }
+                        } else if app.slash_command.active
+                            && matches!(app.input_mode, InputMode::Insert)
+                        {
+                            // Slash popup must stay dismissible (Esc) even if a
+                            // thinking/diff/code overlay is also open.
+                            handle_insert_mode(&mut app, key, &user_cmd_tx);
                         } else if handle_overlay_key(&mut app, key) {
                             // Overlay popup consumed the key.
-                        } else if key.code == KeyCode::Tab {
-                            app.focused_panel = match app.focused_panel {
-                                crate::widgets::state::FocusedPanel::Log => crate::widgets::state::FocusedPanel::Plan,
-                                crate::widgets::state::FocusedPanel::Plan => crate::widgets::state::FocusedPanel::Log,
-                            };
                         } else if (app.show_help || app.show_history) && key.code == KeyCode::Esc {
                             app.show_help = false;
                             app.show_history = false;
@@ -372,10 +393,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(idle_ms)) => {
-                // Wake from idle timeout: force repaint to advance spinner animation
-                if !matches!(app.status, Status::Idle) {
-                    app.dirty = true;
-                }
+                // Low-impact wake: idle ticks Up at most once/sec; active keeps spinner.
+                on_poll_timeout(&mut app);
             }
         }
 
@@ -398,4 +417,58 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     terminal.show_cursor()?;
     println!("{}", exit_msg);
     Ok(())
+}
+
+#[cfg(test)]
+mod poll_timeout_tests {
+    use super::{on_poll_timeout, should_repaint};
+    use crate::render::test_harness::make_app;
+    use crate::widgets::state::Status;
+
+    #[test]
+    fn poll_timeout_marks_idle_dirty_when_uptime_second_changes() {
+        let mut app = make_app();
+        app.status = Status::Idle;
+        app.dirty = false;
+        app.last_uptime_tick_secs = None;
+        on_poll_timeout(&mut app);
+        assert!(app.dirty, "first idle tick should dirty for Up");
+        assert!(should_repaint(&app));
+        assert!(app.last_uptime_tick_secs.is_some());
+    }
+
+    #[test]
+    fn poll_timeout_skips_idle_redraw_within_same_uptime_second() {
+        let mut app = make_app();
+        app.status = Status::Idle;
+        let secs = chrono::Local::now()
+            .signed_duration_since(app.process_start_time)
+            .num_seconds()
+            .max(0);
+        app.last_uptime_tick_secs = Some(secs);
+        app.dirty = false;
+        on_poll_timeout(&mut app);
+        assert!(
+            !app.dirty,
+            "same second must not dirty — avoids idle CPU churn"
+        );
+    }
+
+    #[test]
+    fn poll_timeout_still_dirties_when_executing_for_spinner() {
+        let mut app = make_app();
+        app.status = Status::Planning;
+        app.dirty = false;
+        on_poll_timeout(&mut app);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn poll_timeout_does_not_dirty_done_status() {
+        let mut app = make_app();
+        app.status = Status::Done;
+        app.dirty = false;
+        on_poll_timeout(&mut app);
+        assert!(!app.dirty, "Done already force-repaints via should_repaint");
+    }
 }

@@ -3,9 +3,11 @@
 //! Skills are markdown files (`SKILL.md`) nested in subdirectories under one or
 //! more skill roots. Discovery order (later wins on name clash):
 //!
-//! - legacy: `<workdir>/skills/`
-//! - user:   `~/.tact/skills/`
-//! - project: `<workdir>/.claude/skills/`
+//! - project-local: `<workdir>/.tact/skills/`
+//! - user:          `~/.tact/skills/`
+//! - global:        `~/.agents/skills/`
+//! - project:       `<workdir>/.claude/skills/`
+//! - config:        `[agent].skill_dirs` (in listed order)
 //!
 //! Each file has optional YAML frontmatter for `name` and `description`
 //! (Agent Skills–compatible). Bodies are unrestricted; TUI slash invoke may
@@ -63,10 +65,23 @@ impl std::fmt::Display for SkillDocument {
 /// Shared registry used by the agent tools and (in interactive mode) the TUI.
 pub type SharedSkillRegistry = Arc<Mutex<SkillRegistry>>;
 
-/// Build a registry for `workdir` by scanning Claude-compatible skill roots
-/// (plus legacy `<workdir>/skills` for backward compatibility).
+/// Build a registry for `workdir` by scanning built-in skill roots, then any
+/// `[agent].skill_dirs` from installed process config (when present).
 pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
-    let dirs = TactPath::new(workdir.as_ref()).skill_search_dirs();
+    let workdir = workdir.as_ref();
+    let mut dirs = TactPath::new(workdir).skill_search_dirs();
+    if let Some(cfg) = crate::config::try_settings() {
+        for raw in &cfg.agent.skill_dirs {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path = resolve_skill_dir(trimmed, workdir);
+            if !dirs.iter().any(|d| d == &path) {
+                dirs.push(path);
+            }
+        }
+    }
     let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
     if let Some(plugin_home) = PluginHome::from_environment() {
@@ -74,6 +89,26 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
         registry.load_plugin_skills(&plugin_roots)?;
     }
     Ok(registry)
+}
+
+/// Resolve a configured skill root: `~` / `~/…` via `$HOME`, else relative to `workdir`.
+fn resolve_skill_dir(raw: &str, workdir: &Path) -> PathBuf {
+    if raw == "~" || raw.starts_with("~/") {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return PathBuf::from(raw);
+        };
+        return if raw == "~" {
+            home
+        } else {
+            home.join(&raw[2..])
+        };
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        workdir.join(path)
+    }
 }
 
 /// Load skills into a mutex-backed registry shared across agent + TUI.
@@ -102,7 +137,7 @@ impl SkillRegistry {
     pub fn load_skills(&mut self) -> Result<()> {
         self.skills.clear();
 
-        // Later directories win on name clash: legacy → user → project.
+        // Later directories in `skill_dirs` win on name clash.
         let dirs = self.skill_dirs.clone();
         for dir in dirs {
             self.load_skills_from_dir(&dir)?;
@@ -297,6 +332,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::consts::TactPath;
     use crate::plugin::PluginSkillRoot;
 
     #[test]
@@ -417,19 +453,34 @@ mod tests {
     }
 
     #[test]
-    fn loads_legacy_workdir_skills_dir() {
+    fn loads_from_workdir_tact_skills_dir() {
         let dir = tempdir().unwrap();
-        let legacy = dir.path().join("skills");
-        write_skill(&legacy, "old", "Legacy skill", "legacy body");
+        let tact_skills = dir.path().join(".tact/skills");
+        write_skill(&tact_skills, "local", "Local skill", "local body");
 
         let registry = get_skill_registry(dir.path()).unwrap();
-        assert!(registry.skills().contains_key("old"));
+        assert!(registry.skills().contains_key("local"));
+        assert!(registry.load_full_text("local").contains("local body"));
     }
 
     #[test]
-    fn project_skill_overrides_legacy_same_name() {
+    fn bare_workdir_skills_dir_is_not_scanned() {
         let dir = tempdir().unwrap();
-        write_skill(&dir.path().join("skills"), "style", "legacy", "LEGACY");
+        write_skill(
+            &dir.path().join("skills"),
+            "old",
+            "Legacy skill",
+            "legacy body",
+        );
+
+        let registry = get_skill_registry(dir.path()).unwrap();
+        assert!(!registry.skills().contains_key("old"));
+    }
+
+    #[test]
+    fn project_skill_overrides_tact_skills_same_name() {
+        let dir = tempdir().unwrap();
+        write_skill(&dir.path().join(".tact/skills"), "style", "tact", "TACT");
         write_skill(
             &dir.path().join(".claude/skills"),
             "style",
@@ -439,7 +490,45 @@ mod tests {
 
         let registry = get_skill_registry(dir.path()).unwrap();
         assert!(registry.load_full_text("style").contains("PROJECT"));
-        assert!(!registry.load_full_text("style").contains("LEGACY"));
+        assert!(!registry.load_full_text("style").contains("TACT"));
+    }
+
+    #[test]
+    fn resolve_skill_dir_joins_relative_to_workdir() {
+        let workdir = PathBuf::from("/proj");
+        assert_eq!(
+            resolve_skill_dir("./vendor/skills", &workdir),
+            PathBuf::from("/proj/vendor/skills")
+        );
+        assert_eq!(
+            resolve_skill_dir("/abs/skills", &workdir),
+            PathBuf::from("/abs/skills")
+        );
+    }
+
+    #[test]
+    fn resolve_skill_dir_expands_home_prefix() {
+        let workdir = PathBuf::from("/proj");
+        let home = std::env::var_os("HOME").expect("HOME");
+        assert_eq!(
+            resolve_skill_dir("~/shared-skills", &workdir),
+            PathBuf::from(home).join("shared-skills")
+        );
+    }
+
+    #[test]
+    fn configured_extra_dir_overrides_earlier_roots() {
+        let dir = tempdir().unwrap();
+        write_skill(&dir.path().join(".tact/skills"), "shared", "base", "BASE");
+        let extra = dir.path().join("extra-skills");
+        write_skill(&extra, "shared", "extra", "EXTRA");
+
+        let mut dirs = TactPath::new(dir.path()).skill_search_dirs();
+        dirs.push(extra);
+        let mut registry = SkillRegistry::new(dirs);
+        registry.load_skills().unwrap();
+        assert!(registry.load_full_text("shared").contains("EXTRA"));
+        assert!(!registry.load_full_text("shared").contains("BASE"));
     }
 
     #[test]

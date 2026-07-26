@@ -140,7 +140,7 @@ The model is free-form by design: `from` and `to` are plain strings supplied by 
 - the recipient exists (sending to an unknown name silently creates `inbox/{name}.json`),
 - a teammate ever reads its inbox.
 
-The intended pattern is that a coordinating agent uses the roster as shared state and inboxes as durable mailboxes for whatever worker abstraction eventually consumes them ([sub-agents](./07_chapter_tool.md) run via the `task` tool are the closest existing analogue, but they are not wired to inboxes today).
+The intended pattern is that a coordinating agent uses the roster as shared state and inboxes as durable mailboxes for whatever worker abstraction eventually consumes them ([sub-agents](./07_chapter_tool.md) run via the `spawn_subagent` tool are the closest existing analogue, but they are not wired to inboxes today).
 
 ---
 
@@ -175,6 +175,6 @@ The intended pattern is that a coordinating agent uses the roster as shared stat
 
 - [Store and Persistence](./01_chapter_store.md) — `Store` / `CollectionStore` primitives and `team/` paths
 - [Tool System](./07_chapter_tool.md) — `ToolContext` plumbing and sub-agent toolsets
-- [Subagents](./12_chapter_subagent.md) — `task` runs a real nested agent; teammates do not
+- [Subagents](./12_chapter_subagent.md) — `spawn_subagent` runs a real nested agent; teammates do not
 - [Worktree Lanes](./15_chapter_worktree.md) — the isolation primitive a real multi-agent team would pair with
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 sub-agents, team, tasks, worktrees

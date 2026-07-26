@@ -15,6 +15,10 @@ pub struct BackgroundRunInput {
     name = "background_run",
     description = "Run a shell command in the background."
 )]
+/// # Errors
+///
+/// Returns an error if the background manager fails to run the command
+/// (e.g., invalid command or internal error).
 pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
     ctx.background_manager.run(input.command, &ctx.work_dir)
 }
@@ -29,6 +33,10 @@ pub struct CheckBackgroundInput {
     name = "check_background",
     description = "Check background task status."
 )]
+/// # Errors
+///
+/// Returns an error if the provided task ID does not exist or the background
+/// manager encounters an internal error.
 pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> Result<String> {
     ctx.background_manager.check(input.task_id.as_deref())
 }

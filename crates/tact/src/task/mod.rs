@@ -20,6 +20,13 @@ use strum_macros::{Display, EnumProperty as EnumPropertyDerive, EnumString};
 
 use crate::store::{CollectionStore, Store, StoreRoot};
 
+pub use display::{
+    format_id_list, format_id_transition, format_task_tool_title,
+    format_task_tool_title_with_manager, is_task_tool,
+};
+
+mod display;
+
 /// Task lifecycle states.
 ///
 /// Each state has a visual marker for LLM-friendly list rendering
@@ -69,6 +76,12 @@ pub struct TaskRecord {
     pub blocks: Vec<u64>,
     #[serde(default)]
     pub owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
 }
 
 impl TaskRecord {
@@ -82,6 +95,14 @@ impl TaskRecord {
             blocked_by: Vec::new(),
             blocks: Vec::new(),
             owner: String::new(),
+            created_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64,
+            ),
+            started_at: None,
+            completed_at: None,
         }
     }
 }
@@ -153,7 +174,16 @@ impl TaskManager {
         }
 
         if let Some(status) = update.status {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
             task.status = status;
+            if status == TaskStatus::InProgress {
+                task.started_at = Some(now);
+            } else if status == TaskStatus::Completed {
+                task.completed_at = Some(now);
+            }
             if status == TaskStatus::Completed {
                 self.clear_dependency(task_id)?;
             }
@@ -313,6 +343,45 @@ fn merge_unique(target: &mut Vec<u64>, mut additions: Vec<u64>) {
     target.dedup();
 }
 
+/// Map store records to TUI snapshots, dropping soft-deleted tasks.
+pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapshot> {
+    tasks
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Deleted)
+        .map(|t| tact_protocol::TaskSnapshot {
+            id: t.id,
+            subject: t.subject,
+            status: match t.status {
+                TaskStatus::Pending => tact_protocol::TaskStatusSnapshot::Pending,
+                TaskStatus::InProgress => tact_protocol::TaskStatusSnapshot::InProgress,
+                TaskStatus::Completed => tact_protocol::TaskStatusSnapshot::Completed,
+                TaskStatus::Deleted => unreachable!("filtered above"),
+            },
+            owner: t.owner,
+            blocks: t.blocks,
+            blocked_by: t.blocked_by,
+            created_at: t.created_at,
+            started_at: t.started_at,
+            completed_at: t.completed_at,
+        })
+        .collect()
+}
+
+/// Notify the TUI that the persistent task list changed (no-op without `ui_tx`).
+pub fn emit_tasks_changed(
+    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+    tasks: Vec<TaskRecord>,
+    reason: tact_protocol::TasksChangeReason,
+) {
+    let Some(tx) = ui_tx else {
+        return;
+    };
+    let _ = tx.send(tact_protocol::AgentUpdate::TasksChanged {
+        tasks: to_ui_snapshots(tasks),
+        reason,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +493,9 @@ mod tests {
             blocked_by: vec![2],
             blocks: vec![],
             owner: "bob".to_string(),
+            created_at: None,
+            started_at: None,
+            completed_at: None,
         };
         let rendered = render_task_list(vec![task]);
         assert!(rendered.contains("[>] #1: Ship"));
@@ -438,5 +510,21 @@ mod tests {
         assert!(json.contains("\"subject\": \"Test\""));
         assert!(json.contains("\"description\": \"desc\""));
         assert!(json.contains("\"status\": \"pending\""));
+    }
+
+    #[test]
+    fn to_ui_snapshots_filters_deleted_and_maps_status() {
+        let pending = TaskRecord::new(1, "a".into(), None);
+        let mut active = TaskRecord::new(2, "b".into(), None);
+        active.status = TaskStatus::InProgress;
+        let mut gone = TaskRecord::new(3, "c".into(), None);
+        gone.status = TaskStatus::Deleted;
+        let snaps = to_ui_snapshots(vec![pending, active, gone]);
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].id, 1);
+        assert_eq!(
+            snaps[1].status,
+            tact_protocol::TaskStatusSnapshot::InProgress
+        );
     }
 }

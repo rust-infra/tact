@@ -56,7 +56,6 @@ impl OpenAiMultiModelAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for OpenAiMultiModelAdapter {
     async fn stream_message(
         &self,

@@ -7,9 +7,9 @@ license.workspace = true
 [dependencies]
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
+thiserror = "2"
 async-openai = { workspace = true }
 async-openai-responses = { workspace = true }
-async-trait = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
 eventsource-stream = { workspace = true }

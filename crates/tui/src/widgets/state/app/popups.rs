@@ -35,7 +35,9 @@ impl App {
         self.thinking.popup.is_some()
             || self.tools.popup.is_some()
             || self.code_popup.is_some()
+            || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
+            || self.subagent_popup.is_some()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -45,7 +47,11 @@ impl App {
             Some(&mut p.scroll)
         } else if let Some(p) = self.code_popup.as_mut() {
             Some(&mut p.scroll)
+        } else if let Some(p) = self.task_dag_popup.as_mut() {
+            Some(&mut p.scroll)
         } else if let Some(p) = self.system_prompt_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.subagent_popup.as_mut() {
             Some(&mut p.scroll)
         } else {
             None
@@ -71,8 +77,16 @@ impl App {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
+        } else if self.task_dag_popup.is_some() {
+            self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
             self.system_prompt_popup = None;
+        } else if self.subagent_popup.is_some() {
+            self.subagent_popup = None;
+            self.mouse.subagent_popup_area = Rect::default();
+            self.mouse.popup_text_body_area = Rect::default();
+            self.mouse.popup_text_hit_rows.clear();
+            self.mouse.popup_text_drag_origin = None;
         }
     }
 
@@ -85,6 +99,10 @@ impl App {
             Some(self.mouse.diff_popup_area)
         } else if self.code_popup.is_some() {
             Some(self.mouse.code_popup_area)
+        } else if self.task_dag_popup.is_some() {
+            Some(self.mouse.task_dag_popup_area)
+        } else if self.subagent_popup.is_some() {
+            Some(self.mouse.subagent_popup_area)
         } else {
             None
         };
@@ -104,7 +122,94 @@ impl App {
             self.copy_diff_popup();
         } else if self.code_popup.is_some() {
             self.copy_code_popup();
+        } else if self.subagent_popup.is_some() {
+            self.copy_subagent_popup();
+        } else if self.task_dag_popup.is_some() {
+            let src = self
+                .task_dag_popup
+                .as_ref()
+                .map(|p| p.mermaid_source.clone())
+                .unwrap_or_default();
+            self.copy_text(&src);
         }
+    }
+
+    pub(crate) fn open_task_dag_popup(&mut self) {
+        let (mermaid_source, lines) = render_task_dag_lines(&self.task_panel.snapshot);
+        self.task_dag_popup = Some(TaskDagPopup {
+            lines,
+            scroll: 0,
+            mermaid_source,
+        });
+    }
+
+    /// Open a subagent live-output / markdown-summary popup for a tool card.
+    pub(crate) fn open_subagent_popup(&mut self, phys_idx: usize) {
+        let output = match self.tool_output_at(phys_idx) {
+            Some(o) if o.tool_name == "spawn_subagent" => o.clone(),
+            _ => return,
+        };
+        let tool_id = self
+            .tools
+            .active
+            .iter()
+            .find(|a| a.phys_idx == phys_idx)
+            .map(|a| a.tool_id.clone())
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| b.tool_id.clone())
+            });
+        let Some(tool_id) = tool_id else {
+            return;
+        };
+        self.subagent_popup = Some(crate::widgets::state::SubagentPopup {
+            title: output.title_raw.clone(),
+            scroll: 0,
+            tool_id,
+            cached_markdown: None,
+            selection: None,
+            layout_cache: None,
+        });
+    }
+
+    /// Copy the visible subagent popup content to clipboard.
+    pub(crate) fn copy_subagent_popup(&mut self) {
+        let Some(popup) = self.subagent_popup.as_ref() else {
+            return;
+        };
+        // Prefer the text the popup actually laid out (markdown-rendered when
+        // completed) so mouse-selection byte offsets stay valid.
+        let full_text = popup
+            .layout_cache
+            .as_ref()
+            .map(|c| c.raw_text.clone())
+            .or_else(|| {
+                self.tools
+                    .active
+                    .iter()
+                    .find(|a| a.tool_id == popup.tool_id)
+                    .map(|a| a.live_output.full_detail_text())
+            })
+            .or_else(|| {
+                self.tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.tool_id == popup.tool_id)
+                    .and_then(|b| b.output.detail_full.clone())
+            })
+            .unwrap_or_default();
+        if full_text.is_empty() {
+            return;
+        }
+        let text = popup
+            .selection
+            .and_then(|s| s.normalized_non_empty(&full_text))
+            .map(|range| full_text[range].to_string())
+            .unwrap_or(full_text);
+        self.copy_text(&text);
     }
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.
@@ -179,11 +284,21 @@ impl App {
         self.raw_message_types.remove(idx);
     }
 
-    /// Sentinel row — rendered as a full-width dashed rule at draw time.
+    /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
     pub(crate) fn add_task_end_separator(&mut self) {
+        let secs = if let Some(start) = self.task_start_time.take() {
+            let s = chrono::Local::now()
+                .signed_duration_since(start)
+                .num_seconds()
+                .max(0);
+            self.last_prompt_elapsed_secs = Some(s);
+            s
+        } else {
+            self.last_prompt_elapsed_secs.unwrap_or(0)
+        };
         self.append_msg(
             Line::default(),
-            crate::render::cells::separator::TASK_END_SEPARATOR.to_string(),
+            crate::render::cells::separator::task_end_separator_raw(secs),
             RawMessageType::LLM,
         );
     }

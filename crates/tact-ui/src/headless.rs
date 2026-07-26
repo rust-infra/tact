@@ -52,7 +52,7 @@ pub async fn run_headless(
     };
 
     session_store
-        .ensure_session_row(&session_id, &root_dir)
+        .ensure_session_row(&session_id, &root_dir, "")
         .await?;
     let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
     lock_registry.register(session_lock.clone()).await;
@@ -106,6 +106,9 @@ async fn run_headless_locked(
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
+        bash_nice: tact::config::settings().tools.bash_nice,
+        session_id: None,
+        session_store: None,
     };
 
     let mut agent = Agent::new(

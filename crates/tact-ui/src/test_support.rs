@@ -42,6 +42,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             notifications_enabled: false,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
+            skill_dirs: Vec::new(),
             instruction_sources: tact::config::InstructionSources::default(),
         },
         ui: tact::config::UiSettings {
@@ -54,6 +55,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+            bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
         },
         permission_mode: None,
         tokio_console: false,
@@ -185,7 +187,7 @@ pub async fn build_test_agent_with_session(
     let session_id = "integration-session".to_string();
     let root_dir = work_dir.display().to_string();
     session_store
-        .ensure_session_row(&session_id, &root_dir)
+        .ensure_session_row(&session_id, &root_dir, "")
         .await
         .expect("ensure session row");
 

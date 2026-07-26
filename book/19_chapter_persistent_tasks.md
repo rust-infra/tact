@@ -6,7 +6,7 @@ This chapter covers Tact's **durable work-item tracker**: the `task/` module, JS
 This is **not** the same as:
 
 - [Ch 11 Tool Scheduling](./11_chapter_task.md) — parallel **tool** wave execution in one LLM turn
-- [Ch 12 Subagents](./12_chapter_subagent.md) — the `task` **tool** that spawns a nested agent
+- [Ch 12 Subagents](./12_chapter_subagent.md) — the `spawn_subagent` **tool** that spawns a nested agent
 
 Implementation: `crates/tact/src/task/mod.rs`, tool wrappers in `crates/tact/src/tool/task.rs`.
 
@@ -125,7 +125,7 @@ pub task_manager: SharedTaskManager,
 
 Registered in main `toolset()` only — **not** in `subagent_toolset()`.
 
-Scheduling: treated as **independent** in `crates/tact/src/agent/tool_schedule.rs` (safe to parallelize with other non-conflicting reads/writes).
+Scheduling: all four tools share a synthetic write scope (`__tact_tasks__`) in `crates/tact/src/agent/tool_schedule.rs`, so they **serialize with each other** in one LLM turn (no parallel `task_update` races) while still allowing overlap with unrelated file reads.
 
 ---
 
@@ -137,6 +137,8 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 ```
 
 Tools return these strings directly as tool results (JSON for create/get/update, text list for `task_list`).
+
+Successful `task_create` / `task_update` also emit [`AgentUpdate::TasksChanged`](./25_chapter_protocol.md) (filtered non-deleted snapshots) so the TUI can refresh a sticky progress strip under the Log and append a Log detail card. `task_get` / `task_list` do not emit. Spec: `docs/superpowers/specs/2026-07-24-task-progress-panel-design.md`.
 
 ---
 
@@ -168,6 +170,6 @@ Tools return these strings directly as tool results (JSON for create/get/update,
 
 - [Store and Persistence](./01_chapter_store.md) — `CollectionStore` / `Store` backing
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — unrelated parallel tool waves
-- [Subagents](./12_chapter_subagent.md) — `task` tool name collision
+- [Subagents](./12_chapter_subagent.md) — `spawn_subagent` runs a nested agent; finishing it does **not** complete a task record
 - [Team Coordination](./14_chapter_team.md) — optional owner naming convention
 - [Worktree Lanes](./15_chapter_worktree.md) — optional `task_id` link on worktree create

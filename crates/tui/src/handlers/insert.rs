@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::{
     cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
     line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-    skills::{is_skill_command, skill_name_set, submit_user_task},
+    skills::{skill_name_set, submit_user_task},
     start_of_line,
 };
 use crate::widgets::state::{App, InputMode, Status};
@@ -30,9 +30,12 @@ fn apply_selected_slash_command(app: &mut App) -> bool {
     false
 }
 
-/// Enter on an open slash popup:
-/// - **skills** → autocomplete to `/name ` only (user may add args, then Enter to run)
-/// - **built-in commands** → execute immediately
+/// Enter on an open slash popup runs the highlighted item.
+///
+/// - **Tab** only fills `/{name} ` (see [`apply_selected_slash_command`]).
+/// - **Enter** executes built-ins and skills immediately.
+/// - Arg-taking built-ins (e.g. `/plugin`) still only autocomplete so the user
+///   can type the subcommand.
 fn execute_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
@@ -47,13 +50,16 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
         return false;
     };
-    // Skills autocomplete; built-ins execute. Built-in names never appear as skills
-    // in the palette list, but keep the guard if data drifts. Arg-taking built-ins
-    // (e.g. /plugin list) also autocomplete so the user can type the subcommand.
-    if (is_skill_command(app, cmd) && !super::is_builtin_palette_command(cmd))
-        || super::command_needs_args(cmd)
-    {
+    if super::command_needs_args(cmd) {
         return apply_selected_slash_command(app);
+    }
+    // Normalize the token under the cursor so skill arg parsing sees `/{cmd}`.
+    let start = app.slash_command.start_pos;
+    let end = app.input_cursor.min(app.input.len());
+    if start <= end {
+        let replacement = format!("/{cmd}");
+        app.input.replace_range(start..end, &replacement);
+        app.input_cursor = start + replacement.len();
     }
     app.slash_command.active = false;
     let outcome = execute_palette_command(app, cmd);
@@ -835,8 +841,40 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_enter_on_skill_only_autocompletes() {
+    fn slash_popup_tab_only_autocompletes_skill() {
         use crate::widgets::state::SkillEntry;
+
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "Demo skill".into(),
+            body: "Follow the checklist.".into(),
+        }];
+        app.input = "/dem".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "/demo ");
+        assert!(!app.slash_command.active);
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Tab must only autocomplete, not SubmitTask"
+        );
+    }
+
+    #[test]
+    fn slash_popup_enter_on_skill_runs_immediately() {
+        use crate::widgets::state::SkillEntry;
+        use tact_protocol::UserCommand;
 
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
@@ -857,12 +895,21 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert_eq!(app.input, "/demo ");
+        assert!(app.input.is_empty(), "skill invoke should clear input");
         assert!(!app.slash_command.active);
-        assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "popup Enter on skill must not SubmitTask"
-        );
+        let cmd = user_cmd_rx
+            .try_recv()
+            .expect("popup Enter on skill should SubmitTask");
+        match cmd {
+            UserCommand::SubmitTask(task) => {
+                assert!(
+                    task.contains("<skill name=\"demo\">"),
+                    "expected skill wrapper, got: {task}"
+                );
+                assert!(task.contains("Follow the checklist."));
+            }
+            other => panic!("expected SubmitTask, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1006,5 +1053,24 @@ mod tests {
                 .any(|m| m.contains("/demo fix auth")),
             "user bubble should show slash + args"
         );
+    }
+
+    #[test]
+    fn slash_popup_esc_closes_without_clearing_input() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "/he".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(!app.slash_command.active, "Esc should dismiss slash popup");
+        assert_eq!(app.input, "/he", "Esc should keep typed input");
     }
 }

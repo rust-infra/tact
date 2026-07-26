@@ -14,6 +14,7 @@ const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
 const ERROR_PREVIEW_LINES: usize = 5;
 const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
+const SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES: usize = 8;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -43,6 +44,9 @@ pub enum ToolDisplayKind {
     FileRead,
     FileEdit,
     Command,
+    Task,
+    Subagent,
+    Sleep,
     Generic,
 }
 
@@ -52,16 +56,45 @@ fn display_kind(tool: &str) -> ToolDisplayKind {
         "read_file" => ToolDisplayKind::FileRead,
         "edit_file" => ToolDisplayKind::FileEdit,
         "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
+        "task_create" | "task_update" | "task_get" | "task_list" => ToolDisplayKind::Task,
+        "spawn_subagent" => ToolDisplayKind::Subagent,
+        "sleep" => ToolDisplayKind::Sleep,
         _ => ToolDisplayKind::Generic,
     }
 }
 
 pub fn tool_display_name(tool: &str) -> String {
     match tool {
-        "write_file" => "Write".to_string(),
-        "read_file" => "Read".to_string(),
-        "bash" | "shell" => "Bash".to_string(),
+        "write_file" => "✍️ Write".to_string(),
+        "read_file" => "📖 Read".to_string(),
+        "edit_file" => "✏️ Edit".to_string(),
+        "bash" | "shell" => "$ Bash".to_string(),
         "run_command" => "Command".to_string(),
+        "spawn_subagent" => "🤖 Subagent".to_string(),
+        "ask_user" => "❓ Ask".to_string(),
+        "sleep" => "⏳ Sleep".to_string(),
+        "apply_patch" => "📝 Patch".to_string(),
+        "background_run" => "Background".to_string(),
+        "check_background" => "Background".to_string(),
+        "cron_create" => "Cron".to_string(),
+        "cron_delete" => "Cron".to_string(),
+        "cron_list" => "Cron".to_string(),
+        "load_skill" => "Skill".to_string(),
+        "save_memory" => "Memory".to_string(),
+        "compact" => "Compact".to_string(),
+        "spawn_teammate" => "Teammate".to_string(),
+        "list_teammates" => "Teammate".to_string(),
+        "send_message" => "Message".to_string(),
+        "broadcast" => "Broadcast".to_string(),
+        "read_inbox" => "Inbox".to_string(),
+        "plan_approval" => "Plan".to_string(),
+        "shutdown_request" => "Shutdown".to_string(),
+        "shutdown_response" => "Shutdown".to_string(),
+        "worktree_create" => "Worktree".to_string(),
+        "worktree_list" => "Worktree".to_string(),
+        "worktree_status" => "Worktree".to_string(),
+        "worktree_run" => "Worktree".to_string(),
+        "worktree_events" => "Worktree".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()
@@ -84,6 +117,31 @@ pub fn format_duration_us(us: u64) -> String {
         format!("{ms:.2}ms")
     } else {
         format!("{:.2}s", us as f64 / 1_000_000.0)
+    }
+}
+
+fn sleep_duration(ms: u64) -> String {
+    if ms == 0 {
+        return "0ms".to_string();
+    }
+    if ms < 1000 {
+        return format!("{ms}ms");
+    }
+    if ms < 60_000 {
+        let secs = ms as f64 / 1000.0;
+        // Strip trailing ".0" for whole-second durations.
+        if secs.fract() == 0.0 {
+            return format!("{}s", secs as u64);
+        }
+        return format!("{:.1}s", secs);
+    }
+    let total_secs = ms / 1000;
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+    if seconds == 0 {
+        format!("{}m", minutes)
+    } else {
+        format!("{}m {}s", minutes, seconds)
     }
 }
 
@@ -327,7 +385,12 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
-        let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
+        let preview_cap = if self.tool_name == "spawn_subagent" {
+            SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES
+        } else {
+            LIVE_OUTPUT_PREVIEW_LINES
+        };
+        let lines = output.preview_lines(preview_cap);
         // Popup/detail_full keep `$ <command>` for consistency with completed
         // cards, but the live title/footer/line numbers must count only the
         // streamed output — the preview itself never includes that prefix.
@@ -335,7 +398,7 @@ impl<'a> ToolWidget<'a> {
         self.detail = Some(detail);
         self.detail_lines = Some(lines);
         self.detail_total_lines = Some(output.logical_line_count());
-        self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
+        self.preview_lines = preview_cap;
         self.live_detail = true;
         self
     }
@@ -418,11 +481,35 @@ impl<'a> ToolWidget<'a> {
     pub fn title_text(&self) -> String {
         let base = match display_kind(&self.tool_name) {
             ToolDisplayKind::Command => {
-                let label = self.tool_name.to_lowercase();
+                let label = tool_display_name(&self.tool_name);
                 if self.arg_summary.is_empty() {
                     label
                 } else {
-                    format!("{label} ({})", self.arg_summary)
+                    format!("{label}  {}", self.arg_summary)
+                }
+            }
+            ToolDisplayKind::Subagent => {
+                if self.arg_summary.is_empty() {
+                    "Subagent".to_string()
+                } else {
+                    format!("Subagent · {}", self.arg_summary)
+                }
+            }
+            ToolDisplayKind::Sleep => {
+                if let Ok(ms) = self.arg_summary.parse::<u64>() {
+                    format!("⏳ Sleep · {}", sleep_duration(ms))
+                } else if self.arg_summary.is_empty() {
+                    "⏳ Sleep".to_string()
+                } else {
+                    format!("⏳ Sleep · {}", self.arg_summary)
+                }
+            }
+            ToolDisplayKind::Task => {
+                // Human title already includes "# Task.N · …"; do not prefix tool name.
+                if self.arg_summary.is_empty() {
+                    tool_display_name(&self.tool_name)
+                } else {
+                    self.arg_summary.clone()
                 }
             }
             _ => {
@@ -592,8 +679,10 @@ impl<'a> ToolWidget<'a> {
             return true;
         }
         if self.live_detail {
-            return matches!(display_kind(&self.tool_name), ToolDisplayKind::Command)
-                && matches!(self.phase, ToolPhase::Running);
+            return matches!(
+                display_kind(&self.tool_name),
+                ToolDisplayKind::Command | ToolDisplayKind::Subagent
+            ) && matches!(self.phase, ToolPhase::Running);
         }
         matches!(
             display_kind(&self.tool_name),
@@ -601,6 +690,7 @@ impl<'a> ToolWidget<'a> {
                 | ToolDisplayKind::FileRead
                 | ToolDisplayKind::FileEdit
                 | ToolDisplayKind::Command
+                | ToolDisplayKind::Subagent
         ) && matches!(self.phase, ToolPhase::Success)
     }
 
@@ -614,6 +704,9 @@ impl<'a> ToolWidget<'a> {
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
         }
+        if matches!(display_kind(&self.tool_name), ToolDisplayKind::Subagent) {
+            return format!("Summary ({} lines)", total_lines);
+        }
         match display_kind(&self.tool_name) {
             ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit => self
                 .msgs
@@ -624,7 +717,12 @@ impl<'a> ToolWidget<'a> {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
             ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Generic => format!("{} output", self.tool_name),
+            ToolDisplayKind::Task
+            | ToolDisplayKind::Generic
+            | ToolDisplayKind::Sleep
+            | ToolDisplayKind::Subagent => {
+                format!("{} output", self.tool_name)
+            }
         }
     }
 }
@@ -659,7 +757,7 @@ mod tests {
             .with_arg_summary("echo hello")
             .with_phase(ToolPhase::Running);
 
-        assert_eq!(widget.title_text(), "bash (echo hello)");
+        assert_eq!(widget.title_text(), "$ Bash  echo hello");
     }
 
     #[test]
@@ -977,5 +1075,60 @@ mod tests {
             .with_duration_us(7_000);
 
         assert_eq!(widget.layout().visual_rows, TOOL_HEADER_ROWS);
+    }
+
+    #[test]
+    fn sleep_title_formats_duration() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("5000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(5_000_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 5s");
+    }
+
+    #[test]
+    fn sleep_zero_ms_shows_zero() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("0")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 0ms");
+    }
+
+    #[test]
+    fn sleep_minutes_format() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("125000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(125_000_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 2m 5s");
+    }
+
+    #[test]
+    fn sleep_exact_minute_drops_zero_seconds() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("60000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(60_000_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 1m");
+    }
+
+    #[test]
+    fn sleep_fractional_second_keeps_decimal() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("sleep")
+            .with_arg_summary("1500")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1_500_000);
+        assert_eq!(widget.title_text(), "⏳ Sleep · 1.5s");
     }
 }

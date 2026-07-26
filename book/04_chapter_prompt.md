@@ -126,7 +126,7 @@ let prompt = SystemPrompt::builder()
 
 ### 3.3 Instruction file sources (`instruction_sources`)
 
-By default only **`AGENTS.md`** is injected. `CLAUDE.md` is opt-in via `tact.toml`. Both render inside the same `# Additional context` section (CLAUDE block first when enabled, then AGENTS).
+By default only **`AGENTS.md`** is injected. `CLAUDE.md` is opt-in via `config.toml`. Both render inside the same `# Additional context` section (CLAUDE block first when enabled, then AGENTS).
 
 ```toml
 [agent]

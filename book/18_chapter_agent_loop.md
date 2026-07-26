@@ -213,7 +213,7 @@ UserCommand::Cancel => {
 | **`TaskComplete` heuristic** | TUI uses last message in context when not cancelled; not explicitly last assistant text |
 | **Headless path** | No `ui_tx`; no `TaskComplete` emit — single direct `notify_task_complete` after stdout ([Ch 17](./17_chapter_notify.md)) |
 | **No dedicated cancel API on Agent** | Only atomic flag; subagents have separate flags |
-| **`PlanGenerated` deprecated** | `#[deprecated(since = "0.19.0")]`; TUI handler retained — plan panel driven by `StepAdded` |
+| **`PlanGenerated` deprecated** | `#[deprecated(since = "0.19.0")]`; TUI handler retained — internal plan step store driven by `StepAdded` |
 
 ---
 

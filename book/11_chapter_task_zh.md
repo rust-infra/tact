@@ -4,7 +4,7 @@
 
 本章说明 LLM 决定行动之后发生什么：Tact 如何将一组 `ToolUse` 块转为已执行命令、结果，以及下一轮对话。
 
-**勿与** [持久任务管理器](./19_chapter_persistent_tasks_zh.md)（`task_create` / `task_list` 工具）或 [子 Agent](./12_chapter_subagent_zh.md) 的 `task` spawn 工具混淆。
+**勿与** [持久任务管理器](./19_chapter_persistent_tasks_zh.md)（`task_create` / `task_list` 工具）或 [子 Agent](./12_chapter_subagent_zh.md) 的 `spawn_subagent` spawn 工具混淆。
 
 ---
 
@@ -91,6 +91,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 |------|----------|------|
 | `read_file` | `input.path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
+| `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write（彼此串行） |
 | `sleep` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 
@@ -126,7 +127,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 
 - **只读**：一般允许。
 - **Write**：Default 模式询问（除非 allowlist）；Auto 模式自动批准；Plan 模式拒绝。
-- **高风险**：始终询问（即使 allowlist）；包括 `task`、破坏性工具名与危险 bash 模式。
+- **高风险**：始终询问（即使 allowlist）；包括 `spawn_subagent`、破坏性工具名与危险 bash 模式。
 
 分类规则、模式与 TUI 审批流程见 [权限模型](./10_chapter_permission_zh.md)。
 
@@ -193,7 +194,7 @@ Hook（`PreToolUse`、`PostToolUse`）在 `crates/tact/src/hook/mod.rs`，可检
 - [工具系统](./07_chapter_tool_zh.md) — `ToolRouter` 与 native 工具分发
 - [上下文压缩](./05_chapter_compact_zh.md) — dispatch 中的 `persist_large_output` 与手动 `compact` 检测
 - [后台任务](./13_chapter_background_zh.md) — 同步 `bash` 步骤的异步对应物
-- [子 Agent](./12_chapter_subagent_zh.md) — 嵌套 `task` 工具与调度 barrier
+- [子 Agent](./12_chapter_subagent_zh.md) — 嵌套 `spawn_subagent` 工具与调度 barrier
 - [Parallel Tool Execution](../docs/parallel_tool_execution.md)
 - [Tool Rendering](../docs/tool_rendering.md)
 - [Token Usage Schema](../docs/token_usage_schema.md)

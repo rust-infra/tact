@@ -32,6 +32,9 @@ fn capped_sleep_ms(ms: u64) -> u64 {
                     Use instead of Bash(sleep ...) — it doesn't hold a shell \
                     process and can run concurrently with other tools."
 )]
+/// # Errors
+///
+/// This function always returns `Ok`.
 pub async fn sleep(_ctx: ToolContext, input: SleepInput) -> Result<String> {
     let duration_ms = capped_sleep_ms(input.ms);
     debug!(ms = duration_ms, "Sleeping");

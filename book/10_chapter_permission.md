@@ -62,7 +62,7 @@ Classification is heuristic — based on tool name prefixes and, for `bash`, the
 |------|------|
 | **Read** | `read_file`; names starting with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, `find` |
 | **Read** (bash) | Simple read-only commands: `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `rg`, `grep`; or `git status` / `diff` / `log` / `show` / `branch` — only when the command has no shell metacharacters (`;`, `&`, `\|`, `` ` ``, `$`, `>`, `<`) |
-| **High** | `task` (spawns a sub-agent with full filesystem and shell access); names starting with `delete`, `remove`, `drop`, `shutdown`; bash commands matching high-risk patterns (see [§7 Shell high-risk detection](#7-shell-high-risk-detection)) |
+| **High** | `spawn_subagent` (spawns a sub-agent with full filesystem and shell access); names starting with `delete`, `remove`, `drop`, `shutdown`; bash commands matching high-risk patterns (see [§7 Shell high-risk detection](#7-shell-high-risk-detection)) |
 | **Write** | Everything else (default for unknown native tools and non-read bash) |
 
 MCP tools follow the same prefix rules on the **short** tool name after parsing. A tool like `mcp__demo__db__query` is classified as **Read** because `query` matches a read prefix.
@@ -309,7 +309,7 @@ sequenceDiagram
     end
 ```
 
-`PermissionManager` lives on `AgentRuntime` (`crates/tact/src/agent/mod.rs`), not on `ToolContext`. Sub-agents created by the `task` tool get their own manager (always `PermissionMode::Default`) but inherit the main agent's `ui_tx` so permission popups still work.
+`PermissionManager` lives on `AgentRuntime` (`crates/tact/src/agent/mod.rs`), not on `ToolContext`. Sub-agents created by the `spawn_subagent` tool get their own manager (always `PermissionMode::Default`) but inherit the main agent's `ui_tx` so permission popups still work.
 
 ---
 
@@ -371,7 +371,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 ## Related Docs
 
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — three-phase pipeline permissions sit inside
-- [Subagents](./12_chapter_subagent.md) — `task` High risk, separate `PermissionManager`, inherited `ui_tx`
+- [Subagents](./12_chapter_subagent.md) — `spawn_subagent` High risk, separate `PermissionManager`, inherited `ui_tx`
 - [Agent Lifecycle Hooks](./09_chapter_hook.md) — PreToolUse runs immediately before permission check
 - [ARCHITECTURE.md](../ARCHITECTURE.md#3-permission-system) — architecture diagram and mode table
 - [docs/state_machines.md](../docs/state_machines.md) — permission decision state machine

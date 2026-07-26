@@ -69,6 +69,8 @@ pub fn is_transient_transport_error(error_text: &str) -> bool {
         "temporarily",
         "econnreset",
         "broken pipe",
+        "http request failed",
+        "error sending request",
     ]
     .iter()
     .any(|needle| error_text.contains(needle))
@@ -84,4 +86,31 @@ pub fn backoff_delay(attempt: u32) -> Duration {
         .map(|duration| (duration.subsec_millis() % 1000) as f64 / 1000.0)
         .unwrap_or(0.0);
     Duration::from_secs_f64(base + jitter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_transient_matches_http_request_failed() {
+        assert!(is_transient_transport_error(
+            "unsupported response state: HTTP request failed: error sending request for url"
+        ));
+    }
+
+    #[test]
+    fn is_transient_matches_timeout() {
+        assert!(is_transient_transport_error("request timed out"));
+    }
+
+    #[test]
+    fn is_transient_matches_econnreset() {
+        assert!(is_transient_transport_error("econnreset"));
+    }
+
+    #[test]
+    fn is_transient_rejects_prompt_too_long() {
+        assert!(!is_transient_transport_error("prompt too long"));
+    }
 }

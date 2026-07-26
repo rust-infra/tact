@@ -145,7 +145,7 @@ impl AnsiState {
     }
 }
 
-/// Bounded plain-terminal state used for both live rendering and final output.
+/// Plain-terminal state for live rendering (capped detail) and full output capture.
 #[derive(Debug, Clone)]
 pub struct ToolOutputBuffer {
     committed: VecDeque<ToolOutputLine>,
@@ -158,12 +158,30 @@ pub struct ToolOutputBuffer {
     current_detail_truncated: bool,
     detail_truncated: bool,
     detail_limit: usize,
+    /// When set, accumulate every character (after ANSI stripping) without a
+    /// limit so the complete output can be recovered. Left off for buffers that
+    /// only feed the capped live preview (e.g. bash's TUI card).
+    full_enabled: bool,
+    /// Unlimited accumulation, only populated when `full_enabled`.
+    full_detail: String,
+    full_current_detail: String,
     total_committed: usize,
     ansi: [AnsiState; 3],
 }
 
 impl ToolOutputBuffer {
+    /// Capped buffer: keeps only the live preview and `detail_limit` chars of detail.
     pub fn new(detail_limit: usize) -> Self {
+        Self::build(detail_limit, false)
+    }
+
+    /// Like [`new`], but also accumulates the complete output for
+    /// [`full_detail_text`]/[`take_full_detail`].
+    pub fn new_full(detail_limit: usize) -> Self {
+        Self::build(detail_limit, true)
+    }
+
+    fn build(detail_limit: usize, full_enabled: bool) -> Self {
         Self {
             committed: VecDeque::with_capacity(INLINE_HISTORY_LINES),
             current: ToolOutputLine::default(),
@@ -175,6 +193,9 @@ impl ToolOutputBuffer {
             current_detail_truncated: false,
             detail_truncated: false,
             detail_limit,
+            full_enabled,
+            full_detail: String::new(),
+            full_current_detail: String::new(),
             total_committed: 0,
             ansi: [AnsiState::default(); 3],
         }
@@ -219,6 +240,27 @@ impl ToolOutputBuffer {
         text
     }
 
+    /// Returns the complete (un-truncated) accumulated output.
+    pub fn full_detail_text(&self) -> String {
+        let mut text = self.full_detail.clone();
+        text.push_str(&self.full_current_detail);
+        text
+    }
+
+    /// Byte length of [`full_detail_text`] without materializing it. Cheap
+    /// fingerprint for caches that only need to know when the output grew.
+    pub fn full_detail_len(&self) -> usize {
+        self.full_detail.len() + self.full_current_detail.len()
+    }
+
+    /// Takes ownership of the unlimited full-detail buffers, leaving them empty.
+    pub fn take_full_detail(&mut self) -> String {
+        let mut text = std::mem::take(&mut self.full_detail);
+        text.push_str(&self.full_current_detail);
+        self.full_current_detail.clear();
+        text
+    }
+
     pub fn logical_line_count(&self) -> usize {
         self.total_committed + usize::from(!self.current.is_empty())
     }
@@ -238,6 +280,9 @@ impl ToolOutputBuffer {
             self.current.push_char(stream, ch);
             self.current_chars += 1;
         }
+        if self.full_enabled {
+            self.full_current_detail.push(ch);
+        }
         if !self.detail_truncated && !self.current_detail_truncated {
             if self.detail_chars + self.current_detail_chars < self.detail_limit {
                 self.current_detail.push(ch);
@@ -254,6 +299,7 @@ impl ToolOutputBuffer {
         self.current_detail.clear();
         self.current_detail_chars = 0;
         self.current_detail_truncated = false;
+        self.full_current_detail.clear();
     }
 
     fn commit_current(&mut self) {
@@ -265,6 +311,11 @@ impl ToolOutputBuffer {
             self.detail_truncated = true;
         } else {
             self.append_detail("\n");
+        }
+        if self.full_enabled {
+            self.full_detail.push_str(&self.full_current_detail);
+            self.full_detail.push('\n');
+            self.full_current_detail.clear();
         }
         self.committed.push_back(std::mem::take(&mut self.current));
         self.current_chars = 0;
@@ -371,7 +422,7 @@ mod tests {
 
     #[test]
     fn detail_limit_counts_characters_and_adds_one_marker() {
-        let mut output = ToolOutputBuffer::new(5);
+        let mut output = ToolOutputBuffer::new_full(5);
         output.push_chunks(&[
             ToolOutputChunk::stdout("你好ab"),
             ToolOutputChunk::stdout("cdef"),
@@ -382,6 +433,39 @@ mod tests {
             output.detail_text().matches("[output truncated]").count(),
             1
         );
+        // full_detail keeps everything past the capped detail_limit.
+        assert_eq!(output.full_detail_text(), "你好abcdef");
+    }
+
+    #[test]
+    fn capped_buffer_does_not_accumulate_full_detail() {
+        let mut output = ToolOutputBuffer::new(50_000);
+        output.push_chunks(&[ToolOutputChunk::stdout("hello\nworld")]);
+
+        assert_eq!(output.detail_text(), "hello\nworld");
+        assert!(output.full_detail_text().is_empty());
+    }
+
+    #[test]
+    fn take_full_detail_moves_and_clears() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[ToolOutputChunk::stdout("hello\nworld")]);
+
+        assert_eq!(output.take_full_detail(), "hello\nworld");
+        assert!(output.full_detail_text().is_empty());
+        // Capped detail is independent of take_full_detail.
+        assert_eq!(output.detail_text(), "hello\nworld");
+    }
+
+    #[test]
+    fn full_detail_respects_carriage_return() {
+        let mut output = ToolOutputBuffer::new_full(5);
+        output.push_chunks(&[
+            ToolOutputChunk::stdout("Downloading 10%\r"),
+            ToolOutputChunk::stdout("Downloading 90%\n"),
+        ]);
+
+        assert_eq!(output.full_detail_text(), "Downloading 90%\n");
     }
 
     #[test]

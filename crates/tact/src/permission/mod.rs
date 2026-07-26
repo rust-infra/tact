@@ -265,8 +265,8 @@ fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
         return CapabilityRisk::Read;
     }
 
-    // task spawns a subagent with full filesystem and shell access — always high risk
-    if tool_name == "task" {
+    // spawn_subagent gets full filesystem and shell access — always high risk
+    if tool_name == "spawn_subagent" {
         return CapabilityRisk::High;
     }
 

@@ -29,6 +29,10 @@ impl ToolProgressReporter {
             });
         }
     }
+
+    pub fn tool_id(&self) -> &str {
+        &self.tool_id
+    }
 }
 
 #[cfg(test)]

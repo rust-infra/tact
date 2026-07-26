@@ -27,9 +27,11 @@ Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规
 ```mermaid
 graph TB
     subgraph Disk["Skill 根目录"]
-        L["workdir/skills/*/SKILL.md 旧版"]
+        T["workdir/.tact/skills/*/SKILL.md"]
         U["~/.tact/skills/*/SKILL.md"]
+        A["~/.agents/skills/*/SKILL.md"]
         P["workdir/.claude/skills/*/SKILL.md"]
+        C["agent.skill_dirs 配置"]
         I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
 
@@ -69,16 +71,18 @@ graph TB
     SR --> SE
 ```
 
-发现根目录（Claude Code 兼容的项目路径，外加 tact 用户路径与旧版路径）：
+发现根目录：
 
 | 根 | 路径 | 角色 |
 |----|------|------|
-| Legacy | `<workdir>/skills/` | 向后兼容；仍会扫描 |
+| 项目本地 | `<workdir>/.tact/skills/` | 仓库内 tact skills |
 | User | `~/.tact/skills/` | 跨项目的个人 skills |
-| Project | `<workdir>/.claude/skills/` | 团队/仓库 skills（规范路径） |
+| Global agents | `~/.agents/skills/` | 共享 agents skills |
+| Project（Claude） | `<workdir>/.claude/skills/` | 团队/仓库 skills（Claude 兼容） |
+| 配置额外目录 | `[agent].skill_dirs` | TOML 额外根（相对 workdir；支持 `~`） |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | 已安装插件的 playbook |
 
-加载顺序：legacy → user → project → 已安装插件。**同名的独立 skill 以后者覆盖**（project 覆盖 user/legacy）。已安装插件的 skill 始终使用 `plugin:skill` 名称，因此不能替换独立 skill。
+加载顺序：项目本地 → user → global agents → Claude project → **配置 `skill_dirs`** → 已安装插件。**同名的独立 skill 以后者覆盖**。已安装插件的 skill 始终使用 `plugin:skill` 名称，因此不能替换独立 skill。
 
 ---
 
@@ -218,10 +222,11 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 步骤 | 行为 |
 |------|------|
-| 斜杠弹出菜单对 **skill** 按 Enter | 仅自动补全为 `/name `（同 Tab） |
-| 第二次 Enter（可带参数） | 经 `handlers/skills.rs` **调用** |
+| 斜杠弹出菜单对 **skill** 按 Enter | **立即 Invoke** |
+| 斜杠弹出菜单对 skill 按 **Tab** | 仅自动补全为 `/name ` |
+| Tab 后再 Enter（可带可选 args） | 经 `handlers/skills.rs` **Invoke** |
 | 面板对 skill 按 Enter | 切到 Insert 并预填 `/name `（+ undo checkpoint） |
-| 内置命令 Enter | 立即执行（`/quit`、`/cancel` 等） |
+| 内置命令 Enter | 立即执行（`/quit`、`/cancel` 等）；`/plugin` 仍只补全 |
 
 **发给 agent 的载荷**
 
@@ -247,7 +252,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 方面 | Skills | Memory |
 |------|--------|--------|
-| 位置 | legacy `skills/` + `~/.tact/skills/` + `.claude/skills/` | `<workdir>/.tact/memory/` |
+| 位置 | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/`（+ 可选 `skill_dirs`） | `<workdir>/.tact/memory/` |
 | 格式 | `SKILL.md` + 可选 frontmatter | `{name}.md` + 必需 frontmatter |
 | 提示词注入 | 始终摘要；正文按需 / 斜杠 | 每轮全文（动态节） |
 | 写入路径 | 编辑磁盘文件（无 agent 工具） | `save_memory` 工具 |
@@ -260,7 +265,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | 文件 | 角色 |
 |------|------|
 | `crates/tact/src/skill/mod.rs` | `SkillRegistry`、解析、`describe_available`、`load_full_text` |
-| `crates/tact/src/consts.rs` | `skills_dir()`、`skill_search_dirs()` |
+| `crates/tact/src/consts.rs` | `tact_skills_dir()`、`skill_search_dirs()` |
 | `crates/tact/src/tool/load_skill.rs` | `load_skill` 原生工具 |
 | `crates/tact/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available()` |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |

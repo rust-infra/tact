@@ -98,7 +98,7 @@ fn clone_stop_reason(stop_reason: &Option<StopReason>) -> Option<StopReason> {
 }
 
 fn clone_llm_error(e: &LlmError) -> LlmError {
-    LlmError::Other(e.to_string())
+    LlmError::Mock(e.to_string())
 }
 
 /// Deterministic mock LLM client that returns scripted or dynamic responses.
@@ -242,7 +242,6 @@ impl MockClient {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for MockClient {
     async fn stream_message(
         &self,

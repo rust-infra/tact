@@ -127,7 +127,7 @@ let prompt = SystemPrompt::builder()
 
 ### 3.3 指令文件来源（`instruction_sources`）
 
-默认仅注入 **`AGENTS.md`**。`CLAUDE.md` 通过 `tact.toml` 可选启用。二者渲染在同一 `# Additional context` 节（启用时 CLAUDE 块在前，随后 AGENTS）。
+默认仅注入 **`AGENTS.md`**。`CLAUDE.md` 通过 `config.toml` 可选启用。二者渲染在同一 `# Additional context` 节（启用时 CLAUDE 块在前，随后 AGENTS）。
 
 ```toml
 [agent]

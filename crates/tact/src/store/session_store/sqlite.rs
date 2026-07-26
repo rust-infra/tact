@@ -15,6 +15,30 @@ pub struct SqliteSessionStore {
 }
 
 impl SqliteSessionStore {
+    /// Add `ref_id` to existing DBs created before the column existed.
+    async fn migrate_sessions_ref_id(pool: &SqlitePool) -> Result<()> {
+        let cols = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(pool)
+            .await
+            .context("failed to read sessions table info")?;
+        let has_ref_id = cols.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .map(|n| n == "ref_id")
+                .unwrap_or(false)
+        });
+        if !has_ref_id {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN ref_id TEXT NOT NULL DEFAULT ''")
+                .execute(pool)
+                .await
+                .context("failed to add sessions.ref_id column")?;
+        }
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_ref_id ON sessions(ref_id)")
+            .execute(pool)
+            .await
+            .context("failed to create sessions.ref_id index")?;
+        Ok(())
+    }
+
     pub async fn new(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -43,13 +67,18 @@ impl SqliteSessionStore {
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 root_dir TEXT NOT NULL DEFAULT '',
                 locked_by INTEGER NOT NULL DEFAULT 0,
-                lock_epoch TEXT NOT NULL DEFAULT ''
+                lock_epoch TEXT NOT NULL DEFAULT '',
+                ref_id TEXT NOT NULL DEFAULT ''
             );
             "#,
         )
         .execute(&pool)
         .await
         .context("failed to create sessions table")?;
+
+        Self::migrate_sessions_ref_id(&pool)
+            .await
+            .context("failed to migrate sessions.ref_id")?;
 
         sqlx::query(
             r#"
@@ -188,12 +217,12 @@ fn str_to_role(s: &str) -> Result<Role> {
 
 #[async_trait::async_trait]
 impl super::SessionStore for SqliteSessionStore {
-    async fn create_session(&self, id: &str, root_dir: &str) -> Result<()> {
+    async fn create_session(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()> {
         let now = Self::now();
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, created_at, updated_at, root_dir)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (id, created_at, updated_at, root_dir, ref_id)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 updated_at = excluded.updated_at,
                 root_dir = excluded.root_dir
@@ -203,18 +232,19 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(now)
         .bind(now)
         .bind(root_dir)
+        .bind(ref_id)
         .execute(&self.pool)
         .await
         .context("failed to create session")?;
         Ok(())
     }
 
-    async fn ensure_session_row(&self, id: &str, root_dir: &str) -> Result<()> {
+    async fn ensure_session_row(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()> {
         let now = Self::now();
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, created_at, updated_at, root_dir)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (id, created_at, updated_at, root_dir, ref_id)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -222,6 +252,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(now)
         .bind(now)
         .bind(root_dir)
+        .bind(ref_id)
         .execute(&self.pool)
         .await
         .context("failed to ensure session row")?;
@@ -368,6 +399,7 @@ impl super::SessionStore for SqliteSessionStore {
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.id
                 WHERE s.root_dir = ?
+                  AND s.ref_id = ''
                 GROUP BY s.id
                 ORDER BY s.updated_at DESC
                 "#,
@@ -387,6 +419,7 @@ impl super::SessionStore for SqliteSessionStore {
                     COUNT(m.id) as message_count
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.id
+                WHERE s.ref_id = ''
                 GROUP BY s.id
                 ORDER BY s.updated_at DESC
                 "#,
@@ -425,26 +458,40 @@ impl super::SessionStore for SqliteSessionStore {
             .await
             .context("failed to begin delete session transaction")?;
 
-        sqlx::query("DELETE FROM messages WHERE session_id = ?")
+        let child_rows = sqlx::query("SELECT id FROM sessions WHERE ref_id = ?")
             .bind(session_id)
-            .execute(&mut *tx)
+            .fetch_all(&mut *tx)
             .await
-            .context("failed to delete session messages")?;
-        sqlx::query("DELETE FROM token_usages WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to delete session token usages")?;
-        sqlx::query("DELETE FROM input_history WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to delete session input history")?;
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to delete session")?;
+            .context("failed to list child sessions")?;
+        let mut ids: Vec<String> = child_rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("id"))
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to read child session id")?;
+        ids.push(session_id.to_string());
+
+        for id in &ids {
+            sqlx::query("DELETE FROM messages WHERE session_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete session messages")?;
+            sqlx::query("DELETE FROM token_usages WHERE session_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete session token usages")?;
+            sqlx::query("DELETE FROM input_history WHERE session_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete session input history")?;
+            sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete session")?;
+        }
 
         tx.commit()
             .await
@@ -800,8 +847,8 @@ fn is_process_alive(pid: u32) -> bool {
         // well-defined behavior. OpenProcess returns null on failure (which we
         // check); CloseHandle is always safe to call with any value including null.
         unsafe extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
-            fn CloseHandle(handle: *mut c_void) -> i32;
+            safe fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            safe fn CloseHandle(handle: *mut c_void) -> i32;
         }
 
         // SAFETY: The PID argument comes from a valid u32; OpenProcess returns
@@ -853,7 +900,7 @@ mod tests {
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -911,7 +958,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -943,7 +990,7 @@ mod tests {
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -966,7 +1013,7 @@ mod tests {
         assert_eq!(loaded, vec!["first", "second", "third"]);
 
         store
-            .create_session("session-2", "/tmp/tact-test")
+            .create_session("session-2", "/tmp/tact-test", "")
             .await
             .unwrap();
         assert!(
@@ -985,7 +1032,7 @@ mod tests {
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -1013,7 +1060,7 @@ mod tests {
         let store = SqliteSessionStore::new(&db).await.unwrap();
 
         store
-            .create_session("session-1", "/Users/me/project")
+            .create_session("session-1", "/Users/me/project", "")
             .await
             .unwrap();
 
@@ -1030,7 +1077,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -1084,7 +1131,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -1121,7 +1168,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -1149,7 +1196,7 @@ mod tests {
         let db = tmp.path().join("test.db");
         let store = SqliteSessionStore::new(&db).await.unwrap();
         store
-            .create_session("session-1", "/tmp/tact-test")
+            .create_session("session-1", "/tmp/tact-test", "")
             .await
             .unwrap();
 
@@ -1168,5 +1215,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.try_get::<i64, _>("locked_by").unwrap(), i64::from(pid));
+    }
+
+    #[tokio::test]
+    async fn child_sessions_hidden_from_list_and_cascade_on_delete() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        store
+            .create_session("parent", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+        store
+            .create_session("child", "/tmp/tact-test", "parent")
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "child",
+                Role::User,
+                &MessageContent::Text {
+                    content: "sub work".to_string(),
+                },
+                1,
+            )
+            .await
+            .unwrap();
+
+        let listed = store.list_sessions(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "parent");
+
+        let child_ref: String = sqlx::query("SELECT ref_id FROM sessions WHERE id = 'child'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+            .try_get("ref_id")
+            .unwrap();
+        assert_eq!(child_ref, "parent");
+
+        store.delete_session("parent").await.unwrap();
+        let remaining = sqlx::query("SELECT id FROM sessions")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert!(remaining.is_empty());
+        assert!(store.load_session("child").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn orphan_child_with_empty_ref_appears_in_list() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        store
+            .create_session("orphan-child", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let listed = store.list_sessions(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "orphan-child");
     }
 }

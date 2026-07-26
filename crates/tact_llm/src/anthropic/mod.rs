@@ -150,7 +150,6 @@ struct StreamErrorPayload {
     message: String,
 }
 
-#[async_trait::async_trait]
 impl LlmClient for AnthropicAdapter {
     async fn stream_message(
         &self,

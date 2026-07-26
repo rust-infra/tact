@@ -116,16 +116,19 @@ impl LogSelection {
 /// Mouse interaction state: manages panel areas, selection ranges, and drag flags.
 #[derive(Default)]
 pub(crate) struct MouseState {
-    pub(crate) plan_area: Rect,
     pub(crate) log_area: Rect,
-    pub(crate) plan_selection: Option<(usize, usize)>,
-    pub(crate) dragging_plan: bool,
+    /// Sticky task progress strip under the Log (empty when hidden).
+    pub(crate) task_panel_area: Rect,
+    /// Whether the cursor is hovering over the task panel (used for keyboard scrolling).
+    pub(crate) in_task_panel: bool,
     pub(crate) log_selection: Option<LogSelection>,
     pub(crate) dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).
     pub(crate) thinking_popup_area: Rect,
     /// diff popup area (used to determine if click is inside the popup).
     pub(crate) diff_popup_area: Rect,
+    /// subagent popup area (used to determine if click is inside the popup).
+    pub(crate) subagent_popup_area: Rect,
     /// Selectable body area inside the active text popup border.
     pub(crate) popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.
@@ -134,6 +137,8 @@ pub(crate) struct MouseState {
     pub(crate) popup_text_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
+    /// `/tasks-dag` popup area.
+    pub(crate) task_dag_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.
     pub(crate) last_click_time: Option<std::time::Instant>,
     pub(crate) last_click_pos: Option<(u16, u16)>,
@@ -145,10 +150,6 @@ pub(crate) struct MouseState {
     pub(crate) last_click_tool: Option<usize>,
     /// Index of the code block hit by the last click (used for double-click popup open).
     pub(crate) last_click_code: Option<usize>,
-    /// Divider area between Plan and Log panels (for drag-to-resize).
-    pub(crate) divider_area: Rect,
-    /// Whether the user is currently dragging the panel divider.
-    pub(crate) is_resizing_panel: bool,
 }
 
 impl MouseState {

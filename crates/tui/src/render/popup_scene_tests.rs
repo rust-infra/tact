@@ -114,6 +114,10 @@ fn full_frame_slash_command_popup_lists_help() {
         text.contains("help"),
         "slash popup should list help command, got:\n{text}"
     );
+    assert!(
+        text.contains("[Esc]") || text.contains("Close") || text.contains("关闭"),
+        "slash popup title should hint Esc closes, got:\n{text}"
+    );
 }
 
 #[test]
@@ -520,13 +524,60 @@ fn main_area_system_message_renders_in_log() {
 }
 
 #[test]
+fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
+    let mut app = make_app();
+    let stats = concat!(
+        "── Session Stats ──\n",
+        "\n",
+        "| Metric | Value |\n",
+        "|--------|------:|\n",
+        "| Elapsed | 1.0s |\n",
+    );
+    app.handle_agent_update(tact_protocol::AgentUpdate::SessionStats(stats.into()));
+
+    let popup = app
+        .system_prompt_popup
+        .as_ref()
+        .expect("session stats popup");
+    let rendered = popup
+        .rendered
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains('┌') || rendered.contains('│'),
+        "tui-markdown should draw box borders:\n{rendered}"
+    );
+    assert!(
+        popup.rendered.len() > 3,
+        "GFM table must expand to multiple lines, got {}:\n{rendered}",
+        popup.rendered.len()
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Session Statistics"),
+        "popup title missing:\n{text}"
+    );
+    assert!(text.contains("Metric"), "header missing:\n{text}");
+    assert!(text.contains("Elapsed"), "row missing:\n{text}");
+
+    let metric_pos = text.find("Metric").expect("Metric");
+    let elapsed_pos = text.find("Elapsed").expect("Elapsed");
+    assert!(
+        text[metric_pos..elapsed_pos].contains('\n'),
+        "Metric and Elapsed must stay on separate rows:\n{text}"
+    );
+}
+
+#[test]
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
     use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
-    app.plan.visible = true;
     app.status = crate::widgets::state::Status::Executing {
         current_step: 0,
         total: 1,
@@ -882,5 +933,46 @@ fn open_diff_popup_after_read_file_step_finish() {
     assert!(
         text.contains("popup_real_path"),
         "open_diff_popup should render file content from StepFinished tool block, got:\n{text}"
+    );
+}
+
+#[test]
+fn tasks_dag_popup_renders_mermaid_unicode() {
+    use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+    let mut app = make_app();
+    app.task_panel.snapshot = vec![
+        TaskSnapshot {
+            id: 1,
+            subject: "root".into(),
+            status: TaskStatusSnapshot::Completed,
+            owner: String::new(),
+            blocks: vec![2],
+            blocked_by: Vec::new(),
+            ..Default::default()
+        },
+        TaskSnapshot {
+            id: 2,
+            subject: "child".into(),
+            status: TaskStatusSnapshot::Pending,
+            owner: String::new(),
+            blocks: Vec::new(),
+            blocked_by: vec![1],
+            ..Default::default()
+        },
+    ];
+    app.open_task_dag_popup();
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("tasks-dag") || text.contains("DAG"),
+        "popup chrome missing, got:\n{text}"
+    );
+    assert!(
+        text.contains('#') || text.contains('─') || text.contains("[x]") || text.contains("[ ]"),
+        "expected dag content, got:\n{text}"
+    );
+    assert!(
+        !text.contains("root") && !text.contains("child"),
+        "node labels must omit subjects, got:\n{text}"
     );
 }

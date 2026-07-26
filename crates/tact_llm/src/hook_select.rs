@@ -32,7 +32,7 @@ pub fn body_hook_for(
             }
         }
         // Anthropic uses Messages API (`build_anthropic`), never this path.
-        ProviderKind::Anthropic => Err(LlmError::Other(
+        ProviderKind::Anthropic => Err(LlmError::UnsupportedHook(
             "cannot use anthropic provider with openai-compatible body hooks".to_owned(),
         )),
     }

@@ -54,6 +54,7 @@ mod input_limit_tests {
 /// Directories under the workdir.  Kept private; accessed via [`TactPath`].
 const TACT_DIR: &str = ".tact";
 const CLAUDE_DIR: &str = ".claude";
+const AGENTS_DIR: &str = ".agents";
 const MEMORY_DIR: &str = "memory";
 const SKILL_DIR: &str = "skills";
 
@@ -116,16 +117,22 @@ impl TactPath {
         self.claude_dir().join(SKILL_DIR)
     }
 
-    /// Legacy `<workdir>/skills` (still scanned for backward compatibility).
-    pub fn legacy_skills_dir(&self) -> PathBuf {
-        self.workdir.join(SKILL_DIR)
+    /// `<workdir>/.tact/skills` — project-local tact skills.
+    pub fn tact_skills_dir(&self) -> PathBuf {
+        self.tact_dir().join(SKILL_DIR)
     }
 
     /// Skill roots in load order (later entries win on name clash):
-    /// legacy `<workdir>/skills` → `~/.tact/skills` → `<workdir>/.claude/skills`.
+    /// `<workdir>/.tact/skills` → `~/.tact/skills` → `~/.agents/skills` →
+    /// `<workdir>/.claude/skills`.
+    ///
+    /// Callers may append config `[agent].skill_dirs` after these.
     pub fn skill_search_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.legacy_skills_dir()];
+        let mut dirs = vec![self.tact_skills_dir()];
         if let Some(home) = Self::home_tact_dir() {
+            dirs.push(home.join(SKILL_DIR));
+        }
+        if let Some(home) = Self::home_agents_dir() {
             dirs.push(home.join(SKILL_DIR));
         }
         dirs.push(self.skills_dir());
@@ -168,5 +175,10 @@ impl TactPath {
     /// `$HOME/.claude` — global claude config directory.
     pub fn home_claude_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join(CLAUDE_DIR))
+    }
+
+    /// `$HOME/.agents` — global agents config directory.
+    pub fn home_agents_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(AGENTS_DIR))
     }
 }

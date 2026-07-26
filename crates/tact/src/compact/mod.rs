@@ -871,4 +871,80 @@ mod tests {
         assert_eq!(count, MAX_COMPACT_ARTIFACTS);
         assert!(output_dir.join("new.txt").exists());
     }
+
+    // ── proptest property-based tests ──────────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn should_auto_compact_never_triggers_when_window_is_zero(
+            last_total in 0u32..=1_000_000,
+            estimated in 0usize..1_000_000usize,
+            incoming in 0usize..10_000usize,
+            max_out in 0usize..100_000usize,
+        ) {
+            // When model_context_window is 0, auto-compact is always disabled.
+            assert!(!super::should_auto_compact(
+                last_total, 0, estimated, incoming, max_out
+            ));
+        }
+
+        #[test]
+        fn should_auto_compact_threshold_boundary(
+            last_total in 0u32..=200u32,
+        ) {
+            // With window=100 and 80% threshold, any total >= 80 should trigger
+            // (80 = threshold), and max_tokens pushes remaining cases over.
+            let result = super::should_auto_compact(last_total, 100, 0, 0, 0);
+            let expected = last_total as usize >= 80;
+            prop_assert_eq!(result, expected, "last_total={lt}, expected={exp}", lt = last_total, exp = expected);
+        }
+
+        #[test]
+        fn retained_user_budget_never_exceeds_hard_cap(
+            window in 0usize..500_000usize,
+            max_out in 0usize..100_000usize,
+            overhead in 0usize..50_000usize,
+        ) {
+            let budget = super::retained_user_message_token_budget(window, max_out, overhead);
+            prop_assert!(budget <= super::KEEP_USER_MESSAGE_TOKENS);
+            // Budget should never exceed the window either (minus reservations)
+            if window > 0 {
+                prop_assert!(budget <= window);
+            }
+        }
+
+        #[test]
+        fn approx_tokens_never_underestimates_serialized_json(
+            text in "[a-z]{0,200}"
+        ) {
+            let estimated = super::approx_text_tokens(&text);
+            if text.is_ascii() {
+                // At minimum, each 4 characters = 1 token
+                let min_tokens = text.len().div_ceil(4);
+                prop_assert!(estimated >= min_tokens,
+                    "text={txt:?}, len={len}, estimated={est}, min={min}",
+                    txt = text, len = text.len(), est = estimated, min = min_tokens);
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn take_last_tokens_never_exceeds_budget(
+            text in "\\PC{0,100}",
+            max_tokens in 1usize..20usize,
+        ) {
+            let result = super::take_last_tokens(&text, max_tokens);
+            let result_tokens = super::approx_text_tokens(&result);
+            prop_assert!(result_tokens <= max_tokens,
+                "text={txt:?}, max_tokens={mt}, result={res:?}, tokens={rt}",
+                txt = text, mt = max_tokens, res = result, rt = result_tokens);
+            // Result must be a suffix of the original
+            prop_assert!(text.ends_with(&result),
+                "expected suffix: text={txt:?}, result={res:?}",
+                txt = text, res = result);
+        }
+    }
 }

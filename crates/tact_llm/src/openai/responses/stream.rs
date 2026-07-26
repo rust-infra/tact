@@ -50,8 +50,8 @@ impl ResponsesStreamState {
 
     fn set_terminal(&mut self, response: Response) -> Result<Vec<AgentUpdate>, LlmError> {
         if self.terminal.is_some() {
-            return Err(LlmError::Other(
-                "OpenAI Responses stream emitted multiple terminal events".to_string(),
+            return Err(LlmError::Unsupported(
+                "multiple terminal events".to_string(),
             ));
         }
         self.terminal = Some(response);
@@ -69,7 +69,7 @@ impl ResponsesStreamState {
                 .as_deref()
                 .map(|param| format!(" (param: {param})"))
                 .unwrap_or_default();
-            return Err(LlmError::Other(format!(
+            return Err(LlmError::StreamParse(format!(
                 "OpenAI Responses stream error {code}: {}{param}",
                 event.message
             )));
@@ -98,7 +98,7 @@ impl ResponsesStreamState {
 
     pub(crate) fn finish(self) -> Result<NormalizedResponse, LlmError> {
         let response = self.terminal.ok_or_else(|| {
-            LlmError::Other("OpenAI Responses stream ended without a terminal event".into())
+            LlmError::Unsupported("OpenAI Responses stream ended without a terminal event".into())
         })?;
         let mut normalized = normalize_response(response)?;
         if !self.output_text.is_empty()

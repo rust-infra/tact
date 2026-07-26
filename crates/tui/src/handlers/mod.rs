@@ -24,7 +24,7 @@ pub(crate) use select::handle_select_mode;
 use tact_protocol::UserCommand;
 
 use crate::{
-    render::render_md::format_table,
+    render::render_md::render_markdown_tui,
     widgets::state::{App, InputMode, SelectKind, Status, log_messages::classify_system_message},
 };
 
@@ -365,6 +365,21 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "compact" => {
+            // Only compact when idle; active tasks cannot be compacted
+            // from slash since compact_history synchronously rewrites
+            // the session context.
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+                let msg = app.msgs().input_busy_msg.to_string();
+                app.flash_msg = Some((msg, std::time::Instant::now()));
+            } else {
+                let _ = app.user_cmd_tx.send(UserCommand::Compact);
+            }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "balance" => {
             if app.account_rx.is_none() {
                 return CommandExecOutcome {
@@ -385,6 +400,13 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "tasks-dag" => {
+            app.open_task_dag_popup();
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "lang" => {
             app.toggle_language();
             CommandExecOutcome {
@@ -399,8 +421,10 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
-/// Render `/skills` as a Markdown table via [`format_table`], with blank lines
-/// before/after so consecutive invocations do not glue together.
+/// Render `/skills` via tui-markdown as a wrap-friendly list (not a GFM table).
+///
+/// Long skill descriptions make pipe/box tables wider than the log panel; the
+/// visual wrap then shatters column alignment. One skill per block wraps cleanly.
 fn show_skills_command(app: &mut App) {
     app.add_new_line();
 
@@ -413,8 +437,8 @@ fn show_skills_command(app: &mut App) {
     );
     app.add_new_line();
 
-    let rows = skills_table_rows(&app.skills_description);
-    if rows.len() <= 2 {
+    let md = skills_list_markdown(&app.skills_data);
+    if md.is_empty() {
         let empty = "(no skills available)";
         app.append_msg(
             Line::from(Span::styled(empty, Style::default().fg(app.theme.fg))),
@@ -422,7 +446,7 @@ fn show_skills_command(app: &mut App) {
             classify_system_message(empty),
         );
     } else {
-        let (styled, raw) = format_table(&rows, &app.theme);
+        let (styled, raw) = render_markdown_tui(&md, &app.theme);
         let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
         app.extend_msgs(styled, raw, ty);
     }
@@ -437,24 +461,29 @@ fn show_skills_command(app: &mut App) {
     }
 }
 
-/// Build Markdown table rows for [`format_table`] from `describe_available` text.
-fn skills_table_rows(description: &str) -> Vec<String> {
-    let mut rows = vec![
-        "| Skill | Description |".to_string(),
-        "|-------|-------------|".to_string(),
-    ];
-    for line in description.lines() {
-        let line = line.trim().trim_start_matches('-').trim();
-        if line.is_empty() || line == "(no skills available)" {
-            continue;
+/// Build wrap-friendly markdown from structured skill entries.
+fn skills_list_markdown(skills: &[crate::widgets::state::SkillEntry]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut skills: Vec<_> = skills.iter().collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut out = String::new();
+    for (i, skill) in skills.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
         }
-        if let Some((name, desc)) = line.split_once(": ") {
-            rows.push(format!("| {} | {} |", name.trim(), desc.trim()));
-        } else {
-            rows.push(format!("| {line} |  |"));
+        // Inline code keeps `/` and `:` literal in namespaced skills.
+        out.push_str("**`");
+        out.push_str(&skill.name);
+        out.push_str("`**\n\n");
+        if !skill.description.is_empty() {
+            out.push_str(&skill.description);
+            out.push('\n');
         }
     }
-    rows
+    out
 }
 
 /// Reload skills from disk into the shared registry (agent + TUI).
@@ -484,7 +513,7 @@ mod tests {
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::{execute_palette_command, skills_table_rows};
+    use super::{execute_palette_command, skills_list_markdown};
     use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
@@ -538,38 +567,87 @@ mod tests {
     }
 
     #[test]
-    fn skills_table_rows_parses_describe_available() {
-        let rows =
-            skills_table_rows("- code-reviewer: 代码审查专家\n- demo-test: 测试 skill 加载功能");
-        assert_eq!(rows[0], "| Skill | Description |");
-        assert_eq!(rows[1], "|-------|-------------|");
-        assert_eq!(rows[2], "| code-reviewer | 代码审查专家 |");
-        assert_eq!(rows[3], "| demo-test | 测试 skill 加载功能 |");
+    fn skills_list_markdown_from_entries() {
+        let skills = vec![
+            crate::widgets::state::SkillEntry {
+                name: "code-reviewer".into(),
+                description: "代码审查专家".into(),
+                body: String::new(),
+            },
+            crate::widgets::state::SkillEntry {
+                name: "demo-test".into(),
+                description: "测试 skill 加载功能".into(),
+                body: String::new(),
+            },
+        ];
+        let md = skills_list_markdown(&skills);
+        assert!(
+            md.contains("**`code-reviewer`**"),
+            "missing bold name:\n{md}"
+        );
+        assert!(md.contains("代码审查专家"), "missing desc:\n{md}");
+        assert!(
+            md.contains("**`demo-test`**"),
+            "missing second skill:\n{md}"
+        );
+        assert!(
+            md.contains("测试 skill 加载功能"),
+            "missing second desc:\n{md}"
+        );
+        assert!(
+            !md.contains("| Skill |"),
+            "must not emit a pipe table:\n{md}"
+        );
     }
 
     #[test]
-    fn skills_table_rows_preserves_namespaced_skill_name() {
-        let rows = skills_table_rows("- plugin:skill: Plugin-provided skill");
-        assert_eq!(rows[2], "| plugin:skill | Plugin-provided skill |");
+    fn skills_list_markdown_preserves_namespaced_skill_name() {
+        let skills = vec![crate::widgets::state::SkillEntry {
+            name: "plugin:skill".into(),
+            description: "Plugin-provided skill".into(),
+            body: String::new(),
+        }];
+        let md = skills_list_markdown(&skills);
+        assert!(
+            md.contains("**`plugin:skill`**"),
+            "namespaced name broken:\n{md}"
+        );
+        assert!(
+            md.contains("Plugin-provided skill"),
+            "description lost:\n{md}"
+        );
     }
 
     #[test]
-    fn skills_table_rows_empty_description_is_header_only() {
-        let rows = skills_table_rows("(no skills available)");
-        assert_eq!(rows.len(), 2);
+    fn skills_list_markdown_empty_is_empty() {
+        let md = skills_list_markdown(&[]);
+        assert!(md.is_empty(), "expected empty markdown, got:\n{md}");
     }
 
     #[test]
-    fn skills_command_adds_separators_around_table() {
+    fn skills_command_adds_separators_around_list() {
         let (mut app, _rx) = make_app();
-        app.skills_description = "- code-reviewer: 代码审查专家\n- demo-test: 测试".to_string();
+        app.skills_data = vec![
+            crate::widgets::state::SkillEntry {
+                name: "code-reviewer".into(),
+                description: "代码审查专家".into(),
+                body: String::new(),
+            },
+            crate::widgets::state::SkillEntry {
+                name: "demo-test".into(),
+                description: "测试".into(),
+                body: String::new(),
+            },
+        ];
         let before = app.raw_messages.len();
         execute_palette_command(&mut app, "skills");
         let after_first = app.raw_messages.len();
         assert!(after_first > before);
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("Skill")),
-            "expected table header, got: {:?}",
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("code-reviewer") || m.contains("Available skills")),
+            "expected skills content, got: {:?}",
             app.raw_messages
         );
         // Second invocation must not glue flush to the previous block.

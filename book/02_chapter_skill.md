@@ -26,9 +26,11 @@ Summaries at startup; full content when the model calls `load_skill` or the user
 ```mermaid
 graph TB
     subgraph Disk["Skill roots"]
-        L["workdir/skills/*/SKILL.md legacy"]
+        T["workdir/.tact/skills/*/SKILL.md"]
         U["~/.tact/skills/*/SKILL.md"]
+        A["~/.agents/skills/*/SKILL.md"]
         P["workdir/.claude/skills/*/SKILL.md"]
+        C["agent.skill_dirs from config"]
         I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
 
@@ -68,16 +70,18 @@ graph TB
     SR --> SE
 ```
 
-Discovery roots (Claude Code–compatible project path, plus tact user path and legacy):
+Discovery roots:
 
 | Root | Path | Role |
 |------|------|------|
-| Legacy | `<workdir>/skills/` | Backward compatible; still scanned |
+| Project-local | `<workdir>/.tact/skills/` | Per-repo tact skills |
 | User | `~/.tact/skills/` | Personal skills across projects |
-| Project | `<workdir>/.claude/skills/` | Team / repo skills (canonical) |
+| Global agents | `~/.agents/skills/` | Shared agents skills |
+| Project (Claude) | `<workdir>/.claude/skills/` | Team / repo skills (Claude-compatible) |
+| Config extras | `[agent].skill_dirs` | Extra roots from TOML (relative to workdir; `~` ok) |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | Installed plugin playbooks |
 
-Load order: legacy → user → project → installed plugins. **Same standalone name: later wins** (project overrides user/legacy). Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
+Load order: project-local → user → global agents → Claude project → **config `skill_dirs`** → installed plugins. **Same standalone name: later wins**. Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
 
 ---
 
@@ -217,10 +221,11 @@ Discovered skills appear in the Insert-mode `/` popup and Normal-mode command pa
 
 | Step | Behavior |
 |------|----------|
-| Slash popup Enter on a **skill** | Autocomplete to `/name ` only (same as Tab) |
-| Second Enter (with optional args) | **Invoke** via `handlers/skills.rs` |
+| Slash popup Enter on a **skill** | **Invoke** immediately |
+| Slash popup **Tab** on a skill | Autocomplete to `/name ` only |
+| Second Enter after Tab (with optional args) | **Invoke** via `handlers/skills.rs` |
 | Palette Enter on a skill | Switch to Insert with `/name ` prefilled (+ undo checkpoint) |
-| Built-in Enter | Execute immediately (`/quit`, `/cancel`, …) |
+| Built-in Enter | Execute immediately (`/quit`, `/cancel`, …); `/plugin` still autocompletes |
 
 **Invoke payload for the agent**
 
@@ -246,7 +251,7 @@ Separate from the model calling `load_skill` mid-turn.
 
 | Aspect | Skills | Memory |
 |--------|--------|--------|
-| Location | legacy `skills/` + `~/.tact/skills/` + `.claude/skills/` | `<workdir>/.tact/memory/` |
+| Location | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/` (+ optional `skill_dirs`) | `<workdir>/.tact/memory/` |
 | Format | `SKILL.md` + optional frontmatter | `{name}.md` + required frontmatter |
 | Prompt injection | Summaries always; body on demand / slash | Full content every turn (dynamic section) |
 | Write path | Edit files on disk (no agent tool) | `save_memory` tool |
@@ -259,7 +264,7 @@ Separate from the model calling `load_skill` mid-turn.
 | File | Role |
 |------|------|
 | `crates/tact/src/skill/mod.rs` | `SkillRegistry`, parsing, `describe_available`, `load_full_text` |
-| `crates/tact/src/consts.rs` | `skills_dir()`, `skill_search_dirs()` |
+| `crates/tact/src/consts.rs` | `tact_skills_dir()`, `skill_search_dirs()` |
 | `crates/tact/src/tool/load_skill.rs` | `load_skill` native tool |
 | `crates/tact/src/agent/mod.rs` | `describe_available()` in `build_system_prompt` |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |

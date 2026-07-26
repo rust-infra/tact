@@ -13,7 +13,7 @@ use crate::{
     widgets::state::{
         AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
         MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
-        StatusBarState, StreamState, ThinkingState, ToolState,
+        StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState,
     },
 };
 
@@ -93,8 +93,10 @@ impl App {
             status_bar: StatusBarState::new(git_branch),
             task_start_time: None,
             last_prompt_elapsed_secs: None,
+            task_panel: TaskPanelState::default(),
             task_done_time: None,
             process_start_time: chrono::Local::now(),
+            last_uptime_tick_secs: None,
             workspace_dir,
             select: SelectPopup::default(),
             select_kind: SelectKind::Agent,
@@ -103,6 +105,8 @@ impl App {
             tools: ToolState::default(),
             code_blocks: Vec::new(),
             code_popup: None,
+            task_dag_popup: None,
+            subagent_popup: None,
             system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
@@ -115,7 +119,6 @@ impl App {
             session_store: None,
             spinner_frame: 0,
             loading_idx: None,
-            panel_split_ratio: 0.20,
             language: Language::English,
             flash_msg: None,
             undo_stack: Vec::new(),

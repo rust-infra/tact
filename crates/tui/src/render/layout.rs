@@ -1,14 +1,17 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    widgets::Borders,
 };
 
 use crate::widgets::state::App;
 
-/// Divider width (in columns) for the draggable panel resize handle.
-const DIVIDER_WIDTH: u16 = 2;
-
-/// Main content area layout, switching between history, help, or Plan+Log dual-panel based on current display state.
+/// Main content area layout, switching between history, help, or the Log panel
+/// based on current display state. The Log panel is always single-column and
+/// full-width — there is no side panel or draggable divider.
+///
+/// When persistent tasks are visible, the main area is split: scrollable Log on
+/// top, sticky task strip below (outer split — Log internals unchanged).
 pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.show_history {
         super::popups::history::render_history_panel(frame, area, app);
@@ -18,29 +21,36 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         super::popups::help::render_help_panel(frame, area, app);
         return;
     }
-    if app.plan.visible {
-        // Use dynamic split ratio from App state
-        let ratio_left = app.panel_split_ratio.clamp(0.10, 0.70);
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Ratio((ratio_left * 1000.0) as u32, 1000),
-                Constraint::Length(DIVIDER_WIDTH),
-                Constraint::Ratio((1000.0 - ratio_left * 1000.0) as u32, 1000),
-            ])
-            .split(area);
-        app.mouse.plan_area = chunks[0];
-        app.mouse.divider_area = chunks[1];
-        app.mouse.log_area = chunks[2];
-        super::plan::render_plan_panel(frame, chunks[0], app);
-        // Render the divider bar
-        render_divider(frame, chunks[1], app);
-        super::log::render_log_panel(frame, chunks[2], app);
+
+    let sticky_h = if super::task_panel::sticky_host_visible(app) {
+        let content = super::task_panel::sticky_host_content_height(app) as u16;
+        // Content rows + bottom border so sticky continues the Log box.
+        content
+            .saturating_add(super::task_panel::STICKY_BORDER_ROWS)
+            .min(area.height.saturating_sub(2))
     } else {
-        app.mouse.plan_area = Rect::new(0, 0, 0, 0);
-        app.mouse.divider_area = Rect::new(0, 0, 0, 0);
+        0
+    };
+
+    if sticky_h == 0 {
+        app.mouse.task_panel_area = Rect::default();
         app.mouse.log_area = area;
+        app.log_scroll.height = area.height.saturating_sub(2);
         super::log::render_log_panel(frame, area, app);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(sticky_h)])
+            .split(area);
+        app.mouse.log_area = chunks[0];
+        // Log omits bottom border; sticky draws LEFT|RIGHT|BOTTOM to close the box.
+        super::log::render_log_panel_with_borders(
+            frame,
+            chunks[0],
+            app,
+            Borders::TOP | Borders::LEFT | Borders::RIGHT,
+        );
+        super::task_panel::render_task_panel(frame, chunks[1], app);
     }
 
     if app.thinking.popup.is_some() {
@@ -55,27 +65,12 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.code_popup.is_some() {
         super::popups::code_popup::render_code_popup(frame, area, app);
     }
-}
-
-/// Render the draggable divider bar between Plan and Log panels.
-fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
-    use ratatui::{
-        style::Style,
-        widgets::{Block, Borders},
-    };
-
-    // Highlight divider when user is hovering over it or actively resizing
-    let border_style = if app.mouse.is_resizing_panel {
-        Style::default().fg(app.theme.accent)
-    } else {
-        Style::default().fg(app.theme.border)
-    };
-
-    let divider = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT)
-        .border_style(border_style)
-        .style(Style::default().bg(app.theme.bg));
-    frame.render_widget(divider, area);
+    if app.task_dag_popup.is_some() {
+        super::popups::task_dag_popup::render_task_dag_popup(frame, area, app);
+    }
+    if app.subagent_popup.is_some() {
+        super::popups::subagent_popup::render_subagent_popup(frame, area, app);
+    }
 }
 
 #[cfg(test)]
@@ -90,7 +85,6 @@ mod render_tests {
     #[test]
     fn main_area_renders_tool_and_stream_content() {
         let mut app = make_app();
-        app.plan.visible = true;
 
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
             "read file",
@@ -127,7 +121,7 @@ mod render_tests {
         let text = render_app_text(&mut app, 100, 30);
         assert!(
             text.contains("read_file") || text.contains("main.rs"),
-            "plan/log should show tool activity, buffer:\n{text}"
+            "log should show tool activity, buffer:\n{text}"
         );
         assert!(
             text.contains("Hello from mock"),
@@ -157,32 +151,6 @@ mod render_tests {
                     .iter()
                     .any(|m| m.contains("provider timeout")),
             "error should be visible in log or buffer"
-        );
-    }
-
-    #[test]
-    fn dual_panel_layout_renders_with_custom_split_ratio() {
-        let mut app = make_app();
-        app.plan.visible = true;
-        app.panel_split_ratio = 0.45;
-
-        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
-        assert!(
-            !text.trim().is_empty(),
-            "dual-panel layout should render with custom split"
-        );
-    }
-
-    #[test]
-    fn divider_renders_while_resizing() {
-        let mut app = make_app();
-        app.plan.visible = true;
-        app.mouse.is_resizing_panel = true;
-
-        let text = super::super::test_harness::render_main_area_text(&mut app, 120, 30);
-        assert!(
-            !text.trim().is_empty(),
-            "divider should render highlighted while resizing"
         );
     }
 }

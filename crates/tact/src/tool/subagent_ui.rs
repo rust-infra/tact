@@ -1,0 +1,598 @@
+//! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
+
+use tact_protocol::{AgentUpdate, ToolOutputChunk};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::tool::ToolProgressReporter;
+
+/// Blank-line pad a structural UI block.
+///
+/// The completed subagent popup runs the whole transcript through Markdown.
+/// A single `\n` is a soft break there and collapses into a space — that is
+/// why `…help with! ⚡ 3228 tokens` appeared on one line. Two newlines make a
+/// paragraph boundary so TokenUsage / steps / thinking stay separate.
+fn structural_line(text: impl Into<String>) -> ToolOutputChunk {
+    let body = text.into();
+    let body = body.trim_matches('\n');
+    ToolOutputChunk::other(format!("\n\n{body}\n\n"))
+}
+
+fn structural_stderr(text: impl Into<String>) -> ToolOutputChunk {
+    let body = text.into();
+    let body = body.trim_matches('\n');
+    ToolOutputChunk::stderr(format!("\n\n{body}\n\n"))
+}
+
+/// Keep explicit newlines visible after Markdown rendering (soft-break → space).
+/// Empty lines become paragraph breaks; non-empty lines use a hard break.
+fn preserve_markdown_newlines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        out.push_str(line);
+        if i + 1 == lines.len() {
+            break;
+        }
+        if line.is_empty() {
+            out.push_str("\n\n");
+        } else {
+            // CommonMark hard line break: two trailing spaces before `\n`.
+            out.push_str("  \n");
+        }
+    }
+    out
+}
+
+fn format_tokens_compact(n: u32) -> String {
+    let n = u64::from(n);
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        let k = n as f64 / 1_000.0;
+        if (k * 10.0).round() % 10.0 == 0.0 {
+            format!("{k:.0}K")
+        } else {
+            format!("{k:.1}K")
+        }
+    } else {
+        let m = n as f64 / 1_000_000.0;
+        if (m * 10.0).round() % 10.0 == 0.0 {
+            format!("{m:.0}M")
+        } else {
+            format!("{m:.1}M")
+        }
+    }
+}
+
+/// One-line usage summary for the parent tool card / subagent popup.
+/// Mirrors bottom-bar fields that fit without a context-window size:
+/// total tokens, cache hit rate, and prompt size as `ctx`.
+fn format_token_usage_line(usage: &tact_protocol::TokenUsageInfo) -> String {
+    let cache = {
+        let hit = usage.prompt_cache_hit_tokens;
+        let miss = usage.prompt_cache_miss_tokens;
+        let total = hit + miss;
+        if total == 0 {
+            "▣ cache% --".to_string()
+        } else {
+            let pct = hit.saturating_mul(100).checked_div(total).unwrap_or(0);
+            format!("▣ cache% {pct}%")
+        }
+    };
+    format!(
+        "⚡ {} tokens · {cache} · ctx {}",
+        usage.total,
+        format_tokens_compact(usage.prompt)
+    )
+}
+
+/// Labeled thinking block. Not a Markdown blockquote — `>` + soft-break made
+/// titles glue to the next sentence and doubled the quote gutter (`▎ >`).
+fn format_thinking_block(summary: &str) -> String {
+    format!(
+        "🧠 Thinking\n\n{}",
+        preserve_markdown_newlines(summary.trim())
+    )
+}
+
+/// Spawn a forwarder that pushes subagent stream/steps/thinking as
+/// [`AgentUpdate::ToolProgress`] into the parent tool card, while passing
+/// through permission selects with a `[Subagent]` prefix.
+///
+/// Returns a new sender for the subagent to use as `ui_tx`.
+pub fn tagged_ui_channel_with_progress(
+    inner: UnboundedSender<AgentUpdate>,
+    progress: ToolProgressReporter,
+) -> UnboundedSender<AgentUpdate> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut thinking_buf = String::new();
+        while let Some(update) = rx.recv().await {
+            match update {
+                AgentUpdate::StreamChunk(text) => {
+                    progress.report(vec![ToolOutputChunk::other(text)]);
+                }
+                AgentUpdate::ThinkingChunk(chunk) => match chunk {
+                    tact_protocol::ThinkingChunk::Started => {
+                        thinking_buf.clear();
+                    }
+                    tact_protocol::ThinkingChunk::Delta(text) => {
+                        thinking_buf.push_str(&text);
+                    }
+                    tact_protocol::ThinkingChunk::Finished => {
+                        let summary = thinking_buf.trim().to_string();
+                        thinking_buf.clear();
+                        if !summary.is_empty() {
+                            progress.report(vec![structural_line(format_thinking_block(&summary))]);
+                        }
+                    }
+                },
+                AgentUpdate::StepStarted {
+                    tool_name,
+                    arg_summary,
+                    ..
+                } => {
+                    let line = if arg_summary.is_empty() {
+                        format!("→ {tool_name}")
+                    } else {
+                        format!("→ {tool_name} {arg_summary}")
+                    };
+                    progress.report(vec![structural_line(line)]);
+                }
+                AgentUpdate::StepFinished { result, .. } => {
+                    let preview = result.message;
+                    if !preview.is_empty() {
+                        // Multi-line tool output (e.g. `ls -la`) must keep its
+                        // newlines through the completed-popup Markdown pass.
+                        progress.report(vec![structural_line(format!(
+                            "✓ {}",
+                            preserve_markdown_newlines(&preview)
+                        ))]);
+                    }
+                }
+                AgentUpdate::StepFailed { error, .. } => {
+                    progress.report(vec![structural_stderr(format!(
+                        "✗ {}",
+                        preserve_markdown_newlines(&error)
+                    ))]);
+                }
+                AgentUpdate::Info(msg) => {
+                    progress.report(vec![structural_line(msg)]);
+                }
+                AgentUpdate::Error(err) => {
+                    progress.report(vec![structural_stderr(format!("error: {err:?}"))]);
+                }
+                AgentUpdate::TokenUsage(usage) => {
+                    // Keep the parent bottom-bar cache/ctx meters in sync (docs:
+                    // shared UI channel carries parent *and* child TokenUsage).
+                    let _ = inner.send(AgentUpdate::TokenUsage(usage.clone()));
+                    progress.report(vec![structural_line(format_token_usage_line(&usage))]);
+                }
+                AgentUpdate::ModelInfo(_) => {}
+                AgentUpdate::RequestSelect {
+                    mut prompt,
+                    options,
+                    respond,
+                    log_confirm,
+                } => {
+                    prompt = format!("[Subagent] {prompt}");
+                    let _ = inner.send(AgentUpdate::RequestSelect {
+                        prompt,
+                        options,
+                        respond,
+                        log_confirm,
+                    });
+                }
+                AgentUpdate::RequestMultiSelect {
+                    mut prompt,
+                    options,
+                    respond,
+                } => {
+                    prompt = format!("[Subagent] {prompt}");
+                    let _ = inner.send(AgentUpdate::RequestMultiSelect {
+                        prompt,
+                        options,
+                        respond,
+                    });
+                }
+                AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => {}
+                // Unused/unknown variants — skip silently.
+                _ => {}
+            }
+        }
+    });
+    tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_protocol::{StepResult, StepStatus, ThinkingChunk, TokenUsageInfo};
+
+    #[tokio::test]
+    async fn streams_become_tool_progress() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("task-1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::StreamChunk("hello world\n".into()))
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 1);
+        match &got[0] {
+            AgentUpdate::ToolProgress { tool_id, chunks } => {
+                assert_eq!(tool_id, "task-1");
+                assert_eq!(chunks.len(), 1);
+                assert_eq!(chunks[0].text, "hello world\n");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        assert!(inner_rx.try_recv().is_err(), "nothing on inner");
+    }
+
+    #[tokio::test]
+    async fn thinking_finished_emits_summary_with_prefix() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                "reasoning line\nsecond".into(),
+            )))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 1);
+        match &got[0] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                let text = &chunks[0].text;
+                assert!(text.contains("🧠 Thinking"), "got {text:?}");
+                assert!(
+                    !text.contains("> 🧠"),
+                    "blockquote markers should be gone: {text:?}"
+                );
+                assert!(text.contains("reasoning line"), "got {text:?}");
+                assert!(text.contains("second"), "got {text:?}");
+                // Hard break between thinking lines (two spaces + newline).
+                assert!(text.contains("reasoning line  \nsecond"), "got {text:?}");
+                assert!(text.starts_with("\n\n"), "got {text:?}");
+                assert!(text.ends_with("\n\n"), "got {text:?}");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thinking_block_is_distinct_from_assistant_stream() {
+        assert_eq!(
+            format_thinking_block("plan the answer"),
+            "🧠 Thinking\n\nplan the answer"
+        );
+        assert_eq!(
+            format_thinking_block("line one\nline two"),
+            "🧠 Thinking\n\nline one  \nline two"
+        );
+    }
+
+    #[test]
+    fn structural_line_uses_blank_paragraph_breaks() {
+        // Regression: single `\n` before ⚡ soft-breaks into the previous
+        // assistant sentence under Markdown (`help with! ⚡ 3228 tokens`).
+        let chunk = structural_line("⚡ 3228 tokens · ▣ cache% 71% · ctx 2.7K");
+        assert_eq!(
+            chunk.text,
+            "\n\n⚡ 3228 tokens · ▣ cache% 71% · ctx 2.7K\n\n"
+        );
+    }
+
+    #[test]
+    fn preserve_markdown_newlines_keeps_ls_rows() {
+        let preview = "total 2456\ndrwxr-xr-x@ 30 rg staff 960";
+        assert_eq!(
+            preserve_markdown_newlines(preview),
+            "total 2456  \ndrwxr-xr-x@ 30 rg staff 960"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_thinking_skips_summary() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(progress_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn step_started_and_failed_map_to_progress() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "b1".into(),
+                tool_name: "read_file".into(),
+                arg_summary: "main.rs".into(),
+                arg_full: "main.rs".into(),
+            })
+            .unwrap();
+        tagged
+            .send(AgentUpdate::StepFailed {
+                idx: 0,
+                tool_id: "b1".into(),
+                error: "not found".into(),
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 2);
+        match &got[0] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert!(chunks[0].text.contains("read_file"));
+                assert!(chunks[0].text.contains("main.rs"));
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        match &got[1] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert!(chunks[0].text.contains("✗ "));
+                assert!(chunks[0].text.contains("not found"));
+                assert!(chunks[0].text.starts_with("\n\n"));
+                assert!(matches!(
+                    chunks[0].stream,
+                    tact_protocol::ToolOutputStream::Stderr
+                ));
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn step_finished_emits_preview() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "b1".into(),
+                result: StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "echo hi".into(),
+                    arg_full: Some("echo hi".into()),
+                    status: StepStatus::Success,
+                    message: "hi".into(),
+                    detail: None,
+                    duration_us: None,
+                    permission_label: None,
+                },
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 1);
+        match &got[0] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert!(chunks[0].text.contains("✓ "));
+                assert!(chunks[0].text.contains("hi"));
+                assert!(chunks[0].text.starts_with("\n\n"));
+                assert!(chunks[0].text.ends_with("\n\n"));
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_step_finished_message_is_skipped() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "b1".into(),
+                result: StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "".into(),
+                    detail: None,
+                    duration_us: None,
+                    permission_label: None,
+                },
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(progress_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn select_prefixed_with_subagent() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        let (respond, _) = tokio::sync::oneshot::channel();
+        tagged
+            .send(AgentUpdate::RequestSelect {
+                prompt: "Allow bash?".into(),
+                options: vec!["Yes".into()],
+                respond,
+                log_confirm: false,
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got = inner_rx.try_recv().unwrap();
+        match got {
+            AgentUpdate::RequestSelect { prompt, .. } => {
+                assert!(prompt.starts_with("[Subagent]"));
+            }
+            other => panic!("expected RequestSelect, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn token_usage_becomes_progress_chunk() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::TokenUsage(TokenUsageInfo {
+                total: 999,
+                prompt: 800,
+                prompt_cache_hit_tokens: 600,
+                prompt_cache_miss_tokens: 200,
+                ..Default::default()
+            }))
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 1);
+        match &got[0] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert!(chunks[0].text.contains("⚡"));
+                assert!(chunks[0].text.contains("999"));
+                assert!(chunks[0].text.contains("▣ cache% 75%"));
+                assert!(chunks[0].text.contains("ctx 800"));
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        // Also forwarded so the parent bottom bar can show cache/ctx.
+        match inner_rx.try_recv().unwrap() {
+            AgentUpdate::TokenUsage(u) => {
+                assert_eq!(u.total, 999);
+                assert_eq!(u.prompt_cache_hit_tokens, 600);
+            }
+            other => panic!("expected TokenUsage on inner, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn structural_events_are_newline_delimited() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        // Stream chunk with no trailing newline — previously glued to the next event.
+        tagged
+            .send(AgentUpdate::StreamChunk("partial".into()))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::TokenUsage(TokenUsageInfo {
+                total: 42,
+                ..Default::default()
+            }))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "b1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "ls".into(),
+                arg_full: "ls".into(),
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        assert_eq!(got.len(), 3);
+        match &got[0] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert_eq!(chunks[0].text, "partial");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        match &got[1] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert_eq!(chunks[0].text, "\n\n⚡ 42 tokens · ▣ cache% -- · ctx 0\n\n");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        match &got[2] {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert_eq!(chunks[0].text, "\n\n→ bash ls\n\n");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn model_info_is_silently_ignored() {
+        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+                model: "fake".into(),
+                max_tokens: 4096,
+                thinking_budget: None,
+                reasoning_effort: None,
+                extra_body: None,
+            }))
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(progress_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn task_complete_and_cancelled_are_dropped() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+
+        tagged
+            .send(AgentUpdate::TaskComplete("done".into()))
+            .unwrap();
+        tagged.send(AgentUpdate::TaskCancelled).unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(progress_rx.try_recv().is_err());
+        assert!(inner_rx.try_recv().is_err());
+    }
+}

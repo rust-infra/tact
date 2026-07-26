@@ -99,7 +99,6 @@ impl DeepSeekAdapter {
     }
 }
 
-#[async_trait::async_trait]
 impl LlmClient for DeepSeekAdapter {
     async fn stream_message(
         &self,

@@ -15,6 +15,10 @@ pub struct LoadSkillInput {
     name = "load_skill",
     description = "Load the full body of a named skill into the current context."
 )]
+/// # Errors
+///
+/// This function always returns `Ok`. Unknown skills produce an error message
+/// in the returned string rather than an `Err`.
 pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<String> {
     Ok(crate::skill::lock_skills(&ctx.skill_registry).load_full_text(&input.name))
 }
