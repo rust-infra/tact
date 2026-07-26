@@ -66,17 +66,8 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        match app.sticky_tab {
-            crate::widgets::state::StickyTab::Tasks => {
-                if app.task_panel.scroll > 0 {
-                    app.task_panel.scroll -= 1;
-                }
-            }
-            crate::widgets::state::StickyTab::Subagent => {
-                if app.subagent_pane.scroll > 0 {
-                    app.subagent_pane.scroll -= 1;
-                }
-            }
+        if app.task_panel.scroll > 0 {
+            app.task_panel.scroll -= 1;
         }
     } else if hit.in_log && app.log_scroll.offset > 0 {
         app.mouse.in_task_panel = false;
@@ -90,14 +81,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        match app.sticky_tab {
-            crate::widgets::state::StickyTab::Tasks => {
-                app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
-            }
-            crate::widgets::state::StickyTab::Subagent => {
-                app.subagent_pane.scroll = app.subagent_pane.scroll.saturating_add(1);
-            }
-        }
+        app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
@@ -105,7 +89,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
 }
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.sticky_expanded
+    crate::render::task_panel::sticky_host_visible(app) && app.task_panel.expanded
 }
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
@@ -113,20 +97,8 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         return;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
-        let rel_x = mouse.column.saturating_sub(app.mouse.task_panel_area.x);
-        // Left region: switch tabs when both are available.
-        if app.task_panel.visible && app.subagent_pane.has_content && rel_x < 18 {
-            if rel_x < 8 {
-                app.sticky_tab = crate::widgets::state::StickyTab::Tasks;
-            } else {
-                app.sticky_tab = crate::widgets::state::StickyTab::Subagent;
-                app.subagent_badge = 0;
-            }
-        } else {
-            app.sticky_expanded = !app.sticky_expanded;
-            app.task_panel.expanded = app.sticky_expanded;
-        }
-        app.mouse.in_task_panel = app.sticky_expanded;
+        app.task_panel.expanded = !app.task_panel.expanded;
+        app.mouse.in_task_panel = app.task_panel.expanded;
         app.dirty = true;
         return;
     }
@@ -400,7 +372,7 @@ mod tests {
         let mut app = make_app();
         app.task_panel.visible = true;
         app.task_panel.expanded = false;
-        app.sticky_expanded = false;
+        app.task_panel.expanded = false;
         app.task_panel.snapshot = vec![TaskSnapshot {
             id: 1,
             subject: "Fix auth".into(),
@@ -416,11 +388,11 @@ mod tests {
 
         // Click outside tab strip (x>=18) toggles expand when both tabs aren't shown.
         handle_mouse_event(&mut app, mouse_down(20, 10));
-        assert!(app.sticky_expanded);
+        assert!(app.task_panel.expanded);
         assert!(app.task_panel.expanded);
 
         handle_mouse_event(&mut app, mouse_down(20, 10));
-        assert!(!app.sticky_expanded);
+        assert!(!app.task_panel.expanded);
         assert!(!app.task_panel.expanded);
     }
 

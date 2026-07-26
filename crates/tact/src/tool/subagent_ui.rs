@@ -1,125 +1,21 @@
-//! Tag subagent `ui_tx` traffic so the TUI can route it to the Subagent sticky.
+//! Forward subagent `ui_tx` traffic — currently a no-op while the sticky pane
+//! is removed. In a future step this will push stream chunks as `ToolProgress`
+//! for parent tool-card live output.
 
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// How a subagent update should be forwarded onto the parent UI channel.
-#[derive(Debug)]
-pub enum SubagentForward {
-    /// Wrap as [`AgentUpdate::Subagent`].
-    Tag(AgentUpdate),
-    /// Send unchanged (permission / ask_user popups).
-    Passthrough(AgentUpdate),
-    /// Drop (must not end the parent task).
-    Drop,
-}
-
-/// Classify an update emitted by a nested subagent.
-pub fn classify_subagent_update(update: AgentUpdate) -> SubagentForward {
-    match update {
-        AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
-            SubagentForward::Passthrough(update)
-        }
-        AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => SubagentForward::Drop,
-        // Avoid double-wrapping if a forwarder is stacked.
-        AgentUpdate::Subagent { update, .. } => classify_subagent_update(*update),
-        other => SubagentForward::Tag(other),
-    }
-}
-
-/// Spawn a forwarder that tags subagent updates onto `inner`.
+/// Spawn a forwarder that drops subagent updates.
 ///
-/// Returns a new sender for the subagent to use as `ui_tx`.
+/// Returns a new sender for the subagent to use as `ui_tx`, keeping the channel
+/// contract without routing any content to the parent UI.
 pub fn tagged_ui_channel(
-    inner: UnboundedSender<AgentUpdate>,
-    parent_tool_id: String,
-    session_id: String,
+    _inner: UnboundedSender<AgentUpdate>,
+    _parent_tool_id: String,
+    _session_id: String,
 ) -> UnboundedSender<AgentUpdate> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(update) = rx.recv().await {
-            match classify_subagent_update(update) {
-                SubagentForward::Passthrough(u) => {
-                    let _ = inner.send(u);
-                }
-                SubagentForward::Drop => {}
-                SubagentForward::Tag(u) => {
-                    let _ = inner.send(AgentUpdate::Subagent {
-                        parent_tool_id: parent_tool_id.clone(),
-                        session_id: session_id.clone(),
-                        update: Box::new(u),
-                    });
-                }
-            }
-        }
-    });
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    // All subagent updates are dropped silently — no sticky pane.
+    // Future: forward StreamChunk as ToolProgress to parent tool card.
     tx
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tact_protocol::TokenUsageInfo;
-
-    #[test]
-    fn classifies_stream_as_tag() {
-        assert!(matches!(
-            classify_subagent_update(AgentUpdate::StreamChunk("hi".into())),
-            SubagentForward::Tag(AgentUpdate::StreamChunk(_))
-        ));
-    }
-
-    #[test]
-    fn classifies_token_usage_as_tag() {
-        assert!(matches!(
-            classify_subagent_update(AgentUpdate::TokenUsage(TokenUsageInfo::default())),
-            SubagentForward::Tag(AgentUpdate::TokenUsage(_))
-        ));
-    }
-
-    #[test]
-    fn passthrough_select() {
-        let (respond, _) = tokio::sync::oneshot::channel();
-        assert!(matches!(
-            classify_subagent_update(AgentUpdate::RequestSelect {
-                prompt: "ok?".into(),
-                options: vec!["a".into()],
-                respond,
-                log_confirm: false,
-            }),
-            SubagentForward::Passthrough(AgentUpdate::RequestSelect { .. })
-        ));
-    }
-
-    #[test]
-    fn drops_task_complete() {
-        assert!(matches!(
-            classify_subagent_update(AgentUpdate::TaskComplete("done".into())),
-            SubagentForward::Drop
-        ));
-    }
-
-    #[tokio::test]
-    async fn forwarder_tags_stream_chunks() {
-        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
-        let tagged = tagged_ui_channel(inner_tx, "task-1".into(), "child-sess".into());
-        tagged
-            .send(AgentUpdate::StreamChunk("hello".into()))
-            .unwrap();
-        // Yield so the forwarder task runs.
-        tokio::task::yield_now().await;
-        let got = inner_rx.try_recv().unwrap();
-        match got {
-            AgentUpdate::Subagent {
-                parent_tool_id,
-                session_id,
-                update,
-            } => {
-                assert_eq!(parent_tool_id, "task-1");
-                assert_eq!(session_id, "child-sess");
-                assert!(matches!(*update, AgentUpdate::StreamChunk(s) if s == "hello"));
-            }
-            other => panic!("expected Subagent, got {other:?}"),
-        }
-    }
 }

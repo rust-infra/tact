@@ -1,4 +1,4 @@
-//! Unified sticky host under Log: tabs Tasks | Subagent.
+//! Persistent tasks sticky strip under Log.
 
 use ratatui::{
     Frame,
@@ -9,18 +9,15 @@ use ratatui::{
 };
 
 use crate::widgets::state::{
-    App, StickyTab,
+    App,
     task_panel::{format_grouped_lines, format_sticky_title_line},
 };
 
 /// Extra rows for sticky chrome: bottom border joins the Log box (sides continue).
 pub(crate) const STICKY_BORDER_ROWS: u16 = 1;
 
-/// Cap on subagent mini-log rows reserved in the sticky.
-const SUBAGENT_MAX_LINES: usize = 10;
-
 pub(crate) fn sticky_host_visible(app: &App) -> bool {
-    app.task_panel.visible || app.subagent_pane.has_content
+    app.task_panel.visible
 }
 
 /// Content rows inside the sticky (excluding border).
@@ -28,35 +25,18 @@ pub(crate) fn sticky_host_content_height(app: &App) -> usize {
     if !sticky_host_visible(app) {
         return 0;
     }
-    if !app.sticky_expanded {
+    if !app.task_panel.expanded {
         return 1;
     }
-    match effective_tab(app) {
-        StickyTab::Tasks => {
-            // title + hairline + body (matches legacy sticky_height)
-            let body = format_grouped_lines(
-                &app.task_panel.snapshot,
-                app.task_panel.scroll,
-                app.task_panel.max_visible,
-            )
-            .len()
-            .max(1);
-            2 + body
-        }
-        StickyTab::Subagent => {
-            // title + hairline + in-body header (`sub … · sess …`) + capped log lines
-            3 + app.subagent_pane.visible_lines(SUBAGENT_MAX_LINES).len()
-        }
-    }
-}
-
-fn effective_tab(app: &App) -> StickyTab {
-    match app.sticky_tab {
-        StickyTab::Tasks if app.task_panel.visible => StickyTab::Tasks,
-        StickyTab::Subagent if app.subagent_pane.has_content => StickyTab::Subagent,
-        _ if app.subagent_pane.has_content => StickyTab::Subagent,
-        _ => StickyTab::Tasks,
-    }
+    // title + hairline + body
+    let body = format_grouped_lines(
+        &app.task_panel.snapshot,
+        app.task_panel.scroll,
+        app.task_panel.max_visible,
+    )
+    .len()
+    .max(1);
+    2 + body
 }
 
 pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -90,11 +70,19 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         .add_modifier(Modifier::BOLD);
     let muted = Style::default().fg(app.theme.muted_fg()).bg(bg);
     let row_style = Style::default().fg(app.theme.fg).bg(bg);
-    let tab = effective_tab(app);
 
-    let title_line = host_title_line(app, tab, accent, muted, row_style);
+    let msgs = app.msgs();
+    let rest = format_sticky_title_line(&msgs, &app.task_panel.snapshot)
+        .trim_start_matches('▸')
+        .trim_start()
+        .to_string();
+    let mut title_spans = Vec::new();
+    title_spans.push(Span::styled("[Tasks]", accent));
+    title_spans.push(Span::styled(" ", row_style));
+    title_spans.push(Span::styled(rest, row_style));
+    let title_line = Line::from(title_spans);
 
-    if !app.sticky_expanded || inner.height == 1 {
+    if !app.task_panel.expanded || inner.height == 1 {
         frame.render_widget(Paragraph::new(title_line), inner);
         return;
     }
@@ -111,7 +99,6 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     if inner.height < 2 {
         return;
     }
-    // Hairline keeps tab chrome visually apart from — Pending — / subagent log.
     let gap_area = Rect {
         x: inner.x,
         y: inner.y.saturating_add(1),
@@ -136,108 +123,16 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         height: body_h,
     };
 
-    match tab {
-        StickyTab::Tasks => {
-            let msgs = app.msgs();
-            let _ = msgs; // title already drawn
-            let lines = format_grouped_lines(
-                &app.task_panel.snapshot,
-                app.task_panel.scroll,
-                body_h as usize,
-            );
-            let styled: Vec<Line> = lines
-                .into_iter()
-                .map(|l| Line::from(Span::styled(l, row_style)))
-                .collect();
-            frame.render_widget(Paragraph::new(styled), body_area);
-        }
-        StickyTab::Subagent => {
-            let mut body_lines: Vec<Line> = Vec::new();
-            let header = format!(
-                "sub {} · sess {}{}",
-                short_id(&app.subagent_pane.parent_tool_id),
-                short_id(&app.subagent_pane.session_id),
-                if app.subagent_pane.running {
-                    " · running"
-                } else {
-                    ""
-                }
-            );
-            body_lines.push(Line::from(Span::styled(header, muted)));
-            for line in app
-                .subagent_pane
-                .visible_lines(body_h.saturating_sub(1) as usize)
-            {
-                body_lines.push(Line::from(Span::styled(line.to_string(), row_style)));
-            }
-            frame.render_widget(Paragraph::new(body_lines), body_area);
-        }
-    }
-}
-
-fn host_title_line(
-    app: &App,
-    tab: StickyTab,
-    accent: Style,
-    muted: Style,
-    row: Style,
-) -> Line<'static> {
-    let mut spans = Vec::new();
-    if app.task_panel.visible {
-        let style = if tab == StickyTab::Tasks {
-            accent
-        } else {
-            muted
-        };
-        spans.push(Span::styled("[Tasks]", style));
-        spans.push(Span::styled(" ", row));
-    }
-    if app.subagent_pane.has_content {
-        let style = if tab == StickyTab::Subagent {
-            accent
-        } else {
-            muted
-        };
-        let label = if app.subagent_badge > 0 && tab != StickyTab::Subagent {
-            format!("[Subagent·{}]", app.subagent_badge.min(99))
-        } else {
-            "[Subagent]".into()
-        };
-        spans.push(Span::styled(label, style));
-        spans.push(Span::styled(" ", row));
-    }
-
-    let rest = match tab {
-        StickyTab::Tasks => {
-            let msgs = app.msgs();
-            let t = format_sticky_title_line(&msgs, &app.task_panel.snapshot);
-            // Drop leading ▸ — tabs already provide chrome.
-            t.trim_start_matches('▸').trim_start().to_string()
-        }
-        StickyTab::Subagent => {
-            let status = if app.subagent_pane.running {
-                "running"
-            } else {
-                "idle"
-            };
-            let chevron = if app.sticky_expanded { "▼" } else { "▶" };
-            format!(
-                "sub {} · {status}  {chevron}",
-                short_id(&app.subagent_pane.parent_tool_id)
-            )
-        }
-    };
-    spans.push(Span::styled(rest, row));
-    Line::from(spans)
-}
-
-fn short_id(id: &str) -> String {
-    let take = id.chars().take(8).collect::<String>();
-    if id.chars().count() > 8 {
-        format!("{take}…")
-    } else {
-        take
-    }
+    let lines = format_grouped_lines(
+        &app.task_panel.snapshot,
+        app.task_panel.scroll,
+        body_h as usize,
+    );
+    let styled: Vec<Line> = lines
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, row_style)))
+        .collect();
+    frame.render_widget(Paragraph::new(styled), body_area);
 }
 
 #[cfg(test)]
@@ -255,7 +150,7 @@ mod sticky_tests {
             status: TaskStatusSnapshot::Pending,
             ..Default::default()
         }]);
-        app.sticky_expanded = true;
+        app.task_panel.expanded = true;
 
         let text = render_main_area_text(&mut app, 80, 20);
         let lines: Vec<&str> = text.lines().collect();

@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::widgets::state::{App, InputMode, Status};
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.sticky_expanded
+    crate::render::task_panel::sticky_host_visible(app) && app.task_panel.expanded
 }
 
 pub(crate) fn handle_normal_mode(
@@ -16,31 +16,15 @@ pub(crate) fn handle_normal_mode(
     match key.code {
         KeyCode::Char('j') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                match app.sticky_tab {
-                    crate::widgets::state::StickyTab::Tasks => {
-                        app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
-                    }
-                    crate::widgets::state::StickyTab::Subagent => {
-                        app.subagent_pane.scroll = app.subagent_pane.scroll.saturating_add(1);
-                    }
-                }
+                app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
             } else {
                 app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
             }
         }
         KeyCode::Char('k') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                match app.sticky_tab {
-                    crate::widgets::state::StickyTab::Tasks => {
-                        if app.task_panel.scroll > 0 {
-                            app.task_panel.scroll -= 1;
-                        }
-                    }
-                    crate::widgets::state::StickyTab::Subagent => {
-                        if app.subagent_pane.scroll > 0 {
-                            app.subagent_pane.scroll -= 1;
-                        }
-                    }
+                if app.task_panel.scroll > 0 {
+                    app.task_panel.scroll -= 1;
                 }
             } else if app.log_scroll.offset > 0 {
                 app.log_scroll.offset -= 1;
