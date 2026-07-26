@@ -71,7 +71,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "bash" | "shell" => "Bash".to_string(),
         "run_command" => "Command".to_string(),
         "spawn_subagent" => "Subagent".to_string(),
-        "ask_user" => "💬 Ask".to_string(),
+        "ask_user" => "❓ Ask".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()
