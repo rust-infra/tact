@@ -14,6 +14,7 @@ const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
 const ERROR_PREVIEW_LINES: usize = 5;
 const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
+const SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES: usize = 8;
 pub(crate) const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -332,7 +333,12 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
-        let lines = output.preview_lines(LIVE_OUTPUT_PREVIEW_LINES);
+        let preview_cap = if self.tool_name == "spawn_subagent" {
+            SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES
+        } else {
+            LIVE_OUTPUT_PREVIEW_LINES
+        };
+        let lines = output.preview_lines(preview_cap);
         // Popup/detail_full keep `$ <command>` for consistency with completed
         // cards, but the live title/footer/line numbers must count only the
         // streamed output — the preview itself never includes that prefix.
@@ -340,7 +346,7 @@ impl<'a> ToolWidget<'a> {
         self.detail = Some(detail);
         self.detail_lines = Some(lines);
         self.detail_total_lines = Some(output.logical_line_count());
-        self.preview_lines = LIVE_OUTPUT_PREVIEW_LINES;
+        self.preview_lines = preview_cap;
         self.live_detail = true;
         self
     }
