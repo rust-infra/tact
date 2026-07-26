@@ -177,8 +177,9 @@ async fn update_order_read_before_write() {
     let mock = MockClient::new(vec![
         (
             vec![
-                harness::read_file_tool_use("r1", "source.txt"),
-                harness::write_file_tool_use("w1", "dest.txt", "copied"),
+                // Same file → scheduler must serialize them (read before write).
+                harness::read_file_tool_use("r1", "common.txt"),
+                harness::write_file_tool_use("w1", "common.txt", "updated"),
             ],
             Some(StopReason::ToolUse),
         ),
@@ -187,7 +188,7 @@ async fn update_order_read_before_write() {
 
     let (updates, _work_dir) =
         run_single_task_with_setup(mock, "read and write", PermissionMode::Auto, |dir| {
-            write_workspace_file(dir, "source.txt", "original")
+            write_workspace_file(dir, "common.txt", "original")
         })
         .await;
 
