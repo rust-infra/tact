@@ -95,6 +95,7 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
 }
 
 /// Update the in-memory subagent model and thinking budget.
+#[allow(clippy::collapsible_if)]
 pub fn update_subagent_model(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
     if let Some(cfg) = guard.as_mut() {
