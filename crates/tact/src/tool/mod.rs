@@ -52,6 +52,7 @@ mod cron;
 mod edit_file;
 mod load_skill;
 mod memory;
+mod metadata;
 mod path;
 mod progress;
 mod read_file;
@@ -216,6 +217,11 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;
+pub use metadata::{
+    ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
+    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
+    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+};
 
 #[cfg(test)]
 mod tests {

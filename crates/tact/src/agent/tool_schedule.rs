@@ -22,7 +22,7 @@ use serde_json::Value;
 /// The workspace files a tool reads and/or writes, used to decide whether two
 /// tool calls in the same turn may run concurrently.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ToolResources {
+pub struct ToolResources {
     pub reads: Vec<PathBuf>,
     pub writes: Vec<PathBuf>,
     /// `true` for tools whose effects we cannot scope (bash, MCP, subagents,
@@ -33,7 +33,7 @@ pub(crate) struct ToolResources {
 }
 
 impl ToolResources {
-    fn barrier() -> Self {
+    pub fn barrier() -> Self {
         Self {
             barrier: true,
             ..Default::default()
@@ -42,7 +42,7 @@ impl ToolResources {
 
     /// A tool that touches no workspace file (e.g. `web_search`); it never
     /// conflicts and may run alongside anything.
-    fn independent() -> Self {
+    pub fn independent() -> Self {
         Self::default()
     }
 }

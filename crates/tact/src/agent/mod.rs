@@ -1,7 +1,7 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 mod tool_dispatch;
-mod tool_schedule;
+pub(crate) mod tool_schedule;
 
 use std::path::Path;
 
