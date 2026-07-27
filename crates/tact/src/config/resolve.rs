@@ -1,11 +1,11 @@
-use tact_llm::{OpenAiProtocol, ProviderKind};
+use tact_llm::{OpenAiProtocol, ProviderInfo, ProviderKind};
 
 use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
-        VisionImageSettings,
+        AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
+        UiSettings, VisionImageSettings,
     },
 };
 
@@ -120,6 +120,100 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     })
 }
 
+/// Resolve the optional subagent provider configuration from TOML.
+///
+/// Reads `[agent.subagent]` and validates that the referenced `provider` key
+/// exists in `[llm.providers.*]`. Returns `None` when the subagent section is
+/// absent (backward compatibility).
+fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<SubagentSettings>> {
+    let Some(subagent_cfg) = &toml_cfg.agent.subagent else {
+        return Ok(None);
+    };
+    let Some(provider_name) = &subagent_cfg.provider else {
+        return Ok(None);
+    };
+
+    // Validate the provider name is a known key in llm.providers
+    let provider_kind = provider_name.parse::<ProviderKind>().map_err(|e| {
+        anyhow::anyhow!(
+            "subagent provider '{provider_name}' is not valid: {e}"
+        )
+    })?;
+
+    let entry = toml_cfg
+        .llm
+        .providers
+        .get(provider_name)
+        .ok_or_else(|| {
+            let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
+            anyhow::anyhow!(
+                "subagent provider '{provider_name}' not found in llm.providers (have: {})",
+                if have.is_empty() {
+                    "<none>".into()
+                } else {
+                    have.join(", ")
+                }
+            )
+        })?;
+
+    let api_key = entry
+        .api_key
+        .clone()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("api_key missing for subagent provider '{provider_name}'")
+        })?;
+
+    let base_url = entry
+        .base_url
+        .clone()
+        .or_else(|| provider_kind.default_base_url().map(str::to_string))
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("base_url missing for subagent provider '{provider_name}'"))?;
+
+    let model = subagent_cfg
+        .model
+        .clone()
+        .or_else(|| entry.model.clone())
+        .filter(|m| !m.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "model not configured for subagent provider '{provider_name}'. \
+                 Set [agent.subagent].model or [llm.providers.{provider_name}].model"
+            )
+        })?;
+
+    let protocol = entry
+        .protocol
+        .as_deref()
+        .unwrap_or(OpenAiProtocol::default().as_str())
+        .parse::<OpenAiProtocol>()
+        .map_err(anyhow::Error::msg)?;
+
+    // Resolve reasoning_effort from the referenced provider entry
+    let reasoning_effort = entry.reasoning_effort;
+
+    let max_tokens = subagent_cfg.max_tokens.or(entry.max_tokens).unwrap_or(8_000);
+    let thinking_budget = subagent_cfg
+        .thinking_budget
+        .or(entry.thinking_budget)
+        .unwrap_or(0);
+
+    Ok(Some(SubagentSettings {
+        provider: ProviderInfo {
+            api_key,
+            base_url,
+            model,
+            provider: provider_kind,
+            protocol,
+            reasoning_effort,
+        },
+        max_tokens,
+        thinking_budget,
+        models: entry.models.clone(),
+    }))
+}
+
 pub(super) fn resolve_non_llm_settings(
     args: &CliArgs,
     toml_cfg: &TactTomlConfig,
@@ -196,6 +290,7 @@ pub(super) fn resolve_non_llm_settings(
             skill_body_auto_inject,
             skill_dirs,
             instruction_sources,
+            subagent: None,
         },
         ui: UiSettings {
             theme,
@@ -302,6 +397,8 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
+    let subagent = resolve_subagent(toml_cfg)?;
+
     Ok(ResolvedConfig {
         llm,
         agent: AgentSettings {
@@ -314,6 +411,7 @@ pub(super) fn resolve_config(
             skill_body_auto_inject,
             skill_dirs,
             instruction_sources,
+            subagent,
         },
         ui: UiSettings {
             theme,

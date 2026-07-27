@@ -63,6 +63,8 @@ pub(crate) enum InputMode {
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
     ("model", "Switch model for current provider"),
+    ("model-subagent", "Switch subagent model"),
+    ("permission", "Set permission mode (Default/Plan/Auto)"),
     ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
     ("compact", "Compact conversation history"),
@@ -98,12 +100,26 @@ pub struct SkillEntry {
 pub(crate) enum SelectKind {
     /// Agent `RequestSelect` — confirm sends oneshot reply.
     Agent,
-    /// `/model` picker — confirm applies `set_model` then may open persist prompt.
+    /// `/model` first step — choose a model before applying either value.
     ModelPick,
-    /// Optional "Save to config?" after a model switch.
-    PersistModel { model: String },
+    /// `/model` second step — choose a thinking budget before applying either value.
+    ThinkBudgetPick { model: String },
+    /// Optional combined "save to config?" prompt after session application.
+    PersistModelAndBudget {
+        model: String,
+        thinking_budget: usize,
+    },
     /// Prompt source selection for `/view-system-prompt`.
     ViewSystemPrompt,
+    /// `/permission` picker — choose Default / Plan / Auto.
+    PermissionModePick,
+    /// `/model-subagent` flow
+    SubagentModelPick,
+    SubagentThinkBudgetPick { model: String },
+    SubagentPersistModelAndBudget {
+        model: String,
+        thinking_budget: usize,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]

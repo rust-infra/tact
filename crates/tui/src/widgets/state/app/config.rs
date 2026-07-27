@@ -70,6 +70,7 @@ impl App {
         match cmd {
             "theme" => msgs.cmd_theme.to_string(),
             "model" => msgs.cmd_model.to_string(),
+            "model-subagent" => msgs.cmd_model_subagent.to_string(),
             "save" => msgs.cmd_save.to_string(),
             "cancel" => msgs.cmd_cancel.to_string(),
             "quit" => msgs.cmd_quit.to_string(),

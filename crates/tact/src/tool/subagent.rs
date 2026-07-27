@@ -35,7 +35,21 @@ pub struct SubagentInput {
 /// - The session store cannot be opened.
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String> {
-    let client = get_llm_client()?;
+    let settings = crate::config::settings();
+
+    let (client, model_override, agent_overrides) =
+        if let Some(sa) = &settings.agent.subagent {
+            let client = sa.provider.build_client()?;
+            let model = sa.provider.model.clone();
+            let mut agent_settings = settings.agent.clone();
+            agent_settings.max_tokens = sa.max_tokens;
+            agent_settings.thinking_budget = sa.thinking_budget;
+            (client, Some(model), agent_settings)
+        } else {
+            let client = get_llm_client()?;
+            (client, None, settings.agent.clone())
+        };
+
     let system_prompt = format!(
         "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
         ctx.work_dir.display()
@@ -47,7 +61,13 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         MCPToolRouter::new(),
         PermissionManager::try_new(PermissionMode::Default)?,
         AgentSystemPrompt::Static(system_prompt),
-    );
+    )
+    .with_agent_settings(agent_overrides);
+
+    // Set model override so agent_loop and compact_history use the subagent's model
+    if let Some(model) = model_override {
+        subagent.runtime.model_override = Some(model);
+    }
 
     let child_id = uuid::Uuid::new_v4().to_string();
     let ref_id = ctx.session_id.as_deref().unwrap_or("");

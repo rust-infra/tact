@@ -89,6 +89,9 @@ pub struct AgentRuntime {
     pub cached_agents_md: Option<String>,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
     pub last_token_total: u32,
+    /// Override model name for subagents. When `Some`, agent_loop and
+    /// compact_history use this instead of `crate::get_model()`.
+    pub model_override: Option<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -152,6 +155,7 @@ impl Agent {
                 cached_claude_md: None,
                 cached_agents_md: None,
                 last_token_total: 0,
+                model_override: None,
             },
             tool_context,
             tools,
@@ -176,6 +180,12 @@ impl Agent {
 
     fn max_tokens(&self) -> u32 {
         self.agent_settings.max_tokens
+    }
+
+    /// Update the thinking budget used when constructing subsequent LLM requests.
+    /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
+    pub fn set_thinking_budget(&mut self, budget: usize) {
+        self.agent_settings.thinking_budget = budget;
     }
 
     fn thinking_budget(&self) -> usize {
@@ -424,7 +434,11 @@ impl Agent {
             // Includes the current user turn plus history, or retained users +
             // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
-            let model_name = crate::get_model();
+            let model_name = self
+                .runtime
+                .model_override
+                .clone()
+                .unwrap_or_else(crate::get_model);
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: conversation_messages,
@@ -808,7 +822,11 @@ impl Agent {
             model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
         );
 
-        let model_name = crate::get_model();
+        let model_name = self
+            .runtime
+            .model_override
+            .clone()
+            .unwrap_or_else(crate::get_model);
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
@@ -1363,6 +1381,7 @@ mod tests {
                     skill_body_auto_inject: false,
                     skill_dirs: Vec::new(),
                     instruction_sources: crate::config::InstructionSources::default(),
+                    subagent: None,
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
@@ -1411,6 +1430,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            subagent: None,
         };
         let agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),

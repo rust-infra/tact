@@ -44,6 +44,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: tact::config::InstructionSources::default(),
+            subagent: None,
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),

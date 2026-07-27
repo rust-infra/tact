@@ -96,6 +96,19 @@ mode = "default"
 # Loaded after built-in roots; later entries override same-named skills.
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]
 
+# Subagent LLM configuration (optional).
+# When configured, spawn_subagent uses a separate provider/model
+# instead of the main agent's provider. References a key from
+# [llm.providers.*]; model and token overrides are optional.
+[agent.subagent]
+# Required: references [llm.providers.<name>], e.g. "deepseek" or "openai".
+# provider = "deepseek"
+# Optional model override (otherwise uses the provider's default model).
+# model = "deepseek-chat"
+# Optional token overrides (otherwise falls back to the provider entry defaults).
+# max_tokens = 8000
+# thinking_budget = 0
+
 # ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------

@@ -98,6 +98,23 @@ pub struct AgentTomlConfig {
     /// Supported values: `agents_md`, `claude_md` (all CLAUDE paths), `claude_md_user`,
     /// `claude_md_project`, `claude_md_subdir`.
     pub instruction_sources: Option<Vec<String>>,
+
+    /// Subagent LLM configuration (optional).
+    /// When configured, spawn_subagent uses a separate provider/model.
+    pub subagent: Option<SubagentTomlConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubagentTomlConfig {
+    /// References a key from [llm.providers.*] (e.g. "deepseek", "openai").
+    pub provider: Option<String>,
+    /// Optional model override.
+    pub model: Option<String>,
+    /// Optional max_tokens override.
+    pub max_tokens: Option<u32>,
+    /// Optional thinking_budget override.
+    pub thinking_budget: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -174,6 +191,20 @@ pub struct AgentSettings {
     /// Extra skill roots from `[agent].skill_dirs` (unresolved path strings).
     pub skill_dirs: Vec<String>,
     pub instruction_sources: crate::config::InstructionSources,
+    /// Optional subagent provider/model configuration.
+    pub subagent: Option<SubagentSettings>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubagentSettings {
+    /// The resolved provider configuration for subagents.
+    pub provider: ProviderInfo,
+    /// Max output tokens.
+    pub max_tokens: u32,
+    /// Thinking budget (0 = off).
+    pub thinking_budget: usize,
+    /// Candidate model ids for the /model-subagent picker.
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
