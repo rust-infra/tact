@@ -237,7 +237,12 @@ let theme = config::settings().ui.theme.clone();
 
 若未调用 `init()`，`settings()` 会 panic — 对错误接线的二进制有意 fail-fast。
 
-Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop.md)）。
+每个 `Agent` 在构造时都会将 `model_context_window`、`max_tokens` 和
+`thinking_budget` 复制到自己的 `AgentSettings` 快照；普通 LLM 请求读取的是该 Agent
+快照，而不是每次重新读取全局 `settings()`。用户确认预算后，TUI `/model` 流程会通过
+command driver 更新运行中 Agent 的会话 `thinking_budget`，因此下一次请求使用所选值。
+其它配置变更会在新建 Agent 时生效（通常是下次进程启动）。见
+[第 18 章](./18_chapter_agent_loop_zh.md)。
 
 **破坏性重命名：** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window`（tokens，默认 200_000）。旧 TOML 键**无静默别名** — 请更新现有配置。
 

@@ -255,7 +255,13 @@ let theme = config::settings().ui.theme.clone();
 
 `settings()` panics if `init()` was not called — intentional fail-fast for miswired binaries.
 
-Agent loop reads `model_context_window`, `max_tokens`, and `thinking_budget` from `settings()` when building each LLM request ([Ch 18](./18_chapter_agent_loop.md)).
+Each `Agent` snapshots `model_context_window`, `max_tokens`, and
+`thinking_budget` into its `AgentSettings` at construction; normal LLM requests
+read that per-Agent snapshot rather than re-reading global `settings()`. The
+TUI `/model` flow updates the live Agent’s session `thinking_budget` through the
+command driver after the user confirms the budget, so the next request uses the
+selected value. Other configuration changes take effect for a newly constructed
+Agent (normally on the next process start). See [Ch 18](./18_chapter_agent_loop.md).
 
 **Breaking rename:** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window` (tokens, default 200_000). There is **no silent alias** for the old TOML key — update existing configs.
 
