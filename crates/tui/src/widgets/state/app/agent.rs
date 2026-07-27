@@ -336,15 +336,17 @@ impl App {
         tool_name: String,
         arg_summary: String,
         arg_full: String,
-        _presentation: tact_protocol::ToolPresentationInfo,
+        presentation: tact_protocol::ToolPresentationInfo,
     ) {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
-        // Only subagents need the full conversation preserved for the popup;
-        // other tools keep just the capped live preview.
-        let is_subagent = tool_name == "spawn_subagent";
+        // Full live output for subagents (based on presentation metadata, not tool name).
+        let is_subagent = match &presentation.popup {
+            tact_protocol::ToolPopupKind::SubagentTranscript => true,
+            _ => false,
+        };
         if let Status::Executing {
             current_step,
             total,
@@ -449,7 +451,7 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
-        let is_subagent = result.tool == "spawn_subagent";
+        let is_subagent = matches!(result.presentation.popup, tact_protocol::ToolPopupKind::SubagentTranscript);
         let mut output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
             .with_step_index(idx)
             .build();
