@@ -456,6 +456,7 @@ pub(crate) fn render_log_panel_with_borders(
             None,
             indent_cols,
             log_fg,
+            app.theme.bg,
         );
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
