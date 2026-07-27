@@ -40,9 +40,10 @@ uuid = { workspace = true }
 walkdir = { workspace = true }
 
 [features]
-test-support = []
+test-support = ["tact_llm/test-support"]
 
 [dev-dependencies]
+tact_llm = { path = "../tact_llm", features = ["test-support"] }
 proptest = "1"
 rmcp = { workspace = true, features = ["server"] }
 tempfile = { workspace = true }

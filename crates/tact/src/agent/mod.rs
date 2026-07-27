@@ -1433,17 +1433,28 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         {
+            let _provider_guard = tact_llm::provider::lock_provider_for_tests();
             let mut big = crate::config::settings();
             big.agent.model_context_window = 900_000;
             crate::config::install_or_override(big);
+
+            assert_eq!(agent.model_context_window(), 500);
+            assert_eq!(agent.max_tokens(), 1024);
+            assert_eq!(
+                agent.agent_settings.model_context_window,
+                tiny.model_context_window
+            );
         }
 
-        assert_eq!(agent.model_context_window(), 500);
-        assert_eq!(agent.max_tokens(), 1024);
-        assert_eq!(
-            agent.agent_settings.model_context_window,
-            tiny.model_context_window
-        );
+        #[cfg(not(feature = "test-support"))]
+        {
+            assert_eq!(agent.model_context_window(), 500);
+            assert_eq!(agent.max_tokens(), 1024);
+            assert_eq!(
+                agent.agent_settings.model_context_window,
+                tiny.model_context_window
+            );
+        }
     }
 
     #[test]
@@ -1551,6 +1562,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_budget_keeps_explicit_openai_effort_in_model_info() {
+        let _provider_guard = tact_llm::provider::lock_provider_for_tests();
         ensure_config();
         struct RestoreProvider(tact_llm::ProviderInfo);
 

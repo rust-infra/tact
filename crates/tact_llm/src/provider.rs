@@ -223,8 +223,9 @@ impl ProviderInfo {
 static PROVIDER: RwLock<Option<ProviderInfo>> = RwLock::new(None);
 
 /// Serialize tests that mutate/read the process-global provider snapshot.
-#[cfg(test)]
-pub(crate) fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().expect("provider test lock poisoned")
 }
