@@ -136,7 +136,10 @@ fn apply_model_pick(app: &mut App, model: String) {
         app.input_mode = InputMode::Normal;
         return;
     }
-    tact::config::update_llm_model(model.clone());
+    let thinking_budget = tact::config::try_settings()
+        .map(|settings| settings.agent.thinking_budget)
+        .unwrap_or_default();
+    tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
     app.status_bar.model_name = model.clone();
     app.add_system_message(msgs.model_switched_tmpl.replace("{}", &model));
 
@@ -169,7 +172,13 @@ fn finish_persist_prompt(app: &mut App, chosen: &str, model: &str) {
     let msgs = app.msgs();
     let yes = msgs.model_persist_yes;
     if chosen == yes {
-        match tact::config::persist_active_provider_model(model) {
+        let thinking_budget = tact::config::try_settings()
+            .map(|settings| settings.agent.thinking_budget)
+            .unwrap_or_default();
+        match tact::config::persist_active_provider_model_and_thinking_budget(
+            model,
+            thinking_budget,
+        ) {
             Ok(()) => {
                 app.add_system_message(msgs.model_persisted_tmpl.replace("{}", model));
             }

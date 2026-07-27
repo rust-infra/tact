@@ -77,22 +77,31 @@ pub fn try_settings() -> Option<types::ResolvedConfig> {
     SETTINGS.read().ok()?.as_ref().cloned()
 }
 
-/// Update the in-memory active model (keeps status/help in sync with `tact_llm::set_model`).
-pub fn update_llm_model(model: String) {
+/// Update the active model and thinking budget for this running session.
+pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model;
+        cfg.agent.thinking_budget = thinking_budget;
     }
 }
 
-/// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
-pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
+/// Persist model and thinking budget under the active provider in the loaded config.
+pub fn persist_active_provider_model_and_thinking_budget(
+    model: &str,
+    thinking_budget: usize,
+) -> anyhow::Result<()> {
     let settings = settings();
     let path = settings
         .config_path
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only model change)"))?;
-    persist::update_provider_model_in_toml(path, settings.llm.provider.as_str(), model)
+    persist::update_provider_model_and_thinking_budget_in_toml(
+        path,
+        settings.llm.provider.as_str(),
+        model,
+        thinking_budget,
+    )
 }
 
 /// Parse CLI args, load TOML config, merge with priority CLI > TOML, and install
