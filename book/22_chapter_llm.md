@@ -68,9 +68,11 @@ pub struct ProviderInfo {
 `anthropic` | `openai` | `deepseek` | `kimi`.
 
 Installed at startup (and re-init under test overrides). The active provider is
-kept in an `RwLock` so the TUI `/model` command can change only the `model`
-string mid-session via `tact_llm::set_model` (in-flight streams keep the old id;
-`max_tokens` / thinking heuristics from process start are not recomputed).
+kept in an `RwLock` so the TUI `/model` command can defer a model change until
+its think-budget choice is confirmed, then update both the `model` string and
+the live Agent’s budget for subsequent requests. In-flight streams keep the
+request parameters they started with; provider, protocol, credentials, and
+explicit OpenAI `reasoning_effort` are unchanged.
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -111,7 +113,7 @@ sequenceDiagram
     Install->>LlmInit: provider_info()
     LlmInit->>State: set ProviderInfo
     Install->>State: set ResolvedConfig
-    Note over State: `/model` may update model only
+    Note over State: `/model` updates model + session thinking budget after confirmation
     Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: dedicated provider adapter

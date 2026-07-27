@@ -144,7 +144,12 @@ theme = "ink"
 bash_timeout_secs = 1800
 ```
 
-可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
+可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。确认任一候选模型（包括当前已激活的模型）后，会打开第二个思考预算选择器：
+**关闭 (0)**、**低 (8K)**、**中 (32K)**、**高 (64K)** 或 **最大 (128K)**。
+在确认预算前不会修改任何值。确认后，模型和预算会一起作用于当前会话之后的请求。
+若已加载配置文件，最后可选的确认会在一次更新中将 `model` 和
+`thinking_budget` 写入该 provider 条目；拒绝保存（或没有配置文件）时，该组合仅当前
+会话有效。下次启动时，`--thinking-budget` 仍具有更高优先级。
 
 可选 `protocol` 默认为 `chat_completions`。`responses` 仅对 `openai` provider 有效；配置 resolve 会拒绝 Anthropic、DeepSeek 或 Kimi 使用该值。此字段没有 CLI override。
 

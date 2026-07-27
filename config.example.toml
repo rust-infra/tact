@@ -56,6 +56,9 @@ model = "kimi-k2.5"
 models = ["kimi-k2.5", "kimi-for-coding"]
 # base_url defaults to https://api.moonshot.cn/v1
 # max_tokens = 32000           # optional per-provider override
+# `/model` can change this value for the current session. When you choose
+# “save”, it writes the selected model and thinking_budget under this active
+# provider; CLI --thinking-budget still wins on a later restart.
 # thinking_budget = 64000
 
 # Heuristics still allow provider = "openai" + a Moonshot/Kimi-compatible

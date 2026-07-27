@@ -152,8 +152,14 @@ providers (`openai` / `deepseek` / `kimi`) also call `GET {base_url}/models` and
 append ids not already listed in config (config order and duplicate ids win).
 The API result is cached for the process for that `(base_url, api_key)`. If both
 config and API yield no candidates, `/model` prints a hint instead of opening
-the picker. Choosing a model applies immediately; you can optionally write it
-back to this provider’s `model` field in the loaded config file.
+the picker. Confirming any candidate—including the active model—opens a second picker for
+**Off (0)**, **Low (8K)**, **Medium (32K)**, **High (64K)**, or **Max (128K)**.
+Nothing changes until that budget is confirmed. The selected model and budget
+apply together to subsequent requests in the current session. If a loaded
+config file exists, a final optional confirmation writes both `model` and
+`thinking_budget` to that provider entry in one update; declining (or having
+no config file) keeps the pair session-only. A startup
+`--thinking-budget` remains higher priority on a later restart.
 
 Optional `protocol` defaults to `chat_completions`. `responses` is valid only
 for the `openai` provider; configuration resolution rejects it for Anthropic,

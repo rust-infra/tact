@@ -29,6 +29,35 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-27 — `/model` think-budget picker and session synchronization
+
+| Field | Value |
+| --- | --- |
+| **Type** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-27-model-thinking-budget-picker-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-27-model-thinking-budget-picker.md` |
+
+**Symptom / motivation:** `/model` changed only the model. It did not expose a
+thinking-budget choice, and the running Agent retained the budget copied at
+startup, so a desired model/budget combination could not take effect together.
+
+**Decision:** Make `/model` a deferred two-step picker: model, then Off/Low/
+Medium/High/Max thinking budget. Confirming the second step updates the
+session model, runtime configuration, bottom bar, and live Agent budget for
+later requests. An optional final confirmation writes the pair to the active
+provider entry in one TOML rewrite.
+
+**Behavior after:** Esc before budget confirmation changes nothing; confirmed
+choices affect the next request but not an in-flight request; no-config or
+declined-save choices remain session-only; persisted values do not override a
+future CLI `--thinking-budget`.
+
+**Pointers:** `crates/tui/src/handlers/select.rs`,
+`crates/tact-ui/src/driver.rs`, `crates/tact/src/config/{mod,persist}.rs`,
+Ch 21, Ch 22.
+
+---
+
 ## 1. 2026-07-27 — Ink themes + unified popup chrome
 
 | Field | Value |

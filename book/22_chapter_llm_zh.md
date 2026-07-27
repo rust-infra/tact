@@ -66,7 +66,10 @@ pub struct ProviderInfo {
 
 `ProviderKind` 是 config、CLI（`FromStr`）与 `build_client`（穷尽 match）的单一身份类型。TOML 名称为小写：`anthropic` | `openai` | `deepseek` | `kimi`。
 
-启动时安装（测试 override 下可 re-init）。活跃 provider 保存在 `RwLock` 中，TUI `/model` 命令可在 session 中仅通过 `tact_llm::set_model` 更改 `model` 字符串（进行中的流保留旧 id；进程启动时的 `max_tokens` / thinking 启发式不会重算）。
+启动时安装（测试 override 下可 re-init）。活跃 provider 保存在 `RwLock` 中，因此 TUI
+`/model` 命令会先等待思考预算选择得到确认，再更改模型；确认后会同时更新 `model`
+字符串和运行中 Agent 的预算，供后续请求使用。进行中的流保留其启动时的请求参数；
+provider、协议、凭据和显式 OpenAI `reasoning_effort` 均不变。
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -103,7 +106,7 @@ sequenceDiagram
     Install->>LlmInit: provider_info()
     LlmInit->>State: set ProviderInfo
     Install->>State: set ResolvedConfig
-    Note over State: `/model` 可能仅更新 model
+    Note over State: `/model` 确认后更新 model + 会话思考预算
     Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: 专用 provider adapter

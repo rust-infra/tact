@@ -29,6 +29,31 @@
 
 ---
 
+## 1. 2026-07-27 — `/model` 思考预算选择器与会话同步
+
+| 字段 | 值 |
+| --- | --- |
+| **类型** | bugfix |
+| **Spec** | `docs/superpowers/specs/2026-07-27-model-thinking-budget-picker-design.md` |
+| **Plan** | `docs/superpowers/plans/2026-07-27-model-thinking-budget-picker.md` |
+
+**现象 / 动机：** `/model` 过去只会更改模型，未提供思考预算选择；运行中的 Agent
+仍保留启动时复制的预算，因此所需的模型/预算组合无法一起生效。
+
+**决策：** 将 `/model` 设为延迟的两步选择器：先选模型，再选关闭/低/中/高/最大思考
+预算。确认第二步会更新会话模型、运行时配置、底栏和运行中 Agent 的预算，供后续
+请求使用。最后可选的确认会通过一次 TOML 重写将这一对值写入活跃 provider 条目。
+
+**改后行为：** 在确认预算前按 Esc 不会更改任何值；确认后的选择影响下一次请求而非
+进行中的请求；没有配置文件或拒绝保存时，选择仅当前会话有效；持久化值不会覆盖未来
+CLI 的 `--thinking-budget`。
+
+**指针：** `crates/tui/src/handlers/select.rs`、
+`crates/tact-ui/src/driver.rs`、`crates/tact/src/config/{mod,persist}.rs`，
+第 21、22 章。
+
+---
+
 ## 1. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
 
 | 字段 | 值 |
