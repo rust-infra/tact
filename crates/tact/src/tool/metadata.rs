@@ -6,6 +6,7 @@
 //! and protocol `ToolPresentationInfo`.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use serde_json::Value;
 use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind};
@@ -106,10 +107,12 @@ impl ResourcePolicy {
                 }
                 r
             }
-            ResourcePolicy::SharedState { scope: _ } => {
-                // Shared state: no filesystem resources, but prevents parallel
-                // execution of tools in the same scope via barrier semantics.
-                ToolResources::barrier()
+            ResourcePolicy::SharedState { scope } => {
+                // Shared state: synthetic write so same-scope tools serialize,
+                // but they can still overlap with file reads (unlike barrier).
+                let mut r = ToolResources::independent();
+                r.writes.push(PathBuf::from(format!("__tact_{scope}__")));
+                r
             }
             ResourcePolicy::PatchFiles { patch_field, dry_run_field } => {
                 let mut r = ToolResources::independent();

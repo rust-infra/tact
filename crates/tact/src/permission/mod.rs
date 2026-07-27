@@ -1,16 +1,13 @@
 //! Permission system for tool invocation.
 //!
 //! Every tool call is classified by [`CapabilityRisk`] (Read / Write / High)
-//! based on the tool name and input parameters.  The [`PermissionManager`]
-//! decides whether to allow, deny, or ask the user, depending on:
+//! from its typed metadata. The [`PermissionManager`] decides whether to allow,
+//! deny, or ask the user, depending on:
 //!
 //! - The active [`PermissionMode`] (Default, Plan, Auto).
 //! - The risk level of the tool.
 //! - A per-user allow-list (`always_allowed_tools`).
 //! - Consecutive denials (which may trigger a suggestion to switch to Plan mode).
-//!
-//! Dangerous bash patterns (`sudo`, `rm -rf /`) are always classified as
-//! High risk regardless of context.
 
 use std::fmt;
 
@@ -18,20 +15,7 @@ use anyhow::Result;
 use serde_json::Value;
 use strum_macros::{Display, EnumString};
 
-const READ_PREFIXES: &[&str] = &[
-    "read", "list", "get", "show", "search", "query", "inspect", "find",
-];
-const HIGH_PREFIXES: &[&str] = &["delete", "remove", "drop", "shutdown"];
-use crate::shell::is_high_risk_shell_command;
-const READ_ONLY_BASH_COMMANDS: &[&str] = &["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep"];
-const READ_ONLY_GIT_SUBCOMMANDS: &[&str] = &["status", "diff", "log", "show", "branch"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum CapabilitySource {
-    Native,
-    Mcp,
-}
+use crate::tool::PermissionPromptPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[strum(serialize_all = "snake_case")]
@@ -39,14 +23,6 @@ pub enum CapabilityRisk {
     Read,
     Write,
     High,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityIntent {
-    pub source: CapabilitySource,
-    pub server: Option<String>,
-    pub tool: String,
-    pub risk: CapabilityRisk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
@@ -97,6 +73,7 @@ impl PermissionDecision {
         }
     }
 
+    #[allow(dead_code)]
     fn deny(reason: impl Into<String>) -> Self {
         Self {
             behavior: PermissionBehavior::Deny,
@@ -146,10 +123,9 @@ impl PermissionManager {
         &self.always_allowed_tools
     }
 
-    pub fn check(&mut self, tool_name: &str, tool_input: &Value) -> PermissionDecision {
-        let intent = normalize_capability(tool_name, tool_input);
-
-        if intent.risk == CapabilityRisk::Read {
+    /// Check permission for a tool given its stable name and resolved risk.
+    pub fn check(&mut self, tool_name: &str, risk: CapabilityRisk) -> PermissionDecision {
+        if risk == CapabilityRisk::Read {
             self.consecutive_denials = 0;
             return PermissionDecision::allow("Read-only capability allowed");
         }
@@ -158,10 +134,10 @@ impl PermissionManager {
             return PermissionDecision::deny("Plan mode: write operations are blocked");
         }
 
-        if intent.risk == CapabilityRisk::High {
+        if risk == CapabilityRisk::High {
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
-                intent.tool
+                tool_name
             ));
         }
 
@@ -181,12 +157,8 @@ impl PermissionManager {
         }
     }
 
-    pub fn ask_user(&mut self, tool_name: &str, tool_input: &Value) -> Result<bool> {
-        let preview = truncate_for_prompt(tool_input, 200);
-        eprintln!(
-            "[permission] non-interactive: denying {} ({})",
-            tool_name, preview
-        );
+    pub fn ask_user(&mut self, tool_name: &str) -> Result<bool> {
+        eprintln!("[permission] non-interactive: denying {}", tool_name);
         let approved = self.apply_user_choice(UserPermissionChoice::Deny, tool_name);
         if !approved && self.should_suggest_plan_mode() {
             eprintln!(
@@ -230,334 +202,118 @@ impl PermissionManager {
     fn should_suggest_plan_mode(&self) -> bool {
         self.consecutive_denials >= self.max_consecutive_denials
     }
-}
 
-pub fn normalize_capability(tool_name: &str, tool_input: &Value) -> CapabilityIntent {
-    let (source, server, short_tool) = parse_source(tool_name);
-    let risk = classify_risk(&short_tool, tool_input);
-
-    CapabilityIntent {
-        source,
-        server,
-        tool: short_tool,
-        risk,
+    #[allow(dead_code)]
+    pub fn set_max_consecutive_denials(&mut self, max: usize) {
+        self.max_consecutive_denials = max;
     }
 }
 
-fn parse_source(tool_name: &str) -> (CapabilitySource, Option<String>, String) {
-    if let Some(rest) = tool_name.strip_prefix("mcp__")
-        && let Some((server, tool)) = rest.rsplit_once("__")
-        && !server.is_empty()
-        && !tool.is_empty()
-    {
-        return (
-            CapabilitySource::Mcp,
-            Some(server.to_string()),
-            tool.to_string(),
-        );
-    }
-
-    (CapabilitySource::Native, None, tool_name.to_string())
-}
-
-fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
-    if tool_name == "read_file" || starts_with_any(tool_name, READ_PREFIXES) {
-        return CapabilityRisk::Read;
-    }
-
-    // spawn_subagent gets full filesystem and shell access — always high risk
-    if tool_name == "spawn_subagent" {
-        return CapabilityRisk::High;
-    }
-
-    if tool_name == "bash" {
-        let command = tool_input
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        return if is_high_risk_shell_command(&command) {
-            CapabilityRisk::High
-        } else if is_read_only_bash_command(&command) {
-            CapabilityRisk::Read
-        } else {
-            CapabilityRisk::Write
-        };
-    }
-
-    if starts_with_any(tool_name, HIGH_PREFIXES) {
-        CapabilityRisk::High
-    } else {
-        CapabilityRisk::Write
+/// Format a user-facing permission prompt using typed policy.
+pub fn format_permission_prompt(
+    name: &str,
+    policy: PermissionPromptPolicy,
+    input: &Value,
+) -> String {
+    let field_str = |field: &str| input.get(field).and_then(|v| v.as_str()).unwrap_or("");
+    match policy {
+        PermissionPromptPolicy::Command { field } => format!("Run command: {}", field_str(field)),
+        PermissionPromptPolicy::Question { field } => format!("Ask user: {}", field_str(field)),
+        PermissionPromptPolicy::Path { field } => format!("Allow {name} on {}?", field_str(field)),
+        PermissionPromptPolicy::Json => format!("Allow {name}?"),
     }
 }
 
-fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
-    prefixes.iter().any(|prefix| value.starts_with(prefix))
+/// MCP tools always start as High risk.
+pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
+    CapabilityRisk::High
 }
 
-fn is_read_only_bash_command(command: &str) -> bool {
-    if command
-        .chars()
-        .any(|ch| matches!(ch, ';' | '&' | '|' | '`' | '$' | '>' | '<'))
-    {
-        return false;
-    }
-
-    let mut parts = command.split_whitespace();
-    let Some(program) = parts.next() else {
-        return true;
-    };
-
-    if READ_ONLY_BASH_COMMANDS.contains(&program) {
-        return true;
-    }
-
-    if program == "git"
-        && let Some(subcommand) = parts.next()
-    {
-        return READ_ONLY_GIT_SUBCOMMANDS.contains(&subcommand);
-    }
-
-    false
-}
-
-fn truncate_for_prompt(value: &Value, limit: usize) -> String {
-    truncate_chars(&value.to_string(), limit)
-}
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    let truncated = text.chars().take(limit).collect::<String>();
-    format!("{truncated}...")
-}
-
-/// Human-readable copy for the interactive permission (`RequestSelect`) prompt.
-///
-/// Avoid dumping raw tool JSON — especially for `ask_user`, where the real
-/// question UI comes *after* approval.
-pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
-    match tool_name {
-        "ask_user" => {
-            match tool_input
-                .get("question")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|q| !q.is_empty())
-            {
-                Some(q) => format!(
-                    "Allow ask_user? The agent wants to ask you a question.\n{}",
-                    truncate_chars(q, 80)
-                ),
-                None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
-            }
-        }
-        "bash" => match tool_input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
-            Some(cmd) => format!("Allow bash?\n{}", truncate_chars(cmd, 120)),
-            None => "Allow bash?".to_string(),
-        },
-        "edit_file" | "write_file" | "read_file" | "apply_patch" => {
-            let path = tool_input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("Allow {tool_name} on {path}?")
-        }
-        _ => {
-            let preview = truncate_for_prompt(tool_input, 80);
-            if preview == "{}" || preview.is_empty() {
-                format!("Allow {tool_name}?")
-            } else {
-                format!("Allow {tool_name}?\n{preview}")
-            }
-        }
-    }
+fn truncate_for_prompt(input: &Value, _max_chars: usize) -> String {
+    input.to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{
-        CapabilityRisk, CapabilitySource, PermissionBehavior, PermissionManager, PermissionMode,
-        UserPermissionChoice, format_permission_prompt, normalize_capability,
-    };
+    use super::*;
 
     #[test]
-    fn normalizes_mcp_tool_intent() {
-        let intent = normalize_capability("mcp__demo__db__query", &json!({ "sql": "select 1" }));
-
-        assert_eq!(intent.source, CapabilitySource::Mcp);
-        assert_eq!(intent.server.as_deref(), Some("demo__db"));
-        assert_eq!(intent.tool, "query");
-        assert_eq!(intent.risk, CapabilityRisk::Read);
+    fn allow_list_matches_exact_name() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("read_file");
+        assert!(mgr.is_always_allowed("read_file"));
     }
 
     #[test]
-    fn normalizes_high_risk_native_intent() {
-        let intent = normalize_capability("delete_file", &json!({ "path": "a.txt" }));
-
-        assert_eq!(intent.source, CapabilitySource::Native);
-        assert_eq!(intent.server, None);
-        assert_eq!(intent.tool, "delete_file");
-        assert_eq!(intent.risk, CapabilityRisk::High);
+    fn deny_increments_consecutive_count() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        assert_eq!(mgr.consecutive_denials, 1);
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        assert_eq!(mgr.consecutive_denials, 2);
     }
 
     #[test]
-    fn classifies_destructive_rm_as_high_risk() {
-        let intent = normalize_capability("bash", &json!({ "command": "rm -rf /*" }));
-
-        assert_eq!(intent.risk, CapabilityRisk::High);
+    fn allow_resets_consecutive_count() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::AllowOnce, "bash");
+        assert_eq!(mgr.consecutive_denials, 0);
     }
 
     #[test]
-    fn classifies_high_risk_bash() {
-        let intent = normalize_capability("bash", &json!({ "command": "sudo ls" }));
-
-        assert_eq!(intent.risk, CapabilityRisk::High);
-    }
-
-    #[test]
-    fn classifies_simple_bash_reads_as_read_only() {
-        let intent = normalize_capability(
-            "bash",
-            &json!({ "command": "ls -la /home/w/ai/learn-claude-code-rs-sfull" }),
-        );
-
-        assert_eq!(intent.risk, CapabilityRisk::Read);
-    }
-
-    #[test]
-    fn default_mode_allows_simple_bash_reads() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let decision = manager.check("bash", &json!({ "command": "ls -la ." }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Allow);
-    }
-
-    #[test]
-    fn read_capabilities_are_allowed_in_all_modes() {
-        for mode in [
-            PermissionMode::Default,
-            PermissionMode::Plan,
-            PermissionMode::Auto,
-        ] {
-            let mut manager = PermissionManager::try_new(mode).unwrap();
-            let decision = manager.check("read_file", &json!({ "path": "src/main.rs" }));
-
-            assert_eq!(decision.behavior, PermissionBehavior::Allow);
-        }
-    }
-
-    #[test]
-    fn plan_mode_blocks_non_read_tools() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Plan).unwrap();
-
-        let decision = manager.check("write_file", &json!({ "path": "a.txt", "content": "x" }));
-
+    fn plan_mode_denies_write_including_mcp() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write);
         assert_eq!(decision.behavior, PermissionBehavior::Deny);
-        assert!(decision.reason.contains("Plan mode"));
+        let mcp_decision = mgr.check("mcp__srv__tool", CapabilityRisk::Write);
+        assert_eq!(mcp_decision.behavior, PermissionBehavior::Deny);
     }
 
     #[test]
-    fn high_risk_tools_require_approval() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Auto).unwrap();
-
-        let decision = manager.check("bash", &json!({ "command": "sudo ls" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
-        assert!(decision.reason.contains("High-risk"));
-    }
-
-    #[test]
-    fn auto_mode_allows_non_high_tools() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Auto).unwrap();
-
-        let decision = manager.check("write_file", &json!({ "path": "a.txt", "content": "x" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Allow);
-        assert!(decision.reason.contains("Auto mode"));
-    }
-
-    #[test]
-    fn default_mode_asks_for_non_high_writes() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
-        assert!(decision.reason.contains("asking user"));
-    }
-
-    #[test]
-    fn always_allow_adds_exact_tool_allowlist_entry() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let approved = manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "edit_file");
-
-        assert!(approved);
-        assert!(manager.rules().contains(&"edit_file".to_string()));
-        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
+    fn auto_mode_allows_non_high_capabilities() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write);
         assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     #[test]
-    fn high_risk_still_asks_even_when_tool_was_always_allowed() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-        manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "bash");
-
-        let decision = manager.check("bash", &json!({ "command": "sudo ls" }));
-
+    fn default_mode_asks_for_write() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write);
         assert_eq!(decision.behavior, PermissionBehavior::Ask);
     }
 
     #[test]
-    fn suggests_plan_mode_after_repeated_denials() {
+    fn default_mode_allows_resolved_read_capability() {
         let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        for _ in 0..manager.max_consecutive_denials {
-            let approved = manager.apply_user_choice(UserPermissionChoice::Deny, "bash");
-            assert!(!approved);
-        }
-
-        assert!(manager.should_suggest_plan_mode());
+        let decision = manager.check("read_file", CapabilityRisk::Read);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     #[test]
-    fn ask_user_permission_prompt_avoids_options_json() {
+    fn path_prompt_policy_preserves_file_prompt() {
         let prompt = format_permission_prompt(
-            "ask_user",
-            &json!({
-                "question": "你想练哪个新主题？",
-                "options": ["时态", "从句", "被动语态"],
-            }),
+            "edit_file",
+            PermissionPromptPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "src/lib.rs"}),
         );
-        assert!(prompt.contains("Allow ask_user?"));
-        assert!(prompt.contains("ask you a question"));
-        assert!(prompt.contains("你想练哪个新主题？"));
-        assert!(!prompt.contains("options"));
-        assert!(!prompt.contains("时态"));
-    }
-
-    #[test]
-    fn bash_permission_prompt_shows_command() {
-        let prompt = format_permission_prompt("bash", &json!({ "command": "ls -la" }));
-        assert_eq!(prompt, "Allow bash?\nls -la");
-    }
-
-    #[test]
-    fn edit_file_permission_prompt_shows_path() {
-        let prompt =
-            format_permission_prompt("edit_file", &json!({ "path": "src/lib.rs", "old": "a" }));
         assert_eq!(prompt, "Allow edit_file on src/lib.rs?");
+    }
+
+    #[test]
+    fn always_allow_and_check_skips_prompt() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("bash");
+        let decision = mgr.check("bash", CapabilityRisk::Write);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn high_risk_requires_approval_even_for_allowed_tool() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("bash");
+        let decision = mgr.check("bash", CapabilityRisk::High);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
     }
 }

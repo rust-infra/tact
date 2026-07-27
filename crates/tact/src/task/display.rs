@@ -1,23 +1,13 @@
 //! Human-readable titles for `task_*` tool rows and related UI strings.
 
 use serde_json::Value;
+use crate::tool::TaskOperation;
 
 use super::{SharedTaskManager, TaskRecord, TaskStatus};
 
-/// True for the four persistent-task tools.
-pub fn is_task_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "task_create" | "task_update" | "task_get" | "task_list"
-    )
-}
-
 /// Build the TUI/tool title for a task tool call.
-///
-/// `before` is the record prior to mutation (update/get); ignored for create/list.
-/// `after` is the post-mutation record when known (preferred for finished steps).
 pub fn format_task_tool_title(
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     before: Option<&TaskRecord>,
     after: Option<&TaskRecord>,
@@ -27,7 +17,7 @@ pub fn format_task_tool_title(
         .map(|r| r.id)
         .or_else(|| input.get("task_id").and_then(|v| v.as_u64()));
 
-    let primary = primary_action(name, input, before, after);
+    let primary = primary_action(op, input, before, after);
     let mut parts: Vec<String> = Vec::new();
 
     let head = match id {
@@ -61,7 +51,7 @@ pub fn format_task_tool_title(
     let after_bl = record.map(|r| r.blocks.as_slice()).unwrap_or(before_bl);
 
     // If we only have input intent (pre-exec update), predict after lists.
-    let (bb_old, bb_new, bl_old, bl_new) = if after.is_none() && name == "task_update" {
+    let (bb_old, bb_new, bl_old, bl_new) = if after.is_none() && op == TaskOperation::Update {
         let mut pred_bb = before_bb.to_vec();
         let mut pred_bl = before_bl.to_vec();
         merge_ids(&mut pred_bb, input_u64_list(input, "addBlockedBy"));
@@ -95,7 +85,7 @@ pub fn format_task_tool_title(
 /// Resolve title using the live task manager (lookup before/after by id).
 pub fn format_task_tool_title_with_manager(
     manager: &SharedTaskManager,
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     prefer_after: bool,
 ) -> String {
@@ -104,7 +94,7 @@ pub fn format_task_tool_title_with_manager(
     let after = if prefer_after {
         id.and_then(|id| manager.get(id).ok()).or_else(|| {
             // create: try newest matching subject
-            if name == "task_create" {
+            if op == TaskOperation::Create {
                 let subject = input.get("subject").and_then(|v| v.as_str())?;
                 let list = manager.list().ok()?;
                 list.into_iter()
@@ -118,7 +108,7 @@ pub fn format_task_tool_title_with_manager(
         None
     };
     format_task_tool_title(
-        name,
+        op,
         input,
         before.as_ref(),
         if prefer_after {
@@ -130,16 +120,16 @@ pub fn format_task_tool_title_with_manager(
 }
 
 fn primary_action(
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     before: Option<&TaskRecord>,
     after: Option<&TaskRecord>,
 ) -> &'static str {
-    match name {
-        "task_create" => "create",
-        "task_list" => "list",
-        "task_get" => "view",
-        "task_update" => {
+    match op {
+        TaskOperation::Create => "create",
+        TaskOperation::List => "list",
+        TaskOperation::Get => "view",
+        TaskOperation::Update => {
             let status =
                 input
                     .get("status")
@@ -191,7 +181,6 @@ fn primary_action(
             }
             "no-op"
         }
-        _ => "update",
     }
 }
 
@@ -242,7 +231,7 @@ mod tests {
     #[test]
     fn create_title_without_id() {
         let input = serde_json::json!({"subject": "初始化"});
-        let title = format_task_tool_title("task_create", &input, None, None);
+        let title = format_task_tool_title(TaskOperation::Create, &input, None, None);
         assert_eq!(title, "# Task · create * subject: 初始化");
     }
 
@@ -266,7 +255,7 @@ mod tests {
             ..before.clone()
         };
         let input = serde_json::json!({"task_id": 24, "status": "completed"});
-        let title = format_task_tool_title("task_update", &input, Some(&before), Some(&after));
+        let title = format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&after));
         assert!(title.starts_with("# Task.24 · complete"), "{title}");
         assert!(title.contains("subject: 后端接口"), "{title}");
         assert!(title.contains("owner:张2"), "{title}");
@@ -278,7 +267,7 @@ mod tests {
     fn empty_update_action() {
         let before = TaskRecord::new(1, "x".into(), None);
         let input = serde_json::json!({"task_id": 1});
-        let title = format_task_tool_title("task_update", &input, Some(&before), Some(&before));
+        let title = format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&before));
         assert!(title.contains("no-op"), "{title}");
     }
 }
