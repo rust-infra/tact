@@ -229,6 +229,7 @@ pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
     CapabilityRisk::High
 }
 
+#[allow(dead_code)]
 fn truncate_for_prompt(input: &Value, _max_chars: usize) -> String {
     input.to_string()
 }

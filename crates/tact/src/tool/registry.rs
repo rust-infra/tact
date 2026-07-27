@@ -28,7 +28,7 @@ use super::{
 
 /// Assembles the full tool set for the main agent loop.
 fn try_toolset() -> anyhow::Result<ToolRouter> {
-    Ok(ToolRouter::new()
+    ToolRouter::new()
         .route(ApplyPatchTool)?
         .route(AskUserTool)?
         .route(BashTool)?
@@ -61,7 +61,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(WorktreeListTool)?
         .route(WorktreeStatusTool)?
         .route(WorktreeRunTool)?
-        .route(WorktreeEventsTool)?)
+        .route(WorktreeEventsTool)
 }
 
 pub fn toolset() -> ToolRouter {
@@ -70,12 +70,12 @@ pub fn toolset() -> ToolRouter {
 
 /// Assembles the restricted tool set for sub-agents.
 fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
-    Ok(ToolRouter::new()
+    ToolRouter::new()
         .route(BashTool)?
         .route(ReadFileTool)?
         .route(SleepTool)?
         .route(WriteFileTool)?
-        .route(EditFileTool)?)
+        .route(EditFileTool)
 }
 
 pub fn subagent_toolset() -> ToolRouter {

@@ -35,7 +35,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
-use tact_protocol::{AgentUpdate, ToolVisualKind};
+use tact_protocol::AgentUpdate;
+#[cfg(test)]
+use tact_protocol::ToolVisualKind;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, cron::SharedCronScheduler,

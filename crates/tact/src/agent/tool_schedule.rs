@@ -52,6 +52,7 @@ impl ToolResources {
 /// We do not `canonicalize` (the target may not exist yet, and we want a pure,
 /// filesystem-independent function); a lexical join is enough for the
 /// equal/ancestor/descendant overlap test used by [`conflicts`].
+#[allow(dead_code)]
 fn normalize(work_dir: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
