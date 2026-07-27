@@ -384,6 +384,7 @@ impl<'a> ToolWidget<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_presentation(mut self, presentation: ToolPresentationInfo) -> Self {
         self.presentation = presentation;
         self

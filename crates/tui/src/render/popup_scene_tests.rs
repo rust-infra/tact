@@ -336,7 +336,7 @@ fn main_area_thinking_popup_renders_reasoning() {
 
 #[test]
 fn active_thinking_popup_uses_buffered_content() {
-    use tact_protocol::{AgentUpdate, ThinkingChunk, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, ThinkingChunk};
 
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
@@ -355,7 +355,7 @@ fn active_thinking_popup_uses_buffered_content() {
 
 #[test]
 fn active_thinking_popup_preserves_blank_lines() {
-    use tact_protocol::{AgentUpdate, ThinkingChunk, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, ThinkingChunk};
 
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(

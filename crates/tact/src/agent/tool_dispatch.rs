@@ -18,8 +18,7 @@ use crate::{
         CapabilityRisk, PermissionBehavior, format_permission_prompt, normalize_mcp_capability,
     },
     tool::{
-        ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation,
-        ToolDomain, ToolRouter,
+        ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
     },
 };
 
@@ -728,9 +727,7 @@ impl Agent {
                     },
                 });
 
-                if succeeded
-                    && let ResolvedTool::Native { metadata } = &prep.resolved
-                {
+                if succeeded && let ResolvedTool::Native { metadata } = &prep.resolved {
                     pending_recent_files.extend(metadata.resources.recent_paths(&prep_input));
                 }
 

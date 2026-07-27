@@ -343,10 +343,10 @@ impl App {
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
         // Full live output for subagents (based on presentation metadata, not tool name).
-        let is_subagent = match &presentation.popup {
-            tact_protocol::ToolPopupKind::SubagentTranscript => true,
-            _ => false,
-        };
+        let is_subagent = matches!(
+            &presentation.popup,
+            tact_protocol::ToolPopupKind::SubagentTranscript
+        );
         if let Status::Executing {
             current_step,
             total,
