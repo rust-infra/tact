@@ -134,6 +134,12 @@ impl PermissionManager {
             return PermissionDecision::deny("Plan mode: write operations are blocked");
         }
 
+        // Auto mode trusts the agent — skip all risk checks including High.
+        if self.mode == PermissionMode::Auto {
+            self.consecutive_denials = 0;
+            return PermissionDecision::allow("Auto mode: all capabilities auto-approved");
+        }
+
         if risk == CapabilityRisk::High {
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
@@ -146,15 +152,7 @@ impl PermissionManager {
             return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
 
-        match self.mode {
-            PermissionMode::Auto => {
-                self.consecutive_denials = 0;
-                PermissionDecision::allow("Auto mode: non-high capability auto-approved")
-            }
-            PermissionMode::Default | PermissionMode::Plan => {
-                PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
-            }
-        }
+        PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
     }
 
     pub fn ask_user(&mut self, tool_name: &str) -> Result<bool> {
@@ -275,6 +273,13 @@ mod tests {
     fn auto_mode_allows_non_high_capabilities() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
         let decision = mgr.check("bash", CapabilityRisk::Write);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn auto_mode_allows_high_risk_capabilities() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::High);
         assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
