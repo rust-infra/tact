@@ -177,6 +177,12 @@ async fn run_interactive_locked(
             model_name,
             model_max_tokens,
             model_thinking_budget,
+            permission_mode: match tact::config::settings().permission_mode.as_deref() {
+                Some("plan") => "plan",
+                Some("default") => "default",
+                _ => "auto",
+            }
+            .to_string(),
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()

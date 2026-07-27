@@ -234,6 +234,14 @@ pub enum UserCommand {
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)
     QueryStats,
+    /// Set the active permission mode.
+    /// The TUI sends this after the user picks through the `/permission` popup.
+    /// Only affects the in-memory session; config is never written.
+    SetPermissionMode(String),
+    /// Set the active session's thinking budget for subsequent LLM requests.
+    /// The TUI sends this after `/model` budget confirmation; config persistence
+    /// is a separate optional local flow.
+    SetThinkingBudget(usize),
 }
 
 /// A single step in the execution plan.

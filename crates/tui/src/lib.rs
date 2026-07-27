@@ -105,6 +105,8 @@ pub struct TuiConfig {
     pub model_max_tokens: u32,
     /// Configured thinking budget in tokens (0 = hide).
     pub model_thinking_budget: usize,
+    /// Active permission mode: "default" | "plan" | "auto".
+    pub permission_mode: String,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
@@ -129,6 +131,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         model_name,
         model_max_tokens,
         model_thinking_budget,
+        permission_mode,
         skills_description,
         skills_data,
         skill_registry,
@@ -170,6 +173,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     // the first ModelInfo/TokenUsage updates will overwrite these.
     app.status_bar.model_name = model_name;
     app.status_bar.model_max_tokens = model_max_tokens;
+    app.status_bar.permission_mode = permission_mode;
     if model_thinking_budget > 0 {
         app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
     }

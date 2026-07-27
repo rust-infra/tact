@@ -180,6 +180,20 @@ async fn handle_user_command_with_account(
             let stats_text = agent.runtime.stats.summary();
             agent.emit_update(AgentUpdate::SessionStats(stats_text));
         }
+        UserCommand::SetPermissionMode(mode) => {
+            let parsed = match mode.as_str() {
+                "plan" => tact::permission::PermissionMode::Plan,
+                "default" => tact::permission::PermissionMode::Default,
+                _ => tact::permission::PermissionMode::Auto,
+            };
+            agent.runtime.permission_manager.set_mode(parsed);
+            agent.emit_update(AgentUpdate::Info(format!(
+                "Permission mode set to {mode}"
+            )));
+        }
+        UserCommand::SetThinkingBudget(budget) => {
+            agent.set_thinking_budget(budget);
+        }
         _ => {}
     }
 }
@@ -232,5 +246,34 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    #[tokio::test]
+    async fn set_thinking_budget_changes_the_next_request() {
+        install_test_config();
+        let mock = MockClient::with_responder(|request, _| {
+            assert_eq!(
+                request
+                    .thinking
+                    .as_ref()
+                    .map(|thinking| thinking.budget_tokens),
+                Some(64_000)
+            );
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
+        let (mut agent, work_dir) = build_test_agent(mock, None);
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetThinkingBudget(64_000),
+            &work_dir,
+        )
+        .await;
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("use the new budget".into()),
+            &work_dir,
+        )
+        .await;
     }
 }
