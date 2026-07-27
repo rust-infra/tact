@@ -531,6 +531,7 @@ mod tests {
             card_bottom: " Double-click for full code ".into(),
             subagent_model: None,
             subagent_tokens: None,
+            visual_kind: tact_protocol::ToolVisualKind::FileWrite,
         }
     }
 

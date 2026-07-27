@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{
+    AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
+};
 
 use super::log::render_log_panel;
 use super::test_harness::{
@@ -34,7 +36,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
         tool_name: "bash".into(),
         arg_summary: "seq".into(),
         arg_full: "seq".into(),
-    presentation: ToolPresentationInfo::generic("bash"),
+        presentation: ToolPresentationInfo::generic("bash"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -48,7 +50,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
             detail: Some(output),
             duration_us: Some(100),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("bash"),
+            presentation: ToolPresentationInfo::generic("bash"),
         },
     });
 }

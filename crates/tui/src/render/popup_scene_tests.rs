@@ -594,7 +594,7 @@ fn main_area_loading_spinner_when_executing() {
         tool_name: "bash".into(),
         arg_summary: "sleep 1".into(),
         arg_full: "sleep 1".into(),
-    presentation: ToolPresentationInfo::generic("bash"),
+        presentation: ToolPresentationInfo::generic("bash"),
     });
     app.append_blank(RawMessageType::SysTool);
     app.loading_idx = Some(app.messages.len().saturating_sub(1));
@@ -654,7 +654,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
         tool_name: "edit_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
-    presentation: ToolPresentationInfo::generic("edit_file"),
+        presentation: ToolPresentationInfo::generic("edit_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -846,7 +846,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
         tool_name: "edit_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
-    presentation: ToolPresentationInfo::generic("edit_file"),
+        presentation: ToolPresentationInfo::generic("edit_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -913,7 +913,7 @@ fn open_diff_popup_after_read_file_step_finish() {
         tool_name: "read_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,

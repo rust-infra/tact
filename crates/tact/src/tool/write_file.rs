@@ -1,13 +1,17 @@
 use std::time::{Duration, Instant};
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tact_protocol::{AgentUpdate, format_bytes};
 use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
-use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::{ToolContext, safe_path_allow_missing};
 
@@ -40,14 +44,13 @@ pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
         visual_kind: ToolVisualKind::FileWrite,
         display_name: "📝 Write",
         live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
+        detail: DetailPolicy::InputField("content"),
         popup: PopupPolicy::None,
         compact_result_to_meta: false,
     },
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Path { field: "path" },
 };
-
 
 #[tool]
 /// # Errors

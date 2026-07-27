@@ -176,7 +176,9 @@ pub fn tagged_ui_channel_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo};
+    use tact_protocol::{
+        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo,
+    };
 
     #[tokio::test]
     async fn streams_become_tool_progress() {

@@ -5,12 +5,16 @@
 
 use std::path::PathBuf;
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 use tracing::debug;
 
 use crate::tool::{ToolContext, safe_path};
@@ -216,7 +220,10 @@ pub const APPLY_PATCH_METADATA: ToolMetadata = ToolMetadata {
     description: "Apply a unified diff patch to files. Accepts standard unified diff format. Use dry_run=true to validate without modifying files.",
     permission: PermissionPolicy::Write,
     permission_prompt: PermissionPromptPolicy::Path { field: "path" },
-    resources: ResourcePolicy::PatchFiles { patch_field: "patch", dry_run_field: "dry_run" },
+    resources: ResourcePolicy::PatchFiles {
+        patch_field: "patch",
+        dry_run_field: "dry_run",
+    },
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::FileEdit,
@@ -227,9 +234,10 @@ pub const APPLY_PATCH_METADATA: ToolMetadata = ToolMetadata {
         compact_result_to_meta: false,
     },
     output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::PatchPreview { patch_field: "patch" },
+    argument_summary: ArgumentSummaryPolicy::PatchPreview {
+        patch_field: "patch",
+    },
 };
-
 
 #[tool]
 /// # Errors

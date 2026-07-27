@@ -1,10 +1,14 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{Message, Role, get_llm_client};
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 
 use crate::{
     Agent, AgentSystemPrompt,
@@ -43,7 +47,6 @@ pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::PersistLargeOutput,
     argument_summary: ArgumentSummaryPolicy::SubagentPrompt { field: "prompt" },
 };
-
 
 #[tool]
 /// # Errors

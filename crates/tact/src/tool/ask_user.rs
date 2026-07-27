@@ -8,13 +8,17 @@
 //!
 //! Headless / no `ui_tx`: return a formatted question string (tests / CI).
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::AgentUpdate;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 use tracing::debug;
 
 use crate::tool::ToolContext;
@@ -51,7 +55,6 @@ pub const ASK_USER_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Question { field: "question" },
 };
-
 
 #[tool]
 /// # Errors

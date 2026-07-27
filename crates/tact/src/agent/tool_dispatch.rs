@@ -14,7 +14,9 @@ use crate::{
     hook::{HookControl, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
-    permission::{CapabilityRisk, PermissionBehavior, format_permission_prompt, normalize_mcp_capability},
+    permission::{
+        CapabilityRisk, PermissionBehavior, format_permission_prompt, normalize_mcp_capability,
+    },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, ResourcePolicy, TaskOperation,
         ToolDomain, ToolEffect, ToolRouter,
@@ -120,11 +122,17 @@ fn tool_arg_full(policy: ArgumentSummaryPolicy, input: &serde_json::Value) -> St
         ArgumentSummaryPolicy::Question { field } => str_field(input, field).to_string(),
         ArgumentSummaryPolicy::SubagentPrompt { field } => str_field(input, field).to_string(),
         ArgumentSummaryPolicy::PatchPreview { .. } => patch_title(input),
-        ArgumentSummaryPolicy::ReadOffsetLimit { path_field } => str_field(input, path_field).to_string(),
+        ArgumentSummaryPolicy::ReadOffsetLimit { path_field } => {
+            str_field(input, path_field).to_string()
+        }
     }
 }
 
-fn tool_detail_content(detail: DetailPolicy, input: &serde_json::Value, exec_output: &str) -> Option<String> {
+fn tool_detail_content(
+    detail: DetailPolicy,
+    input: &serde_json::Value,
+    exec_output: &str,
+) -> Option<String> {
     fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
         input.get(key).and_then(|v| v.as_str()).unwrap_or("")
     }
@@ -170,14 +178,20 @@ async fn run_native_tool(
             match output_policy {
                 OutputPolicy::PersistLargeOutput => {
                     match persist_large_output(&tact_path, tool_use_id, &output).await {
-                        Ok(content) => ExecResult { content, status: StepStatus::Success },
+                        Ok(content) => ExecResult {
+                            content,
+                            status: StepStatus::Success,
+                        },
                         Err(error) => ExecResult {
                             content: format!("Error persisting large output: {error}"),
                             status: StepStatus::Failed,
                         },
                     }
                 }
-                OutputPolicy::KeepInline => ExecResult { content: output, status: StepStatus::Success },
+                OutputPolicy::KeepInline => ExecResult {
+                    content: output,
+                    status: StepStatus::Success,
+                },
             }
         }
         Err(e) => ExecResult {
@@ -198,7 +212,10 @@ async fn run_mcp_tool(
         Ok(output) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match persist_large_output(&tact_path, tool_use_id, &output).await {
-                Ok(content) => ExecResult { content, status: StepStatus::Success },
+                Ok(content) => ExecResult {
+                    content,
+                    status: StepStatus::Success,
+                },
                 Err(error) => ExecResult {
                     content: format!("Error persisting large MCP output: {error}"),
                     status: StepStatus::Failed,
@@ -218,15 +235,22 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
     ToolPresentationInfo {
         visual_kind: meta.presentation.visual_kind,
         display_name: meta.presentation.display_name.to_string(),
-        keep_full_live_output: matches!(meta.presentation.live_output, crate::tool::LiveOutputPolicy::FullTranscript),
+        keep_full_live_output: matches!(
+            meta.presentation.live_output,
+            crate::tool::LiveOutputPolicy::FullTranscript
+        ),
         detail: match meta.presentation.detail {
             DetailPolicy::None => tact_protocol::ToolDetailKind::None,
             DetailPolicy::Result => tact_protocol::ToolDetailKind::Result,
-            DetailPolicy::InputField(field) => tact_protocol::ToolDetailKind::InputField(field.to_string()),
+            DetailPolicy::InputField(field) => {
+                tact_protocol::ToolDetailKind::InputField(field.to_string())
+            }
         },
         popup: match meta.presentation.popup {
             crate::tool::PopupPolicy::None => tact_protocol::ToolPopupKind::None,
-            crate::tool::PopupPolicy::SubagentTranscript => tact_protocol::ToolPopupKind::SubagentTranscript,
+            crate::tool::PopupPolicy::SubagentTranscript => {
+                tact_protocol::ToolPopupKind::SubagentTranscript
+            }
         },
         compact_result_to_meta: meta.presentation.compact_result_to_meta,
     }
@@ -245,8 +269,17 @@ impl Agent {
             let ContentBlock::ToolUse { id, name, input } = block else {
                 continue;
             };
-            *self.runtime.stats.tool_counts.entry(name.clone()).or_insert(0) += 1;
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            *self
+                .runtime
+                .stats
+                .tool_counts
+                .entry(name.clone())
+                .or_insert(0) += 1;
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.append_cancelled_tool_uses(&mut prepared, content);
                 return Ok((build_tool_results(prepared, vec![]), None));
@@ -256,7 +289,9 @@ impl Agent {
 
             // Resolve: native first, then MCP, else Unknown
             let resolved = match self.tools.resolve(name) {
-                Ok(r) => ResolvedTool::Native { metadata: r.metadata() },
+                Ok(r) => ResolvedTool::Native {
+                    metadata: r.metadata(),
+                },
                 Err(_) => match self.mcp_router.resolve_tool(name) {
                     Ok(Some(mcp)) => ResolvedTool::Mcp {
                         full_name: mcp.full_name,
@@ -266,20 +301,31 @@ impl Agent {
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
                         self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
-                            name.clone(), name.clone(), id.clone(),
+                            name.clone(),
+                            name.clone(),
+                            id.clone(),
                             input.as_object().cloned().unwrap_or_default(),
                         )));
                         self.emit_update(AgentUpdate::StepStarted {
-                            idx: step_idx, tool_id: id.clone(), tool_name: name.clone(),
-                            arg_summary: String::new(), arg_full: String::new(),
+                            idx: step_idx,
+                            tool_id: id.clone(),
+                            tool_name: name.clone(),
+                            arg_summary: String::new(),
+                            arg_full: String::new(),
                             presentation: ToolPresentationInfo::generic(name.clone()),
                         });
                         self.emit_update(AgentUpdate::StepFailed {
-                            idx: step_idx, tool_id: id.clone(), error: msg.clone(),
+                            idx: step_idx,
+                            tool_id: id.clone(),
+                            error: msg.clone(),
                         });
                         prepared.push(PreparedTool {
-                            id: id.clone(), name: name.clone(), input: input.clone(), step_idx,
-                            permission_label: None, state: PreparedState::Resolved(msg),
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                            step_idx,
+                            permission_label: None,
+                            state: PreparedState::Resolved(msg),
                             resolved: ResolvedTool::Unknown { name: name.clone() },
                             task_before: None,
                         });
@@ -290,7 +336,9 @@ impl Agent {
 
             // Argument formatting
             let (arg_full, arg_summary) = match &resolved {
-                ResolvedTool::Native { metadata } if matches!(metadata.domain, ToolDomain::Task(_)) => {
+                ResolvedTool::Native { metadata }
+                    if matches!(metadata.domain, ToolDomain::Task(_)) =>
+                {
                     let op = match metadata.domain {
                         ToolDomain::Task(op) => op,
                         _ => unreachable!(),
@@ -300,7 +348,12 @@ impl Agent {
                     if full.chars().count() <= TASK_SUMMARY_CHARS {
                         (full.clone(), full)
                     } else {
-                        let s = format!("{}...", full.chars().take(TASK_SUMMARY_CHARS.saturating_sub(3)).collect::<String>());
+                        let s = format!(
+                            "{}...",
+                            full.chars()
+                                .take(TASK_SUMMARY_CHARS.saturating_sub(3))
+                                .collect::<String>()
+                        );
                         (full, s)
                     }
                 }
@@ -315,23 +368,36 @@ impl Agent {
                 }
             };
 
-            let step_description = if arg_summary.is_empty() { name.clone() } else { format!("{name} ({arg_summary})") };
+            let step_description = if arg_summary.is_empty() {
+                name.clone()
+            } else {
+                format!("{name} ({arg_summary})")
+            };
             let presentation = match &resolved {
                 ResolvedTool::Native { metadata } => make_presentation(metadata),
                 _ => ToolPresentationInfo::generic(name.clone()),
             };
 
             self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
-                step_description, name.clone(), id.clone(),
+                step_description,
+                name.clone(),
+                id.clone(),
                 input.as_object().cloned().unwrap_or_default(),
             )));
             self.emit_update(AgentUpdate::StepStarted {
-                idx: step_idx, tool_id: id.clone(), tool_name: name.clone(),
-                arg_summary: arg_summary.clone(), arg_full: arg_full.clone(),
+                idx: step_idx,
+                tool_id: id.clone(),
+                tool_name: name.clone(),
+                arg_summary: arg_summary.clone(),
+                arg_full: arg_full.clone(),
                 presentation: presentation.clone(),
             });
 
-            let mut tool_use = ToolUse { id: id.clone(), name: name.clone(), input: input.clone() };
+            let mut tool_use = ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            };
             let mut permission_label: Option<String> = None;
             let stable_name = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.name,
@@ -351,7 +417,11 @@ impl Agent {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
                             let msg = format!("Permission denied: {}", decision.reason);
-                            self.emit_update(AgentUpdate::StepFailed { idx: step_idx, tool_id: id.clone(), error: msg.clone() });
+                            self.emit_update(AgentUpdate::StepFailed {
+                                idx: step_idx,
+                                tool_id: id.clone(),
+                                error: msg.clone(),
+                            });
                             PreparedState::Resolved(msg)
                         }
                         PermissionBehavior::Ask => {
@@ -361,13 +431,21 @@ impl Agent {
                             };
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
                                 let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-                                let prompt = format_permission_prompt(stable_name, permit_prompt, &tool_use.input);
+                                let prompt = format_permission_prompt(
+                                    stable_name,
+                                    permit_prompt,
+                                    &tool_use.input,
+                                );
                                 let options = vec![
-                                    "Allow once".to_string(), "Deny".to_string(),
+                                    "Allow once".to_string(),
+                                    "Deny".to_string(),
                                     "Always allow this tool".to_string(),
                                 ];
                                 let _ = tx.send(AgentUpdate::RequestSelect {
-                                    prompt, options, respond: respond_tx, log_confirm: false,
+                                    prompt,
+                                    options,
+                                    respond: respond_tx,
+                                    log_confirm: false,
                                 });
                                 match respond_rx.await {
                                     Ok(Some(0)) => Some("allow_once"),
@@ -375,19 +453,32 @@ impl Agent {
                                     _ => Some("deny"),
                                 }
                             } else {
-                                let approved = self.runtime.permission_manager.ask_user(stable_name)?;
-                                if approved { Some("allow_once") } else { Some("deny") }
+                                let approved =
+                                    self.runtime.permission_manager.ask_user(stable_name)?;
+                                if approved {
+                                    Some("allow_once")
+                                } else {
+                                    Some("deny")
+                                }
                             };
                             match choice {
-                                Some("allow_once") => { permission_label = Some("Allow once".to_string()); PreparedState::Run }
+                                Some("allow_once") => {
+                                    permission_label = Some("Allow once".to_string());
+                                    PreparedState::Run
+                                }
                                 Some("always_allow") => {
                                     permission_label = Some("Always allow this tool".to_string());
                                     self.runtime.permission_manager.allow_tool(stable_name);
                                     PreparedState::Run
                                 }
                                 _ => {
-                                    let msg = format!("Permission denied by user for {}", stable_name);
-                                    self.emit_update(AgentUpdate::StepFailed { idx: step_idx, tool_id: id.clone(), error: msg.clone() });
+                                    let msg =
+                                        format!("Permission denied by user for {}", stable_name);
+                                    self.emit_update(AgentUpdate::StepFailed {
+                                        idx: step_idx,
+                                        tool_id: id.clone(),
+                                        error: msg.clone(),
+                                    });
                                     PreparedState::Resolved(msg)
                                 }
                             }
@@ -396,12 +487,20 @@ impl Agent {
                 }
                 Ok(HookControl::Block(reason)) => {
                     let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                    self.emit_update(AgentUpdate::StepFailed { idx: step_idx, tool_id: id.clone(), error: msg.clone() });
+                    self.emit_update(AgentUpdate::StepFailed {
+                        idx: step_idx,
+                        tool_id: id.clone(),
+                        error: msg.clone(),
+                    });
                     PreparedState::Resolved(msg)
                 }
                 Err(error) => {
                     let msg = format!("PreToolUse hook failed: {error}");
-                    self.emit_update(AgentUpdate::StepFailed { idx: step_idx, tool_id: id.clone(), error: msg.clone() });
+                    self.emit_update(AgentUpdate::StepFailed {
+                        idx: step_idx,
+                        tool_id: id.clone(),
+                        error: msg.clone(),
+                    });
                     PreparedState::Resolved(msg)
                 }
             };
@@ -409,7 +508,8 @@ impl Agent {
             let task_before = match &resolved {
                 ResolvedTool::Native { metadata } => match metadata.domain {
                     ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => input
-                        .get("task_id").and_then(|v| v.as_u64())
+                        .get("task_id")
+                        .and_then(|v| v.as_u64())
                         .and_then(|id| self.tool_context.task_manager.get(id).ok()),
                     _ => None,
                 },
@@ -417,37 +517,60 @@ impl Agent {
             };
 
             prepared.push(PreparedTool {
-                id: tool_use.id, name: tool_use.name, input: tool_use.input, step_idx,
-                permission_label, state, resolved, task_before,
+                id: tool_use.id,
+                name: tool_use.name,
+                input: tool_use.input,
+                step_idx,
+                permission_label,
+                state,
+                resolved,
+                task_before,
             });
         }
 
         // Phase 2: execute in conflict-free waves
-        let run_indices: Vec<usize> = prepared.iter().enumerate()
+        let run_indices: Vec<usize> = prepared
+            .iter()
+            .enumerate()
             .filter(|(_, p)| matches!(p.state, PreparedState::Run))
-            .map(|(i, _)| i).collect();
+            .map(|(i, _)| i)
+            .collect();
 
-        let resources: Vec<super::tool_schedule::ToolResources> = run_indices.iter().map(|&i| {
-            match &prepared[i].resolved {
-                ResolvedTool::Native { metadata } =>
-                    super::tool_schedule::tool_resources_from_metadata(&metadata.resources, &prepared[i].input, &self.tool_context.work_dir),
-                ResolvedTool::Mcp { server, .. } =>
-                    super::tool_schedule::mcp_server_resources(server),
-                ResolvedTool::Unknown { .. } =>
-                    super::tool_schedule::ToolResources::barrier(),
-            }
-        }).collect();
+        let resources: Vec<super::tool_schedule::ToolResources> = run_indices
+            .iter()
+            .map(|&i| match &prepared[i].resolved {
+                ResolvedTool::Native { metadata } => {
+                    super::tool_schedule::tool_resources_from_metadata(
+                        &metadata.resources,
+                        &prepared[i].input,
+                        &self.tool_context.work_dir,
+                    )
+                }
+                ResolvedTool::Mcp { server, .. } => {
+                    super::tool_schedule::mcp_server_resources(server)
+                }
+                ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
+            })
+            .collect();
 
         if !run_indices.is_empty() {
-            let names: Vec<String> = run_indices.iter().map(|&i| prepared[i].name.clone()).collect();
-            self.persist_tool_schedule(&super::tool_schedule::summarize(&names, &resources)).await;
+            let names: Vec<String> = run_indices
+                .iter()
+                .map(|&i| prepared[i].name.clone())
+                .collect();
+            self.persist_tool_schedule(&super::tool_schedule::summarize(&names, &resources))
+                .await;
         }
 
         let mut outputs: Vec<Option<String>> = (0..prepared.len()).map(|_| None).collect();
         let mut manual_compact = None;
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
-            if self.runtime.cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .runtime
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok((build_tool_results(prepared, outputs), manual_compact));
             }
@@ -468,48 +591,102 @@ impl Agent {
                     let exec = if is_mcp {
                         run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
                     } else {
-                        run_native_tool(tools, ctx, &prep.id, &prep.name, &prep.input, output_policy).await
+                        run_native_tool(
+                            tools,
+                            ctx,
+                            &prep.id,
+                            &prep.name,
+                            &prep.input,
+                            output_policy,
+                        )
+                        .await
                     };
-                    (pi, exec.content, exec.status, start.elapsed().as_micros() as u64)
+                    (
+                        pi,
+                        exec.content,
+                        exec.status,
+                        start.elapsed().as_micros() as u64,
+                    )
                 });
             }
             let mut pending_durations_us: Vec<u64> = Vec::new();
             let mut pending_recent_files: Vec<String> = Vec::new();
             while let Some((pi, content, exec_status, duration_us)) = futures.next().await {
                 let prep = &prepared[pi];
-                let prep_id = prep.id.clone(); let prep_name = prep.name.clone();
-                let prep_input = prep.input.clone(); let prep_step_idx = prep.step_idx;
+                let prep_id = prep.id.clone();
+                let prep_name = prep.name.clone();
+                let prep_input = prep.input.clone();
+                let prep_step_idx = prep.step_idx;
                 let prep_permission_label = prep.permission_label.clone();
 
-                let tool_use = ToolUse { id: prep_id.clone(), name: prep_name.clone(), input: prep_input.clone() };
-                let mut tool_result = ToolResult { tool_use_id: prep_id.clone(), content };
-                let (exec_output, final_status) = match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                    Ok(HookControl::Continue) => (tool_result.content, exec_status),
-                    Ok(HookControl::Block(reason)) => (format!("Tool blocked by PostToolUse hook: {reason}"), StepStatus::Failed),
-                    Err(error) => (format!("PostToolUse hook failed: {error}"), StepStatus::Failed),
+                let tool_use = ToolUse {
+                    id: prep_id.clone(),
+                    name: prep_name.clone(),
+                    input: prep_input.clone(),
                 };
+                let mut tool_result = ToolResult {
+                    tool_use_id: prep_id.clone(),
+                    content,
+                };
+                let (exec_output, final_status) =
+                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
+                        Ok(HookControl::Continue) => (tool_result.content, exec_status),
+                        Ok(HookControl::Block(reason)) => (
+                            format!("Tool blocked by PostToolUse hook: {reason}"),
+                            StepStatus::Failed,
+                        ),
+                        Err(error) => (
+                            format!("PostToolUse hook failed: {error}"),
+                            StepStatus::Failed,
+                        ),
+                    };
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let task_before = prepared[pi].task_before.clone();
 
                 let (arg_full, arg_summary) = match &prep.resolved {
-                    ResolvedTool::Native { metadata } if matches!(metadata.domain, ToolDomain::Task(_)) => {
-                        let op = match metadata.domain { ToolDomain::Task(op) => op, _ => unreachable!() };
+                    ResolvedTool::Native { metadata }
+                        if matches!(metadata.domain, ToolDomain::Task(_)) =>
+                    {
+                        let op = match metadata.domain {
+                            ToolDomain::Task(op) => op,
+                            _ => unreachable!(),
+                        };
                         let after = match op {
                             TaskOperation::Create => {
-                                let subject = prep_input.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-                                self.tool_context.task_manager.list().ok().and_then(|list|
-                                    list.into_iter().filter(|t| t.subject == subject).max_by_key(|t| t.id))
+                                let subject = prep_input
+                                    .get("subject")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                self.tool_context.task_manager.list().ok().and_then(|list| {
+                                    list.into_iter()
+                                        .filter(|t| t.subject == subject)
+                                        .max_by_key(|t| t.id)
+                                })
                             }
                             TaskOperation::Update | TaskOperation::Get => prep_input
-                                .get("task_id").and_then(|v| v.as_u64())
+                                .get("task_id")
+                                .and_then(|v| v.as_u64())
                                 .and_then(|id| self.tool_context.task_manager.get(id).ok()),
                             _ => None,
                         };
-                        let full = crate::task::format_task_tool_title(op, &prep_input, task_before.as_ref(), after.as_ref());
+                        let full = crate::task::format_task_tool_title(
+                            op,
+                            &prep_input,
+                            task_before.as_ref(),
+                            after.as_ref(),
+                        );
                         const TASK_SUMMARY_CHARS: usize = 240;
-                        let s = if full.chars().count() <= TASK_SUMMARY_CHARS { full.clone() }
-                            else { format!("{}...", full.chars().take(TASK_SUMMARY_CHARS.saturating_sub(3)).collect::<String>()) };
+                        let s = if full.chars().count() <= TASK_SUMMARY_CHARS {
+                            full.clone()
+                        } else {
+                            format!(
+                                "{}...",
+                                full.chars()
+                                    .take(TASK_SUMMARY_CHARS.saturating_sub(3))
+                                    .collect::<String>()
+                            )
+                        };
                         (full, s)
                     }
                     _ => {
@@ -526,7 +703,8 @@ impl Agent {
                     ResolvedTool::Native { metadata } => metadata.presentation.detail,
                     _ => DetailPolicy::Result,
                 };
-                let detail = step_result_detail(detail_policy, &prep_input, &exec_output, &final_status);
+                let detail =
+                    step_result_detail(detail_policy, &prep_input, &exec_output, &final_status);
                 let succeeded = matches!(final_status, StepStatus::Success);
 
                 let presentation = match &prep.resolved {
@@ -535,11 +713,18 @@ impl Agent {
                 };
 
                 self.emit_update(AgentUpdate::StepFinished {
-                    idx: prep_step_idx, tool_id: prep_id,
+                    idx: prep_step_idx,
+                    tool_id: prep_id,
                     result: StepResult {
-                        tool: prep_name.clone(), arg_summary, arg_full: Some(arg_full),
-                        status: final_status, message: summary, detail, duration_us: Some(duration_us),
-                        permission_label: prep_permission_label, presentation,
+                        tool: prep_name.clone(),
+                        arg_summary,
+                        arg_full: Some(arg_full),
+                        status: final_status,
+                        message: summary,
+                        detail,
+                        duration_us: Some(duration_us),
+                        permission_label: prep_permission_label,
+                        presentation,
                     },
                 });
 
@@ -550,24 +735,57 @@ impl Agent {
                 }
 
                 // Compact effect
-                if matches!(&prep.resolved, ResolvedTool::Native { metadata } if metadata.name == "compact") && succeeded {
-                    manual_compact = prep_input.get("focus").and_then(|v| v.as_str())
-                        .map(|s| if s.is_empty() { String::new() } else { s.to_string() })
+                if matches!(&prep.resolved, ResolvedTool::Native { metadata } if metadata.name == "compact")
+                    && succeeded
+                {
+                    manual_compact = prep_input
+                        .get("focus")
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            if s.is_empty() {
+                                String::new()
+                            } else {
+                                s.to_string()
+                            }
+                        })
                         .or_else(|| Some(String::new()));
                 }
 
                 if succeeded {
-                    *self.runtime.stats.tool_success_counts.entry(prep_name.clone()).or_insert(0) += 1;
+                    *self
+                        .runtime
+                        .stats
+                        .tool_success_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
                 } else {
-                    *self.runtime.stats.tool_failure_counts.entry(prep_name.clone()).or_insert(0) += 1;
+                    *self
+                        .runtime
+                        .stats
+                        .tool_failure_counts
+                        .entry(prep_name.clone())
+                        .or_insert(0) += 1;
                 }
-                *self.runtime.stats.tool_total_durations_ms.entry(prep_name.clone()).or_insert(0) += duration_us / 1000;
-                *self.runtime.stats.tool_timing_counts.entry(prep_name.clone()).or_insert(0) += 1;
+                *self
+                    .runtime
+                    .stats
+                    .tool_total_durations_ms
+                    .entry(prep_name.clone())
+                    .or_insert(0) += duration_us / 1000;
+                *self
+                    .runtime
+                    .stats
+                    .tool_timing_counts
+                    .entry(prep_name.clone())
+                    .or_insert(0) += 1;
                 outputs[pi] = Some(exec_output);
             }
             drop(futures);
             for duration_us in pending_durations_us {
-                self.runtime.stats.tool_durations_ms.push(duration_us / 1000);
+                self.runtime
+                    .stats
+                    .tool_durations_ms
+                    .push(duration_us / 1000);
             }
             for path in pending_recent_files {
                 self.remember_recent_file(&path);
@@ -577,17 +795,30 @@ impl Agent {
         Ok((build_tool_results(prepared, outputs), manual_compact))
     }
 
-    fn append_cancelled_tool_uses(&mut self, prepared: &mut Vec<PreparedTool>, content: &[ContentBlock]) {
+    fn append_cancelled_tool_uses(
+        &mut self,
+        prepared: &mut Vec<PreparedTool>,
+        content: &[ContentBlock],
+    ) {
         for block in content.iter().skip(prepared.len()) {
-            let ContentBlock::ToolUse { id, name, input } = block else { continue; };
+            let ContentBlock::ToolUse { id, name, input } = block else {
+                continue;
+            };
             let step_idx = self.next_step_idx();
             self.emit_update(AgentUpdate::StepFailed {
-                idx: step_idx, tool_id: id.clone(), error: TOOL_CANCELLED_MSG.to_string(),
+                idx: step_idx,
+                tool_id: id.clone(),
+                error: TOOL_CANCELLED_MSG.to_string(),
             });
             prepared.push(PreparedTool {
-                id: id.clone(), name: name.clone(), input: input.clone(), step_idx,
-                permission_label: None, state: PreparedState::Resolved(TOOL_CANCELLED_MSG.to_string()),
-                resolved: ResolvedTool::Unknown { name: name.clone() }, task_before: None,
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+                step_idx,
+                permission_label: None,
+                state: PreparedState::Resolved(TOOL_CANCELLED_MSG.to_string()),
+                resolved: ResolvedTool::Unknown { name: name.clone() },
+                task_before: None,
             });
         }
     }
@@ -595,8 +826,8 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::StepStatus;
     use super::*;
+    use tact_protocol::StepStatus;
 
     #[test]
     fn tool_detail_content_edit_file_returns_new_text() {
@@ -607,45 +838,77 @@ mod tests {
 
     #[test]
     fn step_result_detail_on_failure_returns_full_output() {
-        let out = step_result_detail(DetailPolicy::Result, &serde_json::json!({"path": "src/lib.rs"}),
-            "Error: Text not found", &StepStatus::Failed);
+        let out = step_result_detail(
+            DetailPolicy::Result,
+            &serde_json::json!({"path": "src/lib.rs"}),
+            "Error: Text not found",
+            &StepStatus::Failed,
+        );
         assert_eq!(out.as_deref(), Some("Error: Text not found"));
     }
 
     #[test]
     fn step_result_detail_on_success_uses_tool_specific_rules() {
-        let out = step_result_detail(DetailPolicy::Result, &serde_json::json!({"command": "echo hi"}), "hi\n", &StepStatus::Success);
+        let out = step_result_detail(
+            DetailPolicy::Result,
+            &serde_json::json!({"command": "echo hi"}),
+            "hi\n",
+            &StepStatus::Success,
+        );
         assert_eq!(out.as_deref(), Some("hi\n"));
-        let out = step_result_detail(DetailPolicy::InputField("content"),
-            &serde_json::json!({"path": "a.rs", "content": "fn main(){}"}), "wrote", &StepStatus::Success);
+        let out = step_result_detail(
+            DetailPolicy::InputField("content"),
+            &serde_json::json!({"path": "a.rs", "content": "fn main(){}"}),
+            "wrote",
+            &StepStatus::Success,
+        );
         assert_eq!(out.as_deref(), Some("fn main(){}"));
-        let out = step_result_detail(DetailPolicy::None, &serde_json::json!({}), "matches", &StepStatus::Success);
+        let out = step_result_detail(
+            DetailPolicy::None,
+            &serde_json::json!({}),
+            "matches",
+            &StepStatus::Success,
+        );
         assert!(out.is_none());
     }
 
     #[test]
     fn path_policy_arg_full() {
-        let full = tool_arg_full(ArgumentSummaryPolicy::Path { field: "path" }, &serde_json::json!({"path": "src/lib.rs"}));
+        let full = tool_arg_full(
+            ArgumentSummaryPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "src/lib.rs"}),
+        );
         assert_eq!(full, "src/lib.rs");
     }
 
     #[test]
     fn patch_preview_summary() {
-        let full = tool_arg_full(ArgumentSummaryPolicy::PatchPreview { patch_field: "patch" }, &serde_json::json!({
-            "patch": "diff --git a/src/lib.rs" }));
+        let full = tool_arg_full(
+            ArgumentSummaryPolicy::PatchPreview {
+                patch_field: "patch",
+            },
+            &serde_json::json!({
+            "patch": "diff --git a/src/lib.rs" }),
+        );
         assert!(full.starts_with("patch: diff --git"));
     }
 
     #[test]
     fn long_bash_summary_is_truncated() {
         let cmd = "x".repeat(200);
-        let full = tool_arg_full(ArgumentSummaryPolicy::Command { field: "command" }, &serde_json::json!({"command": cmd}));
+        let full = tool_arg_full(
+            ArgumentSummaryPolicy::Command { field: "command" },
+            &serde_json::json!({"command": cmd}),
+        );
         assert_eq!(truncate_tool_arg_summary(&full).chars().count(), 120);
     }
 
     #[test]
     fn short_bash_summary_is_preserved() {
-        let full = tool_arg_full(ArgumentSummaryPolicy::Command { field: "command" }, &serde_json::json!({"command": "git status"}));
+        let full = tool_arg_full(
+            ArgumentSummaryPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "git status"}),
+        );
         assert_eq!(full, "git status");
     }
 }

@@ -1,9 +1,13 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
 
@@ -16,7 +20,9 @@ pub struct BackgroundRunInput {
 pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     name: "background_run",
     description: "Run a shell command in the background.",
-    permission: PermissionPolicy::ShellCommand { command_field: "command" },
+    permission: PermissionPolicy::ShellCommand {
+        command_field: "command",
+    },
     permission_prompt: PermissionPromptPolicy::Command { field: "command" },
     resources: ResourcePolicy::Barrier,
     domain: ToolDomain::Generic,
@@ -31,7 +37,6 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
 };
-
 
 #[tool]
 /// # Errors
@@ -66,7 +71,6 @@ pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors

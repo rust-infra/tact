@@ -2,7 +2,10 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{
+    AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk,
+    ToolPresentationInfo,
+};
 
 use super::test_harness::{make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{App, InputMode, Status};
@@ -31,7 +34,7 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
         tool_name: "write_file".into(),
         arg_summary: path.into(),
         arg_full: path.into(),
-    presentation: ToolPresentationInfo::generic("write_file"),
+        presentation: ToolPresentationInfo::generic("write_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -45,7 +48,7 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
             detail: Some(content.into()),
             duration_us: Some(50),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("write_file"),
+            presentation: ToolPresentationInfo::generic("write_file"),
         },
     });
 }
@@ -63,7 +66,7 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
         tool_name: "bash".into(),
         arg_summary: command.into(),
         arg_full: command.into(),
-    presentation: ToolPresentationInfo::generic("bash"),
+        presentation: ToolPresentationInfo::generic("bash"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -77,7 +80,7 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
             detail: Some(output.into()),
             duration_us: Some(100),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("bash"),
+            presentation: ToolPresentationInfo::generic("bash"),
         },
     });
 }
@@ -242,7 +245,7 @@ fn plan_steps_track_multiple_steps_with_one_running() {
         tool_name: "read_file".into(),
         arg_summary: "a.txt".into(),
         arg_full: "a.txt".into(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -256,7 +259,7 @@ fn plan_steps_track_multiple_steps_with_one_running() {
             detail: None,
             duration_us: Some(1),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("read_file"),
+            presentation: ToolPresentationInfo::generic("read_file"),
         },
     });
     app.handle_agent_update(AgentUpdate::StepStarted {
@@ -265,7 +268,7 @@ fn plan_steps_track_multiple_steps_with_one_running() {
         tool_name: "read_file".into(),
         arg_summary: "b.txt".into(),
         arg_full: "b.txt".into(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
 
     assert_eq!(app.plan.steps.len(), 2, "both steps should be tracked");
@@ -294,7 +297,7 @@ fn plan_panel_lists_failed_step_description() {
         tool_name: "read_file".into(),
         arg_summary: "nope.txt".into(),
         arg_full: "nope.txt".into(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFailed {
         idx: 0,
@@ -532,7 +535,7 @@ fn full_frame_edit_file_tool_shows_in_log() {
         tool_name: "edit_file".into(),
         arg_summary: "lib.rs".into(),
         arg_full: "lib.rs".into(),
-    presentation: ToolPresentationInfo::generic("edit_file"),
+        presentation: ToolPresentationInfo::generic("edit_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -546,7 +549,7 @@ fn full_frame_edit_file_tool_shows_in_log() {
             detail: Some("- fn old()\n+ fn new()".into()),
             duration_us: Some(200),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("edit_file"),
+            presentation: ToolPresentationInfo::generic("edit_file"),
         },
     });
 

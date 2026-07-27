@@ -614,13 +614,33 @@ LLM provider selection (set in `[llm]` or via CLI):
 
 ---
 
-## 13. `#[tool]` Proc Macro
+## 13. `#[tool]` Proc Macro & Self-Described Native Tools
 
-The `tool_refactor_macros` crate provides the `#[tool(name = "...", description = "...")]` attribute macro. It is used by many built-in tools (e.g., `tool/bash.rs`, `tool/sleep.rs`) to auto-generate:
+The `tool_refactor_macros` crate provides the `#[tool]` attribute macro. Starting from Task 5 of the 
+tool-metadata-refactor, the macro uses the bare form (no `name`/`description` arguments). 
 
-- A JSON input schema via `schemars`.
-- A wrapper struct implementing the `Tool` trait.
-- Deserialization of the JSON input into the function's arguments.
+Each native tool handler declares a sibling `UPPER_SNAKE_HANDLER_METADATA` constant of type 
+`ToolMetadata`, which the proc macro references via `&#metadata_ident` in the generated `Tool` impl.
+
+### Metadata flow
+
+```
+LLM name → ToolRouter::resolve → RegisteredTool(handler + ToolMetadata)
+          → permission/resource/presentation/output policies
+          → ToolCallResult(content + typed effects)
+```
+
+- **External names** remain stable strings used for LLM-facing tool specs and 
+  `always_allowed_tools` entries. Rust enum variant names are never serialized.
+- **Permission** is derived from `PermissionPolicy` (Read/Write/High/ShellCommand).
+- **Resources** come from `ResourcePolicy` (ReadPath/WritePath/Barrier/SharedState/PatchFiles).
+- **Presentation** converts to protocol `ToolPresentationInfo` via `ToolPresentation::to_protocol()`.
+- **Output policy** (`PersistLargeOutput` / `KeepInline`) controls post-execution persistence.
+- **Argument summaries** use `ArgumentSummaryPolicy` for tool-card formatting.
+- **Tool effects** are typed (`ToolEffect::CompactHistory { focus }`) and applied only on success.
+- **MCP tools** are parsed at the adapter boundary (`mcp__{server}__{tool}`) and receive 
+  conservative generic defaults for presentation, resources, and permission.
+- **Unknown tools** fail closed before execution — no native privileges leak through.
 
 Handlers can be either:
 

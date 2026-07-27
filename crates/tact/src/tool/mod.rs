@@ -199,10 +199,13 @@ impl ToolRouter {
         if self.tools.contains_key(&name) {
             anyhow::bail!("duplicate native tool name: {name}");
         }
-        self.tools.insert(name, RegisteredTool {
-            handler: Box::new(tool),
-            metadata,
-        });
+        self.tools.insert(
+            name,
+            RegisteredTool {
+                handler: Box::new(tool),
+                metadata,
+            },
+        );
         Ok(self)
     }
 
@@ -215,7 +218,12 @@ impl ToolRouter {
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
         self.cached_specs
-            .get_or_init(|| self.tools.values().map(|rt| rt.handler.tool_spec()).collect())
+            .get_or_init(|| {
+                self.tools
+                    .values()
+                    .map(|rt| rt.handler.tool_spec())
+                    .collect()
+            })
             .iter()
             .map(copy_tool_spec)
             .collect()
@@ -259,13 +267,13 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
     }
 }
 
-pub use path::{safe_path, safe_path_allow_missing};
-pub use progress::ToolProgressReporter;
 pub use metadata::{
     ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
     PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
     ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
 };
+pub use path::{safe_path, safe_path_allow_missing};
+pub use progress::ToolProgressReporter;
 
 #[cfg(test)]
 mod tests {
@@ -360,7 +368,13 @@ mod tests {
         let router = ToolRouter::new().route(EchoTool).unwrap();
         let result = router.route(EchoTool);
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("duplicate native tool name: echo"));
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("duplicate native tool name: echo")
+        );
     }
 
     #[test]
@@ -649,9 +663,12 @@ mod tests {
     #[tokio::test]
     async fn cron_tools_manage_scheduled_tasks() {
         let router = ToolRouter::new()
-            .route(CronCreateTool).unwrap()
-            .route(CronListTool).unwrap()
-            .route(CronDeleteTool).unwrap();
+            .route(CronCreateTool)
+            .unwrap()
+            .route(CronListTool)
+            .unwrap()
+            .route(CronDeleteTool)
+            .unwrap();
         let context = test_context("cron_tools_manage_scheduled_tasks");
 
         let created = router
@@ -698,10 +715,14 @@ mod tests {
     #[tokio::test]
     async fn team_tools_spawn_and_message() {
         let router = ToolRouter::new()
-            .route(SpawnTeammateTool).unwrap()
-            .route(ListTeammatesTool).unwrap()
-            .route(SendMessageTool).unwrap()
-            .route(ReadInboxTool).unwrap();
+            .route(SpawnTeammateTool)
+            .unwrap()
+            .route(ListTeammatesTool)
+            .unwrap()
+            .route(SendMessageTool)
+            .unwrap()
+            .route(ReadInboxTool)
+            .unwrap();
         let context = test_context("team_tools_spawn_and_message");
 
         router
@@ -746,8 +767,10 @@ mod tests {
     #[tokio::test]
     async fn background_run_starts_and_completes() {
         let router = ToolRouter::new()
-            .route(BackgroundRunTool).unwrap()
-            .route(CheckBackgroundTool).unwrap();
+            .route(BackgroundRunTool)
+            .unwrap()
+            .route(CheckBackgroundTool)
+            .unwrap();
         let context = test_context("background_run_starts_and_completes");
 
         let started = router
@@ -789,10 +812,14 @@ mod tests {
     #[tokio::test]
     async fn task_get_list_and_update() {
         let router = ToolRouter::new()
-            .route(TaskCreateTool).unwrap()
-            .route(TaskGetTool).unwrap()
-            .route(TaskListTool).unwrap()
-            .route(TaskUpdateTool).unwrap();
+            .route(TaskCreateTool)
+            .unwrap()
+            .route(TaskGetTool)
+            .unwrap()
+            .route(TaskListTool)
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let context = test_context("task_get_list_and_update");
 
         let created = router

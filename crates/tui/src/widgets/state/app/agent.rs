@@ -451,7 +451,10 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
-        let is_subagent = matches!(result.presentation.popup, tact_protocol::ToolPopupKind::SubagentTranscript);
+        let is_subagent = matches!(
+            result.presentation.popup,
+            tact_protocol::ToolPopupKind::SubagentTranscript
+        );
         let mut output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
             .with_step_index(idx)
             .build();
@@ -1233,7 +1236,7 @@ mod lifecycle_tests {
             tool_name: "bash".into(),
             arg_summary: "long-command".into(),
             arg_full: "long-command".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
+            presentation: ToolPresentationInfo::generic("bash"),
         });
     }
 
@@ -1376,7 +1379,7 @@ mod lifecycle_tests {
                 detail: Some("live line\n".into()),
                 duration_us: Some(100),
                 permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
+                presentation: ToolPresentationInfo::generic("bash"),
             },
         });
         let completed_rows = app.tools.blocks[0].output.visual_rows(false);
@@ -1525,7 +1528,7 @@ mod lifecycle_tests {
             tool_name: "read_file".into(),
             arg_summary: "main.rs".into(),
             arg_full: "main.rs".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
+            presentation: ToolPresentationInfo::generic("read_file"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -1539,7 +1542,7 @@ mod lifecycle_tests {
                 detail: Some("file body".into()),
                 duration_us: Some(1),
                 permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
+                presentation: ToolPresentationInfo::generic("read_file"),
             },
         });
 
@@ -1728,7 +1731,7 @@ mod lifecycle_tests {
             tool_name: "read_file".into(),
             arg_summary: "a.rs".into(),
             arg_full: "a.rs".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
+            presentation: ToolPresentationInfo::generic("read_file"),
         });
         assert!(matches!(app.status, Status::Executing { .. }));
         app.handle_agent_update(AgentUpdate::StepFinished {
@@ -1743,7 +1746,7 @@ mod lifecycle_tests {
                 detail: None,
                 duration_us: Some(1),
                 permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
+                presentation: ToolPresentationInfo::generic("read_file"),
             },
         });
         assert!(

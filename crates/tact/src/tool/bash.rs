@@ -1,8 +1,14 @@
 use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -11,8 +17,6 @@ use tokio::{
     time::{Interval, MissedTickBehavior, interval},
 };
 use tool_refactor_macros::tool;
-use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::{shell::validate_shell_command, tool::ToolContext};
 
@@ -266,7 +270,9 @@ pub struct BashInput {
 pub const BASH_METADATA: ToolMetadata = ToolMetadata {
     name: "bash",
     description: "Run a shell command in the current workspace.",
-    permission: PermissionPolicy::ShellCommand { command_field: "command" },
+    permission: PermissionPolicy::ShellCommand {
+        command_field: "command",
+    },
     permission_prompt: PermissionPromptPolicy::Command { field: "command" },
     resources: ResourcePolicy::Barrier,
     domain: ToolDomain::Generic,
@@ -281,7 +287,6 @@ pub const BASH_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::PersistLargeOutput,
     argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
 };
-
 
 #[tool]
 /// # Errors

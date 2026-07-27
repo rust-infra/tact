@@ -322,11 +322,16 @@ mod tests {
     fn task_tools_serialize_with_each_other() {
         let work = Path::new("/work");
         let task_policy = crate::tool::ResourcePolicy::SharedState { scope: "task" };
-        let create = tool_resources_from_metadata(&task_policy, &serde_json::json!({"subject": "a"}), work);
-        let update = tool_resources_from_metadata(&task_policy,
-            &serde_json::json!({"task_id": 1, "status": "completed"}), work);
+        let create =
+            tool_resources_from_metadata(&task_policy, &serde_json::json!({"subject": "a"}), work);
+        let update = tool_resources_from_metadata(
+            &task_policy,
+            &serde_json::json!({"task_id": 1, "status": "completed"}),
+            work,
+        );
         let list = tool_resources_from_metadata(&task_policy, &serde_json::json!({}), work);
-        let get = tool_resources_from_metadata(&task_policy, &serde_json::json!({"task_id": 1}), work);
+        let get =
+            tool_resources_from_metadata(&task_policy, &serde_json::json!({"task_id": 1}), work);
         assert!(!create.barrier && !update.barrier);
         assert_eq!(
             schedule_waves(&[create.clone(), update.clone(), list.clone(), get]),
@@ -335,7 +340,11 @@ mod tests {
         );
         // Still allowed to overlap a disjoint file read.
         let read_policy = crate::tool::ResourcePolicy::ReadPath { field: "path" };
-        let read = tool_resources_from_metadata(&read_policy, &serde_json::json!({"path": "src/a.rs"}), work);
+        let read = tool_resources_from_metadata(
+            &read_policy,
+            &serde_json::json!({"path": "src/a.rs"}),
+            work,
+        );
         assert_eq!(schedule_waves(&[create, read, update]), vec![0, 0, 1]);
     }
 

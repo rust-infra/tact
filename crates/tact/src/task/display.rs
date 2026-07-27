@@ -1,7 +1,7 @@
 //! Human-readable titles for `task_*` tool rows and related UI strings.
 
-use serde_json::Value;
 use crate::tool::TaskOperation;
+use serde_json::Value;
 
 use super::{SharedTaskManager, TaskRecord, TaskStatus};
 
@@ -255,7 +255,8 @@ mod tests {
             ..before.clone()
         };
         let input = serde_json::json!({"task_id": 24, "status": "completed"});
-        let title = format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&after));
+        let title =
+            format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&after));
         assert!(title.starts_with("# Task.24 · complete"), "{title}");
         assert!(title.contains("subject: 后端接口"), "{title}");
         assert!(title.contains("owner:张2"), "{title}");
@@ -267,7 +268,8 @@ mod tests {
     fn empty_update_action() {
         let before = TaskRecord::new(1, "x".into(), None);
         let input = serde_json::json!({"task_id": 1});
-        let title = format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&before));
+        let title =
+            format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&before));
         assert!(title.contains("no-op"), "{title}");
     }
 }

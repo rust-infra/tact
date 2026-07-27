@@ -1,9 +1,13 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
 
@@ -32,7 +36,6 @@ pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors
@@ -69,7 +72,6 @@ pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata {
     argument_summary: ArgumentSummaryPolicy::Json,
 };
 
-
 #[tool]
 /// # Errors
 ///
@@ -102,7 +104,6 @@ pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata {
     argument_summary: ArgumentSummaryPolicy::Json,
 };
 
-
 #[tool]
 /// # Errors
 ///
@@ -121,7 +122,9 @@ pub struct WorktreeRunInput {
 pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
     name: "worktree_run",
     description: "Run one shell command inside a named worktree.",
-    permission: PermissionPolicy::ShellCommand { command_field: "command" },
+    permission: PermissionPolicy::ShellCommand {
+        command_field: "command",
+    },
     permission_prompt: PermissionPromptPolicy::Command { field: "command" },
     resources: ResourcePolicy::Barrier,
     domain: ToolDomain::Generic,
@@ -136,7 +139,6 @@ pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
 };
-
 
 #[tool]
 /// # Errors
@@ -170,7 +172,6 @@ pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors

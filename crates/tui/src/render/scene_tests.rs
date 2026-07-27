@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{
+    AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk,
+    ToolPresentationInfo,
+};
 
 use super::{
     render_status_bar,
@@ -27,7 +30,7 @@ fn seed_executing_read_step(app: &mut App) {
         tool_name: "read_file".into(),
         arg_summary: "config.toml".into(),
         arg_full: "config.toml".into(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
 }
 
@@ -90,7 +93,7 @@ fn full_frame_failed_tool_shows_in_log() {
         tool_name: "read_file".into(),
         arg_summary: "missing.txt".into(),
         arg_full: "missing.txt".into(),
-    presentation: ToolPresentationInfo::generic("read_file"),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -104,7 +107,7 @@ fn full_frame_failed_tool_shows_in_log() {
             detail: Some("No such file".into()),
             duration_us: Some(500),
             permission_label: None,
-        presentation: ToolPresentationInfo::generic("read_file"),
+            presentation: ToolPresentationInfo::generic("read_file"),
         },
     });
 

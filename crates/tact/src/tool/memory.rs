@@ -1,9 +1,13 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context as _, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
+use tool_refactor_macros::tool;
 
 use crate::{memory::MemoryType, tool::ToolContext};
 
@@ -38,7 +42,6 @@ pub const SAVE_MEMORY_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors

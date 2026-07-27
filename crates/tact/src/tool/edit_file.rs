@@ -1,10 +1,14 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tokio::fs;
 use tool_refactor_macros::tool;
-use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::{ToolContext, safe_path};
 
@@ -35,14 +39,13 @@ pub const EDIT_FILE_METADATA: ToolMetadata = ToolMetadata {
         visual_kind: ToolVisualKind::FileEdit,
         display_name: "✏️ Edit",
         live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
+        detail: DetailPolicy::InputField("new_text"),
         popup: PopupPolicy::None,
         compact_result_to_meta: false,
     },
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Path { field: "path" },
 };
-
 
 #[tool]
 /// # Errors

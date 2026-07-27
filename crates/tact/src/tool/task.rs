@@ -1,11 +1,15 @@
 use std::str::FromStr;
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tool_refactor_macros::tool;
 use tact_protocol::ToolVisualKind;
-use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy, TaskOperation};
+use tool_refactor_macros::tool;
 
 use crate::{
     task::{TaskStatus, TaskUpdate, emit_tasks_changed, render_task_json, render_task_list},
@@ -38,7 +42,6 @@ pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors
@@ -87,7 +90,6 @@ pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata {
     argument_summary: ArgumentSummaryPolicy::Json,
 };
 
-
 #[tool]
 /// # Errors
 ///
@@ -118,7 +120,6 @@ pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors
@@ -162,7 +163,6 @@ pub const TASK_UPDATE_METADATA: ToolMetadata = ToolMetadata {
     output: OutputPolicy::KeepInline,
     argument_summary: ArgumentSummaryPolicy::Json,
 };
-
 
 #[tool]
 /// # Errors
@@ -229,8 +229,10 @@ mod tests {
     #[tokio::test]
     async fn task_update_rejects_invalid_status() {
         let router = ToolRouter::new()
-            .route(TaskCreateTool).unwrap()
-            .route(TaskUpdateTool).unwrap();
+            .route(TaskCreateTool)
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let context = test_context("task_update_rejects_invalid_status");
 
         let created = router
@@ -298,8 +300,10 @@ mod tests {
     async fn task_update_emits_tasks_changed_and_filters_deleted() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let router = ToolRouter::new()
-            .route(TaskCreateTool).unwrap()
-            .route(TaskUpdateTool).unwrap();
+            .route(TaskCreateTool)
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let mut context = test_context("task_update_emits");
         context.ui_tx = Some(tx.clone());
 
@@ -345,7 +349,11 @@ mod tests {
     #[tokio::test]
     async fn task_list_does_not_emit_tasks_changed() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let router = ToolRouter::new().route(TaskCreateTool).unwrap().route(TaskListTool).unwrap();
+        let router = ToolRouter::new()
+            .route(TaskCreateTool)
+            .unwrap()
+            .route(TaskListTool)
+            .unwrap();
         let mut context = test_context("task_list_no_emit");
         context.ui_tx = Some(tx.clone());
         let _ = router

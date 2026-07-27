@@ -81,10 +81,19 @@ pub enum PermissionPromptPolicy {
 pub enum ResourcePolicy {
     Independent,
     Barrier,
-    ReadPath { field: &'static str },
-    WritePath { field: &'static str },
-    SharedState { scope: &'static str },
-    PatchFiles { patch_field: &'static str, dry_run_field: &'static str },
+    ReadPath {
+        field: &'static str,
+    },
+    WritePath {
+        field: &'static str,
+    },
+    SharedState {
+        scope: &'static str,
+    },
+    PatchFiles {
+        patch_field: &'static str,
+        dry_run_field: &'static str,
+    },
 }
 
 impl ResourcePolicy {
@@ -114,7 +123,10 @@ impl ResourcePolicy {
                 r.writes.push(PathBuf::from(format!("__tact_{scope}__")));
                 r
             }
-            ResourcePolicy::PatchFiles { patch_field, dry_run_field } => {
+            ResourcePolicy::PatchFiles {
+                patch_field,
+                dry_run_field,
+            } => {
                 let mut r = ToolResources::independent();
                 if input
                     .get(*dry_run_field)
@@ -136,21 +148,16 @@ impl ResourcePolicy {
     /// Extract recent file paths for display purposes.
     pub fn recent_paths(&self, input: &Value) -> Vec<String> {
         match self {
-            ResourcePolicy::ReadPath { field }
-            | ResourcePolicy::WritePath { field } => {
-                input
-                    .get(*field)
-                    .and_then(|v| v.as_str())
-                    .map(|p| vec![p.to_string()])
-                    .unwrap_or_default()
-            }
-            ResourcePolicy::PatchFiles { patch_field, .. } => {
-                input
-                    .get(*patch_field)
-                    .and_then(|v| v.as_str())
-                    .map(extract_patch_paths)
-                    .unwrap_or_default()
-            }
+            ResourcePolicy::ReadPath { field } | ResourcePolicy::WritePath { field } => input
+                .get(*field)
+                .and_then(|v| v.as_str())
+                .map(|p| vec![p.to_string()])
+                .unwrap_or_default(),
+            ResourcePolicy::PatchFiles { patch_field, .. } => input
+                .get(*patch_field)
+                .and_then(|v| v.as_str())
+                .map(extract_patch_paths)
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -313,9 +320,9 @@ impl IntoToolCallResult for ToolCallResult {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use serde_json::json;
     use super::*;
+    use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn path_resource_policy_resolves_and_reports_recent_path() {
@@ -329,9 +336,17 @@ mod tests {
 
     #[test]
     fn shell_permission_policy_preserves_read_and_high_risk_rules() {
-        let policy = PermissionPolicy::ShellCommand { command_field: "command" };
-        assert_eq!(policy.resolve(&json!({"command": "git status"})), CapabilityRisk::Read);
-        assert_eq!(policy.resolve(&json!({"command": "sudo ls"})), CapabilityRisk::High);
+        let policy = PermissionPolicy::ShellCommand {
+            command_field: "command",
+        };
+        assert_eq!(
+            policy.resolve(&json!({"command": "git status"})),
+            CapabilityRisk::Read
+        );
+        assert_eq!(
+            policy.resolve(&json!({"command": "sudo ls"})),
+            CapabilityRisk::High
+        );
     }
 
     #[test]
