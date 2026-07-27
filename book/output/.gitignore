@@ -1,5 +1,0 @@
-# Generated artifacts — keep scenes.example.json / committed scenes.json if desired
-*
-!.gitignore
-!mcp/
-!mcp/scenes.example.json
