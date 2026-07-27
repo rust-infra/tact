@@ -188,11 +188,11 @@ impl Agent {
         self.agent_settings.thinking_budget
     }
 
-    fn thinking_config(&self) -> Thinking {
-        Thinking {
+    fn thinking_config(&self) -> Option<Thinking> {
+        (self.thinking_budget() > 0).then(|| Thinking {
             budget_tokens: self.thinking_budget(),
             type_: ThinkingType::Enabled,
-        }
+        })
     }
 
     /// Attaches a TUI update channel so the agent can stream events
@@ -431,15 +431,17 @@ impl Agent {
             // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
             let model_name = crate::get_model();
-            let request = CreateMessageParams::new(RequiredMessageParams {
+            let mut request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: conversation_messages,
                 max_tokens: self.max_tokens(),
             })
             .with_system(&system_prompt)
             .with_tools(self.all_tool_specs())
-            .with_stream(true)
-            .with_thinking(self.thinking_config());
+            .with_stream(true);
+            if let Some(thinking) = self.thinking_config() {
+                request = request.with_thinking(thinking);
+            }
 
             self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
                 model: model_name,
@@ -1508,6 +1510,81 @@ mod tests {
             agent.runtime.context.len() >= 2,
             "context should have at least user + assistant messages"
         );
+    }
+
+    #[tokio::test]
+    async fn zero_thinking_budget_omits_thinking_from_request() {
+        ensure_config();
+        let mut settings = crate::config::settings().agent.clone();
+        settings.thinking_budget = 0;
+        let mock = MockClient::with_responder(|request, _| {
+            assert!(
+                request.thinking.is_none(),
+                "zero thinking budget must omit thinking from the request"
+            );
+            Ok((
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("zero_thinking_budget_omits_thinking"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_agent_settings(settings);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "off")))
+            .await
+            .expect("agent loop should complete");
+    }
+
+    #[tokio::test]
+    async fn positive_thinking_budget_attaches_thinking_to_request() {
+        ensure_config();
+        let mut settings = crate::config::settings().agent.clone();
+        settings.thinking_budget = 64_000;
+        let mock = MockClient::with_responder(|request, _| {
+            assert_eq!(
+                request
+                    .thinking
+                    .as_ref()
+                    .map(|thinking| thinking.budget_tokens),
+                Some(64_000)
+            );
+            Ok((
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("positive_thinking_budget_attaches_thinking"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_agent_settings(settings);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "on")))
+            .await
+            .expect("agent loop should complete");
     }
 
     #[tokio::test]
