@@ -1,0 +1,301 @@
+# sfull: Complete Agent Harness
+
+`sfull` is the integrated version of the previous chapters. It brings the minimal agent loop, tools, skills, context compaction, permissions, hooks, memory, tasks, background jobs, cron scheduling, team collaboration, worktrees, MCP, and tool routing into one Rust agent runtime.
+
+This chapter is not about adding one more feature. It answers an engineering question:
+
+```text
+When an agent harness has many capabilities, how should loop, tools, state, permissions, and external plugins be organized?
+```
+
+## Run
+
+Configure `.env`:
+
+```bash
+  # Configure the provider
+  # Options: "anthropic" | "openai" | "deepseek" | "kimi"
+  export TACT_LLM_PROVIDER=anthropic
+
+  # API keys (set at least the one for the active provider)
+  export ANTHROPIC_API_KEY=your_anthropic_api_key
+  export ANTHROPIC_BASE_URL=your_anthropic_compatible_base_url
+  export DEEPSEEK_API_KEY=your_deepseek_api_key
+  export DEEPSEEK_BASE_URL=your_deepseek_base_url
+  export KIMI_API_KEY=your_kimi_api_key
+  export KIMI_BASE_URL=your_kimi_base_url
+  export OPENAI_API_KEY=your_openai_api_key
+  export OPENAI_BASE_URL=your_openai_base_url
+```
+
+Run:
+
+```bash
+cargo run -p tact-ui          # launches tact-ui (default TUI)
+# or
+cargo run -p tact-ui -- headless "your prompt"
+```
+
+Choose a permission mode at startup:
+
+```text
+Default
+Plan
+Auto
+```
+
+Exit:
+
+```text
+exit()
+```
+
+## Goals
+
+- Integrate the previous chapter features into one runnable agent.
+- Use `Agent` as the main runtime boundary.
+- Use `ToolRouter` for native tools.
+- Use `ToolContext` to inject shared domain managers into tools.
+- Use `Store<T>` and `CollectionStore<T>` for durable domain state.
+- Let native tools and MCP tools share one tool-use loop.
+- Run permission checks and hooks before and after tools.
+- Recover from long context, truncated output, and transient errors.
+
+## Code Layout
+
+```text
+crates/
+├── tact-ui/src/
+│   ├── main.rs           # CLI dispatch, config::init(), session store
+│   ├── interactive.rs    # TUI session loop
+│   ├── headless.rs       # Headless session loop
+│   ├── permission.rs     # permission_mode_from_config()
+│   ├── user_message.rs
+│   └── sessions.rs
+└── tact/src/
+    ├── lib.rs            # Module re-exports
+    ├── agent/            # Agent, tool_dispatch, tool_schedule
+    ├── lsp/              # LSP client stack
+    ├── tool/             # Tool trait + registry.rs + implementations
+    ├── store.rs
+    ├── prompt/
+    ├── permission/
+    ├── hook/
+    ├── compact.rs
+    ├── recovery.rs
+    ├── memory/
+    ├── skill/
+    ├── task/
+    ├── background.rs
+    ├── cron/
+    ├── team.rs
+    ├── worktree/
+    ├── mcp/
+    └── stats.rs
+```
+
+Read [`../tact-ui/src/main.rs`](./../tact-ui/src/main.rs), then [`interactive.rs`](./../tact-ui/src/interactive.rs) or [`headless.rs`](./../tact-ui/src/headless.rs), then [`src/agent/mod.rs`](./src/agent/mod.rs), then domain managers and tools.
+
+## Startup Flow
+
+```text
+config::init() + session store (main.rs)
+  -> dispatch interactive or headless
+create LLM client
+  -> resolve PermissionMode (permission.rs / TUI)
+  -> scan skill roots (.tact/skills → ~/.tact/skills → ~/.agents/skills → .claude/skills → agent.skill_dirs)
+  -> create .claude StoreRoot
+  -> initialize task/background/cron/team/worktree managers
+  -> initialize memory manager
+  -> scan .claude-plugin/plugin.json and connect MCP servers
+  -> build ToolContext + toolset() ToolRouter
+  -> create Agent
+  -> enter agent loop
+```
+
+The root agent uses a dynamic system prompt. Subagents use static prompts and fresh context.
+
+## Agent
+
+Core structure:
+
+```rust
+pub struct Agent {
+    pub runtime: AgentRuntime,
+    pub tool_context: ToolContext,
+    pub tools: ToolRouter,
+    pub mcp_router: MCPToolRouter,
+    pub hooks: Vec<Hook>,
+    pub system_prompt: AgentSystemPrompt,
+}
+```
+
+This separates:
+
+- runtime state
+- tool-accessible context
+- native tool router
+- MCP tool router
+- hooks
+- system prompt mode
+
+Tools do not receive the whole `Agent`; they receive only `ToolContext`.
+
+## Agent Loop
+
+```text
+micro compact
+  -> auto compact if context is too large
+  -> build model request
+  -> merge native and MCP tool schemas
+  -> call model
+  -> recover from prompt-too-long / transient error / max tokens
+  -> if no tool_use, finish
+  -> execute tool_use
+  -> return tool_result
+  -> run manual compact if requested
+  -> continue
+```
+
+This is still the s01 loop, with production-oriented boundaries around each stage.
+
+## ToolRouter and ToolContext
+
+`ToolRouter` registers native tools. `ToolContext` provides shared dependencies:
+
+```rust
+pub struct ToolContext {
+    pub skill_registry: Arc<Mutex<SkillRegistry>>,
+    pub memory_manager: Arc<Mutex<MemoryManager>>,
+    pub work_dir: PathBuf,
+    pub task_manager: SharedTaskManager,
+    pub background_manager: SharedBackgroundManager,
+    pub cron_scheduler: SharedCronScheduler,
+    pub teammate_manager: SharedTeammateManager,
+    pub worktree_manager: SharedWorktreeManager,
+    pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub progress_reporter: ToolProgressReporter,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub bash_timeout_secs: u64,
+}
+```
+
+`for_invocation(tool_id)` binds progress to one call. The shared cancellation
+flag and resolved bash timeout let an in-flight command stop promptly. Broader
+runtime policy such as permissions, recovery, hooks, and model context stays
+outside `ToolContext`.
+
+## Native Tools
+
+The full toolset includes:
+
+- base: `bash`, `read_file`, `write_file`, `edit_file`
+- skill: `load_skill`
+- memory: `save_memory`
+- compact: `compact`
+- subagent: `spawn_subagent`
+- tasks: `task_create`, `task_get`, `task_list`, `task_update`
+- background: `background_run`, `background_check`
+- cron: `cron_create`, `cron_delete`, `cron_list`
+- team: `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox`, `plan_approval`, `shutdown_request`, `shutdown_response`
+- worktree: `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events`
+
+Subagents get a smaller toolset: `bash`, `read_file`, `write_file`, and `edit_file`.
+
+## Store
+
+[`src/store.rs`](./src/store.rs) defines:
+
+- `StoreRoot`: the `.claude` state root.
+- `Store<T>`: one typed JSON file or JSONL file.
+- `CollectionStore<T>`: a collection of typed JSON files.
+
+Store handles persistence. Domain managers handle business rules.
+
+## State Directory
+
+```text
+.tact/
+  background/
+  cron/
+  memory/
+  tasks/
+  team/
+  worktrees/
+```
+
+This is the durable state for the harness.
+
+## Domain Managers
+
+Managers include:
+
+- `TaskManager`
+- `BackgroundManager`
+- `CronScheduler`
+- `TeammateManager`
+- `WorktreeManager`
+
+Tools call managers. They do not directly edit domain state files.
+
+## Permission, Hooks, Compact, Recovery
+
+Tool calls go through:
+
+```text
+PreToolUse hook
+  -> PermissionManager
+  -> ToolRouter or MCPToolRouter
+  -> PostToolUse hook
+  -> tool_result
+```
+
+The runtime can compact history, persist transcripts, store large command output, retry transient errors, and continue truncated model output.
+
+## System Prompt, Skills, Memory
+
+The dynamic system prompt includes:
+
+- role and working directory
+- behavior constraints
+- available skill summaries
+- memory content
+- `CLAUDE.md`
+- dynamic context
+- memory guidance
+
+Skill summaries appear in the system prompt; full bodies load via `load_skill`, or via TUI slash `/skill-name` (user task with `<skill>` wrap). Memory is saved with `save_memory` and loaded into future prompts.
+
+## MCP
+
+MCP servers are loaded from:
+
+```text
+.claude-plugin/plugin.json
+```
+
+Their tools are exposed as:
+
+```text
+mcp__<plugin>__<server>__<tool>
+```
+
+Native and MCP tools share the same permission and result path.
+
+## Limits
+
+- One shared `ToolContext` type.
+- Team protocol is minimal and not a full autonomous worker runtime.
+- Worktree support does not merge or rebase results.
+- Store has no cross-process file locking.
+- MCP only covers stdio tool calls.
+- Hooks are not configuration-driven yet.
+- Image attachments (`@file.png`, `![alt](path)` via `tact-ui`) need a vision model; OpenAI-compatible paths always emit `image_url`, so text-only APIs may return HTTP 400.
+
+## Verify
+
+```bash
+cargo check -p tact
+cargo test -p tact
+cargo check --workspace
+```

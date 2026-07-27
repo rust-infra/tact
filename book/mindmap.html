@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tact Book Mind Map</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --text: #f0f0f5;
+      --muted: #a8a8b8;
+      --root-border: #ffffff;
+      --c0: #7ecba1;
+      --c1: #f5a962;
+      --c2: #f28baf;
+      --c3: #6eb5ff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2.5rem 2rem 3rem;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 2.5rem;
+      letter-spacing: 0.02em;
+    }
+
+    .chart {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .root-col {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .root-box {
+      border: 2px solid var(--root-border);
+      border-radius: 10px;
+      padding: 1.1rem 1.4rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      line-height: 1.45;
+      white-space: nowrap;
+      background: rgba(255,255,255,0.04);
+    }
+
+    .trunk {
+      display: flex;
+      align-items: stretch;
+      flex-shrink: 0;
+      width: 28px;
+      position: relative;
+    }
+
+    .trunk::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 14px;
+      height: 2px;
+      background: #888;
+      transform: translateY(-50%);
+    }
+
+    .trunk-brace {
+      flex: 1;
+      margin: 12px 0;
+      border-left: 2px solid #888;
+      border-top: 2px solid #888;
+      border-bottom: 2px solid #888;
+      border-radius: 0 8px 8px 0;
+      width: 14px;
+    }
+
+    .rows {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1.1rem;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 200px 24px 1fr;
+      align-items: stretch;
+      gap: 0 0.6rem;
+      min-height: 72px;
+    }
+
+    .label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      font-size: 0.92rem;
+      font-weight: 600;
+      line-height: 1.35;
+      color: #1a1a2e;
+    }
+
+    .label.c0 { background: var(--c0); }
+    .label.c1 { background: var(--c1); }
+    .label.c2 { background: var(--c2); }
+    .label.c3 { background: var(--c3); }
+
+    .brace {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.8rem;
+      font-weight: 300;
+      line-height: 1;
+      color: #666;
+      user-select: none;
+    }
+
+    .detail {
+      display: flex;
+      align-items: center;
+      border: 2px solid;
+      border-radius: 10px;
+      padding: 0.85rem 1.1rem;
+      font-size: 0.88rem;
+      line-height: 1.55;
+      color: var(--text);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .detail.c0 { border-color: var(--c0); }
+    .detail.c1 { border-color: var(--c1); }
+    .detail.c2 { border-color: var(--c2); }
+    .detail.c3 { border-color: var(--c3); }
+
+    .detail strong {
+      display: block;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+      font-weight: 500;
+    }
+
+    .chapters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.5rem;
+      margin-top: 0.35rem;
+    }
+
+    .chapters a {
+      color: inherit;
+      text-decoration: none;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.08);
+      font-size: 0.8rem;
+    }
+
+    .chapters a:hover { background: rgba(255,255,255,0.16); }
+
+    footer {
+      text-align: center;
+      margin-top: 2.5rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    footer a { color: var(--c3); }
+
+    /* Compact layout when embedded in index.md (iframe or ?embed) */
+    body.embed { padding: 1rem 1.25rem 1.25rem; min-height: auto; }
+    body.embed h1,
+    body.embed footer { display: none; }
+    body.embed .chart { max-width: none; }
+  </style>
+  <script>
+    (function () {
+      var embed = new URLSearchParams(location.search).has("embed")
+        || window.self !== window.top;
+      if (embed) document.documentElement.classList.add("embed-ready");
+    })();
+  </script>
+</head>
+<body>
+  <script>if (document.documentElement.classList.contains("embed-ready")) document.body.classList.add("embed");</script>
+  <h1>Tact Agent Development Tutorials · Mind Map</h1>
+
+  <div class="chart">
+    <div class="root-col">
+      <div class="root-box">Tact Book<br/>25 chapters</div>
+    </div>
+    <div class="trunk"><div class="trunk-brace"></div></div>
+
+    <div class="rows">
+      <div class="row">
+        <div class="label c0">① Runtime order<br/>Ch 1–11</div>
+        <div class="brace">{</div>
+        <div class="detail c0">
+          <div>
+            <strong>Main path through one agent_loop turn</strong>
+            Store → prompt inputs → compaction &amp; recovery → tool pipeline → permissions &amp; scheduling
+            <div class="chapters">
+              <a href="01_chapter_store.html">01 Store</a>
+              <a href="02_chapter_skill.html">02 Skill</a>
+              <a href="03_chapter_memory.html">03 Memory</a>
+              <a href="04_chapter_prompt.html">04 Prompt</a>
+              <a href="05_chapter_compact.html">05 Compact</a>
+              <a href="06_chapter_recovery.html">06 Recovery</a>
+              <a href="07_chapter_tool.html">07 Tool</a>
+              <a href="08_chapter_mcp.html">08 MCP</a>
+              <a href="09_chapter_hook.html">09 Hook</a>
+              <a href="10_chapter_permission.html">10 Permission</a>
+              <a href="11_chapter_task.html">11 Scheduling</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c1">② Tool families<br/>Ch 12–15</div>
+        <div class="brace">{</div>
+        <div class="detail c1">
+          <div>
+            <strong>Deep dives on specific tool capabilities</strong>
+            Subagents, background shell, team coordination, git worktree lanes
+            <div class="chapters">
+              <a href="12_chapter_subagent.html">12 Subagents</a>
+              <a href="13_chapter_background.html">13 Background</a>
+              <a href="14_chapter_team.html">14 Team</a>
+              <a href="15_chapter_worktree.html">15 Worktree</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c2">③ Off-path systems<br/>Ch 16–17</div>
+        <div class="brace">{</div>
+        <div class="detail c2">
+          <div>
+            <strong>Outside the hot agent_loop path</strong>
+            Cron registry, desktop notifications
+            <div class="chapters">
+              <a href="16_chapter_cron.html">16 Cron</a>
+              <a href="17_chapter_notify.html">17 Notify</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c3">④ Capstone<br/>Ch 18</div>
+        <div class="brace">{</div>
+        <div class="detail c3">
+          <div>
+            <strong>Ties the full picture together</strong>
+            agent_loop turn cycle: streaming, cancel_flag, TaskComplete, TUI wiring
+            <div class="chapters">
+              <a href="18_chapter_agent_loop.html">18 Agent Loop</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c0">⑤ Deep topics<br/>Ch 19–20</div>
+        <div class="brace">{</div>
+        <div class="detail c0">
+          <div>
+            <strong>Persistence and IDE intelligence</strong>
+            TaskManager dependencies, LSP code intelligence
+            <div class="chapters">
+              <a href="19_chapter_persistent_tasks.html">19 Tasks</a>
+              <a href="20_chapter_lsp.html">20 LSP</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c1">⑥ Bootstrap &amp; UI<br/>Ch 21–25</div>
+        <div class="brace">{</div>
+        <div class="detail c1">
+          <div>
+            <strong>Read first when wiring a new binary or provider</strong>
+            Config merge → LLM adapters → TUI rendering → Agent–TUI protocol state machines
+            <div class="chapters">
+              <a href="21_chapter_config.html">21 Config</a>
+              <a href="22_chapter_llm.html">22 LLM</a>
+              <a href="23_chapter_tui.html">23 TUI</a>
+              <a href="25_chapter_protocol.html">25 Protocol</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label c2">⑦ Quality<br/>Ch 24</div>
+        <div class="brace">{</div>
+        <div class="detail c2">
+          <div>
+            <strong>Testing and CI</strong>
+            Mock LLM harness, tact-ui driver integration tests, TUI TestBackend render tests
+            <div class="chapters">
+              <a href="24_chapter_testing.html">24 Testing</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Right-hand tree layout · Full TOC in <a href="index.html">index</a> ·
+    Mermaid source in <a href="mindmap-overview.html">mindmap.md</a>
+  </footer>
+</body>
+</html>

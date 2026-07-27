@@ -1,0 +1,125 @@
+# tact configuration (TOML)
+#
+# Copy to one of these locations (auto-discovered):
+#   ./.tact/config.toml      project-level
+#   ./config.toml            project-level (alternative)
+#   ~/.tact/config.toml      user-global
+#
+# Or pass an explicit path:
+#   tact-ui --config /path/to/config.toml
+#
+# Interactive TUI (default):
+#   tact-ui
+#
+# Headless single-shot task:
+#   tact-ui headless "fix all clippy warnings"
+#   tact-ui headless "refactor error handling in lib.rs"
+#
+# Priority: CLI flags override values in this file.
+
+# ---------------------------------------------------------------------------
+# LLM (required for tact-ui unless overridden via CLI)
+# ---------------------------------------------------------------------------
+# Active provider selects which [llm.providers.*] entry is used.
+# Credentials live under providers — not as flat fields on [llm].
+# Switch with llm.provider or --provider (anthropic | openai | deepseek | kimi).
+[llm]
+provider = "anthropic"
+
+# Optional globals (overridable per provider entry, then by CLI flags)
+# max_tokens = 8000
+# thinking_budget = 32000
+
+[llm.providers.anthropic]
+api_key = "sk-ant-..."
+model = "claude-sonnet-4-20250514"
+# Anthropic has no default base_url — required
+base_url = "https://api.anthropic.com"
+
+[llm.providers.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+protocol = "responses"
+# reasoning_effort = "high" # none|minimal|low|medium|high|xhigh|max
+# base_url defaults to https://api.openai.com/v1
+# Omit protocol or set "chat_completions" for OpenAI-compatible proxies.
+# Omit reasoning_effort to keep the thinking_budget low/medium/high mapping.
+
+[llm.providers.deepseek]
+api_key = "sk-..."
+model = "deepseek-chat"
+# base_url defaults to https://api.deepseek.com
+
+[llm.providers.kimi]
+api_key = "sk-..."
+model = "kimi-k2.5"
+models = ["kimi-k2.5", "kimi-for-coding"]
+# base_url defaults to https://api.moonshot.cn/v1
+# max_tokens = 32000           # optional per-provider override
+# `/model` can change this value for the current session. When you choose
+# “save”, it writes the selected model and thinking_budget under this active
+# provider; CLI --thinking-budget still wins on a later restart.
+# thinking_budget = 64000
+
+# Heuristics still allow provider = "openai" + a Moonshot/Kimi-compatible
+# base_url; prefer a dedicated [llm.providers.kimi] entry.
+
+# ---------------------------------------------------------------------------
+# Permission
+# ---------------------------------------------------------------------------
+[permission]
+# "default" | "plan" | "auto"
+mode = "default"
+
+# ---------------------------------------------------------------------------
+# Agent runtime
+# ---------------------------------------------------------------------------
+[agent]
+# Model context window in tokens (must exceed max_tokens when nonzero;
+# auto-compaction + TUI usage meter; default: 200000)
+# model_context_window = 200000
+
+# Max entries in the system-prompt project structure snapshot (default: 80)
+# snapshot_max_items = 80
+
+# Truncate old tool results in context (default: true)
+# micro_compact_enabled = true
+
+# Project instruction files injected into the system prompt (default: ["agents_md"]).
+# Options: agents_md, claude_md (all CLAUDE paths), claude_md_user,
+#          claude_md_project, claude_md_subdir
+# instruction_sources = ["agents_md"]
+# instruction_sources = ["agents_md", "claude_md"]
+
+# Desktop notifications on macOS (default: true)
+# notifications_enabled = true
+
+# Extra skill root directories (optional). Each should contain */SKILL.md.
+# Relative paths resolve against the workdir; ~ expands to $HOME.
+# Loaded after built-in roots; later entries override same-named skills.
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+
+# ---------------------------------------------------------------------------
+# TUI
+# ---------------------------------------------------------------------------
+[ui]
+# Theme name, or "auto" for terminal/system detection.
+theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
+
+# User-attached images (`@file.png`, `![alt](path)`).
+# Requires a vision-capable model/endpoint; compress only reduces tokens.
+# Text-only OpenAI-compatible APIs reject image_url (HTTP 400).
+# vision_image.compress = true       # downscale + JPEG (default); false = send original
+# vision_image.max_edge = 1280       # longest edge in px (256–4096)
+# vision_image.jpeg_quality = 80     # JPEG quality 1–100 (when compress = true)
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+[tools]
+# Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
+# bash_timeout_secs = 1800
+# Nice (scheduling priority) for bash sub-process group, 0-19 (default: 10).
+# Higher values mean lower priority, keeping TUI responsive during cargo test etc.
+# Set to 0 to disable (bash child processes run at normal priority).
+# bash_nice = 10

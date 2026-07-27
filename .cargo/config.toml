@@ -1,0 +1,3 @@
+[build]
+# tokio 的 tracing / console-subscriber 需要 unstable 内部 API
+rustflags = ["--cfg", "tokio_unstable"]
