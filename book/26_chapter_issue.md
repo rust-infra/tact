@@ -46,6 +46,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-27 — Subagent popup shows its model
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 12, Ch 23; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** The live/completed `spawn_subagent` popup showed the child call's token total, cache rate, and prompt context, but not the model that produced them. The agent emits `ModelInfo`, but the subagent UI forwarder discarded that event.
+
+**Decision:** Format the child `ModelInfo` as a structural popup-transcript line: `🤖 Model: {model}`. Keep it on the `ToolProgress` path rather than forwarding it to the shared parent UI channel.
+
+**Behavior after:** Every child model call adds its model name to that child popup alongside its existing token line. The parent bottom bar retains the parent agent's model name; child `TokenUsage` behavior is unchanged.
+
+**Pointers:** `crates/tact/src/tool/subagent_ui.rs`; `docs/token_usage_schema.md`; Ch 12, Ch 23.
+
+---
+
 ## 1. 2026-07-27 — Ink themes + unified popup chrome
 
 | Field | Value |

@@ -180,6 +180,13 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   `prompt_cache_hit_tokens / (hit + miss)` on that latest call. Counts cover the
   entire prompt (system, tools, history), not only the latest user message.
 
+**Subagent popup display:** A subagent's `ModelInfo` is rendered only in that
+subagent's `spawn_subagent` popup transcript as `🤖 Model: {model}`. Its
+`TokenUsage` remains displayed there as `⚡ {total} tokens · cache · ctx` and
+is also forwarded to the shared UI channel for the bottom-bar usage meters.
+`ModelInfo` is deliberately *not* forwarded to that shared channel, so a child
+call cannot replace the parent agent's model name in the bottom bar.
+
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 
 Cached data is evicted after hours to days of inactivity.

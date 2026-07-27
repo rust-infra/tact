@@ -89,6 +89,15 @@ fn format_token_usage_line(usage: &tact_protocol::TokenUsageInfo) -> String {
     )
 }
 
+/// One-line model summary for the subagent popup.
+///
+/// This stays on the tool-progress channel rather than the parent UI channel:
+/// forwarding `ModelInfo` to the latter would incorrectly replace the parent
+/// agent's bottom-bar model name with the subagent's model.
+fn format_model_info_line(params: &tact_protocol::ModelCallParams) -> String {
+    format!("🤖 Model: {}", params.model)
+}
+
 /// Labeled thinking block. Not a Markdown blockquote — `>` + soft-break made
 /// titles glue to the next sentence and doubled the quote gutter (`▎ >`).
 fn format_thinking_block(summary: &str) -> String {
@@ -171,7 +180,9 @@ pub fn tagged_ui_channel_with_progress(
                     let _ = inner.send(AgentUpdate::TokenUsage(usage.clone()));
                     progress.report(vec![structural_line(format_token_usage_line(&usage))]);
                 }
-                AgentUpdate::ModelInfo(_) => {}
+                AgentUpdate::ModelInfo(params) => {
+                    progress.report(vec![structural_line(format_model_info_line(&params))]);
+                }
                 AgentUpdate::RequestSelect {
                     mut prompt,
                     options,
@@ -559,8 +570,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_info_is_silently_ignored() {
-        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+    async fn model_info_becomes_progress_chunk_without_changing_parent_status() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
@@ -576,7 +587,17 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        assert!(progress_rx.try_recv().is_err());
+        match progress_rx.try_recv().unwrap() {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                assert_eq!(chunks.len(), 1);
+                assert!(chunks[0].text.contains("🤖 Model: fake"));
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+        assert!(
+            inner_rx.try_recv().is_err(),
+            "subagent model info must not overwrite the parent status bar"
+        );
     }
 
     #[tokio::test]
