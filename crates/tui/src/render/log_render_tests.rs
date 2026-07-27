@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use ratatui::style::Modifier;
+use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
 
+use super::log::render_log_panel;
 use super::test_harness::{
     buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
@@ -66,6 +67,20 @@ fn buffer_column_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u1
                 .collect();
             if suffix.starts_with(needle) {
                 return Some(x);
+            }
+        }
+    }
+    None
+}
+
+fn buffer_cell_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, u16)> {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let suffix: String = (x..buffer.area.width)
+                .map(|col| buffer[(col, y)].symbol())
+                .collect();
+            if suffix.starts_with(needle) {
+                return Some((x, y));
             }
         }
     }
@@ -392,4 +407,49 @@ fn log_loading_spinner_shows_braille_and_label() {
         text.contains('⠸') || text.contains('⠋') || text.contains("Thinking"),
         "loading placeholder should render braille spinner or Thinking label, got:\n{text}"
     );
+}
+
+#[test]
+fn log_scroll_from_code_card_to_plain_text_restores_theme_background() {
+    use crate::widgets::state::CodeBlock;
+
+    let mut app = make_app();
+    for i in 0..3 {
+        app.add_system_message(format!("code-card-placeholder-{i}"));
+    }
+    app.add_system_message("plain-after-card".into());
+    for i in 0..5 {
+        app.add_system_message(format!("scroll-tail-{i}"));
+    }
+    app.code_blocks.push(CodeBlock {
+        start_idx: 0,
+        end_idx: 3,
+        lang: "rust".into(),
+        content: "let stale_background = true;".into(),
+        styled: vec![Line::from("let stale_background = true;")],
+    });
+
+    let surface_bg = app.theme.bg;
+    let card_bg = app.theme.code_card_bg();
+    assert_ne!(
+        card_bg, surface_bg,
+        "fixture requires a contrasting overlay"
+    );
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), &mut app))
+        .expect("first code-card frame");
+
+    let plain_logical = app.log_scroll.phys_to_logical_cache[3].expect("plain row logical index");
+    app.log_scroll.offset = plain_logical as u16;
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), &mut app))
+        .expect("second plain-text frame");
+
+    let buffer = terminal.backend().buffer();
+    let (x, y) = buffer_cell_of(buffer, "plain-after-card").expect("plain row in viewport");
+    assert_eq!(buffer[(x, y)].bg, surface_bg);
+    assert_ne!(buffer[(x, y)].bg, card_bg);
 }
