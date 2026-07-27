@@ -5,7 +5,8 @@ use ratatui::{
     text::{Line, Span},
 };
 use tact_protocol::{
-    StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+    StepResult, StepStatus, TokenUsageInfo, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan,
+    ToolOutputStream,
 };
 
 use crate::{i18n::Messages, theme::Theme};
@@ -291,6 +292,10 @@ pub struct ToolRenderOutput {
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
     pub card_bottom: String,
+    /// Subagent model name for tool-card header display.
+    pub subagent_model: Option<String>,
+    /// Subagent token usage for tool-card header display.
+    pub subagent_tokens: Option<TokenUsageInfo>,
 }
 
 impl ToolRenderOutput {
@@ -326,6 +331,8 @@ pub struct ToolWidget<'a> {
     detail_lines: Option<Vec<ToolOutputLine>>,
     detail_total_lines: Option<usize>,
     live_detail: bool,
+    subagent_model: Option<String>,
+    subagent_tokens: Option<TokenUsageInfo>,
 }
 
 impl<'a> ToolWidget<'a> {
@@ -347,7 +354,19 @@ impl<'a> ToolWidget<'a> {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_model: None,
+            subagent_tokens: None,
         }
+    }
+
+    pub fn with_subagent_model(mut self, model: Option<String>) -> Self {
+        self.subagent_model = model;
+        self
+    }
+
+    pub fn with_subagent_tokens(mut self, tokens: Option<TokenUsageInfo>) -> Self {
+        self.subagent_tokens = tokens;
+        self
     }
 
     pub fn with_tool(mut self, name: impl Into<String>) -> Self {
@@ -475,6 +494,8 @@ impl<'a> ToolWidget<'a> {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_model: None,
+            subagent_tokens: None,
         }
     }
 
@@ -657,6 +678,8 @@ impl<'a> ToolWidget<'a> {
                 None
             },
             card_bottom,
+            subagent_model: self.subagent_model.clone(),
+            subagent_tokens: self.subagent_tokens.clone(),
         }
     }
 

@@ -29,7 +29,24 @@
 
 ---
 
-## 1. 2026-07-27 — Log 滚动恢复主题背景
+## 1. 2026-07-28 — 子 agent 元数据显示在工具卡片头部
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 12、23 章；`docs/token_usage_schema.md` |
+
+**现象 / 动机：** 子 agent 的 `TokenUsage` 和 `ModelInfo` 作为 `ToolProgress` 内联块转发到共享父 UI 通道，在输出流中产生重复的 `⚡ N tokens` 和 `🤖 Model: …` 行。同时 TokenUsage 还会覆写主 agent 的底栏数据。
+
+**决策：** 引入 `AgentUpdate::ToolMeta` — 专用更新路径，将模型名和 token 数量直接写入父级工具卡片的头部行，与现有的阶段/耗时信息并列显示。转发器不再为这些事件生成 `ToolProgress` 块，也不再转发到共享通道。子 agent 调用的工具卡片元数据行现在显示 `🤖 {model} · ⚡ {total}`。
+
+**改后行为：** 底栏始终显示主 agent 的 token 统计。子 agent 的模型和 token 总数出现在工具卡片的元数据行中（如 `⠋ 运行中 · 🤖 deepseek-v3 · ⚡ 4.2K · 3.2s`），通过 `ToolMeta` 实时更新并在完成后保留。输出流中不再出现内联的元数据行。
+
+**指针：** `crates/tact/src/tool/subagent_ui.rs`、`crates/tui/src/widgets/tool_widget.rs`、`crates/tui/src/render/cells/tool.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/protocol/src/agent.rs`；`docs/token_usage_schema.md`；第 12、23 章。
+
+---
+
+## 1. 2026-07-27 — 日志滚动恢复主题背景
 
 | 字段 | 值 |
 |------|-----|
@@ -57,12 +74,13 @@
 
 **决策：** 将子级 `ModelInfo` 格式化为弹窗转录中的结构化行：`🤖 Model: {model}`。它只走 `ToolProgress` 路径，不转发到共享的父级 UI 通道。
 
-**改后行为：** 每次子级模型调用都会在该子 agent 弹窗中、既有 token 行旁显示模型名。父级底栏继续保留父 agent 的模型名；子级 `TokenUsage` 的既有行为不变。
+**改后行为：** 每次子级模型调用都会在该子 agent 弹窗中、既有 token 行旁显示模型名。父级底栏继续保留父 agent 的模型名（配套的 TokenUsage 修复见 2026-07-28）。
 
 **指针：** `crates/tact/src/tool/subagent_ui.rs`；`docs/token_usage_schema.md`；第 12、23 章。
 
 ---
 
+## 1. 2026-07-27 — Ink 主题 + 统一弹窗外框
 ## 1. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
 
 | 字段 | 值 |

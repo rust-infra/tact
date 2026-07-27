@@ -199,6 +199,14 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
+    /// Update tool-card metadata (model name, token usage) without
+    /// cluttering the output stream. Emitted by subagents to keep
+    /// the parent tool card header up to date.
+    ToolMeta {
+        tool_id: String,
+        model: Option<String>,
+        token_usage: Option<TokenUsageInfo>,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.

@@ -172,20 +172,21 @@ This means consecutive multi-turn conversations typically achieve high cache hit
 - **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
   main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
   Subagent LLM calls persist under their own `sessions.id` (linked via
-  `sessions.ref_id`); the bottom bar still shows the latest `TokenUsage` event
-  received on the shared UI channel (parent or child).
+  `sessions.ref_id`); subagent `TokenUsage` is **not** forwarded to the shared
+  UI channel — the bottom bar reflects the main agent only.
 - **Last-call total** — `∑ₜₒₖ {total}` from the **same** `TokenUsageInfo.total`
   (precise integer; droppable when narrow).
 - **Cache hit rate** — `▣ 缓存%` / `▣ cache%` plus `pct%` or `--`, from
   `prompt_cache_hit_tokens / (hit + miss)` on that latest call. Counts cover the
   entire prompt (system, tools, history), not only the latest user message.
 
-**Subagent popup display:** A subagent's `ModelInfo` is rendered only in that
-subagent's `spawn_subagent` popup transcript as `🤖 Model: {model}`. Its
-`TokenUsage` remains displayed there as `⚡ {total} tokens · cache · ctx` and
-is also forwarded to the shared UI channel for the bottom-bar usage meters.
-`ModelInfo` is deliberately *not* forwarded to that shared channel, so a child
-call cannot replace the parent agent's model name in the bottom bar.
+**Subagent tool-card display:** A subagent's model name and token total
+are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)
+via `AgentUpdate::ToolMeta`. This metadata is updated live during execution
+and preserved in the completed tool block header. It does **not** appear
+as inline `ToolProgress` chunks in the output stream, and it is **not**
+forwarded to the shared parent UI channel — the bottom bar reflects the
+main agent only.
 
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 

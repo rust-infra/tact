@@ -8,7 +8,7 @@ use ratatui::{
 use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
     AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot,
-    TasksChangeReason, ThinkingChunk, ToolOutputBuffer, ToolOutputChunk,
+    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolOutputChunk,
 };
 
 use crate::{
@@ -130,22 +130,26 @@ impl App {
 
         // Safety net: close an open thinking region on content-producing updates
         // that are not ThinkingChunk. Explicit ThinkingChunk::Finished is preferred;
-        // TokenUsage / ModelInfo must not close the region (they can arrive mid-stream).
+        // TokenUsage / ModelInfo / ToolMeta must not close the region (they can
+        // arrive mid-stream).
         match &update {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {}
             _ => {
                 self.flush_and_close_thinking();
             }
         }
         // Remove the loading placeholder on any content-producing update.
-        // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo)
-        // should NOT remove the placeholder since they don't produce visible content.
+        // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo,
+        // ToolMeta) should NOT remove the placeholder since they don't produce
+        // visible content.
         match &update {
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {
                 // Metadata only, no content: keep the loading placeholder.
             }
@@ -282,6 +286,11 @@ impl App {
             AgentUpdate::ToolProgress { tool_id, chunks } => {
                 self.on_tool_progress(&tool_id, &chunks)
             }
+            AgentUpdate::ToolMeta {
+                tool_id,
+                model,
+                token_usage,
+            } => self.on_tool_meta(&tool_id, model, token_usage),
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed(tasks, reason);
@@ -387,6 +396,7 @@ impl App {
         let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
         let (phys_idx, old_rows, output) = {
             let active = &self.tools.active[pos];
+            // Preserve subagent metadata when rebuilding the output.
             let output = ToolWidget::new(&self.theme, &msgs)
                 .with_tool(active.output.tool_name.clone())
                 .with_arg_summary(active.output.arg_summary.clone())
@@ -395,6 +405,8 @@ impl App {
                 .with_phase(ToolPhase::Running)
                 .with_duration_us(0)
                 .with_live_output(&active.live_output)
+                .with_subagent_model(active.output.subagent_model.clone())
+                .with_subagent_tokens(active.output.subagent_tokens.clone())
                 .build();
             (active.phys_idx, active.output.visual_rows(false), output)
         };
@@ -405,6 +417,30 @@ impl App {
         if was_pinned {
             self.log_scroll.offset = u16::MAX;
         }
+    }
+
+    fn on_tool_meta(
+        &mut self,
+        tool_id: &str,
+        model: Option<String>,
+        token_usage: Option<TokenUsageInfo>,
+    ) {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|active| active.tool_id == tool_id)
+        else {
+            return;
+        };
+        let active = &mut self.tools.active[pos];
+        if let Some(m) = model {
+            active.output.subagent_model = Some(m);
+        }
+        if let Some(t) = token_usage {
+            active.output.subagent_tokens = Some(t);
+        }
+        self.dirty = true;
     }
 
     fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
@@ -419,6 +455,8 @@ impl App {
         // Subagent: live output holds the full conversation; detail_full would
         // otherwise only keep the final summary. Take it before the active block
         // is removed so the popup always shows the complete conversation.
+        // Also carry over subagent metadata (model, tokens) so the completed
+        // tool card header continues to show them.
         if is_subagent
             && let Some(active) = self.tools.active.iter_mut().find(|a| a.tool_id == tool_id)
         {
@@ -427,6 +465,8 @@ impl App {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);
             }
+            output.subagent_model = active.output.subagent_model.take();
+            output.subagent_tokens = active.output.subagent_tokens.take();
         }
 
         self.finalize_tool_block(&tool_id, output);
