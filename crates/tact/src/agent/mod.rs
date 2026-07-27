@@ -170,6 +170,12 @@ impl Agent {
         self
     }
 
+    /// Update the thinking budget used when constructing subsequent LLM requests.
+    /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
+    pub fn set_thinking_budget(&mut self, budget: usize) {
+        self.agent_settings.thinking_budget = budget;
+    }
+
     fn model_context_window(&self) -> usize {
         self.agent_settings.model_context_window
     }

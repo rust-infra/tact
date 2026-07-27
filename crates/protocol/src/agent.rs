@@ -234,6 +234,10 @@ pub enum UserCommand {
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)
     QueryStats,
+    /// Set the active session's thinking budget for subsequent LLM requests.
+    /// The TUI sends this after `/model` budget confirmation; config persistence
+    /// is a separate optional local flow.
+    SetThinkingBudget(usize),
 }
 
 /// A single step in the execution plan.
