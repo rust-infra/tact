@@ -83,7 +83,10 @@ pub fn format_task_tool_title(
         ));
     }
     if !bl_new.is_empty() || !bl_old.is_empty() {
-        parts.push(format!("blocks: {}", format_id_transition(&bl_old, &bl_new)));
+        parts.push(format!(
+            "blocks: {}",
+            format_id_transition(&bl_old, &bl_new)
+        ));
     }
 
     parts.join(" * ")

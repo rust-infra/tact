@@ -103,7 +103,9 @@ pub(crate) enum SelectKind {
     /// `/model` first step — choose a model before applying either value.
     ModelPick,
     /// `/model` second step — choose a thinking budget before applying either value.
-    ThinkBudgetPick { model: String },
+    ThinkBudgetPick {
+        model: String,
+    },
     /// Optional combined "save to config?" prompt after session application.
     PersistModelAndBudget {
         model: String,
@@ -115,7 +117,9 @@ pub(crate) enum SelectKind {
     PermissionModePick,
     /// `/model-subagent` flow
     SubagentModelPick,
-    SubagentThinkBudgetPick { model: String },
+    SubagentThinkBudgetPick {
+        model: String,
+    },
     SubagentPersistModelAndBudget {
         model: String,
         thinking_budget: usize,

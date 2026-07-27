@@ -211,13 +211,8 @@ thinking_budget = 64000
         )
         .unwrap();
 
-        update_provider_model_and_thinking_budget_in_toml(
-            &path,
-            "kimi",
-            "kimi-for-coding",
-            64_000,
-        )
-        .unwrap();
+        update_provider_model_and_thinking_budget_in_toml(&path, "kimi", "kimi-for-coding", 64_000)
+            .unwrap();
 
         let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(

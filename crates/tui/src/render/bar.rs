@@ -297,9 +297,15 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
         // Permission mode (never dropped — security-critical indicator)
         {
             let (perm_label, perm_style) = match app.status_bar.permission_mode.as_str() {
-                "plan" => (msgs.bottom_permission_plan, Style::default().fg(theme.warning)),
+                "plan" => (
+                    msgs.bottom_permission_plan,
+                    Style::default().fg(theme.warning),
+                ),
                 "default" => (msgs.bottom_permission_default, secondary),
-                _ => (msgs.bottom_permission_auto, Style::default().fg(theme.success)),
+                _ => (
+                    msgs.bottom_permission_auto,
+                    Style::default().fg(theme.success),
+                ),
             };
             DropGroup {
                 droppable: false,

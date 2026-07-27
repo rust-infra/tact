@@ -187,9 +187,7 @@ async fn handle_user_command_with_account(
                 _ => tact::permission::PermissionMode::Auto,
             };
             agent.runtime.permission_manager.set_mode(parsed);
-            agent.emit_update(AgentUpdate::Info(format!(
-                "Permission mode set to {mode}"
-            )));
+            agent.emit_update(AgentUpdate::Info(format!("Permission mode set to {mode}")));
         }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);

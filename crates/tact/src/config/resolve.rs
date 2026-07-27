@@ -134,27 +134,21 @@ fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<Subagent
     };
 
     // Validate the provider name is a known key in llm.providers
-    let provider_kind = provider_name.parse::<ProviderKind>().map_err(|e| {
+    let provider_kind = provider_name
+        .parse::<ProviderKind>()
+        .map_err(|e| anyhow::anyhow!("subagent provider '{provider_name}' is not valid: {e}"))?;
+
+    let entry = toml_cfg.llm.providers.get(provider_name).ok_or_else(|| {
+        let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
         anyhow::anyhow!(
-            "subagent provider '{provider_name}' is not valid: {e}"
+            "subagent provider '{provider_name}' not found in llm.providers (have: {})",
+            if have.is_empty() {
+                "<none>".into()
+            } else {
+                have.join(", ")
+            }
         )
     })?;
-
-    let entry = toml_cfg
-        .llm
-        .providers
-        .get(provider_name)
-        .ok_or_else(|| {
-            let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
-            anyhow::anyhow!(
-                "subagent provider '{provider_name}' not found in llm.providers (have: {})",
-                if have.is_empty() {
-                    "<none>".into()
-                } else {
-                    have.join(", ")
-                }
-            )
-        })?;
 
     let api_key = entry
         .api_key
@@ -169,7 +163,9 @@ fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<Subagent
         .clone()
         .or_else(|| provider_kind.default_base_url().map(str::to_string))
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("base_url missing for subagent provider '{provider_name}'"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("base_url missing for subagent provider '{provider_name}'")
+        })?;
 
     let model = subagent_cfg
         .model
@@ -193,7 +189,10 @@ fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<Subagent
     // Resolve reasoning_effort from the referenced provider entry
     let reasoning_effort = entry.reasoning_effort;
 
-    let max_tokens = subagent_cfg.max_tokens.or(entry.max_tokens).unwrap_or(8_000);
+    let max_tokens = subagent_cfg
+        .max_tokens
+        .or(entry.max_tokens)
+        .unwrap_or(8_000);
     let thinking_budget = subagent_cfg
         .thinking_budget
         .or(entry.thinking_budget)

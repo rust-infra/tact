@@ -173,9 +173,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         _ => ("auto", msgs.permission_option_auto),
                     };
                     app.status_bar.permission_mode = mode_str.to_string();
-                    app.add_system_message(
-                        msgs.permission_set_tmpl.replace("{}", display_label),
-                    );
+                    app.add_system_message(msgs.permission_set_tmpl.replace("{}", display_label));
                     let _ = app
                         .user_cmd_tx
                         .send(UserCommand::SetPermissionMode(mode_str.to_string()));
@@ -508,7 +506,12 @@ fn apply_subagent_model_and_budget_pick(app: &mut App, model: String, thinking_b
     app.input_mode = InputMode::Select;
 }
 
-fn finish_subagent_persist_prompt(app: &mut App, chosen: &str, model: &str, thinking_budget: usize) {
+fn finish_subagent_persist_prompt(
+    app: &mut App,
+    chosen: &str,
+    model: &str,
+    thinking_budget: usize,
+) {
     let msgs = app.msgs();
     let budget_label = format_thinking_budget(thinking_budget);
     if chosen == msgs.model_persist_yes {
@@ -610,11 +613,7 @@ mod tests {
         });
     }
 
-    fn install_models_config_with_budget(
-        models: Vec<&str>,
-        current: &str,
-        thinking_budget: usize,
-    ) {
+    fn install_models_config_with_budget(models: Vec<&str>, current: &str, thinking_budget: usize) {
         install_models_config(models, current);
         let mut cfg = tact::config::settings();
         cfg.agent.thinking_budget = thinking_budget;

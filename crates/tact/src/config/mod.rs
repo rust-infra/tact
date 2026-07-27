@@ -136,10 +136,9 @@ pub fn persist_active_provider_model_and_thinking_budget(
 /// Persist subagent model and thinking budget to the loaded config file.
 pub fn persist_subagent_model(model: &str, thinking_budget: usize) -> anyhow::Result<()> {
     let settings = settings();
-    let path = settings
-        .config_path
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only subagent model change)"))?;
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only subagent model change)")
+    })?;
     persist::update_subagent_model_in_toml(path, model, thinking_budget)
 }
 
