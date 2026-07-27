@@ -165,7 +165,8 @@ impl App {
                 tool_name,
                 arg_summary,
                 arg_full,
-            } => self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full),
+                presentation,
+            } => self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full, presentation),
             AgentUpdate::StepFinished {
                 idx,
                 tool_id,
@@ -335,6 +336,7 @@ impl App {
         tool_name: String,
         arg_summary: String,
         arg_full: String,
+        _presentation: tact_protocol::ToolPresentationInfo,
     ) {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
@@ -876,6 +878,7 @@ mod lifecycle_tests {
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
         TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
+        ToolPresentationInfo,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -1228,6 +1231,7 @@ mod lifecycle_tests {
             tool_name: "bash".into(),
             arg_summary: "long-command".into(),
             arg_full: "long-command".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
         });
     }
 
@@ -1370,6 +1374,7 @@ mod lifecycle_tests {
                 detail: Some("live line\n".into()),
                 duration_us: Some(100),
                 permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
             },
         });
         let completed_rows = app.tools.blocks[0].output.visual_rows(false);
@@ -1518,6 +1523,7 @@ mod lifecycle_tests {
             tool_name: "read_file".into(),
             arg_summary: "main.rs".into(),
             arg_full: "main.rs".into(),
+        presentation: ToolPresentationInfo::generic("read_file"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -1531,6 +1537,7 @@ mod lifecycle_tests {
                 detail: Some("file body".into()),
                 duration_us: Some(1),
                 permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
             },
         });
 
@@ -1719,6 +1726,7 @@ mod lifecycle_tests {
             tool_name: "read_file".into(),
             arg_summary: "a.rs".into(),
             arg_full: "a.rs".into(),
+        presentation: ToolPresentationInfo::generic("read_file"),
         });
         assert!(matches!(app.status, Status::Executing { .. }));
         app.handle_agent_update(AgentUpdate::StepFinished {
@@ -1733,6 +1741,7 @@ mod lifecycle_tests {
                 detail: None,
                 duration_us: Some(1),
                 permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
             },
         });
         assert!(

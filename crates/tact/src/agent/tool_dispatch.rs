@@ -464,6 +464,7 @@ impl Agent {
                 tool_name: name.clone(),
                 arg_summary,
                 arg_full,
+                presentation: tact_protocol::ToolPresentationInfo::generic(name.clone()),
             });
 
             let mut tool_use = ToolUse {
@@ -744,6 +745,7 @@ impl Agent {
                         detail,
                         duration_us: Some(duration_us),
                         permission_label: prep_permission_label,
+                        presentation: tact_protocol::ToolPresentationInfo::generic(prep_name.clone()),
                     },
                 });
                 if succeeded {

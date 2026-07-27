@@ -1,6 +1,6 @@
 //! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk};
+use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolPresentationInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;
@@ -176,7 +176,7 @@ pub fn tagged_ui_channel_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{StepResult, StepStatus, ThinkingChunk, TokenUsageInfo};
+    use tact_protocol::{StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo};
 
     #[tokio::test]
     async fn streams_become_tool_progress() {
@@ -308,6 +308,7 @@ mod tests {
                 tool_name: "read_file".into(),
                 arg_summary: "main.rs".into(),
                 arg_full: "main.rs".into(),
+                presentation: tact_protocol::ToolPresentationInfo::generic("read_file"),
             })
             .unwrap();
         tagged
@@ -362,6 +363,7 @@ mod tests {
                     detail: None,
                     duration_us: None,
                     permission_label: None,
+                    presentation: ToolPresentationInfo::generic("bash"),
                 },
             })
             .unwrap();
@@ -400,6 +402,7 @@ mod tests {
                     detail: None,
                     duration_us: None,
                     permission_label: None,
+                    presentation: ToolPresentationInfo::generic("bash"),
                 },
             })
             .unwrap();
@@ -493,6 +496,7 @@ mod tests {
                 tool_name: "bash".into(),
                 arg_summary: "ls".into(),
                 arg_full: "ls".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
             })
             .unwrap();
         tokio::task::yield_now().await;

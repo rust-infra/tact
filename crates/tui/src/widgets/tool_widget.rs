@@ -6,7 +6,7 @@ use ratatui::{
 };
 use tact_protocol::{
     StepResult, StepStatus, TokenUsageInfo, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan,
-    ToolOutputStream,
+    ToolOutputStream, ToolPresentationInfo,
 };
 
 use crate::{i18n::Messages, theme::Theme};
@@ -972,6 +972,7 @@ mod tests {
             detail: Some("full error\nline two".to_string()),
             duration_us: Some(1_940),
             permission_label: Some("Always allow this tool".to_string()),
+        presentation: ToolPresentationInfo::generic("edit_file"),
         };
         let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
         assert!(output.error_message.is_none());
@@ -991,6 +992,7 @@ mod tests {
             detail: Some("done\n".to_string()),
             duration_us: Some(1_200_000),
             permission_label: Some("Always allow this tool".to_string()),
+        presentation: ToolPresentationInfo::generic("bash"),
         };
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
@@ -1015,6 +1017,7 @@ mod tests {
             detail: None,
             duration_us: Some(12_370_000),
             permission_label: None,
+        presentation: ToolPresentationInfo::generic("ask_user"),
         };
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
@@ -1057,6 +1060,7 @@ mod tests {
             detail: None,
             duration_us: Some(1_000),
             permission_label: Some("Allow once".to_string()),
+        presentation: ToolPresentationInfo::generic("ask_user"),
         };
         let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
         assert_eq!(

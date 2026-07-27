@@ -77,7 +77,7 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
 mod render_tests {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     use super::super::test_harness::{buffer_contains, make_app, render_app_text};
     use crate::widgets::state::Status;
@@ -98,6 +98,7 @@ mod render_tests {
             tool_name: "read_file".into(),
             arg_summary: "main.rs".into(),
             arg_full: "main.rs".into(),
+        presentation: ToolPresentationInfo::generic("read_file"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -111,6 +112,7 @@ mod render_tests {
                 detail: Some("fn main() {}".into()),
                 duration_us: Some(1000),
                 permission_label: None,
+                presentation: ToolPresentationInfo::generic("read_file"),
             },
         });
         app.handle_agent_update(AgentUpdate::StreamChunk("Hello from mock.".into()));

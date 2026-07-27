@@ -676,7 +676,7 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
-    use tact_protocol::{StepResult, StepStatus};
+    use tact_protocol::{StepResult, StepStatus, ToolPresentationInfo};
 
     use crate::{
         render::test_harness::make_app,
@@ -814,6 +814,7 @@ mod tests {
             detail: Some("output one\noutput two".into()),
             duration_us: Some(1),
             permission_label: None,
+        presentation: ToolPresentationInfo::generic("bash"),
         };
         let msgs = app.msgs();
         let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)

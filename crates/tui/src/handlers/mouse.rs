@@ -361,7 +361,7 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     use super::*;
     use crate::{
@@ -730,6 +730,7 @@ mod tests {
             tool_name: "bash".into(),
             arg_summary: "echo hi".into(),
             arg_full: "echo hi".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -743,6 +744,7 @@ mod tests {
                 detail: Some("hi\n".into()),
                 duration_us: Some(1),
                 permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
             },
         });
 
@@ -772,6 +774,7 @@ mod tests {
             tool_name: "bash".into(),
             arg_summary: "echo hi".into(),
             arg_full: "echo hi".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -785,6 +788,7 @@ mod tests {
                 detail: Some("hi\n".into()),
                 duration_us: Some(1),
                 permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
             },
         });
 
