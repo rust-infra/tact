@@ -258,6 +258,8 @@ Pipeline phases in `render_log_panel`:
 3. **Phase 2** — Map `log_scroll.offset` to a visual viewport (`visual_scroll`, clip height).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
+**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` also writes that same background explicitly on every glyph while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 
 For message types, `AgentUpdate` mapping, streaming lifecycle, visibility, scroll behavior, overlays, and mouse interaction, see [§6.11–§6.18](#611-log-message-model).

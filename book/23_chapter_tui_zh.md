@@ -259,6 +259,8 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 3. **Phase 2** — 将 `log_scroll.offset` 映射到 visual viewport（`visual_scroll`、clip height）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
 
+**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 在保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）的同时，也会为每个字形显式写入同一背景。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+
 流式文本在 token 到达时用 `app.stream.buffer` 作为额外 logical 行。
 
 消息类型、`AgentUpdate` 映射、流式生命周期、可见性、scroll 行为、overlays 与鼠标交互见 [§6.11–§6.18](#611-log-消息模型)。
