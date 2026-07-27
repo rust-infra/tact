@@ -3,6 +3,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{Message, Role, get_llm_client};
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::{
     Agent, AgentSystemPrompt,
@@ -23,10 +25,27 @@ pub struct SubagentInput {
     pub description: Option<String>,
 }
 
-#[tool(
-    name = "spawn_subagent",
-    description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
-)]
+pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
+    name: "spawn_subagent",
+    description: "Spawn a subagent with fresh context. It shares the filesystem but not conversation history.",
+    permission: PermissionPolicy::High,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Subagent,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Subagent,
+        display_name: "🤖 Subagent",
+        live_output: LiveOutputPolicy::FullTranscript,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::SubagentTranscript,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::PersistLargeOutput,
+    argument_summary: ArgumentSummaryPolicy::SubagentPrompt { field: "prompt" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

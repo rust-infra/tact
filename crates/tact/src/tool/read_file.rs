@@ -4,8 +4,14 @@ use serde::Deserialize;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
 
-use crate::tool::{ToolContext, safe_path};
+use crate::tool::{
+    ToolContext, safe_path,
+    ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy,
+    ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy,
+    OutputPolicy, ArgumentSummaryPolicy,
+};
 use crate::utils::approx_token_count;
 
 const READ_FILE_MAX_OUTPUT_TOKENS: usize = 25_000;
@@ -33,7 +39,26 @@ fn partial_marker(start_line: usize, end_line: usize, next_offset: usize) -> Str
     )
 }
 
-#[tool(name = "read_file", description = "Read file contents.")]
+pub const READ_FILE_METADATA: ToolMetadata = ToolMetadata {
+    name: "read_file",
+    description: "Read file contents.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Path { field: "path" },
+    resources: ResourcePolicy::ReadPath { field: "path" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::FileRead,
+        display_name: "📖 Read",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Path { field: "path" },
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

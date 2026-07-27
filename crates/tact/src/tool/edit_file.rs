@@ -3,6 +3,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::fs;
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::{ToolContext, safe_path};
 
@@ -22,11 +24,27 @@ pub struct EditFileInput {
     pub replace_all: bool,
 }
 
-#[tool(
-    name = "edit_file",
-    description = "Replace exact text in a file. By default replaces only the first match; \
-                    set replace_all=true to replace every occurrence."
-)]
+pub const EDIT_FILE_METADATA: ToolMetadata = ToolMetadata {
+    name: "edit_file",
+    description: "Replace exact text in a file.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Path { field: "path" },
+    resources: ResourcePolicy::WritePath { field: "path" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::FileEdit,
+        display_name: "✏️ Edit",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Path { field: "path" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

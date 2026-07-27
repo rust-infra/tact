@@ -2,6 +2,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::ToolContext;
 
@@ -11,10 +13,27 @@ pub struct BackgroundRunInput {
     pub command: String,
 }
 
-#[tool(
-    name = "background_run",
-    description = "Run a shell command in the background."
-)]
+pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
+    name: "background_run",
+    description: "Run a shell command in the background.",
+    permission: PermissionPolicy::ShellCommand { command_field: "command" },
+    permission_prompt: PermissionPromptPolicy::Command { field: "command" },
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Command,
+        display_name: "$ Bg",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the background manager fails to run the command
@@ -29,10 +48,27 @@ pub struct CheckBackgroundInput {
     pub task_id: Option<String>,
 }
 
-#[tool(
-    name = "check_background",
-    description = "Check background task status."
-)]
+pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
+    name: "check_background",
+    description: "Check background task status.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🔍 Check",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the provided task ID does not exist or the background

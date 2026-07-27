@@ -13,6 +13,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::AgentUpdate;
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 use tracing::debug;
 
 use crate::tool::ToolContext;
@@ -31,14 +33,27 @@ pub struct AskUserInput {
     pub multi_select: bool,
 }
 
-#[tool(
-    name = "ask_user",
-    description = "Ask the user a question and wait for their response. Prefer passing \
-                    `options` so the TUI shows a selection popup. Set `multi_select: true` \
-                    to let the user pick multiple options (Space toggles, Enter confirms). \
-                    Without options, the question is shown in the log and the user's next \
-                    message is treated as the answer."
-)]
+pub const ASK_USER_METADATA: ToolMetadata = ToolMetadata {
+    name: "ask_user",
+    description: "Ask the user a question and wait for their response.",
+    permission: PermissionPolicy::High,
+    permission_prompt: PermissionPromptPolicy::Question { field: "question" },
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "❓ Ask",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: true,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Question { field: "question" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// This function always returns `Ok`. Communication failures with the UI

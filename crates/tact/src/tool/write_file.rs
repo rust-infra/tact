@@ -6,6 +6,8 @@ use serde::Deserialize;
 use tact_protocol::{AgentUpdate, format_bytes};
 use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::{ToolContext, safe_path_allow_missing};
 
@@ -27,7 +29,27 @@ const WRITE_CHUNK_SIZE: usize = 64 * 1024;
 /// overhead of chunking and progress tracking.
 const SINGLE_WRITE_THRESHOLD: usize = 256 * 1024;
 
-#[tool(name = "write_file", description = "Write content to file.")]
+pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
+    name: "write_file",
+    description: "Write content to file.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Path { field: "path" },
+    resources: ResourcePolicy::WritePath { field: "path" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::FileWrite,
+        display_name: "📝 Write",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Path { field: "path" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

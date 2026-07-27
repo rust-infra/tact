@@ -27,49 +27,57 @@ use super::{
 };
 
 /// Assembles the full tool set for the main agent loop.
+fn try_toolset() -> anyhow::Result<ToolRouter> {
+    Ok(ToolRouter::new()
+        .route(ApplyPatchTool)?
+        .route(AskUserTool)?
+        .route(BashTool)?
+        .route(BackgroundRunTool)?
+        .route(CheckBackgroundTool)?
+        .route(CronCreateTool)?
+        .route(CronDeleteTool)?
+        .route(CronListTool)?
+        .route(ReadFileTool)?
+        .route(SleepTool)?
+        .route(WriteFileTool)?
+        .route(EditFileTool)?
+        .route(LoadSkillTool)?
+        .route(SaveMemoryTool)?
+        .route(CompactTool)?
+        .route(SpawnSubagentTool)?
+        .route(TaskCreateTool)?
+        .route(TaskGetTool)?
+        .route(TaskListTool)?
+        .route(TaskUpdateTool)?
+        .route(SpawnTeammateTool)?
+        .route(ListTeammatesTool)?
+        .route(SendMessageTool)?
+        .route(BroadcastTool)?
+        .route(ReadInboxTool)?
+        .route(PlanApprovalTool)?
+        .route(ShutdownRequestTool)?
+        .route(ShutdownResponseTool)?
+        .route(WorktreeCreateTool)?
+        .route(WorktreeListTool)?
+        .route(WorktreeStatusTool)?
+        .route(WorktreeRunTool)?
+        .route(WorktreeEventsTool)?)
+}
+
 pub fn toolset() -> ToolRouter {
-    ToolRouter::new()
-        .route(ApplyPatchTool)
-        .route(AskUserTool)
-        .route(BashTool)
-        .route(BackgroundRunTool)
-        .route(CheckBackgroundTool)
-        .route(CronCreateTool)
-        .route(CronDeleteTool)
-        .route(CronListTool)
-        .route(ReadFileTool)
-        .route(SleepTool)
-        .route(WriteFileTool)
-        .route(EditFileTool)
-        .route(LoadSkillTool)
-        .route(SaveMemoryTool)
-        .route(CompactTool)
-        .route(SpawnSubagentTool)
-        .route(TaskCreateTool)
-        .route(TaskGetTool)
-        .route(TaskListTool)
-        .route(TaskUpdateTool)
-        .route(SpawnTeammateTool)
-        .route(ListTeammatesTool)
-        .route(SendMessageTool)
-        .route(BroadcastTool)
-        .route(ReadInboxTool)
-        .route(PlanApprovalTool)
-        .route(ShutdownRequestTool)
-        .route(ShutdownResponseTool)
-        .route(WorktreeCreateTool)
-        .route(WorktreeListTool)
-        .route(WorktreeStatusTool)
-        .route(WorktreeRunTool)
-        .route(WorktreeEventsTool)
+    try_toolset().expect("built-in tool metadata must be valid")
 }
 
 /// Assembles the restricted tool set for sub-agents.
+fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
+    Ok(ToolRouter::new()
+        .route(BashTool)?
+        .route(ReadFileTool)?
+        .route(SleepTool)?
+        .route(WriteFileTool)?
+        .route(EditFileTool)?)
+}
+
 pub fn subagent_toolset() -> ToolRouter {
-    ToolRouter::new()
-        .route(BashTool)
-        .route(ReadFileTool)
-        .route(SleepTool)
-        .route(WriteFileTool)
-        .route(EditFileTool)
+    try_subagent_toolset().expect("subagent tool metadata must be valid")
 }

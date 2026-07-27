@@ -9,6 +9,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 use tracing::debug;
 
 use crate::tool::{ToolContext, safe_path};
@@ -209,11 +211,27 @@ fn apply_hunk(lines: Vec<String>, hunk: &Hunk) -> Result<Vec<String>, String> {
 // Tool implementation
 // ---------------------------------------------------------------------------
 
-#[tool(
-    name = "apply_patch",
-    description = "Apply a unified diff patch to files. Accepts standard unified diff \
-                    format. Use dry_run=true to validate without modifying files."
-)]
+pub const APPLY_PATCH_METADATA: ToolMetadata = ToolMetadata {
+    name: "apply_patch",
+    description: "Apply a unified diff patch to files. Accepts standard unified diff format. Use dry_run=true to validate without modifying files.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Path { field: "path" },
+    resources: ResourcePolicy::PatchFiles { patch_field: "patch", dry_run_field: "dry_run" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::FileEdit,
+        display_name: "📝 Patch",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::PatchPreview { patch_field: "patch" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

@@ -2,6 +2,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
+use tact_protocol::ToolVisualKind;
+use crate::tool::{ToolMetadata, ToolPresentation, PermissionPolicy, PermissionPromptPolicy, ResourcePolicy, ToolDomain, LiveOutputPolicy, DetailPolicy, PopupPolicy, OutputPolicy, ArgumentSummaryPolicy};
 
 use crate::tool::ToolContext;
 
@@ -12,10 +14,27 @@ pub struct WorktreeCreateInput {
     pub base_ref: Option<String>,
 }
 
-#[tool(
-    name = "worktree_create",
-    description = "Create an isolated git worktree lane."
-)]
+pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_create",
+    description: "Create an isolated git worktree lane.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🌿 Worktree",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the git worktree cannot be created (e.g., invalid
@@ -31,7 +50,27 @@ pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Re
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorktreeListInput {}
 
-#[tool(name = "worktree_list", description = "List tracked worktree lanes.")]
+pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_list",
+    description: "List tracked worktree lanes.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🌿 Worktree",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the worktree manager fails to retrieve the list.
@@ -44,10 +83,27 @@ pub struct WorktreeNameInput {
     pub name: String,
 }
 
-#[tool(
-    name = "worktree_status",
-    description = "Show git status for a worktree lane."
-)]
+pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_status",
+    description: "Show git status for a worktree lane.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🌿 Worktree",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the worktree name does not exist or the git
@@ -62,10 +118,27 @@ pub struct WorktreeRunInput {
     pub command: String,
 }
 
-#[tool(
-    name = "worktree_run",
-    description = "Run one shell command inside a named worktree."
-)]
+pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_run",
+    description: "Run one shell command inside a named worktree.",
+    permission: PermissionPolicy::ShellCommand { command_field: "command" },
+    permission_prompt: PermissionPromptPolicy::Command { field: "command" },
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Command,
+        display_name: "$ Wt Run",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the worktree name does not exist or the
@@ -79,10 +152,27 @@ pub struct WorktreeEventsInput {
     pub limit: Option<usize>,
 }
 
-#[tool(
-    name = "worktree_events",
-    description = "List recent worktree lifecycle events."
-)]
+pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_events",
+    description: "List recent worktree lifecycle events.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🌿 Worktree",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the worktree manager fails to retrieve events.
