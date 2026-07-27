@@ -1560,6 +1560,7 @@ mod tests {
             .expect("agent loop should complete");
     }
 
+    #[allow(clippy::await_holding_lock)] // test mutex serializes global provider override + restore
     #[tokio::test]
     async fn off_budget_keeps_explicit_openai_effort_in_model_info() {
         let _provider_guard = tact_llm::provider::lock_provider_for_tests();
