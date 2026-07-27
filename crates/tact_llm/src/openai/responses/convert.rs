@@ -453,6 +453,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_effort_is_serialized_without_generic_thinking() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "hello")],
+            max_tokens: 128,
+        });
+
+        let body = create_response(&request, Some(OpenAiReasoningEffort::High)).unwrap();
+
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
     fn explicit_reasoning_effort_wins_over_budget_fallback() {
         let body =
             create_response(&request_with_history(), Some(OpenAiReasoningEffort::Low)).unwrap();

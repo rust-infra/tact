@@ -447,10 +447,10 @@ impl Agent {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                    tact_llm::current_reasoning_effort_from_budget(t.budget_tokens)
-                        .map(str::to_string)
-                }),
+                reasoning_effort: tact_llm::current_reasoning_effort_from_budget(
+                    self.thinking_budget(),
+                )
+                .map(str::to_string),
                 extra_body: request
                     .thinking
                     .as_ref()
@@ -1341,7 +1341,8 @@ mod tests {
     use std::sync::Once;
 
     use tact_llm::{
-        ContentBlock, LlmProvider, Message, MockClient, ProviderKind, Role, StopReason,
+        ContentBlock, LlmProvider, Message, MockClient, OpenAiReasoningEffort, ProviderKind, Role,
+        StopReason,
     };
 
     use super::*;
@@ -1546,6 +1547,60 @@ mod tests {
             .agent_loop(Some(Message::new_text(Role::User, "off")))
             .await
             .expect("agent loop should complete");
+    }
+
+    #[tokio::test]
+    async fn off_budget_keeps_explicit_openai_effort_in_model_info() {
+        ensure_config();
+        struct RestoreProvider(tact_llm::ProviderInfo);
+
+        impl Drop for RestoreProvider {
+            fn drop(&mut self) {
+                tact_llm::init_provider(self.0.clone());
+            }
+        }
+
+        let original_provider = tact_llm::get_provider();
+        let _provider_restore = RestoreProvider(original_provider.clone());
+        let mut provider = original_provider.clone();
+        provider.provider = ProviderKind::OpenAi;
+        provider.reasoning_effort = Some(OpenAiReasoningEffort::High);
+        tact_llm::init_provider(provider);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut settings = crate::config::settings().agent.clone();
+        settings.thinking_budget = 0;
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+            )])),
+            test_context("off_budget_keeps_explicit_openai_effort_in_model_info"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_agent_settings(settings)
+        .with_ui_channel(tx);
+
+        let agent_result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "off")))
+            .await;
+        let model_info =
+            std::iter::from_fn(|| rx.try_recv().ok()).find_map(|update| match update {
+                AgentUpdate::ModelInfo(params) => Some(params),
+                _ => None,
+            });
+
+        agent_result.expect("agent loop should complete");
+        let params = model_info.expect("ModelInfo update");
+        assert_eq!(params.thinking_budget, None);
+        assert_eq!(params.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(params.extra_body, None);
     }
 
     #[tokio::test]
