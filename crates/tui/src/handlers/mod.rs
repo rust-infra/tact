@@ -255,7 +255,12 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "model" => {
-            crate::handlers::select::start_model_picker(app);
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+                let msg = app.msgs().input_busy_msg.to_string();
+                app.flash_msg = Some((msg, std::time::Instant::now()));
+            } else {
+                crate::handlers::select::start_model_picker(app);
+            }
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -514,7 +519,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{execute_palette_command, skills_list_markdown};
-    use crate::widgets::state::{App, Status};
+    use crate::widgets::state::{App, InputMode, SelectKind, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -538,6 +543,27 @@ mod tests {
             Vec::new(),
         );
         (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn model_while_executing_is_rejected_without_opening_picker() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        let outcome = execute_palette_command(&mut app, "model");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(app.flash_msg.is_some());
+        assert!(matches!(app.input_mode, InputMode::Insert));
+        assert!(matches!(app.select_kind, SelectKind::Agent));
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Executing must not dispatch a user command"
+        );
     }
 
     #[test]
