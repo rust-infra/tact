@@ -98,10 +98,15 @@ pub struct SkillEntry {
 pub(crate) enum SelectKind {
     /// Agent `RequestSelect` — confirm sends oneshot reply.
     Agent,
-    /// `/model` picker — confirm applies `set_model` then may open persist prompt.
+    /// `/model` first step — choose a model before applying either value.
     ModelPick,
-    /// Optional "Save to config?" after a model switch.
-    PersistModel { model: String },
+    /// `/model` second step — choose a thinking budget before applying either value.
+    ThinkBudgetPick { model: String },
+    /// Optional combined "save to config?" prompt after session application.
+    PersistModelAndBudget {
+        model: String,
+        thinking_budget: usize,
+    },
     /// Prompt source selection for `/view-system-prompt`.
     ViewSystemPrompt,
 }
