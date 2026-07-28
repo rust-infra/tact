@@ -317,7 +317,11 @@ fn log_scrollbar_shows_when_content_overflows() {
 
     let text = render_log_panel_text(&mut app, 60, 8);
     assert!(
-        text.contains('█') || text.contains('│') || text.contains('▲') || text.contains('▼'),
+        text.contains('▐')
+            || text.contains('█')
+            || text.contains('│')
+            || text.contains('▲')
+            || text.contains('▼'),
         "overflowing log should render vertical scrollbar glyphs, got:\n{text}"
     );
 }
@@ -456,4 +460,49 @@ fn log_scroll_from_code_card_to_plain_text_restores_theme_background() {
     let (x, y) = buffer_cell_of(buffer, "plain-after-card").expect("plain row in viewport");
     assert_eq!(buffer[(x, y)].bg, surface_bg);
     assert_ne!(buffer[(x, y)].bg, card_bg);
+}
+
+#[test]
+fn log_left_border_force_updates_and_stays_theme_border_color() {
+    use ratatui::buffer::CellDiffOption;
+
+    use crate::theme::ThemeName;
+
+    let mut app = make_app();
+    assert_eq!(app.theme.name, ThemeName::Ink);
+
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Checking git status\nline2\nline3".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    seed_tall_bash_tool(&mut app, 10);
+
+    let terminal = render_log_panel_terminal(&mut app, 100, 30);
+    let buf = terminal.backend().buffer();
+    let border = app.theme.border;
+    let accent = app.theme.accent;
+
+    let mut side_rows = 0usize;
+    for y in 1..buf.area.height.saturating_sub(1) {
+        let cell = &buf[(0, y)];
+        assert_ne!(
+            cell.fg,
+            accent,
+            "left chrome must not keep accent glyphs at y={y}: {:?}",
+            cell.symbol()
+        );
+        if cell.symbol() == "│" {
+            side_rows += 1;
+            assert_eq!(cell.fg, border, "left border fg at y={y}");
+            assert_eq!(
+                cell.diff_option,
+                CellDiffOption::AlwaysUpdate,
+                "left border must force-emit each frame at y={y}"
+            );
+        }
+    }
+    assert!(
+        side_rows >= 5,
+        "expected multiple restamped left-border rows, got {side_rows}"
+    );
 }

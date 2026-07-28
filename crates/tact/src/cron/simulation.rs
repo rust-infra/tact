@@ -111,14 +111,7 @@ mod simulation_tests {
             }
         }
 
-        fn create(
-            &mut self,
-            id: &str,
-            cron: &str,
-            prompt: &str,
-            recurring: bool,
-            durable: bool,
-        ) {
+        fn create(&mut self, id: &str, cron: &str, prompt: &str, recurring: bool, durable: bool) {
             self.tasks.push(SimTask {
                 id: id.to_string(),
                 cron: cron.to_string(),
@@ -185,11 +178,10 @@ mod simulation_tests {
     #[test]
     fn simulate_cron_full_lifecycle() {
         let mut s = SimScheduler::new();
-        let start =
-            DateTime::<Utc>::from_naive_utc_and_offset(
-                NaiveDateTime::parse_from_str("2026-07-28 08:59:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-                Utc,
-            );
+        let start = DateTime::<Utc>::from_naive_utc_and_offset(
+            NaiveDateTime::parse_from_str("2026-07-28 08:59:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+            Utc,
+        );
 
         // ── Phase 1: Create tasks ──────────────────────────────────
 
@@ -220,30 +212,47 @@ mod simulation_tests {
             }
         }
 
-        eprintln!("  Simulated {} minutes, {} fire events logged", 
-                  (end - start).num_minutes(), events.len());
+        eprintln!(
+            "  Simulated {} minutes, {} fire events logged",
+            (end - start).num_minutes(),
+            events.len()
+        );
 
         // Task B fires every minute → one-shot → should fire exactly once then delete
         let b_fires: Vec<_> = events.iter().filter(|e| e.contains("[B]")).collect();
-        assert_eq!(b_fires.len(), 1, "Task B is one-shot, should fire exactly once");
+        assert_eq!(
+            b_fires.len(),
+            1,
+            "Task B is one-shot, should fire exactly once"
+        );
         assert_eq!(
             s.tasks.iter().filter(|t| t.id == "B").count(),
             0,
             "Task B should be removed from task list after firing"
         );
         assert!(
-            s.fired_log.iter().any(|e| e.contains("DELETE") && e.contains("[B]")),
+            s.fired_log
+                .iter()
+                .any(|e| e.contains("DELETE") && e.contains("[B]")),
             "Task B should be auto-deleted after firing"
         );
 
         // Task A fires every day at 09:00 → 3 times in 3 days
         let a_fires: Vec<_> = events.iter().filter(|e| e.contains("[A]")).collect();
-        assert_eq!(a_fires.len(), 3, "Task A should fire 3 times (once per day at 09:00)");
+        assert_eq!(
+            a_fires.len(),
+            3,
+            "Task A should fire 3 times (once per day at 09:00)"
+        );
 
         // Task C: 0 10 * * 1 — 2026-07-28 is Tuesday, so next Monday is 2026-08-03
         // Within 3 days (ending 2026-07-31), no Monday → C never fires
         let c_fires: Vec<_> = events.iter().filter(|e| e.contains("[C]")).collect();
-        assert_eq!(c_fires.len(), 0, "Task C should NOT fire within Tue→Fri window");
+        assert_eq!(
+            c_fires.len(),
+            0,
+            "Task C should NOT fire within Tue→Fri window"
+        );
 
         eprintln!("  A fires: {}", a_fires.len());
         eprintln!("  B fires: {}", b_fires.len());
@@ -264,7 +273,10 @@ mod simulation_tests {
             1,
             "Task C (durable) should survive restart"
         );
-        eprintln!("  After restart: {:?}", s.tasks.iter().map(|t| &t.id).collect::<Vec<_>>());
+        eprintln!(
+            "  After restart: {:?}",
+            s.tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+        );
 
         // ── Phase 4: Next-fire preview ─────────────────────────────
 
@@ -280,7 +292,11 @@ mod simulation_tests {
                     next = next.format("%Y-%m-%d %H:%M:%S (%A)")
                 );
             } else {
-                eprintln!("  [{id}] {cron} → no fire within 1 year", id = task.id, cron = task.cron);
+                eprintln!(
+                    "  [{id}] {cron} → no fire within 1 year",
+                    id = task.id,
+                    cron = task.cron
+                );
             }
         }
 
@@ -291,7 +307,10 @@ mod simulation_tests {
         // Invalid cron expression
         let bad = CronExpr::parse("99 99 99 99 99");
         eprintln!("  Parse '99 99 ... ' → {bad:?}");
-        assert!(bad.is_some(), "should parse as Exact(99) values — matches nothing");
+        assert!(
+            bad.is_some(),
+            "should parse as Exact(99) values — matches nothing"
+        );
 
         // Missing fields
         let too_short = CronExpr::parse("0 9 *");
@@ -312,7 +331,10 @@ mod simulation_tests {
             NaiveDateTime::parse_from_str("2026-07-28 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
             Utc,
         );
-        assert!(!mon_expr.matches(&tue), "2026-07-28 is Tuesday, should not match Monday expr");
+        assert!(
+            !mon_expr.matches(&tue),
+            "2026-07-28 is Tuesday, should not match Monday expr"
+        );
 
         eprintln!("  All edge cases passed.");
     }
@@ -323,11 +345,10 @@ mod simulation_tests {
         let mut s = SimScheduler::new();
         s.create("X", "* * * * *", "Heartbeat", true, false);
 
-        let t0 =
-            DateTime::<Utc>::from_naive_utc_and_offset(
-                NaiveDateTime::parse_from_str("2026-08-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-                Utc,
-            );
+        let t0 = DateTime::<Utc>::from_naive_utc_and_offset(
+            NaiveDateTime::parse_from_str("2026-08-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+            Utc,
+        );
 
         let mut t = t0;
         let mut fires = 0;
@@ -337,7 +358,10 @@ mod simulation_tests {
                 fires += 1;
             }
         }
-        assert_eq!(fires, 5, "Recurring every-minute should fire 5 times in 5 minutes");
+        assert_eq!(
+            fires, 5,
+            "Recurring every-minute should fire 5 times in 5 minutes"
+        );
         assert_eq!(s.tasks.len(), 1, "Recurring task should not be deleted");
     }
 
@@ -347,11 +371,10 @@ mod simulation_tests {
         let mut s = SimScheduler::new();
         s.create("Y", "30 14 * * *", "Once at 14:30", false, false);
 
-        let t =
-            DateTime::<Utc>::from_naive_utc_and_offset(
-                NaiveDateTime::parse_from_str("2026-08-01 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-                Utc,
-            );
+        let t = DateTime::<Utc>::from_naive_utc_and_offset(
+            NaiveDateTime::parse_from_str("2026-08-01 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+            Utc,
+        );
 
         // First tick fires and deletes
         let f1 = s.tick(&t);
