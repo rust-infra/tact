@@ -23,6 +23,7 @@ pub struct OpenAiTranscriber {
 impl OpenAiTranscriber {
     pub fn new(settings: VoiceSettings) -> Self {
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(120))
             .build()
             .expect("reqwest client");
