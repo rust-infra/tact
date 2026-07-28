@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-07-28 — 可点击的语音转文字输入（标题栏）
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | 第 21、23 章；`docs/superpowers/specs/2026-07-28-voice-to-text-design.md`；`docs/superpowers/plans/2026-07-28-voice-to-text-input.md` |
+
+**症状 / 动机：** macOS 上纯键盘输入长提示不便；需要免提录音并在提交前审阅。
+
+**决策：** 增加 `[voice]` 配置（独立 API 密钥）、`tact::voice` 工作线程（cpal 采集 → WAV → OpenAI 兼容转写），以及 TUI 标题栏右侧按钮。成功转写按 UTF-8 光标插入；转写中的 `/help` 在按 Enter 前仅为普通文本。录音/转写在事件循环外执行；`Esc` 或停止可取消。
+
+**改后行为：** 默认 `enabled = false` 隐藏控件。`enabled = true` 显示按钮；缺少 `[voice].api_key` 时点击会提示配置。本版无实时转写、自动提交或本地 Whisper。
+
+**指针：** `crates/tact/src/voice/`、`crates/tui/src/widgets/state/voice.rs`、`crates/tui/src/render/input.rs`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/handlers/insert.rs`、`crates/tui/src/lib.rs`、`crates/tact-ui/src/interactive.rs`。
+
+---
+
 ## 1. 2026-07-28 — 子 agent 元数据显示在工具卡片头部
 
 | 字段 | 值 |

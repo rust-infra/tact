@@ -28,6 +28,7 @@ mod task_dag;
 pub(crate) mod task_panel;
 mod thinking_state;
 mod tool_state;
+mod voice;
 
 pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
@@ -43,6 +44,7 @@ pub(crate) use stream_state::StreamState;
 pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
+pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 pub(crate) use tool_state::{
     ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState,
 };
@@ -277,6 +279,8 @@ pub struct App {
     pub(crate) stream: StreamState,
     // Thinking state
     pub(crate) thinking: ThinkingState,
+    /// Voice-to-text title-bar button and worker channels.
+    pub(crate) voice: VoiceState,
     /// Cached account balance / usage quota state from the account service.
     pub(crate) account: AccountState,
     /// List of available skills (name + description lines).

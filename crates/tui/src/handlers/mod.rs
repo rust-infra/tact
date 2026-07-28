@@ -11,7 +11,7 @@ mod skills;
 
 use chrono::Local;
 pub(crate) use file_picker::handle_file_picker_mode;
-pub(crate) use insert::handle_insert_mode;
+pub(crate) use insert::{handle_insert_mode, insert_transcript};
 pub(crate) use mouse::handle_mouse_event;
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use overlay::handle_overlay_key;

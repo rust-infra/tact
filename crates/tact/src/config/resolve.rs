@@ -5,7 +5,7 @@ use super::{
     instruction_sources::InstructionSources,
     types::{
         AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
-        UiSettings, VisionImageSettings,
+        UiSettings, VisionImageSettings, VoiceSettings,
     },
 };
 
@@ -32,6 +32,50 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
         max_edge,
         jpeg_quality,
     }
+}
+
+fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
+    let enabled = toml_cfg.voice.enabled.unwrap_or(false);
+    let api_key = toml_cfg
+        .voice
+        .api_key
+        .clone()
+        .filter(|k| !k.is_empty());
+    let base_url = toml_cfg
+        .voice
+        .base_url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| VoiceSettings::DEFAULT_BASE_URL.to_string());
+    let model = toml_cfg
+        .voice
+        .model
+        .clone()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| VoiceSettings::DEFAULT_MODEL.to_string());
+    let language = toml_cfg
+        .voice
+        .language
+        .clone()
+        .filter(|l| !l.trim().is_empty())
+        .or_else(|| Some(VoiceSettings::DEFAULT_LANGUAGE.to_string()));
+    let max_duration_secs = toml_cfg
+        .voice
+        .max_duration_secs
+        .unwrap_or(VoiceSettings::DEFAULT_MAX_DURATION_SECS);
+    if !(1..=600).contains(&max_duration_secs) {
+        anyhow::bail!(
+            "voice.max_duration_secs must be between 1 and 600 (got {max_duration_secs})"
+        );
+    }
+    Ok(VoiceSettings {
+        enabled,
+        api_key,
+        base_url,
+        model,
+        language,
+        max_duration_secs,
+    })
 }
 
 fn resolve_provider_kind(
@@ -269,6 +313,8 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
+    let voice = resolve_voice(toml_cfg).unwrap_or_else(|_| VoiceSettings::disabled_defaults());
+
     ResolvedConfig {
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
@@ -299,6 +345,7 @@ pub(super) fn resolve_non_llm_settings(
             bash_timeout_secs,
             bash_nice,
         },
+        voice,
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -398,6 +445,8 @@ pub(super) fn resolve_config(
 
     let subagent = resolve_subagent(toml_cfg)?;
 
+    let voice = resolve_voice(toml_cfg)?;
+
     Ok(ResolvedConfig {
         llm,
         agent: AgentSettings {
@@ -420,6 +469,7 @@ pub(super) fn resolve_config(
             bash_timeout_secs,
             bash_nice,
         },
+        voice,
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -454,6 +504,44 @@ mod tests {
             tokio_console: false,
             skill_body_auto_inject: false,
         }
+    }
+
+    fn openai_toml_config() -> TactTomlConfig {
+        toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn empty_cli_args_with_openai() -> (CliArgs, TactTomlConfig) {
+        (empty_cli_args(), openai_toml_config())
+    }
+
+    #[test]
+    fn resolve_voice_defaults_and_validation() {
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert!(!cfg.voice.enabled);
+        assert_eq!(cfg.voice.base_url, "https://api.openai.com/v1");
+        assert_eq!(cfg.voice.model, "gpt-4o-mini-transcribe");
+        assert_eq!(cfg.voice.language.as_deref(), Some("zh"));
+        assert_eq!(cfg.voice.max_duration_secs, 300);
+    }
+
+    #[test]
+    fn reject_voice_duration_outside_safe_range() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.enabled = Some(true);
+        toml_cfg.voice.max_duration_secs = Some(0);
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("voice.max_duration_secs"));
     }
 
     #[test]

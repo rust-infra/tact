@@ -57,6 +57,8 @@ tempfile = "3"
 tera = "1"
 tokio = { version = "1" }
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+cpal = "0.15"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"

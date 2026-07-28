@@ -21,6 +21,9 @@ pub struct TactTomlConfig {
 
     /// Tool-specific settings
     pub tools: ToolsTomlConfig,
+
+    /// Voice-to-text input settings (independent of LLM providers).
+    pub voice: VoiceTomlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -142,6 +145,17 @@ pub struct VisionImageTomlConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct VoiceTomlConfig {
+    pub enabled: Option<bool>,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub language: Option<String>,
+    pub max_duration_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ToolsTomlConfig {
     /// Bash wall-clock timeout in seconds. Zero disables the timeout.
     pub bash_timeout_secs: Option<u64>,
@@ -238,11 +252,41 @@ impl ToolSettings {
 }
 
 #[derive(Debug, Clone)]
+pub struct VoiceSettings {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+    pub base_url: String,
+    pub model: String,
+    pub language: Option<String>,
+    pub max_duration_secs: u64,
+}
+
+impl VoiceSettings {
+    pub const DEFAULT_BASE_URL: &'static str = "https://api.openai.com/v1";
+    pub const DEFAULT_MODEL: &'static str = "gpt-4o-mini-transcribe";
+    pub const DEFAULT_LANGUAGE: &'static str = "zh";
+    pub const DEFAULT_MAX_DURATION_SECS: u64 = 300;
+
+    /// Disabled voice settings used when voice is not configured or invalid.
+    pub fn disabled_defaults() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            base_url: Self::DEFAULT_BASE_URL.to_string(),
+            model: Self::DEFAULT_MODEL.to_string(),
+            language: Some(Self::DEFAULT_LANGUAGE.to_string()),
+            max_duration_secs: Self::DEFAULT_MAX_DURATION_SECS,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ResolvedConfig {
     pub llm: LlmSettings,
     pub agent: AgentSettings,
     pub ui: UiSettings,
     pub tools: ToolSettings,
+    pub voice: VoiceSettings,
     pub permission_mode: Option<String>,
     pub tokio_console: bool,
     /// Path of the TOML file loaded at startup (for optional `/model` persist).
@@ -327,5 +371,28 @@ models = ["kimi-k2.5", "kimi-for-coding"]
             kimi.models,
             vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_voice_config_and_defaults() {
+        let cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+[voice]
+enabled = true
+api_key = "voice-test"
+base_url = "http://localhost:1234/v1"
+model = "gpt-4o-mini-transcribe"
+language = "zh"
+max_duration_secs = 45
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.voice.enabled, Some(true));
+        assert_eq!(cfg.voice.max_duration_secs, Some(45));
     }
 }

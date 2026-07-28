@@ -19,7 +19,7 @@ futures-util = { workspace = true }
 globset = { workspace = true }
 git2 = { workspace = true }
 libc = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
 reqwest-eventsource = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
@@ -33,6 +33,8 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 tera = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "tracing"] }
+tokio-util = { workspace = true }
+cpal = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -43,6 +45,7 @@ walkdir = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+wiremock = "0.6"
 proptest = "1"
 rmcp = { workspace = true, features = ["server"] }
 tempfile = { workspace = true }

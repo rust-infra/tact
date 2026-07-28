@@ -23,6 +23,7 @@ pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
     ResolvedConfig, SubagentSettings, SubagentTomlConfig, TactTomlConfig, ToolSettings,
     ToolsTomlConfig, UiSettings, UiTomlConfig, VisionImageSettings, VisionImageTomlConfig,
+    VoiceSettings, VoiceTomlConfig,
 };
 
 static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);

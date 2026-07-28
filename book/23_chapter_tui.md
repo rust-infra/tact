@@ -297,7 +297,7 @@ pub(crate) trait Renderable {
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
 - Row 2: model name, `out`/`输出`, `think high(32K)`/`思考 …`, `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
-**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
+**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a right-aligned title-bar button records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
 ### 6.7 Markdown
 

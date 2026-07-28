@@ -141,6 +141,15 @@ theme = "ink"
 # vision_image.max_edge = 1280
 # vision_image.jpeg_quality = 80
 
+[voice]
+# Independent from [llm.providers.*]; disabled by default.
+# enabled = false
+# api_key = ""
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini-transcribe"
+# language = "zh"
+# max_duration_secs = 300
+
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
@@ -187,6 +196,15 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
 | `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |
+| `voice.enabled` | `false` | — |
+| `voice.base_url` | `https://api.openai.com/v1` | — |
+| `voice.model` | `gpt-4o-mini-transcribe` | — |
+| `voice.language` | `zh` | — |
+| `voice.max_duration_secs` | `300` (valid `1..=600`) | — |
+
+### `[voice]` — speech-to-text input (macOS-first)
+
+Independent API key and endpoint from `[llm.providers.*]`. Audio is sent to `{base_url}/audio/transcriptions` when recording stops; transcripts are inserted into the input box for review (never auto-submitted). `enabled = false` hides the title-bar button. `enabled = true` without `api_key` still shows the button and reports `[voice].api_key` on click. Credentials are not logged or written to session history.
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 

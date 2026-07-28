@@ -13,7 +13,7 @@ use crate::{
     widgets::state::{
         AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
         MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
-        StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState,
+        StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState, VoiceState,
     },
 };
 
@@ -110,6 +110,7 @@ impl App {
             system_prompt_popup: None,
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
+            voice: VoiceState::disabled(),
             account: AccountState::default(),
             skills_description,
             skills_data,

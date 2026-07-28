@@ -139,6 +139,15 @@ theme = "ink"
 # vision_image.max_edge = 1280
 # vision_image.jpeg_quality = 80
 
+[voice]
+# 独立于 [llm.providers.*]；默认关闭。
+# enabled = false
+# api_key = ""
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini-transcribe"
+# language = "zh"
+# max_duration_secs = 300
+
 [tools]
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
 bash_timeout_secs = 1800
@@ -174,6 +183,15 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
+| `voice.enabled` | `false` | — |
+| `voice.base_url` | `https://api.openai.com/v1` | — |
+| `voice.model` | `gpt-4o-mini-transcribe` | — |
+| `voice.language` | `zh` | — |
+| `voice.max_duration_secs` | `300`（有效范围 `1..=600`） | — |
+
+### `[voice]` — 语音转文字输入（macOS 优先）
+
+API 密钥与端点独立于 `[llm.providers.*]`。停止录音后将音频发往 `{base_url}/audio/transcriptions`；转写结果插入输入框供审阅（不会自动提交）。`enabled = false` 隐藏标题栏按钮。`enabled = true` 但未配置 `api_key` 时仍显示按钮，点击会提示 `[voice].api_key`。凭证不会写入日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 

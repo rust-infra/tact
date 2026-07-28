@@ -59,7 +59,10 @@ use crate::{
 
 /// Whether the main loop should repaint this frame (mirrors `run_tui` gate).
 pub(crate) fn should_repaint(app: &App) -> bool {
-    app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
+    app.dirty
+        || matches!(app.status, Status::Done)
+        || !app.tools.active.is_empty()
+        || app.voice.is_active()
 }
 
 /// Handle event-loop poll timeout without spinning the CPU.
@@ -112,6 +115,8 @@ pub struct TuiConfig {
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
+    /// Voice-to-text settings (independent of LLM providers).
+    pub voice: tact::config::VoiceSettings,
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
@@ -136,6 +141,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
         skill_registry,
         session_store,
+        voice,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -184,6 +190,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.add_system_message(msgs.startup_welcome.to_string());
     app.add_system_message(msgs.startup_mode_hint.to_string());
 
+    if voice.enabled {
+        let missing_api_key = voice.api_key.is_none();
+        let worker = tact::voice::spawn_worker(voice);
+        app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
+    }
+
     // Restore session history into the Log area after startup messages
     if let Some(store) = &app.session_store
         && let Ok(messages) = store.load_session(&app.session_id).await
@@ -228,6 +240,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         while let Ok(event) = app.plugin_rx.try_recv() {
             app.handle_plugin_event(event);
         }
+        app.drain_voice_events();
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -304,7 +317,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             200u64
         } else if app.dirty {
             10u64
-        } else if !matches!(app.status, Status::Idle) {
+        } else if !matches!(app.status, Status::Idle) || app.voice.is_active() {
             150u64
         } else {
             1000u64
@@ -409,6 +422,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
     // Restore terminal state before exiting
     let exit_msg = app.msgs().exit_bye.to_string();
+    app.shutdown_voice().await;
     drop(app);
     disable_raw_mode()?;
     execute!(

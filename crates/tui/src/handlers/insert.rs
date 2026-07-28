@@ -10,6 +10,30 @@ use super::{
 };
 use crate::widgets::state::{App, InputMode, Status};
 
+/// Insert transcribed voice text at the UTF-8-safe cursor with optional spacing.
+pub(crate) fn insert_transcript(input: &mut String, cursor: &mut usize, transcript: &str) {
+    let transcript = transcript.trim();
+    if transcript.is_empty() {
+        return;
+    }
+    let safe_cursor = input.floor_char_boundary((*cursor).min(input.len()));
+    *cursor = safe_cursor;
+    let needs_sep = if safe_cursor == 0 {
+        false
+    } else {
+        let prev = input[..safe_cursor].chars().last();
+        let first = transcript.chars().next();
+        matches!((prev, first), (Some(p), Some(t)) if !p.is_whitespace() && !t.is_whitespace())
+    };
+    let insertion = if needs_sep {
+        format!(" {transcript}")
+    } else {
+        transcript.to_string()
+    };
+    input.insert_str(safe_cursor, &insertion);
+    *cursor = safe_cursor + insertion.len();
+}
+
 fn apply_selected_slash_command(app: &mut App) -> bool {
     let cmds = app.palette_commands();
     let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
@@ -554,6 +578,10 @@ pub(crate) fn handle_insert_mode(
             let (line, _) = cursor_line_col(&app.input, app.input_cursor);
             app.input_cursor = line_col_to_cursor(&app.input, line, line_length(&app.input, line));
         }
+        KeyCode::Esc if app.voice.is_active() => {
+            app.voice.cancel();
+            app.dirty = true;
+        }
         KeyCode::Esc => app.input_mode = InputMode::Normal,
         _ => {}
     }
@@ -567,7 +595,7 @@ mod tests {
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::handle_insert_mode;
+    use super::{handle_insert_mode, insert_transcript};
     use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
@@ -1072,5 +1100,37 @@ mod tests {
 
         assert!(!app.slash_command.active, "Esc should dismiss slash popup");
         assert_eq!(app.input, "/he", "Esc should keep typed input");
+    }
+
+    #[test]
+    fn insert_transcript_at_unicode_cursor_with_separator() {
+        let mut input = "你好世界".to_string();
+        let mut cursor = "你好".len();
+        insert_transcript(&mut input, &mut cursor, "请检查代码");
+        assert_eq!(input, "你好 请检查代码世界");
+        assert_eq!(cursor, "你好 请检查代码".len());
+    }
+
+    #[test]
+    fn insert_transcript_preserves_newlines_and_does_not_execute_slash_text() {
+        let mut input = "prefix\n".to_string();
+        let mut cursor = input.len();
+        insert_transcript(&mut input, &mut cursor, "/help\n下一行");
+        assert_eq!(input, "prefix\n/help\n下一行");
+    }
+
+    #[test]
+    fn blank_transcript_is_noop_and_invalid_cursor_is_clamped_to_boundary() {
+        let mut input = "ab".to_string();
+        let mut cursor = 1;
+        insert_transcript(&mut input, &mut cursor, "   ");
+        assert_eq!(input, "ab");
+        assert_eq!(cursor, 1);
+
+        let mut input = "你好".to_string();
+        let mut cursor = 3;
+        insert_transcript(&mut input, &mut cursor, "X");
+        assert_eq!(input, "你 X好");
+        assert_eq!(cursor, 5);
     }
 }

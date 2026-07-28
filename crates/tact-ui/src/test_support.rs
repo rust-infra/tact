@@ -58,6 +58,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
             bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
         },
+        voice: tact::config::VoiceSettings::disabled_defaults(),
         permission_mode: None,
         tokio_console: false,
         config_path: None,

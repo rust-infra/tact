@@ -200,6 +200,7 @@ async fn run_interactive_locked(
                     .collect()
             },
             skill_registry,
+            voice: tact::config::settings().voice.clone(),
         })
         .await
     }));
