@@ -99,7 +99,9 @@ impl VoiceWorkerHandle {
 pub fn spawn_worker(settings: VoiceSettings) -> VoiceWorkerHandle {
     let transcriber: Arc<dyn Transcriber> = match settings.provider {
         crate::config::VoiceProvider::OpenAi => Arc::new(OpenAiTranscriber::new(settings.clone())),
-        crate::config::VoiceProvider::WhisperCpp => Arc::new(WhisperCppTranscriber::new(settings.clone())),
+        crate::config::VoiceProvider::WhisperCpp => {
+            Arc::new(WhisperCppTranscriber::new(settings.clone()))
+        }
     };
     spawn_worker_with_components(
         settings.clone(),

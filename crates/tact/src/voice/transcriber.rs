@@ -101,10 +101,7 @@ impl WhisperCppTranscriber {
     }
 
     fn endpoint(&self) -> String {
-        format!(
-            "{}/inference",
-            self.settings.base_url.trim_end_matches('/')
-        )
+        format!("{}/inference", self.settings.base_url.trim_end_matches('/'))
     }
 }
 
