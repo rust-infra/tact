@@ -255,10 +255,7 @@ fn resolve_subagent(
         .or(entry.thinking_budget)
         .unwrap_or(main_thinking_budget);
 
-    if thinking_budget > 0
-        && usize::try_from(max_tokens)
-            .is_ok_and(|mt| thinking_budget >= mt)
-    {
+    if thinking_budget > 0 && usize::try_from(max_tokens).is_ok_and(|mt| thinking_budget >= mt) {
         anyhow::bail!(
             "subagent thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
         );
@@ -404,10 +401,7 @@ pub(super) fn resolve_config(
         .or(toml_cfg.llm.thinking_budget)
         .unwrap_or(0);
 
-    if thinking_budget > 0
-        && usize::try_from(max_tokens)
-            .is_ok_and(|mt| thinking_budget >= mt)
-    {
+    if thinking_budget > 0 && usize::try_from(max_tokens).is_ok_and(|mt| thinking_budget >= mt) {
         anyhow::bail!(
             "thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
         );
