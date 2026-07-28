@@ -2,7 +2,6 @@
 
 use super::{
     ToolRouter,
-    apply_patch::ApplyPatchTool,
     ask_user::AskUserTool,
     background_run::{BackgroundRunTool, CheckBackgroundTool},
     bash::BashTool,
@@ -29,7 +28,6 @@ use super::{
 /// Assembles the full tool set for the main agent loop.
 fn try_toolset() -> anyhow::Result<ToolRouter> {
     ToolRouter::new()
-        .route(ApplyPatchTool)?
         .route(AskUserTool)?
         .route(BashTool)?
         .route(BackgroundRunTool)?

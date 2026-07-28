@@ -45,7 +45,6 @@ use crate::{
     worktree::SharedWorktreeManager,
 };
 
-mod apply_patch;
 mod ask_user;
 mod background_run;
 mod bash;

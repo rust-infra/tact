@@ -3,7 +3,7 @@
 mod harness;
 
 use harness::{
-    apply_patch_tool_use, ask_user_tool_use, ask_user_tool_use_ex, background_run_tool_use,
+    ask_user_tool_use, ask_user_tool_use_ex, background_run_tool_use,
     check_background_tool_use, cron_create_tool_use, cron_list_tool_use, load_skill_tool_use,
     read_inbox_tool_use, run_single_task_with_permission_choice, run_single_task_with_setup,
     save_memory_tool_use, send_message_tool_use, spawn_teammate_tool_use, task_completed_with,
@@ -275,40 +275,6 @@ async fn background_run_and_check() {
             .any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "bg2")),
         "check_background should run: {updates:?}"
     );
-}
-
-#[tokio::test]
-async fn apply_patch_modifies_file() {
-    let patch = r#"--- a/src/main.rs
-+++ b/src/main.rs
-@@ -1 +1 @@
--fn old() {}
-+fn new() {}
-"#;
-
-    let mock = MockClient::new(vec![
-        (
-            vec![apply_patch_tool_use("patch1", patch)],
-            Some(StopReason::ToolUse),
-        ),
-        (
-            vec![text_block("Patch applied.")],
-            Some(StopReason::EndTurn),
-        ),
-    ]);
-
-    let (updates, work_dir) =
-        run_single_task_with_setup(mock, "apply patch", PermissionMode::Auto, |dir| {
-            write_workspace_file(dir, "src/main.rs", "fn old() {}\n")
-        })
-        .await;
-
-    assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "patch1" && result.tool == "apply_patch" && matches!(result.status, StepStatus::Success))),
-        "apply_patch should succeed: {updates:?}"
-    );
-    let content = std::fs::read_to_string(work_dir.join("src/main.rs")).unwrap();
-    assert!(content.contains("fn new()"));
 }
 
 #[tokio::test]

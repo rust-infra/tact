@@ -95,7 +95,6 @@ pub fn tool_display_name(tool: &str) -> String {
         "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
         "sleep" => "⏳ Sleep".to_string(),
-        "apply_patch" => "📝 Patch".to_string(),
         "background_run" => "Background".to_string(),
         "check_background" => "Background".to_string(),
         "cron_create" => "Cron".to_string(),
