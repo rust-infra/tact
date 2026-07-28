@@ -157,11 +157,16 @@ theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 [voice]
 # Show the title-bar voice button and enable microphone capture (default: false).
 enabled = false
+# Transcription provider: "openai" (default) or "whisper_cpp" for a local whisper.cpp server.
+# provider = "openai"
 # API key for the transcription service — not shared with [llm.providers.*].
+# Required for openai; ignored for whisper_cpp.
 api_key = ""
-# Transcription endpoint base URL (default: OpenAI).
+# Transcription endpoint base URL.
+# openai default: https://api.openai.com/v1
+# whisper_cpp default: http://127.0.0.1:8080
 # base_url = "https://api.openai.com/v1"
-# Transcription model (default: gpt-4o-mini-transcribe).
+# Transcription model (default: gpt-4o-mini-transcribe; ignored for whisper_cpp).
 # model = "gpt-4o-mini-transcribe"
 # BCP-47 language hint sent to the API (default: zh).
 # language = "zh"

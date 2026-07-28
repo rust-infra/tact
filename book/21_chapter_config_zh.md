@@ -142,6 +142,7 @@ theme = "ink"
 [voice]
 # 独立于 [llm.providers.*]；默认关闭。
 # enabled = false
+# provider = "openai"
 # api_key = ""
 # base_url = "https://api.openai.com/v1"
 # model = "gpt-4o-mini-transcribe"
@@ -184,14 +185,20 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
 | `voice.enabled` | `false` | — |
-| `voice.base_url` | `https://api.openai.com/v1` | — |
-| `voice.model` | `gpt-4o-mini-transcribe` | — |
+| `voice.provider` | `openai` | `openai` / `whisper_cpp` |
+| `voice.base_url` | `https://api.openai.com/v1`（openai）/ `http://127.0.0.1:8080`（whisper_cpp） | — |
+| `voice.model` | `gpt-4o-mini-transcribe`（openai）/ 空（whisper_cpp） | — |
 | `voice.language` | `zh` | — |
 | `voice.max_duration_secs` | `300`（有效范围 `1..=600`） | — |
 
 ### `[voice]` — 语音转文字输入（macOS 优先）
 
-API 密钥与端点独立于 `[llm.providers.*]`。停止录音后将音频发往 `{base_url}/audio/transcriptions`；转写结果插入输入框供审阅（不会自动提交）。`enabled = false` 隐藏标题栏按钮。`enabled = true` 但未配置 `api_key` 时仍显示按钮，点击会提示 `[voice].api_key`。凭证不会写入日志或会话历史。
+API 密钥与端点独立于 `[llm.providers.*]`。`provider = "openai"`（默认）将音频发往
+`{base_url}/audio/transcriptions`，需要 `api_key`。`provider = "whisper_cpp"` 将音频发往
+`{base_url}/inference`，无需认证与 `model` 字段，适用于本地
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) 服务器。转写结果插入输入框供审阅（不会自动提交）。
+`enabled = false` 隐藏标题栏按钮。`enabled = true` 但未配置 `api_key`（仅 openai）时仍显示按钮，
+点击会提示 `[voice].api_key`。凭证不会写入日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 
