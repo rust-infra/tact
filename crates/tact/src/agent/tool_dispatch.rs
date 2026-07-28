@@ -456,7 +456,7 @@ impl Agent {
                                 }
                             } else {
                                 let approved =
-                                    self.runtime.permission_manager.ask_user(stable_name)?;
+                                    self.runtime.permission_manager.ask_user(stable_name, risk)?;
                                 if approved {
                                     Some("allow_once")
                                 } else {

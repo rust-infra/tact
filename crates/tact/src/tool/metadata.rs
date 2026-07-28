@@ -58,7 +58,7 @@ impl PermissionPolicy {
                 if cmd.starts_with("sudo ") || cmd.starts_with("su ") {
                     CapabilityRisk::High
                 } else {
-                    CapabilityRisk::Read
+                    CapabilityRisk::Write
                 }
             }
         }
@@ -335,16 +335,27 @@ mod tests {
     }
 
     #[test]
-    fn shell_permission_policy_preserves_read_and_high_risk_rules() {
+    fn shell_permission_policy_classifies_common_cmd_as_write_and_sudo_as_high() {
         let policy = PermissionPolicy::ShellCommand {
             command_field: "command",
         };
+        // Non-sudo commands are classified as Write because we cannot
+        // distinguish read-only from destructive shell commands.
         assert_eq!(
             policy.resolve(&json!({"command": "git status"})),
-            CapabilityRisk::Read
+            CapabilityRisk::Write
         );
         assert_eq!(
+            policy.resolve(&json!({"command": "cargo test"})),
+            CapabilityRisk::Write
+        );
+        // sudo / su commands are classified as High.
+        assert_eq!(
             policy.resolve(&json!({"command": "sudo ls"})),
+            CapabilityRisk::High
+        );
+        assert_eq!(
+            policy.resolve(&json!({"command": "su root"})),
             CapabilityRisk::High
         );
     }
