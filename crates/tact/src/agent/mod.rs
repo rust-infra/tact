@@ -208,6 +208,11 @@ impl Agent {
     /// If the new budget is active and not strictly smaller than the current
     /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
     /// warning is emitted to the UI channel.
+    ///
+    /// Always emits [`AgentUpdate::ModelInfo`] so the TUI status bar resyncs after
+    /// `/model` picks: `SetThinkingBudget` is queued behind an in-flight task, and
+    /// that task's older `ModelInfo` would otherwise leave the bar stuck on the
+    /// previous budget.
     pub fn set_thinking_budget(&mut self, budget: usize) {
         self.agent_settings.thinking_budget = budget;
         if let Some(msg) =
@@ -215,6 +220,25 @@ impl Agent {
         {
             self.emit_update(AgentUpdate::Info(msg));
         }
+        self.emit_model_status();
+    }
+
+    /// Push current model / token / thinking settings to the TUI status bar.
+    fn emit_model_status(&self) {
+        let model_name = self
+            .runtime
+            .model_override
+            .clone()
+            .unwrap_or_else(crate::get_model);
+        let budget = self.thinking_budget();
+        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+            model: model_name,
+            max_tokens: self.max_tokens(),
+            thinking_budget: (budget > 0).then_some(budget as u32),
+            reasoning_effort: tact_llm::current_reasoning_effort_from_budget(budget)
+                .map(str::to_string),
+            extra_body: None,
+        }));
     }
 
     fn thinking_budget(&self) -> usize {
@@ -2079,7 +2103,7 @@ mod tests {
             crate::permission::PermissionMode::Default,
         )
         .unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
@@ -2095,5 +2119,19 @@ mod tests {
         agent.set_thinking_budget(64_000);
         assert!(agent.max_tokens() > 64_000);
         assert_eq!(agent.thinking_budget(), 64_000);
+
+        let mut saw_model_info = false;
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                AgentUpdate::ModelInfo(params) => {
+                    assert_eq!(params.thinking_budget, Some(64_000));
+                    assert!(params.max_tokens > 64_000);
+                    saw_model_info = true;
+                }
+                AgentUpdate::Info(_) => {}
+                other => panic!("unexpected update: {other:?}"),
+            }
+        }
+        assert!(saw_model_info, "set_thinking_budget must emit ModelInfo");
     }
 }

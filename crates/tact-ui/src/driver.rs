@@ -186,8 +186,8 @@ async fn handle_user_command_with_account(
                 "default" => tact::permission::PermissionMode::Default,
                 _ => tact::permission::PermissionMode::Auto,
             };
+            // TUI already shows the localized confirmation; do not emit Info here.
             agent.runtime.permission_manager.set_mode(parsed);
-            agent.emit_update(AgentUpdate::Info(format!("Permission mode set to {mode}")));
         }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
@@ -273,5 +273,32 @@ mod tests {
             &work_dir,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn set_thinking_budget_emits_model_info_for_status_bar() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetThinkingBudget(32_000),
+            &work_dir,
+        )
+        .await;
+
+        let mut saw_model_info = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::ModelInfo(params) = update {
+                assert_eq!(params.thinking_budget, Some(32_000));
+                assert!(params.max_tokens > 32_000);
+                saw_model_info = true;
+            }
+        }
+        assert!(
+            saw_model_info,
+            "SetThinkingBudget must emit ModelInfo so the TUI bar resyncs"
+        );
     }
 }

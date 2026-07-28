@@ -87,11 +87,20 @@ pub fn update_llm_model(model: String) {
 }
 
 /// Update the in-memory active model and thinking budget for this session.
+///
+/// When `thinking_budget` is active and not strictly smaller than `max_tokens`,
+/// expands `max_tokens` to `budget + 1` so the session settings match the agent
+/// auto-expand rule used by [`crate::agent::Agent::set_thinking_budget`].
 pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model;
         cfg.agent.thinking_budget = thinking_budget;
+        if thinking_budget > 0 && (cfg.agent.max_tokens as usize) <= thinking_budget {
+            cfg.agent.max_tokens = u32::try_from(thinking_budget)
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
+        }
     }
 }
 

@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-07-28 — `/model` 思考预算未同步到状态栏
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 21、23 章 |
+
+**症状 / 动机：** `/model` 已保存新的思考预算（如 32K），底栏仍可能显示旧值（如 `think high(64K)`）。落盘成功，但运行中的 agent 与状态栏未跟上。
+
+**决策：** `UserCommand::SetThinkingBudget` 要等当前任务结束后才处理；进行中任务的旧 `ModelInfo` 会覆盖 TUI 的乐观更新，而 `set_thinking_budget` 此前不会再发 `ModelInfo`。改为在 `set_thinking_budget` 中发出 `ModelInfo`，并在 TUI 应用路径同步/扩展会话 `max_tokens`，使 `out` / `think` 一致。
+
+**改后行为：** 确认预算后状态栏立即更新；排队的 agent 命令执行时再发一次 `ModelInfo`，重新同步 `thinking_budget` 与可能自动扩展的 `max_tokens`。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`set_thinking_budget` / `emit_model_status`）、`crates/tact/src/config/mod.rs`（`update_llm_model_and_thinking_budget`）、`crates/tui/src/handlers/select.rs`（`apply_model_and_budget_pick`）、`crates/tact-ui/src/driver.rs`。
+
+---
+
 ## 1. 2026-07-28 — 可点击的语音转文字输入（标题栏）
 
 | 字段 | 值 |

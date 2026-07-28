@@ -274,6 +274,11 @@ fn apply_model_and_budget_pick(app: &mut App, model: String, thinking_budget: us
 
     tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
     app.status_bar.model_name = model.clone();
+    if let Some(settings) = tact::config::try_settings() {
+        // Keep out/think in sync immediately; agent may still be busy so
+        // SetThinkingBudget (and its ModelInfo) can arrive later.
+        app.status_bar.model_max_tokens = settings.agent.max_tokens;
+    }
     app.status_bar.model_thinking_budget = (thinking_budget > 0).then_some(thinking_budget as u32);
     app.status_bar.model_reasoning_effort =
         tact_llm::current_reasoning_effort_from_budget(thinking_budget).map(str::to_string);
@@ -810,8 +815,10 @@ thinking_budget = {thinking_budget}
 
         assert_eq!(tact_llm::get_provider().model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
+        assert!(tact::config::settings().agent.max_tokens > 64_000);
         assert_eq!(app.status_bar.model_name, "kimi-for-coding");
         assert_eq!(app.status_bar.model_thinking_budget, Some(64_000));
+        assert!(app.status_bar.model_max_tokens > 64_000);
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
