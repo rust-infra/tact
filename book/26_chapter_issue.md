@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-28 — Theme detection fallback wrong theme (Ink vs Retro)
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | Ch 23 |
+| Symptom / motivation | `detect_terminal_theme()` doc comment said "Fallback: Retro" but the code returned `ThemeName::Ink`. The unit test matching this contract (`test_detect_terminal_theme_env_vars`) expected the fallback to be `Dark`, `Light`, or `Retro`, so it failed on `Ink`. CI broke consistently for any runner without `COLORFGBG` / `COLORTERM` and no macOS dark-mode override. |
+| Decision | Change the fallback return from `ThemeName::Ink` to `ThemeName::Retro`, matching the doc comment and test expectation. |
+| Behavior after | When no terminal theme env vars are set, `detect_terminal_theme()` returns `Retro` (neutral dark) instead of `Ink`. |
+| Pointers | `crates/tui/src/theme_detection.rs` |
+
+---
+
 ## 1. 2026-07-28 — Log left-border scrollbar residue
 
 | Field | Value |

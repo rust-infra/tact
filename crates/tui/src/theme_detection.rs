@@ -56,8 +56,8 @@ pub(crate) fn detect_terminal_theme() -> ThemeName {
         }
     }
 
-    // Fallback: Ink (a modern dark theme)
-    ThemeName::Ink
+    // Fallback: Retro (neutral dark)
+    ThemeName::Retro
 }
 
 /// On macOS, read `AppleInterfaceStyle` via `defaults` to detect
