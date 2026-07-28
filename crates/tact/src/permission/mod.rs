@@ -271,7 +271,10 @@ impl PermissionManager {
         // - High → deny (too dangerous without explicit confirmation)
         let choice = match risk {
             CapabilityRisk::High => {
-                eprintln!("[permission] non-interactive: denying high-risk {}", tool_name);
+                eprintln!(
+                    "[permission] non-interactive: denying high-risk {}",
+                    tool_name
+                );
                 UserPermissionChoice::Deny
             }
             _ => {

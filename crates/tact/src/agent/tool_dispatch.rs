@@ -455,8 +455,10 @@ impl Agent {
                                     _ => Some("deny"),
                                 }
                             } else {
-                                let approved =
-                                    self.runtime.permission_manager.ask_user(stable_name, risk)?;
+                                let approved = self
+                                    .runtime
+                                    .permission_manager
+                                    .ask_user(stable_name, risk)?;
                                 if approved {
                                     Some("allow_once")
                                 } else {
