@@ -3,16 +3,13 @@
 //! These use a temp directory as HOME to avoid polluting the real plugin store.
 //! Tests exercise the plugin execution path directly — without network clones.
 //!
-//! All cases that mutate `HOME` share a process-wide mutex so Tokio's default
-//! multi-thread test runtime cannot race on the environment variable.
+//! All cases that mutate `HOME` share a process-wide async mutex so Tokio's
+//! default multi-thread test runtime cannot race on the environment variable.
 
-use std::{
-    fs,
-    path::Path,
-    sync::{Mutex, MutexGuard, OnceLock},
-};
+use std::{fs, path::Path, sync::OnceLock};
 
 use tact::config::{MarketplaceSubcommand, PluginSubcommand};
+use tokio::sync::{Mutex, MutexGuard};
 
 fn home_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -20,10 +17,8 @@ fn home_lock() -> &'static Mutex<()> {
 }
 
 /// Sets HOME to a temp dir. Holds the lock until the returned guard is dropped.
-fn with_temp_home() -> (tempfile::TempDir, MutexGuard<'static, ()>) {
-    let guard = home_lock()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+async fn with_temp_home() -> (tempfile::TempDir, MutexGuard<'static, ()>) {
+    let guard = home_lock().lock().await;
     let dir = tempfile::tempdir().unwrap();
     // SAFETY: exclusive via `home_lock`; no concurrent HOME readers in this binary.
     unsafe { std::env::set_var("HOME", dir.path()) };
@@ -47,14 +42,14 @@ fn seed_official_marketplace_catalog(home: &Path, plugins_json: &str) {
 
 #[tokio::test]
 async fn plugin_list_when_empty() {
-    let (_home, _lock) = with_temp_home();
+    let (_home, _lock) = with_temp_home().await;
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::List).await;
     assert!(result.is_ok(), "list should succeed: {result:?}");
 }
 
 #[tokio::test]
 async fn marketplace_list_shows_builtin() {
-    let (_home, _lock) = with_temp_home();
+    let (_home, _lock) = with_temp_home().await;
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
         command: MarketplaceSubcommand::List,
     })
@@ -67,7 +62,7 @@ async fn marketplace_list_shows_builtin() {
 
 #[tokio::test]
 async fn marketplace_add_and_remove() {
-    let (_home, _lock) = with_temp_home();
+    let (_home, _lock) = with_temp_home().await;
 
     // Loopback URL: connection refused immediately (no GitHub clone timeout).
     let result_add = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
@@ -95,7 +90,7 @@ async fn marketplace_add_and_remove() {
 
 #[tokio::test]
 async fn removing_builtin_marketplace_fails() {
-    let (_home, _lock) = with_temp_home();
+    let (_home, _lock) = with_temp_home().await;
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Marketplace {
         command: MarketplaceSubcommand::Remove {
             name: "claude-plugins-official".into(),
@@ -110,7 +105,7 @@ async fn removing_builtin_marketplace_fails() {
 
 #[tokio::test]
 async fn install_with_missing_plugin_fails_gracefully() {
-    let (home, _lock) = with_temp_home();
+    let (home, _lock) = with_temp_home().await;
     // Pre-seed catalog so install does not clone github.com/anthropics/...
     seed_official_marketplace_catalog(home.path(), "[]");
 
@@ -128,7 +123,7 @@ async fn install_with_missing_plugin_fails_gracefully() {
 
 #[tokio::test]
 async fn reload_with_no_plugins_succeeds() {
-    let (_home, _lock) = with_temp_home();
+    let (_home, _lock) = with_temp_home().await;
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Reload).await;
     assert!(result.is_ok(), "reload should succeed: {result:?}");
 }
