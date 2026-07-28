@@ -266,6 +266,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::config::VoiceProvider;
     use crate::config::VoiceSettings;
 
     /// Serialize worker tests so a hung `recv().await` cannot stack with siblings
@@ -347,6 +348,7 @@ mod tests {
     fn test_settings() -> VoiceSettings {
         VoiceSettings {
             enabled: true,
+            provider: VoiceProvider::OpenAi,
             api_key: Some("voice-test".into()),
             base_url: "http://localhost".into(),
             model: "gpt-4o-mini-transcribe".into(),

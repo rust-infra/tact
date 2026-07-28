@@ -106,6 +106,7 @@ pub fn parse_transcription_response(status: StatusCode, body: &[u8]) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::VoiceProvider;
     use std::time::Duration;
 
     use serde_json::json;
@@ -115,6 +116,7 @@ mod tests {
     fn test_voice_settings(base_url: &str) -> VoiceSettings {
         VoiceSettings {
             enabled: true,
+            provider: VoiceProvider::OpenAi,
             api_key: Some("voice-test".to_string()),
             base_url: base_url.to_string(),
             model: "gpt-4o-mini-transcribe".to_string(),

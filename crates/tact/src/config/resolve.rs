@@ -5,7 +5,7 @@ use super::{
     instruction_sources::InstructionSources,
     types::{
         AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
-        UiSettings, VisionImageSettings, VoiceSettings,
+        UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
     },
 };
 
@@ -36,19 +36,26 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
     let enabled = toml_cfg.voice.enabled.unwrap_or(false);
+    let provider = toml_cfg.voice.provider.unwrap_or_default();
     let api_key = toml_cfg.voice.api_key.clone().filter(|k| !k.is_empty());
     let base_url = toml_cfg
         .voice
         .base_url
         .clone()
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| VoiceSettings::DEFAULT_BASE_URL.to_string());
+        .unwrap_or_else(|| match provider {
+            VoiceProvider::WhisperCpp => VoiceSettings::DEFAULT_WHISPER_CPP_BASE_URL.to_string(),
+            VoiceProvider::OpenAi => VoiceSettings::DEFAULT_BASE_URL.to_string(),
+        });
     let model = toml_cfg
         .voice
         .model
         .clone()
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| VoiceSettings::DEFAULT_MODEL.to_string());
+        .unwrap_or_else(|| match provider {
+            VoiceProvider::WhisperCpp => String::new(),
+            VoiceProvider::OpenAi => VoiceSettings::DEFAULT_MODEL.to_string(),
+        });
     let language = match toml_cfg.voice.language.clone() {
         Some(language) if language.trim().is_empty() => None,
         Some(language) => Some(language),
@@ -65,6 +72,7 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
     }
     Ok(VoiceSettings {
         enabled,
+        provider,
         api_key,
         base_url,
         model,
