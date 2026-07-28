@@ -8,6 +8,9 @@
 //! - [`ScheduledTaskRecord`] includes the cron expression, prompt text,
 //!   and flags for `recurring` / `durable`.
 
+#[cfg(test)]
+mod simulation;
+
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
