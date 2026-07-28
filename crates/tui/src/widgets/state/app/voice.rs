@@ -34,10 +34,8 @@ impl App {
         match self.voice.phase {
             VoicePhase::Idle => match self.voice.try_start() {
                 VoiceStartResult::MissingApiKey => {
-                    self.flash_msg = Some((
-                        self.msgs().voice_missing_config.to_string(),
-                        Instant::now(),
-                    ));
+                    self.flash_msg =
+                        Some((self.msgs().voice_missing_config.to_string(), Instant::now()));
                     self.dirty = true;
                 }
                 VoiceStartResult::Started => self.dirty = true,

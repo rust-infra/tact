@@ -278,7 +278,7 @@ pub const BASH_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Command,
-        display_name: "$ Shell",
+        display_name: "$ Bash",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,

@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-07-28 — Bash 工具卡片标签恢复为 `$ Bash`
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 7、23 章 |
+| 现象 / 动机 | 内置工具 `ToolPresentation` 绑到 handler 旁路后，`bash` 的 `display_name` 写成了 `"$ Shell"`。TUI 卡片显示 **Shell**，尽管工具 id 与旧回退仍是 `bash` / `$ Bash`。 |
+| 决策 | 将 `BASH_METADATA.presentation.display_name` 改回 `"$ Bash"`。运行时仍用 `sh -c` 启动（不变）。 |
+| 改后行为 | `bash` 工具的卡片与标题再次显示 `$ Bash`。 |
+| 指针 | `crates/tact/src/tool/bash.rs`；`crates/tui/src/widgets/tool_widget.rs` 回退仍为 `$ Bash` |
+
+---
+
 ## 1. 2026-07-28 — 语音快捷键吞掉全部键盘输入
 
 | 字段 | 值 |

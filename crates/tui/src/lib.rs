@@ -214,10 +214,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.add_system_message(msgs.startup_mode_hint.to_string());
 
     if voice.enabled {
-        let missing_api_key = matches!(
-            voice.provider,
-            tact::config::VoiceProvider::OpenAi
-        ) && voice.api_key.is_none();
+        let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
+            && voice.api_key.is_none();
         let worker = tact::voice::spawn_worker(voice);
         app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
     }
@@ -534,38 +532,26 @@ mod voice_keybind_tests {
     #[test]
     fn parse_ctrl_g() {
         let result = parse_voice_keybind("ctrl+g");
-        assert_eq!(
-            result,
-            Some((KeyModifiers::CONTROL, KeyCode::Char('g')))
-        );
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('g'))));
     }
 
     #[test]
     fn parse_ctrl_r() {
         let result = parse_voice_keybind("ctrl+r");
-        assert_eq!(
-            result,
-            Some((KeyModifiers::CONTROL, KeyCode::Char('r')))
-        );
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('r'))));
     }
 
     #[test]
     fn parse_ctrl_comma() {
         let result = parse_voice_keybind("ctrl+,");
-        assert_eq!(
-            result,
-            Some((KeyModifiers::CONTROL, KeyCode::Char(',')))
-        );
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char(','))));
     }
 
     #[test]
     fn parse_ctrl_uppercase_g() {
         // Lowercase normalization
         let result = parse_voice_keybind("Ctrl+G");
-        assert_eq!(
-            result,
-            Some((KeyModifiers::CONTROL, KeyCode::Char('g')))
-        );
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('g'))));
     }
 
     #[test]

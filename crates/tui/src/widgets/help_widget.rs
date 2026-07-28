@@ -83,11 +83,7 @@ impl<'a> Widget for HelpWidget<'a> {
 }
 
 impl<'a> HelpWidget<'a> {
-    pub fn new(
-        msgs: &'a Messages,
-        theme: &'a Theme,
-        voice_keybind_label: Option<&'a str>,
-    ) -> Self {
+    pub fn new(msgs: &'a Messages, theme: &'a Theme, voice_keybind_label: Option<&'a str>) -> Self {
         HelpWidget {
             msgs,
             theme,

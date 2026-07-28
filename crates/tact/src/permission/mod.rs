@@ -254,10 +254,7 @@ impl PermissionManager {
                 UserPermissionChoice::Deny
             }
             CapabilityRisk::Write | CapabilityRisk::Read => {
-                eprintln!(
-                    "[permission] non-interactive: allowing {}",
-                    tool_name
-                );
+                eprintln!("[permission] non-interactive: allowing {}", tool_name);
                 UserPermissionChoice::AllowOnce
             }
         };
@@ -555,9 +552,8 @@ mod tests {
 
     #[test]
     fn loaded_deny_rule_blocks_before_prompt() {
-        let (_dir, mut mgr) = mgr_with_project_settings(
-            r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
-        );
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#);
 
         let decision = mgr.check(
             "bash",
@@ -609,9 +605,8 @@ mod tests {
 
     #[test]
     fn high_risk_deny_rule_blocks_high_risk() {
-        let (_dir, mut mgr) = mgr_with_project_settings(
-            r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
-        );
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#);
 
         let decision = mgr.check(
             "bash",

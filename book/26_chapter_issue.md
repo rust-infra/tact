@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-28 — Bash tool card label restored (`$ Bash`)
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | Ch 7, Ch 23 |
+| Symptom / motivation | After binding builtin `ToolPresentation` beside handlers, `bash` used `display_name: "$ Shell"`. The TUI card showed **Shell** even though the tool id and legacy fallback remain `bash` / `$ Bash`. |
+| Decision | Set `BASH_METADATA.presentation.display_name` back to `"$ Bash"`. Runtime still spawns `sh -c` (unchanged). |
+| Behavior after | Tool cards and titles render `$ Bash` again for the `bash` tool. |
+| Pointers | `crates/tact/src/tool/bash.rs`; fallback still `$ Bash` in `crates/tui/src/widgets/tool_widget.rs` |
+
+---
+
 ## 1. 2026-07-28 — Voice keybind ate all keyboard input
 
 | Field | Value |

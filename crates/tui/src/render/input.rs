@@ -115,9 +115,8 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         .title(Span::raw(app.msgs().input_box_title))
         .title_bottom(bottom_title);
     if let Some((voice_label, voice_style)) = voice_title(app) {
-        block = block.title(
-            Line::from(Span::styled(voice_label, voice_style)).alignment(Alignment::Center),
-        );
+        block = block
+            .title(Line::from(Span::styled(voice_label, voice_style)).alignment(Alignment::Center));
     }
 
     let input_para = Paragraph::new(display)

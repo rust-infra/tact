@@ -283,7 +283,8 @@ pub struct App {
     pub(crate) voice: VoiceState,
     /// Keyboard shortcut to start/stop voice recording, parsed from config.
     /// `None` means mouse-only (no keyboard shortcut).
-    pub(crate) voice_parsed_keybind: Option<(crossterm::event::KeyModifiers, crossterm::event::KeyCode)>,
+    pub(crate) voice_parsed_keybind:
+        Option<(crossterm::event::KeyModifiers, crossterm::event::KeyCode)>,
     /// Cached account balance / usage quota state from the account service.
     pub(crate) account: AccountState,
     /// List of available skills (name + description lines).
