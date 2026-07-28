@@ -172,6 +172,11 @@ api_key = ""
 # language = "zh"
 # Maximum recording duration in seconds, 1–600 (default: 300).
 # max_duration_secs = 300
+# Keyboard shortcut to start/stop voice recording (optional; mouse-only when unset).
+# Format: "ctrl+<char>" — one letter, digit, or symbol after ctrl+.
+# Only an exact match toggles voice; other keys still reach the input box.
+# Examples: "ctrl+g", "ctrl+r", "ctrl+,"
+# voice_keybind = "ctrl+g"
 
 # ---------------------------------------------------------------------------
 # Tools

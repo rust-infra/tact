@@ -161,13 +161,15 @@ impl PermissionManager {
     /// 1. Read → auto-allow (regardless of mode).
     /// 2. Plan mode → deny writes.
     /// 3. Auto mode → allow everything.
-    /// 4. Default mode + high risk → evaluate settings action:
-    ///    - Deny → deny (settings deny blocks even high-risk).
-    ///    - Ask/Allow/None → ask (high-risk always needs confirmation).
-    /// 5. Default mode + matching settings deny → deny.
-    /// 6. Default mode + matching settings ask → ask.
-    /// 7. Default mode + matching settings allow → allow.
-    /// 8. Otherwise → ask (existing default behavior).
+    /// 4. Default mode + matching settings deny → deny.
+    /// 5. Default mode + matching settings allow → allow
+    ///    (including high-risk — user explicitly trusts the pattern).
+    /// 6. Default mode + matching settings ask → ask (non-high only;
+    ///    high-risk Ask/None still uses the high-risk ask path).
+    /// 7. Default mode + high risk (no Deny/Allow rule) → ask
+    ///    (skips the in-session always-allowed list).
+    /// 8. Default mode + in-session always-allowed → allow.
+    /// 9. Otherwise → ask.
     pub fn check(
         &mut self,
         tool_name: &str,
@@ -193,82 +195,56 @@ impl PermissionManager {
 
         // At this point we are in Default mode.
 
-        // 4-7. Evaluate loaded settings rules.
-        // For high-risk: deny if settings say Deny; allow if settings say
-        // Allow (user explicitly trusts this input pattern); otherwise ask.
-        // For non-high-risk: follow settings action normally.
+        // 4-6. Evaluate loaded settings rules (Deny/Allow apply at all risks).
         let settings_action = self
             .settings
             .as_ref()
             .map(|settings| settings.cached_effective_rules().action(tool_name, input));
 
-        if risk == CapabilityRisk::High {
-            // High-risk: deny if settings say Deny, allow if settings say
-            // Allow, otherwise ask.
-            match settings_action {
-                Some(settings::RuleAction::Deny) => {
-                    return PermissionDecision::deny(format!(
-                        "Blocked by project permission rule: {}",
-                        tool_name
-                    ));
-                }
-                Some(settings::RuleAction::Allow) => {
-                    self.consecutive_denials = 0;
-                    return PermissionDecision::allow(format!(
-                        "Allowed by project permission rule (high-risk): {}",
-                        tool_name
-                    ));
-                }
-                _ => {}
+        match settings_action {
+            Some(settings::RuleAction::Deny) => {
+                return PermissionDecision::deny(format!(
+                    "Blocked by project permission rule: {}",
+                    tool_name
+                ));
             }
+            Some(settings::RuleAction::Allow) => {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Allowed by project permission rule: {}",
+                    tool_name
+                ));
+            }
+            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High => {
+                return PermissionDecision::ask(format!(
+                    "Project permission rule requires confirmation: {}",
+                    tool_name
+                ));
+            }
+            _ => {}
+        }
+
+        // 7. High-risk without Deny/Allow: always ask (do not use always_allowed).
+        if risk == CapabilityRisk::High {
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
                 tool_name
             ));
         }
 
-        if let Some(action) = settings_action {
-            match action {
-                settings::RuleAction::Deny => {
-                    return PermissionDecision::deny(format!(
-                        "Blocked by project permission rule: {}",
-                        tool_name
-                    ));
-                }
-                settings::RuleAction::Ask => {
-                    return PermissionDecision::ask(format!(
-                        "Project permission rule requires confirmation: {}",
-                        tool_name
-                    ));
-                }
-                settings::RuleAction::Allow => {
-                    self.consecutive_denials = 0;
-                    return PermissionDecision::allow(format!(
-                        "Allowed by project permission rule: {}",
-                        tool_name
-                    ));
-                }
-                settings::RuleAction::None => {
-                    // No matching rule — fall through to in-memory list.
-                }
-            }
-        }
-
-        // Fallback: in-memory same-session always-allowed list.
+        // 8. Fallback: in-memory same-session always-allowed list.
         if self.is_always_allowed(tool_name, input) {
             self.consecutive_denials = 0;
             return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
 
-        // 8. Default: ask.
+        // 9. Default: ask.
         PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
     }
 
     pub fn ask_user(&mut self, tool_name: &str, risk: CapabilityRisk) -> Result<bool> {
-        // In non-interactive mode (no UI available), we can't ask the user.
-        // Apply reasonable defaults based on risk level:
-        // - Write & below → allow (user chose Default mode, we trust non-destructive ops)
-        // - High → deny (too dangerous without explicit confirmation)
+        // No UI: Default-mode fallback when check() returned Ask.
+        // High → deny; Write/Read → allow once (Read should not reach here).
         let choice = match risk {
             CapabilityRisk::High => {
                 eprintln!(
@@ -277,10 +253,9 @@ impl PermissionManager {
                 );
                 UserPermissionChoice::Deny
             }
-            _ => {
+            CapabilityRisk::Write | CapabilityRisk::Read => {
                 eprintln!(
-                    "[permission] non-interactive: allowing {} \
-                     (use --auto mode for unattended runs)",
+                    "[permission] non-interactive: allowing {}",
                     tool_name
                 );
                 UserPermissionChoice::AllowOnce
@@ -516,21 +491,24 @@ mod tests {
 
     // ── Settings-aware tests ────────────────────────────────────
 
+    /// Temp project `.tact/settings.json` + Default-mode manager. Keep `dir`
+    /// alive for the test duration so the path stays valid.
+    fn mgr_with_project_settings(json: &str) -> (tempfile::TempDir, PermissionManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&path, json).unwrap();
+        let settings = PermissionSettings::load_from(&path, None);
+        let mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+        (dir, mgr)
+    }
+
     #[test]
     fn loaded_allow_rule_skips_write_prompt() {
-        // Build settings with an allow rule for bash.
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"allow": ["bash(command:cargo test *)"]}}"#,
-        )
-        .unwrap();
-
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+        );
 
         // Matching input → Allow (skips prompt)
         let decision = mgr.check(
@@ -545,12 +523,7 @@ mod tests {
         );
 
         // Non-matching input → Ask (fall through to default)
-        let mut mgr2 = PermissionManager::try_new_with_settings(
-            PermissionMode::Default,
-            PermissionSettings::load_from(&project_file, None),
-        )
-        .unwrap();
-        let decision2 = mgr2.check(
+        let decision2 = mgr.check(
             "bash",
             CapabilityRisk::Write,
             &serde_json::json!({"command": "git push"}),
@@ -564,18 +537,9 @@ mod tests {
 
     #[test]
     fn loaded_ask_rule_still_prompts() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"ask": ["bash(command:cargo test *)"]}}"#,
-        )
-        .unwrap();
-
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+        );
 
         let decision = mgr.check(
             "bash",
@@ -591,18 +555,9 @@ mod tests {
 
     #[test]
     fn loaded_deny_rule_blocks_before_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
-        )
-        .unwrap();
-
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+        );
 
         let decision = mgr.check(
             "bash",
@@ -618,21 +573,10 @@ mod tests {
 
     #[test]
     fn high_risk_allow_rule_is_respected() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"allow": ["bash(command:cargo test *)"]}}"#,
-        )
-        .unwrap();
+        );
 
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
-
-        // A matching allow rule should permit High-risk tools — the user
-        // explicitly configured this trust.
         let decision = mgr.check(
             "bash",
             CapabilityRisk::High,
@@ -647,20 +591,10 @@ mod tests {
 
     #[test]
     fn high_risk_ask_rule_still_asks() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"ask": ["bash(command:cargo test *)"]}}"#,
-        )
-        .unwrap();
+        );
 
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
-
-        // A matching ask rule should still prompt for High-risk tools.
         let decision = mgr.check(
             "bash",
             CapabilityRisk::High,
@@ -675,20 +609,10 @@ mod tests {
 
     #[test]
     fn high_risk_deny_rule_blocks_high_risk() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join(".tact/settings.json");
-        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
-        std::fs::write(
-            &project_file,
+        let (_dir, mut mgr) = mgr_with_project_settings(
             r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
-        )
-        .unwrap();
+        );
 
-        let settings = PermissionSettings::load_from(&project_file, None);
-        let mut mgr =
-            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
-
-        // A matching deny rule blocks even high-risk tools.
         let decision = mgr.check(
             "bash",
             CapabilityRisk::High,
@@ -1124,13 +1048,10 @@ mod tests {
         );
     }
 
-    // ── Fix 2: Non-interactive ask_user behavior ──────────────
-
     #[test]
     fn non_interactive_ask_user_allows_writes_and_denies_high_risk() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
 
-        // Write risk: allow in non-interactive mode
         let approved = mgr.ask_user("bash", CapabilityRisk::Write).unwrap();
         assert!(
             approved,
@@ -1141,7 +1062,9 @@ mod tests {
             "Write allow should not increment denials"
         );
 
-        // High risk: deny in non-interactive mode
+        // Defensive: Read should not reach ask_user, but AllowOnce if it does.
+        assert!(mgr.ask_user("read_file", CapabilityRisk::Read).unwrap());
+
         let approved2 = mgr.ask_user("rm", CapabilityRisk::High).unwrap();
         assert!(
             !approved2,
@@ -1151,14 +1074,5 @@ mod tests {
             mgr.consecutive_denials, 1,
             "High-risk denial should increment denials"
         );
-    }
-
-    #[test]
-    fn non_interactive_read_should_not_call_ask_user_but_still_works() {
-        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
-        // Read operations are handled before ask_user is ever called,
-        // but if it were called, they should be allowed.
-        let approved = mgr.ask_user("read_file", CapabilityRisk::Read).unwrap();
-        assert!(approved, "Non-interactive ask_user should allow Read");
     }
 }

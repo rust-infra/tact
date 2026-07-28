@@ -201,6 +201,11 @@ async fn run_interactive_locked(
             },
             skill_registry,
             voice: tact::config::settings().voice.clone(),
+            voice_parsed_keybind: tact::config::settings()
+                .voice
+                .voice_keybind
+                .as_deref()
+                .and_then(tui::parse_voice_keybind),
         })
         .await
     }));

@@ -162,6 +162,10 @@ pub struct VoiceTomlConfig {
     pub model: Option<String>,
     pub language: Option<String>,
     pub max_duration_secs: Option<u64>,
+    /// Keyboard shortcut to start/stop voice recording, e.g. "ctrl+g".
+    /// Format: `ctrl+<lowercase_char>` (e.g. "ctrl+g", "ctrl+r", "ctrl+,").
+    /// When unset, voice recording is mouse-only via the title-bar button.
+    pub voice_keybind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -270,6 +274,8 @@ pub struct VoiceSettings {
     pub model: String,
     pub language: Option<String>,
     pub max_duration_secs: u64,
+    /// Keyboard shortcut to start/stop voice recording, e.g. "ctrl+g".
+    pub voice_keybind: Option<String>,
 }
 
 impl VoiceSettings {
@@ -289,6 +295,7 @@ impl VoiceSettings {
             model: Self::DEFAULT_MODEL.to_string(),
             language: Some(Self::DEFAULT_LANGUAGE.to_string()),
             max_duration_secs: Self::DEFAULT_MAX_DURATION_SECS,
+            voice_keybind: None,
         }
     }
 }

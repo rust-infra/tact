@@ -150,6 +150,8 @@ theme = "ink"
 # model = "gpt-4o-mini-transcribe"
 # language = "zh"
 # max_duration_secs = 300
+# Optional keyboard toggle: "ctrl+<char>" (e.g. "ctrl+g"); mouse-only when unset.
+# voice_keybind = "ctrl+g"
 
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
@@ -203,6 +205,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `voice.model` | `gpt-4o-mini-transcribe` (openai) / empty (whisper_cpp) | — |
 | `voice.language` | `zh` | — |
 | `voice.max_duration_secs` | `300` (valid `1..=600`) | — |
+| `voice.voice_keybind` | unset (mouse-only) | `ctrl+<char>` (e.g. `ctrl+g`) |
 
 ### `[voice]` — speech-to-text input (macOS-first)
 
@@ -210,9 +213,13 @@ Independent API key and endpoint from `[llm.providers.*]`. `provider = "openai"`
 audio to `{base_url}/audio/transcriptions` and requires `api_key`. `provider = "whisper_cpp"`
 sends to `{base_url}/inference` with no auth and no `model` field, for use with a local
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) server. Transcripts are inserted into the
-input box for review (never auto-submitted). `enabled = false` hides the title-bar button.
-`enabled = true` without `api_key` (openai only) still shows the button and reports
-`[voice].api_key` on click. Credentials are not logged or written to session history.
+input box for review (never auto-submitted). `enabled = false` hides the centered title-bar
+button. `enabled = true` without `api_key` (openai only) still shows the button and reports
+`[voice].api_key` on click. Optional `voice_keybind = "ctrl+<char>"` toggles recording from any
+input mode; only an exact match consumes the key event (other keys still reach Insert/Normal).
+Unset keeps mouse-only control. The configured shortcut appears in the help panel (`Ctrl+?`).
+Empty, multi-character, or non-`ctrl` keybinds fail at config resolution. Credentials are not
+logged or written to session history.
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 

@@ -177,6 +177,7 @@ mod tests {
             model: "gpt-4o-mini-transcribe".to_string(),
             language: Some("zh".to_string()),
             max_duration_secs: 300,
+            voice_keybind: None,
         }
     }
 
@@ -305,6 +306,7 @@ mod tests {
             model: String::new(),
             language: Some("zh".to_string()),
             max_duration_secs: 300,
+            voice_keybind: None,
         }
     }
 

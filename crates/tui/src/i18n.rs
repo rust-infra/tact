@@ -140,6 +140,7 @@ pub struct Messages {
     pub help_click_drag: &'static str,
     pub help_scroll: &'static str,
     pub help_y_copy: &'static str,
+    pub help_voice_record_tmpl: &'static str,
 
     // ---- 剪贴板 ----
     pub copied_tmpl: &'static str,
@@ -390,6 +391,7 @@ impl Messages {
             help_click_drag: "    Click/Drag     Select (2x:word, 3x:line)",
             help_scroll: "    Scroll wheel   Scroll panel",
             help_y_copy: "    y              Copy selection to clipboard",
+            help_voice_record_tmpl: "    {}    Voice recording (start/stop)",
 
             copied_tmpl: "📋 Copied: {}",
             copied_terminal_tmpl: "📋 Copied to terminal clipboard: {}",
@@ -631,6 +633,7 @@ impl Messages {
             help_click_drag: "    双击/三击    选词/选行, 拖拽选择",
             help_scroll: "    滚轮         滚动面板",
             help_y_copy: "    y            复制选中内容到剪贴板",
+            help_voice_record_tmpl: "    {}    语音录制 (开始/停止)",
 
             copied_tmpl: "📋 已复制: {}",
             copied_terminal_tmpl: "📋 已复制到终端剪贴板: {}",

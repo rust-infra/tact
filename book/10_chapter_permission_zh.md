@@ -16,9 +16,9 @@
 
 | 层级 | 职责 |
 |------|------|
-| `normalize_capability()` | 解析 native / MCP 工具名；计算 `CapabilityRisk` |
-| `PermissionManager::check()` | 将 risk + mode + allowlist 映射为 `PermissionBehavior` |
-| `tool_dispatch.rs` | 通过 TUI `RequestSelect` 或 headless deny 处理 `Ask` |
+| `PermissionPolicy::resolve()` | 将 native 工具输入分类为 `CapabilityRisk` |
+| `PermissionManager::check()` | 将 risk + mode + settings + allowlist 映射为 `PermissionBehavior` |
+| `tool_dispatch.rs` | 通过 TUI `RequestSelect` 或 headless `ask_user(risk)` 处理 `Ask` |
 | `bash` 工具 + `shell.rs` | 在执行时硬拦截一部分危险 shell 命令 |
 
 Shell 命令有 **两层** 防护：高风险模式触发权限提示；更小的一组在 `bash` 工具内即被拒绝，即使用户已批准。
@@ -59,12 +59,13 @@ MCP 名使用前缀 `mcp__`，随后 `server__tool`，以 **最右侧** 的 `__`
 
 | 风险 | 规则 |
 |------|------|
-| **Read** | `read_file`；以 `read`、`list`、`get`、`show`、`search`、`query`、`inspect`、`find` 开头的名称 |
-| **Read**（bash） | 简单只读命令：`ls`、`pwd`、`cat`、`head`、`tail`、`wc`、`rg`、`grep`；或 `git status` / `diff` / `log` / `show` / `branch`——仅当命令无 shell 元字符（`;`、 `&`、 `\|`、 `` ` ``、`$`、`>`、`<`） |
-| **High** | `spawn_subagent`（spawn 具备完整文件系统与 shell 访问的子 agent）；以 `delete`、`remove`、`drop`、`shutdown` 开头；bash 匹配高风险模式（见 [§7 Shell 高风险检测](#7-shell-高风险检测)） |
-| **Write** | 其余一切（未知 native 工具与非 read bash 的默认） |
+| **Read** | 使用 `PermissionPolicy::Read` 的工具（如 `read_file`） |
+| **Write** | 使用 `PermissionPolicy::Write` 的工具；shell 工具（`bash` / `background_run` / `worktree_run`）在非提权命令上归为 Write——策略无法证明命令只读，因此 shell **不会** 被标为 Read |
+| **High** | 使用 `PermissionPolicy::High` 的工具（如 `spawn_subagent`）；以 `sudo ` 或 `su ` 开头的 shell 命令 |
 
-MCP 工具在解析后的 **短** 工具名上遵循相同前缀规则。例如 `mcp__demo__db__query` 因 `query` 匹配 read 前缀而分类为 **Read**。
+`shell.rs` 另有执行期硬拦截列表，即使权限已批准也会拒绝部分危险命令（见 [§7](#7-shell-高风险检测)）。
+
+MCP 工具使用各自的 metadata / 默认值；dispatch 关卡将未知工具视为 **High**。
 
 ---
 
@@ -87,7 +88,7 @@ pub struct PermissionDecision {
 |----------|----------------------------------|
 | **Allow** | 工具进入 Phase 2（并行执行） |
 | **Deny** | `PreparedState::Resolved`，附带 `"Permission denied: …"`；模型收到失败的 tool result |
-| **Ask** | 交互式提示（TUI）或自动 deny（headless）；见 [§6 TUI RequestSelect 流程](#6-tui-requestselect-流程) |
+| **Ask** | 交互式提示（TUI），或 headless `ask_user` 默认（允许 Write/Read，拒绝 High）；见 [§6 TUI RequestSelect 流程](#6-tui-requestselect-流程) |
 
 ---
 
@@ -105,45 +106,50 @@ pub enum PermissionMode {
 
 | 模式 | 标签 | 行为 |
 |------|------|------|
-| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非在 allowlist）；High 始终询问 |
+| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则 |
 | `Plan` | `plan - read only` | Read 允许；Write 与 High **拒绝**且不提示 |
-| `Auto` | `auto - allow non-high operations` | Read 与 Write 自动批准；High 仍询问 |
+| `Auto` | `auto - allow non-high operations` | 所有风险自动批准（含 High） |
 
 ### `PermissionManager::check()` 中的决策顺序
 
 检查按此固定顺序执行：
 
 ```text
-1. Read risk?                    → Allow（所有模式；重置 consecutive_denials）
-2. Plan mode + non-Read?         → Deny
-3. High risk?                    → Ask（即使工具在 allowlist 上）
-4. Tool in always_allowed_tools? → Allow
-5. Auto mode?                    → Allow（非 high 的 write）
-6. Default (or unreachable Plan) → Ask
+1. Read risk?                         → Allow（所有模式）
+2. Plan mode + non-Read?              → Deny
+3. Auto mode?                         → Allow（所有风险）
+4. Settings deny rule?                → Deny
+5. Settings allow rule?               → Allow（含 High）
+6. Settings ask rule（非 High）?      → Ask
+7. High risk（无 Deny/Allow 规则）?   → Ask（跳过会话内 allowlist）
+8. 会话内 always_allowed 命中?        → Allow
+9. Default                            → Ask
 ```
 
 ```mermaid
 flowchart TD
-    TC["ToolUse { name, input }"] --> Norm["normalize_capability()"]
-    Norm --> Risk["CapabilityRisk"]
-
+    TC["ToolUse { name, input }"] --> Risk["PermissionPolicy::resolve()"]
     Risk -- Read --> Allow["Allow"]
     Risk -- Write / High --> Plan{"Plan mode?"}
 
     Plan -- Yes --> Deny["Deny"]
-    Plan -- No --> High{"High risk?"}
+    Plan -- No --> Auto{"Auto mode?"}
+
+    Auto -- Yes --> Allow
+    Auto -- No --> Settings{"Settings rule?"}
+
+    Settings -- Deny --> Deny
+    Settings -- Allow --> Allow
+    Settings -- Ask / none --> High{"High risk?"}
 
     High -- Yes --> Ask["Ask user"]
     High -- No --> AllowList{"always_allowed_tools?"}
 
     AllowList -- Yes --> Allow
-    AllowList -- No --> Auto{"Auto mode?"}
-
-    Auto -- Yes --> Allow
-    Auto -- No --> Ask
+    AllowList -- No --> Ask
 ```
 
-**High 风险覆盖：** 若用户对 `bash` 选择「Always allow this tool」，后续高风险 bash（如 `sudo ls`）仍返回 `Ask`。allowlist 仅绕过 Default 模式的 write 提示，不能绕过 High 风险分类。
+**High 与 allowlist：** 会话内裸名 allowlist（`allow_tool`）**不能**绕过 High——仍会 `Ask`。匹配的项目 settings **allow** 规则（含「Always allow this tool」经 `allow_tool_with_input` 持久化的规则）**可以**按输入模式放行 High。
 
 ---
 
@@ -195,13 +201,14 @@ TUI（`crates/tui/src/widgets/state/app/agent.rs`）切换到 `InputMode::Select
 
 ### Headless / 无 UI 通道
 
-若缺少 `ui_tx`，agent 调用 `permission_manager.ask_user()`，**始终 deny** 并记录 stderr：
+若缺少 `ui_tx`，agent 调用 `permission_manager.ask_user(tool, risk)`：
 
-```text
-[permission] non-interactive: denying <tool> (<input preview>)
-```
+| 风险 | 非交互默认 | stderr |
+|------|------------|--------|
+| **High** | Deny | `[permission] non-interactive: denying high-risk <tool>` |
+| **Write** / **Read** | Allow once | `[permission] non-interactive: allowing <tool>` |
 
-因此 headless 运行相当于持续 deny，除非决策已是无需提示的 `Allow` 或 `Deny`。
+无人值守且需批准 High 时使用 `--auto`（Auto 模式）。settings 的 allow/deny 规则在到达 `ask_user` 之前仍会生效。
 
 ---
 
@@ -361,7 +368,7 @@ mode = "default"   # "default" | "plan" | "auto"
 |------|------|
 | Allowlist 未持久化 | 「Always allow this tool」仅当前进程有效 |
 | 无运行时模式切换 API | 用户须以不同模式重启；连续拒绝后 stderr 仅建议 Plan |
-| Headless 自动 deny 所有 Ask | 除 Auto/Plan/Default 逻辑已避免 Ask 外，无非交互批准路径 |
+| Headless 下 High 仍需 Auto 或 settings allow | 非交互 `ask_user` 会放行 Write/Read 的 Ask，但对 High 仍 deny，除非 settings allow 已先返回 Allow |
 | `PlanStep.need_approval` 已弃用 | 字段标记 `#[deprecated(since = "0.19.0")]`；用 `PlanStep::new()` — 权限由 `PermissionManager` 驱动 |
 | 权限与 hook 重叠 | 两者均可拦截工具；hook 先运行，`Block` 时跳过权限 |
 

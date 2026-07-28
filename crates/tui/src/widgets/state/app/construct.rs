@@ -111,6 +111,7 @@ impl App {
             stream: StreamState::default(),
             thinking: ThinkingState::default(),
             voice: VoiceState::disabled(),
+            voice_parsed_keybind: None,
             account: AccountState::default(),
             skills_description,
             skills_data,

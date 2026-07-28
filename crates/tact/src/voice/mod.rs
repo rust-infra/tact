@@ -360,6 +360,7 @@ mod tests {
             model: "gpt-4o-mini-transcribe".into(),
             language: Some("zh".into()),
             max_duration_secs: 300,
+            voice_keybind: None,
         }
     }
 

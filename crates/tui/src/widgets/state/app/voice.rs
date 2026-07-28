@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::handlers::insert_transcript;
-use crate::widgets::state::{App, VoiceEventOutcome};
+use crate::widgets::state::{App, VoiceEventOutcome, VoicePhase, VoiceStartResult};
 
 impl App {
     pub(crate) fn drain_voice_events(&mut self) {
@@ -23,6 +23,31 @@ impl App {
                 }
                 VoiceEventOutcome::Repaint => self.dirty = true,
             }
+        }
+    }
+
+    /// Toggle voice recording on/off via keyboard shortcut.
+    /// - Idle → start recording
+    /// - Recording → stop recording
+    /// - Transcribing / Disabled → no-op
+    pub(crate) fn toggle_voice_recording(&mut self) {
+        match self.voice.phase {
+            VoicePhase::Idle => match self.voice.try_start() {
+                VoiceStartResult::MissingApiKey => {
+                    self.flash_msg = Some((
+                        self.msgs().voice_missing_config.to_string(),
+                        Instant::now(),
+                    ));
+                    self.dirty = true;
+                }
+                VoiceStartResult::Started => self.dirty = true,
+                VoiceStartResult::Ignored => {}
+            },
+            VoicePhase::Recording { .. } => {
+                self.voice.stop();
+                self.dirty = true;
+            }
+            VoicePhase::Transcribing | VoicePhase::Disabled => {}
         }
     }
 

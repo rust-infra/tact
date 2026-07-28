@@ -29,6 +29,61 @@
 
 ---
 
+## 1. 2026-07-28 — 语音快捷键吞掉全部键盘输入
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 21、23 章 |
+| 现象 / 动机 | 配置了 `voice.voice_keybind` 后，TUI 用 `if let Some(keybind) = … else if …`：只要 option 存在就把整条分发链占住；未命中快捷键的按键到不了 `handle_insert_mode` / Normal，输入框表现为无法打字。 |
+| 决策 | 先精确匹配快捷键；仅命中时跳过常规分发。未命中则照常走 slash / overlay / 模式处理。 |
+| 改后行为 | `voice_keybind = "ctrl+g"` 仅对该组合键切换录制。其它键输入与导航与从前一致。未配置快捷键时仍为仅鼠标。 |
+| 指针 | `crates/tui/src/lib.rs`（按键分发）；`crates/tui/src/widgets/state/app/voice.rs`（`toggle_voice_recording`）；第 21 章 `[voice]`、第 23 章 §6.6 |
+
+---
+
+## 1. 2026-07-28 — 输入框顶边恢复；语音按钮居中
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 23 章 |
+| 现象 / 动机 | 用空格填充把语音标签“居中”，并带背景色时，会盖住 Input 标题与 `🎙 Voice` 之间的 Block 顶边单元格，横线看起来被“吃掉”。 |
+| 决策 | 左侧 Input 标题与语音标签拆成两个 `Block` title（左对齐 + `Alignment::Center`），不再用带背景的填充空格。点击热区使用同一居中几何。 |
+| 改后行为 | 启用语音时，足够宽的终端上 Input 标签与居中语音控件之间顶边可见。过窄时仍可能与左侧标题碰撞（ratatui 左侧 title 后画）。 |
+| 指针 | `crates/tui/src/render/input.rs`（`voice_title`、`update_voice_button_area`）；第 23 章 §6.6 |
+
+---
+
+## 1. 2026-07-28 — 可配置语音录制快捷键
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `feature` |
+| 现象 / 动机 | 语音录制只能通过鼠标点击标题栏按钮触发，键盘用户无法在不使用鼠标的情况下启动。 |
+| 决策 | 新增 `voice.voice_keybind` 配置项，支持 `ctrl+<char>` 格式（如 `"ctrl+g"`、`"ctrl+r"`）。配置后，在任意输入模式下按下该快捷键即可切换语音录制（空闲→录制，录制中→停止）。未配置时（默认），语音仍仅支持鼠标操作。在帮助面板（`Ctrl+?`）全局快捷键区动态显示当前配置。仅精确匹配时消费按键事件。 |
+| 改后行为 | `[voice] voice_keybind = "ctrl+g"` 启用键盘触发语音。快捷键全局生效（任意输入模式）。未命中的按键仍进入 Insert/Normal。帮助面板动态显示。空字符串、多字符键、非 ctrl 修饰符会在配置解析阶段被拒绝。 |
+| 指针 | 配置：`crates/tact/src/config/types.rs`、`config/resolve.rs`、`config.example.toml`；TUI 分发：`crates/tui/src/lib.rs`（全局快捷键部分）、`crates/tui/src/widgets/state/app/voice.rs`；帮助：`crates/tui/src/widgets/help_widget.rs`、`render/popups/help.rs`；国际化：`crates/tui/src/i18n.rs`（`help_voice_record_tmpl`）；第 21、23 章 |
+
+---
+
+## 1. 2026-07-28 — 权限：shell 标为 Write、High 尊重 settings allow、headless ask 默认
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | 第 10 章 |
+
+**症状 / 动机：** 三处逻辑错误：(1) `PermissionPolicy::ShellCommand` 把非提权命令标为 Read，导致 `bash` / `background_run` / `worktree_run` 绕过 Default 提示；(2) headless `ask_user` 一律 deny，无 TUI 时 Default 几乎不可用；(3) High 风险工具忽略 settings **allow**，始终询问。
+
+**决策：** 非提权 shell → Write；`sudo`/`su` → High。非交互 `ask_user(tool, risk)` 对 Write/Read 允许一次、对 High 拒绝。Settings 的 Deny/Allow 适用于所有风险；无 Deny/Allow 的 High 仍 ask，且跳过会话内裸名 allowlist。
+
+**改后行为：** 普通 shell 与其它 write 一样会提示（或 headless 放行）。项目 allow 规则可按输入模式批准 High。无人值守的 High 仍需 Auto 模式或显式 allow 规则。
+
+**指针：** `crates/tact/src/permission/mod.rs`、`crates/tact/src/tool/metadata.rs`、`crates/tact/src/agent/tool_dispatch.rs`；第 10 章。
+
+---
+
 ## 1. 2026-07-28 — `/model` 思考预算未同步到状态栏
 
 | 字段 | 值 |

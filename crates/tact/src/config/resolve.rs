@@ -34,6 +34,44 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     }
 }
 
+fn validate_voice_keybind(raw: &str) -> anyhow::Result<()> {
+    let lower = raw.trim().to_lowercase();
+    if lower.is_empty() {
+        anyhow::bail!("voice.voice_keybind must not be empty");
+    }
+    let parts: Vec<&str> = lower.split('+').collect();
+    match parts.len() {
+        1 => {
+            // Single-key shortcut (no modifier), e.g. "f5", "tab"
+            // For now, we only support ctrl+<char> format.
+            anyhow::bail!(
+                "unsupported voice_keybind '{}': expected format 'ctrl+<char>', e.g. 'ctrl+g'",
+                raw
+            );
+        }
+        2 => {
+            if parts[0] != "ctrl" {
+                anyhow::bail!(
+                    "voice_keybind modifier '{}' not supported: only 'ctrl' is allowed, e.g. 'ctrl+g'",
+                    parts[0]
+                );
+            }
+            let key = parts[1];
+            if key.len() != 1 {
+                anyhow::bail!(
+                    "voice_keybind key '{}' must be a single character, e.g. 'ctrl+g'",
+                    key
+                );
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "invalid voice_keybind '{}': expected format 'ctrl+<char>', e.g. 'ctrl+g'",
+            raw
+        ),
+    }
+}
+
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
     let enabled = toml_cfg.voice.enabled.unwrap_or(false);
     let provider = toml_cfg.voice.provider.unwrap_or_default();
@@ -70,6 +108,10 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
             "voice.max_duration_secs must be between 1 and 600 (got {max_duration_secs})"
         );
     }
+    let voice_keybind = toml_cfg.voice.voice_keybind.clone();
+    if let Some(ref kb) = voice_keybind {
+        validate_voice_keybind(kb)?;
+    }
     Ok(VoiceSettings {
         enabled,
         provider,
@@ -78,6 +120,7 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
         model,
         language,
         max_duration_secs,
+        voice_keybind,
     })
 }
 
@@ -587,6 +630,46 @@ model = "gpt-4o"
         toml_cfg.voice.max_duration_secs = Some(0);
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
         assert!(err.to_string().contains("voice.max_duration_secs"));
+    }
+
+    #[test]
+    fn voice_keybind_passes_through_when_valid() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("ctrl+g".to_string());
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.voice_keybind.as_deref(), Some("ctrl+g"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_empty_string() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("voice_keybind must not be empty"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_unsupported_modifier() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("alt+x".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("only 'ctrl' is allowed"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_multi_char_key() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("ctrl+ab".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("must be a single character"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_no_modifier() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("g".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("expected format"));
     }
 
     #[test]
