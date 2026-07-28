@@ -110,7 +110,7 @@ flowchart TB
     Classify -->|neither, or<br/>attempts exhausted| Fail([return Err])
 
     Reset --> Stop{stop_reason?}
-    Stop -->|MaxTokens<br/>attempts < 3| Cont[run pending tools,<br/>push CONTINUATION_MESSAGE]
+    Stop -->|MaxTokens<br/>attempts < 3| Cont[run pending tools,<br/>select continuation prompt]
     Cont --> Retry
     Stop -->|ToolUse| Tools[execute_tool_call]
     Tools --> Retry
@@ -126,6 +126,8 @@ Each recovery emits an `AgentUpdate::Info` line visible in the TUI, e.g.:
 [Recovery] continue (1/3): output truncated
 ```
 
+For output-limit recovery, attempt 1 uses the direct-resume prompt. If the model is truncated again, attempts 2 and 3 switch to a convergence prompt that stops expansion and requests only a concise structured result containing the conclusion, verified issues, and minimal fixes. The attempt counter and three-attempt cap are unchanged.
+
 ---
 
 ## 6. Output-Limit Continuation
@@ -136,9 +138,23 @@ When the model stops on `MaxTokens`, the response is truncated but already pushe
 pub const CONTINUATION_MESSAGE: &str =
     "Output limit hit. Continue directly from where you stopped. \
 No recap, no repetition. Pick up mid-sentence if needed.";
+
+pub const CONVERGENCE_CONTINUATION_MESSAGE: &str =
+    "Your response has been truncated repeatedly. Stop expanding the analysis and \
+do not revisit the same scenarios. Return only the final actionable result in a \
+concise structured format: conclusion, verified issues, and minimal fixes. \
+Do not recap, repeat, or speculate.";
+
+pub fn continuation_message(attempt: u32) -> &'static str {
+    if attempt <= 1 {
+        CONTINUATION_MESSAGE
+    } else {
+        CONVERGENCE_CONTINUATION_MESSAGE
+    }
+}
 ```
 
-The continuation message is persisted to the session store like any user message, so restored sessions replay correctly.
+The continuation message is persisted to the session store like any user message, so restored sessions replay correctly, including the phase change.
 
 ### A subtle 400 risk: empty assistant messages
 
