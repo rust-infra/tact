@@ -164,7 +164,14 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
 /// Reads `[agent.subagent]` and validates that the referenced `provider` key
 /// exists in `[llm.providers.*]`. Returns `None` when the subagent section is
 /// absent (backward compatibility).
-fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<SubagentSettings>> {
+///
+/// `main_max_tokens` and `main_thinking_budget` are the main agent's resolved
+/// defaults, used as fallback when the subagent does not override them.
+fn resolve_subagent(
+    toml_cfg: &TactTomlConfig,
+    main_max_tokens: u32,
+    main_thinking_budget: usize,
+) -> anyhow::Result<Option<SubagentSettings>> {
     let Some(subagent_cfg) = &toml_cfg.agent.subagent else {
         return Ok(None);
     };
@@ -231,11 +238,22 @@ fn resolve_subagent(toml_cfg: &TactTomlConfig) -> anyhow::Result<Option<Subagent
     let max_tokens = subagent_cfg
         .max_tokens
         .or(entry.max_tokens)
-        .unwrap_or(8_000);
+        .unwrap_or_else(|| {
+            if provider_kind == ProviderKind::Kimi
+                && (model.contains("kimi-k2")
+                    || model.contains("k2.")
+                    || model.contains("k2-")
+                    || model == "kimi-for-coding")
+            {
+                32_000
+            } else {
+                main_max_tokens
+            }
+        });
     let thinking_budget = subagent_cfg
         .thinking_budget
         .or(entry.thinking_budget)
-        .unwrap_or(0);
+        .unwrap_or(main_thinking_budget);
 
     Ok(Some(SubagentSettings {
         provider: ProviderInfo {
@@ -441,7 +459,7 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
-    let subagent = resolve_subagent(toml_cfg)?;
+    let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget)?;
 
     let voice = resolve_voice(toml_cfg)?;
 
@@ -477,6 +495,7 @@ pub(super) fn resolve_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SubagentTomlConfig;
     use crate::config::{cli::CliArgs, types::TactTomlConfig};
 
     fn empty_cli_args() -> CliArgs {
@@ -548,6 +567,62 @@ model = "gpt-4o"
         toml_cfg.voice.max_duration_secs = Some(0);
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
         assert!(err.to_string().contains("voice.max_duration_secs"));
+    }
+
+    #[test]
+    fn subagent_inherits_main_agent_thinking_budget() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.thinking_budget, 32_000);
+        assert_eq!(sa.max_tokens, 8_000);
+    }
+
+    #[test]
+    fn subagent_uses_kimi_default_max_tokens() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[llm.providers.kimi]
+api_key = "sk-kimi"
+model = "kimi-k2.5"
+
+[agent.subagent]
+provider = "kimi"
+model = "kimi-k2.5"
+"#,
+        )
+        .unwrap();
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.max_tokens, 32_000);
+    }
+
+    #[test]
+    fn subagent_explicit_overrides_beat_inherited_defaults() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: Some(16_000),
+            thinking_budget: Some(64_000),
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.max_tokens, 16_000);
+        assert_eq!(sa.thinking_budget, 64_000);
     }
 
     #[test]
