@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-07-28 — 主题检测回退使用了错误主题（Ink 而非 Retro）
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 23 章 |
+| 现象 / 动机 | `detect_terminal_theme()` 文档注释写「Fallback: Retro」，但代码返回的是 `ThemeName::Ink`。对应的单测接受 `Dark`、`Light`、`Retro` 三者之一，`Ink` 不在其中，导致任何未设置 `COLORFGBG` / `COLORTERM` 环境变量且无 macOS 深色模式覆盖的 CI runner 都会稳定失败。 |
+| 决策 | 将回退值从 `ThemeName::Ink` 改为 `ThemeName::Retro`，与文档注释及测试预期保持一致。 |
+| 改后行为 | 当无终端主题环境变量设置时，`detect_terminal_theme()` 返回 `Retro`（中性暗色），而非 `Ink`。 |
+| 指针 | `crates/tui/src/theme_detection.rs` |
+
+---
+
 ## 1. 2026-07-28 — Log 左边框滚动条残影
 
 | 字段 | 值 |
