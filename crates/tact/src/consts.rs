@@ -167,6 +167,16 @@ impl TactPath {
     // Home-directory paths (global config)
     // ----------------------------------------------------------------
 
+    /// `<workdir>/.tact/settings.json` — project-scoped permission settings.
+    pub fn settings_path(&self) -> PathBuf {
+        self.tact_dir().join("settings.json")
+    }
+
+    /// `$HOME/.tact/settings.json` — global permission settings.
+    pub fn home_settings_path() -> Option<PathBuf> {
+        Self::home_tact_dir().map(|dir| dir.join("settings.json"))
+    }
+
     /// `$HOME/.tact` — global tact config directory.
     pub fn home_tact_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join(TACT_DIR))

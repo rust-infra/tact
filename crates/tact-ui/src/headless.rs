@@ -9,7 +9,7 @@ use tact::{
     extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
-    permission::PermissionManager,
+    permission::{PermissionManager, settings::PermissionSettings},
     store::{DynSessionStore, StoreRoot},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
@@ -75,7 +75,8 @@ async fn run_headless_locked(
 ) -> anyhow::Result<()> {
     let client = get_llm_client()?;
     let mode = permission_mode_from_config();
-    let permission_manager = PermissionManager::try_new(mode)?;
+    let settings = PermissionSettings::load(&tact_path);
+    let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     eprintln!("[permission: {mode}]");
 
     let store_root = StoreRoot::new(tact_path.tact_dir())?;

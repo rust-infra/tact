@@ -15,7 +15,7 @@ use crate::{
     consts::TactPath,
     extract_text,
     mcp::MCPToolRouter,
-    permission::{PermissionManager, PermissionMode},
+    permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     store::open_sqlite_session_store,
     tool::{ToolContext, subagent_toolset},
 };
@@ -75,12 +75,14 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
         ctx.work_dir.display()
     );
+    // Load project-level permission settings for this subagent.
+    let settings = PermissionSettings::load(&TactPath::new(&ctx.work_dir));
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
         subagent_toolset(),
         MCPToolRouter::new(),
-        PermissionManager::try_new(PermissionMode::Default)?,
+        PermissionManager::try_new_with_settings(PermissionMode::Default, settings)?,
         AgentSystemPrompt::Static(system_prompt),
     )
     .with_agent_settings(agent_overrides);

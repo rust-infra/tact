@@ -411,7 +411,10 @@ impl Agent {
 
             let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
                 Ok(HookControl::Continue) => {
-                    let decision = self.runtime.permission_manager.check(stable_name, risk);
+                    let decision =
+                        self.runtime
+                            .permission_manager
+                            .check(stable_name, risk, &tool_use.input);
                     match decision.behavior {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
@@ -467,7 +470,11 @@ impl Agent {
                                 }
                                 Some("always_allow") => {
                                     permission_label = Some("Always allow this tool".to_string());
-                                    self.runtime.permission_manager.allow_tool(stable_name);
+                                    self.runtime.permission_manager.allow_tool_with_input(
+                                        stable_name,
+                                        permit_prompt,
+                                        &tool_use.input,
+                                    );
                                     PreparedState::Run
                                 }
                                 _ => {
