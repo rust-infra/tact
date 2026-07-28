@@ -28,8 +28,8 @@ use crate::{
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        CONTINUATION_MESSAGE, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS,
-        MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay,
+        MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
+        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message,
         is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
@@ -590,13 +590,15 @@ impl Agent {
                     "[Recovery] continue ({}/{}): output truncated",
                     self.runtime.recovery_state.continuation_attempts, MAX_CONTINUATION_ATTEMPTS
                 )));
+                let continuation_message =
+                    continuation_message(self.runtime.recovery_state.continuation_attempts);
                 self.runtime
                     .context
-                    .push(Message::new_text(Role::User, CONTINUATION_MESSAGE));
+                    .push(Message::new_text(Role::User, continuation_message));
                 self.persist_message(
                     Role::User,
                     &MessageContent::Text {
-                        content: CONTINUATION_MESSAGE.to_string(),
+                        content: continuation_message.to_string(),
                     },
                 )
                 .await?;
