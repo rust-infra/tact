@@ -255,6 +255,15 @@ fn resolve_subagent(
         .or(entry.thinking_budget)
         .unwrap_or(main_thinking_budget);
 
+    if thinking_budget > 0
+        && usize::try_from(max_tokens)
+            .is_ok_and(|mt| thinking_budget >= mt)
+    {
+        anyhow::bail!(
+            "subagent thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
+        );
+    }
+
     Ok(Some(SubagentSettings {
         provider: ProviderInfo {
             api_key,
@@ -343,7 +352,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         agent: AgentSettings {
             max_tokens: 8_000,
-            thinking_budget: 32_000,
+            thinking_budget: 0,
             model_context_window: 200_000,
             notifications_enabled,
             snapshot_max_items,
@@ -393,7 +402,16 @@ pub(super) fn resolve_config(
         .thinking_budget
         .or_else(|| entry.and_then(|e| e.thinking_budget))
         .or(toml_cfg.llm.thinking_budget)
-        .unwrap_or(32_000);
+        .unwrap_or(0);
+
+    if thinking_budget > 0
+        && usize::try_from(max_tokens)
+            .is_ok_and(|mt| thinking_budget >= mt)
+    {
+        anyhow::bail!(
+            "thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
+        );
+    }
 
     let model_context_window = args
         .model_context_window
@@ -580,7 +598,7 @@ model = "gpt-4o"
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
-        assert_eq!(sa.thinking_budget, 32_000);
+        assert_eq!(sa.thinking_budget, 0);
         assert_eq!(sa.max_tokens, 8_000);
     }
 
@@ -617,12 +635,34 @@ model = "kimi-k2.5"
             provider: Some("openai".to_string()),
             model: Some("gpt-4o-mini".to_string()),
             max_tokens: Some(16_000),
-            thinking_budget: Some(64_000),
+            thinking_budget: Some(8_000),
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
         assert_eq!(sa.max_tokens, 16_000);
-        assert_eq!(sa.thinking_budget, 64_000);
+        assert_eq!(sa.thinking_budget, 8_000);
+    }
+
+    #[test]
+    fn thinking_budget_not_less_than_max_tokens_errors() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.llm.thinking_budget = Some(16_000);
+        // max_tokens defaults to 8_000, so thinking_budget(16_000) >= max_tokens(8_000)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("thinking_budget"));
+    }
+
+    #[test]
+    fn subagent_thinking_budget_not_less_than_max_tokens_errors() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: Some(4_000),
+            thinking_budget: Some(8_000),
+        });
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("thinking_budget"));
     }
 
     #[test]
@@ -1012,6 +1052,7 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
+max_tokens = 128000
 thinking_budget = 32000
 
 [llm.providers.openai]

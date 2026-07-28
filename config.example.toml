@@ -28,7 +28,7 @@ provider = "anthropic"
 
 # Optional globals (overridable per provider entry, then by CLI flags)
 # max_tokens = 8000
-# thinking_budget = 32000
+# thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
