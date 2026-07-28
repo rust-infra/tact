@@ -77,10 +77,12 @@ fn kind_from_presentation(
 }
 
 fn display_name_from_presentation(presentation: &ToolPresentationInfo, tool_name: &str) -> String {
-    if presentation.visual_kind != tact_protocol::ToolVisualKind::Generic {
+    // Prefer an explicit presentation label from native tool metadata.
+    // Tests / MCP often use ToolPresentationInfo::generic(tool_name) where
+    // display_name == tool_name; fall back to the legacy pretty-name map then.
+    if !presentation.display_name.is_empty() && presentation.display_name != tool_name {
         return presentation.display_name.clone();
     }
-    // Fallback for tests without presentation data
     tool_display_name(tool_name)
 }
 pub fn tool_display_name(tool: &str) -> String {
@@ -95,27 +97,27 @@ pub fn tool_display_name(tool: &str) -> String {
         "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
         "sleep" => "⏳ Sleep".to_string(),
-        "background_run" => "⚙️ Background".to_string(),
-        "check_background" => "⚙️ Background".to_string(),
-        "cron_create" => "⏰ Cron".to_string(),
-        "cron_delete" => "⏰ Cron".to_string(),
-        "cron_list" => "⏰ Cron".to_string(),
+        "background_run" => "$ Bg".to_string(),
+        "check_background" => "🔍 Check".to_string(),
+        "cron_create" => "⏰ Cron Create".to_string(),
+        "cron_delete" => "⏰ Cron Delete".to_string(),
+        "cron_list" => "⏰ Cron List".to_string(),
         "load_skill" => "Skill".to_string(),
         "save_memory" => "Memory".to_string(),
         "compact" => "Compact".to_string(),
-        "spawn_teammate" => "Teammate".to_string(),
-        "list_teammates" => "Teammate".to_string(),
-        "send_message" => "Message".to_string(),
-        "broadcast" => "Broadcast".to_string(),
-        "read_inbox" => "Inbox".to_string(),
-        "plan_approval" => "Plan".to_string(),
-        "shutdown_request" => "Shutdown".to_string(),
-        "shutdown_response" => "Shutdown".to_string(),
-        "worktree_create" => "Worktree".to_string(),
-        "worktree_list" => "Worktree".to_string(),
-        "worktree_status" => "Worktree".to_string(),
-        "worktree_run" => "Worktree".to_string(),
-        "worktree_events" => "Worktree".to_string(),
+        "spawn_teammate" => "👥 Team Spawn".to_string(),
+        "list_teammates" => "👥 Team List".to_string(),
+        "send_message" => "✉️ Msg".to_string(),
+        "broadcast" => "📢 Broadcast".to_string(),
+        "read_inbox" => "📬 Inbox".to_string(),
+        "plan_approval" => "✅ Approve".to_string(),
+        "shutdown_request" => "🔌 Shutdown Request".to_string(),
+        "shutdown_response" => "🔌 Shutdown Response".to_string(),
+        "worktree_create" => "🌿 Worktree Create".to_string(),
+        "worktree_list" => "🌿 Worktree List".to_string(),
+        "worktree_status" => "🌿 Worktree Status".to_string(),
+        "worktree_run" => "$ Wt Run".to_string(),
+        "worktree_events" => "🌿 Worktree Events".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()

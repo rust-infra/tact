@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-07-28 — Distinct tool-card labels for CRUD-style tool families
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | Ch 7, Ch 13–16, Ch 23 |
+| Symptom / motivation | Cron / worktree / team family tools shared one display label (e.g. all cron ops showed `⏰ Cron`). Header titles looked identical unless the user parsed `arg_summary` JSON. Generic `visual_kind` also ignored metadata `display_name` and always used the TUI fallback map. |
+| Decision | Append the verb to each shared family label (`⏰ Cron Create` / `Delete` / `List`, same pattern for Worktree / Team / Shutdown). Align `tool_display_name` fallbacks. Prefer non-empty presentation `display_name` when it differs from the raw tool id so metadata is the source of truth for Generic tools. Leave Task alone — it already uses `# Task…` human titles via `format_task_tool_title`. |
+| Behavior after | Tool cards show distinct action labels at a glance. `background_run` / `check_background` fallbacks match metadata (`$ Bg` / `🔍 Check`). |
+| Pointers | `crates/tact/src/tool/{cron,worktree,team}.rs`; `crates/tui/src/widgets/tool_widget.rs` (`display_name_from_presentation`, `tool_display_name`) |
+
+---
+
 ## 1. 2026-07-28 — Bash tool card label restored (`$ Bash`)
 
 | Field | Value |

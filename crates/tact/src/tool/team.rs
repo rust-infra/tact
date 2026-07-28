@@ -26,7 +26,7 @@ pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "👥 Team",
+        display_name: "👥 Team Spawn",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -56,7 +56,7 @@ pub const LIST_TEAMMATES_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "👥 Team",
+        display_name: "👥 Team List",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -225,7 +225,7 @@ pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🔌 Shutdown",
+        display_name: "🔌 Shutdown Request",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -258,7 +258,7 @@ pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🔌 Shutdown",
+        display_name: "🔌 Shutdown Response",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,

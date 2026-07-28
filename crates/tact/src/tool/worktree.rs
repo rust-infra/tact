@@ -27,7 +27,7 @@ pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree",
+        display_name: "🌿 Worktree Create",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -62,7 +62,7 @@ pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree",
+        display_name: "🌿 Worktree List",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -94,7 +94,7 @@ pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree",
+        display_name: "🌿 Worktree Status",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -163,7 +163,7 @@ pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree",
+        display_name: "🌿 Worktree Events",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,

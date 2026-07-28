@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-07-28 — CRUD 类工具族卡片标签按动作区分
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `optimization` |
+| 相关 | 第 7、13–16、23 章 |
+| 现象 / 动机 | Cron / worktree / team 等同族工具共用一个 display 标签（例如所有 cron 操作都显示 `⏰ Cron`）。标题几乎一样，只能靠解析 `arg_summary` JSON 区分。`visual_kind = Generic` 时还会忽略 metadata 的 `display_name`，一律走 TUI fallback 表。 |
+| 决策 | 同族标签补上动词（`⏰ Cron Create` / `Delete` / `List`，Worktree / Team / Shutdown 同理）。同步 `tool_display_name` fallback。当 presentation `display_name` 非空且不等于原始 tool id 时优先使用它，让 Generic 工具以 metadata 为准。Task 不改——已有 `format_task_tool_title` 的 `# Task…` 人类标题。 |
+| 改后行为 | 工具卡片标题一眼可区分动作。`background_run` / `check_background` 的 fallback 与 metadata 对齐（`$ Bg` / `🔍 Check`）。 |
+| 指针 | `crates/tact/src/tool/{cron,worktree,team}.rs`；`crates/tui/src/widgets/tool_widget.rs`（`display_name_from_presentation`、`tool_display_name`） |
+
+---
+
 ## 1. 2026-07-28 — Bash 工具卡片标签恢复为 `$ Bash`
 
 | 字段 | 值 |

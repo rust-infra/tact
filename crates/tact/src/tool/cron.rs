@@ -32,7 +32,7 @@ pub const CRON_CREATE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "⏰ Cron",
+        display_name: "⏰ Cron Create",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -67,7 +67,7 @@ pub const CRON_DELETE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "⏰ Cron",
+        display_name: "⏰ Cron Delete",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -98,7 +98,7 @@ pub const CRON_LIST_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "⏰ Cron",
+        display_name: "⏰ Cron List",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
