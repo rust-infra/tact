@@ -12,7 +12,7 @@ pub mod recorder;
 pub mod transcriber;
 pub mod wav;
 
-pub use transcriber::{OpenAiTranscriber, Transcriber};
+pub use transcriber::{OpenAiTranscriber, Transcriber, WhisperCppTranscriber};
 pub use wav::encode_wav_mono_16k;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
