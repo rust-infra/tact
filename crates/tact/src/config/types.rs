@@ -143,10 +143,25 @@ pub struct VisionImageTomlConfig {
     pub jpeg_quality: Option<u8>,
 }
 
+/// Transcription provider backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceProvider {
+    OpenAi,
+    WhisperCpp,
+}
+
+impl Default for VoiceProvider {
+    fn default() -> Self {
+        Self::OpenAi
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct VoiceTomlConfig {
     pub enabled: Option<bool>,
+    pub provider: Option<VoiceProvider>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
@@ -254,6 +269,7 @@ impl ToolSettings {
 #[derive(Debug, Clone)]
 pub struct VoiceSettings {
     pub enabled: bool,
+    pub provider: VoiceProvider,
     pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
@@ -263,6 +279,7 @@ pub struct VoiceSettings {
 
 impl VoiceSettings {
     pub const DEFAULT_BASE_URL: &'static str = "https://api.openai.com/v1";
+    pub const DEFAULT_WHISPER_CPP_BASE_URL: &'static str = "http://127.0.0.1:8080";
     pub const DEFAULT_MODEL: &'static str = "gpt-4o-mini-transcribe";
     pub const DEFAULT_LANGUAGE: &'static str = "zh";
     pub const DEFAULT_MAX_DURATION_SECS: u64 = 300;
@@ -271,6 +288,7 @@ impl VoiceSettings {
     pub fn disabled_defaults() -> Self {
         Self {
             enabled: false,
+            provider: VoiceProvider::default(),
             api_key: None,
             base_url: Self::DEFAULT_BASE_URL.to_string(),
             model: Self::DEFAULT_MODEL.to_string(),
