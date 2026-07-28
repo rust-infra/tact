@@ -464,7 +464,8 @@ mod tests {
         );
         let title_row = 0u16;
         let button_x = 70u16;
-        app.voice.set_button_area(Rect::new(button_x, title_row, 8, 1));
+        app.voice
+            .set_button_area(Rect::new(button_x, title_row, 8, 1));
 
         handle_mouse_event(&mut app, mouse_down(button_x, title_row));
         assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Start)));
@@ -475,7 +476,10 @@ mod tests {
         assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Stop)));
 
         handle_mouse_event(&mut app, mouse_down(1, title_row));
-        assert!(cmd_rx.try_recv().is_err(), "outside click should not send commands");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "outside click should not send commands"
+        );
     }
 
     fn popup_hit_row(screen_y: u16, text_x: u16, line_start: usize, text: &str) -> PopupHitRow {

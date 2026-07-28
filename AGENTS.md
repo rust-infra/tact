@@ -2,6 +2,14 @@
 
 Conventions for AI agents working in this repository. Prefer small, focused diffs; do not commit unless asked.
 
+When giving a final answer, always structure your reasoning as a Markdown list (using - or 1. 2. 3.), and place each step on a new line for readability.
+
+## Cargo / tests (agents)
+
+- **Never** launch multiple `cargo test` / `cargo build` / `cargo clippy` processes against this workspace in parallel. They contend on the same `target/` lock and can sit for many minutes looking hung.
+- Prefer **one** cargo invocation with a filter (e.g. `cargo test -p tact --lib voice::`). Do not start a second cargo command until the first exits.
+- Async tests that wait on channels must use timeouts (see `voice` worker tests); do not add unbounded `recv().await` in new tests.
+
 ## Documentation sync — when to update
 
 Update docs **in the same change** (or immediately after) when behavior or public contracts change. Do not leave book / design docs lagging behind code.

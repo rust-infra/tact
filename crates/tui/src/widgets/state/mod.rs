@@ -44,10 +44,10 @@ pub(crate) use stream_state::StreamState;
 pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
-pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 pub(crate) use tool_state::{
     ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState,
 };
+pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 
 // ========== Basic Types ==========
 

@@ -12,11 +12,7 @@ use crate::config::VoiceSettings;
 
 #[async_trait]
 pub trait Transcriber: Send + Sync {
-    async fn transcribe(
-        &self,
-        wav: Vec<u8>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<String>;
+    async fn transcribe(&self, wav: Vec<u8>, cancel: CancellationToken) -> anyhow::Result<String>;
 }
 
 pub struct OpenAiTranscriber {
@@ -43,11 +39,7 @@ impl OpenAiTranscriber {
 
 #[async_trait]
 impl Transcriber for OpenAiTranscriber {
-    async fn transcribe(
-        &self,
-        wav: Vec<u8>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<String> {
+    async fn transcribe(&self, wav: Vec<u8>, cancel: CancellationToken) -> anyhow::Result<String> {
         let api_key = self
             .settings
             .api_key
@@ -160,7 +152,8 @@ mod tests {
 
     #[test]
     fn parse_non_success_status() {
-        let err = parse_transcription_response(StatusCode::UNAUTHORIZED, b"unauthorized").unwrap_err();
+        let err =
+            parse_transcription_response(StatusCode::UNAUTHORIZED, b"unauthorized").unwrap_err();
         assert!(err.to_string().contains("401"));
         assert!(!err.to_string().contains("voice-test"));
     }

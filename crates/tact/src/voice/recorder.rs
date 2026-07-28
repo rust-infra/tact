@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio_util::sync::CancellationToken;
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
@@ -100,9 +100,9 @@ fn record_blocking(
         other => bail!("unsupported microphone sample format: {other:?}"),
     };
 
-    stream
-        .play()
-        .context("failed to start microphone stream; check microphone access in macOS System Settings")?;
+    stream.play().context(
+        "failed to start microphone stream; check microphone access in macOS System Settings",
+    )?;
 
     let deadline = Instant::now() + max_duration;
     loop {
@@ -123,9 +123,7 @@ fn record_blocking(
     }
 
     if let Some(msg) = err_flag.lock().expect("err lock").take() {
-        bail!(
-            "microphone stream error: {msg}; check microphone access in macOS System Settings"
-        );
+        bail!("microphone stream error: {msg}; check microphone access in macOS System Settings");
     }
 
     let raw = samples.lock().expect("samples lock").clone();
@@ -198,9 +196,8 @@ pub(crate) fn resample_to_16k(samples: &[i16], source_rate: u32) -> Vec<i16> {
     if source_rate == TARGET_SAMPLE_RATE {
         return samples.to_vec();
     }
-    let out_len = ((samples.len() as u64) * u64::from(TARGET_SAMPLE_RATE)
-        / u64::from(source_rate))
-    .max(1) as usize;
+    let out_len = ((samples.len() as u64) * u64::from(TARGET_SAMPLE_RATE) / u64::from(source_rate))
+        .max(1) as usize;
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let src_pos = (i as f64) * f64::from(source_rate) / f64::from(TARGET_SAMPLE_RATE);
