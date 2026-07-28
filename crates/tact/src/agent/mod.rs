@@ -182,10 +182,39 @@ impl Agent {
         self.agent_settings.max_tokens
     }
 
+    /// If thinking budget is active (>0) and `max_tokens` is not strictly larger,
+    /// auto-expand `max_tokens` and return a warning message suitable for the UI.
+    fn ensure_max_tokens_gt_thinking_budget(
+        max_tokens: &mut u32,
+        thinking_budget: usize,
+    ) -> Option<String> {
+        if thinking_budget == 0 {
+            return None;
+        }
+        let mt = *max_tokens as usize;
+        if mt > thinking_budget {
+            return None;
+        }
+        let new_max: u32 = (thinking_budget + 1).try_into().unwrap_or(u32::MAX);
+        *max_tokens = new_max;
+        Some(format!(
+            "thinking_budget ({thinking_budget}) >= max_tokens; expanded max_tokens to {new_max}"
+        ))
+    }
+
     /// Update the thinking budget used when constructing subsequent LLM requests.
     /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
+    ///
+    /// If the new budget is active and not strictly smaller than the current
+    /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
+    /// warning is emitted to the UI channel.
     pub fn set_thinking_budget(&mut self, budget: usize) {
         self.agent_settings.thinking_budget = budget;
+        if let Some(msg) =
+            Self::ensure_max_tokens_gt_thinking_budget(&mut self.agent_settings.max_tokens, budget)
+        {
+            self.emit_update(AgentUpdate::Info(msg));
+        }
     }
 
     fn thinking_budget(&self) -> usize {
@@ -428,6 +457,16 @@ impl Agent {
             ) {
                 self.emit_update(AgentUpdate::Info("[auto compact]".into()));
                 self.compact_history(None).await?;
+            }
+
+            // Defense-in-depth: if max_tokens <= thinking_budget (e.g. after a runtime
+            // /model pick), auto-expand max_tokens and warn once.
+            let thinking_budget = self.thinking_budget();
+            if let Some(msg) = Self::ensure_max_tokens_gt_thinking_budget(
+                &mut self.agent_settings.max_tokens,
+                thinking_budget,
+            ) {
+                self.emit_update(AgentUpdate::Info(msg));
             }
 
             // Snapshot the complete conversation after micro/auto compaction.
@@ -2003,5 +2042,58 @@ mod tests {
         });
         assert_eq!(calls, 1);
         assert_eq!(cache.as_deref(), Some(""));
+    }
+
+    // ── ensure_max_tokens_gt_thinking_budget ──
+
+    #[test]
+    fn zero_budget_is_noop() {
+        let mut mt = 8_000u32;
+        assert!(Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 0).is_none());
+        assert_eq!(mt, 8_000);
+    }
+
+    #[test]
+    fn max_tokens_already_larger_is_noop() {
+        let mut mt = 16_000u32;
+        assert!(Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 8_000).is_none());
+        assert_eq!(mt, 16_000);
+    }
+
+    #[test]
+    fn expands_when_budget_exceeds_max_tokens() {
+        let mut mt = 8_000u32;
+        let msg = Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 32_000).unwrap();
+        assert_eq!(mt, 32_001);
+        assert!(msg.contains("32000"));
+        assert!(msg.contains("32001"));
+    }
+
+    #[test]
+    fn set_thinking_budget_auto_expands_max_tokens() {
+        ensure_config();
+        let context = test_context("set_thinking_auto_test");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        assert_eq!(agent.thinking_budget(), 0);
+        agent.set_thinking_budget(64_000);
+        assert!(agent.max_tokens() > 64_000);
+        assert_eq!(agent.thinking_budget(), 64_000);
     }
 }
