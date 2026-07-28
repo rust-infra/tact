@@ -1,6 +1,12 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context as _, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::{memory::MemoryType, tool::ToolContext};
@@ -18,10 +24,26 @@ pub struct SaveMemoryInput {
     pub content: String,
 }
 
-#[tool(
-    name = "save_memory",
-    description = "Save a persistent memory that survives across sessions."
-)]
+pub const SAVE_MEMORY_METADATA: ToolMetadata = ToolMetadata {
+    name: "save_memory",
+    description: "Save a persistent memory that survives across sessions.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🧠 Memory",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

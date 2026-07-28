@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+    widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
 use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
@@ -139,50 +139,6 @@ fn load_popup_content(
     }
 }
 
-fn render_popup_chrome(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    title: &str,
-    body: Text<'static>,
-) -> Rect {
-    let popup_area = super::centered_popup_area(area);
-    frame.render_widget(Clear, popup_area);
-
-    let code_bg = app.theme.code_block_bg();
-
-    let para = Paragraph::new(body).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(app.theme.block_border_type())
-            .border_style(Style::default().fg(app.theme.code_card_border()))
-            .title(Span::styled(
-                title,
-                Style::default()
-                    .fg(app.theme.code_card_title_fg())
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::from(vec![
-                Span::styled(
-                    app.msgs().popup_copy_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
-                Span::styled(
-                    app.msgs().popup_scroll_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
-                Span::styled(
-                    app.msgs().popup_close_hint,
-                    Style::default().fg(app.theme.accent),
-                ),
-            ]))
-            .style(Style::default().bg(code_bg)),
-    );
-
-    frame.render_widget(para, popup_area);
-    popup_area
-}
-
 pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let code_bg = app.theme.code_block_bg();
     let code_fg = app.theme.code_block_fg();
@@ -240,7 +196,8 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
             err,
             Style::default().fg(app.theme.error).bg(code_bg),
         )));
-        let popup_area = render_popup_chrome(frame, area, app, &popup_title, body);
+        let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &popup_title, None);
+        frame.render_widget(Paragraph::new(body), inner);
         app.mouse.diff_popup_area = popup_area;
         app.mouse.popup_text_body_area = body_area;
         app.mouse.popup_text_hit_rows.clear();
@@ -337,7 +294,8 @@ pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    let popup_area = render_popup_chrome(frame, area, app, &title, text);
+    let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &title, None);
+    frame.render_widget(Paragraph::new(text), inner);
 
     let scrollbar =
         Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);

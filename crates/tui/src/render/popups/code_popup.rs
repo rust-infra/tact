@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
 
 use crate::widgets::state::App;
@@ -34,9 +34,34 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let popup_area = super::centered_popup_area(area);
 
-    frame.render_widget(Clear, popup_area);
+    let lang = if popup.lang.is_empty() {
+        "code"
+    } else {
+        &popup.lang
+    };
+    let footer: &[super::FooterHint] = &[
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+    ];
+    let inner = super::render_popup_chrome(
+        frame,
+        popup_area,
+        &app.theme,
+        &format!(" {} ", lang),
+        Some(footer),
+    );
 
-    let content_height = popup_area.height.saturating_sub(3) as usize;
+    let content_height = inner.height as usize;
     let max_scroll = total.saturating_sub(1);
     let scroll = (popup.scroll as usize).min(max_scroll);
     let start_line = scroll;
@@ -46,11 +71,6 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let title_style = Style::default()
         .fg(app.theme.accent)
         .add_modifier(Modifier::BOLD);
-    let lang = if popup.lang.is_empty() {
-        "code"
-    } else {
-        &popup.lang
-    };
     text.push_line(Line::from(Span::styled(
         format!("```{} ({} lines)", lang, total),
         title_style,
@@ -67,22 +87,9 @@ pub(crate) fn render_code_popup(frame: &mut Frame, area: Rect, app: &mut App) {
         )));
     }
 
-    let para = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(app.theme.block_border_type())
-                .title(format!(" {} ", lang))
-                .title_bottom(Line::from(vec![
-                    Span::styled(" y:copy ", Style::default().fg(app.theme.accent)),
-                    Span::styled(" j/k:scroll ", Style::default().fg(app.theme.accent)),
-                    Span::styled(" Esc:close ", Style::default().fg(app.theme.accent)),
-                ]))
-                .style(Style::default().fg(app.theme.fg).bg(app.theme.bg)),
-        )
-        .wrap(Wrap { trim: false });
+    let para = Paragraph::new(text).wrap(Wrap { trim: false });
 
-    frame.render_widget(para, popup_area);
+    frame.render_widget(para, inner);
 
     let scrollbar =
         Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);

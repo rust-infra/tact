@@ -30,6 +30,7 @@ impl ToolProgressReporter {
         }
     }
 
+    /// The tool-invocation id this reporter is bound to.
     pub fn tool_id(&self) -> &str {
         &self.tool_id
     }

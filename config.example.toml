@@ -28,7 +28,7 @@ provider = "anthropic"
 
 # Optional globals (overridable per provider entry, then by CLI flags)
 # max_tokens = 8000
-# thinking_budget = 32000
+# thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
@@ -65,7 +65,35 @@ models = ["kimi-k2.5", "kimi-for-coding"]
 # Permission
 # ---------------------------------------------------------------------------
 [permission]
-# "default" | "plan" | "auto"
+# Controls the permission mode only: "default" | "plan" | "auto"
+#
+# Dynamic allow/ask/deny rules are NOT stored in this file.
+# They live in JSON settings files at:
+#   $HOME/.tact/settings.json       (global scope)
+#   <workdir>/.tact/settings.json   (project scope)
+#
+# JSON shape (example):
+#   {
+#     "permissions": {
+#       "allow": [
+#         "bash(command:cargo test *)",
+#         "edit_file(path:src/**)"
+#       ],
+#       "ask": [
+#         "bash(command:git push *)"
+#       ],
+#       "deny": [
+#         "bash(command:rm -rf *)"
+#       ]
+#     }
+#   }
+#
+# Rules: bare tool names (e.g. "read_file") match any input;
+# argument rules (e.g. "bash(command:…)") match a specific JSON
+# field using glob patterns. Precedence: deny > ask > allow.
+#
+# Selecting "Always allow this tool" writes a parameter-aware
+# rule to the project settings file — not to config.toml.
 mode = "default"
 
 # ---------------------------------------------------------------------------
@@ -96,14 +124,25 @@ mode = "default"
 # Loaded after built-in roots; later entries override same-named skills.
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]
 
+# Subagent LLM configuration (optional).
+# When configured, spawn_subagent uses a separate provider/model
+# instead of the main agent's provider. References a key from
+# [llm.providers.*]; model and token overrides are optional.
+[agent.subagent]
+# Required: references [llm.providers.<name>], e.g. "deepseek" or "openai".
+# provider = "deepseek"
+# Optional model override (otherwise uses the provider's default model).
+# model = "deepseek-chat"
+# Optional token overrides (otherwise falls back to the provider entry defaults).
+# max_tokens = 8000
+# thinking_budget = 0
+
 # ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------
 [ui]
 # Theme name, or "auto" for terminal/system detection.
-# Supported: dark, light, solarized-dark, solarized-light, gruvbox-dark,
-#            nord, retro (default), kawaii, japanese
-theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
+theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 
 # User-attached images (`@file.png`, `![alt](path)`).
 # Requires a vision-capable model/endpoint; compress only reduces tokens.
@@ -111,6 +150,33 @@ theme = "retro"   # retro | brutal | nord | dark | kawaii | auto
 # vision_image.compress = true       # downscale + JPEG (default); false = send original
 # vision_image.max_edge = 1280       # longest edge in px (256–4096)
 # vision_image.jpeg_quality = 80     # JPEG quality 1–100 (when compress = true)
+
+# ---------------------------------------------------------------------------
+# Voice input (macOS-first; independent of LLM providers)
+# ---------------------------------------------------------------------------
+[voice]
+# Show the title-bar voice button and enable microphone capture (default: false).
+enabled = false
+# Transcription provider: "openai" (default) or "whisper_cpp" for a local whisper.cpp server.
+# provider = "openai"
+# API key for the transcription service — not shared with [llm.providers.*].
+# Required for openai; ignored for whisper_cpp.
+api_key = ""
+# Transcription endpoint base URL.
+# openai default: https://api.openai.com/v1
+# whisper_cpp default: http://127.0.0.1:8080
+# base_url = "https://api.openai.com/v1"
+# Transcription model (default: gpt-4o-mini-transcribe; ignored for whisper_cpp).
+# model = "gpt-4o-mini-transcribe"
+# BCP-47 language hint sent to the API (default: zh).
+# language = "zh"
+# Maximum recording duration in seconds, 1–600 (default: 300).
+# max_duration_secs = 300
+# Keyboard shortcut to start/stop voice recording (optional; mouse-only when unset).
+# Format: "ctrl+<char>" — one letter, digit, or symbol after ctrl+.
+# Only an exact match toggles voice; other keys still reach the input box.
+# Examples: "ctrl+g", "ctrl+r", "ctrl+,"
+# voice_keybind = "ctrl+g"
 
 # ---------------------------------------------------------------------------
 # Tools

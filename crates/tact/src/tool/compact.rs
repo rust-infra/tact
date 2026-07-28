@@ -1,6 +1,12 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -11,10 +17,26 @@ pub struct CompactInput {
     pub focus: Option<String>,
 }
 
-#[tool(
-    name = "compact",
-    description = "Summarize earlier conversation so work can continue in a smaller context."
-)]
+pub const COMPACT_METADATA: ToolMetadata = ToolMetadata {
+    name: "compact",
+    description: "Summarize earlier conversation so work can continue in a smaller context.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "📦 Compact",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// This function always returns `Ok`.

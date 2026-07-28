@@ -1,11 +1,11 @@
-use tact_llm::{OpenAiProtocol, ProviderKind};
+use tact_llm::{OpenAiProtocol, ProviderInfo, ProviderKind};
 
 use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, ResolvedConfig, TactTomlConfig, ToolSettings, UiSettings,
-        VisionImageSettings,
+        AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
+        UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
     },
 };
 
@@ -32,6 +32,96 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
         max_edge,
         jpeg_quality,
     }
+}
+
+fn validate_voice_keybind(raw: &str) -> anyhow::Result<()> {
+    let lower = raw.trim().to_lowercase();
+    if lower.is_empty() {
+        anyhow::bail!("voice.voice_keybind must not be empty");
+    }
+    let parts: Vec<&str> = lower.split('+').collect();
+    match parts.len() {
+        1 => {
+            // Single-key shortcut (no modifier), e.g. "f5", "tab"
+            // For now, we only support ctrl+<char> format.
+            anyhow::bail!(
+                "unsupported voice_keybind '{}': expected format 'ctrl+<char>', e.g. 'ctrl+g'",
+                raw
+            );
+        }
+        2 => {
+            if parts[0] != "ctrl" {
+                anyhow::bail!(
+                    "voice_keybind modifier '{}' not supported: only 'ctrl' is allowed, e.g. 'ctrl+g'",
+                    parts[0]
+                );
+            }
+            let key = parts[1];
+            if key.len() != 1 {
+                anyhow::bail!(
+                    "voice_keybind key '{}' must be a single character, e.g. 'ctrl+g'",
+                    key
+                );
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "invalid voice_keybind '{}': expected format 'ctrl+<char>', e.g. 'ctrl+g'",
+            raw
+        ),
+    }
+}
+
+fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
+    let enabled = toml_cfg.voice.enabled.unwrap_or(false);
+    let provider = toml_cfg.voice.provider.unwrap_or_default();
+    let api_key = toml_cfg.voice.api_key.clone().filter(|k| !k.is_empty());
+    let base_url = toml_cfg
+        .voice
+        .base_url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| match provider {
+            VoiceProvider::WhisperCpp => VoiceSettings::DEFAULT_WHISPER_CPP_BASE_URL.to_string(),
+            VoiceProvider::OpenAi => VoiceSettings::DEFAULT_BASE_URL.to_string(),
+        });
+    let model = toml_cfg
+        .voice
+        .model
+        .clone()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| match provider {
+            VoiceProvider::WhisperCpp => String::new(),
+            VoiceProvider::OpenAi => VoiceSettings::DEFAULT_MODEL.to_string(),
+        });
+    let language = match toml_cfg.voice.language.clone() {
+        Some(language) if language.trim().is_empty() => None,
+        Some(language) => Some(language),
+        None => Some(VoiceSettings::DEFAULT_LANGUAGE.to_string()),
+    };
+    let max_duration_secs = toml_cfg
+        .voice
+        .max_duration_secs
+        .unwrap_or(VoiceSettings::DEFAULT_MAX_DURATION_SECS);
+    if !(1..=600).contains(&max_duration_secs) {
+        anyhow::bail!(
+            "voice.max_duration_secs must be between 1 and 600 (got {max_duration_secs})"
+        );
+    }
+    let voice_keybind = toml_cfg.voice.voice_keybind.clone();
+    if let Some(ref kb) = voice_keybind {
+        validate_voice_keybind(kb)?;
+    }
+    Ok(VoiceSettings {
+        enabled,
+        provider,
+        api_key,
+        base_url,
+        model,
+        language,
+        max_duration_secs,
+        voice_keybind,
+    })
 }
 
 fn resolve_provider_kind(
@@ -120,6 +210,123 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     })
 }
 
+/// Resolve the optional subagent provider configuration from TOML.
+///
+/// Reads `[agent.subagent]` and validates that the referenced `provider` key
+/// exists in `[llm.providers.*]`. Returns `None` when the subagent section is
+/// absent (backward compatibility).
+///
+/// `main_max_tokens` and `main_thinking_budget` are the main agent's resolved
+/// defaults, used as fallback when the subagent does not override them.
+fn resolve_subagent(
+    toml_cfg: &TactTomlConfig,
+    main_max_tokens: u32,
+    main_thinking_budget: usize,
+) -> anyhow::Result<Option<SubagentSettings>> {
+    let Some(subagent_cfg) = &toml_cfg.agent.subagent else {
+        return Ok(None);
+    };
+    let Some(provider_name) = &subagent_cfg.provider else {
+        return Ok(None);
+    };
+
+    // Validate the provider name is a known key in llm.providers
+    let provider_kind = provider_name
+        .parse::<ProviderKind>()
+        .map_err(|e| anyhow::anyhow!("subagent provider '{provider_name}' is not valid: {e}"))?;
+
+    let entry = toml_cfg.llm.providers.get(provider_name).ok_or_else(|| {
+        let have: Vec<_> = toml_cfg.llm.providers.keys().cloned().collect();
+        anyhow::anyhow!(
+            "subagent provider '{provider_name}' not found in llm.providers (have: {})",
+            if have.is_empty() {
+                "<none>".into()
+            } else {
+                have.join(", ")
+            }
+        )
+    })?;
+
+    let api_key = entry
+        .api_key
+        .clone()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("api_key missing for subagent provider '{provider_name}'")
+        })?;
+
+    let base_url = entry
+        .base_url
+        .clone()
+        .or_else(|| provider_kind.default_base_url().map(str::to_string))
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("base_url missing for subagent provider '{provider_name}'")
+        })?;
+
+    let model = subagent_cfg
+        .model
+        .clone()
+        .or_else(|| entry.model.clone())
+        .filter(|m| !m.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "model not configured for subagent provider '{provider_name}'. \
+                 Set [agent.subagent].model or [llm.providers.{provider_name}].model"
+            )
+        })?;
+
+    let protocol = entry
+        .protocol
+        .as_deref()
+        .unwrap_or(OpenAiProtocol::default().as_str())
+        .parse::<OpenAiProtocol>()
+        .map_err(anyhow::Error::msg)?;
+
+    // Resolve reasoning_effort from the referenced provider entry
+    let reasoning_effort = entry.reasoning_effort;
+
+    let max_tokens = subagent_cfg
+        .max_tokens
+        .or(entry.max_tokens)
+        .unwrap_or_else(|| {
+            if provider_kind == ProviderKind::Kimi
+                && (model.contains("kimi-k2")
+                    || model.contains("k2.")
+                    || model.contains("k2-")
+                    || model == "kimi-for-coding")
+            {
+                32_000
+            } else {
+                main_max_tokens
+            }
+        });
+    let thinking_budget = subagent_cfg
+        .thinking_budget
+        .or(entry.thinking_budget)
+        .unwrap_or(main_thinking_budget);
+
+    if thinking_budget > 0 && usize::try_from(max_tokens).is_ok_and(|mt| thinking_budget >= mt) {
+        anyhow::bail!(
+            "subagent thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
+        );
+    }
+
+    Ok(Some(SubagentSettings {
+        provider: ProviderInfo {
+            api_key,
+            base_url,
+            model,
+            provider: provider_kind,
+            protocol,
+            reasoning_effort,
+        },
+        max_tokens,
+        thinking_budget,
+        models: entry.models.clone(),
+    }))
+}
+
 pub(super) fn resolve_non_llm_settings(
     args: &CliArgs,
     toml_cfg: &TactTomlConfig,
@@ -157,7 +364,7 @@ pub(super) fn resolve_non_llm_settings(
         .theme
         .clone()
         .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+        .unwrap_or_else(|| "ink".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -176,6 +383,11 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
+    let voice = resolve_voice(toml_cfg).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
+        VoiceSettings::disabled_defaults()
+    });
+
     ResolvedConfig {
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
@@ -188,7 +400,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         agent: AgentSettings {
             max_tokens: 8_000,
-            thinking_budget: 32_000,
+            thinking_budget: 0,
             model_context_window: 200_000,
             notifications_enabled,
             snapshot_max_items,
@@ -196,6 +408,7 @@ pub(super) fn resolve_non_llm_settings(
             skill_body_auto_inject,
             skill_dirs,
             instruction_sources,
+            subagent: None,
         },
         ui: UiSettings {
             theme,
@@ -205,6 +418,7 @@ pub(super) fn resolve_non_llm_settings(
             bash_timeout_secs,
             bash_nice,
         },
+        voice,
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -236,7 +450,13 @@ pub(super) fn resolve_config(
         .thinking_budget
         .or_else(|| entry.and_then(|e| e.thinking_budget))
         .or(toml_cfg.llm.thinking_budget)
-        .unwrap_or(32_000);
+        .unwrap_or(0);
+
+    if thinking_budget > 0 && usize::try_from(max_tokens).is_ok_and(|mt| thinking_budget >= mt) {
+        anyhow::bail!(
+            "thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
+        );
+    }
 
     let model_context_window = args
         .model_context_window
@@ -283,7 +503,7 @@ pub(super) fn resolve_config(
         .theme
         .clone()
         .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "retro".to_string());
+        .unwrap_or_else(|| "ink".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -302,6 +522,10 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
+    let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget)?;
+
+    let voice = resolve_voice(toml_cfg)?;
+
     Ok(ResolvedConfig {
         llm,
         agent: AgentSettings {
@@ -314,6 +538,7 @@ pub(super) fn resolve_config(
             skill_body_auto_inject,
             skill_dirs,
             instruction_sources,
+            subagent,
         },
         ui: UiSettings {
             theme,
@@ -323,6 +548,7 @@ pub(super) fn resolve_config(
             bash_timeout_secs,
             bash_nice,
         },
+        voice,
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -332,6 +558,7 @@ pub(super) fn resolve_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SubagentTomlConfig;
     use crate::config::{cli::CliArgs, types::TactTomlConfig};
 
     fn empty_cli_args() -> CliArgs {
@@ -359,6 +586,170 @@ mod tests {
         }
     }
 
+    fn openai_toml_config() -> TactTomlConfig {
+        toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn empty_cli_args_with_openai() -> (CliArgs, TactTomlConfig) {
+        (empty_cli_args(), openai_toml_config())
+    }
+
+    #[test]
+    fn resolve_voice_defaults_and_validation() {
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert!(!cfg.voice.enabled);
+        assert_eq!(cfg.voice.base_url, "https://api.openai.com/v1");
+        assert_eq!(cfg.voice.model, "gpt-4o-mini-transcribe");
+        assert_eq!(cfg.voice.language.as_deref(), Some("zh"));
+        assert_eq!(cfg.voice.max_duration_secs, 300);
+    }
+
+    #[test]
+    fn explicit_empty_language_disables_language_hint() {
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.voice.language = Some(String::new());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.language, None);
+    }
+
+    #[test]
+    fn reject_voice_duration_outside_safe_range() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.enabled = Some(true);
+        toml_cfg.voice.max_duration_secs = Some(0);
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("voice.max_duration_secs"));
+    }
+
+    #[test]
+    fn voice_keybind_passes_through_when_valid() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("ctrl+g".to_string());
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.voice_keybind.as_deref(), Some("ctrl+g"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_empty_string() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("voice_keybind must not be empty"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_unsupported_modifier() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("alt+x".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("only 'ctrl' is allowed"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_multi_char_key() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("ctrl+ab".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("must be a single character"));
+    }
+
+    #[test]
+    fn voice_keybind_rejects_no_modifier() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.voice_keybind = Some("g".to_string());
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("expected format"));
+    }
+
+    #[test]
+    fn subagent_inherits_main_agent_thinking_budget() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.thinking_budget, 0);
+        assert_eq!(sa.max_tokens, 8_000);
+    }
+
+    #[test]
+    fn subagent_uses_kimi_default_max_tokens() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[llm.providers.kimi]
+api_key = "sk-kimi"
+model = "kimi-k2.5"
+
+[agent.subagent]
+provider = "kimi"
+model = "kimi-k2.5"
+"#,
+        )
+        .unwrap();
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.max_tokens, 32_000);
+    }
+
+    #[test]
+    fn subagent_explicit_overrides_beat_inherited_defaults() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: Some(16_000),
+            thinking_budget: Some(8_000),
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.max_tokens, 16_000);
+        assert_eq!(sa.thinking_budget, 8_000);
+    }
+
+    #[test]
+    fn thinking_budget_not_less_than_max_tokens_errors() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.llm.thinking_budget = Some(16_000);
+        // max_tokens defaults to 8_000, so thinking_budget(16_000) >= max_tokens(8_000)
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("thinking_budget"));
+    }
+
+    #[test]
+    fn subagent_thinking_budget_not_less_than_max_tokens_errors() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            max_tokens: Some(4_000),
+            thinking_budget: Some(8_000),
+        });
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("thinking_budget"));
+    }
+
     #[test]
     fn resolve_config_from_toml() {
         let toml_cfg: TactTomlConfig = toml::from_str(
@@ -381,7 +772,7 @@ model = "gpt-4o"
         assert_eq!(resolved.llm.api_key, "sk-test");
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
-        assert_eq!(resolved.ui.theme, "retro");
+        assert_eq!(resolved.ui.theme, "ink");
         assert_eq!(
             resolved.ui.vision_image.compress,
             VisionImageSettings::DEFAULT_COMPRESS
@@ -746,6 +1137,7 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
+max_tokens = 128000
 thinking_budget = 32000
 
 [llm.providers.openai]

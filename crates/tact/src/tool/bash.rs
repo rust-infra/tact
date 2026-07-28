@@ -1,8 +1,14 @@
 use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -261,10 +267,28 @@ pub struct BashInput {
     pub command: String,
 }
 
-#[tool(
-    name = "bash",
-    description = "Run a shell command in the current workspace."
-)]
+pub const BASH_METADATA: ToolMetadata = ToolMetadata {
+    name: "bash",
+    description: "Run a shell command in the current workspace.",
+    permission: PermissionPolicy::ShellCommand {
+        command_field: "command",
+    },
+    permission_prompt: PermissionPromptPolicy::Command { field: "command" },
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Command,
+        display_name: "$ Bash",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::PersistLargeOutput,
+    argument_summary: ArgumentSummaryPolicy::Command { field: "command" },
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:

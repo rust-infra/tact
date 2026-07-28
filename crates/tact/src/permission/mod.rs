@@ -1,16 +1,16 @@
 //! Permission system for tool invocation.
 //!
 //! Every tool call is classified by [`CapabilityRisk`] (Read / Write / High)
-//! based on the tool name and input parameters.  The [`PermissionManager`]
-//! decides whether to allow, deny, or ask the user, depending on:
+//! from its typed metadata. The [`PermissionManager`] decides whether to allow,
+//! deny, or ask the user, depending on:
 //!
 //! - The active [`PermissionMode`] (Default, Plan, Auto).
 //! - The risk level of the tool.
 //! - A per-user allow-list (`always_allowed_tools`).
 //! - Consecutive denials (which may trigger a suggestion to switch to Plan mode).
-//!
-//! Dangerous bash patterns (`sudo`, `rm -rf /`) are always classified as
-//! High risk regardless of context.
+//! - Loaded JSON permission settings (global and project) — see [`settings`].
+
+pub mod settings;
 
 use std::fmt;
 
@@ -18,20 +18,7 @@ use anyhow::Result;
 use serde_json::Value;
 use strum_macros::{Display, EnumString};
 
-const READ_PREFIXES: &[&str] = &[
-    "read", "list", "get", "show", "search", "query", "inspect", "find",
-];
-const HIGH_PREFIXES: &[&str] = &["delete", "remove", "drop", "shutdown"];
-use crate::shell::is_high_risk_shell_command;
-const READ_ONLY_BASH_COMMANDS: &[&str] = &["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep"];
-const READ_ONLY_GIT_SUBCOMMANDS: &[&str] = &["status", "diff", "log", "show", "branch"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum CapabilitySource {
-    Native,
-    Mcp,
-}
+use crate::tool::PermissionPromptPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[strum(serialize_all = "snake_case")]
@@ -39,14 +26,6 @@ pub enum CapabilityRisk {
     Read,
     Write,
     High,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityIntent {
-    pub source: CapabilitySource,
-    pub server: Option<String>,
-    pub tool: String,
-    pub risk: CapabilityRisk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
@@ -122,15 +101,41 @@ pub struct PermissionManager {
     always_allowed_tools: Vec<String>,
     consecutive_denials: usize,
     max_consecutive_denials: usize,
+    /// Loaded JSON permission settings (global + project), if any.
+    settings: Option<settings::PermissionSettings>,
 }
 
 impl PermissionManager {
+    /// Create a new manager with no loaded permission-settings store.
+    ///
+    /// This constructor is suitable for isolated tests and callers that
+    /// do not have a project directory (e.g. some test harnesses).  It
+    /// does not inherit any persistent allow/ask/deny rules.
     pub fn try_new(mode: PermissionMode) -> Result<Self> {
         Ok(Self {
             mode,
             always_allowed_tools: vec!["read_file".to_string()],
             consecutive_denials: 0,
             max_consecutive_denials: 3,
+            settings: None,
+        })
+    }
+
+    /// Create a new manager with loaded permission settings.
+    ///
+    /// The `settings` handle provides merged global + project rules and
+    /// the ability to persist new allow rules via
+    /// [`allow_tool_with_input`].
+    pub fn try_new_with_settings(
+        mode: PermissionMode,
+        settings: settings::PermissionSettings,
+    ) -> Result<Self> {
+        Ok(Self {
+            mode,
+            always_allowed_tools: vec!["read_file".to_string()],
+            consecutive_denials: 0,
+            max_consecutive_denials: 3,
+            settings: Some(settings),
         })
     }
 
@@ -146,48 +151,114 @@ impl PermissionManager {
         &self.always_allowed_tools
     }
 
-    pub fn check(&mut self, tool_name: &str, tool_input: &Value) -> PermissionDecision {
-        let intent = normalize_capability(tool_name, tool_input);
-
-        if intent.risk == CapabilityRisk::Read {
+    /// Check permission for a tool given its stable name, resolved risk,
+    /// and the current structured input.
+    ///
+    /// The input is used to evaluate parameter-aware allow/ask/deny rules
+    /// from the loaded settings.  Mode semantics are authoritative and
+    /// applied first:
+    ///
+    /// 1. Read → auto-allow (regardless of mode).
+    /// 2. Plan mode → deny writes.
+    /// 3. Auto mode → allow everything.
+    /// 4. Default mode + matching settings deny → deny.
+    /// 5. Default mode + matching settings allow → allow
+    ///    (including high-risk — user explicitly trusts the pattern).
+    /// 6. Default mode + matching settings ask → ask (non-high only;
+    ///    high-risk Ask/None still uses the high-risk ask path).
+    /// 7. Default mode + high risk (no Deny/Allow rule) → ask
+    ///    (skips the in-session always-allowed list).
+    /// 8. Default mode + in-session always-allowed → allow.
+    /// 9. Otherwise → ask.
+    pub fn check(
+        &mut self,
+        tool_name: &str,
+        risk: CapabilityRisk,
+        input: &Value,
+    ) -> PermissionDecision {
+        // 1. Read capabilities are always allowed.
+        if risk == CapabilityRisk::Read {
             self.consecutive_denials = 0;
             return PermissionDecision::allow("Read-only capability allowed");
         }
 
+        // 2. Plan mode blocks all write/High operations.
         if self.mode == PermissionMode::Plan {
             return PermissionDecision::deny("Plan mode: write operations are blocked");
         }
 
-        if intent.risk == CapabilityRisk::High {
+        // 3. Auto mode trusts the agent — skip all risk checks.
+        if self.mode == PermissionMode::Auto {
+            self.consecutive_denials = 0;
+            return PermissionDecision::allow("Auto mode: all capabilities auto-approved");
+        }
+
+        // At this point we are in Default mode.
+
+        // 4-6. Evaluate loaded settings rules (Deny/Allow apply at all risks).
+        let settings_action = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.cached_effective_rules().action(tool_name, input));
+
+        match settings_action {
+            Some(settings::RuleAction::Deny) => {
+                return PermissionDecision::deny(format!(
+                    "Blocked by project permission rule: {}",
+                    tool_name
+                ));
+            }
+            Some(settings::RuleAction::Allow) => {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Allowed by project permission rule: {}",
+                    tool_name
+                ));
+            }
+            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High => {
+                return PermissionDecision::ask(format!(
+                    "Project permission rule requires confirmation: {}",
+                    tool_name
+                ));
+            }
+            _ => {}
+        }
+
+        // 7. High-risk without Deny/Allow: always ask (do not use always_allowed).
+        if risk == CapabilityRisk::High {
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
-                intent.tool
+                tool_name
             ));
         }
 
-        if self.is_always_allowed(tool_name) {
+        // 8. Fallback: in-memory same-session always-allowed list.
+        if self.is_always_allowed(tool_name, input) {
             self.consecutive_denials = 0;
             return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
 
-        match self.mode {
-            PermissionMode::Auto => {
-                self.consecutive_denials = 0;
-                PermissionDecision::allow("Auto mode: non-high capability auto-approved")
-            }
-            PermissionMode::Default | PermissionMode::Plan => {
-                PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
-            }
-        }
+        // 9. Default: ask.
+        PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
     }
 
-    pub fn ask_user(&mut self, tool_name: &str, tool_input: &Value) -> Result<bool> {
-        let preview = truncate_for_prompt(tool_input, 200);
-        eprintln!(
-            "[permission] non-interactive: denying {} ({})",
-            tool_name, preview
-        );
-        let approved = self.apply_user_choice(UserPermissionChoice::Deny, tool_name);
+    pub fn ask_user(&mut self, tool_name: &str, risk: CapabilityRisk) -> Result<bool> {
+        // No UI: Default-mode fallback when check() returned Ask.
+        // High → deny; Write/Read → allow once (Read should not reach here).
+        let choice = match risk {
+            CapabilityRisk::High => {
+                eprintln!(
+                    "[permission] non-interactive: denying high-risk {}",
+                    tool_name
+                );
+                UserPermissionChoice::Deny
+            }
+            CapabilityRisk::Write | CapabilityRisk::Read => {
+                eprintln!("[permission] non-interactive: allowing {}", tool_name);
+                UserPermissionChoice::AllowOnce
+            }
+        };
+        let approved = self.apply_user_choice(choice, tool_name);
         if !approved && self.should_suggest_plan_mode() {
             eprintln!(
                 "[{} consecutive denials -- consider switching to plan mode]",
@@ -216,348 +287,787 @@ impl PermissionManager {
     }
 
     pub fn allow_tool(&mut self, tool_name: &str) {
-        if !self.is_always_allowed(tool_name) {
+        if !self.is_always_allowed(tool_name, &Value::Null) {
             self.always_allowed_tools.push(tool_name.to_string());
         }
     }
 
-    fn is_always_allowed(&self, tool_name: &str) -> bool {
-        self.always_allowed_tools
-            .iter()
-            .any(|allowed| allowed == tool_name)
+    /// Generate a parameter-aware permission rule from the current tool
+    /// call and persist it to project settings.
+    ///
+    /// The rule is generated via [`PermissionRule::generate`] using the
+    /// tool's metadata policy (or `Json` if none is available).
+    ///
+    /// Unlike [`allow_tool`], this method does **not** add a bare tool name
+    /// to the in-memory `always_allowed_tools` list, because doing so would
+    /// grant approval for unrelated future inputs with the same tool.
+    /// Input-aware approvals are matched by the persisted settings rules
+    /// (or, after a successful persist, by the cached effective rules).
+    ///
+    /// When no settings store is available (e.g. agent started without
+    /// a project directory), the generated rule string is added to the
+    /// in-memory allow list so that the same input is still approved for
+    /// the remainder of the session.  This is strictly narrower than a
+    /// bare tool name because matching requires both tool name and input.
+    ///
+    /// **Persistence errors are logged as warnings and never convert an
+    /// already-approved choice into a denial.**
+    pub fn allow_tool_with_input(
+        &mut self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) {
+        // Generate the narrowest parameter-aware rule.
+        let rule = settings::PermissionRule::generate(tool_name, policy, input);
+        let rule_string = rule.to_rule_string();
+
+        // When no settings store is available, add the generated rule
+        // string to the in-memory allow list.  This preserves same-session
+        // approval for the specific input without granting unrelated inputs.
+        if self.settings.is_none() {
+            if !self.always_allowed_tools.contains(&rule_string) {
+                self.always_allowed_tools.push(rule_string);
+            }
+            return;
+        }
+
+        // Persist to project settings — warn on failure, never deny.
+        if let Some(settings) = &mut self.settings
+            && let Err(e) = settings.persist_project_allow(&rule_string)
+        {
+            tracing::warn!(
+                "Failed to persist permission rule '{}': {}. The operation remains approved.",
+                rule_string,
+                e
+            );
+        }
+    }
+
+    fn is_always_allowed(&self, tool_name: &str, input: &Value) -> bool {
+        self.always_allowed_tools.iter().any(|allowed| {
+            // Bare tool name match (legacy allow_tool).
+            if allowed == tool_name {
+                return true;
+            }
+            // Generated rule match (input-aware allow_tool_with_input
+            // without settings store).
+            if let Some(rule) = settings::PermissionRule::parse(allowed) {
+                return rule.matches(tool_name, input);
+            }
+            false
+        })
     }
 
     fn should_suggest_plan_mode(&self) -> bool {
         self.consecutive_denials >= self.max_consecutive_denials
     }
-}
 
-pub fn normalize_capability(tool_name: &str, tool_input: &Value) -> CapabilityIntent {
-    let (source, server, short_tool) = parse_source(tool_name);
-    let risk = classify_risk(&short_tool, tool_input);
-
-    CapabilityIntent {
-        source,
-        server,
-        tool: short_tool,
-        risk,
+    #[allow(dead_code)]
+    pub fn set_max_consecutive_denials(&mut self, max: usize) {
+        self.max_consecutive_denials = max;
     }
 }
 
-fn parse_source(tool_name: &str) -> (CapabilitySource, Option<String>, String) {
-    if let Some(rest) = tool_name.strip_prefix("mcp__")
-        && let Some((server, tool)) = rest.rsplit_once("__")
-        && !server.is_empty()
-        && !tool.is_empty()
-    {
-        return (
-            CapabilitySource::Mcp,
-            Some(server.to_string()),
-            tool.to_string(),
-        );
-    }
-
-    (CapabilitySource::Native, None, tool_name.to_string())
-}
-
-fn classify_risk(tool_name: &str, tool_input: &Value) -> CapabilityRisk {
-    if tool_name == "read_file" || starts_with_any(tool_name, READ_PREFIXES) {
-        return CapabilityRisk::Read;
-    }
-
-    // spawn_subagent gets full filesystem and shell access — always high risk
-    if tool_name == "spawn_subagent" {
-        return CapabilityRisk::High;
-    }
-
-    if tool_name == "bash" {
-        let command = tool_input
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        return if is_high_risk_shell_command(&command) {
-            CapabilityRisk::High
-        } else if is_read_only_bash_command(&command) {
-            CapabilityRisk::Read
-        } else {
-            CapabilityRisk::Write
-        };
-    }
-
-    if starts_with_any(tool_name, HIGH_PREFIXES) {
-        CapabilityRisk::High
-    } else {
-        CapabilityRisk::Write
+/// Format a user-facing permission prompt using typed policy.
+pub fn format_permission_prompt(
+    name: &str,
+    policy: PermissionPromptPolicy,
+    input: &Value,
+) -> String {
+    let field_str = |field: &str| input.get(field).and_then(|v| v.as_str()).unwrap_or("");
+    match policy {
+        PermissionPromptPolicy::Command { field } => format!("Run command: {}", field_str(field)),
+        PermissionPromptPolicy::Question { field } => format!("Ask user: {}", field_str(field)),
+        PermissionPromptPolicy::Path { field } => format!("Allow {name} on {}?", field_str(field)),
+        PermissionPromptPolicy::Json => format!("Allow {name}?"),
     }
 }
 
-fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
-    prefixes.iter().any(|prefix| value.starts_with(prefix))
+/// MCP tools always start as High risk.
+pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
+    CapabilityRisk::High
 }
 
-fn is_read_only_bash_command(command: &str) -> bool {
-    if command
-        .chars()
-        .any(|ch| matches!(ch, ';' | '&' | '|' | '`' | '$' | '>' | '<'))
-    {
-        return false;
-    }
-
-    let mut parts = command.split_whitespace();
-    let Some(program) = parts.next() else {
-        return true;
-    };
-
-    if READ_ONLY_BASH_COMMANDS.contains(&program) {
-        return true;
-    }
-
-    if program == "git"
-        && let Some(subcommand) = parts.next()
-    {
-        return READ_ONLY_GIT_SUBCOMMANDS.contains(&subcommand);
-    }
-
-    false
-}
-
-fn truncate_for_prompt(value: &Value, limit: usize) -> String {
-    truncate_chars(&value.to_string(), limit)
-}
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    let truncated = text.chars().take(limit).collect::<String>();
-    format!("{truncated}...")
-}
-
-/// Human-readable copy for the interactive permission (`RequestSelect`) prompt.
-///
-/// Avoid dumping raw tool JSON — especially for `ask_user`, where the real
-/// question UI comes *after* approval.
-pub fn format_permission_prompt(tool_name: &str, tool_input: &Value) -> String {
-    match tool_name {
-        "ask_user" => {
-            match tool_input
-                .get("question")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|q| !q.is_empty())
-            {
-                Some(q) => format!(
-                    "Allow ask_user? The agent wants to ask you a question.\n{}",
-                    truncate_chars(q, 80)
-                ),
-                None => "Allow ask_user? The agent wants to ask you a question.".to_string(),
-            }
-        }
-        "bash" => match tool_input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
-            Some(cmd) => format!("Allow bash?\n{}", truncate_chars(cmd, 120)),
-            None => "Allow bash?".to_string(),
-        },
-        "edit_file" | "write_file" | "read_file" | "apply_patch" => {
-            let path = tool_input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("Allow {tool_name} on {path}?")
-        }
-        _ => {
-            let preview = truncate_for_prompt(tool_input, 80);
-            if preview == "{}" || preview.is_empty() {
-                format!("Allow {tool_name}?")
-            } else {
-                format!("Allow {tool_name}?\n{preview}")
-            }
-        }
-    }
+#[allow(dead_code)]
+fn truncate_for_prompt(input: &Value, _max_chars: usize) -> String {
+    input.to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{
-        CapabilityRisk, CapabilitySource, PermissionBehavior, PermissionManager, PermissionMode,
-        UserPermissionChoice, format_permission_prompt, normalize_capability,
-    };
+    use super::*;
+    use crate::permission::settings::PermissionSettings;
 
     #[test]
-    fn normalizes_mcp_tool_intent() {
-        let intent = normalize_capability("mcp__demo__db__query", &json!({ "sql": "select 1" }));
-
-        assert_eq!(intent.source, CapabilitySource::Mcp);
-        assert_eq!(intent.server.as_deref(), Some("demo__db"));
-        assert_eq!(intent.tool, "query");
-        assert_eq!(intent.risk, CapabilityRisk::Read);
+    fn allow_list_matches_exact_name() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("read_file");
+        assert!(mgr.is_always_allowed("read_file", &Value::Null));
     }
 
     #[test]
-    fn normalizes_high_risk_native_intent() {
-        let intent = normalize_capability("delete_file", &json!({ "path": "a.txt" }));
-
-        assert_eq!(intent.source, CapabilitySource::Native);
-        assert_eq!(intent.server, None);
-        assert_eq!(intent.tool, "delete_file");
-        assert_eq!(intent.risk, CapabilityRisk::High);
+    fn deny_increments_consecutive_count() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        assert_eq!(mgr.consecutive_denials, 1);
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        assert_eq!(mgr.consecutive_denials, 2);
     }
 
     #[test]
-    fn classifies_destructive_rm_as_high_risk() {
-        let intent = normalize_capability("bash", &json!({ "command": "rm -rf /*" }));
-
-        assert_eq!(intent.risk, CapabilityRisk::High);
+    fn allow_resets_consecutive_count() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::AllowOnce, "bash");
+        assert_eq!(mgr.consecutive_denials, 0);
     }
 
     #[test]
-    fn classifies_high_risk_bash() {
-        let intent = normalize_capability("bash", &json!({ "command": "sudo ls" }));
-
-        assert_eq!(intent.risk, CapabilityRisk::High);
-    }
-
-    #[test]
-    fn classifies_simple_bash_reads_as_read_only() {
-        let intent = normalize_capability(
-            "bash",
-            &json!({ "command": "ls -la /home/w/ai/learn-claude-code-rs-sfull" }),
-        );
-
-        assert_eq!(intent.risk, CapabilityRisk::Read);
-    }
-
-    #[test]
-    fn default_mode_allows_simple_bash_reads() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let decision = manager.check("bash", &json!({ "command": "ls -la ." }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Allow);
-    }
-
-    #[test]
-    fn read_capabilities_are_allowed_in_all_modes() {
-        for mode in [
-            PermissionMode::Default,
-            PermissionMode::Plan,
-            PermissionMode::Auto,
-        ] {
-            let mut manager = PermissionManager::try_new(mode).unwrap();
-            let decision = manager.check("read_file", &json!({ "path": "src/main.rs" }));
-
-            assert_eq!(decision.behavior, PermissionBehavior::Allow);
-        }
-    }
-
-    #[test]
-    fn plan_mode_blocks_non_read_tools() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Plan).unwrap();
-
-        let decision = manager.check("write_file", &json!({ "path": "a.txt", "content": "x" }));
-
+    fn plan_mode_denies_write_including_mcp() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);
         assert_eq!(decision.behavior, PermissionBehavior::Deny);
-        assert!(decision.reason.contains("Plan mode"));
+        let mcp_decision = mgr.check("mcp__srv__tool", CapabilityRisk::Write, &Value::Null);
+        assert_eq!(mcp_decision.behavior, PermissionBehavior::Deny);
     }
 
     #[test]
-    fn high_risk_tools_require_approval() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Auto).unwrap();
-
-        let decision = manager.check("bash", &json!({ "command": "sudo ls" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
-        assert!(decision.reason.contains("High-risk"));
-    }
-
-    #[test]
-    fn auto_mode_allows_non_high_tools() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Auto).unwrap();
-
-        let decision = manager.check("write_file", &json!({ "path": "a.txt", "content": "x" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Allow);
-        assert!(decision.reason.contains("Auto mode"));
-    }
-
-    #[test]
-    fn default_mode_asks_for_non_high_writes() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
-
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
-        assert!(decision.reason.contains("asking user"));
-    }
-
-    #[test]
-    fn always_allow_adds_exact_tool_allowlist_entry() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        let approved = manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "edit_file");
-
-        assert!(approved);
-        assert!(manager.rules().contains(&"edit_file".to_string()));
-        let decision = manager.check("edit_file", &json!({ "path": "src/lib.rs" }));
+    fn auto_mode_allows_non_high_capabilities() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);
         assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     #[test]
-    fn high_risk_still_asks_even_when_tool_was_always_allowed() {
-        let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-        manager.apply_user_choice(UserPermissionChoice::AlwaysAllow, "bash");
+    fn auto_mode_allows_high_risk_capabilities() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+    }
 
-        let decision = manager.check("bash", &json!({ "command": "sudo ls" }));
-
+    #[test]
+    fn default_mode_asks_for_write() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);
         assert_eq!(decision.behavior, PermissionBehavior::Ask);
     }
 
     #[test]
-    fn suggests_plan_mode_after_repeated_denials() {
+    fn default_mode_allows_resolved_read_capability() {
         let mut manager = PermissionManager::try_new(PermissionMode::Default).unwrap();
-
-        for _ in 0..manager.max_consecutive_denials {
-            let approved = manager.apply_user_choice(UserPermissionChoice::Deny, "bash");
-            assert!(!approved);
-        }
-
-        assert!(manager.should_suggest_plan_mode());
+        let decision = manager.check("read_file", CapabilityRisk::Read, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     #[test]
-    fn ask_user_permission_prompt_avoids_options_json() {
+    fn path_prompt_policy_preserves_file_prompt() {
         let prompt = format_permission_prompt(
-            "ask_user",
-            &json!({
-                "question": "你想练哪个新主题？",
-                "options": ["时态", "从句", "被动语态"],
-            }),
+            "edit_file",
+            PermissionPromptPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "src/lib.rs"}),
         );
-        assert!(prompt.contains("Allow ask_user?"));
-        assert!(prompt.contains("ask you a question"));
-        assert!(prompt.contains("你想练哪个新主题？"));
-        assert!(!prompt.contains("options"));
-        assert!(!prompt.contains("时态"));
-    }
-
-    #[test]
-    fn bash_permission_prompt_shows_command() {
-        let prompt = format_permission_prompt("bash", &json!({ "command": "ls -la" }));
-        assert_eq!(prompt, "Allow bash?\nls -la");
-    }
-
-    #[test]
-    fn edit_file_permission_prompt_shows_path() {
-        let prompt =
-            format_permission_prompt("edit_file", &json!({ "path": "src/lib.rs", "old": "a" }));
         assert_eq!(prompt, "Allow edit_file on src/lib.rs?");
+    }
+
+    #[test]
+    fn always_allow_and_check_skips_prompt() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("bash");
+        let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn high_risk_requires_approval_even_for_allowed_tool() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool("bash");
+        let decision = mgr.check("bash", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    // ── Settings-aware tests ────────────────────────────────────
+
+    /// Temp project `.tact/settings.json` + Default-mode manager. Keep `dir`
+    /// alive for the test duration so the path stays valid.
+    fn mgr_with_project_settings(json: &str) -> (tempfile::TempDir, PermissionManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&path, json).unwrap();
+        let settings = PermissionSettings::load_from(&path, None);
+        let mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+        (dir, mgr)
+    }
+
+    #[test]
+    fn loaded_allow_rule_skips_write_prompt() {
+        let (_dir, mut mgr) = mgr_with_project_settings(
+            r#"{"permissions": {"allow": ["bash(command:cargo test *)"]}}"#,
+        );
+
+        // Matching input → Allow (skips prompt)
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "Matching allow rule should skip prompt"
+        );
+
+        // Non-matching input → Ask (fall through to default)
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "git push"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Ask,
+            "Non-matching input should fall through to default Ask"
+        );
+    }
+
+    #[test]
+    fn loaded_ask_rule_still_prompts() {
+        let (_dir, mut mgr) = mgr_with_project_settings(
+            r#"{"permissions": {"ask": ["bash(command:cargo test *)"]}}"#,
+        );
+
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Ask,
+            "Matching ask rule should prompt"
+        );
+    }
+
+    #[test]
+    fn loaded_deny_rule_blocks_before_prompt() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#);
+
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Deny,
+            "Matching deny rule should block before prompt"
+        );
+    }
+
+    #[test]
+    fn high_risk_allow_rule_is_respected() {
+        let (_dir, mut mgr) = mgr_with_project_settings(
+            r#"{"permissions": {"allow": ["bash(command:cargo test *)"]}}"#,
+        );
+
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "High risk should be allowed when a matching allow rule exists"
+        );
+    }
+
+    #[test]
+    fn high_risk_ask_rule_still_asks() {
+        let (_dir, mut mgr) = mgr_with_project_settings(
+            r#"{"permissions": {"ask": ["bash(command:cargo test *)"]}}"#,
+        );
+
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Ask,
+            "High risk should ask when a matching ask rule exists"
+        );
+    }
+
+    #[test]
+    fn high_risk_deny_rule_blocks_high_risk() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#);
+
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Deny,
+            "High risk should be denied when a matching deny rule exists"
+        );
+
+        // Non-matching input → no deny rule matches, high risk → Ask.
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "cargo test"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Ask,
+            "High risk should ask when no deny rule matches"
+        );
+    }
+
+    #[test]
+    fn allow_tool_with_input_persists_and_adds_to_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let input = serde_json::json!({"command": "cargo test"});
+        mgr.allow_tool_with_input(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &input,
+        );
+
+        // In-memory: bare tool name is NOT added (privilege escalation prevention).
+        // The generated rule only allows the specific input, not all bash calls.
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "Bare tool name must not be added"
+        );
+
+        // On disk: the generated parameter rule should exist
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].as_str(), Some("bash(command:cargo test)"));
+
+        // After persist, the in-memory cached effective rules should also know
+        // about the rule so subsequent checks match via settings before falling
+        // through.
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "Generated rule should match subsequent check with same input"
+        );
+
+        // Privilege escalation regression: a different command with the same
+        // tool must NOT be allowed by the cached settings rule.
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Ask,
+            "Different input with same tool must fall through to Ask"
+        );
+    }
+
+    #[test]
+    fn allow_tool_with_input_failure_does_not_deny() {
+        // Isolated temp path: create a regular file where the `.tact` directory
+        // would be, so the directory creation inside persist_project_allow fails.
+        let dir = tempfile::tempdir().unwrap();
+        let tact_dir = dir.path().join(".tact");
+        // Write a regular file at the path that would need to be a directory.
+        std::fs::write(&tact_dir, "i am a file, not a directory").unwrap();
+
+        let bad_path = tact_dir.join("settings.json");
+        let settings = PermissionSettings::load_from(&bad_path, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let input = serde_json::json!({"command": "ls"});
+        // This should not panic or return an error — persistence failure is
+        // logged as a warning, and the tool remains approved.
+        mgr.allow_tool_with_input(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &input,
+        );
+
+        // Bare tool name is NOT added when persistence fails (and never should
+        // be for input-aware approvals).  The current call was approved by the
+        // user; future calls go through normal check flow.
+        assert!(!mgr.is_always_allowed("bash", &Value::Null));
+    }
+
+    #[test]
+    fn settings_none_falls_through_to_in_memory() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        // No settings loaded; uses in-memory always_allowed_tools.
+        mgr.allow_tool("bash");
+
+        let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn deny_rule_takes_precedence_over_allow() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{
+                "permissions": {
+                    "allow": ["bash(command:cargo *)"],
+                    "deny": ["bash(command:cargo test --doc *)"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        // Matches both allow and deny → deny wins
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test --doc foobar"}),
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+
+        // Matches only allow → allow
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo build"}),
+        );
+        assert_eq!(decision2.behavior, PermissionBehavior::Allow);
+    }
+
+    // ── Dispatch-facing tests ──────────────────────────────
+    //
+    // These tests exercise the PermissionManager::check path with structured
+    // input and loaded parameter rules — the same codepath used during tool
+    // dispatch.  Full async dispatch (agent_loop, tool resolution, MCP) cannot
+    // be isolated in a synchronous unit test because it depends on tokio
+    // runtime, MockClient with streaming, and the entire Agent/ToolRouter
+    // infrastructure.  The manager-level check() is the narrowest synchronous
+    // boundary where structured input meets permission evaluation.
+
+    #[test]
+    fn structured_input_reaches_permission_evaluation() {
+        // Verify that a loaded parameter rule (field + glob) is correctly
+        // evaluated by check() with structured input, simulating what
+        // dispatch passes to the manager.
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{"permissions": {"allow": ["edit_file(path:src/*.rs)"]}}"#,
+        )
+        .unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        // Structured input matching the parameter rule → Allow
+        let decision = mgr.check(
+            "edit_file",
+            CapabilityRisk::Write,
+            &serde_json::json!({"path": "src/lib.rs", "old_text": "a", "new_text": "b"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "Structured input matching parameter rule should allow"
+        );
+
+        // Structured input not matching the parameter rule → Ask (fall through)
+        let decision2 = mgr.check(
+            "edit_file",
+            CapabilityRisk::Write,
+            &serde_json::json!({"path": "README.md", "old_text": "a", "new_text": "b"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Ask,
+            "Non-matching structured input should fall through to Ask"
+        );
+    }
+
+    #[test]
+    fn structured_input_parameter_rule_with_capability_risk() {
+        // Simulate dispatch: each tool call carries a CapabilityRisk (Read,
+        // Write, High) from its metadata.  Parameter rules are evaluated
+        // respecting the risk level.
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{"permissions": {"allow": ["bash(command:cargo test *)"]}}"#,
+        )
+        .unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        // Write risk: matching parameter allow rule → Allow
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
+
+        // High risk: matching allow rule → Allow (user explicitly trusts this)
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "cargo test -p tact"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Allow,
+            "High risk should be allowed when matching allow rule exists"
+        );
+
+        // High risk: matching deny rule → Deny (deny blocks high-risk)
+        let project_file2 = dir.path().join(".tact/settings.json");
+        std::fs::write(
+            &project_file2,
+            r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
+        )
+        .unwrap();
+        let settings2 = PermissionSettings::load_from(&project_file2, None);
+        let mut mgr2 =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings2).unwrap();
+
+        let decision3 = mgr2.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision3.behavior,
+            PermissionBehavior::Deny,
+            "High risk should be denied when matching deny rule exists"
+        );
+    }
+
+    // ── Fix 4: Plan/Auto mode with settings ─────────────────────────
+
+    #[test]
+    fn plan_mode_with_settings_allow_still_denies_writes() {
+        // Plan mode is authoritative: even if a settings allow rule matches,
+        // write/High operations must be denied.
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&project_file, r#"{"permissions": {"allow": ["bash"]}}"#).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Plan, settings).unwrap();
+
+        // Write risk — Plan mode denies regardless of allow rule.
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "ls"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Deny,
+            "Plan mode denies writes even with matching settings allow"
+        );
+
+        // High risk — Plan mode denies regardless of allow rule.
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "ls"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Deny,
+            "Plan mode denies high-risk even with matching settings allow"
+        );
+
+        // Read still works in Plan mode.
+        let decision3 = mgr.check(
+            "read_file",
+            CapabilityRisk::Read,
+            &serde_json::json!({"path": "foo.txt"}),
+        );
+        assert_eq!(
+            decision3.behavior,
+            PermissionBehavior::Allow,
+            "Plan mode allows reads"
+        );
+    }
+
+    #[test]
+    fn auto_mode_with_settings_deny_still_allows() {
+        // Auto mode is authoritative: even if a settings deny rule matches,
+        // all non-read operations are auto-approved.
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{"permissions": {"deny": ["bash(command:rm *)"]}}"#,
+        )
+        .unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Auto, settings).unwrap();
+
+        // Write risk — Auto mode allows.
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "Auto mode allows writes even with matching settings deny"
+        );
+
+        // High risk — Auto mode allows everything.
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Allow,
+            "Auto mode allows high risk even with matching settings deny"
+        );
+
+        // Read still works in Auto mode.
+        let decision3 = mgr.check(
+            "read_file",
+            CapabilityRisk::Read,
+            &serde_json::json!({"path": "foo.txt"}),
+        );
+        assert_eq!(
+            decision3.behavior,
+            PermissionBehavior::Allow,
+            "Auto mode allows reads"
+        );
+    }
+
+    // ── Fix 1 regression: prevent same-session privilege escalation ──
+
+    #[test]
+    fn allow_tool_with_input_prevents_privilege_escalation() {
+        // After allowing bash "cargo test" via allow_tool_with_input,
+        // a different bash command (rm -rf /) must NOT be automatically
+        // allowed. The generated rule is input-specific.
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        // Allow bash "cargo test" — generates rule bash(command:cargo test)
+        mgr.allow_tool_with_input(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test"}),
+        );
+
+        // Same input → Allow (via cached settings rule)
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Allow,
+            "Same input should be allowed by generated rule"
+        );
+
+        // Different input → Ask (no bare tool name grants unrelated inputs)
+        let decision2 = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "rm -rf /"}),
+        );
+        assert_eq!(
+            decision2.behavior,
+            PermissionBehavior::Ask,
+            "Different input with same tool must NOT be auto-allowed"
+        );
+
+        // Bare tool name must NOT be in always_allowed_tools
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "Bare tool name must not be in always_allowed_tools"
+        );
+    }
+
+    #[test]
+    fn non_interactive_ask_user_allows_writes_and_denies_high_risk() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+
+        let approved = mgr.ask_user("bash", CapabilityRisk::Write).unwrap();
+        assert!(
+            approved,
+            "Non-interactive ask_user should allow Write operations"
+        );
+        assert_eq!(
+            mgr.consecutive_denials, 0,
+            "Write allow should not increment denials"
+        );
+
+        // Defensive: Read should not reach ask_user, but AllowOnce if it does.
+        assert!(mgr.ask_user("read_file", CapabilityRisk::Read).unwrap());
+
+        let approved2 = mgr.ask_user("rm", CapabilityRisk::High).unwrap();
+        assert!(
+            !approved2,
+            "Non-interactive ask_user should deny High-risk operations"
+        );
+        assert_eq!(
+            mgr.consecutive_denials, 1,
+            "High-risk denial should increment denials"
+        );
     }
 }

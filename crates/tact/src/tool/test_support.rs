@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{Tool, ToolContext, ToolRouter};
+use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
     background::SharedBackgroundManager,
     cron::{CronScheduler, SharedCronScheduler},
@@ -22,8 +22,21 @@ pub async fn run_tool<T: Tool + 'static>(
     input: serde_json::Value,
 ) -> anyhow::Result<String> {
     ToolRouter::new()
-        .route(tool)
+        .route(tool)?
         .call(context, name, input)
+        .await
+}
+
+/// Like [`run_tool`] but returns the full [`ToolCallResult`] including effects.
+pub async fn run_tool_result<T: Tool + 'static>(
+    context: &ToolContext,
+    tool: T,
+    name: &'static str,
+    input: serde_json::Value,
+) -> anyhow::Result<ToolCallResult> {
+    ToolRouter::new()
+        .route(tool)?
+        .call_result(context, name, input)
         .await
 }
 

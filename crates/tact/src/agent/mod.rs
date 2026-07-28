@@ -1,7 +1,7 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 mod tool_dispatch;
-mod tool_schedule;
+pub(crate) mod tool_schedule;
 
 use std::path::Path;
 
@@ -28,8 +28,8 @@ use crate::{
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        CONTINUATION_MESSAGE, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS,
-        MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay,
+        MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
+        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message,
         is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
@@ -89,6 +89,9 @@ pub struct AgentRuntime {
     pub cached_agents_md: Option<String>,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
     pub last_token_total: u32,
+    /// Override model name for subagents. When `Some`, agent_loop and
+    /// compact_history use this instead of `crate::get_model()`.
+    pub model_override: Option<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -152,6 +155,7 @@ impl Agent {
                 cached_claude_md: None,
                 cached_agents_md: None,
                 last_token_total: 0,
+                model_override: None,
             },
             tool_context,
             tools,
@@ -176,6 +180,65 @@ impl Agent {
 
     fn max_tokens(&self) -> u32 {
         self.agent_settings.max_tokens
+    }
+
+    /// If thinking budget is active (>0) and `max_tokens` is not strictly larger,
+    /// auto-expand `max_tokens` and return a warning message suitable for the UI.
+    fn ensure_max_tokens_gt_thinking_budget(
+        max_tokens: &mut u32,
+        thinking_budget: usize,
+    ) -> Option<String> {
+        if thinking_budget == 0 {
+            return None;
+        }
+        let mt = *max_tokens as usize;
+        if mt > thinking_budget {
+            return None;
+        }
+        let new_max: u32 = (thinking_budget + 1).try_into().unwrap_or(u32::MAX);
+        *max_tokens = new_max;
+        Some(format!(
+            "thinking_budget ({thinking_budget}) >= max_tokens; expanded max_tokens to {new_max}"
+        ))
+    }
+
+    /// Update the thinking budget used when constructing subsequent LLM requests.
+    /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
+    ///
+    /// If the new budget is active and not strictly smaller than the current
+    /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
+    /// warning is emitted to the UI channel.
+    ///
+    /// Always emits [`AgentUpdate::ModelInfo`] so the TUI status bar resyncs after
+    /// `/model` picks: `SetThinkingBudget` is queued behind an in-flight task, and
+    /// that task's older `ModelInfo` would otherwise leave the bar stuck on the
+    /// previous budget.
+    pub fn set_thinking_budget(&mut self, budget: usize) {
+        self.agent_settings.thinking_budget = budget;
+        if let Some(msg) =
+            Self::ensure_max_tokens_gt_thinking_budget(&mut self.agent_settings.max_tokens, budget)
+        {
+            self.emit_update(AgentUpdate::Info(msg));
+        }
+        self.emit_model_status();
+    }
+
+    /// Push current model / token / thinking settings to the TUI status bar.
+    fn emit_model_status(&self) {
+        let model_name = self
+            .runtime
+            .model_override
+            .clone()
+            .unwrap_or_else(crate::get_model);
+        let budget = self.thinking_budget();
+        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+            model: model_name,
+            max_tokens: self.max_tokens(),
+            thinking_budget: (budget > 0).then_some(budget as u32),
+            reasoning_effort: tact_llm::current_reasoning_effort_from_budget(budget)
+                .map(str::to_string),
+            extra_body: None,
+        }));
     }
 
     fn thinking_budget(&self) -> usize {
@@ -420,11 +483,25 @@ impl Agent {
                 self.compact_history(None).await?;
             }
 
+            // Defense-in-depth: if max_tokens <= thinking_budget (e.g. after a runtime
+            // /model pick), auto-expand max_tokens and warn once.
+            let thinking_budget = self.thinking_budget();
+            if let Some(msg) = Self::ensure_max_tokens_gt_thinking_budget(
+                &mut self.agent_settings.max_tokens,
+                thinking_budget,
+            ) {
+                self.emit_update(AgentUpdate::Info(msg));
+            }
+
             // Snapshot the complete conversation after micro/auto compaction.
             // Includes the current user turn plus history, or retained users +
             // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
-            let model_name = crate::get_model();
+            let model_name = self
+                .runtime
+                .model_override
+                .clone()
+                .unwrap_or_else(crate::get_model);
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: conversation_messages,
@@ -576,13 +653,15 @@ impl Agent {
                     "[Recovery] continue ({}/{}): output truncated",
                     self.runtime.recovery_state.continuation_attempts, MAX_CONTINUATION_ATTEMPTS
                 )));
+                let continuation_message =
+                    continuation_message(self.runtime.recovery_state.continuation_attempts);
                 self.runtime
                     .context
-                    .push(Message::new_text(Role::User, CONTINUATION_MESSAGE));
+                    .push(Message::new_text(Role::User, continuation_message));
                 self.persist_message(
                     Role::User,
                     &MessageContent::Text {
-                        content: CONTINUATION_MESSAGE.to_string(),
+                        content: continuation_message.to_string(),
                     },
                 )
                 .await?;
@@ -808,7 +887,11 @@ impl Agent {
             model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
         );
 
-        let model_name = crate::get_model();
+        let model_name = self
+            .runtime
+            .model_override
+            .clone()
+            .unwrap_or_else(crate::get_model);
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
@@ -1027,7 +1110,6 @@ impl Agent {
                 "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
                 "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
                 "When editing files, always re-read the file first if its content may have changed since you last read it",
-                "For multi-line changes, prefer apply_patch; for exact string replacements, use edit_file (replace_all=true to change every occurrence in the file)",
                 "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
             ])
@@ -1363,6 +1445,7 @@ mod tests {
                     skill_body_auto_inject: false,
                     skill_dirs: Vec::new(),
                     instruction_sources: crate::config::InstructionSources::default(),
+                    subagent: None,
                 },
                 ui: crate::config::UiSettings {
                     theme: "retro".to_string(),
@@ -1376,6 +1459,7 @@ mod tests {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                     bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
                 },
+                voice: crate::config::VoiceSettings::disabled_defaults(),
                 permission_mode: None,
                 tokio_console: false,
                 config_path: None,
@@ -1411,6 +1495,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            subagent: None,
         };
         let agent = Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
@@ -1980,5 +2065,72 @@ mod tests {
         });
         assert_eq!(calls, 1);
         assert_eq!(cache.as_deref(), Some(""));
+    }
+
+    // ── ensure_max_tokens_gt_thinking_budget ──
+
+    #[test]
+    fn zero_budget_is_noop() {
+        let mut mt = 8_000u32;
+        assert!(Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 0).is_none());
+        assert_eq!(mt, 8_000);
+    }
+
+    #[test]
+    fn max_tokens_already_larger_is_noop() {
+        let mut mt = 16_000u32;
+        assert!(Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 8_000).is_none());
+        assert_eq!(mt, 16_000);
+    }
+
+    #[test]
+    fn expands_when_budget_exceeds_max_tokens() {
+        let mut mt = 8_000u32;
+        let msg = Agent::ensure_max_tokens_gt_thinking_budget(&mut mt, 32_000).unwrap();
+        assert_eq!(mt, 32_001);
+        assert!(msg.contains("32000"));
+        assert!(msg.contains("32001"));
+    }
+
+    #[test]
+    fn set_thinking_budget_auto_expands_max_tokens() {
+        ensure_config();
+        let context = test_context("set_thinking_auto_test");
+        let router = crate::tool::toolset();
+        let mcp = crate::mcp::MCPToolRouter::new();
+        let perm = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            router,
+            mcp,
+            perm,
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        assert_eq!(agent.thinking_budget(), 0);
+        agent.set_thinking_budget(64_000);
+        assert!(agent.max_tokens() > 64_000);
+        assert_eq!(agent.thinking_budget(), 64_000);
+
+        let mut saw_model_info = false;
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                AgentUpdate::ModelInfo(params) => {
+                    assert_eq!(params.thinking_budget, Some(64_000));
+                    assert!(params.max_tokens > 64_000);
+                    saw_model_info = true;
+                }
+                AgentUpdate::Info(_) => {}
+                other => panic!("unexpected update: {other:?}"),
+            }
+        }
+        assert!(saw_model_info, "set_thinking_budget must emit ModelInfo");
     }
 }

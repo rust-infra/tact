@@ -361,8 +361,7 @@ pub fn build_openai_request(
         logit_bias: None,
         logprobs: None,
         top_logprobs: None,
-        // async-openai's field is `u16`; clamp instead of truncating with `as`.
-        max_tokens: Some(u16::try_from(request.max_tokens).unwrap_or(u16::MAX)),
+        max_tokens: Some(request.max_tokens),
         n: Some(1),
         presence_penalty: None,
         response_format: None,

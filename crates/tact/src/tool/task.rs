@@ -1,8 +1,14 @@
 use std::str::FromStr;
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::{
@@ -18,7 +24,26 @@ pub struct TaskCreateInput {
     pub description: Option<String>,
 }
 
-#[tool(name = "task_create", description = "Create a new persistent task.")]
+pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata {
+    name: "task_create",
+    description: "Create a new persistent task.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "task" },
+    domain: ToolDomain::Task(TaskOperation::Create),
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Task,
+        display_name: "📋 Task",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the task manager fails to create the task
@@ -46,7 +71,26 @@ pub struct TaskGetInput {
     pub task_id: u64,
 }
 
-#[tool(name = "task_get", description = "Get full details of a task by ID.")]
+pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata {
+    name: "task_get",
+    description: "Get full details of a task by ID.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Task(TaskOperation::Get),
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Task,
+        display_name: "📋 Task",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the task ID does not exist.
@@ -58,10 +102,26 @@ pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskListInput {}
 
-#[tool(
-    name = "task_list",
-    description = "List all tasks with status summary."
-)]
+pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata {
+    name: "task_list",
+    description: "List all tasks with status summary.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Task(TaskOperation::List),
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Task,
+        display_name: "📋 Task",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the task manager fails to retrieve the task list.
@@ -85,10 +145,26 @@ pub struct TaskUpdateInput {
     pub add_blocks: Vec<u64>,
 }
 
-#[tool(
-    name = "task_update",
-    description = "Update a task's status, owner, or dependencies."
-)]
+pub const TASK_UPDATE_METADATA: ToolMetadata = ToolMetadata {
+    name: "task_update",
+    description: "Update a task's status, owner, or dependencies.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "task" },
+    domain: ToolDomain::Task(TaskOperation::Update),
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Task,
+        display_name: "📋 Task",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:
@@ -131,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {
-        let router = ToolRouter::new().route(TaskCreateTool);
+        let router = ToolRouter::new().route(TaskCreateTool).unwrap();
         let context = test_context("task_create_strips_empty_description");
 
         let output = router
@@ -154,7 +230,9 @@ mod tests {
     async fn task_update_rejects_invalid_status() {
         let router = ToolRouter::new()
             .route(TaskCreateTool)
-            .route(TaskUpdateTool);
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let context = test_context("task_update_rejects_invalid_status");
 
         let created = router
@@ -194,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn task_create_emits_tasks_changed() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let router = ToolRouter::new().route(TaskCreateTool);
+        let router = ToolRouter::new().route(TaskCreateTool).unwrap();
         let mut context = test_context("task_create_emits");
         context.ui_tx = Some(tx);
 
@@ -223,7 +301,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let router = ToolRouter::new()
             .route(TaskCreateTool)
-            .route(TaskUpdateTool);
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let mut context = test_context("task_update_emits");
         context.ui_tx = Some(tx.clone());
 
@@ -269,7 +349,11 @@ mod tests {
     #[tokio::test]
     async fn task_list_does_not_emit_tasks_changed() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let router = ToolRouter::new().route(TaskCreateTool).route(TaskListTool);
+        let router = ToolRouter::new()
+            .route(TaskCreateTool)
+            .unwrap()
+            .route(TaskListTool)
+            .unwrap();
         let mut context = test_context("task_list_no_emit");
         context.ui_tx = Some(tx.clone());
         let _ = router

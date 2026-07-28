@@ -5,7 +5,8 @@ use ratatui::{
     text::{Line, Span},
 };
 use tact_protocol::{
-    StepResult, StepStatus, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+    StepResult, StepStatus, TokenUsageInfo, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan,
+    ToolOutputStream, ToolPresentationInfo,
 };
 
 use crate::{i18n::Messages, theme::Theme};
@@ -37,8 +38,9 @@ impl ToolPhase {
     }
 }
 
-/// Visual strategy inferred from the tool name.
+/// Visual strategy inferred from the tool name (legacy — replaced by ToolVisualKind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ToolDisplayKind {
     FileWrite,
     FileRead,
@@ -50,20 +52,42 @@ pub enum ToolDisplayKind {
     Generic,
 }
 
-fn display_kind(tool: &str) -> ToolDisplayKind {
-    match tool {
-        "write_file" => ToolDisplayKind::FileWrite,
-        "read_file" => ToolDisplayKind::FileRead,
-        "edit_file" => ToolDisplayKind::FileEdit,
-        "run_command" | "bash" | "shell" => ToolDisplayKind::Command,
-        "task_create" | "task_update" | "task_get" | "task_list" => ToolDisplayKind::Task,
-        "spawn_subagent" => ToolDisplayKind::Subagent,
-        "sleep" => ToolDisplayKind::Sleep,
-        _ => ToolDisplayKind::Generic,
+fn kind_from_presentation(
+    presentation: &ToolPresentationInfo,
+    tool_name: &str,
+) -> tact_protocol::ToolVisualKind {
+    if presentation.visual_kind != tact_protocol::ToolVisualKind::Generic {
+        return presentation.visual_kind;
+    }
+    // Fallback: infer from tool name for backward compatibility (tests, MCP, etc.)
+    match tool_name {
+        "write_file" => tact_protocol::ToolVisualKind::FileWrite,
+        "read_file" => tact_protocol::ToolVisualKind::FileRead,
+        "edit_file" => tact_protocol::ToolVisualKind::FileEdit,
+        "bash" | "shell" | "background_run" | "worktree_run" => {
+            tact_protocol::ToolVisualKind::Command
+        }
+        "task_create" | "task_update" | "task_get" | "task_list" => {
+            tact_protocol::ToolVisualKind::Task
+        }
+        "spawn_subagent" => tact_protocol::ToolVisualKind::Subagent,
+        "sleep" => tact_protocol::ToolVisualKind::Sleep,
+        _ => tact_protocol::ToolVisualKind::Generic,
     }
 }
 
+fn display_name_from_presentation(presentation: &ToolPresentationInfo, tool_name: &str) -> String {
+    // Prefer an explicit presentation label from native tool metadata.
+    // Tests / MCP often use ToolPresentationInfo::generic(tool_name) where
+    // display_name == tool_name; fall back to the legacy pretty-name map then.
+    if !presentation.display_name.is_empty() && presentation.display_name != tool_name {
+        return presentation.display_name.clone();
+    }
+    tool_display_name(tool_name)
+}
 pub fn tool_display_name(tool: &str) -> String {
+    // Legacy — use ToolPresentationInfo::display_name from protocol instead.
+    // Provides a fallback for MCP/unknown tools that arrive without presentation.
     match tool {
         "write_file" => "✍️ Write".to_string(),
         "read_file" => "📖 Read".to_string(),
@@ -73,28 +97,27 @@ pub fn tool_display_name(tool: &str) -> String {
         "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
         "sleep" => "⏳ Sleep".to_string(),
-        "apply_patch" => "📝 Patch".to_string(),
-        "background_run" => "Background".to_string(),
-        "check_background" => "Background".to_string(),
-        "cron_create" => "Cron".to_string(),
-        "cron_delete" => "Cron".to_string(),
-        "cron_list" => "Cron".to_string(),
+        "background_run" => "$ Bg".to_string(),
+        "check_background" => "🔍 Check".to_string(),
+        "cron_create" => "⏰ Cron Create".to_string(),
+        "cron_delete" => "⏰ Cron Delete".to_string(),
+        "cron_list" => "⏰ Cron List".to_string(),
         "load_skill" => "Skill".to_string(),
         "save_memory" => "Memory".to_string(),
         "compact" => "Compact".to_string(),
-        "spawn_teammate" => "Teammate".to_string(),
-        "list_teammates" => "Teammate".to_string(),
-        "send_message" => "Message".to_string(),
-        "broadcast" => "Broadcast".to_string(),
-        "read_inbox" => "Inbox".to_string(),
-        "plan_approval" => "Plan".to_string(),
-        "shutdown_request" => "Shutdown".to_string(),
-        "shutdown_response" => "Shutdown".to_string(),
-        "worktree_create" => "Worktree".to_string(),
-        "worktree_list" => "Worktree".to_string(),
-        "worktree_status" => "Worktree".to_string(),
-        "worktree_run" => "Worktree".to_string(),
-        "worktree_events" => "Worktree".to_string(),
+        "spawn_teammate" => "👥 Team Spawn".to_string(),
+        "list_teammates" => "👥 Team List".to_string(),
+        "send_message" => "✉️ Msg".to_string(),
+        "broadcast" => "📢 Broadcast".to_string(),
+        "read_inbox" => "📬 Inbox".to_string(),
+        "plan_approval" => "✅ Approve".to_string(),
+        "shutdown_request" => "🔌 Shutdown Request".to_string(),
+        "shutdown_response" => "🔌 Shutdown Response".to_string(),
+        "worktree_create" => "🌿 Worktree Create".to_string(),
+        "worktree_list" => "🌿 Worktree List".to_string(),
+        "worktree_status" => "🌿 Worktree Status".to_string(),
+        "worktree_run" => "$ Wt Run".to_string(),
+        "worktree_events" => "🌿 Worktree Events".to_string(),
         other => {
             if other.is_empty() {
                 "Tool".to_string()
@@ -291,6 +314,12 @@ pub struct ToolRenderOutput {
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
     pub card_bottom: String,
+    /// Subagent model name for tool-card header display.
+    pub subagent_model: Option<String>,
+    /// Subagent token usage for tool-card header display.
+    pub subagent_tokens: Option<TokenUsageInfo>,
+    /// Tool visual kind from presentation metadata.
+    pub visual_kind: tact_protocol::ToolVisualKind,
 }
 
 impl ToolRenderOutput {
@@ -326,6 +355,9 @@ pub struct ToolWidget<'a> {
     detail_lines: Option<Vec<ToolOutputLine>>,
     detail_total_lines: Option<usize>,
     live_detail: bool,
+    subagent_model: Option<String>,
+    subagent_tokens: Option<TokenUsageInfo>,
+    presentation: ToolPresentationInfo,
 }
 
 impl<'a> ToolWidget<'a> {
@@ -347,7 +379,26 @@ impl<'a> ToolWidget<'a> {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_model: None,
+            subagent_tokens: None,
+            presentation: ToolPresentationInfo::generic(""),
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_presentation(mut self, presentation: ToolPresentationInfo) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
+    pub fn with_subagent_model(mut self, model: Option<String>) -> Self {
+        self.subagent_model = model;
+        self
+    }
+
+    pub fn with_subagent_tokens(mut self, tokens: Option<TokenUsageInfo>) -> Self {
+        self.subagent_tokens = tokens;
+        self
     }
 
     pub fn with_tool(mut self, name: impl Into<String>) -> Self {
@@ -394,7 +445,11 @@ impl<'a> ToolWidget<'a> {
         // Popup/detail_full keep `$ <command>` for consistency with completed
         // cards, but the live title/footer/line numbers must count only the
         // streamed output — the preview itself never includes that prefix.
-        let detail = command_detail(&self.tool_name, &self.arg_full, &output.detail_text());
+        let detail = command_detail(
+            kind_from_presentation(&self.presentation, &self.tool_name),
+            &self.arg_full,
+            &output.detail_text(),
+        );
         self.detail = Some(detail);
         self.detail_lines = Some(lines);
         self.detail_total_lines = Some(output.logical_line_count());
@@ -430,7 +485,8 @@ impl<'a> ToolWidget<'a> {
         let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
         // ask_user answers compress onto the meta row (same slot as permission labels),
         // not a separate detail card line.
-        let ask_user_label = (!failed && result.tool == "ask_user")
+        let ask_user_label = (!failed
+            && (result.presentation.compact_result_to_meta || result.tool == "ask_user"))
             .then(|| compact_ask_user_meta(&result.message))
             .flatten();
         let arg_full = result
@@ -448,7 +504,11 @@ impl<'a> ToolWidget<'a> {
             if failed {
                 detail
             } else {
-                command_detail(&result.tool, &arg_full, &detail)
+                command_detail(
+                    kind_from_presentation(&result.presentation, &result.tool),
+                    &arg_full,
+                    &detail,
+                )
             }
         });
         let permission_label = match (result.permission_label.clone(), ask_user_label) {
@@ -475,27 +535,30 @@ impl<'a> ToolWidget<'a> {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_model: None,
+            subagent_tokens: None,
+            presentation: result.presentation.clone(),
         }
     }
 
     pub fn title_text(&self) -> String {
-        let base = match display_kind(&self.tool_name) {
-            ToolDisplayKind::Command => {
-                let label = tool_display_name(&self.tool_name);
+        let base = match kind_from_presentation(&self.presentation, &self.tool_name) {
+            tact_protocol::ToolVisualKind::Command => {
+                let label = display_name_from_presentation(&self.presentation, &self.tool_name);
                 if self.arg_summary.is_empty() {
                     label
                 } else {
                     format!("{label}  {}", self.arg_summary)
                 }
             }
-            ToolDisplayKind::Subagent => {
+            tact_protocol::ToolVisualKind::Subagent => {
                 if self.arg_summary.is_empty() {
                     "Subagent".to_string()
                 } else {
                     format!("Subagent · {}", self.arg_summary)
                 }
             }
-            ToolDisplayKind::Sleep => {
+            tact_protocol::ToolVisualKind::Sleep => {
                 if let Ok(ms) = self.arg_summary.parse::<u64>() {
                     format!("⏳ Sleep · {}", sleep_duration(ms))
                 } else if self.arg_summary.is_empty() {
@@ -504,16 +567,16 @@ impl<'a> ToolWidget<'a> {
                     format!("⏳ Sleep · {}", self.arg_summary)
                 }
             }
-            ToolDisplayKind::Task => {
+            tact_protocol::ToolVisualKind::Task => {
                 // Human title already includes "# Task.N · …"; do not prefix tool name.
                 if self.arg_summary.is_empty() {
-                    tool_display_name(&self.tool_name)
+                    display_name_from_presentation(&self.presentation, &self.tool_name)
                 } else {
                     self.arg_summary.clone()
                 }
             }
             _ => {
-                let label = tool_display_name(&self.tool_name);
+                let label = display_name_from_presentation(&self.presentation, &self.tool_name);
                 if self.arg_summary.is_empty() {
                     label
                 } else {
@@ -539,8 +602,10 @@ impl<'a> ToolWidget<'a> {
     }
 
     pub fn size_bytes(&self) -> Option<usize> {
-        match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileRead | ToolDisplayKind::FileEdit => {
+        match kind_from_presentation(&self.presentation, &self.tool_name) {
+            tact_protocol::ToolVisualKind::FileWrite
+            | tact_protocol::ToolVisualKind::FileRead
+            | tact_protocol::ToolVisualKind::FileEdit => {
                 self.detail.as_ref().map(|d| d.len()).filter(|len| *len > 0)
             }
             _ => None,
@@ -585,8 +650,8 @@ impl<'a> ToolWidget<'a> {
     pub fn build(&self) -> ToolRenderOutput {
         let layout = self.layout();
         let use_diff_gutter = matches!(
-            display_kind(&self.tool_name),
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit
+            kind_from_presentation(&self.presentation, &self.tool_name),
+            tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileEdit
         );
         let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
@@ -605,7 +670,10 @@ impl<'a> ToolWidget<'a> {
             let total = self
                 .detail_total_lines
                 .unwrap_or_else(|| detail.lines().count());
-            let preview = if matches!(display_kind(&self.tool_name), ToolDisplayKind::Command) {
+            let preview = if matches!(
+                kind_from_presentation(&self.presentation, &self.tool_name),
+                tact_protocol::ToolVisualKind::Command
+            ) {
                 let mut tail: Vec<_> = lines
                     .iter()
                     .rev()
@@ -657,6 +725,9 @@ impl<'a> ToolWidget<'a> {
                 None
             },
             card_bottom,
+            subagent_model: self.subagent_model.clone(),
+            subagent_tokens: self.subagent_tokens.clone(),
+            visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
         }
     }
 
@@ -680,17 +751,17 @@ impl<'a> ToolWidget<'a> {
         }
         if self.live_detail {
             return matches!(
-                display_kind(&self.tool_name),
-                ToolDisplayKind::Command | ToolDisplayKind::Subagent
+                kind_from_presentation(&self.presentation, &self.tool_name),
+                tact_protocol::ToolVisualKind::Command | tact_protocol::ToolVisualKind::Subagent
             ) && matches!(self.phase, ToolPhase::Running);
         }
         matches!(
-            display_kind(&self.tool_name),
-            ToolDisplayKind::FileWrite
-                | ToolDisplayKind::FileRead
-                | ToolDisplayKind::FileEdit
-                | ToolDisplayKind::Command
-                | ToolDisplayKind::Subagent
+            kind_from_presentation(&self.presentation, &self.tool_name),
+            tact_protocol::ToolVisualKind::FileWrite
+                | tact_protocol::ToolVisualKind::FileRead
+                | tact_protocol::ToolVisualKind::FileEdit
+                | tact_protocol::ToolVisualKind::Command
+                | tact_protocol::ToolVisualKind::Subagent
         ) && matches!(self.phase, ToolPhase::Success)
     }
 
@@ -704,31 +775,41 @@ impl<'a> ToolWidget<'a> {
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
         }
-        if matches!(display_kind(&self.tool_name), ToolDisplayKind::Subagent) {
+        if matches!(
+            kind_from_presentation(&self.presentation, &self.tool_name),
+            tact_protocol::ToolVisualKind::Subagent
+        ) {
             return format!("Summary ({} lines)", total_lines);
         }
-        match display_kind(&self.tool_name) {
-            ToolDisplayKind::FileWrite | ToolDisplayKind::FileEdit => self
-                .msgs
-                .diff_card_title
-                .replacen("{}", &total_lines.to_string(), 1)
-                .replacen("{}", &self.arg_summary, 1),
-            ToolDisplayKind::FileRead => {
+        match kind_from_presentation(&self.presentation, &self.tool_name) {
+            tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileEdit => {
+                self.msgs
+                    .diff_card_title
+                    .replacen("{}", &total_lines.to_string(), 1)
+                    .replacen("{}", &self.arg_summary, 1)
+            }
+            tact_protocol::ToolVisualKind::FileRead => {
                 format!("Read {} ({} lines)", self.arg_summary, total_lines)
             }
-            ToolDisplayKind::Command => format!("Command output ({} lines)", total_lines),
-            ToolDisplayKind::Task
-            | ToolDisplayKind::Generic
-            | ToolDisplayKind::Sleep
-            | ToolDisplayKind::Subagent => {
+            tact_protocol::ToolVisualKind::Command => {
+                format!("Command output ({} lines)", total_lines)
+            }
+            tact_protocol::ToolVisualKind::Task
+            | tact_protocol::ToolVisualKind::Generic
+            | tact_protocol::ToolVisualKind::Sleep
+            | tact_protocol::ToolVisualKind::Subagent => {
                 format!("{} output", self.tool_name)
             }
         }
     }
 }
 
-fn command_detail(tool_name: &str, full_arg: &str, detail: &str) -> String {
-    if !matches!(display_kind(tool_name), ToolDisplayKind::Command) || full_arg.is_empty() {
+fn command_detail(
+    visual_kind: tact_protocol::ToolVisualKind,
+    full_arg: &str,
+    detail: &str,
+) -> String {
+    if !matches!(visual_kind, tact_protocol::ToolVisualKind::Command) || full_arg.is_empty() {
         return detail.to_string();
     }
     format!("$ {full_arg}\n\n{detail}")
@@ -949,6 +1030,7 @@ mod tests {
             detail: Some("full error\nline two".to_string()),
             duration_us: Some(1_940),
             permission_label: Some("Always allow this tool".to_string()),
+            presentation: ToolPresentationInfo::generic("edit_file"),
         };
         let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
         assert!(output.error_message.is_none());
@@ -968,6 +1050,7 @@ mod tests {
             detail: Some("done\n".to_string()),
             duration_us: Some(1_200_000),
             permission_label: Some("Always allow this tool".to_string()),
+            presentation: ToolPresentationInfo::generic("bash"),
         };
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
@@ -992,6 +1075,7 @@ mod tests {
             detail: None,
             duration_us: Some(12_370_000),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("ask_user"),
         };
         let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
         let output = widget.build();
@@ -1034,6 +1118,7 @@ mod tests {
             detail: None,
             duration_us: Some(1_000),
             permission_label: Some("Allow once".to_string()),
+            presentation: ToolPresentationInfo::generic("ask_user"),
         };
         let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
         assert_eq!(

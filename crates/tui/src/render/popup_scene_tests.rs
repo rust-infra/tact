@@ -575,7 +575,7 @@ fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep};
+    use tact_protocol::{AgentUpdate, PlanStep, ToolPresentationInfo};
 
     let mut app = make_app();
     app.status = crate::widgets::state::Status::Executing {
@@ -594,6 +594,7 @@ fn main_area_loading_spinner_when_executing() {
         tool_name: "bash".into(),
         arg_summary: "sleep 1".into(),
         arg_full: "sleep 1".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
     });
     app.append_blank(RawMessageType::SysTool);
     app.loading_idx = Some(app.messages.len().saturating_sub(1));
@@ -610,7 +611,7 @@ fn main_area_loading_spinner_when_executing() {
 fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -653,6 +654,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
         tool_name: "edit_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
+        presentation: ToolPresentationInfo::generic("edit_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -666,6 +668,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
             detail: Some("fn new() {}".into()),
             duration_us: Some(100),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("edit_file"),
         },
     });
 
@@ -799,7 +802,7 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -843,6 +846,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
         tool_name: "edit_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
+        presentation: ToolPresentationInfo::generic("edit_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -856,6 +860,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
             detail: Some("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}".into()),
             duration_us: Some(100),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("edit_file"),
         },
     });
 
@@ -889,7 +894,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     let mut app = make_app();
     let file = std::env::temp_dir().join(format!("tact-popup-{}.rs", std::process::id()));
@@ -908,6 +913,7 @@ fn open_diff_popup_after_read_file_step_finish() {
         tool_name: "read_file".into(),
         arg_summary: path.clone(),
         arg_full: path.clone(),
+        presentation: ToolPresentationInfo::generic("read_file"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -921,6 +927,7 @@ fn open_diff_popup_after_read_file_step_finish() {
             detail: Some("fn popup_real_path() {}".into()),
             duration_us: Some(100),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
         },
     });
 

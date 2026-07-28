@@ -20,6 +20,57 @@ pub enum StepStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolVisualKind {
+    #[default]
+    Generic,
+    FileWrite,
+    FileRead,
+    FileEdit,
+    Command,
+    Task,
+    Subagent,
+    Sleep,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolDetailKind {
+    #[default]
+    None,
+    Result,
+    InputField(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolPopupKind {
+    #[default]
+    None,
+    SubagentTranscript,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPresentationInfo {
+    pub visual_kind: ToolVisualKind,
+    pub display_name: String,
+    pub keep_full_live_output: bool,
+    pub detail: ToolDetailKind,
+    pub popup: ToolPopupKind,
+    pub compact_result_to_meta: bool,
+}
+
+impl ToolPresentationInfo {
+    pub fn generic(name: impl Into<String>) -> Self {
+        Self {
+            visual_kind: ToolVisualKind::Generic,
+            display_name: name.into(),
+            keep_full_live_output: false,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::None,
+            compact_result_to_meta: false,
+        }
+    }
+}
+
 /// Structured result of a step execution.
 #[derive(Debug, Clone)]
 pub struct StepResult {
@@ -35,6 +86,8 @@ pub struct StepResult {
     pub duration_us: Option<u64>,
     /// Permission choice label when the user was prompted (e.g. "Allow once").
     pub permission_label: Option<String>,
+    /// Presentation metadata for the TUI rendering layer.
+    pub presentation: ToolPresentationInfo,
 }
 
 /// Parameters for a model API call.
@@ -136,6 +189,8 @@ pub enum AgentUpdate {
         arg_summary: String,
         /// Full tool argument summary (untruncated), used by detailed UI views.
         arg_full: String,
+        /// Presentation metadata for the TUI rendering layer.
+        presentation: ToolPresentationInfo,
     },
     /// A step succeeded, with structured result.
     StepFinished {
@@ -199,6 +254,14 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
+    /// Update tool-card metadata (model name, token usage) without
+    /// cluttering the output stream. Emitted by subagents to keep
+    /// the parent tool card header up to date.
+    ToolMeta {
+        tool_id: String,
+        model: Option<String>,
+        token_usage: Option<TokenUsageInfo>,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -234,6 +297,14 @@ pub enum UserCommand {
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)
     QueryStats,
+    /// Set the active permission mode.
+    /// The TUI sends this after the user picks through the `/permission` popup.
+    /// Only affects the in-memory session; config is never written.
+    SetPermissionMode(String),
+    /// Set the active session's thinking budget for subsequent LLM requests.
+    /// The TUI sends this after `/model` budget confirmation; config persistence
+    /// is a separate optional local flow.
+    SetThinkingBudget(usize),
 }
 
 /// A single step in the execution plan.
@@ -282,7 +353,22 @@ impl PlanStep {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentUpdate, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason};
+    use super::{
+        AgentUpdate, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ToolDetailKind,
+        ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
+    };
+
+    #[test]
+    fn generic_tool_presentation_has_no_native_privileges() {
+        let presentation = ToolPresentationInfo::generic("mcp__demo__search");
+
+        assert_eq!(presentation.visual_kind, ToolVisualKind::Generic);
+        assert_eq!(presentation.display_name, "mcp__demo__search");
+        assert_eq!(presentation.detail, ToolDetailKind::Result);
+        assert_eq!(presentation.popup, ToolPopupKind::None);
+        assert!(!presentation.keep_full_live_output);
+        assert!(!presentation.compact_result_to_meta);
+    }
 
     #[test]
     fn tasks_changed_snapshot_round_trips_fields() {

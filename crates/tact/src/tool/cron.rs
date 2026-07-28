@@ -1,6 +1,12 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -17,7 +23,26 @@ pub struct CronCreateInput {
     pub durable: bool,
 }
 
-#[tool(name = "cron_create", description = "Create a scheduled prompt.")]
+pub const CRON_CREATE_METADATA: ToolMetadata = ToolMetadata {
+    name: "cron_create",
+    description: "Create a scheduled prompt.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "cron" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "⏰ Cron Create",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the cron expression is invalid or the scheduler
@@ -33,7 +58,26 @@ pub struct CronDeleteInput {
     pub id: String,
 }
 
-#[tool(name = "cron_delete", description = "Delete a scheduled prompt.")]
+pub const CRON_DELETE_METADATA: ToolMetadata = ToolMetadata {
+    name: "cron_delete",
+    description: "Delete a scheduled prompt.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "cron" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "⏰ Cron Delete",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the task ID does not exist or the scheduler
@@ -45,7 +89,26 @@ pub async fn cron_delete(ctx: ToolContext, input: CronDeleteInput) -> Result<Str
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CronListInput {}
 
-#[tool(name = "cron_list", description = "List scheduled prompts.")]
+pub const CRON_LIST_METADATA: ToolMetadata = ToolMetadata {
+    name: "cron_list",
+    description: "List scheduled prompts.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "⏰ Cron List",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the scheduler encounters an internal error.

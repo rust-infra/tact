@@ -134,12 +134,24 @@ snapshot_max_items = 80
 micro_compact_enabled = true
 
 [ui]
-theme = "retro"
+theme = "ink"
 # Attached images (`@file.png`, `![alt](path)`); compress only reduces tokens —
 # the model/endpoint must still support vision (see Ch 22 / Ch 23).
 # vision_image.compress = true
 # vision_image.max_edge = 1280
 # vision_image.jpeg_quality = 80
+
+[voice]
+# Independent from [llm.providers.*]; disabled by default.
+# enabled = false
+# provider = "openai"
+# api_key = ""
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini-transcribe"
+# language = "zh"
+# max_duration_secs = 300
+# Optional keyboard toggle: "ctrl+<char>" (e.g. "ctrl+g"); mouse-only when unset.
+# voice_keybind = "ctrl+g"
 
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
@@ -183,10 +195,31 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
 | `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
-| `ui.theme` | `"retro"` | — |
+| `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
 | `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |
+| `voice.enabled` | `false` | — |
+| `voice.provider` | `openai` | `openai` / `whisper_cpp` |
+| `voice.base_url` | `https://api.openai.com/v1` (openai) / `http://127.0.0.1:8080` (whisper_cpp) | — |
+| `voice.model` | `gpt-4o-mini-transcribe` (openai) / empty (whisper_cpp) | — |
+| `voice.language` | `zh` | — |
+| `voice.max_duration_secs` | `300` (valid `1..=600`) | — |
+| `voice.voice_keybind` | unset (mouse-only) | `ctrl+<char>` (e.g. `ctrl+g`) |
+
+### `[voice]` — speech-to-text input (macOS-first)
+
+Independent API key and endpoint from `[llm.providers.*]`. `provider = "openai"` (default) sends
+audio to `{base_url}/audio/transcriptions` and requires `api_key`. `provider = "whisper_cpp"`
+sends to `{base_url}/inference` with no auth and no `model` field, for use with a local
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) server. Transcripts are inserted into the
+input box for review (never auto-submitted). `enabled = false` hides the centered title-bar
+button. `enabled = true` without `api_key` (openai only) still shows the button and reports
+`[voice].api_key` on click. Optional `voice_keybind = "ctrl+<char>"` toggles recording from any
+input mode; only an exact match consumes the key event (other keys still reach Insert/Normal).
+Unset keeps mouse-only control. The configured shortcut appears in the help panel (`Ctrl+?`).
+Empty, multi-character, or non-`ctrl` keybinds fail at config resolution. Credentials are not
+logged or written to session history.
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 

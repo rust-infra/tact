@@ -1,23 +1,13 @@
 //! Human-readable titles for `task_*` tool rows and related UI strings.
 
+use crate::tool::TaskOperation;
 use serde_json::Value;
 
 use super::{SharedTaskManager, TaskRecord, TaskStatus};
 
-/// True for the four persistent-task tools.
-pub fn is_task_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "task_create" | "task_update" | "task_get" | "task_list"
-    )
-}
-
 /// Build the TUI/tool title for a task tool call.
-///
-/// `before` is the record prior to mutation (update/get); ignored for create/list.
-/// `after` is the post-mutation record when known (preferred for finished steps).
 pub fn format_task_tool_title(
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     before: Option<&TaskRecord>,
     after: Option<&TaskRecord>,
@@ -27,7 +17,7 @@ pub fn format_task_tool_title(
         .map(|r| r.id)
         .or_else(|| input.get("task_id").and_then(|v| v.as_u64()));
 
-    let primary = primary_action(name, input, before, after);
+    let primary = primary_action(op, input, before, after);
     let mut parts: Vec<String> = Vec::new();
 
     let head = match id {
@@ -41,7 +31,7 @@ pub fn format_task_tool_title(
         .or_else(|| input.get("subject").and_then(|v| v.as_str()))
         .unwrap_or("");
     if !subject.is_empty() {
-        parts.push(format!("任务名: {subject}"));
+        parts.push(format!("subject: {subject}"));
     }
 
     let owner = record.map(|r| r.owner.as_str()).unwrap_or("");
@@ -52,7 +42,7 @@ pub fn format_task_tool_title(
         owner_from_input.unwrap_or("")
     };
     if !owner_show.is_empty() {
-        parts.push(format!("负责人:{owner_show}"));
+        parts.push(format!("owner:{owner_show}"));
     }
 
     let before_bb = before.map(|r| r.blocked_by.as_slice()).unwrap_or(&[]);
@@ -61,7 +51,7 @@ pub fn format_task_tool_title(
     let after_bl = record.map(|r| r.blocks.as_slice()).unwrap_or(before_bl);
 
     // If we only have input intent (pre-exec update), predict after lists.
-    let (bb_old, bb_new, bl_old, bl_new) = if after.is_none() && name == "task_update" {
+    let (bb_old, bb_new, bl_old, bl_new) = if after.is_none() && op == TaskOperation::Update {
         let mut pred_bb = before_bb.to_vec();
         let mut pred_bl = before_bl.to_vec();
         merge_ids(&mut pred_bb, input_u64_list(input, "addBlockedBy"));
@@ -78,12 +68,15 @@ pub fn format_task_tool_title(
 
     if !bb_new.is_empty() || !bb_old.is_empty() {
         parts.push(format!(
-            "被阻塞于: {}",
+            "blocked by: {}",
             format_id_transition(&bb_old, &bb_new)
         ));
     }
     if !bl_new.is_empty() || !bl_old.is_empty() {
-        parts.push(format!("阻塞: {}", format_id_transition(&bl_old, &bl_new)));
+        parts.push(format!(
+            "blocks: {}",
+            format_id_transition(&bl_old, &bl_new)
+        ));
     }
 
     parts.join(" * ")
@@ -92,7 +85,7 @@ pub fn format_task_tool_title(
 /// Resolve title using the live task manager (lookup before/after by id).
 pub fn format_task_tool_title_with_manager(
     manager: &SharedTaskManager,
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     prefer_after: bool,
 ) -> String {
@@ -101,7 +94,7 @@ pub fn format_task_tool_title_with_manager(
     let after = if prefer_after {
         id.and_then(|id| manager.get(id).ok()).or_else(|| {
             // create: try newest matching subject
-            if name == "task_create" {
+            if op == TaskOperation::Create {
                 let subject = input.get("subject").and_then(|v| v.as_str())?;
                 let list = manager.list().ok()?;
                 list.into_iter()
@@ -115,7 +108,7 @@ pub fn format_task_tool_title_with_manager(
         None
     };
     format_task_tool_title(
-        name,
+        op,
         input,
         before.as_ref(),
         if prefer_after {
@@ -127,16 +120,16 @@ pub fn format_task_tool_title_with_manager(
 }
 
 fn primary_action(
-    name: &str,
+    op: TaskOperation,
     input: &Value,
     before: Option<&TaskRecord>,
     after: Option<&TaskRecord>,
 ) -> &'static str {
-    match name {
-        "task_create" => "创建任务",
-        "task_list" => "列出任务",
-        "task_get" => "查看任务",
-        "task_update" => {
+    match op {
+        TaskOperation::Create => "create",
+        TaskOperation::List => "list",
+        TaskOperation::Get => "view",
+        TaskOperation::Update => {
             let status =
                 input
                     .get("status")
@@ -148,47 +141,46 @@ fn primary_action(
                     });
             if let Some(s) = status {
                 return match s {
-                    "in_progress" => "执行任务",
-                    "completed" => "完成任务",
-                    "pending" => "重置任务",
-                    "deleted" => "删除任务",
-                    _ => "更新任务",
+                    "in_progress" => "execute",
+                    "completed" => "complete",
+                    "pending" => "reset",
+                    "deleted" => "delete",
+                    _ => "update",
                 };
             }
             if input.get("owner").and_then(|v| v.as_str()).is_some() {
-                return "设置负责人";
+                return "set owner";
             }
             let add_bb = input_u64_list(input, "addBlockedBy");
             let add_bl = input_u64_list(input, "addBlocks");
             if !add_bb.is_empty() {
-                return "被阻塞于";
+                return "blocked by";
             }
             if !add_bl.is_empty() {
-                return "阻塞";
+                return "blocks";
             }
             // Compare before/after if present
             if let (Some(b), Some(a)) = (before, after) {
                 if b.status != a.status {
                     return match a.status {
-                        TaskStatus::InProgress => "执行任务",
-                        TaskStatus::Completed => "完成任务",
-                        TaskStatus::Pending => "重置任务",
-                        TaskStatus::Deleted => "删除任务",
+                        TaskStatus::InProgress => "execute",
+                        TaskStatus::Completed => "complete",
+                        TaskStatus::Pending => "reset",
+                        TaskStatus::Deleted => "delete",
                     };
                 }
                 if b.owner != a.owner {
-                    return "设置负责人";
+                    return "set owner";
                 }
                 if b.blocked_by != a.blocked_by {
-                    return "被阻塞于";
+                    return "blocked by";
                 }
                 if b.blocks != a.blocks {
-                    return "阻塞";
+                    return "blocks";
                 }
             }
-            "空更新"
+            "no-op"
         }
-        _ => "更新任务",
     }
 }
 
@@ -239,8 +231,8 @@ mod tests {
     #[test]
     fn create_title_without_id() {
         let input = serde_json::json!({"subject": "初始化"});
-        let title = format_task_tool_title("task_create", &input, None, None);
-        assert_eq!(title, "# Task · 创建任务 * 任务名: 初始化");
+        let title = format_task_tool_title(TaskOperation::Create, &input, None, None);
+        assert_eq!(title, "# Task · create * subject: 初始化");
     }
 
     #[test]
@@ -263,19 +255,21 @@ mod tests {
             ..before.clone()
         };
         let input = serde_json::json!({"task_id": 24, "status": "completed"});
-        let title = format_task_tool_title("task_update", &input, Some(&before), Some(&after));
-        assert!(title.starts_with("# Task.24 · 完成任务"), "{title}");
-        assert!(title.contains("任务名: 后端接口"), "{title}");
-        assert!(title.contains("负责人:张2"), "{title}");
-        assert!(title.contains("被阻塞于: [12] -> [12, 24]"), "{title}");
-        assert!(title.contains("阻塞: [20]"), "{title}");
+        let title =
+            format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&after));
+        assert!(title.starts_with("# Task.24 · complete"), "{title}");
+        assert!(title.contains("subject: 后端接口"), "{title}");
+        assert!(title.contains("owner:张2"), "{title}");
+        assert!(title.contains("blocked by: [12] -> [12, 24]"), "{title}");
+        assert!(title.contains("blocks: [20]"), "{title}");
     }
 
     #[test]
     fn empty_update_action() {
         let before = TaskRecord::new(1, "x".into(), None);
         let input = serde_json::json!({"task_id": 1});
-        let title = format_task_tool_title("task_update", &input, Some(&before), Some(&before));
-        assert!(title.contains("空更新"), "{title}");
+        let title =
+            format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&before));
+        assert!(title.contains("no-op"), "{title}");
     }
 }

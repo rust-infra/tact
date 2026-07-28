@@ -187,7 +187,7 @@ Each transition is persisted to disk under `.claude/background/tasks/<id>.json` 
 
 File: `crates/tact/src/permission/mod.rs`
 
-Every tool call is classified and checked against the active permission mode.
+Every tool call is classified and checked against the active permission mode and the loaded permission settings.
 
 ```rust
 pub enum PermissionBehavior {
@@ -197,14 +197,57 @@ pub enum PermissionBehavior {
 }
 ```
 
+### Settings paths
+
+Dynamic allow/ask/deny rules are stored in JSON settings files — not in `config.toml`. Two scopes are loaded at startup:
+
+| Scope | Path |
+|-------|------|
+| Global | `$HOME/.tact/settings.json` |
+| Project | `<workdir>/.tact/settings.json` |
+
+### Settings format
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "bash(command:cargo test *)",
+      "edit_file(path:src/**)"
+    ],
+    "ask": [
+      "bash(command:git push *)"
+    ],
+    "deny": [
+      "bash(command:rm -rf *)"
+    ]
+  }
+}
+```
+
+Rules are strings in a Claude-like tool-and-argument form. A bare tool rule (`read_file`) matches any invocation of that tool. An argument rule (`bash(command:…)`) matches the named JSON input field using glob semantics (`*` / `**`). Unknown top-level and permission fields are preserved when updating the file.
+
 ### Decision flow
 
 See [`ARCHITECTURE.md`](../ARCHITECTURE.md#3-permission-system) for the full diagram. In short:
 
 1. `normalize_capability(tool, input)` computes `CapabilityRisk` (`Read`, `Write`, `High`).
-2. `PermissionManager::check(mode, risk, allowlist)` returns `PermissionBehavior`.
-3. If `Ask`, the TUI shows a `RequestSelect` popup or the headless runtime denies.
-4. User choice transitions the allowlist (`always_allowed_tools`) and returns to `Allow` or `Deny`.
+2. Rules from global and project settings are merged into one effective policy (project loaded second; both scopes participate equally).
+3. `PermissionManager::check(tool_name, risk, input)` evaluates settings rules with `deny > ask > allow` precedence, then applies the mode.
+4. If `Ask`, the TUI shows a `RequestSelect` popup or the headless runtime denies.
+5. User choice transitions the in-memory allowlist and, when **Always allow this tool** is selected, persists the generated parameter-aware rule to the project settings file.
+
+### Scope merge and soft failure
+
+- Global rules are loaded first, project rules second. Both scopes participate in one effective rule set.
+- Missing settings files are treated as empty rule sets.
+- Malformed JSON or invalid individual rules are soft failures: a warning is emitted, the invalid layer is skipped, and normal prompting is preserved.
+
+### Persistence behavior
+
+- **Always allow this tool** writes the narrowest supported rule (e.g. `bash(command:cargo test *)` for a command tool, or `edit_file(path:src/main.rs)`) to `<workdir>/.tact/settings.json` under `permissions.allow`.
+- Writes are atomic (temporary file + rename). Duplicate rules are not added.
+- Unknown JSON fields are preserved. Persistence failures are logged as warnings and must not turn an already-approved invocation into a denial.
 
 ### Mode-specific state machine
 
@@ -215,12 +258,17 @@ stateDiagram-v2
     ClassifyRisk --> Deny: Plan mode + Write
     ClassifyRisk --> Ask: High risk
     ClassifyRisk --> Allow: Auto mode + non-high Write
-    ClassifyRisk --> Ask: Default mode + Write
-    ClassifyRisk --> Allow: tool in always_allowed_tools
+    ClassifyRisk --> CheckSettings: Default mode + Write
+
+    CheckSettings --> Allow: settings allow (non-high risk)
+    CheckSettings --> Deny: settings deny
+    CheckSettings --> Ask: settings ask
 
     Ask --> Allow: user chooses allow once / always allow
     Ask --> Deny: user chooses deny
 ```
+
+The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt except when the existing high-risk policy requires confirmation (high-risk always asks regardless of allow rules). Existing Plan and Auto mode semantics are unchanged.
 
 ---
 

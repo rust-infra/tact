@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::slash_style::{skill_name_set, style_input_skill_line};
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode, VoicePhase};
 
 /// Render command-line input (Palette mode).
 pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
@@ -59,6 +59,12 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         app.input_scroll = (cursor_line - visible_lines + 1) as u16;
     }
 
+    let line_stats = if app.input.is_empty() {
+        None
+    } else {
+        Some((app.input.lines().count(), app.input.chars().count()))
+    };
+
     let lines: Vec<&str> = app.input.split('\n').collect();
     let start = app.input_scroll as usize;
     let end = (start + visible_lines).min(lines.len());
@@ -89,6 +95,10 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         Text::from(styled_lines)
     };
 
+    let bottom_title = line_stats
+        .map(|(total_lines, total_chars)| format!(" 📝 {total_lines}L · {total_chars}chars "))
+        .unwrap_or_default();
+
     // Determine border color: accent when focused (insert mode), normal otherwise
     let border_color = if app.input_mode == InputMode::Insert {
         app.theme.accent
@@ -96,28 +106,82 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         app.theme.border
     };
 
+    // Left title + centered voice as separate Block titles so the top border
+    // stays visible between them (space-padding with a bg would eat the line).
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(app.theme.block_border_type())
+        .border_style(Style::default().fg(border_color))
+        .title(Span::raw(app.msgs().input_box_title))
+        .title_bottom(bottom_title);
+    if let Some((voice_label, voice_style)) = voice_title(app) {
+        block = block
+            .title(Line::from(Span::styled(voice_label, voice_style)).alignment(Alignment::Center));
+    }
+
     let input_para = Paragraph::new(display)
         .style(Style::default().bg(app.theme.input_box_bg))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(app.theme.block_border_type())
-                .border_style(Style::default().fg(border_color))
-                .title(app.msgs().input_box_title)
-                .title_bottom(if !app.input.is_empty() {
-                    let total_lines = lines.len();
-                    let total_chars = app.input.chars().count();
-                    format!(" 📝 {}L · {}chars ", total_lines, total_chars)
-                } else {
-                    String::new()
-                }),
-        );
+        .block(block);
     frame.render_widget(Clear, area);
     frame.render_widget(input_para, area);
+    update_voice_button_area(app, area);
 
     let cursor_x = area.x + 1 + cursor_col as u16;
     let cursor_y = area.y + 1 + (cursor_line - app.input_scroll as usize) as u16;
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn voice_title(app: &App) -> Option<(String, Style)> {
+    if matches!(app.voice.phase, VoicePhase::Disabled) {
+        return None;
+    }
+    let label = voice_button_label(app);
+    if label.is_empty() {
+        return None;
+    }
+    let style = match app.voice.phase {
+        VoicePhase::Idle => Style::default().fg(app.theme.accent),
+        VoicePhase::Recording { .. } => Style::default().fg(app.theme.warning),
+        VoicePhase::Transcribing => Style::default().fg(Color::Rgb(120, 120, 140)),
+        VoicePhase::Disabled => Style::default(),
+    };
+    Some((label, style))
+}
+
+fn voice_button_label(app: &App) -> String {
+    match app.voice.phase {
+        VoicePhase::Disabled => String::new(),
+        VoicePhase::Idle => app.msgs().voice_idle.to_string(),
+        VoicePhase::Recording { started_at } => {
+            let elapsed = started_at.elapsed();
+            format!(
+                "⏹ {:02}:{:02}",
+                elapsed.as_secs() / 60,
+                elapsed.as_secs() % 60
+            )
+        }
+        VoicePhase::Transcribing => app.msgs().voice_transcribing.to_string(),
+    }
+}
+
+fn update_voice_button_area(app: &mut App, area: Rect) {
+    if matches!(app.voice.phase, VoicePhase::Disabled) {
+        app.voice.set_button_area(Rect::default());
+        return;
+    }
+    let label = voice_button_label(app);
+    let width = UnicodeWidthStr::width(label.as_str()) as u16;
+    if width == 0 {
+        app.voice.set_button_area(Rect::default());
+        return;
+    }
+    // Centered Block title: starts at left_border + (inner_width - label_w) / 2.
+    let inner_width = area.width.saturating_sub(2);
+    let x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(inner_width.saturating_sub(width) / 2);
+    app.voice.set_button_area(Rect::new(x, area.y, width, 1));
 }
 
 #[cfg(test)]
@@ -128,7 +192,7 @@ mod render_tests {
         super::test_harness::{buffer_text, make_app},
         render_input_box,
     };
-    use crate::widgets::state::SkillEntry;
+    use crate::widgets::state::{SkillEntry, VoicePhase, VoiceState};
 
     #[test]
     fn input_box_renders_multiline_content() {
@@ -199,5 +263,80 @@ mod render_tests {
             skill_fg, arg_fg,
             "skill and args should use different fg colors"
         );
+    }
+
+    #[test]
+    fn input_box_renders_recording_elapsed_time() {
+        let mut app = make_app();
+        app.voice.phase = VoicePhase::Recording {
+            started_at: std::time::Instant::now() - std::time::Duration::from_secs(8),
+        };
+
+        let backend = TestBackend::new(100, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 100, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("00:08"), "recording elapsed label: {text}");
+    }
+    #[test]
+    fn input_box_keeps_top_border_between_title_and_voice() {
+        let mut app = make_app();
+        app.voice = VoiceState::idle_visible_for_tests();
+
+        // Wide enough that the centered Voice title does not collide with the left title.
+        let backend = TestBackend::new(120, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 120, 5), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        let y = 0u16;
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        // Border glyphs must remain between left title and Voice. Space-padded
+        // titles with a background used to overwrite this segment.
+        let title = app.msgs().input_box_title;
+        let voice = if row.contains("Voice") {
+            "Voice"
+        } else {
+            "语音"
+        };
+        let after_title = row.find(title.trim()).expect("input title") + title.trim().len();
+        let voice_at = row.find(voice).expect("voice label");
+        assert!(
+            voice_at > after_title,
+            "voice should sit after title:\n{row}"
+        );
+        let between = &row[after_title..voice_at];
+        assert!(
+            between.chars().any(|c| c == '─' || c == '━' || c == '-'),
+            "top border between title and voice must not be eaten:\n{row}"
+        );
+    }
+
+    #[test]
+    fn input_box_renders_voice_button_when_enabled() {
+        let mut app = make_app();
+        app.voice = VoiceState::idle_visible_for_tests();
+
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 80, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Voice") || text.contains("语音"),
+            "voice label: {text}"
+        );
+        assert!(!app.voice.button_area.is_empty());
+        assert!(matches!(app.voice.phase, VoicePhase::Idle));
     }
 }

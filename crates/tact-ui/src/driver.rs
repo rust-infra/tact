@@ -180,6 +180,18 @@ async fn handle_user_command_with_account(
             let stats_text = agent.runtime.stats.summary();
             agent.emit_update(AgentUpdate::SessionStats(stats_text));
         }
+        UserCommand::SetPermissionMode(mode) => {
+            let parsed = match mode.as_str() {
+                "plan" => tact::permission::PermissionMode::Plan,
+                "default" => tact::permission::PermissionMode::Default,
+                _ => tact::permission::PermissionMode::Auto,
+            };
+            // TUI already shows the localized confirmation; do not emit Info here.
+            agent.runtime.permission_manager.set_mode(parsed);
+        }
+        UserCommand::SetThinkingBudget(budget) => {
+            agent.set_thinking_budget(budget);
+        }
         _ => {}
     }
 }
@@ -232,5 +244,61 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    #[tokio::test]
+    async fn set_thinking_budget_changes_the_next_request() {
+        install_test_config();
+        let mock = MockClient::with_responder(|request, _| {
+            assert_eq!(
+                request
+                    .thinking
+                    .as_ref()
+                    .map(|thinking| thinking.budget_tokens),
+                Some(64_000)
+            );
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
+        let (mut agent, work_dir) = build_test_agent(mock, None);
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetThinkingBudget(64_000),
+            &work_dir,
+        )
+        .await;
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("use the new budget".into()),
+            &work_dir,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn set_thinking_budget_emits_model_info_for_status_bar() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetThinkingBudget(32_000),
+            &work_dir,
+        )
+        .await;
+
+        let mut saw_model_info = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::ModelInfo(params) = update {
+                assert_eq!(params.thinking_budget, Some(32_000));
+                assert!(params.max_tokens > 32_000);
+                saw_model_info = true;
+            }
+        }
+        assert!(
+            saw_model_info,
+            "SetThinkingBudget must emit ModelInfo so the TUI bar resyncs"
+        );
     }
 }

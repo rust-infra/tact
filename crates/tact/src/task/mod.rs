@@ -22,7 +22,7 @@ use crate::store::{CollectionStore, Store, StoreRoot};
 
 pub use display::{
     format_id_list, format_id_transition, format_task_tool_title,
-    format_task_tool_title_with_manager, is_task_tool,
+    format_task_tool_title_with_manager,
 };
 
 mod display;

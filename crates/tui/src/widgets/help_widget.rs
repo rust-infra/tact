@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 use crate::{i18n::Messages, theme::Theme};
@@ -12,18 +12,20 @@ use crate::{i18n::Messages, theme::Theme};
 pub struct HelpWidget<'a> {
     msgs: &'a Messages,
     theme: &'a Theme,
+    /// Optional voice keybind label (e.g. "Ctrl+G"), shown under Global shortcuts.
+    voice_keybind_label: Option<&'a str>,
 }
 
 impl<'a> Widget for HelpWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let msgs = self.msgs;
         let header_style = Style::default()
-            .fg(Color::Rgb(140, 170, 220))
+            .fg(self.theme.heading)
             .add_modifier(Modifier::BOLD);
         let normal_style = Style::default().fg(self.theme.fg);
         let dim_style = Style::default().fg(Color::Rgb(120, 120, 140));
 
-        let help_text = vec![
+        let mut help_text = vec![
             // ── Main header ──
             Line::from(Span::styled(msgs.help_header_shortcuts, header_style)),
             Line::from(""),
@@ -49,18 +51,30 @@ impl<'a> Widget for HelpWidget<'a> {
             Line::from(Span::styled(msgs.help_ctrl_l, normal_style)),
             Line::from(Span::styled(msgs.help_ctrl_qmark, normal_style)),
             Line::from(Span::styled(msgs.help_q, normal_style)),
-            Line::from(""),
+        ];
+
+        // Voice recording shortcut under Global (only when configured).
+        if let Some(label) = self.voice_keybind_label {
+            help_text.push(Line::from(Span::styled(
+                msgs.help_voice_record_tmpl.replace("{}", label),
+                normal_style,
+            )));
+        }
+
+        help_text.push(Line::from(""));
+        help_text.extend(vec![
             // ── Mouse ──
             Line::from(Span::styled(msgs.help_mouse_header, dim_style)),
             Line::from(Span::styled(msgs.help_click_drag, normal_style)),
             Line::from(Span::styled(msgs.help_scroll, normal_style)),
             Line::from(Span::styled(msgs.help_y_copy, normal_style)),
-        ];
+        ]);
+
         let para = Paragraph::new(help_text)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(self.theme.block_border_type())
                     .title(msgs.help_title),
             )
             .style(Style::default().fg(self.theme.fg).bg(self.theme.bg));
@@ -69,7 +83,11 @@ impl<'a> Widget for HelpWidget<'a> {
 }
 
 impl<'a> HelpWidget<'a> {
-    pub fn new(msgs: &'a Messages, theme: &'a Theme) -> Self {
-        HelpWidget { msgs, theme }
+    pub fn new(msgs: &'a Messages, theme: &'a Theme, voice_keybind_label: Option<&'a str>) -> Self {
+        HelpWidget {
+            msgs,
+            theme,
+            voice_keybind_label,
+        }
     }
 }

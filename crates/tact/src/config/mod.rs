@@ -21,8 +21,9 @@ pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, PluginSubcommand};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, PermissionTomlConfig,
-    ResolvedConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
-    VisionImageSettings, VisionImageTomlConfig,
+    ResolvedConfig, SubagentSettings, SubagentTomlConfig, TactTomlConfig, ToolSettings,
+    ToolsTomlConfig, UiSettings, UiTomlConfig, VisionImageSettings, VisionImageTomlConfig,
+    VoiceProvider, VoiceSettings, VoiceTomlConfig,
 };
 
 static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
@@ -85,6 +86,36 @@ pub fn update_llm_model(model: String) {
     }
 }
 
+/// Update the in-memory active model and thinking budget for this session.
+///
+/// When `thinking_budget` is active and not strictly smaller than `max_tokens`,
+/// expands `max_tokens` to `budget + 1` so the session settings match the agent
+/// auto-expand rule used by [`crate::agent::Agent::set_thinking_budget`].
+pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usize) {
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    if let Some(cfg) = guard.as_mut() {
+        cfg.llm.model = model;
+        cfg.agent.thinking_budget = thinking_budget;
+        if thinking_budget > 0 && (cfg.agent.max_tokens as usize) <= thinking_budget {
+            cfg.agent.max_tokens = u32::try_from(thinking_budget)
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
+        }
+    }
+}
+
+/// Update the in-memory subagent model and thinking budget.
+#[allow(clippy::collapsible_if)]
+pub fn update_subagent_model(model: String, thinking_budget: usize) {
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    if let Some(cfg) = guard.as_mut() {
+        if let Some(ref mut sa) = cfg.agent.subagent {
+            sa.provider.model = model;
+            sa.thinking_budget = thinking_budget;
+        }
+    }
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();
@@ -93,6 +124,33 @@ pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only model change)"))?;
     persist::update_provider_model_in_toml(path, settings.llm.provider.as_str(), model)
+}
+
+/// Persist model and thinking budget under the active provider in the loaded config.
+pub fn persist_active_provider_model_and_thinking_budget(
+    model: &str,
+    thinking_budget: usize,
+) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings
+        .config_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only model change)"))?;
+    persist::update_provider_model_and_thinking_budget_in_toml(
+        path,
+        settings.llm.provider.as_str(),
+        model,
+        thinking_budget,
+    )
+}
+
+/// Persist subagent model and thinking budget to the loaded config file.
+pub fn persist_subagent_model(model: &str, thinking_budget: usize) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only subagent model change)")
+    })?;
+    persist::update_subagent_model_in_toml(path, model, thinking_budget)
 }
 
 /// Parse CLI args, load TOML config, merge with priority CLI > TOML, and install

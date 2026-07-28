@@ -9,12 +9,13 @@ use unicode_width::UnicodeWidthChar;
 use crate::render::{renderable::Renderable, util::wrap_line};
 
 /// Writes a single-line span into the buffer.
-fn render_line(line: &Line, x: u16, y: u16, width: u16, buf: &mut Buffer) {
+fn render_line(line: &Line, x: u16, y: u16, width: u16, bg_color: Color, buf: &mut Buffer) {
     let mut col = x;
     for span in &line.spans {
+        let style = span.style.bg(bg_color);
         for ch in span.content.chars() {
             if col < x + width {
-                buf[(col, y)].set_char(ch).set_style(span.style);
+                buf[(col, y)].set_char(ch).set_style(style);
                 col += UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
             }
         }
@@ -36,6 +37,8 @@ pub(crate) struct TextCell {
     indent_cols: u16,
     /// Normal foreground color.
     fg_color: Color,
+    /// Surface background color applied to every written glyph.
+    bg_color: Color,
 }
 
 impl TextCell {
@@ -46,6 +49,7 @@ impl TextCell {
         prefix: Option<String>,
         indent_cols: u16,
         fg_color: Color,
+        bg_color: Color,
     ) -> Self {
         TextCell {
             cached_lines,
@@ -54,6 +58,7 @@ impl TextCell {
             prefix,
             indent_cols,
             fg_color,
+            bg_color,
         }
     }
 
@@ -131,7 +136,7 @@ impl Renderable for TextCell {
             {
                 first.content = format!("{}{}", prefix, first.content).into();
             }
-            render_line(&line, x, y, width, buf);
+            render_line(&line, x, y, width, self.bg_color, buf);
             // y advances via zip
         }
     }
@@ -156,6 +161,7 @@ mod render_tests {
             None,
             0,
             Color::White,
+            Color::Black,
         )
     }
 
@@ -168,6 +174,7 @@ mod render_tests {
             None,
             0,
             Color::White,
+            Color::Black,
         );
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
@@ -192,6 +199,7 @@ mod render_tests {
             None,
             0,
             Color::White,
+            Color::Black,
         );
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
@@ -209,5 +217,29 @@ mod render_tests {
             "word selection should reverse the target word spans"
         );
         assert_eq!(sample_cell().height(40), 1);
+    }
+
+    #[test]
+    fn normal_text_replaces_prior_cell_background_with_surface_color() {
+        let surface_bg = Color::Rgb(13, 13, 13);
+        let old_card_bg = Color::Rgb(30, 35, 50);
+        let cell = TextCell::new(
+            vec![Line::from("plain log row")],
+            "plain log row".into(),
+            None,
+            None,
+            0,
+            Color::White,
+            surface_bg,
+        );
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        buf.set_style(area, Style::default().bg(old_card_bg));
+
+        cell.render(area, &mut buf);
+
+        assert_eq!(buf[(0, 0)].symbol(), "p");
+        assert_eq!(buf[(0, 0)].bg, surface_bg);
+        assert_ne!(buf[(0, 0)].bg, old_card_bg);
     }
 }

@@ -9,9 +9,9 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+    style::Style,
+    text::Line,
+    widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
 use super::selectable_text::{PopupLayoutCache, layout_all_display_rows};
@@ -56,12 +56,9 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     }
 
     let popup_area = super::centered_popup_area(area);
-    let body_area = Rect::new(
-        popup_area.x.saturating_add(1),
-        popup_area.y.saturating_add(3),
-        popup_area.width.saturating_sub(2),
-        popup_area.height.saturating_sub(4),
-    );
+
+    // Determine body width for cache validity before rendering chrome
+    let body_area = super::popup_inner(popup_area);
 
     let cache_valid = app
         .subagent_popup
@@ -87,42 +84,28 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
     let max_scroll = total.saturating_sub(content_height);
     let scroll = (scroll as usize).min(max_scroll);
 
-    let code_bg = app.theme.code_block_bg();
-
     let header = if is_live {
         format!(" {} (live, {} lines) ", title, cache.line_count)
     } else {
         format!(" {} ({} lines) ", title, cache.line_count)
     };
 
-    let title_style = Style::default()
-        .fg(app.theme.code_card_title_fg())
-        .add_modifier(Modifier::BOLD);
-
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(app.theme.block_border_type())
-        .border_style(Style::default().fg(app.theme.code_card_border()))
-        .title_top(Line::from(Span::styled(&header, title_style)))
-        .title_bottom(Line::from(vec![
-            Span::styled(
-                app.msgs().popup_copy_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-            Span::styled(
-                app.msgs().popup_close_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-            Span::styled(
-                app.msgs().popup_scroll_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-        ]))
-        .style(Style::default().bg(code_bg));
-
-    frame.render_widget(block, popup_area);
+    let footer: &[super::FooterHint] = &[
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+    ];
+    let inner = super::render_popup_chrome(frame, popup_area, &app.theme, &header, Some(footer));
+    let body_area = inner;
 
     let selection_range = selection.and_then(|sel| sel.normalized_non_empty(raw_text));
 

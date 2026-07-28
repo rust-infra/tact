@@ -1,5 +1,6 @@
 use ratatui::{
     Frame,
+    buffer::{Buffer, CellDiffOption},
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
@@ -11,6 +12,7 @@ use crate::{
         cells::{thinking::ThinkingCell, tool::ToolCell},
         util::wrap_line,
     },
+    theme::Theme,
     widgets::state::App,
 };
 
@@ -456,6 +458,7 @@ pub(crate) fn render_log_panel_with_borders(
             None,
             indent_cols,
             log_fg,
+            app.theme.bg,
         );
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
@@ -504,7 +507,9 @@ pub(crate) fn render_log_panel_with_borders(
         .begin_symbol(Some("▲"))
         .end_symbol(Some("▼"))
         .track_symbol(Some("│"))
-        .thumb_symbol("█")
+        // Half-block thumb: if a terminal briefly desyncs around wide emoji titles,
+        // a full `█` ghost on the left chrome reads as a hard "shadow"; `▐` is quieter.
+        .thumb_symbol("▐")
         .begin_style(Style::default().fg(app.theme.border))
         .end_style(Style::default().fg(app.theme.border))
         .track_style(Style::default().fg(app.theme.border))
@@ -521,8 +526,38 @@ pub(crate) fn render_log_panel_with_borders(
         .position(sb_position);
     frame.render_stateful_widget(scrollbar, area, &mut state);
 
+    // Wide graphemes in card titles (e.g. 🧠) can desync some terminals' cursors while the
+    // accent scrollbar thumb (`█`) is also being painted. Ghost thumb cells then stick on the
+    // left chrome because unchanged border cells are skipped by Buffer::diff. Force-emit the
+    // left border every frame so those residues cannot persist.
+    restamp_log_left_border(frame.buffer_mut(), area, borders, &app.theme);
+
     // Persist prefix-sum cache for mouse hit-testing and scroll handlers outside render.
     app.log_scroll.visual_start = app.log_scroll.visual_start_cache.clone();
+}
+
+/// Re-assert the log panel's left vertical border and mark it `AlwaysUpdate`.
+///
+/// Corners stay owned by the outer `Block`; this only refreshes the vertical span.
+fn restamp_log_left_border(buf: &mut Buffer, area: Rect, borders: Borders, theme: &Theme) {
+    if !borders.contains(Borders::LEFT) || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let top = u16::from(borders.contains(Borders::TOP));
+    let bottom = u16::from(borders.contains(Borders::BOTTOM));
+    let y0 = area.y.saturating_add(top);
+    let y1 = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(bottom)
+        .max(y0);
+    let style = Style::default().fg(theme.border).bg(theme.bg);
+    for y in y0..y1 {
+        let cell = &mut buf[(area.x, y)];
+        cell.set_symbol("│");
+        cell.set_style(style);
+        cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+    }
 }
 
 /// Map a clamped logical scroll offset to the first visible visual line.

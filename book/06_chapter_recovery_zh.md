@@ -111,7 +111,7 @@ flowchart TB
     Classify -->|均不匹配，或<br/>次数用尽| Fail([return Err])
 
     Reset --> Stop{stop_reason?}
-    Stop -->|MaxTokens<br/>attempts < 3| Cont[执行 pending tools，<br/>push CONTINUATION_MESSAGE]
+    Stop -->|MaxTokens<br/>attempts < 3| Cont[执行 pending tools，<br/>选择续写提示]
     Cont --> Retry
     Stop -->|ToolUse| Tools[execute_tool_call]
     Tools --> Retry
@@ -127,6 +127,8 @@ flowchart TB
 [Recovery] continue (1/3): output truncated
 ```
 
+对于输出上限恢复，第 1 次续写使用直接接续提示。如果模型再次被截断，第 2、3 次续写切换到收敛提示：停止扩展分析，不再重复场景，只返回包含结论、已确认问题和最小修复建议的简洁结构化结果。尝试计数和最多 3 次的上限保持不变。
+
 ---
 
 ## 6. 输出上限续写
@@ -137,9 +139,23 @@ flowchart TB
 pub const CONTINUATION_MESSAGE: &str =
     "Output limit hit. Continue directly from where you stopped. \
 No recap, no repetition. Pick up mid-sentence if needed.";
+
+pub const CONVERGENCE_CONTINUATION_MESSAGE: &str =
+    "Your response has been truncated repeatedly. Stop expanding the analysis and \
+do not revisit the same scenarios. Return only the final actionable result in a \
+concise structured format: conclusion, verified issues, and minimal fixes. \
+Do not recap, repeat, or speculate.";
+
+pub fn continuation_message(attempt: u32) -> &'static str {
+    if attempt <= 1 {
+        CONTINUATION_MESSAGE
+    } else {
+        CONVERGENCE_CONTINUATION_MESSAGE
+    }
+}
 ```
 
-续写消息会像普通用户消息一样持久化到 session store，恢复会话时可正确回放。
+续写消息会像普通用户消息一样持久化到 session store，恢复会话时可正确回放，包括阶段切换。
 
 ### 微妙的 400 风险：空 assistant 消息
 

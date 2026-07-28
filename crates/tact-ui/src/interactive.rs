@@ -8,7 +8,7 @@ use tact::{
     cron::{CronScheduler, SharedCronScheduler},
     mcp::load_mcp_router,
     memory::get_memory_manager,
-    permission::PermissionManager,
+    permission::{PermissionManager, settings::PermissionSettings},
     store::{DynSessionStore, StoreRoot},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
@@ -77,7 +77,8 @@ async fn run_interactive_locked(
 
     let client = get_llm_client()?;
     let mode = permission_mode_from_config();
-    let permission_manager = PermissionManager::try_new(mode)?;
+    let settings = PermissionSettings::load(&tact_path);
+    let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     eprintln!("[permission: {mode}]");
 
     let work_dir = tact_path.workdir().to_path_buf();
@@ -177,6 +178,12 @@ async fn run_interactive_locked(
             model_name,
             model_max_tokens,
             model_thinking_budget,
+            permission_mode: match tact::config::settings().permission_mode.as_deref() {
+                Some("plan") => "plan",
+                Some("default") => "default",
+                _ => "auto",
+            }
+            .to_string(),
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()
@@ -193,6 +200,12 @@ async fn run_interactive_locked(
                     .collect()
             },
             skill_registry,
+            voice: tact::config::settings().voice.clone(),
+            voice_parsed_keybind: tact::config::settings()
+                .voice
+                .voice_keybind
+                .as_deref()
+                .and_then(tui::parse_voice_keybind),
         })
         .await
     }));

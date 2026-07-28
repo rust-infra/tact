@@ -41,6 +41,7 @@ pub mod task;
 pub mod team;
 pub mod tool;
 pub mod utils;
+pub mod voice;
 pub mod worktree;
 
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};

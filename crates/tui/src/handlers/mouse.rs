@@ -3,7 +3,8 @@
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use crate::widgets::state::{
-    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition,
+    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
+    VoiceStartResult,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -95,6 +96,10 @@ fn sticky_scrollable(app: &App) -> bool {
 }
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
+    if point_in_rect(mouse.column, mouse.row, app.voice.button_area) {
+        handle_voice_button_click(app);
+        return;
+    }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
@@ -107,6 +112,27 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if hit.in_log {
         app.mouse.in_task_panel = false;
         handle_log_click(app, mouse);
+    }
+}
+
+fn handle_voice_button_click(app: &mut App) {
+    match app.voice.phase {
+        VoicePhase::Idle => match app.voice.try_start() {
+            VoiceStartResult::MissingApiKey => {
+                app.flash_msg = Some((
+                    app.msgs().voice_missing_config.to_string(),
+                    std::time::Instant::now(),
+                ));
+                app.dirty = true;
+            }
+            VoiceStartResult::Started => app.dirty = true,
+            VoiceStartResult::Ignored => {}
+        },
+        VoicePhase::Recording { .. } => {
+            app.voice.stop();
+            app.dirty = true;
+        }
+        VoicePhase::Transcribing | VoicePhase::Disabled => {}
     }
 }
 
@@ -361,7 +387,7 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus};
+    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
 
     use super::*;
     use crate::{
@@ -422,6 +448,38 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(20, 10));
         assert!(!app.task_panel.expanded);
         assert!(!app.task_panel.expanded);
+    }
+
+    #[test]
+    fn voice_button_click_starts_and_stops_recording() {
+        use tact::voice::VoiceCommand;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let mut app = make_app();
+        let (cmd_tx, mut cmd_rx) = unbounded_channel();
+        let (_event_tx, event_rx) = unbounded_channel();
+        app.voice = crate::widgets::state::VoiceState::enabled(
+            tact::voice::VoiceWorkerHandle::stub_for_test(cmd_tx, event_rx),
+            false,
+        );
+        let title_row = 0u16;
+        let button_x = 70u16;
+        app.voice
+            .set_button_area(Rect::new(button_x, title_row, 8, 1));
+
+        handle_mouse_event(&mut app, mouse_down(button_x, title_row));
+        assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Start)));
+
+        app.voice
+            .apply_event(tact::voice::VoiceEvent::RecordingStarted);
+        handle_mouse_event(&mut app, mouse_down(button_x, title_row));
+        assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Stop)));
+
+        handle_mouse_event(&mut app, mouse_down(1, title_row));
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "outside click should not send commands"
+        );
     }
 
     fn popup_hit_row(screen_y: u16, text_x: u16, line_start: usize, text: &str) -> PopupHitRow {
@@ -730,6 +788,7 @@ mod tests {
             tool_name: "bash".into(),
             arg_summary: "echo hi".into(),
             arg_full: "echo hi".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -743,6 +802,7 @@ mod tests {
                 detail: Some("hi\n".into()),
                 duration_us: Some(1),
                 permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
             },
         });
 
@@ -772,6 +832,7 @@ mod tests {
             tool_name: "bash".into(),
             arg_summary: "echo hi".into(),
             arg_full: "echo hi".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -785,6 +846,7 @@ mod tests {
                 detail: Some("hi\n".into()),
                 duration_us: Some(1),
                 permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
             },
         });
 

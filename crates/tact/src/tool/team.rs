@@ -1,6 +1,12 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -11,7 +17,26 @@ pub struct SpawnTeammateInput {
     pub role: String,
 }
 
-#[tool(name = "spawn_teammate", description = "Create a named teammate.")]
+pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata {
+    name: "spawn_teammate",
+    description: "Create a named teammate.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "👥 Team Spawn",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if a teammate with the same name already exists.
@@ -22,7 +47,26 @@ pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Resu
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListTeammatesInput {}
 
-#[tool(name = "list_teammates", description = "List teammates.")]
+pub const LIST_TEAMMATES_METADATA: ToolMetadata = ToolMetadata {
+    name: "list_teammates",
+    description: "List teammates.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "👥 Team List",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the teammate manager fails to retrieve the list.
@@ -37,10 +81,26 @@ pub struct SendMessageInput {
     pub body: String,
 }
 
-#[tool(
-    name = "send_message",
-    description = "Send a message to a teammate inbox."
-)]
+pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata {
+    name: "send_message",
+    description: "Send a message to a teammate inbox.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "✉️ Msg",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the recipient does not exist or the teammate
@@ -56,10 +116,26 @@ pub struct BroadcastInput {
     pub body: String,
 }
 
-#[tool(
-    name = "broadcast",
-    description = "Broadcast a message to all teammates."
-)]
+pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata {
+    name: "broadcast",
+    description: "Broadcast a message to all teammates.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "📢 Broadcast",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the teammate manager fails to deliver the broadcast.
@@ -72,7 +148,26 @@ pub struct ReadInboxInput {
     pub owner: String,
 }
 
-#[tool(name = "read_inbox", description = "Read a teammate inbox.")]
+pub const READ_INBOX_METADATA: ToolMetadata = ToolMetadata {
+    name: "read_inbox",
+    description: "Read a teammate inbox.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "📬 Inbox",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the owner does not exist or the teammate
@@ -88,10 +183,26 @@ pub struct ProtocolInput {
     pub body: String,
 }
 
-#[tool(
-    name = "plan_approval",
-    description = "Send a durable plan approval protocol message."
-)]
+pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata {
+    name: "plan_approval",
+    description: "Send a durable plan approval protocol message.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "✅ Approve",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the recipient does not exist or the teammate
@@ -105,10 +216,26 @@ pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<Str
     )
 }
 
-#[tool(
-    name = "shutdown_request",
-    description = "Send a shutdown request protocol message."
-)]
+pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata {
+    name: "shutdown_request",
+    description: "Send a shutdown request protocol message.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🔌 Shutdown Request",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the recipient does not exist or the teammate
@@ -122,10 +249,26 @@ pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<
     )
 }
 
-#[tool(
-    name = "shutdown_response",
-    description = "Send a shutdown response protocol message."
-)]
+pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata {
+    name: "shutdown_response",
+    description: "Send a shutdown response protocol message.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::SharedState { scope: "team" },
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🔌 Shutdown Response",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if the recipient does not exist or the teammate

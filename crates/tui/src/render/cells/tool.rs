@@ -14,7 +14,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
-use tact_protocol::{ToolOutputLine, ToolOutputStream};
+use tact_protocol::{TokenUsageInfo, ToolOutputLine, ToolOutputStream};
 
 use crate::{
     i18n::Messages,
@@ -55,6 +55,8 @@ pub(crate) struct ToolCell {
     warning: Color,
     error: Color,
     card_border_type: BorderType,
+    subagent_model: Option<String>,
+    subagent_tokens: Option<TokenUsageInfo>,
 }
 
 impl ToolCell {
@@ -103,6 +105,8 @@ impl ToolCell {
             warning,
             error,
             card_border_type,
+            subagent_model: output.subagent_model,
+            subagent_tokens: output.subagent_tokens,
         }
     }
 
@@ -112,7 +116,7 @@ impl ToolCell {
         } else {
             self.duration_us
         };
-        let text = build_meta_text(
+        let mut text = build_meta_text(
             self.phase,
             self.permission_label.as_deref(),
             self.size_bytes,
@@ -128,6 +132,15 @@ impl ToolCell {
             self.step_success_prefix,
             self.step_fail_prefix,
         );
+        // Subagent metadata: model name + compact token total appended to meta row.
+        if let Some(ref model) = self.subagent_model {
+            text.push_str(self.tool_meta_sep);
+            text.push_str(&format!("🤖 {model}"));
+        }
+        if let Some(ref tokens) = self.subagent_tokens {
+            text.push_str(self.tool_meta_sep);
+            text.push_str(&format!("⚡ {}", format_tokens_compact(tokens.total)));
+        }
         let style = match self.phase {
             ToolPhase::Running => Style::default().fg(self.warning),
             ToolPhase::Success => Style::default().fg(self.success),
@@ -442,6 +455,28 @@ impl Renderable for ToolCell {
     }
 }
 
+/// Compact token count for tool-card meta rows (e.g. "4.2K", "1.3M").
+fn format_tokens_compact(n: u32) -> String {
+    let n = u64::from(n);
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        let k = n as f64 / 1_000.0;
+        if (k * 10.0).round() % 10.0 == 0.0 {
+            format!("{k:.0}K")
+        } else {
+            format!("{k:.1}K")
+        }
+    } else {
+        let m = n as f64 / 1_000_000.0;
+        if (m * 10.0).round() % 10.0 == 0.0 {
+            format!("{m:.0}M")
+        } else {
+            format!("{m:.1}M")
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 //
 // Tests use `ToolRenderOutput` / `ToolLayout` from `widgets::tool_widget`
@@ -494,6 +529,9 @@ mod tests {
             detail_total_lines: total,
             detail_full: None,
             card_bottom: " Double-click for full code ".into(),
+            subagent_model: None,
+            subagent_tokens: None,
+            visual_kind: tact_protocol::ToolVisualKind::FileWrite,
         }
     }
 

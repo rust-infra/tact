@@ -11,7 +11,7 @@ mod skills;
 
 use chrono::Local;
 pub(crate) use file_picker::handle_file_picker_mode;
-pub(crate) use insert::handle_insert_mode;
+pub(crate) use insert::{handle_insert_mode, insert_transcript};
 pub(crate) use mouse::handle_mouse_event;
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use overlay::handle_overlay_key;
@@ -261,6 +261,20 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "model-subagent" => {
+            crate::handlers::select::start_subagent_model_picker(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        "permission" => {
+            start_permission_picker(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "view-system-prompt" => {
             app.select.set_local(
                 "View system prompt".to_string(),
@@ -504,6 +518,29 @@ pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
     // Skill list affects log highlighting; force visual-cache rebuild.
     app.log_scroll.visual_cache_ver = 0;
     Ok(app.skills_data.len())
+}
+
+/// Open the `/permission` SelectPopup from palette / slash command.
+pub(crate) fn start_permission_picker(app: &mut App) {
+    let msgs = app.msgs();
+    let options = vec![
+        msgs.permission_option_default.to_string(),
+        msgs.permission_option_plan.to_string(),
+        msgs.permission_option_auto.to_string(),
+    ];
+    let current = match app.status_bar.permission_mode.as_str() {
+        "plan" => 1,
+        "auto" => 2,
+        _ => 0,
+    };
+    app.select_kind = crate::widgets::state::SelectKind::PermissionModePick;
+    app.select.set_local(
+        msgs.permission_select_prompt.to_string(),
+        options,
+        current,
+        true,
+    );
+    app.input_mode = crate::widgets::state::InputMode::Select;
 }
 
 #[cfg(test)]

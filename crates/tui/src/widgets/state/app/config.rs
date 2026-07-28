@@ -54,6 +54,8 @@ impl App {
             ThemeName::Kawaii => msgs.theme_kawaii,
             ThemeName::Japanese => msgs.theme_japanese,
             ThemeName::Brutal => msgs.theme_brutal,
+            ThemeName::Ink => msgs.theme_ink,
+            ThemeName::InkLight => msgs.theme_ink_light,
         };
         self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
         self.theme = Theme::from(next_name);
@@ -68,6 +70,7 @@ impl App {
         match cmd {
             "theme" => msgs.cmd_theme.to_string(),
             "model" => msgs.cmd_model.to_string(),
+            "model-subagent" => msgs.cmd_model_subagent.to_string(),
             "save" => msgs.cmd_save.to_string(),
             "cancel" => msgs.cmd_cancel.to_string(),
             "quit" => msgs.cmd_quit.to_string(),
@@ -98,12 +101,12 @@ mod tests {
     use crate::{render::test_harness::make_app, theme::ThemeName};
 
     #[test]
-    fn toggle_theme_cycles_from_retro() {
+    fn toggle_theme_cycles_from_ink() {
         let mut app = make_app();
-        assert_eq!(app.theme.name, ThemeName::Retro);
+        assert_eq!(app.theme.name, ThemeName::Ink);
 
         app.toggle_theme();
-        assert_ne!(app.theme.name, ThemeName::Retro);
+        assert_ne!(app.theme.name, ThemeName::Ink);
         assert!(
             app.raw_messages
                 .iter()

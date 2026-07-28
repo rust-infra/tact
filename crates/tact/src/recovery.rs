@@ -4,8 +4,12 @@
 //! (network timeout, rate limit) or permanent (prompt too long).  Transient
 //! errors are retried with exponential back-off (see [`backoff_delay`]).
 //!
-//! - [`CONTINUATION_MESSAGE`]: appended when the LLM hits its output limit,
-//!   asking it to pick up mid-response.
+//! - [`CONTINUATION_MESSAGE`]: appended when the LLM hits its output limit
+//!   on the first attempt, asking it to pick up mid-response.
+//! - [`CONVERGENCE_CONTINUATION_MESSAGE`]: used on repeated truncations to
+//!   stop further expansion and request only a concise final result.
+//! - [`continuation_message`]: selector that chooses the direct-resume prompt
+//!   on attempt 1 and the convergence prompt on later attempts.
 //! - [`MAX_COMPACT_ATTEMPTS`]: prompt-too-long compaction retries.
 //! - [`MAX_TRANSPORT_ATTEMPTS`]: transient network error retries (higher for
 //!   long-running tasks that may encounter multiple intermittent failures).
@@ -32,6 +36,21 @@ const BACKOFF_MAX_DELAY_SECS: f64 = 30.0;
 
 pub const CONTINUATION_MESSAGE: &str = "Output limit hit. Continue directly from where you stopped. \
 No recap, no repetition. Pick up mid-sentence if needed.";
+
+pub const CONVERGENCE_CONTINUATION_MESSAGE: &str = "Your response has been truncated repeatedly. Stop expanding the analysis and do not revisit the same scenarios. Return only the final actionable result in a concise structured format: conclusion, verified issues, and minimal fixes. Do not recap, repeat, or speculate.";
+
+/// Returns the continuation prompt appropriate for the current attempt index.
+///
+/// During continuation recovery, attempt 1 uses the direct-resume prompt. If the model
+/// is truncated again, attempts 2 and 3 switch to a convergence prompt that requests
+/// only concise actionable conclusions without further expansion.
+pub fn continuation_message(attempt: u32) -> &'static str {
+    if attempt <= 1 {
+        CONTINUATION_MESSAGE
+    } else {
+        CONVERGENCE_CONTINUATION_MESSAGE
+    }
+}
 
 /// Current state of retry counters.
 ///
@@ -112,5 +131,27 @@ mod tests {
     #[test]
     fn is_transient_rejects_prompt_too_long() {
         assert!(!is_transient_transport_error("prompt too long"));
+    }
+
+    #[test]
+    fn first_continuation_preserves_direct_resume_prompt() {
+        assert_eq!(continuation_message(0), CONTINUATION_MESSAGE);
+        assert_eq!(continuation_message(1), CONTINUATION_MESSAGE);
+    }
+
+    #[test]
+    fn repeated_continuations_switch_to_convergence_prompt() {
+        assert_eq!(continuation_message(2), CONVERGENCE_CONTINUATION_MESSAGE);
+        assert_eq!(continuation_message(3), CONVERGENCE_CONTINUATION_MESSAGE);
+        assert_eq!(continuation_message(99), CONVERGENCE_CONTINUATION_MESSAGE);
+    }
+
+    #[test]
+    fn convergence_prompt_requires_concise_actionable_output() {
+        let prompt = CONVERGENCE_CONTINUATION_MESSAGE.to_ascii_lowercase();
+        assert!(prompt.contains("stop"));
+        assert!(prompt.contains("concise"));
+        assert!(prompt.contains("actionable"));
+        assert!(prompt.contains("repeat"));
     }
 }

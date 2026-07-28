@@ -146,7 +146,9 @@ impl App {
     /// Open a subagent live-output / markdown-summary popup for a tool card.
     pub(crate) fn open_subagent_popup(&mut self, phys_idx: usize) {
         let output = match self.tool_output_at(phys_idx) {
-            Some(o) if o.tool_name == "spawn_subagent" => o.clone(),
+            Some(o) if matches!(o.visual_kind, tact_protocol::ToolVisualKind::Subagent) => {
+                o.clone()
+            }
             _ => return,
         };
         let tool_id = self
@@ -474,36 +476,38 @@ impl App {
                 highlighted_lines: Vec::new(),
             });
         }
-        match output.tool_name.as_str() {
-            "write_file" | "read_file" => Some(DiffPopup {
-                title: if output.arg_full.is_empty() {
-                    output.arg_summary.clone()
-                } else {
-                    output.arg_full.clone()
-                },
-                file_path: Some(if output.arg_full.is_empty() {
-                    output.arg_summary.clone()
-                } else {
-                    output.arg_full.clone()
-                }),
-                git_diff_path: None,
-                workspace_dir: None,
-                inline_content: output.detail_full.clone(),
-                lang: crate::render::popups::diff_popup::popup_lang_for_path(
-                    if output.arg_full.is_empty() {
-                        &output.arg_summary
+        match output.visual_kind {
+            tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileRead => {
+                Some(DiffPopup {
+                    title: if output.arg_full.is_empty() {
+                        output.arg_summary.clone()
                     } else {
-                        &output.arg_full
+                        output.arg_full.clone()
                     },
-                ),
-                use_diff_gutter: output.use_diff_gutter,
-                is_diff: false,
-                scroll: 0,
-                selection: None,
-                cached_content: None,
-                highlighted_lines: Vec::new(),
-            }),
-            "edit_file" => {
+                    file_path: Some(if output.arg_full.is_empty() {
+                        output.arg_summary.clone()
+                    } else {
+                        output.arg_full.clone()
+                    }),
+                    git_diff_path: None,
+                    workspace_dir: None,
+                    inline_content: output.detail_full.clone(),
+                    lang: crate::render::popups::diff_popup::popup_lang_for_path(
+                        if output.arg_full.is_empty() {
+                            &output.arg_summary
+                        } else {
+                            &output.arg_full
+                        },
+                    ),
+                    use_diff_gutter: output.use_diff_gutter,
+                    is_diff: false,
+                    scroll: 0,
+                    selection: None,
+                    cached_content: None,
+                    highlighted_lines: Vec::new(),
+                })
+            }
+            tact_protocol::ToolVisualKind::FileEdit => {
                 let path = if output.arg_full.is_empty() {
                     output.arg_summary.clone()
                 } else {
@@ -524,7 +528,7 @@ impl App {
                     highlighted_lines: Vec::new(),
                 })
             }
-            "bash" | "shell" | "run_command" => {
+            tact_protocol::ToolVisualKind::Command => {
                 let content = output.detail_full.clone()?;
                 let full_arg = if output.arg_full.is_empty() {
                     output.arg_summary.clone()
@@ -676,7 +680,7 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
-    use tact_protocol::{StepResult, StepStatus};
+    use tact_protocol::{StepResult, StepStatus, ToolPresentationInfo};
 
     use crate::{
         render::test_harness::make_app,
@@ -814,6 +818,7 @@ mod tests {
             detail: Some("output one\noutput two".into()),
             duration_us: Some(1),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
         };
         let msgs = app.msgs();
         let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)

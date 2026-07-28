@@ -6,9 +6,15 @@
 
 use std::time::Duration;
 
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 use tracing::debug;
 
@@ -26,12 +32,26 @@ fn capped_sleep_ms(ms: u64) -> u64 {
     ms.min(300_000)
 }
 
-#[tool(
-    name = "sleep",
-    description = "Wait for a specified duration in milliseconds. \
-                    Use instead of Bash(sleep ...) — it doesn't hold a shell \
-                    process and can run concurrently with other tools."
-)]
+pub const SLEEP_METADATA: ToolMetadata = ToolMetadata {
+    name: "sleep",
+    description: "Wait for a specified duration in milliseconds.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Sleep,
+        display_name: "💤 Sleep",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
 /// # Errors
 ///
 /// This function always returns `Ok`.

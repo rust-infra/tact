@@ -1,55 +1,30 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Expr, ExprLit, FnArg, Ident, ItemFn, Lit, MetaNameValue, Pat, PatIdent, PatType,
-    ReturnType, Type, parse_macro_input, punctuated::Punctuated, token::Comma,
+    Attribute, FnArg, Ident, ItemFn, Pat, PatIdent, PatType, ReturnType, Type, parse_macro_input,
 };
 
 #[proc_macro_attribute]
-pub fn tool(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args with Punctuated::<MetaNameValue, Comma>::parse_terminated);
+pub fn tool(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item_fn = parse_macro_input!(input as ItemFn);
 
-    match expand_tool(args, item_fn) {
+    match expand_tool(item_fn) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn expand_tool(
-    args: Punctuated<MetaNameValue, Comma>,
-    item_fn: ItemFn,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let name = required_string_arg(&args, "name")?;
-    let description = required_string_arg(&args, "description")?;
-
+fn expand_tool(item_fn: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let fn_ident = &item_fn.sig.ident;
+    let metadata_ident = format_ident!("{}_METADATA", fn_ident.to_string().to_uppercase());
     let wrapper_ident = format_ident!("{}Tool", to_pascal_case(&fn_ident.to_string()));
     let output = output_handling(&item_fn)?;
 
     if let Some(input_ty) = extract_stateful_handler_input_type(&item_fn)? {
-        expand_stateful_tool(item_fn, wrapper_ident, name, description, input_ty, output)
+        expand_stateful_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
     } else {
-        expand_pure_tool(item_fn, wrapper_ident, name, description, output)
+        expand_pure_tool(item_fn, wrapper_ident, metadata_ident, output)
     }
-}
-
-fn required_string_arg(args: &Punctuated<MetaNameValue, Comma>, name: &str) -> syn::Result<String> {
-    for arg in args {
-        if arg.path.is_ident(name)
-            && let Expr::Lit(ExprLit {
-                lit: Lit::Str(value),
-                ..
-            }) = &arg.value
-        {
-            return Ok(value.value());
-        }
-    }
-
-    Err(syn::Error::new_spanned(
-        args,
-        format!("missing required string argument `{name}`"),
-    ))
 }
 
 struct OutputHandling {
@@ -67,18 +42,18 @@ fn output_handling(item_fn: &ItemFn) -> syn::Result<OutputHandling> {
     match &item_fn.sig.output {
         ReturnType::Default => Err(syn::Error::new_spanned(
             &item_fn.sig.ident,
-            "tool handlers must return a Display value or Result<Display>",
+            "tool handlers must return a value convertible to ToolCallResult",
         )),
         ReturnType::Type(_, ty) if is_result_type(ty) => Ok(OutputHandling {
             await_expr: quote! {
                 let output = call_future.await?;
-                Ok(output.to_string())
+                Ok(crate::tool::IntoToolCallResult::into_tool_call_result(output))
             },
         }),
         ReturnType::Type(_, _) => Ok(OutputHandling {
             await_expr: quote! {
                 let output = call_future.await;
-                Ok(output.to_string())
+                Ok(crate::tool::IntoToolCallResult::into_tool_call_result(output))
             },
         }),
     }
@@ -99,8 +74,7 @@ fn is_result_type(ty: &Type) -> bool {
 fn expand_stateful_tool(
     item_fn: ItemFn,
     wrapper_ident: Ident,
-    name: String,
-    description: String,
+    metadata_ident: Ident,
     input_ty: Type,
     output: OutputHandling,
 ) -> syn::Result<proc_macro2::TokenStream> {
@@ -114,12 +88,8 @@ fn expand_stateful_tool(
 
         #[async_trait::async_trait]
         impl crate::tool::Tool for #wrapper_ident {
-            fn name(&self) -> &'static str {
-                #name
-            }
-
-            fn description(&self) -> &'static str {
-                #description
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                &#metadata_ident
             }
 
             fn input_schema(&self) -> serde_json::Value {
@@ -130,7 +100,7 @@ fn expand_stateful_tool(
                 &self,
                 context: crate::tool::ToolContext,
                 input: serde_json::Value,
-            ) -> anyhow::Result<String> {
+            ) -> anyhow::Result<crate::tool::ToolCallResult> {
                 let input: #input_ty = serde_json::from_value(input)?;
                 let call_future = #fn_ident(context, input);
                 #await_expr
@@ -142,8 +112,7 @@ fn expand_stateful_tool(
 fn expand_pure_tool(
     mut item_fn: ItemFn,
     wrapper_ident: Ident,
-    name: String,
-    description: String,
+    metadata_ident: Ident,
     output: OutputHandling,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let fn_ident = item_fn.sig.ident.clone();
@@ -183,12 +152,8 @@ fn expand_pure_tool(
 
         #[async_trait::async_trait]
         impl crate::tool::Tool for #wrapper_ident {
-            fn name(&self) -> &'static str {
-                #name
-            }
-
-            fn description(&self) -> &'static str {
-                #description
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                &#metadata_ident
             }
 
             fn input_schema(&self) -> serde_json::Value {
@@ -199,7 +164,7 @@ fn expand_pure_tool(
                 &self,
                 _context: crate::tool::ToolContext,
                 input: serde_json::Value,
-            ) -> anyhow::Result<String> {
+            ) -> anyhow::Result<crate::tool::ToolCallResult> {
                 let input: #input_ident = serde_json::from_value(input)?;
                 let call_future = #fn_ident(#(#call_args),*);
                 #await_expr

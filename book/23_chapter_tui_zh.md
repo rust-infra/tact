@@ -54,7 +54,7 @@ sequenceDiagram
 4. 在独立 tokio task 上 spawn `tui::run_tui(...)`。
 5. 循环 `user_cmd_rx` — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
 
-主题来自 `config::settings().ui.theme`（默认 `"retro"`）。
+主题来自 `config::settings().ui.theme`（默认 `"ink"`）。
 
 ### Headless（`tact-ui headless "prompt"`）
 
@@ -259,6 +259,8 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 3. **Phase 2** — 将 `log_scroll.offset` 映射到 visual viewport（`visual_scroll`、clip height）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
 
+**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 在保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）的同时，也会为每个字形显式写入同一背景。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+
 流式文本在 token 到达时用 `app.stream.buffer` 作为额外 logical 行。
 
 消息类型、`AgentUpdate` 映射、流式生命周期、可见性、scroll 行为、overlays 与鼠标交互见 [§6.11–§6.18](#611-log-消息模型)。
@@ -296,7 +298,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 - 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
 - 第 2 行：模型名、`输出`/`out`、`思考 high(32K)`/`think …`、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
 
-**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。
+**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
 ### 6.7 Markdown
 
@@ -320,7 +322,18 @@ Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击�
 
 Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit 将每个渲染出的扩展字素簇映射至 byte offset，因此组合字符与 emoji 序列保持不可分割，行号、diff gutter、边框、标题、底栏、元数据及其他仅用于显示的前缀不会进入选择。Popup 滚动时选择保留；拖拽到 body 上方或下方会 clamp 到首个或末个可见 source boundary，且不会自动滚动。`y` 在 tool popup 中复制选中的原始文本，在 Thinking popup 中复制选中的可见文本；没有非空选择时复制 popup 的完整原始内容。Code detail popup 保持原有鼠标行为。
 
-### 6.9 性能
+### 6.9 统一弹出层 Chrome
+
+所有覆层弹窗（palette、select、file picker、slash commands、help、history、thinking/diff/code detail）使用共享的 `render_popup_chrome` 函数，提供一致的视觉框架：
+
+| 元素 | 样式 |
+|------|------|
+| **标题栏** | 左对齐标题用粗体 primary foreground；右对齐 `[x]` 关闭提示用 muted 装饰风格 |
+| **底栏** | 居中提示文本：快捷键用 accent 色，标签用 muted 色，` \| ` 分隔 |
+| **边框** | 使用 `theme.border` 颜色，通过 `block_border_type()` 设置 |
+| **背景** | 绘制前 `Clear`（无 drop shadow） |
+
+Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overlay 无论内容如何，外观上都属于统一家族。
 
 **Dirty 渲染：** 仅当 `app.dirty`、`Status::Done` 或 `!tools.active.is_empty()` 时运行 `terminal.draw`。绘制后清除 `dirty`。
 
@@ -346,7 +359,7 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 
 ### 6.10 渲染中的主题与 i18n
 
-颜色来自 `theme.rs` 的 `Theme`（11 主题；config 默认 `retro`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale  styled 行。
+颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale styled 行。
 
 UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
 
@@ -588,7 +601,7 @@ sequenceDiagram
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十一个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`（默认）、`kawaii`、`japanese`、`brutal`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
 
 ---
 

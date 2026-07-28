@@ -55,11 +55,32 @@ use crate::{
     widgets::state::{App, InputMode, Status},
 };
 
+// ========== Utility ==========
+
+/// Parse a voice keybind string like "ctrl+g" into crossterm (modifiers, keycode).
+///
+/// Only supports the `ctrl+<single_char>` format. Returns `None` for invalid or
+/// unsupported formats.
+pub fn parse_voice_keybind(raw: &str) -> Option<(KeyModifiers, KeyCode)> {
+    let lower = raw.trim().to_lowercase();
+    let parts: Vec<&str> = lower.split('+').collect();
+    if parts.len() != 2 || parts[0] != "ctrl" || parts[1].len() != 1 {
+        return None;
+    }
+    let ch = parts[1].chars().next()?;
+    // crossterm represents Ctrl+char as KeyCode::Char(<lowercase char>).
+    // Control modifier is checked separately during matching.
+    Some((KeyModifiers::CONTROL, KeyCode::Char(ch)))
+}
+
 // ========== Main Loop ==========
 
 /// Whether the main loop should repaint this frame (mirrors `run_tui` gate).
 pub(crate) fn should_repaint(app: &App) -> bool {
-    app.dirty || matches!(app.status, Status::Done) || !app.tools.active.is_empty()
+    app.dirty
+        || matches!(app.status, Status::Done)
+        || !app.tools.active.is_empty()
+        || app.voice.is_active()
 }
 
 /// Handle event-loop poll timeout without spinning the CPU.
@@ -105,11 +126,18 @@ pub struct TuiConfig {
     pub model_max_tokens: u32,
     /// Configured thinking budget in tokens (0 = hide).
     pub model_thinking_budget: usize,
+    /// Active permission mode: "default" | "plan" | "auto".
+    pub permission_mode: String,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
+    /// Voice-to-text settings (independent of LLM providers).
+    pub voice: tact::config::VoiceSettings,
+    /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
+    /// Parsed from voice.voice_keybind; ready for crossterm matching.
+    pub voice_parsed_keybind: Option<(KeyModifiers, KeyCode)>,
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
@@ -129,10 +157,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         model_name,
         model_max_tokens,
         model_thinking_budget,
+        permission_mode,
         skills_description,
         skills_data,
         skill_registry,
         session_store,
+        voice,
+        voice_parsed_keybind,
     } = cfg;
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
@@ -166,10 +197,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
+    app.voice_parsed_keybind = voice_parsed_keybind;
     // Seed the bottom bar from config so model/token info renders at startup;
     // the first ModelInfo/TokenUsage updates will overwrite these.
     app.status_bar.model_name = model_name;
     app.status_bar.model_max_tokens = model_max_tokens;
+    app.status_bar.permission_mode = permission_mode;
     if model_thinking_budget > 0 {
         app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
     }
@@ -179,6 +212,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let msgs = app.msgs();
     app.add_system_message(msgs.startup_welcome.to_string());
     app.add_system_message(msgs.startup_mode_hint.to_string());
+
+    if voice.enabled {
+        let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
+            && voice.api_key.is_none();
+        let worker = tact::voice::spawn_worker(voice);
+        app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
+    }
 
     // Restore session history into the Log area after startup messages
     if let Some(store) = &app.session_store
@@ -224,6 +264,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         while let Ok(event) = app.plugin_rx.try_recv() {
             app.handle_plugin_event(event);
         }
+        app.drain_voice_events();
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -300,7 +341,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             200u64
         } else if app.dirty {
             10u64
-        } else if !matches!(app.status, Status::Idle) {
+        } else if !matches!(app.status, Status::Idle) || app.voice.is_active() {
             150u64
         } else {
             1000u64
@@ -334,6 +375,15 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                                 }
                                 _ => {}
                             }
+                        }
+                        // Voice recording keybind: only consume the event on an
+                        // exact match; otherwise fall through to normal dispatch.
+                        let voice_key_handled =
+                            app.voice_parsed_keybind.is_some_and(|(vk_mod, vk_code)| {
+                                key.modifiers.contains(vk_mod) && key.code == vk_code
+                            });
+                        if voice_key_handled {
+                            app.toggle_voice_recording();
                         } else if app.slash_command.active
                             && matches!(app.input_mode, InputMode::Insert)
                         {
@@ -405,6 +455,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
     // Restore terminal state before exiting
     let exit_msg = app.msgs().exit_bye.to_string();
+    app.shutdown_voice().await;
     drop(app);
     disable_raw_mode()?;
     execute!(
@@ -470,5 +521,51 @@ mod poll_timeout_tests {
         app.dirty = false;
         on_poll_timeout(&mut app);
         assert!(!app.dirty, "Done already force-repaints via should_repaint");
+    }
+}
+
+#[cfg(test)]
+mod voice_keybind_tests {
+    use super::parse_voice_keybind;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn parse_ctrl_g() {
+        let result = parse_voice_keybind("ctrl+g");
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('g'))));
+    }
+
+    #[test]
+    fn parse_ctrl_r() {
+        let result = parse_voice_keybind("ctrl+r");
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('r'))));
+    }
+
+    #[test]
+    fn parse_ctrl_comma() {
+        let result = parse_voice_keybind("ctrl+,");
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char(','))));
+    }
+
+    #[test]
+    fn parse_ctrl_uppercase_g() {
+        // Lowercase normalization
+        let result = parse_voice_keybind("Ctrl+G");
+        assert_eq!(result, Some((KeyModifiers::CONTROL, KeyCode::Char('g'))));
+    }
+
+    #[test]
+    fn parse_rejects_no_modifier() {
+        assert_eq!(parse_voice_keybind("g"), None);
+    }
+
+    #[test]
+    fn parse_rejects_multi_char() {
+        assert_eq!(parse_voice_keybind("ctrl+ab"), None);
+    }
+
+    #[test]
+    fn parse_rejects_empty() {
+        assert_eq!(parse_voice_keybind(""), None);
     }
 }

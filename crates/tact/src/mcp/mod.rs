@@ -367,6 +367,14 @@ impl TryFrom<&str> for McpToolName {
     }
 }
 
+/// Resolved MCP tool identity — parsed once, reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMcpTool {
+    pub full_name: String,
+    pub server: String,
+    pub tool: String,
+}
+
 #[derive(Default)]
 pub struct MCPToolRouter {
     clients: HashMap<String, McpClient>,
@@ -383,6 +391,29 @@ impl MCPToolRouter {
 
     pub fn is_mcp_tool(tool_name: &str) -> bool {
         tool_name.starts_with("mcp__")
+    }
+
+    /// Resolve a tool name without connecting to servers.
+    /// Returns `Ok(Some(ResolvedMcpTool))` for valid MCP-prefixed names,
+    /// `Ok(None)` for non-MCP names, or an error for misformatted MCP names.
+    pub fn resolve_tool(&self, name: &str) -> Result<Option<ResolvedMcpTool>> {
+        if !Self::is_mcp_tool(name) {
+            return Ok(None);
+        }
+        let parsed = McpToolName::try_from(name)?;
+        Ok(Some(ResolvedMcpTool {
+            full_name: name.to_string(),
+            server: parsed.server.clone(),
+            tool: parsed.tool.clone(),
+        }))
+    }
+
+    /// MCP server name for scheduling.
+    pub fn server_name_for(&self, name: &str) -> Option<String> {
+        if !Self::is_mcp_tool(name) {
+            return None;
+        }
+        McpToolName::try_from(name).ok().map(|p| p.server)
     }
 
     pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {

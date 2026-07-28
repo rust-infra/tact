@@ -28,6 +28,7 @@ mod task_dag;
 pub(crate) mod task_panel;
 mod thinking_state;
 mod tool_state;
+mod voice;
 
 pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
@@ -46,6 +47,7 @@ pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopu
 pub(crate) use tool_state::{
     ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState,
 };
+pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 
 // ========== Basic Types ==========
 
@@ -63,6 +65,8 @@ pub(crate) enum InputMode {
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Toggle color theme"),
     ("model", "Switch model for current provider"),
+    ("model-subagent", "Switch subagent model"),
+    ("permission", "Set permission mode (Default/Plan/Auto)"),
     ("view-system-prompt", "View system prompt"),
     ("save", "Save log to file"),
     ("compact", "Compact conversation history"),
@@ -98,12 +102,30 @@ pub struct SkillEntry {
 pub(crate) enum SelectKind {
     /// Agent `RequestSelect` — confirm sends oneshot reply.
     Agent,
-    /// `/model` picker — confirm applies `set_model` then may open persist prompt.
+    /// `/model` first step — choose a model before applying either value.
     ModelPick,
-    /// Optional "Save to config?" after a model switch.
-    PersistModel { model: String },
+    /// `/model` second step — choose a thinking budget before applying either value.
+    ThinkBudgetPick {
+        model: String,
+    },
+    /// Optional combined "save to config?" prompt after session application.
+    PersistModelAndBudget {
+        model: String,
+        thinking_budget: usize,
+    },
     /// Prompt source selection for `/view-system-prompt`.
     ViewSystemPrompt,
+    /// `/permission` picker — choose Default / Plan / Auto.
+    PermissionModePick,
+    /// `/model-subagent` flow
+    SubagentModelPick,
+    SubagentThinkBudgetPick {
+        model: String,
+    },
+    SubagentPersistModelAndBudget {
+        model: String,
+        thinking_budget: usize,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -257,6 +279,12 @@ pub struct App {
     pub(crate) stream: StreamState,
     // Thinking state
     pub(crate) thinking: ThinkingState,
+    /// Voice-to-text title-bar button and worker channels.
+    pub(crate) voice: VoiceState,
+    /// Keyboard shortcut to start/stop voice recording, parsed from config.
+    /// `None` means mouse-only (no keyboard shortcut).
+    pub(crate) voice_parsed_keybind:
+        Option<(crossterm::event::KeyModifiers, crossterm::event::KeyCode)>,
     /// Cached account balance / usage quota state from the account service.
     pub(crate) account: AccountState,
     /// List of available skills (name + description lines).

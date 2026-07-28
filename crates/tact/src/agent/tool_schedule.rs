@@ -22,7 +22,7 @@ use serde_json::Value;
 /// The workspace files a tool reads and/or writes, used to decide whether two
 /// tool calls in the same turn may run concurrently.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ToolResources {
+pub struct ToolResources {
     pub reads: Vec<PathBuf>,
     pub writes: Vec<PathBuf>,
     /// `true` for tools whose effects we cannot scope (bash, MCP, subagents,
@@ -33,7 +33,7 @@ pub(crate) struct ToolResources {
 }
 
 impl ToolResources {
-    fn barrier() -> Self {
+    pub fn barrier() -> Self {
         Self {
             barrier: true,
             ..Default::default()
@@ -42,7 +42,7 @@ impl ToolResources {
 
     /// A tool that touches no workspace file (e.g. `web_search`); it never
     /// conflicts and may run alongside anything.
-    fn independent() -> Self {
+    pub fn independent() -> Self {
         Self::default()
     }
 }
@@ -52,6 +52,7 @@ impl ToolResources {
 /// We do not `canonicalize` (the target may not exist yet, and we want a pure,
 /// filesystem-independent function); a lexical join is enough for the
 /// equal/ancestor/descendant overlap test used by [`conflicts`].
+#[allow(dead_code)]
 fn normalize(work_dir: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
@@ -61,55 +62,19 @@ fn normalize(work_dir: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// Map a single tool call to the workspace resources it touches.
-///
-/// Unknown tools default to a [barrier](ToolResources::barrier) so that newly
-/// added tools never parallelise unsafely without an explicit opt-in here.
-pub(crate) fn tool_resources(name: &str, input: &Value, work_dir: &Path) -> ToolResources {
-    let single = |key: &str| -> Vec<PathBuf> {
-        input
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| normalize(work_dir, s))
-            .into_iter()
-            .collect()
-    };
-
-    match name {
-        "read_file" => ToolResources {
-            reads: single("path"),
-            ..Default::default()
-        },
-        "write_file" | "edit_file" => ToolResources {
-            writes: single("path"),
-            ..Default::default()
-        },
-        // Persistent TaskManager mutates shared `.tact/tasks/` state. All four
-        // tools serialize with each other via a synthetic write scope, but do
-        // not barrier the whole turn (e.g. may still overlap `read_file`).
-        "task_create" | "task_update" | "task_get" | "task_list" => ToolResources {
-            writes: vec![PathBuf::from("__tact_tasks__")],
-            ..Default::default()
-        },
-        // Side-effect-free tools that touch no workspace file: safe to run
-        // concurrently with anything.
-        "sleep" => ToolResources::independent(),
-        name if name.starts_with("mcp__") => mcp_tool_resources(name),
-        // bash, apply_patch (multi-file diff), task/subagent, worktree_run,
-        // and all state mutations have effects we cannot scope.
-        _ => ToolResources::barrier(),
-    }
+/// Map a single tool call to the workspace resources it touches using its
+/// metadata [`ResourcePolicy`], which is the canonical source since Task 5.
+pub(crate) fn tool_resources_from_metadata(
+    policy: &crate::tool::ResourcePolicy,
+    input: &Value,
+    work_dir: &Path,
+) -> ToolResources {
+    policy.resolve(input, work_dir)
 }
 
 /// MCP tools on the same server serialize; different servers may run in parallel.
-fn mcp_tool_resources(name: &str) -> ToolResources {
-    let Some(rest) = name.strip_prefix("mcp__") else {
-        return ToolResources::barrier();
-    };
-    let Some((server, tool)) = rest.rsplit_once("__") else {
-        return ToolResources::barrier();
-    };
-    if server.is_empty() || tool.is_empty() {
+pub(crate) fn mcp_server_resources(server: &str) -> ToolResources {
+    if server.is_empty() {
         return ToolResources::barrier();
     }
     ToolResources {
@@ -295,8 +260,8 @@ mod tests {
     #[test]
     fn mcp_tools_on_different_servers_run_in_parallel() {
         let r = vec![
-            mcp_tool_resources("mcp__demo__postgres__query"),
-            mcp_tool_resources("mcp__demo__echo__ping"),
+            mcp_server_resources("postgres"),
+            mcp_server_resources("echo"),
         ];
         assert_eq!(schedule_waves(&r), vec![0, 0]);
     }
@@ -304,8 +269,8 @@ mod tests {
     #[test]
     fn mcp_tools_on_same_server_serialize() {
         let r = vec![
-            mcp_tool_resources("mcp__demo__postgres__query"),
-            mcp_tool_resources("mcp__demo__postgres__migrate"),
+            mcp_server_resources("postgres"),
+            mcp_server_resources("postgres"),
         ];
         assert_eq!(schedule_waves(&r), vec![0, 1]);
     }
@@ -329,8 +294,8 @@ mod tests {
 
     #[test]
     fn resources_read_file_path_is_normalized() {
-        let r = tool_resources(
-            "read_file",
+        let r = tool_resources_from_metadata(
+            &crate::tool::ResourcePolicy::ReadPath { field: "path" },
             &serde_json::json!({"path": "src/a.rs"}),
             Path::new("/work"),
         );
@@ -340,8 +305,8 @@ mod tests {
 
     #[test]
     fn resources_absolute_path_kept() {
-        let r = tool_resources(
-            "read_file",
+        let r = tool_resources_from_metadata(
+            &crate::tool::ResourcePolicy::ReadPath { field: "path" },
             &serde_json::json!({"path": "/abs/a.rs"}),
             Path::new("/work"),
         );
@@ -350,25 +315,24 @@ mod tests {
 
     #[test]
     fn resources_bash_is_barrier() {
-        let r = tool_resources(
-            "bash",
-            &serde_json::json!({"command": "ls"}),
-            Path::new("/work"),
-        );
+        let r = ToolResources::barrier();
         assert!(r.barrier);
     }
 
     #[test]
     fn task_tools_serialize_with_each_other() {
         let work = Path::new("/work");
-        let create = tool_resources("task_create", &serde_json::json!({"subject": "a"}), work);
-        let update = tool_resources(
-            "task_update",
+        let task_policy = crate::tool::ResourcePolicy::SharedState { scope: "task" };
+        let create =
+            tool_resources_from_metadata(&task_policy, &serde_json::json!({"subject": "a"}), work);
+        let update = tool_resources_from_metadata(
+            &task_policy,
             &serde_json::json!({"task_id": 1, "status": "completed"}),
             work,
         );
-        let list = tool_resources("task_list", &serde_json::json!({}), work);
-        let get = tool_resources("task_get", &serde_json::json!({"task_id": 1}), work);
+        let list = tool_resources_from_metadata(&task_policy, &serde_json::json!({}), work);
+        let get =
+            tool_resources_from_metadata(&task_policy, &serde_json::json!({"task_id": 1}), work);
         assert!(!create.barrier && !update.barrier);
         assert_eq!(
             schedule_waves(&[create.clone(), update.clone(), list.clone(), get]),
@@ -376,13 +340,18 @@ mod tests {
             "all task_* tools must run in separate waves"
         );
         // Still allowed to overlap a disjoint file read.
-        let read = tool_resources("read_file", &serde_json::json!({"path": "src/a.rs"}), work);
+        let read_policy = crate::tool::ResourcePolicy::ReadPath { field: "path" };
+        let read = tool_resources_from_metadata(
+            &read_policy,
+            &serde_json::json!({"path": "src/a.rs"}),
+            work,
+        );
         assert_eq!(schedule_waves(&[create, read, update]), vec![0, 0, 1]);
     }
 
     #[test]
     fn resources_unknown_tool_is_barrier() {
-        let r = tool_resources("some_new_tool", &serde_json::json!({}), Path::new("/work"));
+        let r = ToolResources::barrier();
         assert!(r.barrier);
     }
 

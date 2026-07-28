@@ -53,7 +53,7 @@ Five unbounded MPSC channel pairs bridge the agent task, account service, plugin
 4. Spawn `tui::run_tui(...)` on a separate tokio task.
 5. Loop on `user_cmd_rx` — dispatch `SubmitTask`, `Cancel`, `QueryBalance`.
 
-Theme comes from `config::settings().ui.theme` (default `"retro"`).
+Theme comes from `config::settings().ui.theme` (default `"ink"`).
 
 ### Headless (`tact-ui headless "prompt"`)
 
@@ -258,6 +258,8 @@ Pipeline phases in `render_log_panel`:
 3. **Phase 2** — Map `log_scroll.offset` to a visual viewport (`visual_scroll`, clip height).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
+**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` also writes that same background explicitly on every glyph while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 
 For message types, `AgentUpdate` mapping, streaming lifecycle, visibility, scroll behavior, overlays, and mouse interaction, see [§6.11–§6.18](#611-log-message-model).
@@ -295,7 +297,7 @@ pub(crate) trait Renderable {
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
 - Row 2: model name, `out`/`输出`, `think high(32K)`/`思考 …`, `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
-**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`.
+**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
 ### 6.7 Markdown
 
@@ -319,7 +321,18 @@ Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_are
 
 The tool/file and Thinking detail popups support left-button text selection. Mouse hits map each rendered extended grapheme cluster to byte offsets, so combining and emoji sequences remain indivisible while line numbers, diff gutters, borders, titles, footers, metadata, and other display-only prefixes are excluded. The selection survives popup scrolling; dragging above or below the body clamps to the first or last visible source boundary without auto-scrolling. `y` copies selected original text in tool popups and selected visible text in Thinking popups; without a non-empty selection it copies the popup's complete original content. Code detail popups keep their existing mouse behavior.
 
-### 6.9 Performance
+### 6.9 Unified Popup Chrome
+
+All overlay popups (palette, select, file picker, slash commands, help, history, thinking/diff/code detail) use a shared `render_popup_chrome` function that provides consistent visual framing:
+
+| Element | Style |
+|---------|-------|
+| **Title bar** | Left-aligned title in bold primary foreground; right-aligned `[x]` close hint in muted decorative style |
+| **Footer** | Centered hint text: keys in accent color, labels in muted color, separated by ` \| ` |
+| **Border** | Uses `theme.border` color via `block_border_type()` |
+| **Background** | `Clear` before draw (no drop shadow) |
+
+The chrome is rendered as a ratatui `Block` wrapped around the popup content area. This ensures all overlays feel like a unified family regardless of their internal content.
 
 **Dirty rendering:** `terminal.draw` runs only when `app.dirty`, `Status::Done`, or `!tools.active.is_empty()`. After draw, `dirty` is cleared.
 
@@ -345,7 +358,7 @@ Active tool rows also force redraw so duration counters tick without new `AgentU
 
 ### 6.10 Theme and i18n in rendering
 
-Colors come from `Theme` in `theme.rs` (11 themes; default `retro` from config). `Ctrl+T` cycles themes at runtime; cache invalidation on theme change prevents stale styled lines.
+Colors come from `Theme` in `theme.rs` (12 themes; default `ink` from config). `Ctrl+T` cycles themes at runtime; cache invalidation on theme change prevents stale styled lines.
 
 UI strings are centralized in `i18n.rs` (`English` / `Chinese`); render code pulls labels via `app.msgs()`. `Ctrl+L` toggles language.
 
@@ -583,7 +596,7 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 
 Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 
-Eleven built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro` (default), `kawaii`, `japanese`, `brutal`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
+Twelve built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `gruvbox-dark`, `nord`, `retro`, `kawaii`, `japanese`, `brutal`, `ink`, `ink-light`. Initial theme from config ([Ch 21](./21_chapter_config.md)); cycle with `Ctrl+T` in normal mode.
 
 ---
 

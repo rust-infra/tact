@@ -132,12 +132,24 @@ snapshot_max_items = 80
 micro_compact_enabled = true
 
 [ui]
-theme = "retro"
+theme = "ink"
 # 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
 # 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
 # vision_image.compress = true
 # vision_image.max_edge = 1280
 # vision_image.jpeg_quality = 80
+
+[voice]
+# 独立于 [llm.providers.*]；默认关闭。
+# enabled = false
+# provider = "openai"
+# api_key = ""
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini-transcribe"
+# language = "zh"
+# max_duration_secs = 300
+# 可选键盘切换："ctrl+<char>"（如 "ctrl+g"）；未设置时仅鼠标。
+# voice_keybind = "ctrl+g"
 
 [tools]
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
@@ -170,10 +182,29 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
-| `ui.theme` | `"retro"` | — |
+| `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
+| `voice.enabled` | `false` | — |
+| `voice.provider` | `openai` | `openai` / `whisper_cpp` |
+| `voice.base_url` | `https://api.openai.com/v1`（openai）/ `http://127.0.0.1:8080`（whisper_cpp） | — |
+| `voice.model` | `gpt-4o-mini-transcribe`（openai）/ 空（whisper_cpp） | — |
+| `voice.language` | `zh` | — |
+| `voice.max_duration_secs` | `300`（有效范围 `1..=600`） | — |
+| `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
+
+### `[voice]` — 语音转文字输入（macOS 优先）
+
+API 密钥与端点独立于 `[llm.providers.*]`。`provider = "openai"`（默认）将音频发往
+`{base_url}/audio/transcriptions`，需要 `api_key`。`provider = "whisper_cpp"` 将音频发往
+`{base_url}/inference`，无需认证与 `model` 字段，适用于本地
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) 服务器。转写结果插入输入框供审阅（不会自动提交）。
+`enabled = false` 隐藏标题栏居中按钮。`enabled = true` 但未配置 `api_key`（仅 openai）时仍显示按钮，
+点击会提示 `[voice].api_key`。可选 `voice_keybind = "ctrl+<char>"` 可在任意输入模式下切换录制；
+仅精确匹配时消费按键（其它键仍进入 Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在
+帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败。凭证不会写入
+日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 

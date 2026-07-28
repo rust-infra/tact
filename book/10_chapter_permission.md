@@ -17,9 +17,9 @@ It does **not** execute tools. It classifies intent, applies the active mode and
 
 | Layer | Responsibility |
 |-------|------------------|
-| `normalize_capability()` | Parse native vs MCP tool names; compute `CapabilityRisk` |
-| `PermissionManager::check()` | Map risk + mode + allowlist → `PermissionBehavior` |
-| `tool_dispatch.rs` | Handle `Ask` via TUI `RequestSelect` or headless deny |
+| `PermissionPolicy::resolve()` | Classify native tool input → `CapabilityRisk` |
+| `PermissionManager::check()` | Map risk + mode + settings + allowlist → `PermissionBehavior` |
+| `tool_dispatch.rs` | Handle `Ask` via TUI `RequestSelect` or headless `ask_user(risk)` |
 | `bash` tool + `shell.rs` | Hard-block a subset of dangerous shell commands at execution time |
 
 Shell commands get **two** defenses: high-risk patterns trigger permission prompts; a smaller set is rejected outright inside the `bash` tool even after approval.
@@ -60,12 +60,13 @@ Classification is heuristic — based on tool name prefixes and, for `bash`, the
 
 | Risk | Rule |
 |------|------|
-| **Read** | `read_file`; names starting with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, `find` |
-| **Read** (bash) | Simple read-only commands: `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `rg`, `grep`; or `git status` / `diff` / `log` / `show` / `branch` — only when the command has no shell metacharacters (`;`, `&`, `\|`, `` ` ``, `$`, `>`, `<`) |
-| **High** | `spawn_subagent` (spawns a sub-agent with full filesystem and shell access); names starting with `delete`, `remove`, `drop`, `shutdown`; bash commands matching high-risk patterns (see [§7 Shell high-risk detection](#7-shell-high-risk-detection)) |
-| **Write** | Everything else (default for unknown native tools and non-read bash) |
+| **Read** | Tools with `PermissionPolicy::Read` (e.g. `read_file`) |
+| **Write** | Tools with `PermissionPolicy::Write`; shell tools (`bash` / `background_run` / `worktree_run`) for non-elevated commands — shell is never treated as Read because the policy cannot prove a command is read-only |
+| **High** | Tools with `PermissionPolicy::High` (e.g. `spawn_subagent`); shell commands starting with `sudo ` or `su ` |
 
-MCP tools follow the same prefix rules on the **short** tool name after parsing. A tool like `mcp__demo__db__query` is classified as **Read** because `query` matches a read prefix.
+A separate hard-block list in `shell.rs` still rejects a subset of dangerous commands at execution time (see [§7](#7-shell-high-risk-detection)), even after permission approval.
+
+MCP tools use their own metadata / defaults; unknown tools are treated as **High** at the dispatch gate.
 
 ---
 
@@ -88,7 +89,7 @@ pub struct PermissionDecision {
 |----------|-------------------------------|
 | **Allow** | Tool enters Phase 2 (parallel execution) |
 | **Deny** | `PreparedState::Resolved` with `"Permission denied: …"`; model receives a failed tool result |
-| **Ask** | Interactive prompt (TUI) or automatic deny (headless); see [§6 TUI RequestSelect flow](#6-tui-requestselect-flow) |
+| **Ask** | Interactive prompt (TUI), or headless `ask_user` defaults (allow Write/Read, deny High); see [§6 TUI RequestSelect flow](#6-tui-requestselect-flow) |
 
 ---
 
@@ -106,45 +107,50 @@ Display labels (from `PermissionMode`'s `Display` impl):
 
 | Mode | Label | Behavior |
 |------|-------|----------|
-| `Default` | `default - ask for writes` | Read tools allowed; Write tools ask (unless allowlisted); High always asks |
+| `Default` | `default - ask for writes` | Read allowed; Write asks unless settings/allowlist match; High asks unless a settings **allow** rule matches |
 | `Plan` | `plan - read only` | Read allowed; Write and High **denied** without prompting |
-| `Auto` | `auto - allow non-high operations` | Read and Write auto-approved; High still asks |
+| `Auto` | `auto - allow non-high operations` | All risks auto-approved (including High) |
 
 ### Decision order in `PermissionManager::check()`
 
 The checks run in this fixed order:
 
 ```text
-1. Read risk?                    → Allow (all modes; resets consecutive_denials)
-2. Plan mode + non-Read?         → Deny
-3. High risk?                    → Ask (even if tool is on allowlist)
-4. Tool in always_allowed_tools? → Allow
-5. Auto mode?                    → Allow (non-high writes)
-6. Default (or unreachable Plan) → Ask
+1. Read risk?                         → Allow (all modes)
+2. Plan mode + non-Read?              → Deny
+3. Auto mode?                         → Allow (all risks)
+4. Settings deny rule?                → Deny
+5. Settings allow rule?               → Allow (including High)
+6. Settings ask rule (non-High)?      → Ask
+7. High risk (no Deny/Allow rule)?    → Ask (skips in-session allowlist)
+8. In-session always_allowed match?   → Allow
+9. Default                            → Ask
 ```
 
 ```mermaid
 flowchart TD
-    TC["ToolUse { name, input }"] --> Norm["normalize_capability()"]
-    Norm --> Risk["CapabilityRisk"]
-
+    TC["ToolUse { name, input }"] --> Risk["PermissionPolicy::resolve()"]
     Risk -- Read --> Allow["Allow"]
     Risk -- Write / High --> Plan{"Plan mode?"}
 
     Plan -- Yes --> Deny["Deny"]
-    Plan -- No --> High{"High risk?"}
+    Plan -- No --> Auto{"Auto mode?"}
+
+    Auto -- Yes --> Allow
+    Auto -- No --> Settings{"Settings rule?"}
+
+    Settings -- Deny --> Deny
+    Settings -- Allow --> Allow
+    Settings -- Ask / none --> High{"High risk?"}
 
     High -- Yes --> Ask["Ask user"]
     High -- No --> AllowList{"always_allowed_tools?"}
 
     AllowList -- Yes --> Allow
-    AllowList -- No --> Auto{"Auto mode?"}
-
-    Auto -- Yes --> Allow
-    Auto -- No --> Ask
+    AllowList -- No --> Ask
 ```
 
-**High-risk override:** if the user chooses "Always allow this tool" for `bash`, subsequent high-risk bash commands (e.g. `sudo ls`) still return `Ask`. The allowlist only bypasses the Default-mode write prompt, not High-risk classification.
+**High-risk vs allowlists:** the in-session bare-name allowlist (`allow_tool`) does **not** bypass High — those calls still `Ask`. A matching project settings **allow** rule (including rules persisted by "Always allow this tool" via `allow_tool_with_input`) **does** allow High for that input pattern.
 
 ---
 
@@ -196,13 +202,14 @@ The `permission_label` is attached to `StepResult` and shown on the tool meta ro
 
 ### Headless / no UI channel
 
-If `ui_tx` is absent, the agent calls `permission_manager.ask_user()`, which **always denies** and logs to stderr:
+If `ui_tx` is absent, the agent calls `permission_manager.ask_user(tool, risk)`:
 
-```text
-[permission] non-interactive: denying <tool> (<input preview>)
-```
+| Risk | Non-interactive default | stderr |
+|------|-------------------------|--------|
+| **High** | Deny | `[permission] non-interactive: denying high-risk <tool>` |
+| **Write** / **Read** | Allow once | `[permission] non-interactive: allowing <tool>` |
 
-Headless runs therefore behave like persistent deny unless the decision was already `Allow` or `Deny` without prompting.
+Use `--auto` (Auto mode) when unattended runs must also approve High-risk tools without a TUI. Settings allow/deny rules still apply before `ask_user` is reached.
 
 ---
 
@@ -362,7 +369,7 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 |-----|--------|
 | Allowlist not persisted | "Always allow this tool" lasts only for the current process |
 | No runtime mode switch API | User must restart with a different mode; stderr only suggests Plan after repeated denials |
-| Headless auto-denies all Ask | No non-interactive approval path except Auto/Plan/Default logic that avoids Ask |
+| Headless High still needs Auto or settings allow | Non-interactive `ask_user` allows Write/Read Ask, but denies High unless a settings allow rule already returned Allow |
 | `PlanStep.need_approval` deprecated | Field marked `#[deprecated(since = "0.19.0")]`; use `PlanStep::new()` — permission is driven by `PermissionManager` |
 | Permission vs hook overlap | Both can block tools; hooks run first and skip permission on `Block` |
 

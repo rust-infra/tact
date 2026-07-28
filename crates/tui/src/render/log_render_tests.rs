@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 
-use ratatui::style::Modifier;
-use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk};
+use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
+use tact_protocol::{
+    AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
+};
 
+use super::log::render_log_panel;
 use super::test_harness::{
     buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
@@ -33,6 +36,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
         tool_name: "bash".into(),
         arg_summary: "seq".into(),
         arg_full: "seq".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
@@ -46,6 +50,7 @@ fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
             detail: Some(output),
             duration_us: Some(100),
             permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
         },
     });
 }
@@ -66,6 +71,20 @@ fn buffer_column_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u1
                 .collect();
             if suffix.starts_with(needle) {
                 return Some(x);
+            }
+        }
+    }
+    None
+}
+
+fn buffer_cell_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, u16)> {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let suffix: String = (x..buffer.area.width)
+                .map(|col| buffer[(col, y)].symbol())
+                .collect();
+            if suffix.starts_with(needle) {
+                return Some((x, y));
             }
         }
     }
@@ -298,7 +317,11 @@ fn log_scrollbar_shows_when_content_overflows() {
 
     let text = render_log_panel_text(&mut app, 60, 8);
     assert!(
-        text.contains('█') || text.contains('│') || text.contains('▲') || text.contains('▼'),
+        text.contains('▐')
+            || text.contains('█')
+            || text.contains('│')
+            || text.contains('▲')
+            || text.contains('▼'),
         "overflowing log should render vertical scrollbar glyphs, got:\n{text}"
     );
 }
@@ -391,5 +414,95 @@ fn log_loading_spinner_shows_braille_and_label() {
     assert!(
         text.contains('⠸') || text.contains('⠋') || text.contains("Thinking"),
         "loading placeholder should render braille spinner or Thinking label, got:\n{text}"
+    );
+}
+
+#[test]
+fn log_scroll_from_code_card_to_plain_text_restores_theme_background() {
+    use crate::widgets::state::CodeBlock;
+
+    let mut app = make_app();
+    for i in 0..3 {
+        app.add_system_message(format!("code-card-placeholder-{i}"));
+    }
+    app.add_system_message("plain-after-card".into());
+    for i in 0..5 {
+        app.add_system_message(format!("scroll-tail-{i}"));
+    }
+    app.code_blocks.push(CodeBlock {
+        start_idx: 0,
+        end_idx: 3,
+        lang: "rust".into(),
+        content: "let stale_background = true;".into(),
+        styled: vec![Line::from("let stale_background = true;")],
+    });
+
+    let surface_bg = app.theme.bg;
+    let card_bg = app.theme.code_card_bg();
+    assert_ne!(
+        card_bg, surface_bg,
+        "fixture requires a contrasting overlay"
+    );
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), &mut app))
+        .expect("first code-card frame");
+
+    let plain_logical = app.log_scroll.phys_to_logical_cache[3].expect("plain row logical index");
+    app.log_scroll.offset = plain_logical as u16;
+    terminal
+        .draw(|frame| render_log_panel(frame, frame.area(), &mut app))
+        .expect("second plain-text frame");
+
+    let buffer = terminal.backend().buffer();
+    let (x, y) = buffer_cell_of(buffer, "plain-after-card").expect("plain row in viewport");
+    assert_eq!(buffer[(x, y)].bg, surface_bg);
+    assert_ne!(buffer[(x, y)].bg, card_bg);
+}
+
+#[test]
+fn log_left_border_force_updates_and_stays_theme_border_color() {
+    use ratatui::buffer::CellDiffOption;
+
+    use crate::theme::ThemeName;
+
+    let mut app = make_app();
+    assert_eq!(app.theme.name, ThemeName::Ink);
+
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Checking git status\nline2\nline3".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    seed_tall_bash_tool(&mut app, 10);
+
+    let terminal = render_log_panel_terminal(&mut app, 100, 30);
+    let buf = terminal.backend().buffer();
+    let border = app.theme.border;
+    let accent = app.theme.accent;
+
+    let mut side_rows = 0usize;
+    for y in 1..buf.area.height.saturating_sub(1) {
+        let cell = &buf[(0, y)];
+        assert_ne!(
+            cell.fg,
+            accent,
+            "left chrome must not keep accent glyphs at y={y}: {:?}",
+            cell.symbol()
+        );
+        if cell.symbol() == "│" {
+            side_rows += 1;
+            assert_eq!(cell.fg, border, "left border fg at y={y}");
+            assert_eq!(
+                cell.diff_option,
+                CellDiffOption::AlwaysUpdate,
+                "left border must force-emit each frame at y={y}"
+            );
+        }
+    }
+    assert!(
+        side_rows >= 5,
+        "expected multiple restamped left-border rows, got {side_rows}"
     );
 }

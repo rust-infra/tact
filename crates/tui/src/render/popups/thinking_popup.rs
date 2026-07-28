@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarState},
+    style::Style,
+    text::Line,
+    widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
 use super::selectable_text::{DisplayRow, layout_display_rows, scalar_styles, source_lines};
@@ -45,7 +45,7 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
         Some(p) => p,
         None => return,
     };
-    let (styled_lines, raw_total) = if let Some(active) = app
+    let (styled_lines, _raw_total) = if let Some(active) = app
         .thinking
         .active
         .as_ref()
@@ -72,12 +72,23 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
     }
 
     let popup_area = super::centered_popup_area(area);
-    let body_area = Rect::new(
-        popup_area.x.saturating_add(1),
-        popup_area.y.saturating_add(3),
-        popup_area.width.saturating_sub(2),
-        popup_area.height.saturating_sub(4),
-    );
+    let footer: &[super::FooterHint] = &[
+        super::FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+    ];
+    let inner =
+        super::render_popup_chrome(frame, popup_area, &app.theme, &popup.title, Some(footer));
+    let body_area = inner;
     let selection_text = styled_lines
         .iter()
         .map(line_text)
@@ -119,49 +130,6 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
     let content_height = body_area.height as usize;
     let max_scroll = total.saturating_sub(content_height);
     let scroll = (popup.scroll as usize).min(max_scroll);
-    let title_style = Style::default()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(app.theme.block_border_type())
-        .title(app.msgs().thinking_popup_title)
-        .title_bottom(Line::from(vec![
-            Span::styled(
-                app.msgs().popup_copy_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-            Span::styled(
-                app.msgs().popup_close_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-            Span::styled(
-                app.msgs().popup_scroll_hint,
-                Style::default().fg(app.theme.accent),
-            ),
-        ]))
-        .style(Style::default().fg(app.theme.fg).bg(app.theme.bg));
-
-    frame.render_widget(Clear, popup_area);
-    frame.render_widget(block, popup_area);
-    let header_area = Rect::new(
-        popup_area.x.saturating_add(1),
-        popup_area.y.saturating_add(1),
-        popup_area.width.saturating_sub(2),
-        1,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(
-                "{} ({} markdown lines, {} raw)",
-                popup.title,
-                styled_lines.len(),
-                raw_total
-            ),
-            title_style,
-        ))),
-        header_area,
-    );
 
     let mut hit_rows = Vec::new();
     for (visible_row, display) in display_rows

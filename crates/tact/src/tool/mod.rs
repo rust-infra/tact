@@ -36,6 +36,8 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
+#[cfg(test)]
+use tact_protocol::ToolVisualKind;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, cron::SharedCronScheduler,
@@ -43,7 +45,6 @@ use crate::{
     worktree::SharedWorktreeManager,
 };
 
-mod apply_patch;
 mod ask_user;
 mod background_run;
 mod bash;
@@ -52,6 +53,7 @@ mod cron;
 mod edit_file;
 mod load_skill;
 mod memory;
+mod metadata;
 mod path;
 mod progress;
 mod read_file;
@@ -134,18 +136,40 @@ impl ToolContext {
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    fn metadata(&self) -> &'static ToolMetadata;
     fn input_schema(&self) -> Value;
 
-    async fn call(&self, context: ToolContext, input: Value) -> Result<String>;
+    async fn call(&self, context: ToolContext, input: Value) -> Result<ToolCallResult>;
 
     fn tool_spec(&self) -> ToolSpec {
+        let metadata = self.metadata();
         ToolSpec {
-            name: self.name().to_string(),
-            description: Some(self.description().to_string()),
+            name: metadata.name.to_string(),
+            description: Some(metadata.description.to_string()),
             input_schema: self.input_schema(),
         }
+    }
+}
+
+/// A registered tool: handler + its static metadata.
+struct RegisteredTool {
+    handler: Box<dyn Tool>,
+    metadata: &'static ToolMetadata,
+}
+
+/// A resolved native tool handle, obtained from [`ToolRouter::resolve`].
+#[derive(Clone, Copy)]
+pub struct ResolvedNativeTool<'a> {
+    registered: &'a RegisteredTool,
+}
+
+impl ResolvedNativeTool<'_> {
+    pub fn metadata(self) -> &'static ToolMetadata {
+        self.registered.metadata
+    }
+
+    pub async fn call(self, context: ToolContext, input: Value) -> Result<ToolCallResult> {
+        self.registered.handler.call(context, input).await
     }
 }
 
@@ -155,7 +179,7 @@ pub trait Tool: Send + Sync {
 /// [`call`](ToolRouter::call).  The router can also emit the full list of
 /// [`ToolSpec`] values for inclusion in the LLM API request.
 pub struct ToolRouter {
-    tools: HashMap<String, Box<dyn Tool>>,
+    tools: HashMap<String, RegisteredTool>,
     cached_specs: OnceLock<Vec<ToolSpec>>,
 }
 
@@ -167,29 +191,59 @@ impl ToolRouter {
         }
     }
 
-    pub fn route<T>(mut self, tool: T) -> Self
+    pub fn route<T>(mut self, tool: T) -> Result<Self>
     where
         T: Tool + 'static,
     {
-        self.tools.insert(tool.name().to_string(), Box::new(tool));
-        self
+        let metadata = tool.metadata();
+        let name = metadata.name.to_string();
+        if self.tools.contains_key(&name) {
+            anyhow::bail!("duplicate native tool name: {name}");
+        }
+        self.tools.insert(
+            name,
+            RegisteredTool {
+                handler: Box::new(tool),
+                metadata,
+            },
+        );
+        Ok(self)
+    }
+
+    pub fn resolve(&self, name: &str) -> Result<ResolvedNativeTool<'_>> {
+        self.tools
+            .get(name)
+            .map(|registered| ResolvedNativeTool { registered })
+            .ok_or_else(|| anyhow::anyhow!("unknown tool: {name}"))
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
         self.cached_specs
-            .get_or_init(|| self.tools.values().map(|tool| tool.tool_spec()).collect())
+            .get_or_init(|| {
+                self.tools
+                    .values()
+                    .map(|rt| rt.handler.tool_spec())
+                    .collect()
+            })
             .iter()
             .map(copy_tool_spec)
             .collect()
     }
 
-    pub async fn call(&self, context: &ToolContext, name: &str, input: Value) -> Result<String> {
-        let tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown tool: {name}"))?;
+    pub async fn call_result(
+        &self,
+        context: &ToolContext,
+        name: &str,
+        input: Value,
+    ) -> Result<ToolCallResult> {
+        let resolved = self.resolve(name)?;
+        resolved.call(context.clone(), input).await
+    }
 
-        tool.call(context.clone(), input).await
+    pub async fn call(&self, context: &ToolContext, name: &str, input: Value) -> Result<String> {
+        self.call_result(context, name, input)
+            .await
+            .map(|r| r.content)
     }
 }
 
@@ -214,6 +268,11 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
     }
 }
 
+pub use metadata::{
+    ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
+    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
+    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+};
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;
 
@@ -232,29 +291,48 @@ mod tests {
 
     struct EchoTool;
 
+    pub const ECHO_METADATA: ToolMetadata = ToolMetadata {
+        name: "echo",
+        description: "Echo text with a prefix.",
+        permission: PermissionPolicy::Read,
+        permission_prompt: PermissionPromptPolicy::Json,
+        resources: ResourcePolicy::Independent,
+        domain: ToolDomain::Generic,
+        presentation: ToolPresentation {
+            visual_kind: ToolVisualKind::Generic,
+            display_name: "echo",
+            live_output: LiveOutputPolicy::Standard,
+            detail: DetailPolicy::Result,
+            popup: PopupPolicy::None,
+            compact_result_to_meta: false,
+        },
+        output: OutputPolicy::KeepInline,
+        argument_summary: ArgumentSummaryPolicy::Json,
+    };
+
     #[async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &'static str {
-            "echo"
-        }
-
-        fn description(&self) -> &'static str {
-            "Echo text with a prefix."
+        fn metadata(&self) -> &'static ToolMetadata {
+            &ECHO_METADATA
         }
 
         fn input_schema(&self) -> Value {
             input_schema::<EchoInput>()
         }
 
-        async fn call(&self, context: ToolContext, input: Value) -> Result<String> {
+        async fn call(&self, context: ToolContext, input: Value) -> Result<ToolCallResult> {
             let input: EchoInput = serde_json::from_value(input)?;
-            Ok(format!("{}:{}", context.work_dir.display(), input.text))
+            Ok(ToolCallResult::text(format!(
+                "{}:{}",
+                context.work_dir.display(),
+                input.text
+            )))
         }
     }
 
     #[tokio::test]
     async fn router_dispatches_by_tool_name() {
-        let router = ToolRouter::new().route(EchoTool);
+        let router = ToolRouter::new().route(EchoTool).unwrap();
         let context = test_context("router_dispatches_by_tool_name");
 
         let output = router
@@ -268,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn router_rejects_unknown_tool() {
-        let router = ToolRouter::new().route(EchoTool);
+        let router = ToolRouter::new().route(EchoTool).unwrap();
         let context = test_context("router_rejects_unknown_tool");
 
         let error = router
@@ -277,6 +355,27 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("unknown tool: missing_tool"));
+    }
+
+    #[test]
+    fn router_resolves_handler_and_metadata_together() {
+        let router = ToolRouter::new().route(EchoTool).unwrap();
+        let resolved = router.resolve("echo").unwrap();
+        assert_eq!(resolved.metadata().name, "echo");
+    }
+
+    #[test]
+    fn router_rejects_duplicate_native_names() {
+        let router = ToolRouter::new().route(EchoTool).unwrap();
+        let result = router.route(EchoTool);
+        assert!(result.is_err());
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("duplicate native tool name: echo")
+        );
     }
 
     #[test]
@@ -306,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_macro_supports_plain_function_tools() {
-        let router = ToolRouter::new().route(SleepTool);
+        let router = ToolRouter::new().route(SleepTool).unwrap();
         let context = test_context("proc_macro_supports_plain_function_tools");
 
         let output = router
@@ -326,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_file_creates_expected_content() {
-        let router = ToolRouter::new().route(WriteFileTool);
+        let router = ToolRouter::new().route(WriteFileTool).unwrap();
         let context = test_context("write_file_creates_expected_content");
         let path = "test.txt";
         let content = "hello world\nsecond line\n";
@@ -350,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_file_emits_progress_for_large_content() {
-        let router = ToolRouter::new().route(WriteFileTool);
+        let router = ToolRouter::new().route(WriteFileTool).unwrap();
         let mut context = test_context("write_file_emits_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         context.ui_tx = Some(tx);
@@ -384,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_returns_content_with_offset_and_limit() {
-        let router = ToolRouter::new().route(ReadFileTool);
+        let router = ToolRouter::new().route(ReadFileTool).unwrap();
         let context = test_context("read_file_returns_content_with_offset_and_limit");
         write_workspace_file(
             &context.work_dir,
@@ -412,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_rejects_path_outside_workspace() {
-        let router = ToolRouter::new().route(ReadFileTool);
+        let router = ToolRouter::new().route(ReadFileTool).unwrap();
         let context = test_context("read_file_rejects_path_outside_workspace");
         let outside_dir = context
             .work_dir
@@ -439,7 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_replaces_first_match() {
-        let router = ToolRouter::new().route(EditFileTool);
+        let router = ToolRouter::new().route(EditFileTool).unwrap();
         let context = test_context("edit_file_replaces_first_match");
         write_workspace_file(&context.work_dir, "edit.txt", "alpha beta gamma");
 
@@ -463,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_errors_when_text_missing() {
-        let router = ToolRouter::new().route(EditFileTool);
+        let router = ToolRouter::new().route(EditFileTool).unwrap();
         let context = test_context("edit_file_errors_when_text_missing");
         write_workspace_file(&context.work_dir, "edit.txt", "unchanged");
 
@@ -485,7 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_runs_command_in_workspace() {
-        let router = ToolRouter::new().route(BashTool);
+        let router = ToolRouter::new().route(BashTool).unwrap();
         let context = test_context("bash_runs_command_in_workspace");
 
         let output = router
@@ -502,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_blocks_dangerous_commands() {
-        let router = ToolRouter::new().route(BashTool);
+        let router = ToolRouter::new().route(BashTool).unwrap();
         let context = test_context("bash_blocks_dangerous_commands");
 
         let error = router
@@ -519,7 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_memory_persists_entry() {
-        let router = ToolRouter::new().route(SaveMemoryTool);
+        let router = ToolRouter::new().route(SaveMemoryTool).unwrap();
         let context = test_context("save_memory_persists_entry");
 
         let output = router
@@ -547,7 +646,7 @@ mod tests {
     async fn load_skill_returns_skill_body() {
         let mut context = test_context("load_skill_returns_skill_body");
         context.skill_registry = install_skill(&context.work_dir, "demo", "Skill body content.");
-        let router = ToolRouter::new().route(LoadSkillTool);
+        let router = ToolRouter::new().route(LoadSkillTool).unwrap();
 
         let output = router
             .call(
@@ -566,8 +665,11 @@ mod tests {
     async fn cron_tools_manage_scheduled_tasks() {
         let router = ToolRouter::new()
             .route(CronCreateTool)
+            .unwrap()
             .route(CronListTool)
-            .route(CronDeleteTool);
+            .unwrap()
+            .route(CronDeleteTool)
+            .unwrap();
         let context = test_context("cron_tools_manage_scheduled_tasks");
 
         let created = router
@@ -615,9 +717,13 @@ mod tests {
     async fn team_tools_spawn_and_message() {
         let router = ToolRouter::new()
             .route(SpawnTeammateTool)
+            .unwrap()
             .route(ListTeammatesTool)
+            .unwrap()
             .route(SendMessageTool)
-            .route(ReadInboxTool);
+            .unwrap()
+            .route(ReadInboxTool)
+            .unwrap();
         let context = test_context("team_tools_spawn_and_message");
 
         router
@@ -663,7 +769,9 @@ mod tests {
     async fn background_run_starts_and_completes() {
         let router = ToolRouter::new()
             .route(BackgroundRunTool)
-            .route(CheckBackgroundTool);
+            .unwrap()
+            .route(CheckBackgroundTool)
+            .unwrap();
         let context = test_context("background_run_starts_and_completes");
 
         let started = router
@@ -706,9 +814,13 @@ mod tests {
     async fn task_get_list_and_update() {
         let router = ToolRouter::new()
             .route(TaskCreateTool)
+            .unwrap()
             .route(TaskGetTool)
+            .unwrap()
             .route(TaskListTool)
-            .route(TaskUpdateTool);
+            .unwrap()
+            .route(TaskUpdateTool)
+            .unwrap();
         let context = test_context("task_get_list_and_update");
 
         let created = router

@@ -294,6 +294,27 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     #[allow(clippy::vec_init_then_push)]
     let mut row1_groups: Vec<DropGroup> = vec![
+        // Permission mode (never dropped — security-critical indicator)
+        {
+            let (perm_label, perm_style) = match app.status_bar.permission_mode.as_str() {
+                "plan" => (
+                    msgs.bottom_permission_plan,
+                    Style::default().fg(theme.warning),
+                ),
+                "default" => (msgs.bottom_permission_default, secondary),
+                _ => (
+                    msgs.bottom_permission_auto,
+                    Style::default().fg(theme.success),
+                ),
+            };
+            DropGroup {
+                droppable: false,
+                spans: vec![
+                    Span::styled(perm_label, perm_style),
+                    Span::styled(SEP_ROW1.to_string(), dim),
+                ],
+            }
+        },
         // Path (droppable)
         DropGroup {
             droppable: true,
@@ -480,6 +501,8 @@ pub(crate) fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 crate::theme::ThemeName::Kawaii => msgs.theme_kawaii,
                 crate::theme::ThemeName::Japanese => msgs.theme_japanese,
                 crate::theme::ThemeName::Brutal => msgs.theme_brutal,
+                crate::theme::ThemeName::Ink => msgs.theme_ink,
+                crate::theme::ThemeName::InkLight => msgs.theme_ink_light,
             };
             let lang_label = app.language.label();
             (

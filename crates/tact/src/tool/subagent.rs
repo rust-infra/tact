@@ -1,7 +1,13 @@
+use crate::tool::{
+    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+    ToolPresentation,
+};
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{Message, Role, get_llm_client};
+use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::{
@@ -9,7 +15,7 @@ use crate::{
     consts::TactPath,
     extract_text,
     mcp::MCPToolRouter,
-    permission::{PermissionManager, PermissionMode},
+    permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     store::open_sqlite_session_store,
     tool::{ToolContext, subagent_toolset},
 };
@@ -23,10 +29,26 @@ pub struct SubagentInput {
     pub description: Option<String>,
 }
 
-#[tool(
-    name = "spawn_subagent",
-    description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
-)]
+pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
+    name: "spawn_subagent",
+    description: "Spawn a subagent with fresh context. It shares the filesystem but not conversation history.",
+    permission: PermissionPolicy::High,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Subagent,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Subagent,
+        display_name: "🤖 Subagent",
+        live_output: LiveOutputPolicy::FullTranscript,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::SubagentTranscript,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::PersistLargeOutput,
+    argument_summary: ArgumentSummaryPolicy::SubagentPrompt { field: "prompt" },
+};
+
+#[tool]
 /// # Errors
 ///
 /// Returns an error if:
@@ -35,19 +57,40 @@ pub struct SubagentInput {
 /// - The session store cannot be opened.
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String> {
-    let client = get_llm_client()?;
+    let settings = crate::config::settings();
+
+    let (client, model_override, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
+        let client = sa.provider.build_client()?;
+        let model = sa.provider.model.clone();
+        let mut agent_settings = settings.agent.clone();
+        agent_settings.max_tokens = sa.max_tokens;
+        agent_settings.thinking_budget = sa.thinking_budget;
+        (client, Some(model), agent_settings)
+    } else {
+        let client = get_llm_client()?;
+        (client, None, settings.agent.clone())
+    };
+
     let system_prompt = format!(
         "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
         ctx.work_dir.display()
     );
+    // Load project-level permission settings for this subagent.
+    let settings = PermissionSettings::load(&TactPath::new(&ctx.work_dir));
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
         subagent_toolset(),
         MCPToolRouter::new(),
-        PermissionManager::try_new(PermissionMode::Default)?,
+        PermissionManager::try_new_with_settings(PermissionMode::Default, settings)?,
         AgentSystemPrompt::Static(system_prompt),
-    );
+    )
+    .with_agent_settings(agent_overrides);
+
+    // Set model override so agent_loop and compact_history use the subagent's model
+    if let Some(model) = model_override {
+        subagent.runtime.model_override = Some(model);
+    }
 
     let child_id = uuid::Uuid::new_v4().to_string();
     let ref_id = ctx.session_id.as_deref().unwrap_or("");

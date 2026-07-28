@@ -46,49 +46,6 @@ fn preserve_markdown_newlines(text: &str) -> String {
     out
 }
 
-fn format_tokens_compact(n: u32) -> String {
-    let n = u64::from(n);
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        let k = n as f64 / 1_000.0;
-        if (k * 10.0).round() % 10.0 == 0.0 {
-            format!("{k:.0}K")
-        } else {
-            format!("{k:.1}K")
-        }
-    } else {
-        let m = n as f64 / 1_000_000.0;
-        if (m * 10.0).round() % 10.0 == 0.0 {
-            format!("{m:.0}M")
-        } else {
-            format!("{m:.1}M")
-        }
-    }
-}
-
-/// One-line usage summary for the parent tool card / subagent popup.
-/// Mirrors bottom-bar fields that fit without a context-window size:
-/// total tokens, cache hit rate, and prompt size as `ctx`.
-fn format_token_usage_line(usage: &tact_protocol::TokenUsageInfo) -> String {
-    let cache = {
-        let hit = usage.prompt_cache_hit_tokens;
-        let miss = usage.prompt_cache_miss_tokens;
-        let total = hit + miss;
-        if total == 0 {
-            "▣ cache% --".to_string()
-        } else {
-            let pct = hit.saturating_mul(100).checked_div(total).unwrap_or(0);
-            format!("▣ cache% {pct}%")
-        }
-    };
-    format!(
-        "⚡ {} tokens · {cache} · ctx {}",
-        usage.total,
-        format_tokens_compact(usage.prompt)
-    )
-}
-
 /// Labeled thinking block. Not a Markdown blockquote — `>` + soft-break made
 /// titles glue to the next sentence and doubled the quote gutter (`▎ >`).
 fn format_thinking_block(summary: &str) -> String {
@@ -166,12 +123,21 @@ pub fn tagged_ui_channel_with_progress(
                     progress.report(vec![structural_stderr(format!("error: {err:?}"))]);
                 }
                 AgentUpdate::TokenUsage(usage) => {
-                    // Keep the parent bottom-bar cache/ctx meters in sync (docs:
-                    // shared UI channel carries parent *and* child TokenUsage).
-                    let _ = inner.send(AgentUpdate::TokenUsage(usage.clone()));
-                    progress.report(vec![structural_line(format_token_usage_line(&usage))]);
+                    // Update the parent tool card header (model + token count)
+                    // instead of cluttering the output stream with inline lines.
+                    let _ = inner.send(AgentUpdate::ToolMeta {
+                        tool_id: progress.tool_id().to_string(),
+                        model: None,
+                        token_usage: Some(usage),
+                    });
                 }
-                AgentUpdate::ModelInfo(_) => {}
+                AgentUpdate::ModelInfo(params) => {
+                    let _ = inner.send(AgentUpdate::ToolMeta {
+                        tool_id: progress.tool_id().to_string(),
+                        model: Some(params.model),
+                        token_usage: None,
+                    });
+                }
                 AgentUpdate::RequestSelect {
                     mut prompt,
                     options,
@@ -210,7 +176,9 @@ pub fn tagged_ui_channel_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{StepResult, StepStatus, ThinkingChunk, TokenUsageInfo};
+    use tact_protocol::{
+        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo,
+    };
 
     #[tokio::test]
     async fn streams_become_tool_progress() {
@@ -342,6 +310,7 @@ mod tests {
                 tool_name: "read_file".into(),
                 arg_summary: "main.rs".into(),
                 arg_full: "main.rs".into(),
+                presentation: tact_protocol::ToolPresentationInfo::generic("read_file"),
             })
             .unwrap();
         tagged
@@ -396,6 +365,7 @@ mod tests {
                     detail: None,
                     duration_us: None,
                     permission_label: None,
+                    presentation: ToolPresentationInfo::generic("bash"),
                 },
             })
             .unwrap();
@@ -434,6 +404,7 @@ mod tests {
                     detail: None,
                     duration_us: None,
                     permission_label: None,
+                    presentation: ToolPresentationInfo::generic("bash"),
                 },
             })
             .unwrap();
@@ -470,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_usage_becomes_progress_chunk() {
+    async fn token_usage_sends_tool_meta_to_parent() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
@@ -487,24 +458,25 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
-        assert_eq!(got.len(), 1);
-        match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
-                assert!(chunks[0].text.contains("⚡"));
-                assert!(chunks[0].text.contains("999"));
-                assert!(chunks[0].text.contains("▣ cache% 75%"));
-                assert!(chunks[0].text.contains("ctx 800"));
-            }
-            other => panic!("expected ToolProgress, got {other:?}"),
-        }
-        // Also forwarded so the parent bottom bar can show cache/ctx.
+        // No progress chunks — token usage updates the tool card header via ToolMeta.
+        assert!(
+            progress_rx.try_recv().is_err(),
+            "TokenUsage must not produce ToolProgress chunks"
+        );
+        // ToolMeta sent to parent channel for the TUI to update the tool card header.
         match inner_rx.try_recv().unwrap() {
-            AgentUpdate::TokenUsage(u) => {
+            AgentUpdate::ToolMeta {
+                tool_id,
+                model,
+                token_usage,
+            } => {
+                assert_eq!(tool_id, "t1");
+                assert!(model.is_none());
+                let u = token_usage.unwrap();
                 assert_eq!(u.total, 999);
                 assert_eq!(u.prompt_cache_hit_tokens, 600);
             }
-            other => panic!("expected TokenUsage on inner, got {other:?}"),
+            other => panic!("expected ToolMeta, got {other:?}"),
         }
     }
 
@@ -520,24 +492,19 @@ mod tests {
             .send(AgentUpdate::StreamChunk("partial".into()))
             .unwrap();
         tagged
-            .send(AgentUpdate::TokenUsage(TokenUsageInfo {
-                total: 42,
-                ..Default::default()
-            }))
-            .unwrap();
-        tagged
             .send(AgentUpdate::StepStarted {
                 idx: 0,
                 tool_id: "b1".into(),
                 tool_name: "bash".into(),
                 arg_summary: "ls".into(),
                 arg_full: "ls".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
             })
             .unwrap();
         tokio::task::yield_now().await;
 
         let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
-        assert_eq!(got.len(), 3);
+        assert_eq!(got.len(), 2);
         match &got[0] {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "partial");
@@ -546,12 +513,6 @@ mod tests {
         }
         match &got[1] {
             AgentUpdate::ToolProgress { chunks, .. } => {
-                assert_eq!(chunks[0].text, "\n\n⚡ 42 tokens · ▣ cache% -- · ctx 0\n\n");
-            }
-            other => panic!("expected ToolProgress, got {other:?}"),
-        }
-        match &got[2] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "\n\n→ bash ls\n\n");
             }
             other => panic!("expected ToolProgress, got {other:?}"),
@@ -559,8 +520,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_info_is_silently_ignored() {
-        let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
+    async fn model_info_sends_tool_meta_to_parent() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
@@ -576,7 +537,23 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        assert!(progress_rx.try_recv().is_err());
+        // No progress chunks — model info updates the tool card header via ToolMeta.
+        assert!(
+            progress_rx.try_recv().is_err(),
+            "ModelInfo must not produce ToolProgress chunks"
+        );
+        match inner_rx.try_recv().unwrap() {
+            AgentUpdate::ToolMeta {
+                tool_id,
+                model,
+                token_usage,
+            } => {
+                assert_eq!(tool_id, "t1");
+                assert_eq!(model.unwrap(), "fake");
+                assert!(token_usage.is_none());
+            }
+            other => panic!("expected ToolMeta, got {other:?}"),
+        }
     }
 
     #[tokio::test]

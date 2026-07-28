@@ -269,14 +269,6 @@ pub fn mock_turn_with_usage(
 
 // ── Additional tool-use builders ─────────────────────────────────────
 
-pub fn apply_patch_tool_use(id: &str, patch: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "apply_patch".to_string(),
-        input: serde_json::json!({ "patch": patch }),
-    }
-}
-
 pub fn web_search_tool_use(id: &str, query: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: id.to_string(),

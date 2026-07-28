@@ -20,7 +20,7 @@ use super::{
 };
 use crate::widgets::state::{App, InputMode};
 
-/// Build a minimal `App` for render tests (retro theme, empty log).
+/// Build a minimal `App` for render tests (ink theme, empty log).
 pub fn make_app() -> App {
     let (_agent_tx, agent_rx) = unbounded_channel();
     let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
@@ -37,7 +37,7 @@ pub fn make_app() -> App {
         Vec::new(),
         "render-test".to_string(),
         history_tx,
-        "retro".to_string(),
+        "ink".to_string(),
         String::new(),
         Vec::new(),
     )

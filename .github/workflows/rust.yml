@@ -28,10 +28,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Install SQLite build dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -49,10 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install SQLite build dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
+          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
