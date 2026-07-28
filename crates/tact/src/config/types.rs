@@ -144,17 +144,12 @@ pub struct VisionImageTomlConfig {
 }
 
 /// Transcription provider backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceProvider {
+    #[default]
     OpenAi,
     WhisperCpp,
-}
-
-impl Default for VoiceProvider {
-    fn default() -> Self {
-        Self::OpenAi
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
