@@ -135,12 +135,7 @@ fn build_input_titles(app: &App, inner_width: usize) -> (String, Style) {
         return (String::new(), Style::default());
     }
 
-    let label = match app.voice.phase {
-        VoicePhase::Disabled => String::new(),
-        VoicePhase::Idle => app.msgs().voice_idle.to_string(),
-        VoicePhase::Recording { .. } => app.msgs().voice_stop.to_string(),
-        VoicePhase::Transcribing => app.msgs().voice_transcribing.to_string(),
-    };
+    let label = voice_button_label(app);
     if label.is_empty() {
         return (String::new(), Style::default());
     }
@@ -157,27 +152,35 @@ fn build_input_titles(app: &App, inner_width: usize) -> (String, Style) {
     (format!("{}{label}", " ".repeat(pad)), style)
 }
 
+fn voice_button_label(app: &App) -> String {
+    match app.voice.phase {
+        VoicePhase::Disabled => String::new(),
+        VoicePhase::Idle => app.msgs().voice_idle.to_string(),
+        VoicePhase::Recording { started_at } => {
+            let elapsed = started_at.elapsed();
+            format!(
+                "⏹ {:02}:{:02}",
+                elapsed.as_secs() / 60,
+                elapsed.as_secs() % 60
+            )
+        }
+        VoicePhase::Transcribing => app.msgs().voice_transcribing.to_string(),
+    }
+}
+
 fn update_voice_button_area(app: &mut App, area: Rect) {
     if matches!(app.voice.phase, VoicePhase::Disabled) {
         app.voice.set_button_area(Rect::default());
         return;
     }
-    let label = match app.voice.phase {
-        VoicePhase::Idle => app.msgs().voice_idle,
-        VoicePhase::Recording { .. } => app.msgs().voice_stop,
-        VoicePhase::Transcribing => app.msgs().voice_transcribing,
-        VoicePhase::Disabled => "",
-    };
-    let width = UnicodeWidthStr::width(label) as u16;
+    let label = voice_button_label(app);
+    let width = UnicodeWidthStr::width(label.as_str()) as u16;
     if width == 0 {
         app.voice.set_button_area(Rect::default());
         return;
     }
-    let x = area
-        .x
-        .saturating_add(area.width.saturating_sub(width + 1));
-    app.voice
-        .set_button_area(Rect::new(x, area.y, width, 1));
+    let x = area.x.saturating_add(area.width.saturating_sub(width + 1));
+    app.voice.set_button_area(Rect::new(x, area.y, width, 1));
 }
 
 #[cfg(test)]
@@ -262,6 +265,22 @@ mod render_tests {
     }
 
     #[test]
+    fn input_box_renders_recording_elapsed_time() {
+        let mut app = make_app();
+        app.voice.phase = VoicePhase::Recording {
+            started_at: std::time::Instant::now() - std::time::Duration::from_secs(8),
+        };
+
+        let backend = TestBackend::new(100, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 100, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("00:08"), "recording elapsed label: {text}");
+    }
+    #[test]
     fn input_box_renders_voice_button_when_enabled() {
         let mut app = make_app();
         app.voice = VoiceState::idle_visible_for_tests();
@@ -273,7 +292,10 @@ mod render_tests {
             .expect("draw");
 
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("Voice") || text.contains("语音"), "voice label: {text}");
+        assert!(
+            text.contains("Voice") || text.contains("语音"),
+            "voice label: {text}"
+        );
         assert!(!app.voice.button_area.is_empty());
         assert!(matches!(app.voice.phase, VoicePhase::Idle));
     }

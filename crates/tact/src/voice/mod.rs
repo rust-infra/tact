@@ -156,8 +156,11 @@ pub fn spawn_worker_with_components(
                             }
                         }
                         VoiceCommand::Cancel => {
-                            if let Some(active) = recording.as_ref() {
+                            // Drop active slots immediately so a follow-up Start is not ignored
+                            // while teardown finishes, and late results cannot re-enter Idle.
+                            if let Some(active) = recording.take() {
                                 active.cancel.cancel();
+                                let _ = event_tx.send(VoiceEvent::Cancelled);
                             }
                             if let Some(active) = transcription.take() {
                                 active.cancel.cancel();
@@ -173,10 +176,8 @@ pub fn spawn_worker_with_components(
                             result,
                             generation: recording_gen,
                         } => {
-                            if recording
-                                .as_ref()
-                                .is_some_and(|r| r.generation != recording_gen)
-                            {
+                            // Skip stale or already-cancelled sessions (recording taken on Cancel).
+                            if recording.as_ref().map(|r| r.generation) != Some(recording_gen) {
                                 continue;
                             }
                             recording = None;
@@ -184,7 +185,9 @@ pub fn spawn_worker_with_components(
                                 Ok(None) => {
                                     let _ = event_tx.send(VoiceEvent::Cancelled);
                                 }
-                                Ok(Some(samples)) if samples.is_empty() => {}
+                                Ok(Some(samples)) if samples.is_empty() => {
+                                    let _ = event_tx.send(VoiceEvent::Cancelled);
+                                }
                                 Ok(Some(samples)) => {
                                     let _ = event_tx.send(VoiceEvent::RecordingStopped);
                                     let _ = event_tx.send(VoiceEvent::Transcribing);
@@ -226,9 +229,9 @@ pub fn spawn_worker_with_components(
                             result,
                             generation: transcription_gen,
                         } => {
-                            if transcription
-                                .as_ref()
-                                .is_some_and(|t| t.generation != transcription_gen)
+                            // Skip stale or already-cancelled sessions (transcription taken on Cancel).
+                            if transcription.as_ref().map(|t| t.generation)
+                                != Some(transcription_gen)
                             {
                                 continue;
                             }
@@ -259,10 +262,20 @@ pub fn spawn_worker_with_components(
 #[cfg(test)]
 mod tests {
     use anyhow::Context;
+    use std::sync::LazyLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::config::VoiceSettings;
+
+    /// Serialize worker tests so a hung `recv().await` cannot stack with siblings
+    /// (parallel cases made agent `cargo test` runs look stuck for minutes).
+    static WORKER_TEST_GATE: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    async fn lock_worker_tests() -> tokio::sync::MutexGuard<'static, ()> {
+        WORKER_TEST_GATE.lock().await
+    }
 
     struct FakeRecorder {
         wait_stop: bool,
@@ -308,9 +321,26 @@ mod tests {
             if cancel.is_cancelled() {
                 anyhow::bail!("transcription cancelled");
             }
-            self.text
-                .clone()
-                .context("missing fake transcript")
+            self.text.clone().context("missing fake transcript")
+        }
+    }
+
+    /// Waits until cancelled, then still returns Ok — models a late HTTP completion.
+    struct LateSuccessTranscriber {
+        text: String,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Transcriber for LateSuccessTranscriber {
+        async fn transcribe(
+            &self,
+            _wav: Vec<u8>,
+            cancel: CancellationToken,
+        ) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancel.cancelled().await;
+            Ok(self.text.clone())
         }
     }
 
@@ -326,12 +356,24 @@ mod tests {
     }
 
     async fn assert_event(rx: &mut UnboundedReceiver<VoiceEvent>, expected: VoiceEvent) {
-        let event = rx.recv().await.expect("event");
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for voice event")
+            .expect("event channel closed");
         assert_eq!(event, expected);
+    }
+
+    async fn assert_no_event(rx: &mut UnboundedReceiver<VoiceEvent>) {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Err(_) => {}
+            Ok(None) => panic!("event channel closed unexpectedly"),
+            Ok(Some(event)) => panic!("unexpected voice event: {event:?}"),
+        }
     }
 
     #[tokio::test]
     async fn start_stop_records_then_transcribes_and_emits_text() {
+        let _gate = lock_worker_tests().await;
         let recorder = Arc::new(FakeRecorder {
             wait_stop: true,
             samples: Some(vec![1, 2, 3]),
@@ -357,6 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_recording_emits_cancelled_and_never_transcribes() {
+        let _gate = lock_worker_tests().await;
         let recorder = Arc::new(FakeRecorder {
             wait_stop: true,
             samples: Some(vec![1, 2, 3]),
@@ -367,11 +410,8 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let transcriber_calls = transcriber.calls.load(Ordering::SeqCst);
-        let mut worker = spawn_worker_with_components(
-            test_settings(),
-            recorder,
-            transcriber.clone(),
-        );
+        let mut worker =
+            spawn_worker_with_components(test_settings(), recorder, transcriber.clone());
         worker.command_tx.send(VoiceCommand::Start).unwrap();
         assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
         worker.command_tx.send(VoiceCommand::Cancel).unwrap();
@@ -382,6 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_api_key_is_reported_by_transcriber_without_recording_failure() {
+        let _gate = lock_worker_tests().await;
         let recorder = Arc::new(FakeRecorder {
             wait_stop: false,
             samples: Some(vec![1, 2, 3]),
@@ -404,7 +445,10 @@ mod tests {
         worker.command_tx.send(VoiceCommand::Stop).unwrap();
         assert_event(&mut worker.event_rx, VoiceEvent::RecordingStopped).await;
         assert_event(&mut worker.event_rx, VoiceEvent::Transcribing).await;
-        let err = worker.event_rx.recv().await.expect("error event");
+        let err = tokio::time::timeout(Duration::from_secs(2), worker.event_rx.recv())
+            .await
+            .expect("timed out waiting for error event")
+            .expect("event channel closed");
         match err {
             VoiceEvent::Error(msg) => assert!(msg.contains("[voice].api_key")),
             other => panic!("expected error, got {other:?}"),
@@ -414,11 +458,13 @@ mod tests {
 
     #[tokio::test]
     async fn second_start_while_active_is_ignored_and_shutdown_is_safe() {
+        let _gate = lock_worker_tests().await;
         let recorder = Arc::new(FakeRecorder {
             wait_stop: true,
             samples: Some(vec![1]),
             calls: AtomicUsize::new(0),
         });
+        let recorder_calls = Arc::clone(&recorder);
         let transcriber = Arc::new(FakeTranscriber {
             text: Some("x".into()),
             calls: AtomicUsize::new(0),
@@ -427,11 +473,86 @@ mod tests {
         worker.command_tx.send(VoiceCommand::Start).unwrap();
         assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
         worker.command_tx.send(VoiceCommand::Start).unwrap();
+        worker.command_tx.send(VoiceCommand::Stop).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStopped).await;
+        assert_eq!(recorder_calls.calls.load(Ordering::SeqCst), 1);
+        worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn empty_recording_returns_to_idle_with_cancelled_event() {
+        let _gate = lock_worker_tests().await;
+        let recorder = Arc::new(FakeRecorder {
+            wait_stop: false,
+            samples: Some(Vec::new()),
+            calls: AtomicUsize::new(0),
+        });
+        let transcriber = Arc::new(FakeTranscriber {
+            text: Some("should not be sent".into()),
+            calls: AtomicUsize::new(0),
+        });
+        let mut worker =
+            spawn_worker_with_components(test_settings(), recorder, transcriber.clone());
+        worker.command_tx.send(VoiceCommand::Start).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
+        assert_event(&mut worker.event_rx, VoiceEvent::Cancelled).await;
+        assert_eq!(transcriber.calls.load(Ordering::SeqCst), 0);
+        worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cancel_transcription_ignores_late_transcript() {
+        let _gate = lock_worker_tests().await;
+        let recorder = Arc::new(FakeRecorder {
+            wait_stop: true,
+            samples: Some(vec![1, 2, 3]),
+            calls: AtomicUsize::new(0),
+        });
+        let transcriber = Arc::new(LateSuccessTranscriber {
+            text: "late".into(),
+            calls: AtomicUsize::new(0),
+        });
+        let mut worker = spawn_worker_with_components(test_settings(), recorder, transcriber);
+        worker.command_tx.send(VoiceCommand::Start).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
+        worker.command_tx.send(VoiceCommand::Stop).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStopped).await;
+        assert_event(&mut worker.event_rx, VoiceEvent::Transcribing).await;
+        worker.command_tx.send(VoiceCommand::Cancel).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::Cancelled).await;
+        assert_no_event(&mut worker.event_rx).await;
+        worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn start_after_cancel_recording_is_accepted() {
+        let _gate = lock_worker_tests().await;
+        let recorder = Arc::new(FakeRecorder {
+            wait_stop: true,
+            samples: Some(vec![1, 2, 3]),
+            calls: AtomicUsize::new(0),
+        });
+        let transcriber = Arc::new(FakeTranscriber {
+            text: Some("ok".into()),
+            calls: AtomicUsize::new(0),
+        });
+        let mut worker = spawn_worker_with_components(test_settings(), recorder, transcriber);
+        worker.command_tx.send(VoiceCommand::Start).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
+        worker.command_tx.send(VoiceCommand::Cancel).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::Cancelled).await;
+        worker.command_tx.send(VoiceCommand::Start).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStarted).await;
+        worker.command_tx.send(VoiceCommand::Stop).unwrap();
+        assert_event(&mut worker.event_rx, VoiceEvent::RecordingStopped).await;
+        assert_event(&mut worker.event_rx, VoiceEvent::Transcribing).await;
+        assert_event(&mut worker.event_rx, VoiceEvent::Transcript("ok".into())).await;
         worker.shutdown().await;
     }
 
     #[tokio::test]
     async fn duration_limit_completes_recording() {
+        let _gate = lock_worker_tests().await;
         let recorder = Arc::new(FakeRecorder {
             wait_stop: false,
             samples: Some(vec![9, 9]),

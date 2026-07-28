@@ -36,11 +36,7 @@ fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
     let enabled = toml_cfg.voice.enabled.unwrap_or(false);
-    let api_key = toml_cfg
-        .voice
-        .api_key
-        .clone()
-        .filter(|k| !k.is_empty());
+    let api_key = toml_cfg.voice.api_key.clone().filter(|k| !k.is_empty());
     let base_url = toml_cfg
         .voice
         .base_url
@@ -53,12 +49,11 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
         .clone()
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| VoiceSettings::DEFAULT_MODEL.to_string());
-    let language = toml_cfg
-        .voice
-        .language
-        .clone()
-        .filter(|l| !l.trim().is_empty())
-        .or_else(|| Some(VoiceSettings::DEFAULT_LANGUAGE.to_string()));
+    let language = match toml_cfg.voice.language.clone() {
+        Some(language) if language.trim().is_empty() => None,
+        Some(language) => Some(language),
+        None => Some(VoiceSettings::DEFAULT_LANGUAGE.to_string()),
+    };
     let max_duration_secs = toml_cfg
         .voice
         .max_duration_secs
@@ -313,7 +308,10 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
-    let voice = resolve_voice(toml_cfg).unwrap_or_else(|_| VoiceSettings::disabled_defaults());
+    let voice = resolve_voice(toml_cfg).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
+        VoiceSettings::disabled_defaults()
+    });
 
     ResolvedConfig {
         llm: LlmSettings {
@@ -533,6 +531,14 @@ model = "gpt-4o"
         assert_eq!(cfg.voice.model, "gpt-4o-mini-transcribe");
         assert_eq!(cfg.voice.language.as_deref(), Some("zh"));
         assert_eq!(cfg.voice.max_duration_secs, 300);
+    }
+
+    #[test]
+    fn explicit_empty_language_disables_language_hint() {
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.voice.language = Some(String::new());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.language, None);
     }
 
     #[test]
