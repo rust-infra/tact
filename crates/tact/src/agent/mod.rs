@@ -2128,13 +2128,19 @@ mod tests {
         assert_eq!(agent.runtime.context.len(), 2);
 
         // The response committed a provider state covering the request
-        // messages (the single user turn), with the assistant output appended
-        // to the protocol baseline.
+        // messages plus the pushed assistant message (the protocol baseline
+        // already contains the terminal output), so the anchor is the
+        // post-assistant logical context.
         let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
         else {
             panic!("agent loop must commit provider state after the LLM response");
         };
-        assert_eq!(state.logical_message_count, 1);
+        assert_eq!(state.logical_message_count, 2);
+        assert_eq!(
+            state.logical_context_hash,
+            tact_llm::context_hash(&agent.runtime.context).unwrap(),
+            "committed anchor must cover the post-assistant logical context"
+        );
         assert!(!state.is_compacted);
         assert_eq!(state.input_items.len(), 2, "user input + assistant output");
         assert!(
@@ -2158,6 +2164,223 @@ mod tests {
             "one user message converted for the first request"
         );
         assert_eq!(input[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn responses_agent_loop_two_turns_never_duplicates_assistant_tool_items() {
+        ensure_config();
+        let server = MockServer::start().await;
+        // Turn 1: reasoning + assistant message + read_file function call
+        // (the agent executes the tool and continues). Turn 2: terminal
+        // assistant message. Served sequentially by request index.
+        let turn1 = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 1,
+                "completed_at": 2,
+                "status": "completed",
+                "model": "gpt-5",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [{"type": "summary_text", "text": "plan"}],
+                        "encrypted_content": "encrypted-plan-1",
+                        "status": "completed"
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{
+                            "type": "output_text",
+                            "annotations": [],
+                            "logprobs": null,
+                            "text": "reading the file"
+                        }]
+                    },
+                    {
+                        "type": "function_call",
+                        "arguments": "{\"path\":\"a.txt\"}",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "id": "fc_1",
+                        "status": "completed"
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 5,
+                    "output_tokens_details": { "reasoning_tokens": 2 },
+                    "total_tokens": 15
+                }
+            }
+        });
+        let turn2 = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_2",
+                "object": "response",
+                "created_at": 3,
+                "completed_at": 4,
+                "status": "completed",
+                "model": "gpt-5",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_2",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "annotations": [],
+                        "logprobs": null,
+                        "text": "done reading"
+                    }]
+                }],
+                "usage": {
+                    "input_tokens": 12,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 2,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 14
+                }
+            }
+        });
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_for_responder = call_count.clone();
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(move |_request: &wiremock::Request| {
+                let index =
+                    call_count_for_responder.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = if index == 0 { &turn1 } else { &turn2 };
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {body}\n\n"))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let context = crate::tool::test_support::test_context("responses_two_turns");
+        crate::tool::test_support::write_workspace_file(&context.work_dir, "a.txt", "aaa");
+        let mut tool_context = context;
+        tool_context.ui_tx = None;
+        let mut agent = Agent::new(
+            LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
+                "test-key",
+                &server.uri(),
+                None,
+                None,
+            )),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read a.txt")))
+            .await
+            .expect("agent loop should finish both turns");
+        server.verify().await;
+
+        // Logical context: user, assistant (tool call), user (tool result),
+        // assistant (final).
+        assert_eq!(agent.runtime.context.len(), 4);
+
+        // The committed anchor covers the full post-assistant logical context.
+        let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
+        else {
+            panic!("agent loop must commit provider state after the LLM response");
+        };
+        assert_eq!(
+            state.logical_message_count,
+            agent.runtime.context.len(),
+            "committed anchor must match the post-assistant logical context"
+        );
+        assert_eq!(
+            state.logical_context_hash,
+            tact_llm::context_hash(&agent.runtime.context).unwrap()
+        );
+        assert_eq!(
+            state.input_items.len(),
+            6,
+            "user + reasoning + message + function_call + function_call_output + message"
+        );
+
+        // Second request body: the baseline is replayed verbatim and only the
+        // new user/tool suffix is converted — no duplicated assistant,
+        // reasoning, or function-call items/ids.
+        let requests = server.received_requests().await.expect("received requests");
+        assert_eq!(requests.len(), 2, "exactly two /responses requests");
+        let second: serde_json::Value =
+            serde_json::from_slice(&requests[1].body).expect("second request body is JSON");
+        let input = second["input"].as_array().expect("second request input");
+        assert_eq!(
+            input.len(),
+            5,
+            "baseline (4) + one converted tool-result suffix item, got: {input:?}"
+        );
+        let reasoning_items = input
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasoning_items.len(),
+            1,
+            "reasoning item must not be duplicated, got: {input:?}"
+        );
+        assert_eq!(reasoning_items[0]["id"], "rs_1");
+        let assistant_messages = input
+            .iter()
+            .filter(|item| item["type"] == "message" && item["role"] == "assistant")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            assistant_messages.len(),
+            1,
+            "assistant message must not be duplicated, got: {input:?}"
+        );
+        assert_eq!(assistant_messages[0]["id"], "msg_1");
+        let function_calls = input
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            function_calls.len(),
+            1,
+            "function_call item must not be duplicated, got: {input:?}"
+        );
+        assert_eq!(function_calls[0]["call_id"], "call_1");
+        assert_eq!(function_calls[0]["id"], "fc_1");
+        // The only newly converted item is the tool result of the executed
+        // read_file call.
+        let outputs = input
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outputs.len(),
+            1,
+            "exactly one tool-result suffix item, got: {input:?}"
+        );
+        assert_eq!(outputs[0]["call_id"], "call_1");
+        assert_eq!(outputs[0]["output"], "aaa");
+        // Baseline items are replayed verbatim (same ids, same order).
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[2]["id"], "msg_1");
+        assert_eq!(input[3]["id"], "fc_1");
+        assert_eq!(input[4]["type"], "function_call_output");
     }
 
     #[tokio::test]

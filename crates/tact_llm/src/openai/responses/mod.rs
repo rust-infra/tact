@@ -206,8 +206,7 @@ impl OpenAiResponsesAdapter {
             "openai_responses",
             &self.base_url,
             &request.model,
-            request.messages.len(),
-            context_hash(&request.messages)?,
+            &request.messages,
         )
     }
 

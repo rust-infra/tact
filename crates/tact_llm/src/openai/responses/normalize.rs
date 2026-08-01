@@ -7,8 +7,8 @@ use tact_protocol::TokenUsageInfo;
 
 use super::history;
 use crate::{
-    ContentBlock, LlmError, ProviderConversationState, ProviderStateUpdate,
-    ResponsesConversationState, StopReason,
+    ContentBlock, LlmError, Message, ProviderConversationState, ProviderStateUpdate,
+    ResponsesConversationState, Role, StopReason, context_hash,
 };
 
 #[derive(Debug)]
@@ -180,9 +180,12 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
             // Compaction is opaque protocol state: it must not become a
             // ContentBlock, and it is retained as JSON in `output_items`.
             OutputItem::Compaction(_) => {}
-            // Unmapped output items (file search, web search, computer use,
-            // unknown future types) produce no ContentBlock but are retained
-            // as JSON in `output_items`.
+            // Unmapped output items known to the typed SDK (file search, web
+            // search, computer use, …) produce no ContentBlock but are
+            // retained as JSON in `output_items`. A truly unknown future item
+            // type is rejected earlier by the typed SDK boundary (async-openai
+            // `OutputItem` has no `Unknown` variant): hard protocol error,
+            // never a silent drop or fallback.
             _ => {}
         }
     }
@@ -298,14 +301,25 @@ impl NormalizedResponse {
     /// fixture contract instead: the single compaction item replaces the
     /// entire prior baseline and is followed by the current response's
     /// non-compaction output items.
+    ///
+    /// The logical anchor is advanced to the **post-assistant** context when
+    /// the response produced terminal output items: the baseline then covers
+    /// the assistant message the agent pushes, so the next turn converts only
+    /// the new user/tool suffix and never duplicates assistant/reasoning/
+    /// function-call items or ids. When the terminal output is empty (the
+    /// compatible-endpoint visible-text recovery path) the baseline did not
+    /// grow, so the anchor stays at the request prefix and the assistant
+    /// message is converted on the next turn instead of being dropped from
+    /// the wire. The post-assistant hash covers `messages` plus exactly the
+    /// assistant message built from the normalized blocks — the same message
+    /// the agent pushes into its logical context.
     pub(crate) fn provider_state_update(
         &self,
         request_input_items: Vec<serde_json::Value>,
         provider: &str,
         base_url: &str,
         model: &str,
-        logical_message_count: usize,
-        logical_context_hash: String,
+        messages: &[Message],
     ) -> Result<ProviderStateUpdate, LlmError> {
         let compaction_index = find_single_compaction(&self.output_items)?;
         let (input_items, compaction_id, is_compacted) = match compaction_index {
@@ -335,6 +349,13 @@ impl NormalizedResponse {
                     .to_string();
                 (items, Some(id), true)
             }
+        };
+        let (logical_message_count, logical_context_hash) = if self.output_items.is_empty() {
+            (messages.len(), context_hash(messages)?)
+        } else {
+            let mut post_assistant = messages.to_vec();
+            post_assistant.push(Message::new_blocks(Role::Assistant, self.blocks.clone()));
+            (post_assistant.len(), context_hash(&post_assistant)?)
         };
         Ok(ProviderStateUpdate::Replace(
             ProviderConversationState::OpenAiResponses(ResponsesConversationState {
@@ -666,6 +687,7 @@ pub(crate) mod tests {
     fn ordinary_response_appends_output_items_to_the_request_input() {
         let response: Response = serde_json::from_value(completed_response_json()).unwrap();
         let normalized = normalize_response(response).unwrap();
+        let messages = vec![Message::new_text(Role::User, "hi")];
         let update = normalized
             .provider_state_update(
                 vec![serde_json::json!({
@@ -676,8 +698,7 @@ pub(crate) mod tests {
                 "openai_responses",
                 "https://api.openai.com/v1",
                 "gpt-5",
-                1,
-                "hash-prefix".to_string(),
+                &messages,
             )
             .unwrap();
 
@@ -692,8 +713,83 @@ pub(crate) mod tests {
         assert_eq!(state.input_items[3]["type"], "function_call");
         assert_eq!(state.compaction_id, None);
         assert!(!state.is_compacted);
+        // The baseline already covers the terminal output, so the anchor
+        // advances past the assistant message the agent pushes: the next
+        // turn converts only the new user/tool suffix and never duplicates
+        // assistant/reasoning/function-call items or ids.
+        let expected_post_assistant = vec![
+            messages[0].clone(),
+            Message::new_blocks(Role::Assistant, normalized.blocks.clone()),
+        ];
+        assert_eq!(state.logical_message_count, 2);
+        assert_eq!(
+            state.logical_context_hash,
+            crate::context_hash(&expected_post_assistant).unwrap()
+        );
+    }
+
+    #[test]
+    fn response_without_terminal_output_keeps_pre_assistant_anchor() {
+        // A terminal response without output items (visible-text recovery
+        // path) must not advance the anchor: its baseline did not gain the
+        // assistant output, so the assistant message is converted on the
+        // next turn instead of being silently dropped from the wire.
+        let mut value = completed_response_json();
+        value["output"] = serde_json::json!([]);
+        value["usage"] = serde_json::Value::Null;
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+        assert!(normalized.output_items.is_empty());
+
+        let messages = vec![Message::new_text(Role::User, "hi")];
+        let update = normalized
+            .provider_state_update(
+                vec![serde_json::json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                })],
+                "openai_responses",
+                "https://api.openai.com/v1",
+                "gpt-5",
+                &messages,
+            )
+            .unwrap();
+        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
+            state,
+        )) = update
+        else {
+            panic!("expected a replacement state");
+        };
+        assert_eq!(state.input_items.len(), 1, "baseline did not grow");
         assert_eq!(state.logical_message_count, 1);
-        assert_eq!(state.logical_context_hash, "hash-prefix");
+        assert_eq!(
+            state.logical_context_hash,
+            crate::context_hash(&messages).unwrap()
+        );
+    }
+
+    #[test]
+    fn unknown_output_item_type_is_a_hard_protocol_error() {
+        // The typed SDK boundary: async-openai 0.41 `OutputItem` has no
+        // `Unknown` variant, so a truly unknown terminal output item type
+        // fails typed deserialization instead of being silently dropped.
+        // Tact keeps this hard validation; there is no fallback.
+        let mut value = completed_response_json();
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "future_unknown_item",
+                "opaque": { "any": ["shape"] }
+            }));
+        let error = serde_json::from_value::<Response>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown variant"),
+            "typed SDK must reject unknown output item types, got: {error}"
+        );
     }
 
     #[test]
@@ -719,8 +815,11 @@ pub(crate) mod tests {
                 "openai_responses",
                 "https://api.openai.com/v1",
                 "gpt-5.4-mini",
-                3,
-                "hash-full".to_string(),
+                &[
+                    Message::new_text(Role::User, "old turn"),
+                    Message::new_text(Role::Assistant, "prior answer"),
+                    Message::new_text(Role::User, "current turn"),
+                ],
             )
             .unwrap();
         let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
@@ -738,7 +837,20 @@ pub(crate) mod tests {
         assert_eq!(state.input_items[2]["type"], "message");
         assert_eq!(state.compaction_id.as_deref(), Some("cmp_sanitized_01"));
         assert!(state.is_compacted);
-        assert_eq!(state.logical_message_count, 3);
+        // The compaction item stands in for every prior turn and the output
+        // items cover the current assistant response: the anchor covers the
+        // full post-assistant logical context.
+        let expected_post_assistant = vec![
+            Message::new_text(Role::User, "old turn"),
+            Message::new_text(Role::Assistant, "prior answer"),
+            Message::new_text(Role::User, "current turn"),
+            Message::new_blocks(Role::Assistant, normalized.blocks.clone()),
+        ];
+        assert_eq!(state.logical_message_count, 4);
+        assert_eq!(
+            state.logical_context_hash,
+            crate::context_hash(&expected_post_assistant).unwrap()
+        );
     }
 
     #[test]

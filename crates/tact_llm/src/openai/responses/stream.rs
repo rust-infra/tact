@@ -447,8 +447,11 @@ mod tests {
                 "openai_responses",
                 "https://api.openai.com/v1",
                 "gpt-5.4-mini",
-                3,
-                "hash-full".to_string(),
+                &[
+                    crate::Message::new_text(crate::Role::User, "old turn"),
+                    crate::Message::new_text(crate::Role::Assistant, "prior answer"),
+                    crate::Message::new_text(crate::Role::User, "current turn"),
+                ],
             )
             .unwrap();
         assert!(matches!(
@@ -670,14 +673,18 @@ mod tests {
         );
 
         let input = vec![serde_json::json!({"type": "message", "role": "user", "content": "old"})];
+        let messages = [
+            crate::Message::new_text(crate::Role::User, "old turn"),
+            crate::Message::new_text(crate::Role::Assistant, "prior answer"),
+            crate::Message::new_text(crate::Role::User, "current turn"),
+        ];
         let streamed_update = streamed
             .provider_state_update(
                 input.clone(),
                 "openai_responses",
                 "https://api.openai.com/v1",
                 "gpt-5.4-mini",
-                3,
-                "hash-full".to_string(),
+                &messages,
             )
             .unwrap();
         let direct_update = direct
@@ -686,8 +693,7 @@ mod tests {
                 "openai_responses",
                 "https://api.openai.com/v1",
                 "gpt-5.4-mini",
-                3,
-                "hash-full".to_string(),
+                &messages,
             )
             .unwrap();
         assert_eq!(streamed_update, direct_update);
