@@ -94,6 +94,8 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
             | "response.reasoning_text.delta"
             | "response.output_text.delta"
             | "response.refusal.delta"
+            | "response.output_item.added"
+            | "response.output_item.done"
             | "response.completed"
             | "response.incomplete"
             | "response.failed"
@@ -371,14 +373,58 @@ mod tests {
     #[test]
     fn skips_unconsumed_events_without_deserializing_provider_specific_items() {
         let event = parse_stream_event(serde_json::json!({
-            "type": "response.output_item.added",
+            "type": "response.content_part.added",
             "sequence_number": 1,
+            "item_id": "msg_1",
             "output_index": 0,
-            "item": {"type": "message", "role": "assistant", "content": []}
+            "content_index": 0,
+            "part": {"type": "output_text", "text": "answer", "annotations": []}
         }))
         .unwrap();
 
         assert!(event.is_none());
+    }
+
+    #[test]
+    fn parses_output_item_added_and_done_events() {
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            let event = parse_stream_event(serde_json::json!({
+                "type": event_type,
+                "sequence_number": 1,
+                "output_index": 0,
+                "item": {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "answer",
+                        "annotations": []
+                    }]
+                }
+            }))
+            .unwrap();
+
+            assert!(event.is_some());
+        }
+    }
+
+    #[test]
+    fn parses_output_item_done_with_a_compaction_item() {
+        let event = parse_stream_event(serde_json::json!({
+            "type": "response.output_item.done",
+            "sequence_number": 1,
+            "output_index": 2,
+            "item": {
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": "encrypted-compaction"
+            }
+        }))
+        .unwrap();
+
+        assert!(event.is_some());
     }
 
     #[test]
