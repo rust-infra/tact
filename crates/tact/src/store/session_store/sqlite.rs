@@ -417,11 +417,14 @@ impl super::SessionStore for SqliteSessionStore {
         };
 
         let state_json: String = row.try_get("state_json")?;
-        let preview: String = state_json.chars().take(256).collect();
+        // Structural metadata only: the payload length and session id. The raw
+        // JSON (including `input_items` / `encrypted_content`) must never
+        // appear in error strings.
+        let state_json_len = state_json.chars().count();
         let state: ProviderConversationState = serde_json::from_str(&state_json).with_context(
             || {
                 format!(
-                    "failed to deserialize provider state for session {session_id} (json preview: {preview})"
+                    "failed to deserialize provider state for session {session_id} (state_json length: {state_json_len} chars)"
                 )
             },
         )?;
@@ -1892,6 +1895,71 @@ mod tests {
         assert!(
             message.contains("provider state"),
             "error should mention provider state: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_provider_state_error_never_leaks_payload() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 0,
+            logical_context_hash: "hash".to_string(),
+        });
+        store
+            .replace_session_messages_and_provider_state(
+                "session-1",
+                &[Message::new_text(Role::User, "hello")],
+                Some(&state),
+            )
+            .await
+            .unwrap();
+
+        // Valid JSON that fails type validation, carrying a secret payload
+        // marker inside `encrypted_content` and `input_items`. The marker must
+        // never surface in the deserialization error: error strings carry
+        // structural metadata only, never raw state payloads.
+        const LEAK_MARKER: &str = "TOP-SECRET-LEAK-MARKER-12345";
+        sqlx::query("UPDATE responses_states SET state_json = ? WHERE session_id = 'session-1'")
+            .bind(format!(
+                r#"{{"version": 1, "provider": "openai_responses", "base_url": "https://api.openai.com/v1", "model": "gpt-5.4-mini", "input_items": [{{"type": "message", "encrypted_content": "{LEAK_MARKER}"}}], "compaction_id": null, "is_compacted": false, "logical_message_count": "not-a-number", "logical_context_hash": "hash"}}"#
+            ))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        let err = store.load_provider_state("session-1").await.unwrap_err();
+        let message = err.to_string();
+        assert!(
+            !message.contains(LEAK_MARKER),
+            "raw state payload must never leak into error strings, got: {message}"
+        );
+        assert!(
+            !message.contains("encrypted_content"),
+            "payload field names must not leak into error strings, got: {message}"
+        );
+        assert!(
+            !message.contains("input_items"),
+            "payload field names must not leak into error strings, got: {message}"
+        );
+        assert!(
+            message.contains("session-1"),
+            "structural metadata (session id) must remain, got: {message}"
         );
     }
 
