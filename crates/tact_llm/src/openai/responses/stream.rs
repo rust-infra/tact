@@ -19,6 +19,11 @@ pub(crate) struct ResponsesStreamState {
     /// completed. A non-empty set means the output sequence is incomplete and
     /// must not be reconstructed from `done_items`.
     pending_added: BTreeSet<u32>,
+    /// Output indices announced via `output_item.added` as compaction items
+    /// that have not yet been completed. A missing compaction boundary must
+    /// hard-fail in `finish()` rather than fall back to visible-text recovery,
+    /// which would silently drop the compacted baseline.
+    pending_compactions: BTreeSet<u32>,
 }
 
 impl ResponsesStreamState {
@@ -98,8 +103,14 @@ impl ResponsesStreamState {
                 // `added` event once the corresponding `done` item exists.
                 // Otherwise remember the announced index so an item that is
                 // added but never completed marks the sequence incomplete.
+                // Compaction indices are tracked separately because a missing
+                // compaction boundary must hard-fail rather than fall back to
+                // visible-text recovery.
                 if !self.done_items.contains_key(&event.output_index) {
                     self.pending_added.insert(event.output_index);
+                    if matches!(&event.item, OutputItem::Compaction(_)) {
+                        self.pending_compactions.insert(event.output_index);
+                    }
                 }
                 Vec::new()
             }
@@ -107,6 +118,7 @@ impl ResponsesStreamState {
                 // Idempotent by `output_index`: a repeated `done` event
                 // overwrites the same slot and never duplicates output.
                 self.pending_added.remove(&event.output_index);
+                self.pending_compactions.remove(&event.output_index);
                 self.done_items.insert(event.output_index, event.item);
                 Vec::new()
             }
@@ -129,6 +141,7 @@ impl ResponsesStreamState {
             terminal,
             done_items,
             pending_added,
+            pending_compactions,
             ..
         } = self;
         let response = terminal.ok_or_else(|| {
@@ -155,6 +168,16 @@ impl ResponsesStreamState {
             let mut reconstructed = response;
             reconstructed.output = output_items;
             normalize_response(reconstructed)?
+        } else if !pending_compactions.is_empty() {
+            // Hard protocol error: a compaction item was announced but never
+            // completed. Neither the done-sequence reconstruction nor
+            // visible-text recovery may run here, because both would silently
+            // drop the compaction boundary and lose the compacted baseline
+            // for the next turn.
+            return Err(LlmError::Unsupported(
+                "OpenAI Responses stream ended with an incomplete compaction item sequence"
+                    .to_string(),
+            ));
         } else if !output_text.is_empty() {
             // Compatible-endpoint visible-text recovery: no terminal output
             // and no complete done sequence, so the streamed delta is the
@@ -643,6 +666,80 @@ mod tests {
             normalized.blocks.as_slice(),
             [ContentBlock::Text { text }] if text == "done text"
         ));
+    }
+
+    #[test]
+    fn incomplete_added_compaction_never_uses_visible_text_recovery() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque"
+                }),
+            ))
+            .unwrap();
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 2,
+                "item_id": "msg_1",
+                "output_index": 1,
+                "content_index": 0,
+                "delta": "visible fallback",
+                "logprobs": []
+            })))
+            .unwrap();
+        state
+            .apply(completed_with_output(serde_json::json!([])))
+            .unwrap();
+
+        let error = state.finish().unwrap_err().to_string();
+        assert!(error.contains("compaction") || error.contains("incomplete"));
+        assert!(!error.contains("visible fallback"));
+    }
+
+    #[test]
+    fn compaction_added_with_done_at_other_index_still_fails_on_empty_terminal() {
+        let mut state = ResponsesStreamState::default();
+        // Compaction announced at index 0 but only ever completed at index 1:
+        // the compaction baseline is missing from the done sequence.
+        state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque"
+                }),
+            ))
+            .unwrap();
+        state
+            .apply(output_item_done(1, message_item("answer")))
+            .unwrap();
+        // Visible deltas exist, so without the compaction guard finish()
+        // would recover text and silently drop the missing compaction.
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 2,
+                "item_id": "msg_1",
+                "output_index": 1,
+                "content_index": 0,
+                "delta": "visible fallback",
+                "logprobs": []
+            })))
+            .unwrap();
+        state
+            .apply(completed_with_output(serde_json::json!([])))
+            .unwrap();
+
+        let error = state.finish().unwrap_err().to_string();
+        assert!(error.contains("compaction") || error.contains("incomplete"));
+        // Must not reconstruct a baseline that silently drops the compaction.
+        assert!(!error.contains("visible fallback"));
     }
 
     #[test]
