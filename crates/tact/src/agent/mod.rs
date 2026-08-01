@@ -2022,8 +2022,23 @@ mod tests {
     #[test]
     fn responses_auto_compact_requires_reported_usage() {
         ensure_config();
-        let agent = responses_test_agent("responses_auto_compact", "https://api.openai.com/v1");
-        // Default snapshot: window 500_000, max_tokens 8192 → threshold 400_000.
+        // Explicit local snapshot (window 500_000, max_tokens 8192 → threshold
+        // 400_000) so this test never depends on process-global config, which
+        // parallel tests may override via `install_or_override`.
+        let defaults = crate::config::AgentSettings {
+            model_context_window: 500_000,
+            max_tokens: 8192,
+            thinking_budget: 0,
+            snapshot_max_items: 80,
+            notifications_enabled: false,
+            micro_compact_enabled: true,
+            skill_body_auto_inject: false,
+            skill_dirs: Vec::new(),
+            instruction_sources: crate::config::InstructionSources::default(),
+            subagent: None,
+        };
+        let agent = responses_test_agent("responses_auto_compact", "https://api.openai.com/v1")
+            .with_agent_settings(defaults);
         assert!(!agent.auto_compact_due(0), "no usage yet → no auto compact");
 
         let mut agent = agent;
