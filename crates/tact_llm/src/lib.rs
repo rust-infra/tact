@@ -29,7 +29,7 @@ mod test_openai;
 
 // Re-export account query APIs at the crate root (existing public surface).
 pub use account::{query_deepseek_balance, query_kimi_balance, query_kimi_code_usage};
-pub use client::{LlmClient, LlmProvider, LlmRequestBody};
+pub use client::{LlmClient, LlmProvider, LlmRequestBody, LlmResponse};
 pub use content::{
     ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, Role, StreamUsage,
 };

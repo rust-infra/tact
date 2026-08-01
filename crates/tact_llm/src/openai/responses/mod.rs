@@ -10,13 +10,13 @@ use async_openai_responses::{
 };
 use futures_util::StreamExt;
 use serde_json::Value;
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use self::{convert::create_response, normalize::NormalizedResponse, stream::ResponsesStreamState};
 use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, OpenAiReasoningEffort,
-    StopReason,
+    CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse, OpenAiReasoningEffort,
+    ProviderConversationState, ProviderStateUpdate,
 };
 
 fn set_default_id(value: &mut Value, default_id: String) {
@@ -137,21 +137,14 @@ impl OpenAiResponsesAdapter {
         &self.base_url
     }
 
-    fn into_result(
-        normalized: NormalizedResponse,
-        request_body: LlmRequestBody,
-    ) -> (
-        Vec<ContentBlock>,
-        Option<StopReason>,
-        Option<TokenUsageInfo>,
-        Option<LlmRequestBody>,
-    ) {
-        (
-            normalized.blocks,
-            normalized.stop_reason,
-            normalized.usage,
-            Some(request_body),
-        )
+    fn into_result(normalized: NormalizedResponse, request_body: LlmRequestBody) -> LlmResponse {
+        LlmResponse {
+            blocks: normalized.blocks,
+            stop_reason: normalized.stop_reason,
+            usage: normalized.usage,
+            request_body: Some(request_body),
+            state_update: ProviderStateUpdate::Unchanged,
+        }
     }
 }
 
@@ -159,16 +152,9 @@ impl LlmClient for OpenAiResponsesAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
+        _provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<LlmResponse, LlmError> {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)?;
@@ -230,15 +216,8 @@ impl LlmClient for OpenAiResponsesAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+        _provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
         let mut wire_request = create_response(request, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)?;
@@ -370,10 +349,13 @@ mod tests {
         });
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
-        let (blocks, stop_reason, _usage, request_body) = adapter
-            .stream_message(&request, None)
+        let response = adapter
+            .stream_message(&request, None, None)
             .await
             .expect("Responses stream request should succeed");
+        let blocks = response.blocks;
+        let stop_reason = response.stop_reason;
+        let request_body = response.request_body;
         let visible_text = blocks
             .iter()
             .filter_map(|block| match block {
@@ -401,10 +383,12 @@ mod tests {
             ],
             max_tokens: 128,
         });
-        let (follow_up_blocks, follow_up_stop_reason, _usage, _request_body) = adapter
-            .stream_message(&follow_up, None)
+        let response = adapter
+            .stream_message(&follow_up, None, None)
             .await
             .expect("second Responses stream request should succeed");
+        let follow_up_blocks = response.blocks;
+        let follow_up_stop_reason = response.stop_reason;
 
         assert_eq!(follow_up_stop_reason, Some(StopReason::EndTurn));
         assert!(follow_up_blocks.iter().any(|block| {
@@ -447,10 +431,12 @@ mod tests {
         .with_tools(tools.clone());
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
-        let (blocks, stop_reason, _usage, _request_body) = adapter
-            .stream_message(&request, None)
+        let response = adapter
+            .stream_message(&request, None, None)
             .await
             .expect("Responses stream request with a tool should succeed");
+        let blocks = response.blocks;
+        let stop_reason = response.stop_reason;
 
         assert_eq!(
             stop_reason,
@@ -489,10 +475,12 @@ mod tests {
         .with_system(system)
         .with_tools(tools);
 
-        let (follow_up_blocks, follow_up_stop_reason, _usage, _request_body) = adapter
-            .stream_message(&follow_up, None)
+        let response = adapter
+            .stream_message(&follow_up, None, None)
             .await
             .expect("Responses follow-up after a tool result should succeed");
+        let follow_up_blocks = response.blocks;
+        let follow_up_stop_reason = response.stop_reason;
 
         assert_eq!(
             follow_up_stop_reason,

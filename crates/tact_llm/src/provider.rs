@@ -551,17 +551,20 @@ mod tests {
         )]);
 
         let (tx, mut rx) = unbounded_channel();
-        let (blocks, _, returned, _) = client
+        let response = client
             .stream_message(
                 &CreateMessageParams::new(RequiredMessageParams {
                     model: "mock".to_string(),
                     messages: vec![],
                     max_tokens: 100,
                 }),
+                None,
                 Some(tx),
             )
             .await
             .expect("stream");
+        let blocks = response.blocks;
+        let returned = response.usage;
 
         assert_eq!(blocks.len(), 1);
         assert_eq!(returned.as_ref().map(|u| u.total), Some(15));
