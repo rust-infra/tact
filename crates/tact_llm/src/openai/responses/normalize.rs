@@ -6,13 +6,20 @@ use async_openai_responses::types::responses::{
 use tact_protocol::TokenUsageInfo;
 
 use super::history;
-use crate::{ContentBlock, LlmError, StopReason};
+use crate::{
+    ContentBlock, LlmError, ProviderConversationState, ProviderStateUpdate,
+    ResponsesConversationState, StopReason,
+};
 
 #[derive(Debug)]
 pub(crate) struct NormalizedResponse {
     pub blocks: Vec<ContentBlock>,
     pub stop_reason: Option<StopReason>,
     pub usage: Option<TokenUsageInfo>,
+    /// Every terminal output item retained as JSON in output order, including
+    /// compaction and unknown/unmapped items. This is the protocol output used
+    /// to build the next conversation baseline.
+    pub output_items: Vec<serde_json::Value>,
 }
 
 fn terminal_stop_reason(
@@ -82,6 +89,29 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         })
         .collect();
 
+    // A terminal response may carry at most one compaction item, and its
+    // encrypted content must be non-empty. A compaction item is protocol
+    // state, not content: it is retained in `output_items` but never mapped
+    // into a `ContentBlock`.
+    let compaction_items = response
+        .output
+        .iter()
+        .filter(|output| matches!(output, OutputItem::Compaction(_)))
+        .collect::<Vec<_>>();
+    if compaction_items.len() > 1 {
+        return Err(LlmError::Unsupported(format!(
+            "OpenAI Responses terminal response contains {} compaction items; exactly one is required",
+            compaction_items.len()
+        )));
+    }
+    if let Some(OutputItem::Compaction(compaction)) = compaction_items.first()
+        && compaction.encrypted_content.is_empty()
+    {
+        return Err(LlmError::Unsupported(
+            "OpenAI Responses compaction item has empty encrypted_content".to_string(),
+        ));
+    }
+
     for output in &response.output {
         match output {
             OutputItem::Reasoning(reasoning) => {
@@ -147,9 +177,21 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
                     input,
                 });
             }
+            // Compaction is opaque protocol state: it must not become a
+            // ContentBlock, and it is retained as JSON in `output_items`.
+            OutputItem::Compaction(_) => {}
+            // Unmapped output items (file search, web search, computer use,
+            // unknown future types) produce no ContentBlock but are retained
+            // as JSON in `output_items`.
             _ => {}
         }
     }
+
+    let output_items = response
+        .output
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
 
     let stop_reason = terminal_stop_reason(&response, has_tools, has_refusal)?;
     let usage = response.usage.as_ref().map(|usage| TokenUsageInfo {
@@ -167,7 +209,147 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         blocks,
         stop_reason,
         usage,
+        output_items,
     })
+}
+
+/// Finds the single compaction item in a protocol output sequence.
+///
+/// Returns `Ok(None)` when no compaction item is present (an ordinary
+/// response), `Ok(Some(index))` for exactly one compaction item with non-empty
+/// `encrypted_content`, and a protocol error for multiple compaction items or
+/// empty encrypted content.
+fn find_single_compaction(output_items: &[serde_json::Value]) -> Result<Option<usize>, LlmError> {
+    let indices = output_items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("compaction")
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    match indices.len() {
+        0 => Ok(None),
+        1 => {
+            let item = &output_items[indices[0]];
+            match item
+                .get("encrypted_content")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(content) if !content.is_empty() => Ok(Some(indices[0])),
+                _ => Err(LlmError::Unsupported(
+                    "OpenAI Responses compaction item has empty encrypted_content".to_string(),
+                )),
+            }
+        }
+        count => Err(LlmError::Unsupported(format!(
+            "OpenAI Responses output contains {count} compaction items; exactly one is required"
+        ))),
+    }
+}
+
+/// Parsed and validated `/responses/compact` output.
+#[derive(Debug)]
+pub(crate) struct ParsedCompactResource {
+    /// The compacted output items, in protocol order (retained user items
+    /// followed by the single compaction item). This is the replacement
+    /// conversation baseline for the next request.
+    pub input_items: Vec<serde_json::Value>,
+    /// The id of the single validated compaction item.
+    pub compaction_id: String,
+}
+
+/// Validates a `CompactResource` JSON body and extracts its replacement
+/// baseline. A valid compact resource must contain exactly one compaction item
+/// with non-empty `encrypted_content`.
+pub(crate) fn parse_compact_resource(
+    value: serde_json::Value,
+) -> Result<ParsedCompactResource, LlmError> {
+    let output = value
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            LlmError::Unsupported("CompactResource is missing the `output` array".to_string())
+        })?;
+    let compaction_index = find_single_compaction(output)?.ok_or_else(|| {
+        LlmError::Unsupported(
+            "CompactResource output contains no compaction item; exactly one is required"
+                .to_string(),
+        )
+    })?;
+    let compaction_id = output[compaction_index]
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            LlmError::Unsupported("CompactResource compaction item is missing `id`".to_string())
+        })?
+        .to_string();
+    Ok(ParsedCompactResource {
+        input_items: output.clone(),
+        compaction_id,
+    })
+}
+
+impl NormalizedResponse {
+    /// Builds the provider state update for this terminal response.
+    ///
+    /// Ordinary responses append the terminal output to the exact request
+    /// input. Responses containing a compaction boundary use the Phase 0
+    /// fixture contract instead: the single compaction item replaces the
+    /// entire prior baseline and is followed by the current response's
+    /// non-compaction output items.
+    pub(crate) fn provider_state_update(
+        &self,
+        request_input_items: Vec<serde_json::Value>,
+        provider: &str,
+        base_url: &str,
+        model: &str,
+        logical_message_count: usize,
+        logical_context_hash: String,
+    ) -> Result<ProviderStateUpdate, LlmError> {
+        let compaction_index = find_single_compaction(&self.output_items)?;
+        let (input_items, compaction_id, is_compacted) = match compaction_index {
+            None => {
+                let mut items = request_input_items;
+                items.extend(self.output_items.iter().cloned());
+                (items, None, false)
+            }
+            Some(index) => {
+                let mut items = Vec::with_capacity(self.output_items.len());
+                items.push(self.output_items[index].clone());
+                items.extend(
+                    self.output_items
+                        .iter()
+                        .enumerate()
+                        .filter(|(item_index, _)| *item_index != index)
+                        .map(|(_, item)| item.clone()),
+                );
+                let id = self.output_items[index]
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        LlmError::Unsupported(
+                            "OpenAI Responses compaction item is missing `id`".to_string(),
+                        )
+                    })?
+                    .to_string();
+                (items, Some(id), true)
+            }
+        };
+        Ok(ProviderStateUpdate::Replace(
+            ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+                version: 1,
+                provider: provider.to_string(),
+                base_url: base_url.to_string(),
+                model: model.to_string(),
+                input_items,
+                compaction_id,
+                is_compacted,
+                logical_message_count,
+                logical_context_hash,
+            }),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -382,10 +564,8 @@ pub(crate) mod tests {
             max_tokens: 4096,
         });
 
-        let body = serde_json::to_value(
-            super::super::convert::create_response(&request, None).expect("round-trip request"),
-        )
-        .unwrap();
+        let (body, _) = super::super::convert::create_response(&request, None, None, None)
+            .expect("round-trip request");
         let input = body["input"].as_array().unwrap();
         let reasoning = input
             .iter()
@@ -402,5 +582,181 @@ pub(crate) mod tests {
             .find(|item| item["call_id"] == "call_2")
             .unwrap();
         assert_eq!(second_call["id"], "fc_2");
+    }
+
+    #[test]
+    fn retains_every_output_item_as_json_in_output_order() {
+        let response: Response = serde_json::from_value(completed_response_json()).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        assert_eq!(normalized.output_items.len(), 3);
+        assert_eq!(normalized.output_items[0]["type"], "reasoning");
+        assert_eq!(normalized.output_items[0]["id"], "rs_1");
+        assert_eq!(normalized.output_items[1]["type"], "message");
+        assert_eq!(normalized.output_items[1]["id"], "msg_1");
+        assert_eq!(normalized.output_items[2]["type"], "function_call");
+        assert_eq!(normalized.output_items[2]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn compaction_item_is_retained_as_json_but_not_mapped_to_a_block() {
+        let mut value = completed_response_json();
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": "encrypted-compaction"
+            }));
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        assert_eq!(normalized.output_items.len(), 4);
+        assert_eq!(normalized.output_items[3]["type"], "compaction");
+        assert_eq!(normalized.output_items[3]["id"], "cmp_1");
+        assert!(normalized.blocks.iter().all(|block| {
+            !matches!(block, ContentBlock::Text { text } if text.contains("encrypted"))
+        }));
+    }
+
+    #[test]
+    fn rejects_multiple_compaction_items_in_a_terminal_response() {
+        let mut value = completed_response_json();
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": "first"
+            }));
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_2",
+                "encrypted_content": "second"
+            }));
+        let response: Response = serde_json::from_value(value).unwrap();
+
+        let error = normalize_response(response).unwrap_err().to_string();
+        assert!(error.contains("2 compaction items"));
+    }
+
+    #[test]
+    fn rejects_empty_compaction_encrypted_content() {
+        let mut value = completed_response_json();
+        value["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": ""
+            }));
+        let response: Response = serde_json::from_value(value).unwrap();
+
+        let error = normalize_response(response).unwrap_err().to_string();
+        assert!(error.contains("empty encrypted_content"));
+    }
+
+    #[test]
+    fn ordinary_response_appends_output_items_to_the_request_input() {
+        let response: Response = serde_json::from_value(completed_response_json()).unwrap();
+        let normalized = normalize_response(response).unwrap();
+        let update = normalized
+            .provider_state_update(
+                vec![serde_json::json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                })],
+                "openai_responses",
+                "https://api.openai.com/v1",
+                "gpt-5",
+                1,
+                "hash-prefix".to_string(),
+            )
+            .unwrap();
+
+        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
+            state,
+        )) = update
+        else {
+            panic!("expected a replacement state");
+        };
+        assert_eq!(state.input_items.len(), 4);
+        assert_eq!(state.input_items[0]["role"], "user");
+        assert_eq!(state.input_items[3]["type"], "function_call");
+        assert_eq!(state.compaction_id, None);
+        assert!(!state.is_compacted);
+        assert_eq!(state.logical_message_count, 1);
+        assert_eq!(state.logical_context_hash, "hash-prefix");
+    }
+
+    #[test]
+    fn automatic_compaction_replaces_the_baseline_from_the_fixture_contract() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/automatic_compact.json")).unwrap();
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        // The compaction item is not normalized into a ContentBlock.
+        assert!(matches!(
+            normalized.blocks[0],
+            ContentBlock::Thinking { .. }
+        ));
+        assert!(matches!(normalized.blocks[1], ContentBlock::Text { .. }));
+        assert_eq!(normalized.blocks.len(), 2);
+        assert_eq!(normalized.output_items.len(), 3);
+        assert_eq!(normalized.output_items[2]["type"], "compaction");
+
+        let update = normalized
+            .provider_state_update(
+                vec![serde_json::json!({"type": "message", "role": "user", "content": "old"})],
+                "openai_responses",
+                "https://api.openai.com/v1",
+                "gpt-5.4-mini",
+                3,
+                "hash-full".to_string(),
+            )
+            .unwrap();
+        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
+            state,
+        )) = update
+        else {
+            panic!("expected a replacement state");
+        };
+        // The fixture contract: the single compaction item replaces the entire
+        // prior baseline and is followed by the current response output items.
+        assert_eq!(state.input_items.len(), 3);
+        assert_eq!(state.input_items[0]["type"], "compaction");
+        assert_eq!(state.input_items[0]["id"], "cmp_sanitized_01");
+        assert_eq!(state.input_items[1]["type"], "reasoning");
+        assert_eq!(state.input_items[2]["type"], "message");
+        assert_eq!(state.compaction_id.as_deref(), Some("cmp_sanitized_01"));
+        assert!(state.is_compacted);
+        assert_eq!(state.logical_message_count, 3);
+    }
+
+    #[test]
+    fn automatic_compact_fixture_normalizes_without_exposing_encrypted_content() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/automatic_compact.json")).unwrap();
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        let visible = normalized
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(!visible.contains("encrypted"));
+        assert!(!visible.contains("sanitized-encrypted"));
     }
 }

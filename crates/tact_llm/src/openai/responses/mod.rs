@@ -13,10 +13,14 @@ use serde_json::Value;
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
-use self::{convert::create_response, normalize::NormalizedResponse, stream::ResponsesStreamState};
+use self::{
+    convert::create_response,
+    normalize::{NormalizedResponse, parse_compact_resource},
+    stream::ResponsesStreamState,
+};
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse, OpenAiReasoningEffort,
-    ProviderConversationState, ProviderStateUpdate,
+    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
 
 fn set_default_id(value: &mut Value, default_id: String) {
@@ -137,13 +141,61 @@ impl OpenAiResponsesAdapter {
         &self.base_url
     }
 
-    fn into_result(normalized: NormalizedResponse, request_body: LlmRequestBody) -> LlmResponse {
+    /// Validates that a persisted Responses state is bound to this adapter's
+    /// provider, base URL, and request model before it is reused.
+    fn validate_state_binding(
+        &self,
+        state: &ResponsesConversationState,
+        model: &str,
+    ) -> Result<(), LlmError> {
+        if state.provider != "openai_responses" {
+            return Err(LlmError::Unsupported(format!(
+                "provider state is bound to provider '{}', expected 'openai_responses'",
+                state.provider
+            )));
+        }
+        if state.base_url != self.base_url {
+            return Err(LlmError::Unsupported(format!(
+                "provider state is bound to base URL '{}', expected '{}'",
+                state.base_url, self.base_url
+            )));
+        }
+        if state.model != model {
+            return Err(LlmError::Unsupported(format!(
+                "provider state is bound to model '{}', expected '{}'",
+                state.model, model
+            )));
+        }
+        Ok(())
+    }
+
+    fn state_update(
+        &self,
+        normalized: &NormalizedResponse,
+        request: &CreateMessageParams,
+        input_items: Vec<serde_json::Value>,
+    ) -> Result<ProviderStateUpdate, LlmError> {
+        normalized.provider_state_update(
+            input_items,
+            "openai_responses",
+            &self.base_url,
+            &request.model,
+            request.messages.len(),
+            context_hash(&request.messages)?,
+        )
+    }
+
+    fn into_result(
+        normalized: NormalizedResponse,
+        request_body: LlmRequestBody,
+        state_update: ProviderStateUpdate,
+    ) -> LlmResponse {
         LlmResponse {
             blocks: normalized.blocks,
             stop_reason: normalized.stop_reason,
             usage: normalized.usage,
             request_body: Some(request_body),
-            state_update: ProviderStateUpdate::Unchanged,
+            state_update,
         }
     }
 }
@@ -152,10 +204,14 @@ impl LlmClient for OpenAiResponsesAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
-        _provider_state: Option<&ProviderConversationState>,
+        provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
     ) -> Result<LlmResponse, LlmError> {
-        let mut wire_request = create_response(request, self.reasoning_effort)?;
+        if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
+            self.validate_state_binding(state, &request.model)?;
+        }
+        let (mut wire_request, input_items) =
+            create_response(request, provider_state, None, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)?;
         let mut response_stream = self
@@ -210,15 +266,20 @@ impl LlmClient for OpenAiResponsesAdapter {
         {
             let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
         }
-        Ok(Self::into_result(normalized, request_body))
+        let state_update = self.state_update(&normalized, request, input_items)?;
+        Ok(Self::into_result(normalized, request_body, state_update))
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-        _provider_state: Option<&ProviderConversationState>,
+        provider_state: Option<&ProviderConversationState>,
     ) -> Result<LlmResponse, LlmError> {
-        let mut wire_request = create_response(request, self.reasoning_effort)?;
+        if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
+            self.validate_state_binding(state, &request.model)?;
+        }
+        let (mut wire_request, input_items) =
+            create_response(request, provider_state, None, self.reasoning_effort)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)?;
         let response = self
@@ -227,10 +288,57 @@ impl LlmClient for OpenAiResponsesAdapter {
             .create_byot::<_, Response>(wire_request)
             .await
             .map_err(LlmError::from)?;
-        Ok(Self::into_result(
-            normalize::normalize_response(response)?,
-            request_body,
-        ))
+        let normalized = normalize::normalize_response(response)?;
+        let state_update = self.state_update(&normalized, request, input_items)?;
+        Ok(Self::into_result(normalized, request_body, state_update))
+    }
+
+    async fn compact(
+        &self,
+        request: &CreateMessageParams,
+        provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
+        if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
+            self.validate_state_binding(state, &request.model)?;
+        }
+        // The compact request carries the current protocol baseline plus any
+        // logical messages not yet represented in it. The exact JSON input
+        // items (including unknown/future item types) are preserved by
+        // sending the request through the byot JSON path; no local summary
+        // prompt or `create_message()` call is used.
+        let (body, _) = create_response(request, provider_state, None, None)?;
+        let compact_request = serde_json::json!({
+            "model": request.model,
+            "input": body["input"],
+        });
+        let request_body = serde_json::to_vec(&compact_request)?;
+        let resource = self
+            .client
+            .responses()
+            .compact_byot::<_, Value>(compact_request)
+            .await
+            .map_err(LlmError::from)?;
+        let parsed = parse_compact_resource(resource)?;
+        let state = ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: self.base_url.clone(),
+            model: request.model.clone(),
+            input_items: parsed.input_items,
+            compaction_id: Some(parsed.compaction_id),
+            is_compacted: true,
+            logical_message_count: request.messages.len(),
+            logical_context_hash: context_hash(&request.messages)?,
+        };
+        Ok(LlmResponse {
+            blocks: Vec::new(),
+            stop_reason: None,
+            usage: None,
+            request_body: Some(request_body),
+            state_update: ProviderStateUpdate::Replace(ProviderConversationState::OpenAiResponses(
+                state,
+            )),
+        })
     }
 }
 
@@ -326,6 +434,92 @@ mod tests {
             event["response"]["output"][2]["status"],
             serde_json::json!("completed")
         );
+    }
+
+    #[test]
+    fn parse_stream_event_accepts_terminal_compaction_item() {
+        let mut response = super::normalize::tests::completed_response_json();
+        response["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": "encrypted-compaction"
+            }));
+
+        let event = parse_stream_event(serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": response
+        }))
+        .unwrap();
+
+        assert!(event.is_some());
+    }
+
+    fn adapter_with_state(
+        base_url: &str,
+        model: &str,
+    ) -> (
+        super::OpenAiResponsesAdapter,
+        crate::ResponsesConversationState,
+    ) {
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
+        let state = crate::ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            input_items: vec![],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 0,
+            logical_context_hash: String::new(),
+        };
+        (adapter, state)
+    }
+
+    #[test]
+    fn state_binding_accepts_matching_provider_base_url_and_model() {
+        let (adapter, state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
+        adapter
+            .validate_state_binding(&state, "gpt-5")
+            .expect("matching binding is valid");
+    }
+
+    #[test]
+    fn state_binding_rejects_another_provider() {
+        let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
+        state.provider = "anthropic".to_string();
+        let error = adapter
+            .validate_state_binding(&state, "gpt-5")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("anthropic"));
+        assert!(error.contains("openai_responses"));
+    }
+
+    #[test]
+    fn state_binding_rejects_another_base_url() {
+        let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
+        state.base_url = "https://other.example.com/v1".to_string();
+        let error = adapter
+            .validate_state_binding(&state, "gpt-5")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("other.example.com"));
+    }
+
+    #[test]
+    fn state_binding_rejects_another_model() {
+        let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
+        state.model = "gpt-4o".to_string();
+        let error = adapter
+            .validate_state_binding(&state, "gpt-5")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("gpt-4o"));
     }
 
     /// Run with:
