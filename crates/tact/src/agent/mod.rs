@@ -999,13 +999,13 @@ impl Agent {
             }
         };
 
-        let _ = self
-            .persist_llm_call(
-                "responses_compact",
-                response.usage.as_ref(),
-                response.request_body.as_deref(),
-            )
-            .await;
+        self.persist_llm_call(
+            "responses_compact",
+            response.usage.as_ref(),
+            response.request_body.as_deref(),
+        )
+        .await
+        .context("failed to persist Responses compact usage")?;
 
         let ProviderStateUpdate::Replace(ProviderConversationState::OpenAiResponses(
             candidate_state,
@@ -1698,6 +1698,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::store::SessionStore;
     use crate::tool::test_support::test_context;
 
     static INIT_CONFIG: Once = Once::new();
@@ -2003,6 +2004,181 @@ mod tests {
             agent.runtime.context.len(),
             2,
             "native compaction keeps the logical context unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_compact_surfaces_usage_persistence_failure() {
+        ensure_config();
+        let server = MockServer::start().await;
+        let fixture = serde_json::json!({
+            "id": "cmp_sanitized_02",
+            "object": "response.compaction",
+            "created_at": 1754000001,
+            "output": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_sanitized_2",
+                    "output": "sanitized tool output retained by compaction",
+                    "id": "fc_out_sanitized_2",
+                    "status": "completed"
+                },
+                {
+                    "type": "compaction",
+                    "id": "cmp_sanitized_02",
+                    "encrypted_content": "sanitized-encrypted-compaction-content-placeholder"
+                }
+            ],
+            "usage": {
+                "input_tokens": 1200,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 340,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 1540
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite =
+            crate::store::session_store::SqliteSessionStore::new(&dir.path().join("session.db"))
+                .await
+                .unwrap();
+        sqlite
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        // Seed the committed baseline that a successful compaction would
+        // replace: two messages plus a compacted provider state.
+        let old_messages = vec![
+            Message::new_text(Role::User, "old user turn"),
+            Message::new_text(Role::Assistant, "old assistant turn"),
+        ];
+        let old_state =
+            ProviderConversationState::OpenAiResponses(tact_llm::ResponsesConversationState {
+                version: 1,
+                provider: "openai_responses".to_string(),
+                base_url: server.uri(),
+                model: "mock-model".to_string(),
+                input_items: vec![serde_json::json!({"type": "message", "id": "old_msg_1"})],
+                compaction_id: Some("cmp_old".to_string()),
+                is_compacted: true,
+                logical_message_count: 2,
+                logical_context_hash: tact_llm::context_hash(&old_messages).unwrap(),
+            });
+        sqlite
+            .replace_session_messages_and_provider_state(
+                "session-1",
+                &old_messages,
+                Some(&old_state),
+            )
+            .await
+            .unwrap();
+
+        // The native compact endpoint succeeds, but persisting its usage
+        // (`responses_compact` token-usage row) fails in the database.
+        sqlite.inject_token_usage_insert_failure().await.unwrap();
+        let store: crate::store::DynSessionStore = std::sync::Arc::new(sqlite);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = responses_test_agent("responses_compact_usage_failure", &server.uri());
+        agent = agent
+            .with_ui_channel(tx)
+            .with_session("session-1".to_string(), store);
+        agent.runtime.context = old_messages.clone();
+        agent.runtime.provider_state = Some(old_state.clone());
+
+        let error = agent
+            .compact_history(None)
+            .await
+            .expect_err("usage persistence failure must surface from native compaction");
+        assert!(
+            format!("{error:#}").contains("failed to persist Responses compact usage"),
+            "error must carry the Responses compact usage context, got: {error:#}"
+        );
+
+        // Atomic correctness: usage persistence precedes the commit, so a
+        // usage failure must leave the old runtime state fully intact.
+        assert_eq!(
+            agent.runtime.provider_state.as_ref(),
+            Some(&old_state),
+            "runtime provider state must remain the old committed state"
+        );
+        assert_eq!(
+            serde_json::to_value(&agent.runtime.context).unwrap(),
+            serde_json::to_value(&old_messages).unwrap(),
+            "runtime context must remain the old committed context"
+        );
+        assert_eq!(
+            agent.runtime.stats.compactions, 0,
+            "no compaction may be recorded when usage persistence failed"
+        );
+        assert!(
+            !agent.runtime.compact_state.has_compacted,
+            "runtime must not report compacted when usage persistence failed"
+        );
+
+        // No success Info may be emitted for a compaction whose usage row
+        // never persisted.
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        assert!(
+            updates.iter().all(|u| !matches!(
+                u,
+                tact_protocol::AgentUpdate::Info(msg) if msg.contains("[responses compacted")
+            )),
+            "no compaction success Info may be emitted, got: {updates:?}"
+        );
+
+        // DB state intact: old messages and old provider state remain, and no
+        // `responses_compact` usage row was recorded.
+        let pool = sqlx::SqlitePool::connect(&format!(
+            "sqlite:{}",
+            dir.path().join("session.db").display()
+        ))
+        .await
+        .unwrap();
+        let message_count: i64 =
+            sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("cnt")
+                .unwrap();
+        assert_eq!(
+            message_count, 2,
+            "old committed messages must stay in the database"
+        );
+        let state_count: i64 = sqlx::query(
+            "SELECT COUNT(*) as cnt FROM responses_states WHERE session_id = 'session-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .try_get("cnt")
+        .unwrap();
+        assert_eq!(
+            state_count, 1,
+            "old committed provider state must stay in the database"
+        );
+        let usage_count: i64 =
+            sqlx::query("SELECT COUNT(*) as cnt FROM token_usages WHERE session_id = 'session-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("cnt")
+                .unwrap();
+        assert_eq!(
+            usage_count, 0,
+            "no token usage row may be recorded for the failed compact call"
         );
     }
 

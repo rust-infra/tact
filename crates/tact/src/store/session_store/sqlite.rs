@@ -999,6 +999,29 @@ impl SqliteSessionStore {
         .context("failed to install test failure trigger")?;
         Ok(())
     }
+
+    /// Test-support: install a SQL trigger that aborts any `token_usages`
+    /// insert for the explicit native compact call type, simulating a usage
+    /// persistence failure right after the `/responses/compact` endpoint
+    /// succeeded. Callers can then assert that the failure surfaces and that
+    /// the old committed messages/provider state stay intact.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn inject_token_usage_insert_failure(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS fail_token_usage_insert
+            BEFORE INSERT ON token_usages
+            WHEN NEW.call_type = 'responses_compact'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected token usage failure');
+            END;
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("failed to install token usage failure trigger")?;
+        Ok(())
+    }
 }
 
 fn is_active_lock_holder(holder: u32, holder_epoch: &str) -> bool {

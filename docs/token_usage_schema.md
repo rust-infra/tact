@@ -101,7 +101,11 @@ confused in usage accounting:
   auto-compact trigger fires; the agent sends a real `POST /responses/compact`
   request and records a distinguishable `responses_compact` row with its
   `request_body` (the compact request: model + protocol input baseline). This
-  is a genuine second HTTP call and shows up as its own row.
+  is a genuine second HTTP call and shows up as its own row. Unlike `stream`
+  and local `compact` rows, the `responses_compact` row is **not**
+  best-effort: if it cannot be persisted the compaction fails with an error
+  before the new messages/provider state are committed, so the previous
+  committed state stays fully intact.
 - **Automatic (provider-side) compaction** — the provider compacts inside an
   ordinary streamed `/responses` response (a `compaction` item appears in the
   terminal `output`). No second HTTP call is made and **no** `responses_compact`
