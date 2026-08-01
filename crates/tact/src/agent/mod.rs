@@ -748,11 +748,18 @@ impl Agent {
         anyhow::Error,
     > {
         let ui_tx = self.runtime.ui_tx.clone();
-        self.runtime
+        let response = self
+            .runtime
             .client
-            .stream_message(request, ui_tx)
+            .stream_message(request, None, ui_tx)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((
+            response.blocks,
+            response.stop_reason,
+            response.usage,
+            response.request_body,
+        ))
     }
 
     pub fn session_start(&mut self, hook: impl SessionStartFn + 'static) {
@@ -920,8 +927,15 @@ impl Agent {
 
         let mut retry_attempt = 0;
         let (blocks, stop_reason, token_usage, request_body) = loop {
-            match self.runtime.client.create_message(&request).await {
-                Ok(response) => break response,
+            match self.runtime.client.create_message(&request, None).await {
+                Ok(response) => {
+                    break (
+                        response.blocks,
+                        response.stop_reason,
+                        response.usage,
+                        response.request_body,
+                    );
+                }
                 Err(error) => {
                     let error_text = error.to_string();
                     if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
