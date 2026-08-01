@@ -311,13 +311,13 @@ request construction still starts from SDK types, while final JSON dispatch
 allows the current `max` effort value that the SDK enum does not yet expose.
 Responses and stream events remain SDK-typed.
 
-Tact remains the conversation owner. Every request sends the full normalized
-history with `store: false`; it does not use Conversations or
-`previous_response_id`. Conversion maps system instructions, user/assistant
-text, image data URLs, function calls, function outputs, function tools,
-tool choice, sampling fields, and `max_tokens → max_output_tokens`.
-`top_k` and stop sequences are omitted because the Responses request type has
-no matching fields.
+Tact remains the conversation owner. Every request sends the persisted
+protocol baseline plus the newly uncovered logical messages with `store:
+false`; it does not use Conversations or `previous_response_id`. Conversion
+maps system instructions, user/assistant text, image data URLs, function
+calls, function outputs, function tools, tool choice, sampling fields, and
+`max_tokens → max_output_tokens`. `top_k` and stop sequences are omitted
+because the Responses request type has no matching fields.
 
 Responses requests include `reasoning.encrypted_content`. A returned reasoning
 item becomes `ContentBlock::Thinking`: summary text is stored in `thinking`,
@@ -356,7 +356,10 @@ Input/cache/output/reasoning token counts map to the existing
 `TokenUsageInfo` fields.
 
 Unsupported in this adapter: server-hosted tools, background responses,
-Conversations, `previous_response_id`, and the Responses compaction endpoint.
+Conversations, and `previous_response_id`. Native compaction is supported:
+ordinary requests carry `context_management` when a compact threshold is
+resolved, and `compact()` sends an explicit `POST /responses/compact` request
+([Ch 5](./05_chapter_compact.md)).
 
 #### 6.2.1 Conversion pipeline: `Message` → `/responses` input
 
@@ -364,10 +367,16 @@ The Responses adapter receives the same shared `CreateMessageParams` used by oth
 
 `create_response` performs these steps:
 
-1. Walk `request.messages` in order.
-2. For each `Message`, call `message_to_input`.
-3. Flatten the returned `InputItem`s into the final `input` array.
-4. Add request-level fields: `instructions`, `tools`, `tool_choice`, `reasoning`, `temperature`, `top_p`, `max_output_tokens`, `store: false`.
+1. Take the persisted state baseline (`input_items`) verbatim when a valid
+   `ResponsesConversationState` is supplied; otherwise start empty.
+2. Walk the uncovered suffix of `request.messages` (beyond the state's
+   `logical_message_count`) and call `message_to_input`.
+3. Flatten the returned `InputItem`s into the final `input` array after the
+   baseline items.
+4. Add request-level fields: `instructions`, `tools`, `tool_choice`, `reasoning`,
+   `temperature`, `top_p`, `max_output_tokens`, `store: false`, and
+   `context_management` (`[{ "type": "compaction", "compact_threshold": N }]`)
+   when a compact threshold is configured.
 5. Normalize assistant history items so prior assistant text becomes a completed Responses output message with stable local ids and `output_text` content.
 
 The per-message mapping is:
@@ -390,140 +399,81 @@ Two details matter for multi-turn correctness:
 
 #### 6.2.2 Compaction interaction: where Responses differs
 
-The compact logic itself does **not** live in `tact_llm`. It runs earlier in `Agent::agent_loop` and `Agent::compact_history` ([Ch 5](./05_chapter_compact.md)). The Responses-specific behavior comes from the interaction between that local rebuild and the later conversion pipeline.
+For `protocol = "responses"`, compaction is **native**: there is no local
+summary rebuild, and the logical context (`runtime.context`) is never rewritten
+by `compact_history` ([Ch 5](./05_chapter_compact.md)). The Responses adapter
+owns the exact **conversion/state boundaries**:
 
-A compacted Responses turn follows this order:
+- **State baseline** — `ResponsesConversationState` holds the opaque protocol
+  baseline: `input_items` (verbatim JSON from previous terminal outputs,
+  including `compaction` and `reasoning` items), `compaction_id`,
+  `is_compacted`, `logical_message_count`, and `logical_context_hash`.
+- **Validation** — before reuse, `validate_conversion_state` checks that the
+  persisted state binds to the same provider/model and that the logical-message
+  prefix covered by the state hashes to the recorded value. A mismatch is a
+  hard protocol error; Tact never silently duplicates, truncates, or
+  reconstructs the baseline.
+- **Incremental conversion** — `create_response` sends the state baseline
+  verbatim plus only the newly uncovered logical messages converted to
+  `/responses` items. With no state, every logical message is converted.
+- **`context_management`** — when a compact threshold is configured (or
+  derived), every ordinary `/responses` request carries
+  `context_management: [{ "type": "compaction", "compact_threshold": N }]`, so
+  the endpoint may compact the baseline automatically inside a normal stream.
+- **Explicit `/responses/compact`** — when Tact decides to compact, the agent
+  calls `compact()` on the adapter: a real `POST /responses/compact` request
+  carrying the current baseline plus uncovered messages. The returned compact
+  resource replaces the baseline; `focus` text has no meaning and is ignored.
+- **State update** — every call returns `LlmResponse` with a
+  `state_update: ProviderStateUpdate` (`Replace(new state)` or `Unchanged`).
+  The agent commits the assistant message and the state baseline in **one
+  transaction** before any further LLM call or tool execution.
 
-```text
-old context
-→ should_auto_compact(reserve incoming turn + max_output)
-→ compact_history() summarizer call
-→ rebuild local Message history as recent real users + SUMMARY_PREFIX summary
-→ append current user turn verbatim
-→ create_response() converts rebuilt history to /responses items
-→ OpenAI /responses request
-```
+#### `LlmResponse` and terminal response authority
 
-This ordering solves a problem that is easy to miss with Responses-style histories: if Tact pushed the current user turn **before** compacting, the next compaction could absorb that turn into the handoff summary. The `/responses` request would still be valid, but the latest user intent would no longer appear verbatim in the converted input. By compacting old history first, Tact ensures the latest turn survives as a normal user message all the way into the final `/responses` payload.
+`LlmResponse` is the adapter's single return contract:
 
-Another important consequence is that the adapter is intentionally stateless with respect to conversation shrinking. It does not ask OpenAI to compact, does not resume a server-side conversation id, and does not diff against an older Responses graph. It simply serializes the current local `Vec<Message>` into a fresh request. That keeps the compaction policy centralized in one place while letting the adapter focus on protocol-specific item identity and ordering.
+| Field | Meaning |
+|-------|---------|
+| `blocks` | Final `ContentBlock`s for the TUI/agent |
+| `stop_reason` | Terminal stop reason |
+| `usage` | Token usage (when reported) |
+| `request_body` | Serialized JSON body actually sent (for session debugging) |
+| `state_update` | `ProviderStateUpdate::Replace(…)` or `Unchanged` |
 
-##### Responses compaction/conversion timeline
+The terminal `response.completed` / `response.incomplete` object is
+**authoritative** for final blocks, tool calls, usage, and stop reason when it
+includes the completed output. Streamed deltas are used for live UI only; for
+compatible endpoints that omit the final message from the terminal object,
+already received output-text deltas are restored as the final text block, and
+missing output-message/function-call statuses are inferred from the terminal
+event type. Placeholder ids injected for such endpoints are never treated as
+provider identities.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User
-    participant A as Agent::agent_loop
-    participant C as compact_history
-    participant M as runtime.context (Message)
-    participant R as create_response
-    participant O as OpenAI /responses
+#### The `compaction` item round-trip
 
-    U->>A: current user turn
-    A->>A: estimate incoming turn + max_output
-    A->>A: should_auto_compact(old context, incoming, max_output)
-    alt compaction needed
-        A->>C: compact_history()
-        C->>C: summarize recent tail
-        C->>M: rebuild as recent real users + SUMMARY_PREFIX summary
-        C-->>A: compact complete
-    end
-    A->>M: append current user turn verbatim
-    A->>R: create_response(CreateMessageParams)
-    R->>R: Message -> input items
-    R->>O: POST /responses (store=false)
-    O-->>R: response / stream events
-    R-->>A: normalized blocks + usage
-```
+A compaction item appears either in an explicit `/responses/compact` resource
+or in the terminal output of an ordinary request after automatic
+`context_management` compaction. In both cases it round-trips as **opaque
+state**, not content:
 
-The critical boundary is between `compact_history` and `create_response`: compaction rewrites shared local history, then the adapter serializes that rewritten history. The adapter never sees a “pre-compact request” and never performs its own remote shrink step.
+1. `normalize_response` retains every terminal output item as JSON in output
+   order (`output_items`), including `compaction` items and unknown future item
+   types. A terminal response may carry at most one compaction item, and its
+   `encrypted_content` must be non-empty.
+2. `state_update` packages those items into the next request's `input_items`
+   baseline, and `create_response` replays them **verbatim** on the next call.
+3. The item is **never** mapped to a `ContentBlock`: `encrypted_content` is
+   opaque provider state, not assistant text. It must not surface in TUI
+   rendering, `AgentUpdate::Info` messages, `tracing` output, or error strings.
 
-##### Before/after example: compacted `/responses` input
-
-A simplified pre-compaction local history might look like this:
-
-```text
-User: "Add an 80% trigger to compact logic"
-Assistant: thinking + tool_use(read_file compact/mod.rs)
-User: tool_result("...full file contents...")
-Assistant: "I found should_auto_compact; next I'll patch it"
-```
-
-Before compaction, `create_response()` would emit a longer `/responses` `input` similar to:
-
-```json
-[
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "Add an 80% trigger to compact logic"}]
-  },
-  {
-    "type": "reasoning",
-    "id": "rs_...",
-    "summary": []
-  },
-  {
-    "type": "function_call",
-    "call_id": "toolu_1",
-    "name": "read_file",
-    "arguments": "{\"path\":\"crates/tact/src/compact/mod.rs\"}",
-    "status": "completed"
-  },
-  {
-    "type": "function_call_output",
-    "call_id": "toolu_1",
-    "output": "...full file contents...",
-    "status": "completed"
-  },
-  {
-    "type": "message",
-    "role": "assistant",
-    "content": [{"type": "output_text", "text": "I found should_auto_compact; next I'll patch it", "annotations": []}],
-    "status": "completed",
-    "id": "tact-assistant-history-3"
-  }
-]
-```
-
-After compaction and before the next `/responses` call, local history is first rebuilt to something conceptually like:
-
-```text
-User: "Add an 80% trigger to compact logic"
-User: "This conversation was compacted so the agent can continue working.\n\n<summary>"
-User: "Please continue and add tests too"
-```
-
-The next `create_response()` call therefore emits a much smaller `/responses` `input`:
-
-```json
-[
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "Add an 80% trigger to compact logic"}]
-  },
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "This conversation was compacted so the agent can continue working.\n\n<summary>"}]
-  },
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "Please continue and add tests too"}]
-  }
-]
-```
-
-Three things change at once:
-
-- bulky assistant/tool history is removed from the next request payload
-- the handoff summary becomes ordinary user text with `SUMMARY_PREFIX`
-- the newest user turn survives as a normal final user message, still verbatim
-
-That last point is the main reason Tact compacts old history **before** appending the current user turn on the entry path.
+Why not a `ContentBlock`? Because a `ContentBlock` is logical content the
+agent loop renders, persists, and may tool-dispatch over. A `compaction` item
+is protocol plumbing: it exists only to tell the endpoint that the baseline
+was compacted and carries an opaque payload Tact cannot interpret. Treating it
+as content would leak encrypted provider state into the UI and would break the
+round-trip (the exact JSON must be replayed, not reconstructed from visible
+fields).
 
 #### 6.2.3 Reasoning-history replay
 
@@ -537,7 +487,7 @@ On a later request, `history::decode` can recover that state so `message_to_inpu
 - a proper standalone `reasoning` item
 - `function_call` items carrying the matching provider item ids when available
 
-This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from local messages rather than a server-side `previous_response_id` chain.
+This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from the persisted baseline plus local messages rather than a server-side `previous_response_id` chain.
 
 ### 6.3 Shared thinking configuration
 
@@ -681,7 +631,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **No Anthropic SDK dependency** | Conversation, request, stop, stream-delta, and error types are all owned by `tact_llm`; Anthropic is spoken via custom HTTP + SSE only |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; for DeepSeek, `set_user_id` mutates the copy held on `Agent` |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
-| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, background mode, or Responses compaction endpoint |
+| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, or background mode (native compaction is supported) |
 
 ### Protocol compatibility gaps (internal Anthropic shape → wire)
 

@@ -10,6 +10,13 @@ tact implements **three-tier progressive compaction**:
 | Tier 2: Micro Compaction | Before each LLM call | Old tool results | Stub (keep last 12; only if > 120 chars) |
 | Tier 3: Full Compaction | Reported/estimated input reaches 80% of the window, prompt-too-long, or `compact` tool | Conversation history | JSONL transcript + LLM summary → retained real users + handoff |
 
+> **OpenAI Responses providers do not use the local Tier-3 summary path.** Ordinary
+> `/responses` requests carry `context_management` with the resolved compact
+> threshold, and `compact_history` calls the native `POST /responses/compact`
+> endpoint, replacing the opaque protocol baseline (never the logical context).
+> Endpoints without native compaction are unsupported — no local-summary
+> fallback. See [book/05_chapter_compact.md](../book/05_chapter_compact.md).
+
 ```mermaid
 flowchart TB
     Entry([agent_loop entry]) --> EntryEst{should_auto_compact?<br/>reserve incoming}

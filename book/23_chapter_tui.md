@@ -67,6 +67,7 @@ Theme comes from `config::settings().ui.theme` (default `"ink"`).
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    Compact,
     QueryBalance,
 }
 ```
@@ -75,7 +76,32 @@ pub enum UserCommand {
 |---------|--------|---------------------|
 | **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
 | **`Cancel`** | `/cancel`, or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
+| **`Compact`** | `/compact` (idle only) | `agent.compact_history(None)` → native `/responses/compact` for Responses providers, local summarizer otherwise ([Ch 5](./05_chapter_compact.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
+
+### `/compact` status messages
+
+Compaction is **never** an assistant message or streamed markdown output: it is
+a sequence of system `Info` lines plus a final status line. The messages
+depend on the provider:
+
+| Message | When |
+|---------|------|
+| `[compacting]` | `UserCommand::Compact` received by the command driver, before `compact_history` runs |
+| `[auto compact]` | Auto-compact trigger fired in `agent_loop` (entry path or per-iteration) |
+| `[manual compact]` | Local `compact` tool succeeded and set a manual-compact flag (non-Responses only) |
+| `[native compact]` | Responses provider: explicit `POST /responses/compact` started |
+| `[compact retry n/N] retrying in Xs` | Transient transport error while compacting; bounded backoff retry |
+| `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = compaction id |
+| `Compaction complete.` | `UserCommand::Compact` finished successfully |
+
+**Encrypted state is never rendered.** Responses compaction and reasoning
+items carry opaque `encrypted_content`; it is replayed to the endpoint but
+must never appear in `Info` lines, error strings, tool cards, or any other TUI
+surface. Diagnostics emit item counts and the compaction id only (for example
+`[responses compacted: items=2, id=cmp_…]`). A failed compaction shows
+`Error` + `Compaction failed: …` and leaves the previous context and state
+intact.
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. Raster images use `[ui.vision_image]` in config: `compress` (default `true`) downscales and re-encodes as JPEG (`max_edge` 1280, `jpeg_quality` 80); set `compress = false` to send the original file bytes. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 

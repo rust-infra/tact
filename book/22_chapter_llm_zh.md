@@ -292,7 +292,7 @@ reasoning_effort = "high"
 
 `openai/responses/` 通过依赖别名使用 `async-openai` 0.41.1；现有 Chat Completions 类型保留在 0.20，使 Kimi 与 DeepSeek 的非标准 wire 形不发生变化。Adapter 在同一个 provider 无关 contract 后实现流式 `stream_message` 与非流式 `create_message`。该别名启用 SDK 的 `byot` 扩展：请求仍从 SDK 类型构建，最终 JSON dispatch 可以发送 SDK enum 尚未暴露的当前 `max` effort；Response 与 stream event 继续使用 SDK 类型。
 
-Tact 继续拥有 conversation。每次请求以 `store: false` 发送完整规范化历史；不使用 Conversations 或 `previous_response_id`。转换覆盖 system instructions、用户/assistant 文本、图片 data URL、function call、function output、function tools、tool choice、采样字段，以及 `max_tokens → max_output_tokens`。`top_k` 与 stop sequences 因 Responses 请求类型无对应字段而省略。
+Tact 继续拥有 conversation。每次请求以 `store: false` 发送**已持久化的协议基线 + 新出现的逻辑消息**；不使用 Conversations 或 `previous_response_id`。转换覆盖 system instructions、用户/assistant 文本、图片 data URL、function call、function output、function tools、tool choice、采样字段，以及 `max_tokens → max_output_tokens`。`top_k` 与 stop sequences 因 Responses 请求类型无对应字段而省略。
 
 Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 转为 `ContentBlock::Thinking`：summary 文本存入 `thinking`，`signature` 保存一个带版本的 opaque envelope，其中包含完整 reasoning item 与相关 `fc_*` function-call item id。下一次请求由该 envelope 重建原始 `rs_*` / `fc_*` identity；没有 encrypted payload 的 thinking block 仅用于显示，不发送回 API。
 
@@ -300,7 +300,10 @@ Responses 使用独立的 `responses_system_prompt_template.md`，不改变其�
 
 流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
 
-此 adapter 不支持：server-hosted tools、background responses、Conversations、`previous_response_id` 与 Responses compaction endpoint。
+此 adapter 不支持：server-hosted tools、background responses、Conversations 与
+`previous_response_id`。原生压缩是受支持的：解析出压缩阈值后，普通请求会携带
+`context_management`；`compact()` 会发送显式 `POST /responses/compact` 请求
+（见 [Ch 5](./05_chapter_compact_zh.md)）。
 
 #### 6.2.1 转换流水线：`Message` → `/responses` input
 
@@ -308,10 +311,15 @@ Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessa
 
 `create_response` 会执行以下步骤：
 
-1. 按顺序遍历 `request.messages`。
-2. 对每条 `Message` 调用 `message_to_input`。
-3. 将返回的 `InputItem` 扁平化进最终 `input` 数组。
-4. 追加请求级字段：`instructions`、`tools`、`tool_choice`、`reasoning`、`temperature`、`top_p`、`max_output_tokens`、`store: false`。
+1. 当提供了合法 `ResponsesConversationState` 时，原样取用其中已持久化的基线
+   `input_items`；否则从空开始。
+2. 只遍历 `request.messages` 中超出基线 `logical_message_count` 的未覆盖后缀，
+   对每条 `Message` 调用 `message_to_input`。
+3. 把返回的 `InputItem` 追加到基线 items 之后，扁平化进最终 `input` 数组。
+4. 追加请求级字段：`instructions`、`tools`、`tool_choice`、`reasoning`、
+   `temperature`、`top_p`、`max_output_tokens`、`store: false`；解析出压缩阈值
+   时还会追加 `context_management`（`[{ "type": "compaction",
+   "compact_threshold": N }]`）。
 5. 规范化 assistant 历史项，使先前 assistant 文本变成已完成的 Responses output message，带稳定本地 ID 与 `output_text` content。
 
 逐消息映射如下：
@@ -334,140 +342,70 @@ Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessa
 
 #### 6.2.2 与压缩的交互：Responses 的特殊点
 
-compact 逻辑本身**不**在 `tact_llm` 中实现。它更早发生在 `Agent::agent_loop` 与 `Agent::compact_history`（见 [Ch 5](./05_chapter_compact_zh.md)）。Responses 的特殊性，来自这次本地重建与后续转换流水线之间的相互作用。
+当配置 `protocol = "responses"` 时，压缩是**原生**的：不存在本地摘要重建，
+`compact_history` 也**不会**改写逻辑 context（`runtime.context`）（见
+[Ch 5](./05_chapter_compact_zh.md)）。Responses adapter 负责精确的
+**转换 / 状态边界**：
 
-一个经过 compact 的 Responses 回合顺序如下：
+- **状态基线** — `ResponsesConversationState` 保存不透明协议基线：
+  `input_items`（此前 terminal outputs 的原样 JSON，含 `compaction` 与
+  `reasoning` item）、`compaction_id`、`is_compacted`、`logical_message_count`
+  与 `logical_context_hash`。
+- **校验** — 复用前，`validate_conversion_state` 检查持久化状态是否绑定到同一
+  provider/model，并确认基线覆盖的逻辑消息前缀哈希与记录值一致。不一致是硬性
+  协议错误；Tact 绝不静默重复、截断或重建基线。
+- **增量转换** — `create_response` 发送状态基线原文，再加上仅新出现的逻辑
+  消息转换出的 `/responses` items。无状态时则转换全部逻辑消息。
+- **`context_management`** — 解析出压缩阈值（配置或推导）后，每个普通
+  `/responses` 请求都会携带
+  `context_management: [{ "type": "compaction", "compact_threshold": N }]`，
+  端点可以在正常流式过程中自动压缩基线。
+- **显式 `/responses/compact`** — 当 Tact 决定压缩时，agent 调用 adapter 的
+  `compact()`：发送真正的 `POST /responses/compact` 请求，携带当前基线加未覆盖
+  消息。返回的 compact resource 替换基线；`focus` 文本无意义并被忽略。
+- **状态更新** — 每次调用返回 `LlmResponse`，内含
+  `state_update: ProviderStateUpdate`（`Replace(新状态)` 或 `Unchanged`）。
+  agent 在任何后续 LLM 调用或工具执行之前，用**同一事务**提交 assistant 消息
+  与状态基线。
 
-```text
-old context
-→ should_auto_compact(预留 incoming turn + max_output)
-→ compact_history() 摘要调用
-→ 本地 Message 历史重建为 recent real users + SUMMARY_PREFIX summary
-→ append 当前 user turn 原文
-→ create_response() 把重建后的历史转成 /responses items
-→ 发起 OpenAI /responses 请求
-```
+#### `LlmResponse` 与终态响应权威
 
-这个顺序解决了一个在 Responses 风格历史里很容易被忽略的问题：如果 Tact 先 push 当前 user turn，**再** compact，那么下一次压缩就可能把这条 turn 吞进 handoff summary。最终 `/responses` 请求依然合法，但最新用户意图将不再以原文出现在转换后的 input 里。通过“先 compact 旧历史、再 append 当前 turn”，Tact 保证最新一轮会作为普通 user message 一路保留到最终 `/responses` payload。
+`LlmResponse` 是 adapter 唯一的返回契约：
 
-另一个重要结果是：adapter 在“缩短对话历史”这件事上是刻意无状态的。它不会要求 OpenAI 代为 compact，不会续用服务端 conversation id，也不会对旧 Responses 图做 diff。它只是把当前本地 `Vec<Message>` 序列化为一次新的请求。这样 compact 策略可以集中在一个地方维护，而 adapter 只需要专注于协议特有的 item identity 与顺序正确性。
+| 字段 | 含义 |
+|------|------|
+| `blocks` | 交给 TUI / agent 的最终 `ContentBlock` |
+| `stop_reason` | 终态 stop reason |
+| `usage` | token 用量（若有上报） |
+| `request_body` | 实际发送的序列化 JSON body（会话调试用） |
+| `state_update` | `ProviderStateUpdate::Replace(…)` 或 `Unchanged` |
 
-##### Responses 压缩/转换时序图
+当终态包含完整输出时，terminal `response.completed` / `response.incomplete`
+对象是最终 blocks、tool calls、usage 与 stop reason 的**权威来源**。流式 delta
+仅用于实时 UI；兼容端点若在终态对象中省略最终 message，则已收到的输出文本
+delta 恢复为最终文本 block，缺失的 output-message / function-call status 从
+terminal event type 推断。为兼容端点注入的占位 id 绝不被当作 provider 身份。
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User
-    participant A as Agent::agent_loop
-    participant C as compact_history
-    participant M as runtime.context (Message)
-    participant R as create_response
-    participant O as OpenAI /responses
+#### `compaction` item 的往返
 
-    U->>A: 当前 user turn
-    A->>A: 估算 incoming turn + max_output
-    A->>A: should_auto_compact(old context, incoming, max_output)
-    alt 需要 compact
-        A->>C: compact_history()
-        C->>C: 摘要近期尾部历史
-        C->>M: 重建为 recent real users + SUMMARY_PREFIX summary
-        C-->>A: compact 完成
-    end
-    A->>M: append 当前 user turn 原文
-    A->>R: create_response(CreateMessageParams)
-    R->>R: Message -> input items
-    R->>O: POST /responses (store=false)
-    O-->>R: response / stream events
-    R-->>A: normalized blocks + usage
-```
+`compaction` item 要么出现在显式 `/responses/compact` resource 中，要么出现在
+自动 `context_management` 压缩后普通请求的 terminal output 里。两种情况下它都
+以**不透明状态**往返，而不是内容：
 
-真正关键的边界在 `compact_history` 与 `create_response` 之间：前者先重写共享的本地历史，后者再把这份重写后的历史序列化。Adapter 从不会看到一份“压缩前请求”，也不会自己额外做远端 shrink。
+1. `normalize_response` 按输出顺序把每个 terminal output item 保留为 JSON
+   （`output_items`），包括 `compaction` item 与未知的未来 item 类型。一个
+   terminal response 至多含一个 compaction item，且其 `encrypted_content`
+   必须非空。
+2. `state_update` 把这些 items 打包进下一次请求的 `input_items` 基线，
+   `create_response` 在后续调用中**原样**回放。
+3. 该 item **绝不会**映射为 `ContentBlock`：`encrypted_content` 是不透明
+   provider 状态，不是 assistant 文本，绝不出现在 TUI 渲染、
+   `AgentUpdate::Info` 消息、`tracing` 输出或错误字符串中。
 
-##### before/after 示例：compact 前后的 `/responses` input
-
-一个简化后的压缩前本地历史大致可能是：
-
-```text
-User: "给 compact 逻辑加一个 80% 触发阈值"
-Assistant: thinking + tool_use(read_file compact/mod.rs)
-User: tool_result("...完整文件内容...")
-Assistant: "我已经找到 should_auto_compact，下一步准备修改它"
-```
-
-在 compact 之前，`create_response()` 生成的 `/responses` `input` 会比较长，形态类似：
-
-```json
-[
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "给 compact 逻辑加一个 80% 触发阈值"}]
-  },
-  {
-    "type": "reasoning",
-    "id": "rs_...",
-    "summary": []
-  },
-  {
-    "type": "function_call",
-    "call_id": "toolu_1",
-    "name": "read_file",
-    "arguments": "{\"path\":\"crates/tact/src/compact/mod.rs\"}",
-    "status": "completed"
-  },
-  {
-    "type": "function_call_output",
-    "call_id": "toolu_1",
-    "output": "...完整文件内容...",
-    "status": "completed"
-  },
-  {
-    "type": "message",
-    "role": "assistant",
-    "content": [{"type": "output_text", "text": "我已经找到 should_auto_compact，下一步准备修改它", "annotations": []}],
-    "status": "completed",
-    "id": "tact-assistant-history-3"
-  }
-]
-```
-
-完成 compact、并准备发起下一次 `/responses` 调用前，本地历史会先被重建成类似：
-
-```text
-User: "给 compact 逻辑加一个 80% 触发阈值"
-User: "This conversation was compacted so the agent can continue working.\n\n<summary>"
-User: "请继续，并顺手补上测试"
-```
-
-因此下一次 `create_response()` 发出的 `/responses` `input` 就会小很多：
-
-```json
-[
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "给 compact 逻辑加一个 80% 触发阈值"}]
-  },
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "This conversation was compacted so the agent can continue working.\n\n<summary>"}]
-  },
-  {
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "请继续，并顺手补上测试"}]
-  }
-]
-```
-
-这里同时发生了三件事：
-
-- 大体积的 assistant/tool 历史不再进入下一次请求
-- handoff summary 变成了一条带 `SUMMARY_PREFIX` 的普通 user 文本
-- 最新 user turn 仍作为最后一条普通 user message 原样保留
-
-最后这一点正是 Tact 在入口路径上选择“先 compact 旧历史，再 append 当前 user turn”的核心原因。
+为什么不是 `ContentBlock`？因为 `ContentBlock` 是 agent loop 会渲染、持久化并
+可能参与工具分派的逻辑内容；`compaction` item 是协议管道：它只用于告诉端点
+基线已被压缩，并携带 Tact 无法解读的不透明载荷。把它当作内容会向 UI 泄漏
+加密的 provider 状态，并破坏往返（必须回放精确 JSON，而不是从可见字段重建）。
 
 #### 6.2.3 Reasoning 历史回放
 
@@ -481,7 +419,7 @@ Responses reasoning item 并不是从可见文本重新推导出来的。相反�
 - 一个正确的独立 `reasoning` item
 - 在可用时带匹配 provider item id 的 `function_call` item
 
-这也是为什么即使 adapter 每次都从本地消息重建请求，而不是依赖服务端 `previous_response_id` 链，compact 过的会话依然能回放 Responses-native 的 reasoning / function-call 历史。
+这也是为什么即使 adapter 每次都从持久化基线 + 本地消息重建请求，而不是依赖服务端 `previous_response_id` 链，compact 过的会话依然能回放 Responses-native 的 reasoning / function-call 历史。
 
 ### 6.3 共享 thinking 配置
 
@@ -619,7 +557,7 @@ sequenceDiagram
 | **无 Anthropic SDK 依赖** | 对话、请求、stop、stream-delta、错误类型均由 `tact_llm` 拥有；Anthropic 仅通过自定义 HTTP + SSE |
 | **每次 `get_llm_client()` 重建 adapter** | 每次调用新 adapter 实例；DeepSeek 下 `set_user_id` 变更 `Agent` 持有的副本 |
 | **无 vision 能力门控** | 附加图片始终作为 multimodal part 发送；纯文本模型/代理可能对 `image_url` 返回 400 |
-| **Responses 仅核心子集** | 无 Conversations、`previous_response_id`、hosted tools、background mode 或 Responses compaction endpoint |
+| **Responses 仅核心子集** | 无 Conversations、`previous_response_id`、hosted tools 或 background mode（原生压缩受支持） |
 
 ### 协议兼容缺口（内部 Anthropic 形 → wire）
 

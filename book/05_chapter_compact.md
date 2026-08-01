@@ -2,7 +2,7 @@
 
 > Language: [English](./05_chapter_compact.md) · [中文](./05_chapter_compact_zh.md)
 
-This chapter explains how Tact keeps a long-running conversation **inside the model's context window**: cheap in-place truncation every turn (`micro_compact`), full LLM-generated summarization when the limit is reached (`compact_history`), and disk spill for both transcripts and oversized tool outputs. The primitives live in `crates/tact/src/compact/mod.rs`; the orchestration lives in `Agent::compact_history` in `crates/tact/src/agent/mod.rs`.
+This chapter explains how Tact keeps a long-running conversation **inside the model's context window**: cheap in-place truncation every turn (`micro_compact`), full LLM-generated summarization when the limit is reached (`compact_history`, non-Responses providers), native `/responses/compact` for OpenAI Responses, and disk spill for both transcripts and oversized tool outputs. The primitives live in `crates/tact/src/compact/mod.rs`; the orchestration lives in `Agent::compact_history` in `crates/tact/src/agent/mod.rs`.
 
 Compaction is also a **recovery strategy**: when the provider rejects a request as too long, the agent compacts and retries. See [Error Recovery](./06_chapter_recovery.md).
 
@@ -42,7 +42,7 @@ Tact’s answer is **progressive defense**: free local stubs first, then one pai
 |-------|-----------|------|------|-----------------------------|
 | 1 | `persist_large_output` | Free (disk I/O) | Every successful native or MCP result > 30,000 chars **except `read_file`** | Full output (kept on disk + preview) |
 | 2 | `micro_compact` | Free | Start of every LLM turn | Old tool-result bodies (stub left behind) |
-| 3 | `compact_history` | One extra LLM call | 80% threshold, prompt-too-long, or `compact` tool | Assistant/tool history (recent real users + summary remain; full JSONL on disk) |
+| 3 | `compact_history` | One extra LLM call (local) / native `/responses/compact` for Responses | 80% threshold, prompt-too-long, or `compact` tool | Assistant/tool history (recent real users + summary remain; full JSONL on disk) |
 
 ```mermaid
 flowchart TB
@@ -79,7 +79,7 @@ flowchart TB
 
 ## 2. Where Compaction Sits in the Agent Loop
 
-Compaction is not a separate daemon — it is woven into `Agent::agent_loop`. This ordering is especially important for **OpenAI Responses**-style providers, where assistant/tool history is later converted into `/responses` input items. Tact therefore compacts **before** protocol conversion and, on the entry path, compacts **old** history before pushing the current user turn so the latest prompt remains verbatim instead of being absorbed into a summary.
+Compaction is not a separate daemon — it is woven into `Agent::agent_loop`. For non-Responses providers, Tact compacts **old** history before pushing the current user turn so the latest prompt remains verbatim instead of being absorbed into a summary. For **OpenAI Responses**-style providers the same entry-path trigger runs before the turn is pushed, but native compaction only shrinks the wire baseline — the logical context is never rewritten, and the current turn is sent as newly uncovered `/responses` input items.
 
 Reading the loop top-to-bottom:
 
@@ -321,104 +321,60 @@ Optional appendages:
 - `Focus to preserve next: {focus}` — from the manual `compact` tool  
 - `Recent files to reopen if needed:` — from `CompactState.recent_files`
 
-### OpenAI Responses protocol boundary
+### OpenAI Responses: native compaction (no local summary fallback)
 
-For `protocol = "responses"`, compaction still happens in the **shared agent/message layer**, not inside the OpenAI adapter and not via a remote compact endpoint. The flow is:
+For `protocol = "responses"`, compaction is **native**: Tact manages the
+protocol baseline through the Responses API instead of running a local
+summarizer. The local pipeline above (steps 1–4, `compact_history_local`)
+remains the path for **non-Responses** providers (Anthropic, DeepSeek, Kimi,
+Chat Completions); it is **never** used as a fallback for Responses.
 
-1. `agent_loop` decides whether to compact, reserving the incoming turn and output budget.
-2. `compact_history` rewrites `runtime.context` as local `Message` values (`[recent real User…] + [SUMMARY_PREFIX + handoff]`).
-3. Only **after that** does `tact_llm::openai::responses::convert::create_response` translate the rebuilt context into `/responses` `input` items.
+The native path has six properties:
 
-This keeps compaction provider-agnostic while still preserving Responses-specific history details during conversion:
+1. **Ordinary request + `context_management`** — every `/responses` request
+   built by `create_response` carries
+   `context_management: [{ "type": "compaction", "compact_threshold": N }]`
+   when a threshold is resolved. The endpoint may therefore compact the
+   baseline automatically mid-conversation **without** a second HTTP call; a
+   `compaction` item then appears in the terminal response output and is
+   retained as opaque protocol state (never mapped to a `ContentBlock`).
+2. **Tact threshold + `/responses/compact`** — the threshold is
+   `responses_compact_threshold` (config) or derived from
+   `agent.model_context_window` / `max_tokens` with 10% headroom. When Tact
+   decides to compact (auto trigger, recovery, or `/compact`), it sends a real
+   `POST /responses/compact` request carrying the current protocol baseline
+   (`input` items) plus any logical messages not yet covered, and replaces the
+   baseline with the returned compact resource.
+3. **User `/compact` without a model compact tool** — Responses model-facing
+   tool specs exclude the local `compact` tool; the `/compact` command
+   dispatches to the native `/responses/compact` endpoint instead.
+4. **Opaque provider state** — the baseline lives in
+   `ResponsesConversationState` as opaque JSON (`input_items`, including
+   `encrypted_content` of compaction/reasoning items) plus `compaction_id` and
+   `logical_context_hash`. Tact never interprets the encrypted payload: it is
+   replayed verbatim to the endpoint and never rendered or logged.
+5. **Atomic messages/state persistence** — assistant messages and the provider
+   state baseline are committed in **one transaction**; native compaction
+   replaces the persisted context and baseline atomically, then updates the
+   runtime fields. Failures leave the old committed state intact.
+6. **No fallback** — Responses endpoints lacking native compaction are
+   unsupported (a hard protocol error, never a silent local summary). Tact
+   resets `last_token_total` to 0 after native compaction because the next
+   request's input is the compacted baseline, not the pre-compact prompt.
 
-- assistant/user text becomes Responses `message` items
-- `ToolUse` becomes `function_call`
-- `ToolResult` becomes `function_call_output`
-- persisted reasoning signatures may decode back into Responses `reasoning` items via `openai-responses-v1:...`
-
-Current scope is intentionally local-only: Tact does **not** call a remote `/v1/responses/compact`-style API and does not rely on server-side conversation state to shrink history. The OpenAI adapter receives the already-compacted local context and serializes that context into a fresh `/responses` request.
-
-### Responses-specific compaction flow (detailed)
-
-The most failure-prone part of Responses integration is the boundary between **history compaction** and **history conversion**. Tact handles that boundary in four explicit stages:
-
-1. **Pre-turn decision in `agent_loop`**  
-   Before the current user turn is appended, `should_auto_compact(last_token_total, window, estimate_context_tokens(old_context), estimate_message_tokens(incoming_turn), max_tokens)` reserves both the incoming prompt and the next model output. If this projected request is near the threshold, Tact compacts **old** history first.
-
-2. **Local context rebuild in `compact_history`**  
-   The summarizer sees a recent tail of the full conversation, including assistant text and tool traffic, and writes a handoff summary. Tact then rebuilds `runtime.context` as:
-   - recent real user messages kept verbatim from the tail
-   - one summary user message with `SUMMARY_PREFIX`
-   - the current turn, appended later by the loop
-
-   This is the key Codex-style property: the latest real user request remains literal text in the next request instead of being swallowed into the summary.
-
-3. **Protocol conversion in `create_response`**  
-   Only after compaction is complete does the Responses adapter walk the rebuilt `Vec<Message>` and emit `/responses` items. The adapter does not know how the context became small; it only serializes the current local truth.
-
-4. **Provider request ownership**  
-   The final HTTP request still contains `store: false` and a full rebuilt history. Tact does not hand control of the conversation graph to OpenAI. There is no `previous_response_id`, no conversation resume token, and no remote compact call.
-
-That separation gives Tact two guarantees:
-
-- compacting can be reasoned about once, at the shared `Message` layer
-- the Responses adapter can stay focused on wire-format correctness (`message`, `reasoning`, `function_call`, `function_call_output`)
-
-A simplified timeline for one compacted Responses turn:
+A simplified native timeline:
 
 ```text
-old runtime.context
-→ should_auto_compact(incoming user turn reserved)
-→ compact_history() writes transcript + summary
-→ runtime.context = recent real users + SUMMARY_PREFIX summary
-→ agent_loop pushes current user turn verbatim
-→ create_response() converts rebuilt Message history into /responses input items
-→ POST /responses
+old baseline (input_items) + logical context
+→ auto trigger / recovery / user /compact → "[native compact]"
+→ POST /responses/compact (baseline + uncovered messages)
+→ compact resource → new baseline (items + compaction id)
+→ replace persisted context + state atomically (one transaction)
+→ next POST /responses (context_management + compacted baseline)
 ```
 
-This design also explains why Tact resets `last_token_total = 0` after compaction: the token usage reported by the summarizer call describes the **large pre-compact prompt**, not the new rebuilt history that will be sent to `/responses` next.
-
-If the focus text is too large to fit in the summarizer input budget together with the fixed instructions, it is silently dropped — but a `tracing::warn!` log records the event (original length, available budget, and needed tokens) so the omission is observable in diagnostics.
-
-When a message exceeds the summary-input budget, `summary_message_fallback` converts it to a valid text-only representation. Each block type is mapped as follows:
-
-| Block type | Becomes |
-|------------|---------|
-| `Text` | Kept as-is |
-| `Thinking` | Kept as-is |
-| `RedactedThinking` | `[Redacted thinking omitted.]` |
-| `Image` | `[Earlier image attachment omitted during compaction.]` |
-| `ToolUse` | `[Tool call: {name}]` |
-| `ToolResult` | `[Tool result {tool_use_id}]\n{content}` |
-
-If even the fallback text is too large, it is tail-truncated (`take_last_tokens`) to the remaining budget. Base64 image data is **never** sliced — it is replaced wholesale by the omission marker, guaranteeing the serialized JSON is always valid.
-
-**4. Context replacement** — Codex-style rebuild, in three stages:
-
-**4a. Collect user messages** — `collect_user_messages(&old_context)` walks the full context, filtering with `is_real_user_message`: keeps non-summary, non-tool-result-only User messages. This is the candidate set, not yet truncated.
-
-**4b. Rebuild from tail** — `build_compacted_history(users, summary, max_tokens)` keeps real user messages from the tail within a token budget; a summary message is appended last:
-
-```text
-[0] User  "<earlier real user text…>"
-[1] User  "<more recent real user text…>"
-[2] User  "This conversation was compacted so the agent can continue working.
-
-           <summary…>
-
-           Recently accessed files (re-read if you need their contents):
-           - crates/tact/src/agent/mod.rs
-           - …"
-```
-
-(`compact_history_legacy` still replaces with a **single** summary user message.)
-
-**4c. Shrink loop (final-request guard)** — The initial budget comes from `retained_user_message_token_budget` (`model_context_window - max_tokens - estimate(system+tools+summary) - 20% headroom`, capped at 20k). But this is an estimate; the rebuilt payload may still exceed the window. So a loop runs:
-
-1. Compute total tokens: `system + tools + estimate(rebuilt) + max_tokens + headroom`
-2. If ≤ `model_context_window` → accepted.
-3. If it exceeds → `retained_tokens -= overflow`, rebuild again with the smaller budget, go to step 1.
-4. If `retained_tokens == 0` and still doesn't fit → `anyhow::bail!` (original context intact; even a single summary alone exceeds the window).
+The `focus` text of the local `compact` tool has no meaning for the native
+endpoint and is ignored.
 
 ### Design rationale: summarizer input vs rebuilt context
 

@@ -68,6 +68,7 @@ sequenceDiagram
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    Compact,
     QueryBalance,
 }
 ```
@@ -76,7 +77,29 @@ pub enum UserCommand {
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
 | **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
+| **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
+
+### `/compact` 状态消息
+
+压缩**绝不是** assistant 消息或流式 markdown 输出：它是一串系统 `Info` 行加
+一条最终状态行。具体消息随 provider 不同：
+
+| 消息 | 时机 |
+|------|------|
+| `[compacting]` | 命令 driver 收到 `UserCommand::Compact`，`compact_history` 运行前 |
+| `[auto compact]` | `agent_loop` 中自动压缩触发（入口路径或每次迭代） |
+| `[manual compact]` | 本地 `compact` 工具成功并置位手动压缩标记（仅非 Responses） |
+| `[native compact]` | Responses provider：显式 `POST /responses/compact` 开始 |
+| `[compact retry n/N] retrying in Xs` | 压缩遇到瞬时传输错误；有界退避重试 |
+| `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = compaction id |
+| `Compaction complete.` | `UserCommand::Compact` 成功完成 |
+
+**加密状态绝不渲染。** Responses 的 compaction / reasoning item 携带不透明的
+`encrypted_content`；它只会被回放给端点，绝不能出现在 `Info` 行、错误字符串、
+工具卡片或任何 TUI 表面。诊断信息只输出 item 数与 compaction id（例如
+`[responses compacted: items=2, id=cmp_…]`）。压缩失败会显示 `Error` +
+`Compaction failed: …`，并保持之前的 context 与状态不变。
 
 `build_user_message`（`crates/tact-ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
 
