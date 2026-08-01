@@ -9,8 +9,8 @@ use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmResponse,
-    ProviderConversationState, ProviderStateUpdate, StopReason,
+    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
+    ProviderStateUpdate, StopReason,
 };
 
 /// A single canned LLM turn for [`MockClient`].

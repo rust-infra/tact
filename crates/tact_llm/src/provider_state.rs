@@ -276,7 +276,7 @@ mod tests {
         let first = Message::new_text(Role::User, "hello");
         let second = Message::new_text(Role::Assistant, "world");
 
-        let prefix_hash = super::context_hash(&[first.clone()]).unwrap();
+        let prefix_hash = super::context_hash(std::slice::from_ref(&first)).unwrap();
         let full_hash = super::context_hash(&[first, second]).unwrap();
         assert_ne!(prefix_hash, full_hash);
     }

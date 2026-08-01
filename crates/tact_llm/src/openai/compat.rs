@@ -15,7 +15,9 @@ pub(crate) async fn stream_assembled(
     assemble: impl FnOnce(&CreateMessageParams, bool) -> Result<Value, LlmError>,
 ) -> Result<LlmResponse, LlmError> {
     let body = assemble(request, true)?;
-    adapter.stream_completion(&body, provider_state, ui_tx).await
+    adapter
+        .stream_completion(&body, provider_state, ui_tx)
+        .await
 }
 
 pub(crate) async fn create_assembled(

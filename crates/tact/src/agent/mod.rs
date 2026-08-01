@@ -2275,7 +2275,7 @@ mod tests {
         let mut agent = Agent::new(
             LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
                 "test-key",
-                &server.uri(),
+                server.uri(),
                 None,
                 None,
             )),

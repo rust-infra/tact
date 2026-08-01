@@ -155,8 +155,8 @@ impl LlmProvider {
 mod tests {
     use super::*;
     use crate::{
-        anthropic::AnthropicAdapter, mock::MockClient, ContentBlock, RequiredMessageParams,
-        StopReason,
+        ContentBlock, RequiredMessageParams, StopReason, anthropic::AnthropicAdapter,
+        mock::MockClient,
     };
 
     #[test]
@@ -168,7 +168,10 @@ mod tests {
             request_body: None,
             state_update: ProviderStateUpdate::Unchanged,
         };
-        assert!(matches!(response.state_update, ProviderStateUpdate::Unchanged));
+        assert!(matches!(
+            response.state_update,
+            ProviderStateUpdate::Unchanged
+        ));
     }
 
     #[tokio::test]

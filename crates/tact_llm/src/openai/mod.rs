@@ -34,7 +34,9 @@ use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::LlmError;
-use crate::{ContentBlock, LlmResponse, ProviderConversationState, ProviderStateUpdate, StopReason};
+use crate::{
+    ContentBlock, LlmResponse, ProviderConversationState, ProviderStateUpdate, StopReason,
+};
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
