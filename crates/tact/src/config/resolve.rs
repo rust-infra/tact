@@ -271,6 +271,7 @@ fn resolve_subagent(
     toml_cfg: &TactTomlConfig,
     main_max_tokens: u32,
     main_thinking_budget: usize,
+    model_context_window: usize,
 ) -> anyhow::Result<Option<SubagentSettings>> {
     let Some(subagent_cfg) = &toml_cfg.agent.subagent else {
         return Ok(None);
@@ -359,6 +360,25 @@ fn resolve_subagent(
         anyhow::bail!(
             "subagent thinking_budget ({thinking_budget}) must be less than max_tokens ({max_tokens})"
         );
+    }
+
+    // The subagent reuses the provider entry's configured Responses compact
+    // threshold with its own max_tokens and the shared agent context window.
+    // A threshold validated against the main agent's max_tokens may not leave
+    // room for a larger subagent max_tokens, so the same headroom rule is
+    // applied here. Derived thresholds (None) are resolved per-agent and need
+    // no subagent-time validation.
+    if protocol == OpenAiProtocol::Responses
+        && let Some(configured) = entry.responses_compact_threshold
+        && model_context_window != 0
+    {
+        let headroom = model_context_window.saturating_mul(10).div_ceil(100);
+        let required = u128::from(configured) + u128::from(max_tokens) + headroom as u128;
+        if required > model_context_window as u128 {
+            anyhow::bail!(
+                "invalid subagent token limits: responses_compact_threshold ({configured}) must leave room for subagent max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
+            );
+        }
     }
 
     Ok(Some(SubagentSettings {
@@ -573,7 +593,7 @@ pub(super) fn resolve_config(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
-    let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget)?;
+    let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget, model_context_window)?;
 
     let responses_compact_threshold = resolve_responses_compact_threshold(
         entry.and_then(|e| e.responses_compact_threshold),
@@ -1552,6 +1572,77 @@ model_context_window = 200000
             .to_string();
         assert!(error.contains("responses_compact_threshold"));
         assert!(error.contains("leave room"));
+    }
+
+    #[test]
+    fn subagent_responses_threshold_must_leave_room_for_subagent_max_tokens() {
+        // The subagent reuses the provider entry's configured threshold with
+        // its own max_tokens; a threshold validated against the main agent's
+        // max_tokens may not leave room for a larger subagent max_tokens.
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+responses_compact_threshold = 160000
+
+[agent]
+model_context_window = 200000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-5"
+max_tokens = 40000
+"#,
+        )
+        .unwrap();
+        // 160000 + 40000 + 20000 = 220000 > 200000 → no room left.
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("responses_compact_threshold"));
+        assert!(error.contains("leave room"));
+        assert!(error.contains("subagent"));
+    }
+
+    #[test]
+    fn subagent_responses_threshold_with_room_is_accepted() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+responses_compact_threshold = 160000
+
+[agent]
+model_context_window = 250000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-5"
+max_tokens = 40000
+"#,
+        )
+        .unwrap();
+        // 160000 + 40000 + 25000 = 225000 <= 250000 → valid.
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = resolved.agent.subagent.expect("subagent resolved");
+        assert_eq!(sa.max_tokens, 40_000);
+        assert_eq!(
+            sa.provider.responses_compact_threshold,
+            Some(160_000),
+            "subagent provider carries the validated threshold"
+        );
     }
 
     #[test]
