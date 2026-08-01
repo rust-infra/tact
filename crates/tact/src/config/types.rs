@@ -56,6 +56,11 @@ pub struct ProviderEntryToml {
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Candidate models for the `/model` picker (optional).
     pub models: Vec<String>,
+    /// Optional OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). Only meaningful for `protocol = "responses"`. When omitted,
+    /// the threshold is derived from `agent.model_context_window`,
+    /// `llm.max_tokens`, and 10% safety headroom.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +197,13 @@ pub struct LlmSettings {
     pub model: String,
     /// Candidate models for the `/model` TUI picker.
     pub models: Vec<String>,
+    /// Resolved OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). `Some` only for `protocol = "responses"`: either the
+    /// configured `responses_compact_threshold` (validated against
+    /// `max_tokens` + 10% headroom) or derived from
+    /// `model_context_window`, `max_tokens`, and headroom. `None` for
+    /// non-Responses providers and when the model context window is zero.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 impl LlmSettings {
@@ -391,6 +403,39 @@ models = ["kimi-k2.5", "kimi-for-coding"]
             kimi.models,
             vec!["kimi-k2.5".to_string(), "kimi-for-coding".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_responses_compact_threshold() {
+        let toml_str = r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+responses_compact_threshold = 160000
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        let openai = cfg.llm.providers.get("openai").unwrap();
+        assert_eq!(openai.responses_compact_threshold, Some(160_000));
+
+        // Absent key resolves to None, not a deserialization error.
+        let absent: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+        let openai = absent.llm.providers.get("openai").unwrap();
+        assert_eq!(openai.responses_compact_threshold, None);
     }
 
     #[test]
