@@ -97,6 +97,7 @@ impl KimiAdapter {
                 provider: ProviderKind::Kimi,
                 protocol: crate::OpenAiProtocol::default(),
                 reasoning_effort: None,
+                responses_compact_threshold: None,
                 api_key: String::new(),
                 base_url,
                 model,

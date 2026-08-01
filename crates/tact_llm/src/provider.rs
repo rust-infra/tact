@@ -18,6 +18,10 @@ pub struct ProviderInfo {
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Optional OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). Only meaningful for `protocol = "responses"`; `None` omits
+    /// `context_management` from ordinary `/responses` requests.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 impl Default for ProviderInfo {
@@ -29,6 +33,7 @@ impl Default for ProviderInfo {
             provider: ProviderKind::OpenAi,
             protocol: OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
         }
     }
 }
@@ -107,6 +112,7 @@ impl ProviderInfo {
                 self.api_key.clone(),
                 base_url,
                 self.reasoning_effort,
+                self.responses_compact_threshold,
             ),
         ))
     }
@@ -356,6 +362,7 @@ mod tests {
             provider,
             protocol: OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),

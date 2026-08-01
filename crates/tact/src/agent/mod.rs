@@ -1835,7 +1835,7 @@ mod tests {
     fn responses_test_agent(context_name: &str, base_url: &str) -> Agent {
         Agent::new(
             LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
-                "test-key", base_url, None,
+                "test-key", base_url, None, None,
             )),
             test_context(context_name),
             crate::tool::toolset(),

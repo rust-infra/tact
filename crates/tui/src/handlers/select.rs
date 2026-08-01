@@ -614,6 +614,7 @@ mod tests {
             provider: ProviderKind::Kimi,
             protocol: tact_llm::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: "sk-test".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             model: current.into(),

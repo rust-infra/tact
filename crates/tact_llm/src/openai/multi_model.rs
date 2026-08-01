@@ -99,6 +99,7 @@ mod tests {
             provider: ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),

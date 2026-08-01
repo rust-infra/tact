@@ -118,6 +118,11 @@ pub struct OpenAiResponsesAdapter {
     client: Client<OpenAIConfig>,
     base_url: String,
     reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Optional `context_management.compact_threshold` (tokens) sent on
+    /// every ordinary `/responses` request. `None` omits `context_management`
+    /// entirely; Tact never falls back to a local summary compaction for
+    /// Responses providers.
+    compact_threshold: Option<u32>,
 }
 
 impl OpenAiResponsesAdapter {
@@ -125,6 +130,7 @@ impl OpenAiResponsesAdapter {
         api_key: impl Into<String>,
         base_url: impl Into<String>,
         reasoning_effort: Option<OpenAiReasoningEffort>,
+        compact_threshold: Option<u32>,
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let config = OpenAIConfig::new()
@@ -136,11 +142,29 @@ impl OpenAiResponsesAdapter {
             client: Client::with_config(config),
             base_url,
             reasoning_effort,
+            compact_threshold,
         }
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Builds the ordinary `/responses` wire request for this adapter,
+    /// including `context_management` when a compact threshold is
+    /// configured. Shared by the streaming and non-streaming paths so the
+    /// configured threshold can never be dropped by one of them.
+    fn build_wire_request(
+        &self,
+        request: &CreateMessageParams,
+        provider_state: Option<&ProviderConversationState>,
+    ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
+        create_response(
+            request,
+            provider_state,
+            self.compact_threshold,
+            self.reasoning_effort,
+        )
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
@@ -212,8 +236,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
             self.validate_state_binding(state, &request.model)?;
         }
-        let (mut wire_request, input_items) =
-            create_response(request, provider_state, None, self.reasoning_effort)?;
+        let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)?;
         let mut response_stream = self
@@ -280,8 +303,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
             self.validate_state_binding(state, &request.model)?;
         }
-        let (mut wire_request, input_items) =
-            create_response(request, provider_state, None, self.reasoning_effort)?;
+        let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)?;
         let response = self
@@ -511,7 +533,7 @@ mod tests {
         super::OpenAiResponsesAdapter,
         crate::ResponsesConversationState,
     ) {
-        let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None, None);
         let state = crate::ResponsesConversationState {
             version: 1,
             provider: "openai_responses".to_string(),
@@ -587,7 +609,7 @@ mod tests {
             messages: vec![first_user.clone()],
             max_tokens: 128,
         });
-        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
+        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None, None);
 
         let response = adapter
             .stream_message(&request, None, None)
@@ -669,7 +691,7 @@ mod tests {
         })
         .with_system(system)
         .with_tools(tools.clone());
-        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
+        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None, None);
 
         let response = adapter
             .stream_message(&request, None, None)
@@ -732,5 +754,168 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "bash"))
         );
+    }
+
+    // ── Regression: configured `responses_compact_threshold` must reach
+    // ── ordinary `/responses` requests as `context_management` ──────────────
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn simple_request() -> CreateMessageParams {
+        CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "hello")],
+            max_tokens: 256,
+        })
+    }
+
+    /// Minimal terminal `/responses` body accepted by `normalize_response`.
+    fn completed_response_value() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1754000001,
+            "completed_at": 1754000002,
+            "status": "completed",
+            "model": "gpt-5",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": null,
+                    "text": "hello"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 2,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 12
+            }
+        })
+    }
+
+    /// Build the adapter through `ProviderInfo::build_client()` so the whole
+    /// configuration → adapter wiring (including the Responses threshold) is
+    /// exercised, then return the captured `/responses` request body.
+    async fn captured_request_body(
+        server: &MockServer,
+        compact_threshold: Option<u32>,
+    ) -> serde_json::Value {
+        let info = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            reasoning_effort: None,
+            responses_compact_threshold: compact_threshold,
+        };
+        let crate::LlmProvider::OpenAiResponses(adapter) = info.build_client().unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        adapter
+            .create_message(&simple_request(), None)
+            .await
+            .expect("ordinary Responses request should succeed");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "exactly one ordinary /responses request");
+        serde_json::from_slice(&requests[0].body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn ordinary_responses_request_includes_context_management_when_threshold_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completed_response_value()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = captured_request_body(&server, Some(160_000)).await;
+
+        assert_eq!(
+            body["context_management"][0]["type"],
+            serde_json::json!("compaction"),
+            "ordinary /responses request must declare native compaction, got: {body}"
+        );
+        assert_eq!(
+            body["context_management"][0]["compact_threshold"],
+            serde_json::json!(160_000),
+            "configured threshold must reach the wire request, got: {body}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn ordinary_responses_request_omits_context_management_without_threshold() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completed_response_value()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = captured_request_body(&server, None).await;
+
+        assert!(
+            body.get("context_management").is_none(),
+            "no threshold must mean no context_management (no default injection), got: {body}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn streamed_responses_request_includes_context_management_when_threshold_configured() {
+        let server = MockServer::start().await;
+        let sse = format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "type": "response.completed",
+                "sequence_number": 1,
+                "response": completed_response_value()
+            })
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let info = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            reasoning_effort: None,
+            responses_compact_threshold: Some(160_000),
+        };
+        let crate::LlmProvider::OpenAiResponses(adapter) = info.build_client().unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        adapter
+            .stream_message(&simple_request(), None, None)
+            .await
+            .expect("streamed Responses request should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "exactly one streamed /responses request");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            body["context_management"][0]["compact_threshold"],
+            serde_json::json!(160_000),
+            "streamed ordinary request must carry the configured threshold, got: {body}"
+        );
+        server.verify().await;
     }
 }

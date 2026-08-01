@@ -215,6 +215,7 @@ impl LlmSettings {
             provider: self.provider,
             protocol: self.protocol,
             reasoning_effort: self.reasoning_effort,
+            responses_compact_threshold: self.responses_compact_threshold,
         }
     }
 }
@@ -459,5 +460,31 @@ max_duration_secs = 45
         .unwrap();
         assert_eq!(cfg.voice.enabled, Some(true));
         assert_eq!(cfg.voice.max_duration_secs, Some(45));
+    }
+
+    #[test]
+    fn provider_info_carries_responses_compact_threshold() {
+        let settings = LlmSettings {
+            provider: ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::Responses,
+            reasoning_effort: None,
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+            models: Vec::new(),
+            responses_compact_threshold: Some(160_000),
+        };
+
+        let info = settings.provider_info();
+        assert_eq!(info.responses_compact_threshold, Some(160_000));
+
+        let settings_without = LlmSettings {
+            responses_compact_threshold: None,
+            ..settings
+        };
+        assert_eq!(
+            settings_without.provider_info().responses_compact_threshold,
+            None
+        );
     }
 }

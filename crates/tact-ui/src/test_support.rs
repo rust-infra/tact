@@ -159,7 +159,7 @@ pub fn build_responses_test_agent(
     let config = default_test_config();
     build_test_agent_with_provider(
         LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
-            "test-key", base_url, None,
+            "test-key", base_url, None, None,
         )),
         ui_tx,
         PermissionMode::Auto,

@@ -369,6 +369,7 @@ fn resolve_subagent(
             provider: provider_kind,
             protocol,
             reasoning_effort,
+            responses_compact_threshold: entry.responses_compact_threshold,
         },
         max_tokens,
         thinking_budget,
