@@ -366,20 +366,16 @@ fn resolve_subagent(
     // threshold with its own max_tokens and the shared agent context window.
     // A threshold validated against the main agent's max_tokens may not leave
     // room for a larger subagent max_tokens, so the same headroom rule is
-    // applied here. Derived thresholds (None) are resolved per-agent and need
-    // no subagent-time validation.
-    if protocol == OpenAiProtocol::Responses
-        && let Some(configured) = entry.responses_compact_threshold
-        && model_context_window != 0
-    {
-        let headroom = model_context_window.saturating_mul(10).div_ceil(100);
-        let required = u128::from(configured) + u128::from(max_tokens) + headroom as u128;
-        if required > model_context_window as u128 {
-            anyhow::bail!(
-                "invalid subagent token limits: responses_compact_threshold ({configured}) must leave room for subagent max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
-            );
-        }
-    }
+    // applied here. When the threshold is omitted, it is derived from the
+    // subagent's own max_tokens; non-Responses protocols and zero context
+    // windows resolve to `None`.
+    let responses_compact_threshold = resolve_responses_compact_threshold(
+        entry.responses_compact_threshold,
+        protocol,
+        model_context_window,
+        max_tokens,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid subagent token limits: {error:#}"))?;
 
     Ok(Some(SubagentSettings {
         provider: ProviderInfo {
@@ -389,7 +385,7 @@ fn resolve_subagent(
             provider: provider_kind,
             protocol,
             reasoning_effort,
-            responses_compact_threshold: entry.responses_compact_threshold,
+            responses_compact_threshold,
         },
         max_tokens,
         thinking_budget,
@@ -683,6 +679,43 @@ model = "gpt-4o"
 
     fn empty_cli_args_with_openai() -> (CliArgs, TactTomlConfig) {
         (empty_cli_args(), openai_toml_config())
+    }
+
+    /// Responses config with a main agent and a subagent that reuses the
+    /// `openai` provider entry. `threshold` sets the provider entry's
+    /// `responses_compact_threshold` (shared by main and subagent);
+    /// `subagent_max_tokens` overrides the subagent's output budget and
+    /// `model_context_window` sets the shared agent context window.
+    fn config_with_responses_main_and_subagent(
+        threshold: Option<u32>,
+        subagent_max_tokens: u32,
+        model_context_window: usize,
+    ) -> TactTomlConfig {
+        let threshold_line = threshold
+            .map(|t| format!("responses_compact_threshold = {t}"))
+            .unwrap_or_default();
+        toml::from_str(&format!(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+{threshold_line}
+
+[agent]
+model_context_window = {model_context_window}
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-5"
+max_tokens = {subagent_max_tokens}
+"#
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -1643,6 +1676,44 @@ max_tokens = 40000
             Some(160_000),
             "subagent provider carries the validated threshold"
         );
+    }
+
+    #[test]
+    fn subagent_responses_threshold_is_derived_when_omitted() {
+        let config = config_with_responses_main_and_subagent(None, 8_000, 200_000);
+        let resolved = resolve_config(&empty_cli_args(), &config, None).unwrap();
+        let subagent = resolved.agent.subagent.unwrap();
+        // headroom = 200000 * 10% = 20000; 200000 - 8000 - 20000.
+        assert_eq!(subagent.provider.responses_compact_threshold, Some(172_000));
+    }
+
+    #[test]
+    fn subagent_responses_threshold_is_derived_from_subagent_max_tokens() {
+        // The subagent overrides max_tokens to 40000 while the main agent
+        // keeps 8000; the derived threshold must use the subagent budget.
+        let config = config_with_responses_main_and_subagent(None, 40_000, 200_000);
+        let resolved = resolve_config(&empty_cli_args(), &config, None).unwrap();
+        let subagent = resolved.agent.subagent.unwrap();
+        assert_eq!(subagent.max_tokens, 40_000);
+        // headroom = 20000; 200000 - 40000 - 20000.
+        assert_eq!(subagent.provider.responses_compact_threshold, Some(140_000));
+    }
+
+    #[test]
+    fn subagent_responses_threshold_is_none_for_non_responses_and_zero_window() {
+        // Non-Responses subagent: configured threshold on the provider entry
+        // must not leak into the subagent ProviderInfo.
+        let mut config = config_with_responses_main_and_subagent(Some(160_000), 8_000, 200_000);
+        config.llm.providers.get_mut("openai").unwrap().protocol = None;
+        let resolved = resolve_config(&empty_cli_args(), &config, None).unwrap();
+        let subagent = resolved.agent.subagent.unwrap();
+        assert_eq!(subagent.provider.responses_compact_threshold, None);
+
+        // Responses subagent with a zero context window resolves to None.
+        let config = config_with_responses_main_and_subagent(None, 8_000, 0);
+        let resolved = resolve_config(&empty_cli_args(), &config, None).unwrap();
+        let subagent = resolved.agent.subagent.unwrap();
+        assert_eq!(subagent.provider.responses_compact_threshold, None);
     }
 
     #[test]
