@@ -33,6 +33,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             base_url: String::new(),
             model: "mock-model".to_string(),
             models: Vec::new(),
+            responses_compact_threshold: None,
         },
         agent: tact::config::AgentSettings {
             model_context_window: 500_000,

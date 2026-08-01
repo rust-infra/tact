@@ -579,6 +579,7 @@ mod tests {
                 base_url: "https://api.moonshot.cn/v1".into(),
                 model: current.into(),
                 models: models.into_iter().map(str::to_string).collect(),
+                responses_compact_threshold: None,
             },
             agent: tact::config::AgentSettings {
                 max_tokens: 8000,
