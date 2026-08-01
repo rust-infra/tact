@@ -111,6 +111,21 @@ pub fn build_test_agent_with_config(
     permission_mode: PermissionMode,
     config: &tact::config::ResolvedConfig,
 ) -> (Agent, std::path::PathBuf) {
+    build_test_agent_with_provider(LlmProvider::Mock(mock), ui_tx, permission_mode, config)
+}
+
+/// Build an agent with an explicit LLM provider and configuration snapshot.
+///
+/// Installs `config` for global readers (UI/permissions) and attaches
+/// `config.agent` to the returned agent so parallel tests do not race.
+/// Used by driver tests that need a real protocol adapter (e.g. OpenAI
+/// Responses) pointed at a local wiremock server.
+pub fn build_test_agent_with_provider(
+    client: LlmProvider,
+    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    permission_mode: PermissionMode,
+    config: &tact::config::ResolvedConfig,
+) -> (Agent, std::path::PathBuf) {
     tact::config::install_or_override(config.clone());
     let agent_settings = config.agent.clone();
     let context = test_context(&unique_workspace_name("tact-ui-integration"));
@@ -120,7 +135,7 @@ pub fn build_test_agent_with_config(
     tool_context.ui_tx = ui_tx.clone();
 
     let mut agent = Agent::new(
-        LlmProvider::Mock(mock),
+        client,
         tool_context,
         toolset(),
         MCPToolRouter::new(),
@@ -133,6 +148,23 @@ pub fn build_test_agent_with_config(
     }
 
     (agent, work_dir)
+}
+
+/// Build an agent wired to the OpenAI Responses protocol adapter pointed at
+/// `base_url` (normally a local wiremock server).
+pub fn build_responses_test_agent(
+    base_url: &str,
+    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+) -> (Agent, std::path::PathBuf) {
+    let config = default_test_config();
+    build_test_agent_with_provider(
+        LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
+            "test-key", base_url, None,
+        )),
+        ui_tx,
+        PermissionMode::Auto,
+        &config,
+    )
 }
 
 /// Build an agent with a custom MCP router.

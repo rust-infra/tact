@@ -433,3 +433,480 @@ async fn max_tokens_with_large_pending_tool_result_compacts_before_continuation(
 
     assert!(task_completed_with(&updates, "Continued after compact"));
 }
+
+// ── Native Responses `/compact` through the command loop ──────────────
+//
+// `UserCommand::Compact` stays provider-agnostic: the driver calls
+// `agent.compact_history(None)` and the Responses agent dispatches to the
+// native `/responses/compact` endpoint. These tests drive the real command
+// loop against a local wiremock server.
+
+use std::sync::Arc;
+
+use tact::store::{SessionStore, session_store::SqliteSessionStore};
+use tact_llm::{Message, ProviderConversationState, ResponsesConversationState, Role};
+use tact_protocol::UserCommand;
+use tact_ui::{
+    driver::run_command_loop,
+    test_support::{build_responses_test_agent, collect_updates_after, user_command_channels},
+};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn compact_resource_fixture() -> serde_json::Value {
+    serde_json::json!({
+        "id": "cmp_native_01",
+        "object": "response.compaction",
+        "created_at": 1754000000,
+        "output": [
+            {
+                "type": "function_call_output",
+                "call_id": "call_sanitized_1",
+                "output": "sanitized tool output retained by compaction",
+                "id": "fc_out_sanitized_1",
+                "status": "completed"
+            },
+            {
+                "type": "compaction",
+                "id": "cmp_native_01",
+                "encrypted_content": "opaque-encrypted-compaction-content"
+            }
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": { "cached_tokens": 0 },
+            "output_tokens": 2,
+            "output_tokens_details": { "reasoning_tokens": 0 },
+            "total_tokens": 12
+        }
+    })
+}
+
+fn messages_json(messages: &[tact_llm::Message]) -> serde_json::Value {
+    serde_json::to_value(messages).unwrap()
+}
+
+fn info_messages(updates: &[AgentUpdate]) -> Vec<String> {
+    updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::Info(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Drive a single `UserCommand::Compact` through the command loop and return
+/// the finished agent plus every update it emitted.
+async fn drive_compact_command(
+    agent: tact::Agent,
+    work_dir: std::path::PathBuf,
+    agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>,
+) -> (tact::Agent, Vec<AgentUpdate>) {
+    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
+    user_cmd_tx.send(UserCommand::Compact).unwrap();
+    drop(user_cmd_tx);
+    let agent = driver.await.unwrap();
+    (agent, collect_updates_after(agent_rx).await)
+}
+
+#[tokio::test]
+async fn command_compact_native_responses_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses/compact"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(compact_resource_fixture()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // A local summary `create_message()` must never be attempted: an
+    // ordinary `/responses` request would fail the test.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
+    agent
+        .runtime
+        .context
+        .push(Message::new_text(Role::User, "first turn"));
+    agent
+        .runtime
+        .context
+        .push(Message::new_text(Role::Assistant, "second turn"));
+
+    let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+
+    // Exactly one native compact request; no local summary request.
+    server.verify().await;
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "one native compact request expected");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(
+        body.get("tools").is_none(),
+        "native compact request must not declare any tools: {body}"
+    );
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(
+        !serialized.contains("\"name\":\"compact\""),
+        "native compact request must not declare a compact function: {body}"
+    );
+    assert!(
+        !agent
+            .all_tool_specs()
+            .iter()
+            .any(|spec| spec.name == "compact"),
+        "Responses model-facing tool specs must not include the local compact tool"
+    );
+
+    let infos = info_messages(&updates);
+    for needle in [
+        "[compacting]",
+        "[native compact]",
+        "[responses compacted: items=2, id=cmp_native_01]",
+        "Compaction complete.",
+    ] {
+        assert!(
+            infos.iter().any(|msg| msg.contains(needle)),
+            "expected info {needle:?}, got: {updates:?}"
+        );
+    }
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, AgentUpdate::Error(_))),
+        "no error expected after successful compaction, got: {updates:?}"
+    );
+
+    // Committed runtime state: the replacement baseline carries the fixture
+    // compaction id and the logical context is unchanged.
+    let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
+    else {
+        panic!("provider state must be committed after native compaction");
+    };
+    assert_eq!(state.compaction_id.as_deref(), Some("cmp_native_01"));
+    assert!(state.is_compacted);
+    assert_eq!(state.input_items.len(), 2);
+    assert_eq!(
+        agent.runtime.context.len(),
+        2,
+        "native compaction keeps the logical context unchanged"
+    );
+    let encrypted = state
+        .input_items
+        .iter()
+        .find_map(|item| item.get("encrypted_content").and_then(|v| v.as_str()))
+        .expect("compaction item must carry encrypted_content");
+    assert!(
+        infos.iter().all(|msg| !msg.contains(encrypted)),
+        "encrypted compaction content must never surface in Info updates, got: {updates:?}"
+    );
+}
+
+#[tokio::test]
+async fn command_compact_native_responses_failure_keeps_context() {
+    let server = MockServer::start().await;
+    // Malformed compact resource: protocol error, never retried.
+    Mock::given(method("POST"))
+        .and(path("/responses/compact"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "cmp_bad",
+            "object": "response.compaction",
+            "output": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
+    let original = vec![
+        Message::new_text(Role::User, "first turn"),
+        Message::new_text(Role::Assistant, "second turn"),
+    ];
+    agent.runtime.context = original.clone();
+
+    let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::Error(error) if error.to_string().contains("Compaction failed")
+        )),
+        "expected compaction failure error, got: {updates:?}"
+    );
+    assert!(
+        !info_messages(&updates)
+            .iter()
+            .any(|msg| msg == "Compaction complete."),
+        "no success info after failure, got: {updates:?}"
+    );
+    assert_eq!(
+        messages_json(&agent.runtime.context),
+        messages_json(&original),
+        "failed compaction must leave the logical context unchanged"
+    );
+    assert!(
+        agent.runtime.provider_state.is_none(),
+        "failed compaction must leave the old committed provider state intact"
+    );
+
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn restart_round_trip_preserves_compaction_and_unknown_items() {
+    let server = MockServer::start().await;
+    let completed = serde_json::json!({
+        "type": "response.completed",
+        "sequence_number": 1,
+        "response": {
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1,
+            "completed_at": 2,
+            "status": "completed",
+            "model": "gpt-5",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": null,
+                    "text": "hello after restart"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 2,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 12
+            }
+        }
+    });
+    let sse_body = format!("data: {completed}\n\n");
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("session.db");
+    let session_id = "restart-session";
+    let root_dir = tmp.path().display().to_string();
+
+    // 1. Create a session and persist messages plus a Responses state that
+    //    contains a compaction item and an unknown future item.
+    let messages = vec![
+        Message::new_text(Role::User, "first turn"),
+        Message::new_text(Role::Assistant, "second turn"),
+    ];
+    let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+        version: 1,
+        provider: "openai_responses".to_string(),
+        base_url: server.uri(),
+        model: "mock-model".to_string(),
+        input_items: vec![
+            serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_restart_1",
+                "encrypted_content": "opaque-encrypted-bytes",
+                "retention": "kept"
+            }),
+            serde_json::json!({
+                "type": "custom_future_item",
+                "id": "unknown_item_1",
+                "role": "user",
+                "payload": { "future": true }
+            }),
+        ],
+        compaction_id: Some("cmp_restart_1".to_string()),
+        is_compacted: true,
+        logical_message_count: 2,
+        logical_context_hash: tact_llm::context_hash(&messages).unwrap(),
+    });
+    {
+        let store = tact::store::open_sqlite_session_store(&db_path)
+            .await
+            .unwrap();
+        store
+            .create_session(session_id, &root_dir, "")
+            .await
+            .unwrap();
+        store
+            .replace_session_messages_and_provider_state(session_id, &messages, Some(&state))
+            .await
+            .unwrap();
+        // 3. Drop the store: simulates the process restarting.
+    }
+
+    // Reopen the database from scratch.
+    let store = tact::store::open_sqlite_session_store(&db_path)
+        .await
+        .unwrap();
+
+    // 4/5. Load both values and assert exact equality.
+    let loaded_messages = store.load_session(session_id).await.unwrap();
+    assert_eq!(
+        messages_json(&loaded_messages),
+        messages_json(&messages),
+        "messages must survive the restart"
+    );
+    let loaded_state = store
+        .load_provider_state(session_id)
+        .await
+        .unwrap()
+        .expect("provider state must survive the restart");
+    assert_eq!(
+        loaded_state, state,
+        "provider state must survive the restart"
+    );
+
+    // 6. Build the next request after the restart: ensure_session restores
+    //    context + baseline, then a new user turn goes to the endpoint with
+    //    the baseline items replayed verbatim.
+    let (agent, _) = build_responses_test_agent(&server.uri(), None);
+    let mut agent = agent.with_session(session_id.to_string(), store);
+    agent.ensure_session().await.unwrap();
+    assert_eq!(agent.runtime.context.len(), 2);
+    agent
+        .agent_loop(Some(Message::new_text(Role::User, "third turn")))
+        .await
+        .expect("agent loop after restart should complete");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let input = body["input"].as_array().expect("next request input array");
+    let compaction_count = input
+        .iter()
+        .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("compaction"))
+        .count();
+    assert_eq!(
+        compaction_count, 1,
+        "compaction item must be present exactly once in the next request: {body}"
+    );
+    let unknown = input
+        .iter()
+        .find(|item| item.get("type").and_then(|v| v.as_str()) == Some("custom_future_item"))
+        .expect("unknown item must be preserved in the next request");
+    assert_eq!(unknown["payload"]["future"], true);
+    assert_eq!(unknown["id"], "unknown_item_1");
+    // No compact function declaration in the model request.
+    let tools = body["tools"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(|v| v.as_str()) == Some("compact")),
+        "model request must not declare the local compact tool: {body}"
+    );
+
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn native_compact_failure_rolls_back_runtime_and_database() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses/compact"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(compact_resource_fixture()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("session.db");
+    let store = SqliteSessionStore::new(&db_path).await.unwrap();
+    store
+        .create_session("rollback-session", tmp.path().to_str().unwrap(), "")
+        .await
+        .unwrap();
+
+    let old_messages = vec![
+        Message::new_text(Role::User, "old user turn"),
+        Message::new_text(Role::Assistant, "old assistant turn"),
+    ];
+    let old_state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+        version: 1,
+        provider: "openai_responses".to_string(),
+        base_url: server.uri(),
+        model: "mock-model".to_string(),
+        input_items: vec![serde_json::json!({"type": "message", "id": "old_msg_1"})],
+        compaction_id: Some("cmp_old".to_string()),
+        is_compacted: true,
+        logical_message_count: 2,
+        logical_context_hash: tact_llm::context_hash(&old_messages).unwrap(),
+    });
+    store
+        .replace_session_messages_and_provider_state(
+            "rollback-session",
+            &old_messages,
+            Some(&old_state),
+        )
+        .await
+        .unwrap();
+
+    // Force a database insertion failure mid-replacement: the transaction
+    // aborts after deleting old messages and inserting the first new one.
+    store.inject_message_insert_failure().await.unwrap();
+
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
+    agent = agent.with_session("rollback-session".to_string(), Arc::new(store));
+    agent.runtime.context = old_messages.clone();
+    agent.runtime.provider_state = Some(old_state.clone());
+
+    let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::Error(error) if error.to_string().contains("Compaction failed")
+        )),
+        "expected compaction failure error, got: {updates:?}"
+    );
+
+    // Runtime state rolled back: context and provider state are untouched.
+    assert_eq!(
+        messages_json(&agent.runtime.context),
+        messages_json(&old_messages),
+        "runtime context must equal the old committed context"
+    );
+    assert_eq!(
+        agent.runtime.provider_state.as_ref(),
+        Some(&old_state),
+        "runtime provider state must equal the old committed state"
+    );
+
+    // Database state rolled back: messages and responses_states are intact.
+    let dyn_store = agent.runtime.session_store.as_ref().expect("session store");
+    assert_eq!(
+        messages_json(&dyn_store.load_session("rollback-session").await.unwrap()),
+        messages_json(&old_messages),
+        "messages table must equal the old messages"
+    );
+    assert_eq!(
+        dyn_store
+            .load_provider_state("rollback-session")
+            .await
+            .unwrap(),
+        Some(old_state),
+        "responses_states table must equal the old state"
+    );
+    server.verify().await;
+}

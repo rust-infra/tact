@@ -975,6 +975,29 @@ impl super::SessionStore for SqliteSessionStore {
     }
 }
 
+impl SqliteSessionStore {
+    /// Test-support: install a SQL trigger that aborts any message insert with
+    /// `ordinal > 1`, simulating a mid-replacement database failure. Callers
+    /// can then assert that messages and provider state rolled back atomically.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn inject_message_insert_failure(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS fail_message_insert
+            BEFORE INSERT ON messages
+            WHEN NEW.ordinal > 1
+            BEGIN
+                SELECT RAISE(ABORT, 'injected replacement failure');
+            END;
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("failed to install test failure trigger")?;
+        Ok(())
+    }
+}
+
 fn is_active_lock_holder(holder: u32, holder_epoch: &str) -> bool {
     if holder == 0 || holder_epoch.is_empty() {
         return false;
@@ -1360,6 +1383,100 @@ mod tests {
         );
         let state_json: String = row.try_get("state_json").unwrap();
         assert!(state_json.contains("\"cmp_test_1\""));
+    }
+
+    #[tokio::test]
+    async fn test_provider_state_restart_round_trip_preserves_unknown_json() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+
+        let messages = vec![
+            Message::new_text(Role::User, "first turn"),
+            Message::new_text(Role::Assistant, "second turn"),
+        ];
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![
+                serde_json::json!({
+                    "type": "compaction",
+                    "id": "cmp_restart_1",
+                    "encrypted_content": "opaque-encrypted-bytes",
+                    "retention": "kept"
+                }),
+                // Unknown/future item type with extra fields must survive verbatim.
+                serde_json::json!({
+                    "type": "custom_future_item",
+                    "id": "unknown_item_1",
+                    "role": "user",
+                    "payload": { "future": true }
+                }),
+            ],
+            compaction_id: Some("cmp_restart_1".to_string()),
+            is_compacted: true,
+            logical_message_count: 2,
+            logical_context_hash: tact_llm::context_hash(&messages).unwrap(),
+        });
+
+        {
+            let store = SqliteSessionStore::new(&db).await.unwrap();
+            store
+                .create_session("session-1", "/tmp/tact-test", "")
+                .await
+                .unwrap();
+            store
+                .replace_session_messages_and_provider_state("session-1", &messages, Some(&state))
+                .await
+                .unwrap();
+            // Drop the store: simulates the process restarting.
+        }
+
+        // Reopen the database from scratch.
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        let loaded_messages = store.load_session("session-1").await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded_messages).unwrap(),
+            serde_json::to_value(&messages).unwrap(),
+            "messages must survive the restart byte-for-byte"
+        );
+
+        let loaded_state = store
+            .load_provider_state("session-1")
+            .await
+            .unwrap()
+            .expect("provider state must survive the restart");
+        assert_eq!(
+            loaded_state, state,
+            "provider state must survive the restart"
+        );
+
+        let ProviderConversationState::OpenAiResponses(loaded) = loaded_state;
+        assert_eq!(loaded.input_items.len(), 2);
+        assert_eq!(
+            loaded.input_items[0],
+            serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_restart_1",
+                "encrypted_content": "opaque-encrypted-bytes",
+                "retention": "kept"
+            }),
+            "compaction item JSON must round-trip exactly"
+        );
+        assert_eq!(
+            loaded.input_items[1],
+            serde_json::json!({
+                "type": "custom_future_item",
+                "id": "unknown_item_1",
+                "role": "user",
+                "payload": { "future": true }
+            }),
+            "unknown item JSON must round-trip exactly"
+        );
     }
 
     #[tokio::test]

@@ -4820,6 +4820,7 @@ dependencies = [
  "tokio",
  "tui",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
