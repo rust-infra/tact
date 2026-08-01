@@ -260,6 +260,36 @@ pub(crate) struct ParsedCompactResource {
     pub input_items: Vec<serde_json::Value>,
     /// The id of the single validated compaction item.
     pub compaction_id: String,
+    /// Token accounting reported by the compaction pass, when present.
+    pub usage: Option<TokenUsageInfo>,
+}
+
+/// Maps the `usage` object of a `/responses/compact` resource (or any
+/// responses-shaped usage JSON) into Tact's shared usage type. Unknown usage
+/// fields are ignored; a missing object yields `None`.
+fn usage_from_value(value: &serde_json::Value) -> Option<TokenUsageInfo> {
+    let usage = value.get("usage")?;
+    let input_tokens = usage.get("input_tokens")?.as_u64()? as u32;
+    let output_tokens = usage.get("output_tokens")?.as_u64()? as u32;
+    let total = usage.get("total_tokens")?.as_u64()? as u32;
+    let cached = usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let reasoning = usage
+        .get("output_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    Some(TokenUsageInfo {
+        prompt: input_tokens,
+        completion: output_tokens,
+        total,
+        prompt_cache_hit_tokens: cached,
+        prompt_cache_miss_tokens: input_tokens.saturating_sub(cached),
+        reasoning_tokens: reasoning,
+    })
 }
 
 /// Validates a `CompactResource` JSON body and extracts its replacement
@@ -290,6 +320,7 @@ pub(crate) fn parse_compact_resource(
     Ok(ParsedCompactResource {
         input_items: output.clone(),
         compaction_id,
+        usage: usage_from_value(&value),
     })
 }
 
@@ -377,7 +408,7 @@ impl NormalizedResponse {
 pub(crate) mod tests {
     use async_openai_responses::types::responses::Response;
 
-    use super::normalize_response;
+    use super::{normalize_response, parse_compact_resource};
     use crate::{
         ContentBlock, CreateMessageParams, Message, RequiredMessageParams, Role, StopReason,
     };
@@ -851,6 +882,19 @@ pub(crate) mod tests {
             state.logical_context_hash,
             crate::context_hash(&expected_post_assistant).unwrap()
         );
+    }
+
+    #[test]
+    fn compact_resource_preserves_reported_usage() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/explicit_compact.json")).unwrap();
+        let parsed = parse_compact_resource(value).unwrap();
+        let usage = parsed.usage.expect("fixture carries usage");
+        assert_eq!(usage.prompt, 1200);
+        assert_eq!(usage.completion, 340);
+        assert_eq!(usage.total, 1540);
+        assert_eq!(usage.prompt_cache_hit_tokens, 0);
+        assert_eq!(usage.reasoning_tokens, 0);
     }
 
     #[test]

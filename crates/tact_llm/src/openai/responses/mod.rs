@@ -356,7 +356,11 @@ impl LlmClient for OpenAiResponsesAdapter {
         Ok(LlmResponse {
             blocks: Vec::new(),
             stop_reason: None,
-            usage: None,
+            // Preserve the token accounting reported by the compaction pass
+            // so the native compact call is observable like any other LLM
+            // call (it does not drive `last_token_total`: the next request
+            // input is the compacted baseline, not the pre-compact prompt).
+            usage: parsed.usage,
             request_body: Some(request_body),
             state_update: ProviderStateUpdate::Replace(ProviderConversationState::OpenAiResponses(
                 state,
@@ -915,6 +919,44 @@ mod tests {
             serde_json::json!(160_000),
             "streamed ordinary request must carry the configured threshold, got: {body}"
         );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn compact_preserves_the_resource_reported_usage() {
+        let server = MockServer::start().await;
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/explicit_compact.json")).unwrap();
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let crate::LlmProvider::OpenAiResponses(adapter) = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5.4-mini".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            reasoning_effort: None,
+            responses_compact_threshold: None,
+        }
+        .build_client()
+        .unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        let response = adapter
+            .compact(&simple_request(), None)
+            .await
+            .expect("native compact should succeed");
+        let usage = response
+            .usage
+            .expect("compact resource usage must be preserved");
+        assert_eq!(usage.total, 1540);
+        assert_eq!(usage.prompt, 1200);
+        assert_eq!(usage.completion, 340);
         server.verify().await;
     }
 }
