@@ -17,6 +17,7 @@ pub mod mock;
 pub mod models;
 pub mod openai;
 pub mod provider;
+pub mod provider_state;
 pub mod types;
 
 #[cfg(test)]
@@ -44,6 +45,9 @@ pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
     is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k27,
     is_kimi_usage_supported, read_provider, set_model, supports_vision,
+};
+pub use provider_state::{
+    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
 pub use types::{
     CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort, ProviderKind,
