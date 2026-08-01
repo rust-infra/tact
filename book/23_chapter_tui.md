@@ -303,6 +303,8 @@ pub(crate) trait Renderable {
 
 `render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
+**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Real streamed code blocks with an explicit language tag (for example ```rust) still use the code-card path.
+
 ### 6.8 Popups
 
 | Popup | Trigger | File |
@@ -435,7 +437,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 
 - **Paragraph mode** — non-blank lines accumulate in `stream.paragraph` until a blank line or horizontal rule; then `render_markdown_tui` emits styled rows.
 - **Table mode** — `| … |` lines buffer until a non-table line; `format_table` emits aligned rows.
-- **Code fence mode** — opening ` ```lang ` sets `stream.code_block`; interior lines stream with a ` ▌` indicator; closing ` ``` ` splices placeholder rows and pushes a `CodeBlock` overlay entry.
+- **Code fence mode** — opening ` ```lang ` sets `stream.code_block`; interior lines stream with a ` ▌` indicator; closing ` ``` ` splices placeholder rows and pushes a `CodeBlock` overlay entry. Empty-language fences that appear immediately after an in-progress markdown paragraph/list stay in paragraph flow instead of being promoted into a code card.
 - **Gap rules** — `ensure_gap_after_tools()` inserts a blank before assistant text following a tool card; tool start calls `ensure_gap_before_tools()`.
 
 When a tool starts, `flush_stream_pending()` runs first — any partial paragraph, table, code block, or `stream.buffer` tail is committed to `messages[]` before placeholder rows appear.

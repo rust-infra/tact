@@ -358,6 +358,187 @@ Input/cache/output/reasoning token counts map to the existing
 Unsupported in this adapter: server-hosted tools, background responses,
 Conversations, `previous_response_id`, and the Responses compaction endpoint.
 
+#### 6.2.1 Conversion pipeline: `Message` → `/responses` input
+
+The Responses adapter receives the same shared `CreateMessageParams` used by other providers. The critical difference is that it emits a heterogeneous `/responses` `input` array rather than a chat-style list of role/content messages.
+
+`create_response` performs these steps:
+
+1. Walk `request.messages` in order.
+2. For each `Message`, call `message_to_input`.
+3. Flatten the returned `InputItem`s into the final `input` array.
+4. Add request-level fields: `instructions`, `tools`, `tool_choice`, `reasoning`, `temperature`, `top_p`, `max_output_tokens`, `store: false`.
+5. Normalize assistant history items so prior assistant text becomes a completed Responses output message with stable local ids and `output_text` content.
+
+The per-message mapping is:
+
+| Shared Tact content | Responses item emitted |
+|---|---|
+| `Message::Text(User)` | `message(role=user, content=text)` |
+| `Message::Text(Assistant)` | assistant `message`, later normalized to completed output form |
+| `ContentBlock::Text` | `input_text` inside the current message |
+| `ContentBlock::Image` | `input_image` with a data URL |
+| `ContentBlock::Thinking` with decodable signature | standalone `reasoning` item |
+| `ContentBlock::ToolUse` | standalone `function_call` item |
+| `ContentBlock::ToolResult` | standalone `function_call_output` item |
+| `ContentBlock::RedactedThinking` | omitted |
+
+Two details matter for multi-turn correctness:
+
+- `flush_message_content` emits accumulated text/image parts as one message **before** emitting standalone reasoning or tool items, preserving the order required by the Responses API.
+- `normalize_assistant_history_items` rewrites assistant history into completed output messages because some compatible endpoints reject prior assistant turns if they are replayed as plain assistant input text.
+
+#### 6.2.2 Compaction interaction: where Responses differs
+
+The compact logic itself does **not** live in `tact_llm`. It runs earlier in `Agent::agent_loop` and `Agent::compact_history` ([Ch 5](./05_chapter_compact.md)). The Responses-specific behavior comes from the interaction between that local rebuild and the later conversion pipeline.
+
+A compacted Responses turn follows this order:
+
+```text
+old context
+→ should_auto_compact(reserve incoming turn + max_output)
+→ compact_history() summarizer call
+→ rebuild local Message history as recent real users + SUMMARY_PREFIX summary
+→ append current user turn verbatim
+→ create_response() converts rebuilt history to /responses items
+→ OpenAI /responses request
+```
+
+This ordering solves a problem that is easy to miss with Responses-style histories: if Tact pushed the current user turn **before** compacting, the next compaction could absorb that turn into the handoff summary. The `/responses` request would still be valid, but the latest user intent would no longer appear verbatim in the converted input. By compacting old history first, Tact ensures the latest turn survives as a normal user message all the way into the final `/responses` payload.
+
+Another important consequence is that the adapter is intentionally stateless with respect to conversation shrinking. It does not ask OpenAI to compact, does not resume a server-side conversation id, and does not diff against an older Responses graph. It simply serializes the current local `Vec<Message>` into a fresh request. That keeps the compaction policy centralized in one place while letting the adapter focus on protocol-specific item identity and ordering.
+
+##### Responses compaction/conversion timeline
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant A as Agent::agent_loop
+    participant C as compact_history
+    participant M as runtime.context (Message)
+    participant R as create_response
+    participant O as OpenAI /responses
+
+    U->>A: current user turn
+    A->>A: estimate incoming turn + max_output
+    A->>A: should_auto_compact(old context, incoming, max_output)
+    alt compaction needed
+        A->>C: compact_history()
+        C->>C: summarize recent tail
+        C->>M: rebuild as recent real users + SUMMARY_PREFIX summary
+        C-->>A: compact complete
+    end
+    A->>M: append current user turn verbatim
+    A->>R: create_response(CreateMessageParams)
+    R->>R: Message -> input items
+    R->>O: POST /responses (store=false)
+    O-->>R: response / stream events
+    R-->>A: normalized blocks + usage
+```
+
+The critical boundary is between `compact_history` and `create_response`: compaction rewrites shared local history, then the adapter serializes that rewritten history. The adapter never sees a “pre-compact request” and never performs its own remote shrink step.
+
+##### Before/after example: compacted `/responses` input
+
+A simplified pre-compaction local history might look like this:
+
+```text
+User: "Add an 80% trigger to compact logic"
+Assistant: thinking + tool_use(read_file compact/mod.rs)
+User: tool_result("...full file contents...")
+Assistant: "I found should_auto_compact; next I'll patch it"
+```
+
+Before compaction, `create_response()` would emit a longer `/responses` `input` similar to:
+
+```json
+[
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "Add an 80% trigger to compact logic"}]
+  },
+  {
+    "type": "reasoning",
+    "id": "rs_...",
+    "summary": []
+  },
+  {
+    "type": "function_call",
+    "call_id": "toolu_1",
+    "name": "read_file",
+    "arguments": "{\"path\":\"crates/tact/src/compact/mod.rs\"}",
+    "status": "completed"
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "toolu_1",
+    "output": "...full file contents...",
+    "status": "completed"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "content": [{"type": "output_text", "text": "I found should_auto_compact; next I'll patch it", "annotations": []}],
+    "status": "completed",
+    "id": "tact-assistant-history-3"
+  }
+]
+```
+
+After compaction and before the next `/responses` call, local history is first rebuilt to something conceptually like:
+
+```text
+User: "Add an 80% trigger to compact logic"
+User: "This conversation was compacted so the agent can continue working.\n\n<summary>"
+User: "Please continue and add tests too"
+```
+
+The next `create_response()` call therefore emits a much smaller `/responses` `input`:
+
+```json
+[
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "Add an 80% trigger to compact logic"}]
+  },
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "This conversation was compacted so the agent can continue working.\n\n<summary>"}]
+  },
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "Please continue and add tests too"}]
+  }
+]
+```
+
+Three things change at once:
+
+- bulky assistant/tool history is removed from the next request payload
+- the handoff summary becomes ordinary user text with `SUMMARY_PREFIX`
+- the newest user turn survives as a normal final user message, still verbatim
+
+That last point is the main reason Tact compacts old history **before** appending the current user turn on the entry path.
+
+#### 6.2.3 Reasoning-history replay
+
+Responses reasoning items are not re-derived from visible text. Instead, Tact persists a versioned opaque signature (`openai-responses-v1:...`) inside `ContentBlock::Thinking`. The payload stores:
+
+- the full `ReasoningItem`
+- a map from local tool call ids to provider `function_call` item ids
+
+On a later request, `history::decode` can recover that state so `message_to_input` can emit:
+
+- a proper standalone `reasoning` item
+- `function_call` items carrying the matching provider item ids when available
+
+This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from local messages rather than a server-side `previous_response_id` chain.
+
 ### 6.3 Shared thinking configuration
 
 **Thinking / reasoning injection:** the internal request always carries Anthropic-shaped `Thinking { budget_tokens }`. Provider body hooks rewrite that into each wire protocol:

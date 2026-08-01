@@ -79,7 +79,9 @@ flowchart TB
 
 ## 2. Where Compaction Sits in the Agent Loop
 
-Compaction is not a separate daemon — it is woven into `Agent::agent_loop`. Reading the loop top-to-bottom:
+Compaction is not a separate daemon — it is woven into `Agent::agent_loop`. This ordering is especially important for **OpenAI Responses**-style providers, where assistant/tool history is later converted into `/responses` input items. Tact therefore compacts **before** protocol conversion and, on the entry path, compacts **old** history before pushing the current user turn so the latest prompt remains verbatim instead of being absorbed into a summary.
+
+Reading the loop top-to-bottom:
 
 ```mermaid
 flowchart TD
@@ -318,6 +320,63 @@ Optional appendages:
 
 - `Focus to preserve next: {focus}` — from the manual `compact` tool  
 - `Recent files to reopen if needed:` — from `CompactState.recent_files`
+
+### OpenAI Responses protocol boundary
+
+For `protocol = "responses"`, compaction still happens in the **shared agent/message layer**, not inside the OpenAI adapter and not via a remote compact endpoint. The flow is:
+
+1. `agent_loop` decides whether to compact, reserving the incoming turn and output budget.
+2. `compact_history` rewrites `runtime.context` as local `Message` values (`[recent real User…] + [SUMMARY_PREFIX + handoff]`).
+3. Only **after that** does `tact_llm::openai::responses::convert::create_response` translate the rebuilt context into `/responses` `input` items.
+
+This keeps compaction provider-agnostic while still preserving Responses-specific history details during conversion:
+
+- assistant/user text becomes Responses `message` items
+- `ToolUse` becomes `function_call`
+- `ToolResult` becomes `function_call_output`
+- persisted reasoning signatures may decode back into Responses `reasoning` items via `openai-responses-v1:...`
+
+Current scope is intentionally local-only: Tact does **not** call a remote `/v1/responses/compact`-style API and does not rely on server-side conversation state to shrink history. The OpenAI adapter receives the already-compacted local context and serializes that context into a fresh `/responses` request.
+
+### Responses-specific compaction flow (detailed)
+
+The most failure-prone part of Responses integration is the boundary between **history compaction** and **history conversion**. Tact handles that boundary in four explicit stages:
+
+1. **Pre-turn decision in `agent_loop`**  
+   Before the current user turn is appended, `should_auto_compact(last_token_total, window, estimate_context_tokens(old_context), estimate_message_tokens(incoming_turn), max_tokens)` reserves both the incoming prompt and the next model output. If this projected request is near the threshold, Tact compacts **old** history first.
+
+2. **Local context rebuild in `compact_history`**  
+   The summarizer sees a recent tail of the full conversation, including assistant text and tool traffic, and writes a handoff summary. Tact then rebuilds `runtime.context` as:
+   - recent real user messages kept verbatim from the tail
+   - one summary user message with `SUMMARY_PREFIX`
+   - the current turn, appended later by the loop
+
+   This is the key Codex-style property: the latest real user request remains literal text in the next request instead of being swallowed into the summary.
+
+3. **Protocol conversion in `create_response`**  
+   Only after compaction is complete does the Responses adapter walk the rebuilt `Vec<Message>` and emit `/responses` items. The adapter does not know how the context became small; it only serializes the current local truth.
+
+4. **Provider request ownership**  
+   The final HTTP request still contains `store: false` and a full rebuilt history. Tact does not hand control of the conversation graph to OpenAI. There is no `previous_response_id`, no conversation resume token, and no remote compact call.
+
+That separation gives Tact two guarantees:
+
+- compacting can be reasoned about once, at the shared `Message` layer
+- the Responses adapter can stay focused on wire-format correctness (`message`, `reasoning`, `function_call`, `function_call_output`)
+
+A simplified timeline for one compacted Responses turn:
+
+```text
+old runtime.context
+→ should_auto_compact(incoming user turn reserved)
+→ compact_history() writes transcript + summary
+→ runtime.context = recent real users + SUMMARY_PREFIX summary
+→ agent_loop pushes current user turn verbatim
+→ create_response() converts rebuilt Message history into /responses input items
+→ POST /responses
+```
+
+This design also explains why Tact resets `last_token_total = 0` after compaction: the token usage reported by the summarizer call describes the **large pre-compact prompt**, not the new rebuilt history that will be sent to `/responses` next.
 
 If the focus text is too large to fit in the summarizer input budget together with the fixed instructions, it is silently dropped — but a `tracing::warn!` log records the event (original length, available budget, and needed tokens) so the omission is observable in diagnostics.
 

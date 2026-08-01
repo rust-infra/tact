@@ -302,6 +302,187 @@ Responses 使用独立的 `responses_system_prompt_template.md`，不改变其�
 
 此 adapter 不支持：server-hosted tools、background responses、Conversations、`previous_response_id` 与 Responses compaction endpoint。
 
+#### 6.2.1 转换流水线：`Message` → `/responses` input
+
+Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessageParams`。关键区别在于，它输出的是异构的 `/responses` `input` 数组，而不是 chat 风格的 role/content 消息列表。
+
+`create_response` 会执行以下步骤：
+
+1. 按顺序遍历 `request.messages`。
+2. 对每条 `Message` 调用 `message_to_input`。
+3. 将返回的 `InputItem` 扁平化进最终 `input` 数组。
+4. 追加请求级字段：`instructions`、`tools`、`tool_choice`、`reasoning`、`temperature`、`top_p`、`max_output_tokens`、`store: false`。
+5. 规范化 assistant 历史项，使先前 assistant 文本变成已完成的 Responses output message，带稳定本地 ID 与 `output_text` content。
+
+逐消息映射如下：
+
+| Tact 共享内容 | 发出的 Responses item |
+|---|---|
+| `Message::Text(User)` | `message(role=user, content=text)` |
+| `Message::Text(Assistant)` | assistant `message`，随后被规范化为 completed output 形式 |
+| `ContentBlock::Text` | 当前消息里的 `input_text` |
+| `ContentBlock::Image` | 带 data URL 的 `input_image` |
+| 带可解码 signature 的 `ContentBlock::Thinking` | 独立的 `reasoning` item |
+| `ContentBlock::ToolUse` | 独立的 `function_call` item |
+| `ContentBlock::ToolResult` | 独立的 `function_call_output` item |
+| `ContentBlock::RedactedThinking` | 省略 |
+
+有两个细节对多轮正确性尤其重要：
+
+- `flush_message_content` 会先把已累积的 text/image part 作为一条消息发出，**然后**再发出独立的 reasoning 或 tool item，保证顺序符合 Responses API 预期。
+- `normalize_assistant_history_items` 会把 assistant 历史重写成 completed output message，因为有些兼容端点会拒绝把旧 assistant turn 当作普通 assistant input text 回放。
+
+#### 6.2.2 与压缩的交互：Responses 的特殊点
+
+compact 逻辑本身**不**在 `tact_llm` 中实现。它更早发生在 `Agent::agent_loop` 与 `Agent::compact_history`（见 [Ch 5](./05_chapter_compact_zh.md)）。Responses 的特殊性，来自这次本地重建与后续转换流水线之间的相互作用。
+
+一个经过 compact 的 Responses 回合顺序如下：
+
+```text
+old context
+→ should_auto_compact(预留 incoming turn + max_output)
+→ compact_history() 摘要调用
+→ 本地 Message 历史重建为 recent real users + SUMMARY_PREFIX summary
+→ append 当前 user turn 原文
+→ create_response() 把重建后的历史转成 /responses items
+→ 发起 OpenAI /responses 请求
+```
+
+这个顺序解决了一个在 Responses 风格历史里很容易被忽略的问题：如果 Tact 先 push 当前 user turn，**再** compact，那么下一次压缩就可能把这条 turn 吞进 handoff summary。最终 `/responses` 请求依然合法，但最新用户意图将不再以原文出现在转换后的 input 里。通过“先 compact 旧历史、再 append 当前 turn”，Tact 保证最新一轮会作为普通 user message 一路保留到最终 `/responses` payload。
+
+另一个重要结果是：adapter 在“缩短对话历史”这件事上是刻意无状态的。它不会要求 OpenAI 代为 compact，不会续用服务端 conversation id，也不会对旧 Responses 图做 diff。它只是把当前本地 `Vec<Message>` 序列化为一次新的请求。这样 compact 策略可以集中在一个地方维护，而 adapter 只需要专注于协议特有的 item identity 与顺序正确性。
+
+##### Responses 压缩/转换时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant A as Agent::agent_loop
+    participant C as compact_history
+    participant M as runtime.context (Message)
+    participant R as create_response
+    participant O as OpenAI /responses
+
+    U->>A: 当前 user turn
+    A->>A: 估算 incoming turn + max_output
+    A->>A: should_auto_compact(old context, incoming, max_output)
+    alt 需要 compact
+        A->>C: compact_history()
+        C->>C: 摘要近期尾部历史
+        C->>M: 重建为 recent real users + SUMMARY_PREFIX summary
+        C-->>A: compact 完成
+    end
+    A->>M: append 当前 user turn 原文
+    A->>R: create_response(CreateMessageParams)
+    R->>R: Message -> input items
+    R->>O: POST /responses (store=false)
+    O-->>R: response / stream events
+    R-->>A: normalized blocks + usage
+```
+
+真正关键的边界在 `compact_history` 与 `create_response` 之间：前者先重写共享的本地历史，后者再把这份重写后的历史序列化。Adapter 从不会看到一份“压缩前请求”，也不会自己额外做远端 shrink。
+
+##### before/after 示例：compact 前后的 `/responses` input
+
+一个简化后的压缩前本地历史大致可能是：
+
+```text
+User: "给 compact 逻辑加一个 80% 触发阈值"
+Assistant: thinking + tool_use(read_file compact/mod.rs)
+User: tool_result("...完整文件内容...")
+Assistant: "我已经找到 should_auto_compact，下一步准备修改它"
+```
+
+在 compact 之前，`create_response()` 生成的 `/responses` `input` 会比较长，形态类似：
+
+```json
+[
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "给 compact 逻辑加一个 80% 触发阈值"}]
+  },
+  {
+    "type": "reasoning",
+    "id": "rs_...",
+    "summary": []
+  },
+  {
+    "type": "function_call",
+    "call_id": "toolu_1",
+    "name": "read_file",
+    "arguments": "{\"path\":\"crates/tact/src/compact/mod.rs\"}",
+    "status": "completed"
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "toolu_1",
+    "output": "...完整文件内容...",
+    "status": "completed"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "content": [{"type": "output_text", "text": "我已经找到 should_auto_compact，下一步准备修改它", "annotations": []}],
+    "status": "completed",
+    "id": "tact-assistant-history-3"
+  }
+]
+```
+
+完成 compact、并准备发起下一次 `/responses` 调用前，本地历史会先被重建成类似：
+
+```text
+User: "给 compact 逻辑加一个 80% 触发阈值"
+User: "This conversation was compacted so the agent can continue working.\n\n<summary>"
+User: "请继续，并顺手补上测试"
+```
+
+因此下一次 `create_response()` 发出的 `/responses` `input` 就会小很多：
+
+```json
+[
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "给 compact 逻辑加一个 80% 触发阈值"}]
+  },
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "This conversation was compacted so the agent can continue working.\n\n<summary>"}]
+  },
+  {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "请继续，并顺手补上测试"}]
+  }
+]
+```
+
+这里同时发生了三件事：
+
+- 大体积的 assistant/tool 历史不再进入下一次请求
+- handoff summary 变成了一条带 `SUMMARY_PREFIX` 的普通 user 文本
+- 最新 user turn 仍作为最后一条普通 user message 原样保留
+
+最后这一点正是 Tact 在入口路径上选择“先 compact 旧历史，再 append 当前 user turn”的核心原因。
+
+#### 6.2.3 Reasoning 历史回放
+
+Responses reasoning item 并不是从可见文本重新推导出来的。相反，Tact 会把一个带版本的 opaque signature（`openai-responses-v1:...`）持久化在 `ContentBlock::Thinking` 中。该 payload 保存：
+
+- 完整的 `ReasoningItem`
+- 本地 tool call id 到 provider `function_call` item id 的映射
+
+后续请求中，`history::decode` 可以恢复这份状态，使 `message_to_input` 发出：
+
+- 一个正确的独立 `reasoning` item
+- 在可用时带匹配 provider item id 的 `function_call` item
+
+这也是为什么即使 adapter 每次都从本地消息重建请求，而不是依赖服务端 `previous_response_id` 链，compact 过的会话依然能回放 Responses-native 的 reasoning / function-call 历史。
+
 ### 6.3 共享 thinking 配置
 
 **Thinking / reasoning 注入：** 内部请求始终携带 Anthropic 形 `Thinking { budget_tokens }`。Provider body hook 将其改写为各 wire 协议：

@@ -304,6 +304,8 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 `render_md.rs` 经 `tui-markdown` 与自定义 `TuiStyleSheet`（标题、代码、链接、引用）转换 assistant markdown。Code block 统一深色背景；表格列对齐。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
+**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。真正带显式语言标签的流式代码块（例如 ```rust）仍走 code-card 路径。
+
 ### 6.8 Popups
 
 | Popup | 触发 | 文件 |
@@ -436,7 +438,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 
 - **Paragraph 模式** — 非空行累积于 `stream.paragraph` 直至 blank 或水平规则；然后 `render_markdown_tui` 发出 styled 行。
 - **Table 模式** — `| … |` 行缓冲至非 table 行；`format_table` 发出对齐行。
-- **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式； closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。
+- **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式；closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。若空语言 fence 紧跟在进行中的 markdown 段落/列表后，则继续保留在 paragraph 流中，不提升为 code card。
 - **Gap 规则** — tool card 后 assistant 文本前 `ensure_gap_after_tools()` 插 blank；tool 开始 `ensure_gap_before_tools()`。
 
 Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `messages[]`。

@@ -79,7 +79,9 @@ flowchart TB
 
 ## 2. 压缩在 Agent Loop 中的位置
 
-压缩不是独立守护进程，而是织进 `Agent::agent_loop`。自上而下阅读循环：
+压缩不是独立守护进程，而是织进 `Agent::agent_loop`。这个顺序对于 **OpenAI Responses** 一类 provider 尤其重要：assistant/tool 历史稍后还要再转换成 `/responses` input items。因此 Tact 总是先在统一消息层做 compact，再做协议转换；在入口路径上，又会先压缩**旧历史**，再 push 当前 user turn，确保最新用户输入以原文保留，而不是被吞进摘要。
+
+自上而下阅读循环：
 
 ```mermaid
 flowchart TD
@@ -318,6 +320,63 @@ flowchart LR
 
 - `Focus to preserve next: {focus}` — 来自手动 `compact` 工具  
 - `Recent files to reopen if needed:` — 来自 `CompactState.recent_files`
+
+### OpenAI Responses 协议边界
+
+当配置 `protocol = "responses"` 时，压缩仍然发生在**共享的 agent / message 层**，而不是 OpenAI adapter 内部，也不会通过远端 compact endpoint 完成。流程是：
+
+1. `agent_loop` 先决定是否 compact，并预留 incoming turn 与输出预算。
+2. `compact_history` 把 `runtime.context` 重写成本地 `Message` 结构（`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`）。
+3. 只有在这之后，`tact_llm::openai::responses::convert::create_response` 才会把重建后的 context 转成 `/responses` 的 `input` items。
+
+这种分层让 compact 逻辑保持 provider-agnostic，同时又能在转换阶段保留 Responses 特有的历史细节：
+
+- assistant/user 文本会变成 Responses `message` item
+- `ToolUse` 会变成 `function_call`
+- `ToolResult` 会变成 `function_call_output`
+- 已持久化的 reasoning signature 可通过 `openai-responses-v1:...` 解码回 Responses `reasoning` item
+
+当前范围有意保持为本地方案：Tact **不会**调用远端 `/v1/responses/compact` 一类 API，也**不会**依赖服务端会话状态来缩短历史。OpenAI adapter 接收的是已经 compact 完的本地 context，然后把这份 context 序列化成一次新的 `/responses` 请求。
+
+### Responses 专用压缩流程（详细）
+
+Responses 集成里最容易出错的部分，是**历史压缩**与**历史转换**之间的边界。Tact 把这条边界拆成四个明确阶段：
+
+1. **`agent_loop` 入口的预判**  
+   在当前 user turn 真正 append 之前，`should_auto_compact(last_token_total, window, estimate_context_tokens(old_context), estimate_message_tokens(incoming_turn), max_tokens)` 会同时预留 incoming prompt 与下一次模型输出。如果投影后的请求逼近阈值，Tact 会先对**旧历史** compact。
+
+2. **`compact_history` 的本地 context 重建**  
+   摘要器看到的是完整对话的近期尾部，其中包含 assistant 文本与工具往返，然后生成 handoff summary。之后 Tact 把 `runtime.context` 重建为：
+   - 从尾部原样保留的近期真实 user 消息
+   - 一条带 `SUMMARY_PREFIX` 的 summary user 消息
+   - 当前轮 user turn，由 loop 稍后再 append
+
+   这正是 Codex 风格的关键性质：下一次请求里，最新真实用户请求仍然是字面原文，而不是被吞进摘要。
+
+3. **`create_response` 的协议转换**  
+   只有在 compact 完成之后，Responses adapter 才会遍历重建后的 `Vec<Message>` 并发出 `/responses` items。Adapter 并不关心 context 是如何变小的；它只负责把当前这份本地事实正确序列化。
+
+4. **Provider 请求所有权仍在 Tact**  
+   最终 HTTP 请求仍带 `store: false`，并发送一份完整的“重建后历史”。Tact 不会把对话图的所有权交给 OpenAI：没有 `previous_response_id`，没有 conversation resume token，也没有远端 compact 调用。
+
+这种分层给了 Tact 两个保证：
+
+- compact 可以只在共享 `Message` 层思考一次
+- Responses adapter 可以专注于 wire-format 正确性（`message`、`reasoning`、`function_call`、`function_call_output`）
+
+一个简化后的单轮时序如下：
+
+```text
+old runtime.context
+→ should_auto_compact(预留 incoming user turn)
+→ compact_history() 写 transcript + summary
+→ runtime.context = 近期真实 users + SUMMARY_PREFIX summary
+→ agent_loop append 当前 user turn 原文
+→ create_response() 把重建后的 Message 历史转成 /responses input items
+→ POST /responses
+```
+
+这也解释了为什么 Tact 会在 compact 后把 `last_token_total = 0`：摘要调用返回的 token usage 描述的是**压缩前的大 prompt**，而不是下一次真正发往 `/responses` 的重建后历史。
 
 如果 focus 文本过长，无法与固定指令一起放入摘要输入预算，会被静默丢弃——但会通过 `tracing::warn!` 记录日志（原始长度、可用预算和所需 token 数），使该事件在诊断中可见。
 
