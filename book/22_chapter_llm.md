@@ -426,7 +426,16 @@ owns the exact **conversion/state boundaries**:
   resource replaces the baseline; `focus` text has no meaning and is ignored.
 - **State update** — every call returns `LlmResponse` with a
   `state_update: ProviderStateUpdate` (`Replace(new state)` or `Unchanged`).
-  The agent commits the assistant message and the state baseline in **one
+  For ordinary terminal responses the replacement baseline already contains
+  the request input **plus** the terminal output, so `logical_message_count`
+  and `logical_context_hash` are anchored to the **post-assistant** logical
+  context (request messages plus the assistant message the agent pushes); the
+  next turn then converts only the new user/tool suffix and never duplicates
+  assistant/reasoning/function-call items or ids. Only when a terminal
+  response carries no output items at all (the compatible-endpoint
+  visible-text recovery path) does the anchor stay at the request prefix, so
+  the assistant message is converted next turn instead of being dropped. The
+  agent commits the assistant message and the state baseline in **one
   transaction** before any further LLM call or tool execution.
 
 #### `LlmResponse` and terminal response authority
@@ -458,9 +467,13 @@ or in the terminal output of an ordinary request after automatic
 state**, not content:
 
 1. `normalize_response` retains every terminal output item as JSON in output
-   order (`output_items`), including `compaction` items and unknown future item
-   types. A terminal response may carry at most one compaction item, and its
-   `encrypted_content` must be non-empty.
+   order (`output_items`), including `compaction` items and every item type
+   known to the typed SDK (unmapped types such as file/web search produce no
+   `ContentBlock` but are retained). A terminal response may carry at most one
+   compaction item, and its `encrypted_content` must be non-empty. A truly
+   unknown future item type is rejected by the typed SDK boundary
+   (async-openai `OutputItem` has no `Unknown` variant): a hard protocol
+   error, never a silent drop or fallback.
 2. `state_update` packages those items into the next request's `input_items`
    baseline, and `create_response` replays them **verbatim** on the next call.
 3. The item is **never** mapped to a `ContentBlock`: `encrypted_content` is

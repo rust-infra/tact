@@ -357,6 +357,16 @@ Responses 的回退方案。
    本地摘要。原生压缩后 Tact 会把 `last_token_total` 重置为 0，因为下一次
    请求的输入是压缩后的基线，而不是压缩前的大 prompt。
 
+**协议契约与验证状态** — 自动压缩的替换基线（单个 `compaction` item 置前，
+后跟本次 response 的非 compaction 输出 items）来源于设计阶段从目标端点捕获
+的脱敏 fixture
+（`crates/tact_llm/src/openai/responses/fixtures/automatic_compact.json`），
+**尚未**经过真实端点验证。硬性校验仍然生效：零个或多个 `compaction` item、
+空的 `encrypted_content` 都是协议错误；真正未知的输出 item 类型会被 typed
+SDK 边界拒绝（不静默丢弃、不回退，见
+[Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)）。
+与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
+
 简化后的原生时序：
 
 ```text

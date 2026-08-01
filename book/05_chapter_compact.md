@@ -362,6 +362,18 @@ The native path has six properties:
    resets `last_token_total` to 0 after native compaction because the next
    request's input is the compacted baseline, not the pre-compact prompt.
 
+**Protocol contract and verification status** — the automatic-compaction
+replacement baseline (the single `compaction` item first, followed by the
+response's non-compaction output items) is derived from the sanitized fixture
+captured from the target endpoint during design
+(`crates/tact_llm/src/openai/responses/fixtures/automatic_compact.json`); it
+has **not** been verified against a live endpoint. Hard validation remains in
+force: zero or multiple `compaction` items and empty `encrypted_content` are
+protocol errors, and a truly unknown output item type is rejected by the typed
+SDK boundary (no silent drop, no fallback — see [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)).
+An endpoint whose compaction contract differs from the fixture fails loudly
+with a protocol error rather than being papered over.
+
 A simplified native timeline:
 
 ```text

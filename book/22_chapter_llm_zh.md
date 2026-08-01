@@ -365,8 +365,13 @@ Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessa
   消息。返回的 compact resource 替换基线；`focus` 文本无意义并被忽略。
 - **状态更新** — 每次调用返回 `LlmResponse`，内含
   `state_update: ProviderStateUpdate`（`Replace(新状态)` 或 `Unchanged`）。
-  agent 在任何后续 LLM 调用或工具执行之前，用**同一事务**提交 assistant 消息
-  与状态基线。
+  对于普通终态响应，替换基线已包含请求输入**加**终态输出，因此
+  `logical_message_count` 与 `logical_context_hash` 锚定在**assistant 之后**
+  的逻辑 context（请求消息加 agent 随后 push 的 assistant 消息）；下一轮只
+  转换新的 user/tool 后缀，绝不重复 assistant/reasoning/function-call item
+  或 id。仅当终态响应完全没有输出 items 时（兼容端点可见文本恢复路径），锚点
+  才停留在请求前缀，使 assistant 消息在下一轮被转换而不是丢失。agent 在任何
+  后续 LLM 调用或工具执行之前，用**同一事务**提交 assistant 消息与状态基线。
 
 #### `LlmResponse` 与终态响应权威
 
@@ -393,9 +398,12 @@ terminal event type 推断。为兼容端点注入的占位 id 绝不被当作 p
 以**不透明状态**往返，而不是内容：
 
 1. `normalize_response` 按输出顺序把每个 terminal output item 保留为 JSON
-   （`output_items`），包括 `compaction` item 与未知的未来 item 类型。一个
-   terminal response 至多含一个 compaction item，且其 `encrypted_content`
-   必须非空。
+   （`output_items`），包括 `compaction` item 以及 typed SDK 已知的每种 item
+   类型（file/web search 等未映射类型不产生 `ContentBlock`，但仍被保留）。
+   一个 terminal response 至多含一个 compaction item，且其
+   `encrypted_content` 必须非空。真正未知的未来 item 类型会被 typed SDK 边界
+   拒绝（async-openai `OutputItem` 没有 `Unknown` variant）：这是硬性协议
+   错误，绝不静默丢弃，也绝不回退。
 2. `state_update` 把这些 items 打包进下一次请求的 `input_items` 基线，
    `create_response` 在后续调用中**原样**回放。
 3. 该 item **绝不会**映射为 `ContentBlock`：`encrypted_content` 是不透明

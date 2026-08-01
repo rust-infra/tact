@@ -4,7 +4,11 @@
 //! from the wire-level protocol state required to continue an OpenAI Responses
 //! conversation. [`ProviderConversationState`] is that opaque, versioned
 //! boundary: it stores the exact Responses input-item baseline as JSON so
-//! unknown fields and future item types survive SDK upgrades.
+//! unknown fields and future item types survive SDK upgrades **once they are
+//! part of the input baseline**. Terminal *output* parsing is typed
+//! (async-openai `OutputItem` has no `Unknown` variant), so a truly unknown
+//! output item type is rejected as a hard protocol error at the adapter
+//! boundary — never silently dropped or replaced by a fallback.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,9 +28,11 @@ pub enum ProviderConversationState {
 ///
 /// `input_items` is the exact wire-level protocol baseline for the next
 /// request. It may contain compaction, reasoning, function-call,
-/// function-call-output, message, and unknown future items. The state is
+/// function-call-output, message, and other SDK-known item types. The state is
 /// stored as JSON rather than an SDK-specific binary format so unknown fields
-/// and future item types survive SDK upgrades.
+/// and future input item types survive SDK upgrades; terminal *output* item
+/// types unknown to the typed SDK are rejected earlier as a hard protocol
+/// error (see the adapter boundary), never silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesConversationState {
     pub version: u32,
