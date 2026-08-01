@@ -92,16 +92,24 @@ depend on the provider:
 | `[manual compact]` | Local `compact` tool succeeded and set a manual-compact flag (non-Responses only) |
 | `[native compact]` | Responses provider: explicit `POST /responses/compact` started |
 | `[compact retry n/N] retrying in Xs` | Transient transport error while compacting; bounded backoff retry |
-| `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = compaction id |
+| `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = truncated compaction-id prefix |
 | `Compaction complete.` | `UserCommand::Compact` finished successfully |
 
 **Encrypted state is never rendered.** Responses compaction and reasoning
 items carry opaque `encrypted_content`; it is replayed to the endpoint but
 must never appear in `Info` lines, error strings, tool cards, or any other TUI
-surface. Diagnostics emit item counts and the compaction id only (for example
-`[responses compacted: items=2, id=cmp_…]`). A failed compaction shows
-`Error` + `Compaction failed: …` and leaves the previous context and state
-intact.
+surface. The two encrypted payloads have different boundaries: reasoning
+encrypted data may exist **only** inside the internal, non-renderable
+`Thinking.signature` envelope (never in visible thinking text, never in an
+output block), while a `compaction` item's `encrypted_content` remains
+**provider state only** (protocol baseline and request body) and never becomes
+a `ContentBlock` at all. Diagnostics emit item counts and a **bounded
+compaction-id prefix** only — the full id stays in provider state and SQLite
+metadata (for example `[responses compacted: items=2, id=cmp_sanitize]` shows
+just the first characters of the id). A failed compaction shows `Error` +
+`Compaction failed: …` and leaves the previous context and state intact; an
+incomplete streamed compaction (announced but never completed) is a hard
+protocol error, never silently “recovered” from visible text.
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. Raster images use `[ui.vision_image]` in config: `compress` (default `true`) downscales and re-encodes as JPEG (`max_edge` 1280, `jpeg_quality` 80); set `compress = false` to send the original file bytes. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 

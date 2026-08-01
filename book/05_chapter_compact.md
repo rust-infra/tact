@@ -340,7 +340,9 @@ The native path has six properties:
    retained as opaque protocol state (never mapped to a `ContentBlock`).
 2. **Tact threshold + `/responses/compact`** — the threshold is
    `responses_compact_threshold` (config) or derived from
-   `agent.model_context_window` / `max_tokens` with 10% headroom. When Tact
+   `agent.model_context_window` / `max_tokens` with 10% headroom; a subagent's
+   derived threshold uses the **subagent's own `max_tokens`** budget, not the
+   main agent's. When Tact
    decides to compact (auto trigger, recovery, or `/compact`), it sends a real
    `POST /responses/compact` request carrying the current protocol baseline
    (`input` items) plus any logical messages not yet covered, and replaces the
@@ -349,10 +351,13 @@ The native path has six properties:
    tool specs exclude the local `compact` tool; the `/compact` command
    dispatches to the native `/responses/compact` endpoint instead.
 4. **Opaque provider state** — the baseline lives in
-   `ResponsesConversationState` as opaque JSON (`input_items`, including
-   `encrypted_content` of compaction/reasoning items) plus `compaction_id` and
+   `ResponsesConversationState` as opaque JSON (`input_items`, including the
+   `encrypted_content` of compaction items) plus `compaction_id` and
    `logical_context_hash`. Tact never interprets the encrypted payload: it is
-   replayed verbatim to the endpoint and never rendered or logged.
+   replayed verbatim to the endpoint and never rendered or logged. Compaction
+   `encrypted_content` remains **provider state only**; reasoning encrypted
+   data may exist **only** inside the internal, non-renderable
+   `Thinking.signature` envelope (never in a renderable `ContentBlock`).
 5. **Atomic messages/state persistence** — assistant messages and the provider
    state baseline are committed in **one transaction**; native compaction
    replaces the persisted context and baseline atomically, then updates the
@@ -373,6 +378,17 @@ protocol errors, and a truly unknown output item type is rejected by the typed
 SDK boundary (no silent drop, no fallback — see [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)).
 An endpoint whose compaction contract differs from the fixture fails loudly
 with a protocol error rather than being papered over.
+
+An **incomplete streamed compaction** — a `compaction` item announced in the
+stream but never completed — is also a hard error: the stream adapter refuses
+to fall back to visible-text recovery, because that would silently drop the
+compaction boundary and lose the compacted baseline for the next turn.
+Persisting the explicit `/responses/compact` usage row is **not** best-effort
+either: if the `responses_compact` row cannot be written, compaction fails
+with an error before the new messages/provider state are committed, and the
+old committed state stays fully intact. Success diagnostics show only a
+**bounded compaction-id prefix** (`[responses compacted: items=N, id=…]`); the
+full id lives in the provider state and SQLite metadata only.
 
 A simplified native timeline:
 

@@ -114,14 +114,22 @@ confused in usage accounting:
 
 Local (non-Responses) providers keep their existing `compact` rows; the
 `responses_compact` value is used **only** around the explicit
-`/responses/compact` call.
+`/responses/compact` call. Token values written from a Responses compact
+resource are **checked conversions**: a required usage field that is missing,
+not an unsigned integer, or larger than `u32` is rejected as a hard protocol
+error — values are never truncated or wrapped before they reach this table.
 
 > **Safety:** compaction `encrypted_content` is opaque protocol state. It is
 > preserved only inside the `request_body` BLOB of `responses_compact` /
 > `stream` rows (for replay and debugging) and in `responses_states.state_json`.
 > It is never formatted into `tracing` output, `AgentUpdate::Info` messages,
-> error strings, or TUI cards — diagnostics emit item counts and the compaction
-> id only (e.g. `[responses compacted: items=2, id=cmp_…]`).
+> error strings, or TUI cards — diagnostics emit item counts and a **bounded
+> compaction-id prefix** only (e.g. `[responses compacted: items=2, id=cmp_…]`;
+> the full id lives in provider state and SQLite metadata). Reasoning encrypted
+> data follows a separate boundary: it may exist **only** inside the internal,
+> non-renderable `Thinking.signature` envelope of a persisted message — never in
+> visible thinking text, output text, or this table's columns — while compaction
+> `encrypted_content` never becomes a `ContentBlock` at all.
 
 ### Relating Token Usage to Messages
 

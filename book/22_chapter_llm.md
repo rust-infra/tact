@@ -353,7 +353,10 @@ output message (`output_text` with a stable local item ID), rather than an
 assistant `input_text` message; this is required by strict compatible endpoints
 on multi-turn requests.
 Input/cache/output/reasoning token counts map to the existing
-`TokenUsageInfo` fields.
+`TokenUsageInfo` fields. Usage counters are **checked conversions**: a
+required token field that is missing, not an unsigned integer, or larger than
+`u32` is a hard protocol error — values are never truncated, wrapped, or
+clamped.
 
 Unsupported in this adapter: server-hosted tools, background responses,
 Conversations, and `previous_response_id`. Native compaction is supported:
@@ -420,10 +423,17 @@ owns the exact **conversion/state boundaries**:
   derived), every ordinary `/responses` request carries
   `context_management: [{ "type": "compaction", "compact_threshold": N }]`, so
   the endpoint may compact the baseline automatically inside a normal stream.
+  A derived threshold is resolved per agent: a subagent derives it from the
+  **subagent's own `max_tokens`** budget (with the shared context window and
+  10% headroom), never from the main agent's budget.
 - **Explicit `/responses/compact`** — when Tact decides to compact, the agent
   calls `compact()` on the adapter: a real `POST /responses/compact` request
   carrying the current baseline plus uncovered messages. The returned compact
   resource replaces the baseline; `focus` text has no meaning and is ignored.
+  Persisting the explicit call's usage row (`responses_compact`) is **not**
+  best-effort: if that row cannot be written, the compaction fails with an
+  error **before** any new messages/provider state are committed, so the old
+  committed state stays fully intact and no compaction is recorded.
 - **State update** — every call returns `LlmResponse` with a
   `state_update: ProviderStateUpdate` (`Replace(new state)` or `Unchanged`).
   For ordinary terminal responses the replacement baseline already contains
@@ -479,6 +489,15 @@ state**, not content:
 3. The item is **never** mapped to a `ContentBlock`: `encrypted_content` is
    opaque provider state, not assistant text. It must not surface in TUI
    rendering, `AgentUpdate::Info` messages, `tracing` output, or error strings.
+   User-facing diagnostics show only a **bounded compaction-id prefix**; the
+   full id is retained inside the provider state and SQLite metadata only.
+
+A compaction item that is announced in the stream (`output_item.added`) but
+never completed is a **hard protocol error** in the stream adapter's
+`finish()`: neither the done-sequence reconstruction nor visible-text recovery
+may run, because both would silently drop the compaction boundary and lose the
+compacted baseline for the next turn. The stream fails loudly; it never
+"recovers" by treating the streamed output text as the final result.
 
 Why not a `ContentBlock`? Because a `ContentBlock` is logical content the
 agent loop renders, persists, and may tool-dispatch over. A `compaction` item
@@ -501,6 +520,17 @@ On a later request, `history::decode` can recover that state so `message_to_inpu
 - `function_call` items carrying the matching provider item ids when available
 
 This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from the persisted baseline plus local messages rather than a server-side `previous_response_id` chain.
+
+**Encrypted boundary.** The reasoning `encrypted_content` may exist **only**
+inside this internal, non-renderable signature envelope: never in the visible
+`thinking` summary text, never in a renderable `ContentBlock::Text`, never in
+persisted output text, and never in error strings or `Info` diagnostics. This
+is the same "encrypted data stays opaque" rule as compaction payloads, but the
+carriers differ: compaction `encrypted_content` never enters any
+`ContentBlock` (it is **provider state only**, kept in the protocol baseline
+and request body), while reasoning encrypted data is carried by the internal
+signature of a `Thinking` block so it can be replayed as a native `reasoning`
+item.
 
 ### 6.3 Shared thinking configuration
 

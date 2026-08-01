@@ -299,6 +299,8 @@ Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 
 Responses 使用独立的 `responses_system_prompt_template.md`，不改变其他 provider 模板。其 skill 加载策略禁止对问候、闲聊和普通问题调用 `load_skill`；必须由用户显式 slash 调用或明确要求使用某个 skill，且 skill 描述不得自行要求必须调用该 skill。
 
 流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
+用量计数器是**受检转换**：必填 token 字段缺失、不是无符号整数、或大于
+`u32` 都是硬性协议错误 — 数值绝不会被截断、回绕或钳制。
 
 此 adapter 不支持：server-hosted tools、background responses、Conversations 与
 `previous_response_id`。原生压缩是受支持的：解析出压缩阈值后，普通请求会携带
@@ -359,10 +361,15 @@ Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessa
 - **`context_management`** — 解析出压缩阈值（配置或推导）后，每个普通
   `/responses` 请求都会携带
   `context_management: [{ "type": "compaction", "compact_threshold": N }]`，
-  端点可以在正常流式过程中自动压缩基线。
+  端点可以在正常流式过程中自动压缩基线。推导阈值按 agent 分别解析：subagent
+  使用**subagent 自己的 `max_tokens`** 预算推导（结合共享 context window 与
+  10% 余量），绝不使用主 agent 的预算。
 - **显式 `/responses/compact`** — 当 Tact 决定压缩时，agent 调用 adapter 的
   `compact()`：发送真正的 `POST /responses/compact` 请求，携带当前基线加未覆盖
   消息。返回的 compact resource 替换基线；`focus` 文本无意义并被忽略。
+  显式调用的 usage 行（`responses_compact`）持久化**不是**尽力而为：该行写入
+  失败时，压缩会在**任何**新消息 / provider 状态提交之前以错误失败，旧提交
+  状态完全保持原样，且不会记录任何压缩。
 - **状态更新** — 每次调用返回 `LlmResponse`，内含
   `state_update: ProviderStateUpdate`（`Replace(新状态)` 或 `Unchanged`）。
   对于普通终态响应，替换基线已包含请求输入**加**终态输出，因此
@@ -408,7 +415,14 @@ terminal event type 推断。为兼容端点注入的占位 id 绝不被当作 p
    `create_response` 在后续调用中**原样**回放。
 3. 该 item **绝不会**映射为 `ContentBlock`：`encrypted_content` 是不透明
    provider 状态，不是 assistant 文本，绝不出现在 TUI 渲染、
-   `AgentUpdate::Info` 消息、`tracing` 输出或错误字符串中。
+   `AgentUpdate::Info` 消息、`tracing` 输出或错误字符串中。面向用户的诊断
+   只显示**有界的 compaction-id 前缀**；完整 id 仅保留在 provider 状态与
+   SQLite 元数据中。
+
+流式中被宣布（`output_item.added`）但从未完成的 compaction item 是流 adapter
+`finish()` 中的**硬性协议错误**：既不能走 done-sequence 重建，也不能走
+可见文本恢复 — 两者都会静默丢弃 compaction 边界，丢失下一轮所需的压缩后基线。
+流会响亮失败，绝不会把流式输出文本当作最终结果来“恢复”。
 
 为什么不是 `ContentBlock`？因为 `ContentBlock` 是 agent loop 会渲染、持久化并
 可能参与工具分派的逻辑内容；`compaction` item 是协议管道：它只用于告诉端点
@@ -428,6 +442,15 @@ Responses reasoning item 并不是从可见文本重新推导出来的。相反�
 - 在可用时带匹配 provider item id 的 `function_call` item
 
 这也是为什么即使 adapter 每次都从持久化基线 + 本地消息重建请求，而不是依赖服务端 `previous_response_id` 链，compact 过的会话依然能回放 Responses-native 的 reasoning / function-call 历史。
+
+**加密边界。** reasoning 的 `encrypted_content` **只允许**存在于这个内部、
+不可渲染的 signature envelope 中：绝不进入可见的 `thinking` 摘要文本，绝不
+进入可渲染的 `ContentBlock::Text`，绝不进入持久化的输出文本，也绝不进入错误
+字符串或 `Info` 诊断。这与 compaction 载荷的“加密数据保持不透明”规则相同，
+但载体不同：compaction 的 `encrypted_content` 从不进入任何 `ContentBlock`
+（它**仅为 provider 状态**，只存在于协议基线与请求体中）；而 reasoning 加密
+数据由 `Thinking` block 的内部 signature 携带，以便可以回放为原生 `reasoning`
+item。
 
 ### 6.3 共享 thinking 配置
 

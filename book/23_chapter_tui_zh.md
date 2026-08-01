@@ -92,14 +92,21 @@ pub enum UserCommand {
 | `[manual compact]` | 本地 `compact` 工具成功并置位手动压缩标记（仅非 Responses） |
 | `[native compact]` | Responses provider：显式 `POST /responses/compact` 开始 |
 | `[compact retry n/N] retrying in Xs` | 压缩遇到瞬时传输错误；有界退避重试 |
-| `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = compaction id |
+| `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
 | `Compaction complete.` | `UserCommand::Compact` 成功完成 |
 
 **加密状态绝不渲染。** Responses 的 compaction / reasoning item 携带不透明的
 `encrypted_content`；它只会被回放给端点，绝不能出现在 `Info` 行、错误字符串、
-工具卡片或任何 TUI 表面。诊断信息只输出 item 数与 compaction id（例如
-`[responses compacted: items=2, id=cmp_…]`）。压缩失败会显示 `Error` +
-`Compaction failed: …`，并保持之前的 context 与状态不变。
+工具卡片或任何 TUI 表面。两种加密载荷的边界不同：reasoning 加密数据**只允许**
+存在于内部、不可渲染的 `Thinking.signature` envelope 中（绝不进入可见 thinking
+文本，绝不进入 output block）；而 `compaction` item 的 `encrypted_content`
+**仅为 provider 状态**（协议基线与请求体），根本不会成为 `ContentBlock`。
+诊断信息只输出 item 数与**有界的 compaction-id 前缀** — 完整 id 只保留在
+provider 状态与 SQLite 元数据中（例如 `[responses compacted: items=2,
+id=cmp_sanitize]` 只显示 id 的前几个字符）。压缩失败会显示 `Error` +
+`Compaction failed: …`，并保持之前的 context 与状态不变；流式中被宣布但从未
+完成的压缩（incomplete streamed compaction）是硬性协议错误，绝不静默地
+从可见文本“恢复”。
 
 `build_user_message`（`crates/tact-ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
 

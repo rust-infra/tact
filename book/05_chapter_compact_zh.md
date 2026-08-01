@@ -339,7 +339,8 @@ Responses 的回退方案。
    保留（**不会**映射成 `ContentBlock`）。
 2. **Tact 阈值 + `/responses/compact`** — 阈值来自配置项
    `responses_compact_threshold`，或由 `agent.model_context_window` /
-   `max_tokens` 加 10% 余量推导。当 Tact 决定压缩（自动触发、恢复或
+   `max_tokens` 加 10% 余量推导；subagent 的推导阈值使用 **subagent 自己的
+   `max_tokens`** 预算，而不是主 agent 的。当 Tact 决定压缩（自动触发、恢复或
    `/compact`）时，它会发送真正的 `POST /responses/compact` 请求，携带当前
    协议基线（`input` items）加上尚未被基线覆盖的逻辑消息，并用返回的 compact
    resource 替换基线。
@@ -347,9 +348,12 @@ Responses 的回退方案。
    tool specs 会排除本地 `compact` 工具；`/compact` 命令改走原生
    `/responses/compact` 端点。
 4. **不透明 provider 状态** — 基线存放在 `ResponsesConversationState` 中，
-   是不透明 JSON（`input_items`，含 compaction / reasoning item 的
+   是不透明 JSON（`input_items`，含 compaction item 的
    `encrypted_content`），外加 `compaction_id` 与 `logical_context_hash`。
    Tact 从不解读加密载荷：它被原样回放给端点，且绝不渲染、绝不写日志。
+   compaction 的 `encrypted_content` **仅为 provider 状态**；reasoning 加密
+   数据**只允许**存在于内部、不可渲染的 `Thinking.signature` envelope 中
+   （绝不进入可渲染的 `ContentBlock`）。
 5. **消息与状态原子持久化** — assistant 消息与 provider 状态基线在**同一
    事务**中提交；原生压缩以原子方式替换已持久化的 context 与基线，然后更新
    运行时字段。失败时旧提交状态保持完整。
@@ -366,6 +370,14 @@ Responses 的回退方案。
 SDK 边界拒绝（不静默丢弃、不回退，见
 [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)）。
 与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
+
+**流式中未完成的压缩** — 在流中被宣布但从未完成的 `compaction` item — 同样是
+硬性错误：流 adapter 拒绝回退到可见文本恢复，因为那会静默丢弃 compaction
+边界，丢失下一轮所需的压缩后基线。显式 `/responses/compact` 的 usage 行持久化
+同样**不是**尽力而为：`responses_compact` 行写入失败时，压缩会在新消息 /
+provider 状态提交之前以错误失败，旧提交状态完全保持原样。成功诊断只显示
+**有界的 compaction-id 前缀**（`[responses compacted: items=N, id=…]`）；完整
+id 仅存于 provider 状态与 SQLite 元数据中。
 
 简化后的原生时序：
 
