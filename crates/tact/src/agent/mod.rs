@@ -1678,6 +1678,7 @@ fn assemble_agents_md_prompt(
 mod tests {
     use std::sync::Once;
 
+    use sqlx::Row;
     use tact_llm::{
         ContentBlock, LlmProvider, Message, MockClient, ProviderConversationState, ProviderKind,
         Role, StopReason,
@@ -2157,6 +2158,152 @@ mod tests {
             "one user message converted for the first request"
         );
         assert_eq!(input[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn responses_agent_loop_automatic_compaction_stays_single_stream_call() {
+        ensure_config();
+        let server = MockServer::start().await;
+        // A streamed terminal response that includes a provider-side
+        // automatic-compaction item (the opaque encrypted content must never
+        // surface in diagnostics).
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_auto_1",
+                "object": "response",
+                "created_at": 1,
+                "completed_at": 2,
+                "status": "completed",
+                "model": "gpt-5",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [{"type": "summary_text", "text": "reasoning"}],
+                        "encrypted_content": "opaque-reasoning-encrypted-content",
+                        "status": "completed"
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{
+                            "type": "output_text",
+                            "annotations": [],
+                            "logprobs": null,
+                            "text": "automatic compaction handled inline"
+                        }]
+                    },
+                    {
+                        "type": "compaction",
+                        "id": "cmp_auto_01",
+                        "encrypted_content": "opaque-encrypted-compaction-content"
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 160012,
+                    "input_tokens_details": { "cached_tokens": 120000 },
+                    "output_tokens": 120,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 160132
+                }
+            }
+        });
+        let sse_body = format!("data: {completed}\n\n");
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Automatic compaction must NOT trigger a second HTTP call to the
+        // explicit compact endpoint.
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = responses_test_agent("responses_auto_compact_stream", &server.uri());
+        agent = agent
+            .with_ui_channel(tx)
+            .with_session("session-1".to_string(), store);
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("agent loop should complete with provider-side compaction");
+
+        // Exactly one streamed /responses request; no explicit compact call.
+        server.verify().await;
+
+        // The compaction item committed to the provider state without a
+        // separate HTTP call.
+        let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
+        else {
+            panic!("agent loop must commit provider state after the LLM response");
+        };
+        assert!(
+            state.is_compacted,
+            "provider state must reflect auto compaction"
+        );
+        assert_eq!(state.compaction_id.as_deref(), Some("cmp_auto_01"));
+
+        // Usage accounting stays on the ordinary stream call: exactly one
+        // `stream` row and no `responses_compact` row for a call that never
+        // happened.
+        let pool = sqlx::SqlitePool::connect(&format!(
+            "sqlite:{}",
+            dir.path().join("session.db").display()
+        ))
+        .await
+        .unwrap();
+        let rows = sqlx::query("SELECT call_type FROM token_usages WHERE session_id = 'session-1'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let call_types: Vec<String> = rows
+            .iter()
+            .map(|row| row.try_get("call_type").unwrap())
+            .collect();
+        assert_eq!(
+            call_types,
+            vec!["stream"],
+            "automatic compaction must stay associated with the stream call, \
+             got: {call_types:?}"
+        );
+
+        // Encrypted compaction content never surfaces in Info diagnostics.
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        assert!(
+            updates
+                .iter()
+                .filter_map(|u| match u {
+                    tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                    _ => None,
+                })
+                .all(|msg| !msg.contains("opaque-encrypted-compaction-content")),
+            "encrypted compaction content must never surface in Info updates: {updates:?}"
+        );
     }
 
     #[tokio::test]

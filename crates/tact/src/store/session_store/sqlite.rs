@@ -1169,6 +1169,170 @@ mod tests {
         assert_eq!(stored.as_deref(), Some(schedule));
     }
 
+    /// Explicit native Responses compaction must produce a distinguishable
+    /// `responses_compact` usage row with its request body preserved verbatim,
+    /// and the opaque encrypted compaction content must stay confined to the
+    /// request_body BLOB (never copied into any other column that could feed a
+    /// diagnostic).
+    #[tokio::test]
+    async fn test_responses_compact_usage_row_is_distinguishable() {
+        use sqlx::Row;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        // The explicit `/responses/compact` request replays the protocol
+        // baseline, which carries the prior compaction item's opaque encrypted
+        // content.
+        let encrypted_content = "opaque-encrypted-compaction-baseline";
+        let request_body = serde_json::json!({
+            "model": "gpt-5",
+            "input": [
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": encrypted_content}
+            ]
+        });
+        let body = serde_json::to_vec(&request_body).unwrap();
+        let usage = tact_protocol::TokenUsageInfo {
+            prompt: 1200,
+            completion: 340,
+            total: 1540,
+            prompt_cache_hit_tokens: 900,
+            prompt_cache_miss_tokens: 300,
+            reasoning_tokens: 40,
+        };
+        store
+            .record_token_usage(
+                "session-1",
+                "responses_compact",
+                Some(&usage),
+                3,
+                7,
+                Some(&body),
+            )
+            .await
+            .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT call_type, request_body, prompt_tokens, completion_tokens, total_tokens, \
+             prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, \
+             first_message_id, last_message_id, tool_schedule \
+             FROM token_usages WHERE session_id = 'session-1'",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one usage row for the explicit compact"
+        );
+        let row = &rows[0];
+        assert_eq!(
+            row.try_get::<String, _>("call_type").unwrap(),
+            "responses_compact",
+            "explicit native compaction must be distinguishable from stream/compact"
+        );
+        let stored_body: Vec<u8> = row.try_get("request_body").unwrap();
+        assert_eq!(stored_body, body, "request_body must be preserved verbatim");
+        assert_eq!(row.try_get::<i64, _>("prompt_tokens").unwrap(), 1200);
+        assert_eq!(row.try_get::<i64, _>("completion_tokens").unwrap(), 340);
+        assert_eq!(row.try_get::<i64, _>("total_tokens").unwrap(), 1540);
+        assert_eq!(
+            row.try_get::<i64, _>("prompt_cache_hit_tokens").unwrap(),
+            900
+        );
+        assert_eq!(
+            row.try_get::<i64, _>("prompt_cache_miss_tokens").unwrap(),
+            300
+        );
+        assert_eq!(row.try_get::<i64, _>("reasoning_tokens").unwrap(), 40);
+        assert_eq!(row.try_get::<i64, _>("first_message_id").unwrap(), 3);
+        assert_eq!(row.try_get::<i64, _>("last_message_id").unwrap(), 7);
+
+        // The encrypted content is only ever stored inside the opaque
+        // request_body BLOB; no other column may expose it.
+        for column in ["call_type", "tool_schedule"] {
+            let value = row.try_get::<Option<String>, _>(column).unwrap();
+            assert!(
+                !value.unwrap_or_default().contains(encrypted_content),
+                "column {column} must not expose encrypted compaction content"
+            );
+        }
+
+        // Replay/debug path returns the compact request body unchanged.
+        let latest = store.load_latest_request_body("session-1").await.unwrap();
+        assert_eq!(latest.as_deref(), Some(body.as_slice()));
+    }
+
+    /// Automatic (provider-side) compaction arrives inside an ordinary
+    /// streamed `/responses` response, so its accounting must stay on the
+    /// `stream` row: exactly one row per call, no fabricated second HTTP call.
+    /// Local-provider compaction keeps its own `compact` rows.
+    #[tokio::test]
+    async fn test_call_types_distinguish_stream_local_compact_and_responses_compact() {
+        use sqlx::Row;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        // 1. Ordinary stream call whose response carried a provider-side
+        //    automatic-compaction item: stays a single `stream` row.
+        let stream_body = serde_json::json!({
+            "model": "gpt-5",
+            "input": [{"type": "message", "role": "user", "content": "hi"}]
+        });
+        store
+            .record_token_usage(
+                "session-1",
+                "stream",
+                None,
+                1,
+                7,
+                Some(&serde_json::to_vec(&stream_body).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        // 2. Local (non-Responses) compaction: preserved as `compact`.
+        store
+            .record_token_usage("session-1", "compact", None, 0, 7, Some(b"{}"))
+            .await
+            .unwrap();
+
+        // 3. Explicit native `/responses/compact` call: distinguishable row.
+        store
+            .record_token_usage("session-1", "responses_compact", None, 3, 7, Some(b"{}"))
+            .await
+            .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT call_type FROM token_usages WHERE session_id = 'session-1' ORDER BY id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let call_types: Vec<String> = rows
+            .iter()
+            .map(|row| row.try_get("call_type").unwrap())
+            .collect();
+        assert_eq!(
+            call_types,
+            vec!["stream", "compact", "responses_compact"],
+            "each real call keeps exactly one distinguishable row; automatic \
+             compaction must not fabricate a second HTTP call"
+        );
+    }
+
     #[tokio::test]
     async fn test_input_history_round_trip() {
         let tmp = TempDir::new().unwrap();
