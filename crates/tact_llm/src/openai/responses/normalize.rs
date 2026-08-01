@@ -335,11 +335,34 @@ fn usage_from_value(value: &serde_json::Value) -> Result<Option<TokenUsageInfo>,
 }
 
 /// Validates a `CompactResource` JSON body and extracts its replacement
-/// baseline. A valid compact resource must contain exactly one compaction item
-/// with non-empty `encrypted_content`.
+/// baseline. A valid compact resource must be a `response.compaction` object
+/// with a non-empty top-level `id` and must contain exactly one compaction
+/// item with non-empty `encrypted_content`.
 pub(crate) fn parse_compact_resource(
     value: serde_json::Value,
 ) -> Result<ParsedCompactResource, LlmError> {
+    let object = value
+        .get("object")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            LlmError::Unsupported("CompactResource is missing the `object` field".to_string())
+        })?;
+    if object != "response.compaction" {
+        return Err(LlmError::Unsupported(format!(
+            "CompactResource has object '{object}', expected 'response.compaction'"
+        )));
+    }
+    let resource_id = value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            LlmError::Unsupported("CompactResource is missing the top-level `id`".to_string())
+        })?;
+    if resource_id.is_empty() {
+        return Err(LlmError::Unsupported(
+            "CompactResource has an empty top-level `id`".to_string(),
+        ));
+    }
     let output = value
         .get("output")
         .and_then(serde_json::Value::as_array)
@@ -941,7 +964,9 @@ pub(crate) mod tests {
 
     fn compact_resource_with_usage(usage: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
-            "output": [{"type":"compaction","id":"cmp","encrypted_content":"opaque"}],
+            "id": "cmp",
+            "object": "response.compaction",
+            "output": [{"type":"compaction","id":"cmp-item","encrypted_content":"opaque"}],
             "usage": usage
         })
     }
@@ -1056,7 +1081,9 @@ pub(crate) mod tests {
     #[test]
     fn compact_resource_without_usage_yields_none() {
         let value = serde_json::json!({
-            "output": [{"type":"compaction","id":"cmp","encrypted_content":"opaque"}]
+            "id": "cmp",
+            "object": "response.compaction",
+            "output": [{"type":"compaction","id":"cmp-item","encrypted_content":"opaque"}]
         });
         let parsed = parse_compact_resource(value).unwrap();
         assert!(parsed.usage.is_none());
@@ -1079,5 +1106,97 @@ pub(crate) mod tests {
             .collect::<String>();
         assert!(!visible.contains("encrypted"));
         assert!(!visible.contains("sanitized-encrypted"));
+    }
+
+    #[test]
+    fn reasoning_encrypted_envelope_is_internal_signature_only() {
+        // The reasoning encrypted envelope is permitted only inside the
+        // internal, non-renderable `Thinking.signature`. It must never become
+        // a renderable `ContentBlock::Text` (which the TUI shows verbatim).
+        let response: Response = serde_json::from_value(completed_response_json()).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        let mut signature_carriers = 0;
+        for block in &normalized.blocks {
+            match block {
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    assert!(
+                        signature.contains("encrypted-plan"),
+                        "Thinking.signature must carry the encrypted envelope"
+                    );
+                    assert!(
+                        !thinking.contains("encrypted-plan"),
+                        "visible thinking text must not carry the envelope"
+                    );
+                    signature_carriers += 1;
+                }
+                ContentBlock::Text { text } => {
+                    assert!(
+                        !text.contains("encrypted-plan"),
+                        "ContentBlock::Text must never carry the encrypted envelope: {text}"
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            signature_carriers, 1,
+            "exactly one internal signature must carry the envelope"
+        );
+    }
+
+    #[test]
+    fn reasoning_envelope_persistence_json_carries_it_only_inside_signature() {
+        // The transcript/store serialization (what a log or the SQLite
+        // message column sees) must carry the envelope exactly once, inside
+        // the internal signature field — never in thinking or output text.
+        let response: Response = serde_json::from_value(completed_response_json()).unwrap();
+        let normalized = normalize_response(response).unwrap();
+        let message = Message::new_blocks(Role::Assistant, normalized.blocks);
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            json.matches("encrypted-plan").count(),
+            1,
+            "persisted message JSON must contain the envelope exactly once: {json}"
+        );
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let content = value["content"].as_array().unwrap();
+        let thinking = content
+            .iter()
+            .find(|block| block["type"] == "thinking")
+            .expect("thinking block");
+        assert!(
+            thinking["signature"]
+                .as_str()
+                .is_some_and(|signature| signature.contains("encrypted-plan")),
+            "the envelope must live inside the signature field"
+        );
+        for block in content {
+            if let Some(text) = block["text"].as_str() {
+                assert!(
+                    !text.contains("encrypted-plan"),
+                    "serialized output text must not carry the envelope: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_envelope_never_leaks_into_errors() {
+        // An unrelated protocol error in the same response must not carry the
+        // reasoning encrypted envelope.
+        let mut value = completed_response_json();
+        value["output"][2]["arguments"] = serde_json::json!("{");
+        let error = normalize_response(serde_json::from_value(value).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !error.contains("encrypted-plan"),
+            "errors must never carry the reasoning envelope: {error}"
+        );
     }
 }

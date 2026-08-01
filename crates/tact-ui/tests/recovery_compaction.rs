@@ -568,7 +568,9 @@ async fn command_compact_native_responses_success() {
     for needle in [
         "[compacting]",
         "[native compact]",
-        "[responses compacted: items=2, id=cmp_native_01]",
+        // The success Info shows only a bounded compaction id prefix; the
+        // full id is retained in the provider state and SQLite metadata.
+        "[responses compacted: items=2, id=cmp_native_0]",
         "Compaction complete.",
     ] {
         assert!(
@@ -576,6 +578,10 @@ async fn command_compact_native_responses_success() {
             "expected info {needle:?}, got: {updates:?}"
         );
     }
+    assert!(
+        infos.iter().all(|msg| !msg.contains("cmp_native_01")),
+        "full compaction id must never surface in Info updates, got: {updates:?}"
+    );
     assert!(
         !updates
             .iter()

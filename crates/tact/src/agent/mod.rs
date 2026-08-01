@@ -1033,12 +1033,15 @@ impl Agent {
         self.runtime.compact_state.has_compacted = true;
         self.runtime.stats.compactions += 1;
 
-        // Informational status only: item count and compaction id. Never
-        // expose the opaque encrypted content.
+        // Informational status only: item count and a bounded compaction id
+        // prefix. Never expose the opaque encrypted content, and never echo
+        // the full compaction id into user-facing diagnostics; the complete
+        // id is retained inside the provider state and SQLite metadata.
         let item_count = candidate_state.input_items.len();
         let compaction_id = candidate_state.compaction_id.unwrap_or_default();
         self.emit_update(AgentUpdate::Info(format!(
-            "[responses compacted: items={item_count}, id={compaction_id}]"
+            "[responses compacted: items={item_count}, id={}]",
+            compact_id_display(&compaction_id)
         )));
         Ok(())
     }
@@ -1447,6 +1450,14 @@ fn load_dynamic_context(
     }
 
     lines.join("\n")
+}
+
+/// Bounded display for a compaction id in user-facing diagnostics: only a
+/// short prefix is shown. The full id is retained inside the provider state
+/// and SQLite metadata; it is never echoed into Info lines.
+fn compact_id_display(id: &str) -> String {
+    const MAX_ID_CHARS: usize = 12;
+    id.chars().take(MAX_ID_CHARS).collect()
 }
 
 /// Directory-only workspace snapshot for the system prompt.
@@ -1965,14 +1976,27 @@ mod tests {
         while let Ok(update) = rx.try_recv() {
             updates.push(update);
         }
+        let info_messages: Vec<&str> = updates
+            .iter()
+            .filter_map(|u| match u {
+                tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
         assert!(
-            updates
+            info_messages
                 .iter()
-                .filter_map(|u| match u {
-                    tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
-                    _ => None,
-                })
-                .all(|msg| !msg.contains(encrypted)),
+                .any(|msg| msg.contains("[responses compacted: items=2, id=cmp_sanitize]")),
+            "success Info must display only a bounded compaction id prefix, got: {updates:?}"
+        );
+        assert!(
+            info_messages
+                .iter()
+                .all(|msg| !msg.contains("cmp_sanitized_01")),
+            "full compaction id must never surface in Info updates, got: {updates:?}"
+        );
+        assert!(
+            info_messages.iter().all(|msg| !msg.contains(encrypted)),
             "encrypted compaction content must never surface in Info updates, got: {updates:?}"
         );
         assert_eq!(
@@ -2527,21 +2551,29 @@ mod tests {
              got: {call_types:?}"
         );
 
-        // Encrypted compaction content never surfaces in Info diagnostics.
+        // Encrypted compaction content and the reasoning encrypted envelope
+        // never surface in Info diagnostics: the compaction payload is
+        // strictly provider state/request body, and the reasoning envelope
+        // lives only in the internal Thinking.signature.
         let mut updates = Vec::new();
         while let Ok(update) = rx.try_recv() {
             updates.push(update);
         }
-        assert!(
-            updates
-                .iter()
-                .filter_map(|u| match u {
-                    tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
-                    _ => None,
-                })
-                .all(|msg| !msg.contains("opaque-encrypted-compaction-content")),
-            "encrypted compaction content must never surface in Info updates: {updates:?}"
-        );
+        for secret in [
+            "opaque-encrypted-compaction-content",
+            "opaque-reasoning-encrypted-content",
+        ] {
+            assert!(
+                updates
+                    .iter()
+                    .filter_map(|u| match u {
+                        tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                        _ => None,
+                    })
+                    .all(|msg| !msg.contains(secret)),
+                "encrypted payload {secret:?} must never surface in Info updates: {updates:?}"
+            );
+        }
     }
 
     #[tokio::test]

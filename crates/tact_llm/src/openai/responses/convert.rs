@@ -178,14 +178,20 @@ fn normalize_assistant_history_items(input: &mut [serde_json::Value]) {
 }
 
 /// Validates that a persisted Responses state may be reused for the given
-/// request. The provider and model must match and the logical-message prefix
-/// represented by the state must hash to the recorded value. A mismatch is a
-/// hard protocol error; Tact must never silently duplicate, truncate, or
-/// reconstruct the baseline.
+/// request. The state version must be exactly 1, the provider and model must
+/// match, and the logical-message prefix represented by the state must hash
+/// to the recorded value. A mismatch is a hard protocol error; Tact must
+/// never silently duplicate, truncate, or reconstruct the baseline.
 fn validate_conversion_state(
     state: &ResponsesConversationState,
     request: &CreateMessageParams,
 ) -> Result<(), LlmError> {
+    if state.version != 1 {
+        return Err(LlmError::Unsupported(format!(
+            "provider state version {} is unsupported; expected version 1",
+            state.version
+        )));
+    }
     if state.provider != "openai_responses" {
         return Err(LlmError::Unsupported(format!(
             "provider state is bound to provider '{}', expected 'openai_responses'",
@@ -657,6 +663,42 @@ mod tests {
     }
 
     #[test]
+    fn compact_resource_requires_expected_object_and_id() {
+        let missing_object = serde_json::json!({
+            "id":"cmp","output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(missing_object).is_err());
+
+        let wrong_object = serde_json::json!({
+            "id":"cmp","object":"response",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(wrong_object).is_err());
+
+        let missing_id = serde_json::json!({
+            "object":"response.compaction",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(missing_id).is_err());
+
+        let empty_id = serde_json::json!({
+            "id":"","object":"response.compaction",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(empty_id).is_err());
+    }
+
+    #[test]
+    fn compact_resource_with_expected_object_and_id_is_accepted() {
+        let valid = serde_json::json!({
+            "id":"cmp-resource","object":"response.compaction",
+            "output":[{"type":"compaction","id":"cmp-item","encrypted_content":"opaque"}]
+        });
+        let parsed = parse_compact_resource(valid).unwrap();
+        assert_eq!(parsed.compaction_id, "cmp-item");
+    }
+
+    #[test]
     fn explicit_compact_fixture_parses_to_replacement_baseline() {
         let value: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/explicit_compact.json")).unwrap();
@@ -727,6 +769,22 @@ mod tests {
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn state_with_unknown_version_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.version = 2;
+        assert!(
+            create_response(
+                &request,
+                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                None,
+                None,
             )
             .is_err()
         );
