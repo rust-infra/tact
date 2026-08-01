@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tact_llm::{Message, MessageContent, Role};
+use tact_llm::{Message, MessageContent, ProviderConversationState, Role};
 use tact_protocol::TokenUsageInfo;
 
 pub mod sqlite;
@@ -58,6 +58,23 @@ pub trait SessionStore: Send + Sync {
         &self,
         session_id: &str,
         messages: &[Message],
+    ) -> Result<(i64, i64)>;
+
+    /// Load the durable provider conversation state (Responses input-item
+    /// baseline) for a session, if one was stored.
+    async fn load_provider_state(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderConversationState>>;
+
+    /// Atomically replace the session messages and the provider conversation
+    /// state in one transaction. `provider_state = None` deletes any stored
+    /// state (non-Responses callers).
+    async fn replace_session_messages_and_provider_state(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        provider_state: Option<&ProviderConversationState>,
     ) -> Result<(i64, i64)>;
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;

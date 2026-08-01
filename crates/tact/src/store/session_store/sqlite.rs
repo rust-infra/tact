@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
-use tact_llm::{Message, MessageContent, Role};
+use tact_llm::{Message, MessageContent, ProviderConversationState, Role};
 use tact_protocol::TokenUsageInfo;
 
 use super::{
@@ -158,6 +158,24 @@ impl SqliteSessionStore {
         .await
         .context("failed to create input_history index")?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS responses_states (
+                session_id       TEXT PRIMARY KEY NOT NULL,
+                schema_version   INTEGER NOT NULL,
+                provider         TEXT NOT NULL,
+                base_url         TEXT NOT NULL,
+                model            TEXT NOT NULL,
+                state_json       TEXT NOT NULL,
+                compaction_id    TEXT,
+                updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .context("failed to create responses_states table")?;
+
         Ok(Self { pool })
     }
 
@@ -204,6 +222,28 @@ fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::User => "user",
         Role::Assistant => "assistant",
+    }
+}
+
+/// Column metadata extracted from [`ProviderConversationState`] so the
+/// `responses_states` table stays queryable without parsing `state_json`.
+struct ProviderStateMetadata {
+    schema_version: i64,
+    provider: String,
+    base_url: String,
+    model: String,
+    compaction_id: Option<String>,
+}
+
+fn provider_state_metadata(state: &ProviderConversationState) -> Result<ProviderStateMetadata> {
+    match state {
+        ProviderConversationState::OpenAiResponses(inner) => Ok(ProviderStateMetadata {
+            schema_version: i64::from(inner.version),
+            provider: inner.provider.clone(),
+            base_url: inner.base_url.clone(),
+            model: inner.model.clone(),
+            compaction_id: inner.compaction_id.clone(),
+        }),
     }
 }
 
@@ -362,6 +402,124 @@ impl super::SessionStore for SqliteSessionStore {
         Ok((first_id, last_id))
     }
 
+    async fn load_provider_state(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderConversationState>> {
+        let row = sqlx::query("SELECT state_json FROM responses_states WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to load provider state")?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let state_json: String = row.try_get("state_json")?;
+        let preview: String = state_json.chars().take(256).collect();
+        let state: ProviderConversationState = serde_json::from_str(&state_json).with_context(
+            || {
+                format!(
+                    "failed to deserialize provider state for session {session_id} (json preview: {preview})"
+                )
+            },
+        )?;
+        Ok(Some(state))
+    }
+
+    async fn replace_session_messages_and_provider_state(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        provider_state: Option<&ProviderConversationState>,
+    ) -> Result<(i64, i64)> {
+        // Serialize and extract metadata before opening the transaction so a
+        // serialization error surfaces without burning a transaction.
+        let state_json = provider_state
+            .map(|state| serde_json::to_string(state).context("failed to serialize provider state"))
+            .transpose()?;
+        let metadata = provider_state.map(provider_state_metadata).transpose()?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin replace messages and provider state transaction")?;
+
+        sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete session messages for replace")?;
+
+        let now = Self::now();
+        let mut first_id = 0_i64;
+        let mut last_id = 0_i64;
+
+        for (idx, message) in messages.iter().enumerate() {
+            let ordinal = (idx + 1) as i64;
+            let content_json = serde_json::to_string(&message.content)
+                .context("failed to serialize message content")?;
+            let id = sqlx::query(
+                "INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(role_to_str(message.role))
+            .bind(content_json)
+            .bind(ordinal)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .context("failed to insert replaced session message")?
+            .last_insert_rowid();
+
+            if idx == 0 {
+                first_id = id;
+            }
+            last_id = id;
+        }
+
+        sqlx::query("DELETE FROM responses_states WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to delete provider state for replace")?;
+
+        if let (Some(state_json), Some(meta)) = (state_json.as_deref(), metadata.as_ref()) {
+            sqlx::query(
+                r#"
+                INSERT INTO responses_states
+                    (session_id, schema_version, provider, base_url, model, state_json, compaction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(session_id)
+            .bind(meta.schema_version)
+            .bind(&meta.provider)
+            .bind(&meta.base_url)
+            .bind(&meta.model)
+            .bind(state_json)
+            .bind(&meta.compaction_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to insert provider state for replace")?;
+        }
+
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update session timestamp after replace")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit replace messages and provider state transaction")?;
+
+        Ok((first_id, last_id))
+    }
+
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>> {
         let rows = sqlx::query(
             "SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
@@ -476,6 +634,11 @@ impl super::SessionStore for SqliteSessionStore {
                 .execute(&mut *tx)
                 .await
                 .context("failed to delete session messages")?;
+            sqlx::query("DELETE FROM responses_states WHERE session_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete session provider state")?;
             sqlx::query("DELETE FROM token_usages WHERE session_id = ?")
                 .bind(id)
                 .execute(&mut *tx)
@@ -1123,6 +1286,332 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_provider_state_round_trip_with_replace() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let replacement = vec![
+            Message::new_text(Role::User, "compacted summary"),
+            Message::new_text(Role::Assistant, "follow-up"),
+        ];
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![serde_json::json!({
+                "type": "compaction",
+                "id": "cmp_test_1",
+                "encrypted_content": "sanitized"
+            })],
+            compaction_id: Some("cmp_test_1".to_string()),
+            is_compacted: true,
+            logical_message_count: 2,
+            logical_context_hash: "abc123".to_string(),
+        });
+
+        store
+            .replace_session_messages_and_provider_state("session-1", &replacement, Some(&state))
+            .await
+            .unwrap();
+
+        let loaded = store.load_session("session-1").await.unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].role, Role::User);
+        assert_eq!(loaded[1].role, Role::Assistant);
+
+        assert_eq!(
+            store.load_provider_state("session-1").await.unwrap(),
+            Some(state)
+        );
+
+        // The Responses metadata is extracted into the dedicated columns.
+        let row = sqlx::query(
+            "SELECT schema_version, provider, base_url, model, compaction_id, state_json FROM responses_states WHERE session_id = 'session-1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.try_get::<i64, _>("schema_version").unwrap(), 1);
+        assert_eq!(
+            row.try_get::<String, _>("provider").unwrap(),
+            "openai_responses"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("base_url").unwrap(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(row.try_get::<String, _>("model").unwrap(), "gpt-5.4-mini");
+        assert_eq!(
+            row.try_get::<Option<String>, _>("compaction_id")
+                .unwrap()
+                .as_deref(),
+            Some("cmp_test_1")
+        );
+        let state_json: String = row.try_get("state_json").unwrap();
+        assert!(state_json.contains("\"cmp_test_1\""));
+    }
+
+    #[tokio::test]
+    async fn test_provider_state_none_clears_row() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let replacement = vec![Message::new_text(Role::User, "hello")];
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 1,
+            logical_context_hash: "hash".to_string(),
+        });
+
+        store
+            .replace_session_messages_and_provider_state("session-1", &replacement, Some(&state))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .load_provider_state("session-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // Replacing with `None` (non-Responses caller) must delete the row.
+        store
+            .replace_session_messages_and_provider_state("session-1", &replacement, None)
+            .await
+            .unwrap();
+
+        assert_eq!(store.load_provider_state("session-1").await.unwrap(), None);
+        let row = sqlx::query(
+            "SELECT COUNT(*) as cnt FROM responses_states WHERE session_id = 'session-1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_replace_provider_state_rolls_back_on_failure() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let old_messages = vec![
+            Message::new_text(Role::User, "old"),
+            Message::new_text(Role::Assistant, "old reply"),
+        ];
+        let old_state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![serde_json::json!({"type": "message", "id": "msg_old"})],
+            compaction_id: Some("cmp_old".to_string()),
+            is_compacted: true,
+            logical_message_count: 2,
+            logical_context_hash: "old-hash".to_string(),
+        });
+        store
+            .replace_session_messages_and_provider_state(
+                "session-1",
+                &old_messages,
+                Some(&old_state),
+            )
+            .await
+            .unwrap();
+
+        // Abort the transaction on the second message insert so the replace
+        // fails after messages were deleted and the first message inserted.
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_replacement
+            BEFORE INSERT ON messages
+            WHEN NEW.ordinal > 1
+            BEGIN
+                SELECT RAISE(ABORT, 'injected replacement failure');
+            END;
+            "#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let new_messages = vec![
+            Message::new_text(Role::User, "new 1"),
+            Message::new_text(Role::Assistant, "new 2"),
+        ];
+        let new_state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 2,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![],
+            compaction_id: Some("cmp_new".to_string()),
+            is_compacted: true,
+            logical_message_count: 2,
+            logical_context_hash: "new-hash".to_string(),
+        });
+
+        let err = store
+            .replace_session_messages_and_provider_state(
+                "session-1",
+                &new_messages,
+                Some(&new_state),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("injected replacement failure"),
+            "unexpected error: {err:#}"
+        );
+
+        // The whole transaction rolled back: old messages and old state intact.
+        let loaded = store.load_session("session-1").await.unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            store.load_provider_state("session-1").await.unwrap(),
+            Some(old_state)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_removes_provider_state() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+        store
+            .create_session("session-2", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 0,
+            logical_context_hash: "hash".to_string(),
+        });
+        for session_id in ["session-1", "session-2"] {
+            store
+                .replace_session_messages_and_provider_state(
+                    session_id,
+                    &[Message::new_text(Role::User, "hello")],
+                    Some(&state),
+                )
+                .await
+                .unwrap();
+        }
+
+        store.delete_session("session-1").await.unwrap();
+
+        assert_eq!(store.load_provider_state("session-1").await.unwrap(), None);
+        assert!(
+            store
+                .load_provider_state("session-2")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let row = sqlx::query(
+            "SELECT COUNT(*) as cnt FROM responses_states WHERE session_id = 'session-1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_load_provider_state_reports_corrupt_json() {
+        use tact_llm::{Message, ProviderConversationState, ResponsesConversationState};
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let state = ProviderConversationState::OpenAiResponses(ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            input_items: vec![],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 0,
+            logical_context_hash: "hash".to_string(),
+        });
+        store
+            .replace_session_messages_and_provider_state(
+                "session-1",
+                &[Message::new_text(Role::User, "hello")],
+                Some(&state),
+            )
+            .await
+            .unwrap();
+
+        // Corrupt the stored JSON directly; malformed state must surface as a
+        // contextual error, never be silently discarded.
+        sqlx::query("UPDATE responses_states SET state_json = ? WHERE session_id = 'session-1'")
+            .bind("{not valid json")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        let err = store.load_provider_state("session-1").await.unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("session-1"),
+            "error should name the session: {message}"
+        );
+        assert!(
+            message.contains("provider state"),
+            "error should mention provider state: {message}"
+        );
     }
 
     #[tokio::test]
