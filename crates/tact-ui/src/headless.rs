@@ -112,6 +112,14 @@ async fn run_headless_locked(
         session_store: None,
     };
 
+    // Responses compaction routing depends on the effective provider: OpenAI
+    // uses native `/responses/compact`, DeepSeek (including an OpenAI entry
+    // pointed at a DeepSeek endpoint) falls back to local summary compaction.
+    let provider_kind = if tact_llm::is_deepseek() {
+        tact_llm::ProviderKind::DeepSeek
+    } else {
+        tact_llm::get_provider().provider
+    };
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -120,7 +128,8 @@ async fn run_headless_locked(
         permission_manager,
         AgentSystemPrompt::Dynamic,
     )
-    .with_session(session_id.clone(), session_store);
+    .with_session(session_id.clone(), session_store)
+    .with_provider_kind(provider_kind);
 
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;

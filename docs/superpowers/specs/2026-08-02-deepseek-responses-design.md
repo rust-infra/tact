@@ -106,11 +106,12 @@ Compaction uses the same native Responses compaction as OpenAI.
 2. Protocol/network failures surface through the existing
    `LlmError::OpenAiResponses` mapping; no new error path.
 3. Explicit `POST /responses/compact` is not implemented by the DeepSeek
-   endpoint (live-verified 2026-08-02): the request returns an unparseable
-   body and the error surfaces through `LlmError::OpenAiResponses`. Automatic
-   `context_management` compaction on ordinary requests works. If the DeepSeek
-   `/responses` endpoint turns out to be incompatible elsewhere, the error is
-   surfaced as-is; there is no silent fallback to chat completions.
+   endpoint (live-verified 2026-08-02: the request returns an unparseable
+   body), so `Agent::compact_history` routes DeepSeek + Responses to the local
+   summary pipeline and clears the stale Responses baseline (messages + `None`
+   state persist atomically). Automatic `context_management` compaction on
+   ordinary requests works. OpenAI Responses keeps the strict no-fallback
+   contract; there is never a silent protocol switch to chat completions.
 
 ## 6. Testing
 
@@ -135,8 +136,10 @@ Compaction uses the same native Responses compaction as OpenAI.
 - `context_management` (`compact_threshold`) is accepted on ordinary requests;
 - `reasoning.effort` derived from `thinking_budget` is accepted;
 - multi-turn continuation with a replayed Responses baseline passes;
-- explicit `/responses/compact` is not supported by the endpoint and the error
-  surfaces (test asserts the error rather than a fallback).
+- explicit `/responses/compact` is not supported by the endpoint; the agent
+  falls back to local summary compaction and clears the baseline (verified by
+  the `deepseek_responses_compact_falls_back_to_local_summary` agent test and
+  the live `deepseek_responses_explicit_compact_unsupported` test).
 
 Per repo `AGENTS.md`: run cargo commands one at a time (single process against
 the shared `target/` lock).

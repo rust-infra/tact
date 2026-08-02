@@ -327,7 +327,8 @@ flowchart LR
 管理协议基线（baseline），而不是运行本地摘要器。上文步骤 1–4（
 `compact_history_local`）的本地流水线仍然是**非 Responses** provider
 （Anthropic、DeepSeek、Kimi、Chat Completions）的路径；它**永远不会**作为
-Responses 的回退方案。
+OpenAI Responses 的回退方案。唯一例外是 DeepSeek + Responses（见下文
+"DeepSeek 例外"）。
 
 原生路径有六个性质：
 
@@ -360,6 +361,13 @@ Responses 的回退方案。
 6. **不回退** — 不支持原生压缩的 Responses 端点是硬性协议错误，绝不静默走
    本地摘要。原生压缩后 Tact 会把 `last_token_total` 重置为 0，因为下一次
    请求的输入是压缩后的基线，而不是压缩前的大 prompt。
+
+**DeepSeek 例外** — DeepSeek + `protocol = "responses"` 在普通请求上接受
+`context_management`（端点侧自动压缩可用），但其 `/responses/compact` **没有**
+实现（2026-08-02 实测：返回空响应体）。因此 `compact_history` 会把 DeepSeek +
+Responses 路由到本地摘要流水线（`compact_history_local`），清掉旧的
+`provider_state` 基线，并以原子方式持久化消息 + `None` 状态。OpenAI Responses
+仍保持上述严格"不回退"契约。
 
 **协议契约与验证状态** — 自动压缩的替换基线（单个 `compaction` item 置前，
 后跟本次 response 的非 compaction 输出 items）来源于设计阶段从目标端点捕获

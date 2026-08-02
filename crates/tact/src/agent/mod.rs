@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tact_llm::{
     ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
-    ProviderConversationState, ProviderStateUpdate, RequiredMessageParams, Role, StopReason,
-    Thinking, ThinkingType,
+    ProviderConversationState, ProviderKind, ProviderStateUpdate, RequiredMessageParams, Role,
+    StopReason, Thinking, ThinkingType,
 };
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
@@ -126,6 +126,11 @@ pub struct Agent {
     pub tool_use_counter: usize,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
+    /// Provider kind captured at construction (or overridden via
+    /// [`Self::with_provider_kind`]); lets Responses routing distinguish
+    /// OpenAI (native compaction) from DeepSeek (local summary fallback)
+    /// without reading process-global provider state.
+    provider_kind: ProviderKind,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
@@ -142,6 +147,7 @@ impl Agent {
         // user `/compact` command and automatic triggers dispatch to the
         // native `/responses/compact` endpoint instead. MCP tools are kept
         // unchanged.
+        let provider_kind = ProviderKind::OpenAi;
         let native_specs = if matches!(client, LlmProvider::OpenAiResponses(_)) {
             tools
                 .tool_specs()
@@ -186,8 +192,17 @@ impl Agent {
             system_prompt,
             tool_use_counter: 0,
             agent_settings: crate::config::settings().agent.clone(),
+            provider_kind,
             cached_tool_specs,
         }
+    }
+
+    /// Override the provider kind used for Responses compaction routing
+    /// (OpenAI → native `/responses/compact`; DeepSeek → local summary
+    /// fallback because its endpoint lacks the endpoint).
+    pub fn with_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
+        self.provider_kind = provider_kind;
+        self
     }
 
     /// Override agent-loop settings (used by integration tests with custom config).
@@ -942,7 +957,7 @@ impl Agent {
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
-        if self.is_openai_responses() {
+        if self.is_openai_responses() && self.provider_kind != ProviderKind::DeepSeek {
             self.compact_responses_native().await
         } else {
             self.compact_history_local(focus).await
@@ -1317,7 +1332,18 @@ impl Agent {
             CompactRebuildMode::LegacySingleSummary => compacted_context(full_summary),
         };
         let previous_context = std::mem::replace(&mut self.runtime.context, rebuilt_context);
-        if let Err(error) = self.replace_persisted_context().await {
+        if self.is_openai_responses() {
+            // The rebuilt logical history invalidates the old Responses
+            // baseline (e.g. DeepSeek + Responses, whose endpoint lacks
+            // `/responses/compact` and compacts locally). Clear it in both the
+            // runtime and persistence so the next request rebuilds from the
+            // compacted context instead of failing the stale-hash check.
+            self.runtime.provider_state = None;
+            if let Err(error) = self.replace_persisted_context_and_state(None).await {
+                self.runtime.context = previous_context;
+                return Err(error);
+            }
+        } else if let Err(error) = self.replace_persisted_context().await {
             self.runtime.context = previous_context;
             return Err(error);
         }
@@ -2004,6 +2030,87 @@ mod tests {
             agent.runtime.context.len(),
             2,
             "native compaction keeps the logical context unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_responses_compact_falls_back_to_local_summary() {
+        ensure_config();
+        // The DeepSeek endpoint lacks `/responses/compact` (verified live
+        // 2026-08-02: it returns an empty body), so DeepSeek + Responses must
+        // compact through the local summary path and clear the stale baseline.
+
+        let server = MockServer::start().await;
+        // The local summary request is an ordinary (non-streaming) `/responses`
+        // call; DeepSeek serves it fine.
+        let summary_fixture = serde_json::json!({
+            "id": "resp_summary",
+            "object": "response",
+            "created_at": 1,
+            "completed_at": 2,
+            "status": "completed",
+            "model": "deepseek-v4-flash",
+            "output": [{
+                "type": "message",
+                "id": "msg_summary",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": null,
+                    "text": "compaction summary text"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 2,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 12
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(summary_fixture))
+            .mount(&server)
+            .await;
+        // `/responses/compact` must never be called for DeepSeek.
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let mut agent = responses_test_agent("deepseek_responses_local_compact", &server.uri())
+            .with_provider_kind(tact_llm::ProviderKind::DeepSeek);
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::Assistant, "second turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("local summary compaction should succeed for DeepSeek Responses");
+
+        server.verify().await;
+
+        // The old Responses baseline covers the pre-compact history and must
+        // not survive the rebuild.
+        assert!(
+            agent.runtime.provider_state.is_none(),
+            "stale Responses baseline must be cleared after local compaction"
+        );
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("compaction summary text"),
+            "rebuilt context must contain the summary, got: {context_text}"
         );
     }
 

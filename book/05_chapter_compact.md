@@ -327,7 +327,8 @@ For `protocol = "responses"`, compaction is **native**: Tact manages the
 protocol baseline through the Responses API instead of running a local
 summarizer. The local pipeline above (steps 1–4, `compact_history_local`)
 remains the path for **non-Responses** providers (Anthropic, DeepSeek, Kimi,
-Chat Completions); it is **never** used as a fallback for Responses.
+Chat Completions); it is **never** used as a fallback for OpenAI Responses.
+The one exception is DeepSeek + Responses (see "DeepSeek exception" below).
 
 The native path has six properties:
 
@@ -366,6 +367,14 @@ The native path has six properties:
    unsupported (a hard protocol error, never a silent local summary). Tact
    resets `last_token_total` to 0 after native compaction because the next
    request's input is the compacted baseline, not the pre-compact prompt.
+
+**DeepSeek exception** — DeepSeek + `protocol = "responses"` accepts
+`context_management` on ordinary requests (automatic endpoint-side compaction
+works), but its `/responses/compact` is **not** implemented (live-verified
+2026-08-02: it returns an empty body). `compact_history` therefore routes
+DeepSeek + Responses to the local summary pipeline (`compact_history_local`),
+clears the old `provider_state` baseline, and persists messages + `None` state
+atomically. OpenAI Responses keeps the strict no-fallback contract above.
 
 **Protocol contract and verification status** — the automatic-compaction
 replacement baseline (the single `compaction` item first, followed by the

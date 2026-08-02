@@ -60,7 +60,9 @@ model = "deepseek-chat"
 # base_url defaults to https://api.deepseek.com
 # Optional protocol: omit or set "chat_completions" (default) for the DeepSeek
 # Chat Completions API; "responses" talks to {base_url}/responses with the same
-# Responses semantics as the openai provider (native compaction, reasoning effort).
+# Responses semantics as the openai provider (automatic context_management
+# compaction, reasoning effort). Explicit /responses/compact is not implemented
+# by DeepSeek, so explicit compaction falls back to the local summary pipeline.
 
 [llm.providers.kimi]
 api_key = "sk-..."
