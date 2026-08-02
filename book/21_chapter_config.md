@@ -167,9 +167,11 @@ config and API yield no candidates, `/model` prints a hint instead of opening
 the picker. Choosing a model applies immediately; you can optionally write it
 back to this provider’s `model` field in the loaded config file.
 
-Optional `protocol` defaults to `chat_completions`. `responses` is valid only
-for the `openai` provider; configuration resolution rejects it for Anthropic,
-DeepSeek, or Kimi. There is no CLI override for this field.
+Optional `protocol` defaults to `chat_completions`. `responses` is valid for
+the `openai` and `deepseek` providers; configuration resolution rejects it for
+Anthropic or Kimi. DeepSeek with `responses` uses the same Responses adapter as
+OpenAI against its configured `base_url` (native compaction and reasoning
+effort included). There is no CLI override for this field.
 
 Optional `reasoning_effort` is also OpenAI-only and accepts `none`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. Availability is model-dependent.

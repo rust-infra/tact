@@ -58,6 +58,9 @@ protocol = "responses"
 api_key = "sk-..."
 model = "deepseek-chat"
 # base_url defaults to https://api.deepseek.com
+# Optional protocol: omit or set "chat_completions" (default) for the DeepSeek
+# Chat Completions API; "responses" talks to {base_url}/responses with the same
+# Responses semantics as the openai provider (native compaction, reasoning effort).
 
 [llm.providers.kimi]
 api_key = "sk-..."

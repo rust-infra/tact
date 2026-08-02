@@ -23,6 +23,8 @@ pub mod types;
 #[cfg(test)]
 mod test_deepseek_reasoning;
 #[cfg(test)]
+mod test_deepseek_responses;
+#[cfg(test)]
 mod test_kimi_reasoning;
 #[cfg(test)]
 mod test_openai;

@@ -237,8 +237,11 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .unwrap_or(OpenAiProtocol::default().as_str())
         .parse::<OpenAiProtocol>()
         .map_err(anyhow::Error::msg)?;
-    if protocol == OpenAiProtocol::Responses && provider != ProviderKind::OpenAi {
-        anyhow::bail!("protocol 'responses' is only supported for provider 'openai'");
+    if protocol == OpenAiProtocol::Responses
+        && provider != ProviderKind::OpenAi
+        && provider != ProviderKind::DeepSeek
+    {
+        anyhow::bail!("protocol 'responses' is only supported for provider 'openai' or 'deepseek'");
     }
     let reasoning_effort = entry.reasoning_effort;
     if reasoning_effort.is_some() && provider != ProviderKind::OpenAi {
@@ -988,7 +991,7 @@ reasoning_effort = "extreme"
     }
 
     #[test]
-    fn reject_responses_protocol_for_non_openai_provider() {
+    fn deepseek_responses_protocol_resolves() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1002,10 +1005,52 @@ protocol = "responses"
         )
         .unwrap();
 
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::DeepSeek);
+        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::Responses);
+    }
+
+    #[test]
+    fn reject_responses_protocol_for_anthropic() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "anthropic"
+
+[llm.providers.anthropic]
+api_key = "sk-test"
+model = "claude-sonnet-4-20250514"
+base_url = "https://api.anthropic.com"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
         let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("only supported for provider 'openai'"));
+        assert!(error.contains("only supported for provider 'openai' or 'deepseek'"));
+    }
+
+    #[test]
+    fn reject_responses_protocol_for_kimi() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "sk-test"
+model = "kimi-for-coding"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only supported for provider 'openai' or 'deepseek'"));
     }
 
     #[test]

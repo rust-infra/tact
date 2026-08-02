@@ -158,7 +158,7 @@ bash_timeout_secs = 1800
 
 可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
 
-可选 `protocol` 默认为 `chat_completions`。`responses` 仅对 `openai` provider 有效；配置 resolve 会拒绝 Anthropic、DeepSeek 或 Kimi 使用该值。此字段没有 CLI override。
+可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含原生压缩与 reasoning effort）。此字段没有 CLI override。
 
 可选 `reasoning_effort` 同样仅对 OpenAI 有效，接受 `none`、`minimal`、
 `low`、`medium`、`high`、`xhigh` 或 `max`；具体可用值取决于模型。显式值会

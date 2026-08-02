@@ -43,7 +43,10 @@ impl ProviderInfo {
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider {
             ProviderKind::Anthropic => self.build_anthropic(),
-            ProviderKind::DeepSeek => self.build_deepseek(),
+            ProviderKind::DeepSeek => match self.protocol {
+                OpenAiProtocol::ChatCompletions => self.build_deepseek(),
+                OpenAiProtocol::Responses => self.build_openai_responses(),
+            },
             ProviderKind::Kimi => self.build_kimi(),
             ProviderKind::OpenAi => match self.protocol {
                 OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
@@ -405,6 +408,18 @@ mod tests {
         assert!(result.is_ok());
         let LlmProvider::DeepSeek(adapter) = result.unwrap() else {
             panic!("expected DeepSeek adapter for deepseek");
+        };
+        assert_eq!(adapter.base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn deepseek_responses_protocol_builds_responses_adapter() {
+        let mut p = provider_info(ProviderKind::DeepSeek, "sk-test", "", "deepseek-v4-flash");
+        p.protocol = OpenAiProtocol::Responses;
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAiResponses(adapter) = result.unwrap() else {
+            panic!("expected OpenAI Responses adapter for deepseek responses");
         };
         assert_eq!(adapter.base_url(), "https://api.deepseek.com");
     }
