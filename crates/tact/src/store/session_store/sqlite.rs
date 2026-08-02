@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
-use tact_llm::{Message, MessageContent, ProviderConversationState, Role};
+use tact_llm::{Message, MessageContent, MessageKind, ProviderConversationState, Role};
 use tact_protocol::TokenUsageInfo;
 
 use super::{
@@ -541,6 +541,10 @@ impl super::SessionStore for SqliteSessionStore {
             messages.push(Message {
                 role: str_to_role(&role_str)?,
                 content,
+                // The store persists only role + content, so reloaded cells are
+                // Normal; compaction summaries are re-detected by content
+                // (see `is_summary_message` in compact).
+                kind: MessageKind::Normal,
             });
         }
 

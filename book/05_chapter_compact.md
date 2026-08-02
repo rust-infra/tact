@@ -205,7 +205,7 @@ Both sides of the OR compare against the same **token** window and both reserve 
 - **Entry (`agent_loop`)**: compact **old** history first with `incoming_turn_tokens = estimate(user_turn)`, then `push` the turn verbatim.
 - **Loop / recovery / manual**: turn already in context → `incoming_turn_tokens = 0`.
 
-Rebuild after summarize (Codex-style): **`[recent real User messages…] + [SUMMARY_PREFIX + handoff]`**, not a single summary-only message. The rebuild has three stages:
+Rebuild after summarize (Codex-style): **`[recent real User messages…] + [<context-handoff> summary cell]`**, not a single summary-only message. The handoff is a `User`-role message framed with `<context-handoff>` … `</context-handoff>` and marked `MessageKind::Summary` in memory so it is a first-class cell: detected by type (with a `SUMMARY_PREFIX` string fallback for reloaded sessions), never mistaken for a real user turn, and safely distinguishable even if a provider merges consecutive user messages. The rebuild has three stages:
 
 1. **`collect_user_messages`** — walks the entire context, extracting real user turns via `is_real_user_message` (excludes tool-result-only blocks, prior summaries, and non-User roles).
 2. **`retained_user_message_token_budget`** — budget = `min(20k estimated tokens, model_context_window - max_tokens - estimate(system + tools + summary) - 20% headroom)`.
@@ -256,7 +256,7 @@ After compaction, `last_token_total` is **reset to 0** (the summarizer call's us
 
 Tact has **two** compaction rebuild modes. Both share the same summarization pipeline (transcript → select recent messages → LLM summary), but differ in **how context is replaced after the summary is produced**:
 
-- **Codex-style** (`compact_history`, production default): rebuilds via `collect_user_messages` + `build_compacted_history`. Context after: `[real User…] + [SUMMARY_PREFIX + summary]`. Real user turns are preserved verbatim from the tail (budget permitting). Current turn survives loop compaction because `collect_user_messages` recovers it from the full context.
+- **Codex-style** (`compact_history`, production default): rebuilds via `collect_user_messages` + `build_compacted_history`. Context after: `[real User…] + [<context-handoff> summary cell]`. Real user turns are preserved verbatim from the tail (budget permitting). Current turn survives loop compaction because `collect_user_messages` recovers it from the full context.
 - **Legacy** (`compact_history_legacy`, rollback only): replaces the entire context with `compacted_context(summary)` — a single user message. All user turns are lost; the current turn in loop compaction is eaten into the summary.
 
 Only Codex is called by production call sites; Legacy exists as `#[allow(dead_code)]` for reference.
@@ -505,7 +505,8 @@ Recent real user turns remain within budget, followed by the handoff summary:
 
 ```text
 [0] User  "Add an early 80% trigger to the compact module"
-[1] User  "This conversation was compacted so the agent can continue working.
+[1] User  "<context-handoff>
+           This conversation was compacted so the agent can continue working.
 
            <LLM summary, organized around the 6 points:>
            1. Current goal: add an early 80% trigger to the compact module
@@ -518,7 +519,8 @@ Recent real user turns remain within budget, followed by the handoff summary:
 
            Recently accessed files (re-read if you need their contents):
            - crates/tact/src/compact/mod.rs
-           - crates/tact/src/agent/mod.rs"
+           - crates/tact/src/agent/mod.rs
+           </context-handoff>"
 ```
 
 Every `tool_use` / `ToolResult` / reasoning block from `[1]`–`[N]` is **no longer in the window** — it survives in only two places: the `transcript_<ts>.jsonl` written before compaction, and whatever the model chose to keep in this summary.

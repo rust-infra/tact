@@ -29,6 +29,17 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-02 — Compaction handoff is now a typed message cell
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Related | Ch 5 |
+| Symptom / motivation | The Codex-style rebuild appended the handoff as a plain `Role::User` text message; the only "special handling" was string-prefix matching (`is_summary_message`). The model could not distinguish a system-generated handoff from a real user turn, consecutive `[User: summary][User: prompt]` messages risked provider-side merging, and detection was fragile (prefix-only, lost on non-Text cells). |
+| Decision | Make the handoff a first-class message cell: `MessageKind::Summary` on `tact_llm::Message` (`#[serde(skip)]`, in-memory only — the Anthropic wire, OpenAI conversion, and JSONL transcripts stay byte-identical) plus `<context-handoff>` … `</context-handoff>` framing in the cell text. Detection is by kind first, with `SUMMARY_PREFIX` / tag string fallback for sessions reloaded from the SQLite store (which persists only role + content). |
+| Behavior after | `build_compacted_history` / `compacted_context` emit a framed, kind-marked cell: `<context-handoff>\nThis conversation was compacted…\n\n{summary}\n</context-handoff>`. `collect_user_messages` skips it by type; reloaded sessions are re-detected by content. Wire format is unchanged for Normal messages; Anthropic never sees `kind`. |
+| Pointers | `crates/tact_llm/src/content.rs` (`MessageKind`, `Message::with_kind/is_summary`); `crates/tact/src/compact/mod.rs` (`summary_message`, `is_summary_message`, `build_compacted_history`, `compacted_context`); `crates/tact/src/store/session_store/sqlite.rs` (`load_session`); `book/05_chapter_compact.md` |
+
 ## 1. 2026-08-02 — DeepSeek can now use the OpenAI Responses protocol
 
 | Field | Value |

@@ -49,7 +49,7 @@ fn reasoning_item(signature: &str) -> Result<Option<InputItem>, LlmError> {
 }
 
 fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
-    let Message { role, content } = message;
+    let Message { role, content, .. } = message;
     if let MessageContent::Text { content } = content {
         return Ok(vec![message_item(
             *role,

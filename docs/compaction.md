@@ -101,7 +101,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 1. **`write_transcript`** (async) → unique `.tact/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
 2. **Recent window** — select from the tail within the model budget and a 20k estimated-token cap; oversized messages become valid text-only views and images become omission markers
 3. **Summarize** — window-aware `create_message`, at most 2k output tokens, with output/headroom reserved; transient failures retry up to three times; abnormal stop reasons and empty summaries fail without replacing context
-4. **Replace** — Codex-style `[recent real User…] + [SUMMARY_PREFIX + handoff]` (legacy: `compacted_context`); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
+4. **Replace** — Codex-style `[recent real User…] + [<context-handoff> summary cell]` (legacy: `compacted_context`); the handoff cell is a `User`-role message framed with `<context-handoff>` … `</context-handoff>` and marked `MessageKind::Summary` in memory (string fallback on reload); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
 5. **`replace_session_messages`** — SQLite matches the new context; message-id window reset; `last_token_total = 0`
 
 ### Recent files

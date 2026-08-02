@@ -205,7 +205,7 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 - **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_tokens = estimate(user_turn)`），再 `push` 本轮原文。
 - **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_tokens = 0`。
 
-摘要后重建（Codex 风格）：**`[近期真实 User…] + [SUMMARY_PREFIX + handoff]`**，不再是单条 summary。重建分为三步：
+摘要后重建（Codex 风格）：**`[近期真实 User…] + [<context-handoff> summary cell]`**，不再是单条 summary。交接摘要是一条带 `<context-handoff>` … `</context-handoff>` 包裹、内存中标记为 `MessageKind::Summary` 的 `User` 角色消息，是**一等公民 cell**：按类型检测（reload 会话回退到 `SUMMARY_PREFIX` 字符串匹配）、永远不会被当成真实 user turn，即使 provider 合并连续 user 消息也能靠标签区分。重建分为三步：
 
 1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息和非 User 角色）。
 2. **`retained_user_message_token_budget`** — 预算 = `min(20k 估算 token, model_context_window - max_tokens - estimate(system + tools + summary) - 20% 余量)`。
@@ -256,7 +256,7 @@ flowchart TD
 
 Tact 有**两种**压缩重建模式。两者共享相同的摘要流水线（transcript → 选取近期消息 → LLM 摘要），区别仅在于**摘要产出后如何替换 context**：
 
-- **Codex 风格**（`compact_history`，生产默认）：通过 `collect_user_messages` + `build_compacted_history` 重建。压缩后 context：`[真实 User…] + [SUMMARY_PREFIX + summary]`。真实 user turn 从尾部原样保留（预算允许）。当前轮次在 loop 压缩中不会丢失——`collect_user_messages` 从完整 context 中恢复它。
+- **Codex 风格**（`compact_history`，生产默认）：通过 `collect_user_messages` + `build_compacted_history` 重建。压缩后 context：`[真实 User…] + [<context-handoff> summary cell]`。真实 user turn 从尾部原样保留（预算允许）。当前轮次在 loop 压缩中不会丢失——`collect_user_messages` 从完整 context 中恢复它。
 - **Legacy**（`compact_history_legacy`，仅保留用于回滚）：用 `compacted_context(summary)` 替换整个 context——单条 user 消息。所有 user turn 丢失；loop 压缩中当前轮次原文被摘要吞掉。
 
 只有 Codex 被生产调用点使用；Legacy 以 `#[allow(dead_code)]` 存在供参考。
@@ -488,7 +488,8 @@ flowchart TD
 
 ```text
 [0] User  "帮我给 compact 模块加个 80% 提前触发"
-[1] User  "This conversation was compacted so the agent can continue working.
+[1] User  "<context-handoff>
+           This conversation was compacted so the agent can continue working.
 
            <LLM 摘要，按 6 点组织：>
            1. 当前目标：给 compact 模块加 80% 提前触发
@@ -501,7 +502,8 @@ flowchart TD
 
            Recently accessed files (re-read if you need their contents):
            - crates/tact/src/compact/mod.rs
-           - crates/tact/src/agent/mod.rs"
+           - crates/tact/src/agent/mod.rs
+           </context-handoff>"
 ```
 
 原来 `[1]`–`[N]` 的所有 `tool_use` / `ToolResult` / 推理**都不在窗口里了**——它们只存在于两个地方：压缩前落盘的 `transcript_<ts>.jsonl`，以及模型自己写的这段摘要。

@@ -33,7 +33,8 @@ mod test_openai;
 pub use account::{query_deepseek_balance, query_kimi_balance, query_kimi_code_usage};
 pub use client::{LlmClient, LlmProvider, LlmRequestBody, LlmResponse};
 pub use content::{
-    ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, Role, StreamUsage,
+    ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, MessageKind, Role,
+    StreamUsage,
 };
 pub use error::{LlmError, MessageError};
 pub use hook_select::body_hook_for;

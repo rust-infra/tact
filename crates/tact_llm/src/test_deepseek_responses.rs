@@ -36,8 +36,7 @@ fn env_config() -> Option<(String, String, String)> {
     };
     let base_url = std::env::var("DEEPSEEK_BASE_URL")
         .unwrap_or_else(|_| "https://api.deepseek.com".to_string());
-    let model =
-        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let model = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
     Some((api_key, base_url, model))
 }
 
@@ -89,7 +88,10 @@ fn text_of(response: &LlmResponse) -> String {
 
 fn assert_has_text(response: &LlmResponse, label: &str) -> String {
     let text = text_of(response);
-    assert!(!text.trim().is_empty(), "{label}: expected a text block, got: {text:?}");
+    assert!(
+        !text.trim().is_empty(),
+        "{label}: expected a text block, got: {text:?}"
+    );
     text
 }
 
@@ -258,9 +260,7 @@ async fn deepseek_responses_explicit_compact_unsupported() {
             Message::new_blocks(Role::Assistant, first.blocks.clone()),
         ],
     });
-    let compacted = client
-        .compact(&compact_request, Some(&state))
-        .await;
+    let compacted = client.compact(&compact_request, Some(&state)).await;
 
     // Live-verified 2026-08-02: the DeepSeek /responses endpoint accepts
     // ordinary requests (including `context_management`) but its
