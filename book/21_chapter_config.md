@@ -170,8 +170,11 @@ back to this provider’s `model` field in the loaded config file.
 Optional `protocol` defaults to `chat_completions`. `responses` is valid for
 the `openai` and `deepseek` providers; configuration resolution rejects it for
 Anthropic or Kimi. DeepSeek with `responses` uses the same Responses adapter as
-OpenAI against its configured `base_url` (native compaction and reasoning
-effort included). There is no CLI override for this field.
+OpenAI against its configured `base_url` (automatic `context_management`
+compaction and reasoning effort included; explicit `/responses/compact`
+support depends on the endpoint — DeepSeek currently does not implement it and
+the error is surfaced without a fallback). There is no CLI override for this
+field.
 
 Optional `reasoning_effort` is also OpenAI-only and accepts `none`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. Availability is model-dependent.
