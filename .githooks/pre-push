@@ -2,4 +2,8 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+# Git exports GIT_DIR / GIT_WORK_TREE into hook processes. Clear them so
+# child commands (cargo test) resolve the repository from their cwd instead
+# of operating on the hook's repository context.
+unset GIT_DIR GIT_WORK_TREE
 exec "${ROOT}/scripts/check-rust.sh"

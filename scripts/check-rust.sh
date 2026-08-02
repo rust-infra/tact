@@ -2,6 +2,10 @@
 # CI-style Rust checks: formatting + clippy with warnings denied (+ integration tests).
 set -euo pipefail
 
+# Do not inherit GIT_DIR / GIT_WORK_TREE from a calling git hook (pre-push,
+# pre-commit, ...): tests must run git commands against their own temp repos.
+unset GIT_DIR GIT_WORK_TREE
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
