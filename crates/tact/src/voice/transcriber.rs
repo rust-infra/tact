@@ -70,7 +70,7 @@ impl Transcriber for GoogleTranscriber {
             .query(&[("key", api_key)])
             .json(&body);
         let response = tokio::select! {
-            result = request.send() => result.context("transcription request failed")?,
+            result = request.send() => result.map_err(|_| anyhow::anyhow!("transcription request failed"))?,
             () = cancel.cancelled() => bail!("transcription cancelled"),
         };
         let status = response.status();
@@ -211,9 +211,7 @@ pub fn parse_google_transcription_response(
     body: &[u8],
 ) -> anyhow::Result<String> {
     if !status.is_success() {
-        let snippet = String::from_utf8_lossy(body);
-        let snippet = snippet.chars().take(200).collect::<String>();
-        bail!("transcription HTTP {status}: {snippet}");
+        bail!("Google transcription HTTP {status}");
     }
     let value: serde_json::Value =
         serde_json::from_slice(body).context("invalid Google transcription JSON response")?;

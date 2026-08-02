@@ -27,9 +27,20 @@ Newest entries first. Each entry should include:
 5. **Behavior after** — observable rules agents and users rely on  
 6. **Pointers** — code paths, specs, related book chapters  
 
+## 1. 2026-08-02 — Google Cloud API-key voice transcription provider
+
+| Field | Value |
+|-------|-------|
+| Type | `feature` |
+| Related | Ch 21, Ch 23 |
+| Symptom / motivation | Voice input supported OpenAI-compatible transcription and local `whisper.cpp`, but users with a Google Cloud Speech-to-Text API key had no direct provider. |
+| Decision | Add `VoiceProvider::Google` using synchronous `POST {base_url}/speech:recognize?key=...` with base64 LINEAR16 mono 16 kHz WAV JSON. Reuse `voice.api_key`, `voice.language`, and `voice.model`; default to `https://speech.googleapis.com/v1` and `latest_short`. Limit Google recordings to `1..=60` seconds. Service Accounts, OAuth, long-running recognition, streaming, and automatic segmentation remain out of scope. |
+| Behavior after | Configuring `provider = "google"` sends a short recording to Google Cloud and concatenates returned `results[].alternatives[0].transcript` values into the existing TUI input flow. Missing keys, HTTP failures, malformed/empty responses, and cancellation are reported without exposing credentials. |
+| Pointers | `crates/tact/src/config/{types.rs,resolve.rs}`; `crates/tact/src/voice/transcriber.rs`; `docs/superpowers/specs/2026-08-02-google-voice-transcription-design.md`; Ch 21, Ch 23 |
+
 ---
 
-## 1. 2026-08-02 — Compaction handoff is now a typed message cell
+
 
 | Field | Value |
 |-------|-------|
