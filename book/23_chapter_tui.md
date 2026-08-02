@@ -67,6 +67,7 @@ Theme comes from `config::settings().ui.theme` (default `"ink"`).
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    Compact,
     QueryBalance,
 }
 ```
@@ -75,7 +76,40 @@ pub enum UserCommand {
 |---------|--------|---------------------|
 | **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
 | **`Cancel`** | `/cancel`, or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
+| **`Compact`** | `/compact` (idle only) | `agent.compact_history(None)` → native `/responses/compact` for Responses providers, local summarizer otherwise ([Ch 5](./05_chapter_compact.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
+
+### `/compact` status messages
+
+Compaction is **never** an assistant message or streamed markdown output: it is
+a sequence of system `Info` lines plus a final status line. The messages
+depend on the provider:
+
+| Message | When |
+|---------|------|
+| `[compacting]` | `UserCommand::Compact` received by the command driver, before `compact_history` runs |
+| `[auto compact]` | Auto-compact trigger fired in `agent_loop` (entry path or per-iteration) |
+| `[manual compact]` | Local `compact` tool succeeded and set a manual-compact flag (non-Responses only) |
+| `[native compact]` | Responses provider: explicit `POST /responses/compact` started |
+| `[compact retry n/N] retrying in Xs` | Transient transport error while compacting; bounded backoff retry |
+| `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = truncated compaction-id prefix |
+| `Compaction complete.` | `UserCommand::Compact` finished successfully |
+
+**Encrypted state is never rendered.** Responses compaction and reasoning
+items carry opaque `encrypted_content`; it is replayed to the endpoint but
+must never appear in `Info` lines, error strings, tool cards, or any other TUI
+surface. The two encrypted payloads have different boundaries: reasoning
+encrypted data may exist **only** inside the internal, non-renderable
+`Thinking.signature` envelope (never in visible thinking text, never in an
+output block), while a `compaction` item's `encrypted_content` remains
+**provider state only** (protocol baseline and request body) and never becomes
+a `ContentBlock` at all. Diagnostics emit item counts and a **bounded
+compaction-id prefix** only — the full id stays in provider state and SQLite
+metadata (for example `[responses compacted: items=2, id=cmp_sanitize]` shows
+just the first characters of the id). A failed compaction shows `Error` +
+`Compaction failed: …` and leaves the previous context and state intact; an
+incomplete streamed compaction (announced but never completed) is a hard
+protocol error, never silently “recovered” from visible text.
 
 `build_user_message` (in `crates/tact-ui/src/user_message.rs`) parses inline `![alt](path)` images and `@file` references into multimodal `ContentBlock`s. Raster images use `[ui.vision_image]` in config: `compress` (default `true`) downscales and re-encodes as JPEG (`max_edge` 1280, `jpeg_quality` 80); set `compress = false` to send the original file bytes. File paths are resolved with `tact::tool::safe_path` — references outside the workspace are left unchanged in the prompt text.
 
@@ -303,6 +337,8 @@ pub(crate) trait Renderable {
 
 `render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
+**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Real streamed code blocks with an explicit language tag (for example ```rust) still use the code-card path.
+
 ### 6.8 Popups
 
 | Popup | Trigger | File |
@@ -435,7 +471,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 
 - **Paragraph mode** — non-blank lines accumulate in `stream.paragraph` until a blank line or horizontal rule; then `render_markdown_tui` emits styled rows.
 - **Table mode** — `| … |` lines buffer until a non-table line; `format_table` emits aligned rows.
-- **Code fence mode** — opening ` ```lang ` sets `stream.code_block`; interior lines stream with a ` ▌` indicator; closing ` ``` ` splices placeholder rows and pushes a `CodeBlock` overlay entry.
+- **Code fence mode** — opening ` ```lang ` sets `stream.code_block`; interior lines stream with a ` ▌` indicator; closing ` ``` ` splices placeholder rows and pushes a `CodeBlock` overlay entry. Empty-language fences that appear immediately after an in-progress markdown paragraph/list stay in paragraph flow instead of being promoted into a code card.
 - **Gap rules** — `ensure_gap_after_tools()` inserts a blank before assistant text following a tool card; tool start calls `ensure_gap_before_tools()`.
 
 When a tool starts, `flush_stream_pending()` runs first — any partial paragraph, table, code block, or `stream.buffer` tail is committed to `messages[]` before placeholder rows appear.

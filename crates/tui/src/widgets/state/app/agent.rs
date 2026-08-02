@@ -598,6 +598,24 @@ impl App {
                 );
                 self.stream.code_block_line_count += 1;
             } else if is_code_fence {
+                let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
+
+                // If an empty-language fence appears immediately after an
+                // in-progress markdown paragraph/list, keep it in normal
+                // markdown flow instead of promoting it into a standalone code
+                // card. This avoids surprising card extraction for malformed or
+                // explanatory fence snippets embedded in prose.
+                if lang.is_empty() && !self.stream.paragraph.is_empty() {
+                    if !self.stream.table_buffer.is_empty() {
+                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        completed.extend(styled.into_iter().zip(raw));
+                        self.stream.table_buffer.clear();
+                    }
+                    self.stream.paragraph.push('\n');
+                    self.stream.paragraph.push_str(&line);
+                    continue;
+                }
+
                 // Open new code block: flush pending content first
                 if !self.stream.paragraph.is_empty() {
                     let paragraph = std::mem::take(&mut self.stream.paragraph);
@@ -615,7 +633,6 @@ impl App {
                     self.append_msg(styled_line, raw_line, RawMessageType::LLM);
                 }
 
-                let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
                 self.stream.code_block = true;
                 self.stream.code_block_buffer.clear();
                 self.stream.code_block_lang = lang.clone();

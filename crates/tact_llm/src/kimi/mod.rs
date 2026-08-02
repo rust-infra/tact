@@ -6,12 +6,12 @@
 //! Chat Completions docs).
 
 use serde_json::Value;
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, ProviderInfo,
-    ProviderKind, StopReason,
+    CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState, ProviderInfo,
+    ProviderKind,
     inject::{inject_reasoning_content, thinking_budget_enabled},
     openai::{
         CompatibleConfig, OpenAiAdapter,
@@ -97,6 +97,7 @@ impl KimiAdapter {
                 provider: ProviderKind::Kimi,
                 protocol: crate::OpenAiProtocol::default(),
                 reasoning_effort: None,
+                responses_compact_threshold: None,
                 api_key: String::new(),
                 base_url,
                 model,
@@ -118,17 +119,10 @@ impl LlmClient for KimiAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
+        provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+    ) -> Result<LlmResponse, LlmError> {
+        stream_assembled(&self.adapter, request, provider_state, ui_tx, |r, s| {
             self.assemble_body(r, s)
         })
         .await
@@ -137,16 +131,12 @@ impl LlmClient for KimiAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
-        create_assembled(&self.adapter, request, |r, s| self.assemble_body(r, s)).await
+        provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
+        create_assembled(&self.adapter, request, provider_state, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 }
 

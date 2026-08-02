@@ -56,6 +56,11 @@ pub struct ProviderEntryToml {
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Candidate models for the `/model` picker (optional).
     pub models: Vec<String>,
+    /// Optional OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). Only meaningful for `protocol = "responses"`. When omitted,
+    /// the threshold is derived from `agent.model_context_window`,
+    /// `llm.max_tokens`, and 10% safety headroom.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +197,13 @@ pub struct LlmSettings {
     pub model: String,
     /// Candidate models for the `/model` TUI picker.
     pub models: Vec<String>,
+    /// Resolved OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). `Some` only for `protocol = "responses"`: either the
+    /// configured `responses_compact_threshold` (validated against
+    /// `max_tokens` + 10% headroom) or derived from
+    /// `model_context_window`, `max_tokens`, and headroom. `None` for
+    /// non-Responses providers and when the model context window is zero.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 impl LlmSettings {
@@ -203,6 +215,7 @@ impl LlmSettings {
             provider: self.provider,
             protocol: self.protocol,
             reasoning_effort: self.reasoning_effort,
+            responses_compact_threshold: self.responses_compact_threshold,
         }
     }
 }
@@ -394,6 +407,39 @@ models = ["kimi-k2.5", "kimi-for-coding"]
     }
 
     #[test]
+    fn parse_responses_compact_threshold() {
+        let toml_str = r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+responses_compact_threshold = 160000
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        let openai = cfg.llm.providers.get("openai").unwrap();
+        assert_eq!(openai.responses_compact_threshold, Some(160_000));
+
+        // Absent key resolves to None, not a deserialization error.
+        let absent: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+protocol = "responses"
+"#,
+        )
+        .unwrap();
+        let openai = absent.llm.providers.get("openai").unwrap();
+        assert_eq!(openai.responses_compact_threshold, None);
+    }
+
+    #[test]
     fn parse_voice_config_and_defaults() {
         let cfg: TactTomlConfig = toml::from_str(
             r#"
@@ -414,5 +460,31 @@ max_duration_secs = 45
         .unwrap();
         assert_eq!(cfg.voice.enabled, Some(true));
         assert_eq!(cfg.voice.max_duration_secs, Some(45));
+    }
+
+    #[test]
+    fn provider_info_carries_responses_compact_threshold() {
+        let settings = LlmSettings {
+            provider: ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::Responses,
+            reasoning_effort: None,
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+            models: Vec::new(),
+            responses_compact_threshold: Some(160_000),
+        };
+
+        let info = settings.provider_info();
+        assert_eq!(info.responses_compact_threshold, Some(160_000));
+
+        let settings_without = LlmSettings {
+            responses_compact_threshold: None,
+            ..settings
+        };
+        assert_eq!(
+            settings_without.provider_info().responses_compact_threshold,
+            None
+        );
     }
 }

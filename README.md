@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-1.0.8-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.0.10-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
 </p>
 
@@ -120,8 +120,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v1.0.8
-git push origin v1.0.8
+git tag v1.0.10
+git push origin v1.0.10
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
@@ -132,7 +132,9 @@ Create `config.toml` in your project root (or `~/.tact/config.toml` for user-lev
 
 ```toml
 [llm]
-provider = "anthropic"   # "anthropic" | "openai" | "deepseek" | "kimi"
+provider = "anthropic"   # selects [llm.providers.anthropic]
+
+[llm.providers.anthropic]
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
 base_url = "https://api.anthropic.com"  # required for anthropic
@@ -143,15 +145,17 @@ mode = "default"   # "default" | "plan" | "auto"
 [agent]
 model_context_window = 200000
 snapshot_max_items = 80
-micro_compact_enabled = true
+micro_compact_enabled = false
 notifications_enabled = true
 
 [ui]
-theme = "retro"   # retro | brutal | nord | dark | auto ...
+theme = "retro"   # ink | ink-light | retro | brutal | nord | dark | auto ...
 
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
+# Bash process niceness (default: 10; 0 disables)
+bash_nice = 10
 ```
 
 CLI flags override the config file (e.g. `--model`, `--api-key`, `--theme`).
@@ -162,7 +166,7 @@ Optional agent settings (config file or CLI):
 |---|---|---|---|
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
 | `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (80% auto-compact + TUI usage meter) |
-| `micro_compact_enabled` | `--no-micro-compact` | `true` | Stub old tool results before each LLM call |
+| `micro_compact_enabled` | `--no-micro-compact` | `false` | Stub old tool results before each LLM call when enabled |
 
 ### 3. Run
 
@@ -180,6 +184,18 @@ tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling
 tact-ui -m plan headless "Add rate limiting to the API client"
 ```
 
+Persisted sessions can be resumed with `--session ID` or `--resume-last`; inspect
+recent sessions with `--list-sessions`. Plugin and marketplace management is also
+available without starting the TUI:
+
+```bash
+tact-ui plugin list
+tact-ui plugin install superpowers@claude-plugins-official
+tact-ui plugin marketplace add owner/repository
+tact-ui plugin marketplace list
+tact-ui plugin reload
+```
+
 ---
 
 ## Features
@@ -189,8 +205,8 @@ tact-ui -m plan headless "Add rate limiting to the API client"
 Multi-turn conversation loop with progressive context management:
 
 1. **Large-output spill** — oversized tool results land on disk with a short preview in context
-2. **Micro-compact** — before each LLM call, stub old tool results (keep the last 12 intact)
-3. **Full compact** — when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary**
+2. **Micro-compact (optional)** — when enabled, stub old tool results before each LLM call (keep the last 12 intact)
+3. **Full compact** — for chat-completions providers, when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary**. OpenAI Responses uses provider-native compaction; DeepSeek Responses falls back to the local summary pipeline when its explicit compact endpoint is unavailable.
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
@@ -200,7 +216,7 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 
 | Category | Tools |
 |----------|-------|
-| **File System** | `read_file`, `write_file`, `edit_file`, `apply_patch` |
+| **File System** | `read_file`, `write_file`, `edit_file` |
 | **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
@@ -227,6 +243,8 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
 - **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
+- **Model picker** — TUI `/model` uses configured `models = [...]` first and supplements OpenAI-compatible `openai`, `deepseek`, and `kimi` providers with a cached `GET {base_url}/models` result.
+- **Voice input** — optional microphone recording and transcription via OpenAI or a local `whisper.cpp` server, configured under `[voice]` (macOS-first).
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 🧩 Plugin Marketplace
@@ -304,7 +322,7 @@ Transcripts, tool results, memories, cron jobs, and task state all persist to `~
 The agent loop:
 1. Optionally auto-compacts **old** history (reserving space for the incoming user turn), then appends the turn
 2. Builds the system prompt from role, guidelines, constraints, memory, and dynamic context
-3. Micro-compacts old tool results; auto-compacts again if the window is still over the threshold
+3. Micro-compacts old tool results when enabled; auto-compacts again if the window is still over the threshold
 4. Sends the conversation to the LLM with tool definitions
 5. Processes streaming responses: text → display, tool calls → execute
 6. Checks permissions for each tool call
@@ -323,7 +341,6 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `read_file` | Read file contents with optional offset/limit; default page is 2000 lines / ~25k approx tokens with a PARTIAL continuation marker |
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
-| `apply_patch` | Apply unified diff patches |
 | `bash` | Run a shell command |
 | `background_run` | Run a command in the background |
 | `check_background` | Check background task status |
@@ -378,31 +395,73 @@ Use `--config /path/to/config.toml` to point at a specific file instead of auto-
 
 ```toml
 [llm]
-provider = "anthropic"           # "anthropic" | "openai" | "deepseek" | "kimi"
+provider = "anthropic"           # selects [llm.providers.anthropic]
+max_tokens = 8000                 # optional global default
+thinking_budget = 0               # optional global default; 0 = off
+
+[llm.providers.anthropic]
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
-base_url = "https://..."         # proxy or compatible endpoint
-max_tokens = 8000
-thinking_budget = 32000
+base_url = "https://api.anthropic.com"  # required for anthropic
+
+[llm.providers.openai]
+model = "gpt-4o"
+api_key = "sk-..."
+protocol = "responses"            # responses | chat_completions
+# reasoning_effort = "high"       # none|minimal|low|medium|high|xhigh|max
+# base_url = "https://api.openai.com/v1"
+# responses_compact_threshold = 160000
+
+[llm.providers.deepseek]
+model = "deepseek-chat"
+api_key = "sk-..."
+# protocol = "responses"          # otherwise chat_completions
+
+[llm.providers.kimi]
+model = "kimi-k2.5"
+api_key = "sk-..."
+models = ["kimi-k2.5", "kimi-for-coding"]
 
 [permission]
-mode = "default"                 # "default" | "plan" | "auto"
+mode = "default"                 # default | plan | auto
 
 [agent]
 model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
 snapshot_max_items = 80
-micro_compact_enabled = true      # stub old tool results before each LLM call
+micro_compact_enabled = false     # stub old tool results before each LLM call
 notifications_enabled = true
+skill_body_auto_inject = false
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+# instruction_sources = ["agents_md"]
+# instruction_sources = ["agents_md", "claude_md"]
+
+[agent.subagent]
+# provider = "deepseek"            # key from [llm.providers.*]
+# model = "deepseek-chat"
+# max_tokens = 8000
+# thinking_budget = 0
 
 [ui]
-theme = "retro"                  # or "auto"
-# vision_image.* only reduces tokens for attached images; does not enable vision
-# vision_image.compress = true
-# vision_image.max_edge = 1280
-# vision_image.jpeg_quality = 80
+theme = "retro"                  # ink | ink-light | retro | brutal | nord | dark | auto
+# vision_image.* only reduces tokens for attached images; it does not enable vision
+# [ui.vision_image]
+# compress = true
+# max_edge = 1280
+# jpeg_quality = 80
+
+[voice]
+enabled = false                   # macOS-first microphone input
+# provider = "openai"             # openai | whisper_cpp
+# api_key = "..."                 # transcription key, separate from LLM key
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini-transcribe"
+# language = "zh"
+# max_duration_secs = 300
+# voice_keybind = "ctrl+g"
 
 [tools]
-bash_timeout_secs = 1800          # wall-clock seconds; 0 disables timeout
+bash_timeout_secs = 1800         # wall-clock seconds; 0 disables timeout
+bash_nice = 10                    # process niceness, 0 disables
 ```
 
 ### CLI flags (override config)
@@ -417,61 +476,20 @@ bash_timeout_secs = 1800          # wall-clock seconds; 0 disables timeout
 | `--max-tokens` | Max tokens per LLM call |
 | `--thinking-budget` | Extended thinking budget |
 | `--permission-mode` / `-m` | Permission mode |
+| `--session ID` | Resume a specific persisted session |
+| `--resume-last` | Resume the most recent session |
+| `--list-sessions` | List recent sessions and exit |
+| `--notifications BOOL` | Enable/disable desktop notifications |
+| `--no-notifications` | Disable desktop notifications |
+| `--model-context-window` | Model context window before auto-compaction |
 | `--theme` | TUI theme |
 | `--snapshot-max-items` | Project structure snapshot size |
 | `--no-micro-compact` | Disable micro-compaction |
+| `--skill-body-auto-inject` | Inject full skill bodies into the system prompt |
 | `--tokio-console` | Enable tokio-console debugging |
-
----
-
-## Project Structure
-
-```
-crates/
-├── protocol/    # Shared wire types (AgentUpdate, UserCommand, …)
-├── tact/        # Agent runtime library: loop, tools, hooks, permissions, MCP, LSP
-├── tact-ui/     # CLI binary (TUI + headless); wires tact + tui
-├── tact_llm/    # LLM provider adapters
-├── tui/         # Terminal UI (ratatui)
-└── tool_refactor_macros/   # #[tool] proc macro
-```
-
----
-
-## Roadmap
-
-- [ ] Publish to crates.io
-- [x] Pre-built binary releases (GitHub Actions)
-- [ ] Web dashboard for task/tool monitoring
-- [ ] More MCP transports (SSE, WebSocket)
-- [ ] Llama / Ollama support for fully local operation
-- [ ] VS Code extension (bridge to TUI)
-- [ ] Multi-user team server
-
----
-
-## Contributing
-
-tact is early stage and welcomes contributions! Some good places to start:
-
-- 🐛 **Bug reports** — open an issue
-- 💡 **Feature requests** — open a discussion
-- 🔧 **PRs** — pick up a `good-first-issue`
-
-Before opening a PR, run `./scripts/check-rust.sh` (fmt + clippy `-D warnings` + tests),
-or format only with `./scripts/fmt-rust.sh`. Install hooks with
-`./scripts/install-git-hooks.sh` to run the full check on push.
-
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for an overview of the codebase.
 
 ---
 
 ## License
 
 MIT — do whatever you want, just keep the copyright notice.
-
----
-
-<p align="center">
-  <sub>Built with 🦀 by <a href="https://github.com/Rg0x80">Rg0x80</a></sub>
-</p>

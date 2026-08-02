@@ -8,7 +8,10 @@ use std::sync::{
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmRequestBody, StopReason};
+use crate::{
+    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
+    ProviderStateUpdate, StopReason,
+};
 
 /// A single canned LLM turn for [`MockClient`].
 struct MockTurn {
@@ -246,16 +249,9 @@ impl LlmClient for MockClient {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
+        _provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<LlmResponse, LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         if let Some(ref u) = usage {
             Self::emit_token_usage(&ui_tx, u);
@@ -263,22 +259,46 @@ impl LlmClient for MockClient {
         if self.emit_stream_chunks {
             Self::emit_stream_chunks(&ui_tx, &blocks);
         }
-        Ok((blocks, stop_reason, usage, None))
+        Ok(LlmResponse {
+            blocks,
+            stop_reason,
+            usage,
+            request_body: None,
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+        _provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
-        Ok((blocks, stop_reason, usage, None))
+        Ok(LlmResponse {
+            blocks,
+            stop_reason,
+            usage,
+            request_body: None,
+            state_update: ProviderStateUpdate::Unchanged,
+        })
+    }
+
+    /// Native mock compaction: returns the next scripted turn.
+    ///
+    /// Keeps the mock turn counter semantics shared with `stream_message` /
+    /// `create_message` so compaction participates in scripted sequences.
+    async fn compact(
+        &self,
+        request: &CreateMessageParams,
+        _provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
+        let (blocks, stop_reason, usage) = self.next_turn(request)?;
+        Ok(LlmResponse {
+            blocks,
+            stop_reason,
+            usage,
+            request_body: None,
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 }

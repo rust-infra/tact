@@ -137,6 +137,7 @@ mod tests {
             provider: kind,
             protocol: crate::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: "sk-test".into(),
             base_url: base_url.into(),
             model: "test-model".into(),

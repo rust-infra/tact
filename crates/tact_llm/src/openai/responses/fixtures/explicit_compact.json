@@ -1,0 +1,33 @@
+{
+  "id": "cmp_sanitized_01",
+  "object": "response.compaction",
+  "created_at": 1754000000,
+  "output": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_sanitized_1",
+      "output": "sanitized tool output retained by compaction",
+      "id": "fc_out_sanitized_1",
+      "status": "completed"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_sanitized_2",
+      "output": "sanitized second retained tool output",
+      "id": "fc_out_sanitized_2",
+      "status": "completed"
+    },
+    {
+      "type": "compaction",
+      "id": "cmp_sanitized_01",
+      "encrypted_content": "sanitized-encrypted-compaction-content-placeholder"
+    }
+  ],
+  "usage": {
+    "input_tokens": 1200,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens": 340,
+    "output_tokens_details": { "reasoning_tokens": 0 },
+    "total_tokens": 1540
+  }
+}

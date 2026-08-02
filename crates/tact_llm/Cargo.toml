@@ -17,8 +17,10 @@ reqwest-eventsource = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 dotenvy = { workspace = true }
+wiremock = "0.6"

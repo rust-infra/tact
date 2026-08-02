@@ -7,7 +7,7 @@
 
 use super::OpenAiAdapter;
 use crate::{
-    CreateMessageParams, LlmClient, LlmError,
+    CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
     hook_select::body_hook_for,
     openai::{
         body::assemble_chat_completion_body,
@@ -60,17 +60,10 @@ impl LlmClient for OpenAiMultiModelAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
+        provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<crate::ContentBlock>,
-            Option<crate::StopReason>,
-            Option<tact_protocol::TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
-        stream_assembled(&self.adapter, request, ui_tx, |r, s| {
+    ) -> Result<LlmResponse, LlmError> {
+        stream_assembled(&self.adapter, request, provider_state, ui_tx, |r, s| {
             self.assemble_body(r, s)
         })
         .await
@@ -79,16 +72,12 @@ impl LlmClient for OpenAiMultiModelAdapter {
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<crate::ContentBlock>,
-            Option<crate::StopReason>,
-            Option<tact_protocol::TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
-        create_assembled(&self.adapter, request, |r, s| self.assemble_body(r, s)).await
+        provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
+        create_assembled(&self.adapter, request, provider_state, |r, s| {
+            self.assemble_body(r, s)
+        })
+        .await
     }
 }
 
@@ -110,6 +99,7 @@ mod tests {
             provider: ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),

@@ -129,6 +129,14 @@ async fn run_interactive_locked(
     };
 
     let history_store = session_store.clone();
+    // Responses compaction routing depends on the effective provider: OpenAI
+    // uses native `/responses/compact`, DeepSeek (including an OpenAI entry
+    // pointed at a DeepSeek endpoint) falls back to local summary compaction.
+    let provider_kind = if tact_llm::is_deepseek() {
+        tact_llm::ProviderKind::DeepSeek
+    } else {
+        tact_llm::get_provider().provider
+    };
     let agent = Agent::new(
         client.clone(),
         tool_context,
@@ -138,7 +146,8 @@ async fn run_interactive_locked(
         AgentSystemPrompt::Dynamic,
     )
     .with_ui_channel(agent_tx)
-    .with_session(session_id.clone(), session_store.clone());
+    .with_session(session_id.clone(), session_store.clone())
+    .with_provider_kind(provider_kind);
 
     let (history_save_tx, mut history_save_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();

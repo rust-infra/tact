@@ -4759,7 +4759,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "anyhow",
  "async-openai 0.20.0",
@@ -4803,7 +4803,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "anyhow",
  "base64",
@@ -4820,11 +4820,12 @@ dependencies = [
  "tokio",
  "tui",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
 name = "tact_llm"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "anyhow",
  "async-openai 0.20.0",
@@ -4837,10 +4838,12 @@ dependencies = [
  "secrecy 0.8.0",
  "serde",
  "serde_json",
+ "sha2",
  "tact_protocol",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -5261,7 +5264,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "proc-macro2",
  "quote",

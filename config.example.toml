@@ -45,10 +45,24 @@ protocol = "responses"
 # Omit protocol or set "chat_completions" for OpenAI-compatible proxies.
 # Omit reasoning_effort to keep the thinking_budget low/medium/high mapping.
 
+# Optional OpenAI Responses `context_management.compact_threshold` (tokens).
+# Sent on every ordinary `/responses` request so the endpoint compacts the
+# protocol baseline automatically at the threshold. When omitted, the
+# threshold is derived from agent.model_context_window / llm.max_tokens with
+# 10% headroom (only for protocol = "responses").
+# responses_compact_threshold = 160000
+# Endpoints lacking native Responses compaction are unsupported; Tact never
+# falls back to local summary compaction for protocol = "responses".
+
 [llm.providers.deepseek]
 api_key = "sk-..."
 model = "deepseek-chat"
 # base_url defaults to https://api.deepseek.com
+# Optional protocol: omit or set "chat_completions" (default) for the DeepSeek
+# Chat Completions API; "responses" talks to {base_url}/responses with the same
+# Responses semantics as the openai provider (automatic context_management
+# compaction, reasoning effort). Explicit /responses/compact is not implemented
+# by DeepSeek, so explicit compaction falls back to the local summary pipeline.
 
 [llm.providers.kimi]
 api_key = "sk-..."

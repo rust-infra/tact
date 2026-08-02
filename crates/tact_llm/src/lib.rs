@@ -17,10 +17,13 @@ pub mod mock;
 pub mod models;
 pub mod openai;
 pub mod provider;
+pub mod provider_state;
 pub mod types;
 
 #[cfg(test)]
 mod test_deepseek_reasoning;
+#[cfg(test)]
+mod test_deepseek_responses;
 #[cfg(test)]
 mod test_kimi_reasoning;
 #[cfg(test)]
@@ -28,9 +31,10 @@ mod test_openai;
 
 // Re-export account query APIs at the crate root (existing public surface).
 pub use account::{query_deepseek_balance, query_kimi_balance, query_kimi_code_usage};
-pub use client::{LlmClient, LlmProvider, LlmRequestBody};
+pub use client::{LlmClient, LlmProvider, LlmRequestBody, LlmResponse};
 pub use content::{
-    ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, Role, StreamUsage,
+    ContentBlock, ContentBlockDelta, ImageSource, Message, MessageContent, MessageKind, Role,
+    StreamUsage,
 };
 pub use error::{LlmError, MessageError};
 pub use hook_select::body_hook_for;
@@ -44,6 +48,9 @@ pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
     is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k27,
     is_kimi_usage_supported, read_provider, set_model, supports_vision,
+};
+pub use provider_state::{
+    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
 pub use types::{
     CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort, ProviderKind,

@@ -34,7 +34,9 @@ use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::LlmError;
-use crate::{ContentBlock, StopReason};
+use crate::{
+    ContentBlock, LlmResponse, ProviderConversationState, ProviderStateUpdate, StopReason,
+};
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
@@ -384,16 +386,9 @@ impl OpenAiAdapter {
     pub async fn stream_completion(
         &self,
         body: &serde_json::Value,
+        _provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
@@ -571,22 +566,21 @@ impl OpenAiAdapter {
             }
         }
 
-        Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
+        Ok(LlmResponse {
+            blocks: response_blocks,
+            stop_reason,
+            usage: token_usage,
+            request_body: Some(json_body),
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 
     /// Non-streaming chat completion against a finished JSON body.
     pub async fn create_completion(
         &self,
         body: &serde_json::Value,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+        _provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
@@ -699,7 +693,13 @@ impl OpenAiAdapter {
             }
         });
 
-        Ok((blocks, stop_reason, token_usage, Some(json_body)))
+        Ok(LlmResponse {
+            blocks,
+            stop_reason,
+            usage: token_usage,
+            request_body: Some(json_body),
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 }
 

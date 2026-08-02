@@ -579,6 +579,7 @@ mod tests {
                 base_url: "https://api.moonshot.cn/v1".into(),
                 model: current.into(),
                 models: models.into_iter().map(str::to_string).collect(),
+                responses_compact_threshold: None,
             },
             agent: tact::config::AgentSettings {
                 max_tokens: 8000,
@@ -613,6 +614,7 @@ mod tests {
             provider: ProviderKind::Kimi,
             protocol: tact_llm::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: "sk-test".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             model: current.into(),

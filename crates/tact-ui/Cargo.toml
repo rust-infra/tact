@@ -31,3 +31,4 @@ rmcp = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
+wiremock = "0.6"

@@ -13,8 +13,8 @@ use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo}
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, MessageError,
-    StopReason, StreamUsage,
+    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, LlmResponse,
+    MessageError, ProviderConversationState, ProviderStateUpdate, StopReason, StreamUsage,
 };
 
 /// Events emitted when an Anthropic thinking content block starts.
@@ -154,16 +154,9 @@ impl LlmClient for AnthropicAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
+        _provider_state: Option<&ProviderConversationState>,
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+    ) -> Result<LlmResponse, LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
         let mut stop_reason: Option<StopReason> = None;
@@ -411,21 +404,20 @@ impl LlmClient for AnthropicAdapter {
             }
         }
 
-        Ok((response_blocks, stop_reason, token_usage, Some(json_body)))
+        Ok(LlmResponse {
+            blocks: response_blocks,
+            stop_reason,
+            usage: token_usage,
+            request_body: Some(json_body),
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 
     async fn create_message(
         &self,
         request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<crate::LlmRequestBody>,
-        ),
-        LlmError,
-    > {
+        _provider_state: Option<&ProviderConversationState>,
+    ) -> Result<LlmResponse, LlmError> {
         let body = self.prepare_body(request, false)?;
 
         let json_body = serde_json::to_vec(&body).unwrap();
@@ -484,12 +476,13 @@ impl LlmClient for AnthropicAdapter {
             })
         });
 
-        Ok((
-            payload.content,
-            parse_stop_reason(payload.stop_reason),
-            token_usage,
-            Some(json_body),
-        ))
+        Ok(LlmResponse {
+            blocks: payload.content,
+            stop_reason: parse_stop_reason(payload.stop_reason),
+            usage: token_usage,
+            request_body: Some(json_body),
+            state_update: ProviderStateUpdate::Unchanged,
+        })
     }
 }
 

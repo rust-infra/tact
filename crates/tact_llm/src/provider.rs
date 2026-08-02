@@ -18,6 +18,10 @@ pub struct ProviderInfo {
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Optional OpenAI Responses `context_management.compact_threshold`
+    /// (tokens). Only meaningful for `protocol = "responses"`; `None` omits
+    /// `context_management` from ordinary `/responses` requests.
+    pub responses_compact_threshold: Option<u32>,
 }
 
 impl Default for ProviderInfo {
@@ -29,6 +33,7 @@ impl Default for ProviderInfo {
             provider: ProviderKind::OpenAi,
             protocol: OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
         }
     }
 }
@@ -38,7 +43,10 @@ impl ProviderInfo {
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider {
             ProviderKind::Anthropic => self.build_anthropic(),
-            ProviderKind::DeepSeek => self.build_deepseek(),
+            ProviderKind::DeepSeek => match self.protocol {
+                OpenAiProtocol::ChatCompletions => self.build_deepseek(),
+                OpenAiProtocol::Responses => self.build_openai_responses(),
+            },
             ProviderKind::Kimi => self.build_kimi(),
             ProviderKind::OpenAi => match self.protocol {
                 OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
@@ -107,6 +115,7 @@ impl ProviderInfo {
                 self.api_key.clone(),
                 base_url,
                 self.reasoning_effort,
+                self.responses_compact_threshold,
             ),
         ))
     }
@@ -356,6 +365,7 @@ mod tests {
             provider,
             protocol: OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),
@@ -398,6 +408,18 @@ mod tests {
         assert!(result.is_ok());
         let LlmProvider::DeepSeek(adapter) = result.unwrap() else {
             panic!("expected DeepSeek adapter for deepseek");
+        };
+        assert_eq!(adapter.base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn deepseek_responses_protocol_builds_responses_adapter() {
+        let mut p = provider_info(ProviderKind::DeepSeek, "sk-test", "", "deepseek-v4-flash");
+        p.protocol = OpenAiProtocol::Responses;
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAiResponses(adapter) = result.unwrap() else {
+            panic!("expected OpenAI Responses adapter for deepseek responses");
         };
         assert_eq!(adapter.base_url(), "https://api.deepseek.com");
     }
@@ -551,17 +573,20 @@ mod tests {
         )]);
 
         let (tx, mut rx) = unbounded_channel();
-        let (blocks, _, returned, _) = client
+        let response = client
             .stream_message(
                 &CreateMessageParams::new(RequiredMessageParams {
                     model: "mock".to_string(),
                     messages: vec![],
                     max_tokens: 100,
                 }),
+                None,
                 Some(tx),
             )
             .await
             .expect("stream");
+        let blocks = response.blocks;
+        let returned = response.usage;
 
         assert_eq!(blocks.len(), 1);
         assert_eq!(returned.as_ref().map(|u| u.total), Some(15));

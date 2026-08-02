@@ -57,12 +57,36 @@ pub struct ImageSource {
     pub data: String,
 }
 
+/// Kind / origin of a message cell.
+///
+/// `Normal` is the default for real turns. `Summary` marks a system-generated
+/// compaction handoff so it can be detected by type instead of by string
+/// matching, and rendered / handled specially by callers (TUI, summarizer,
+/// rebuild filters).
+///
+/// The kind is **in-memory only**: the field is `#[serde(skip)]`, so the wire
+/// format (Anthropic messages, OpenAI conversion, JSONL transcripts) never
+/// carries it. Persisted sessions reload as `Normal` and fall back to the
+/// `SUMMARY_PREFIX` / `<context-handoff>` string detection in
+/// `crates/tact/src/compact`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    /// Real user / assistant turn.
+    #[default]
+    Normal,
+    /// System-generated compaction handoff, not a real user turn.
+    Summary,
+}
+
 /// Message in a conversation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: Role,
     #[serde(flatten)]
     pub content: MessageContent,
+    /// In-memory cell marker; never serialized (see [`MessageKind`]).
+    #[serde(skip)]
+    pub kind: MessageKind,
 }
 
 impl Message {
@@ -72,6 +96,7 @@ impl Message {
             content: MessageContent::Text {
                 content: text.into(),
             },
+            kind: MessageKind::Normal,
         }
     }
 
@@ -79,7 +104,24 @@ impl Message {
         Self {
             role,
             content: MessageContent::Blocks { content: blocks },
+            kind: MessageKind::Normal,
         }
+    }
+
+    /// Marks this cell with a [`MessageKind`] (builder style).
+    pub fn with_kind(mut self, kind: MessageKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Returns the cell's [`MessageKind`].
+    pub fn kind(&self) -> MessageKind {
+        self.kind
+    }
+
+    /// True for system-generated compaction handoff cells.
+    pub fn is_summary(&self) -> bool {
+        self.kind == MessageKind::Summary
     }
 
     /// Returns true if this message contains any `ContentBlock::Image`.
@@ -139,6 +181,26 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "user");
         assert_eq!(json["content"], "hi");
+        assert!(json.get("kind").is_none());
+    }
+
+    #[test]
+    fn message_kind_is_in_memory_only_and_defaults_to_normal_on_wire() {
+        let summary = Message::new_text(Role::User, "handoff").with_kind(MessageKind::Summary);
+        assert!(summary.is_summary());
+        assert_eq!(summary.kind(), MessageKind::Summary);
+
+        // The kind marker must never leak onto the wire / transcript format.
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"], "handoff");
+        assert!(json.get("kind").is_none());
+
+        // Reloading from a serialized form yields a Normal cell; callers fall
+        // back to content-based detection (e.g. SUMMARY_PREFIX / tags).
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind(), MessageKind::Normal);
+        assert!(!back.is_summary());
     }
 
     #[test]

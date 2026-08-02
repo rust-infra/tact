@@ -362,6 +362,27 @@ mod tests {
     }
 
     #[test]
+    fn render_markdown_list_then_fenced_code_then_list_tail() {
+        let md = "- 例如：\n  - 为什么不是远端 compact\n  - 为什么不能先 push 当前 turn 再 compact\n```\n - 为什么 assistant history 要规范化成 completed output message\n```";
+
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let joined = raw.join("\n");
+
+        assert!(
+            joined.contains("为什么不是远端 compact"),
+            "first nested list item missing: {joined}"
+        );
+        assert!(
+            joined.contains("为什么不能先 push 当前 turn 再 compact"),
+            "second nested list item missing: {joined}"
+        );
+        assert!(
+            joined.contains("为什么 assistant history 要规范化成 completed output message"),
+            "tail line after fenced code missing or swallowed: {joined}"
+        );
+    }
+
+    #[test]
     fn render_markdown_fenced_code_block() {
         let md = "```rust\nfn md_test() {}\n```";
         let (lines, raw) = render_markdown_tui(md, &theme());

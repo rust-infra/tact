@@ -68,6 +68,7 @@ sequenceDiagram
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    Compact,
     QueryBalance,
 }
 ```
@@ -76,7 +77,36 @@ pub enum UserCommand {
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
 | **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
+| **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
+
+### `/compact` 状态消息
+
+压缩**绝不是** assistant 消息或流式 markdown 输出：它是一串系统 `Info` 行加
+一条最终状态行。具体消息随 provider 不同：
+
+| 消息 | 时机 |
+|------|------|
+| `[compacting]` | 命令 driver 收到 `UserCommand::Compact`，`compact_history` 运行前 |
+| `[auto compact]` | `agent_loop` 中自动压缩触发（入口路径或每次迭代） |
+| `[manual compact]` | 本地 `compact` 工具成功并置位手动压缩标记（仅非 Responses） |
+| `[native compact]` | Responses provider：显式 `POST /responses/compact` 开始 |
+| `[compact retry n/N] retrying in Xs` | 压缩遇到瞬时传输错误；有界退避重试 |
+| `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
+| `Compaction complete.` | `UserCommand::Compact` 成功完成 |
+
+**加密状态绝不渲染。** Responses 的 compaction / reasoning item 携带不透明的
+`encrypted_content`；它只会被回放给端点，绝不能出现在 `Info` 行、错误字符串、
+工具卡片或任何 TUI 表面。两种加密载荷的边界不同：reasoning 加密数据**只允许**
+存在于内部、不可渲染的 `Thinking.signature` envelope 中（绝不进入可见 thinking
+文本，绝不进入 output block）；而 `compaction` item 的 `encrypted_content`
+**仅为 provider 状态**（协议基线与请求体），根本不会成为 `ContentBlock`。
+诊断信息只输出 item 数与**有界的 compaction-id 前缀** — 完整 id 只保留在
+provider 状态与 SQLite 元数据中（例如 `[responses compacted: items=2,
+id=cmp_sanitize]` 只显示 id 的前几个字符）。压缩失败会显示 `Error` +
+`Compaction failed: …`，并保持之前的 context 与状态不变；流式中被宣布但从未
+完成的压缩（incomplete streamed compaction）是硬性协议错误，绝不静默地
+从可见文本“恢复”。
 
 `build_user_message`（`crates/tact-ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
 
@@ -304,6 +334,8 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 `render_md.rs` 经 `tui-markdown` 与自定义 `TuiStyleSheet`（标题、代码、链接、引用）转换 assistant markdown。Code block 统一深色背景；表格列对齐。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
+**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。真正带显式语言标签的流式代码块（例如 ```rust）仍走 code-card 路径。
+
 ### 6.8 Popups
 
 | Popup | 触发 | 文件 |
@@ -436,7 +468,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 
 - **Paragraph 模式** — 非空行累积于 `stream.paragraph` 直至 blank 或水平规则；然后 `render_markdown_tui` 发出 styled 行。
 - **Table 模式** — `| … |` 行缓冲至非 table 行；`format_table` 发出对齐行。
-- **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式； closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。
+- **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式；closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。若空语言 fence 紧跟在进行中的 markdown 段落/列表后，则继续保留在 paragraph 流中，不提升为 code card。
 - **Gap 规则** — tool card 后 assistant 文本前 `ensure_gap_after_tools()` 插 blank；tool 开始 `ensure_gap_before_tools()`。
 
 Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `messages[]`。

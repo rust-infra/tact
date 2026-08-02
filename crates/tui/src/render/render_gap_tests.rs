@@ -7,7 +7,9 @@ use tact_protocol::{
     ToolPresentationInfo,
 };
 
-use super::test_harness::{make_app, render_app_text, render_main_area_text};
+use super::test_harness::{
+    make_app, render_app_text, render_log_panel_text, render_main_area_text,
+};
 use crate::widgets::state::{App, InputMode, Status};
 
 #[test]
@@ -149,6 +151,34 @@ fn log_renders_collapsed_thinking_card() {
     assert!(
         text.contains("Thinking") || text.contains("Analyzing") || text.contains("considering"),
         "collapsed thinking card should render in log, got:\n{text}"
+    );
+}
+
+#[test]
+fn log_markdown_list_then_empty_fence_stays_in_markdown_flow() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "- example:\n  - why not remote compact\n  - why not push current turn first\n```\n - why normalize assistant history\n```".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+
+    assert!(
+        text.contains("why not remote compact"),
+        "first nested list item missing from log render, got:\n{text}"
+    );
+    assert!(
+        text.contains("why not push current turn first"),
+        "second nested list item missing from log render, got:\n{text}"
+    );
+    assert!(
+        text.contains("why normalize assistant history"),
+        "tail line missing from log render, got:\n{text}"
+    );
+    assert!(
+        !text.contains("Click for full code"),
+        "empty fence after markdown list should not be promoted to a code card, got:\n{text}"
     );
 }
 

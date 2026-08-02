@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use tact_llm::{ContentBlock, Message, MessageContent, Role};
+use tact_llm::{ContentBlock, Message, MessageContent, MessageKind, Role};
 use tokio::io::AsyncWriteExt;
 
 use crate::consts::TactPath;
@@ -38,6 +38,15 @@ const MAX_COMPACT_ARTIFACTS: usize = 100;
 /// prefix and to detect prior summaries so they are not stacked.
 pub const SUMMARY_PREFIX: &str =
     "This conversation was compacted so the agent can continue working.";
+
+/// Framing tags that delimit a compaction handoff cell. The cell is a
+/// system-generated message, not a real user turn; the tags give the model an
+/// explicit boundary (and survive providers that merge consecutive user
+/// turns) while the [`MessageKind::Summary`] marker drives in-memory
+/// detection. Old summaries without the tags are still detected via
+/// [`SUMMARY_PREFIX`].
+pub const HANDOFF_OPEN_TAG: &str = "<context-handoff>";
+pub const HANDOFF_CLOSE_TAG: &str = "</context-handoff>";
 
 /// Maximum estimated tokens of recent real-user messages to retain when
 /// rebuilding compacted history (roughly 80k ASCII characters).
@@ -153,9 +162,29 @@ pub(crate) fn compact_rebuild_headroom_tokens(model_context_window: usize) -> us
 }
 
 /// Whether `text` is a prior compaction handoff (must not be re-kept as a
-/// "real" user message).
+/// "real" user message). Detects both the current `<context-handoff>` cell
+/// framing and legacy `SUMMARY_PREFIX`-only summaries (e.g. sessions reloaded
+/// from the store, where the in-memory [`MessageKind`] marker is `Normal`).
 pub fn is_summary_message(text: &str) -> bool {
-    text.starts_with(SUMMARY_PREFIX)
+    text.starts_with(HANDOFF_OPEN_TAG) || text.starts_with(SUMMARY_PREFIX)
+}
+
+/// Builds the compaction handoff cell: a `User`-role message framed with
+/// [`HANDOFF_OPEN_TAG`] / [`HANDOFF_CLOSE_TAG`] and marked
+/// [`MessageKind::Summary`] so callers can special-case it by type instead of
+/// string matching. The `SUMMARY_PREFIX` line is kept inside the cell so
+/// reloaded sessions (where the in-memory marker is lost) still detect it.
+fn summary_message(summary_body: &str) -> Message {
+    let body = if summary_body.is_empty() {
+        "(no summary available)"
+    } else {
+        summary_body
+    };
+    Message::new_text(
+        Role::User,
+        format!("{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\n{body}\n{HANDOFF_CLOSE_TAG}"),
+    )
+    .with_kind(MessageKind::Summary)
 }
 
 fn user_text_content(message: &Message) -> Option<&str> {
@@ -167,6 +196,9 @@ fn user_text_content(message: &Message) -> Option<&str> {
 
 fn is_real_user_message(message: &Message) -> bool {
     if !matches!(message.role, Role::User) {
+        return false;
+    }
+    if message.is_summary() {
         return false;
     }
     match &message.content {
@@ -371,10 +403,7 @@ pub fn build_compacted_history(
     } else {
         summary_text
     };
-    selected.push(Message::new_text(
-        Role::User,
-        format!("{SUMMARY_PREFIX}\n\n{summary_body}"),
-    ));
+    selected.push(summary_message(&summary_body));
     selected
 }
 
@@ -502,10 +531,7 @@ async fn prune_compact_artifacts(
 /// Produces a replacement context (single user message) containing a
 /// summary of what was compacted. Used by [`crate::agent::Agent::compact_history_legacy`].
 pub fn compacted_context(summary: String) -> Vec<Message> {
-    vec![Message::new_text(
-        Role::User,
-        format!("{SUMMARY_PREFIX}\n\n{summary}"),
-    )]
+    vec![summary_message(&summary)]
 }
 
 fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
@@ -561,14 +587,15 @@ pub(crate) fn should_auto_compact(
 
 #[cfg(test)]
 mod tests {
-    use tact_llm::{ContentBlock, ImageSource, Message, Role};
+    use tact_llm::{ContentBlock, ImageSource, Message, MessageKind, Role};
 
     use super::{
-        KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS, OMITTED_IMAGE, SUMMARY_PREFIX,
-        approx_text_tokens, build_compacted_history, collect_user_messages,
-        estimate_context_tokens, estimate_message_tokens, is_summary_message, persist_large_output,
-        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
-        take_last_tokens, write_transcript,
+        HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
+        OMITTED_IMAGE, SUMMARY_PREFIX, approx_text_tokens, build_compacted_history,
+        collect_user_messages, estimate_context_tokens, estimate_message_tokens,
+        is_summary_message, persist_large_output, recent_messages_for_summary,
+        retained_user_message_token_budget, should_auto_compact, summary_message, take_last_tokens,
+        write_transcript,
     };
 
     #[test]
@@ -650,6 +677,9 @@ mod tests {
     #[test]
     fn is_summary_message_detects_prefix() {
         assert!(is_summary_message(&format!("{SUMMARY_PREFIX}\nhandoff")));
+        assert!(is_summary_message(&format!(
+            "{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\nhandoff\n{HANDOFF_CLOSE_TAG}"
+        )));
         assert!(!is_summary_message("please fix the bug"));
     }
 
@@ -672,6 +702,8 @@ mod tests {
                 }],
             ),
             Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\nold summary")),
+            // Kind-marked cell: must be skipped by type, not just by prefix.
+            summary_message("handoff marked as Summary kind"),
             Message::new_text(Role::User, "goal B"),
         ];
         let kept = collect_user_messages(&messages);
@@ -796,8 +828,12 @@ mod tests {
         assert!(matches!(
             &history[2].content,
             tact_llm::MessageContent::Text { content }
-                if content.starts_with(SUMMARY_PREFIX) && content.contains("handoff body")
+                if content.starts_with(HANDOFF_OPEN_TAG)
+                    && content.contains("handoff body")
+                    && content.ends_with(HANDOFF_CLOSE_TAG)
         ));
+        assert!(history[2].is_summary());
+        assert_eq!(history[2].kind(), MessageKind::Summary);
     }
 
     #[test]

@@ -311,13 +311,13 @@ request construction still starts from SDK types, while final JSON dispatch
 allows the current `max` effort value that the SDK enum does not yet expose.
 Responses and stream events remain SDK-typed.
 
-Tact remains the conversation owner. Every request sends the full normalized
-history with `store: false`; it does not use Conversations or
-`previous_response_id`. Conversion maps system instructions, user/assistant
-text, image data URLs, function calls, function outputs, function tools,
-tool choice, sampling fields, and `max_tokens → max_output_tokens`.
-`top_k` and stop sequences are omitted because the Responses request type has
-no matching fields.
+Tact remains the conversation owner. Every request sends the persisted
+protocol baseline plus the newly uncovered logical messages with `store:
+false`; it does not use Conversations or `previous_response_id`. Conversion
+maps system instructions, user/assistant text, image data URLs, function
+calls, function outputs, function tools, tool choice, sampling fields, and
+`max_tokens → max_output_tokens`. `top_k` and stop sequences are omitted
+because the Responses request type has no matching fields.
 
 Responses requests include `reasoning.encrypted_content`. A returned reasoning
 item becomes `ContentBlock::Thinking`: summary text is stored in `thinking`,
@@ -353,10 +353,184 @@ output message (`output_text` with a stable local item ID), rather than an
 assistant `input_text` message; this is required by strict compatible endpoints
 on multi-turn requests.
 Input/cache/output/reasoning token counts map to the existing
-`TokenUsageInfo` fields.
+`TokenUsageInfo` fields. Usage counters are **checked conversions**: a
+required token field that is missing, not an unsigned integer, or larger than
+`u32` is a hard protocol error — values are never truncated, wrapped, or
+clamped.
 
 Unsupported in this adapter: server-hosted tools, background responses,
-Conversations, `previous_response_id`, and the Responses compaction endpoint.
+Conversations, and `previous_response_id`. Native compaction is supported:
+ordinary requests carry `context_management` when a compact threshold is
+resolved, and `compact()` sends an explicit `POST /responses/compact` request
+([Ch 5](./05_chapter_compact.md)).
+
+#### 6.2.1 Conversion pipeline: `Message` → `/responses` input
+
+The Responses adapter receives the same shared `CreateMessageParams` used by other providers. The critical difference is that it emits a heterogeneous `/responses` `input` array rather than a chat-style list of role/content messages.
+
+`create_response` performs these steps:
+
+1. Take the persisted state baseline (`input_items`) verbatim when a valid
+   `ResponsesConversationState` is supplied; otherwise start empty.
+2. Walk the uncovered suffix of `request.messages` (beyond the state's
+   `logical_message_count`) and call `message_to_input`.
+3. Flatten the returned `InputItem`s into the final `input` array after the
+   baseline items.
+4. Add request-level fields: `instructions`, `tools`, `tool_choice`, `reasoning`,
+   `temperature`, `top_p`, `max_output_tokens`, `store: false`, and
+   `context_management` (`[{ "type": "compaction", "compact_threshold": N }]`)
+   when a compact threshold is configured.
+5. Normalize assistant history items so prior assistant text becomes a completed Responses output message with stable local ids and `output_text` content.
+
+The per-message mapping is:
+
+| Shared Tact content | Responses item emitted |
+|---|---|
+| `Message::Text(User)` | `message(role=user, content=text)` |
+| `Message::Text(Assistant)` | assistant `message`, later normalized to completed output form |
+| `ContentBlock::Text` | `input_text` inside the current message |
+| `ContentBlock::Image` | `input_image` with a data URL |
+| `ContentBlock::Thinking` with decodable signature | standalone `reasoning` item |
+| `ContentBlock::ToolUse` | standalone `function_call` item |
+| `ContentBlock::ToolResult` | standalone `function_call_output` item |
+| `ContentBlock::RedactedThinking` | omitted |
+
+Two details matter for multi-turn correctness:
+
+- `flush_message_content` emits accumulated text/image parts as one message **before** emitting standalone reasoning or tool items, preserving the order required by the Responses API.
+- `normalize_assistant_history_items` rewrites assistant history into completed output messages because some compatible endpoints reject prior assistant turns if they are replayed as plain assistant input text.
+
+#### 6.2.2 Compaction interaction: where Responses differs
+
+For `protocol = "responses"`, compaction is **native**: there is no local
+summary rebuild, and the logical context (`runtime.context`) is never rewritten
+by `compact_history` ([Ch 5](./05_chapter_compact.md)). The Responses adapter
+owns the exact **conversion/state boundaries**:
+
+- **State baseline** — `ResponsesConversationState` holds the opaque protocol
+  baseline: `input_items` (verbatim JSON from previous terminal outputs,
+  including `compaction` and `reasoning` items), `compaction_id`,
+  `is_compacted`, `logical_message_count`, and `logical_context_hash`.
+- **Validation** — before reuse, `validate_conversion_state` checks that the
+  persisted state binds to the same provider/model and that the logical-message
+  prefix covered by the state hashes to the recorded value. A mismatch is a
+  hard protocol error; Tact never silently duplicates, truncates, or
+  reconstructs the baseline.
+- **Incremental conversion** — `create_response` sends the state baseline
+  verbatim plus only the newly uncovered logical messages converted to
+  `/responses` items. With no state, every logical message is converted.
+- **`context_management`** — when a compact threshold is configured (or
+  derived), every ordinary `/responses` request carries
+  `context_management: [{ "type": "compaction", "compact_threshold": N }]`, so
+  the endpoint may compact the baseline automatically inside a normal stream.
+  A derived threshold is resolved per agent: a subagent derives it from the
+  **subagent's own `max_tokens`** budget (with the shared context window and
+  10% headroom), never from the main agent's budget.
+- **Explicit `/responses/compact`** — when Tact decides to compact, the agent
+  calls `compact()` on the adapter: a real `POST /responses/compact` request
+  carrying the current baseline plus uncovered messages. The returned compact
+  resource replaces the baseline; `focus` text has no meaning and is ignored.
+  Persisting the explicit call's usage row (`responses_compact`) is **not**
+  best-effort: if that row cannot be written, the compaction fails with an
+  error **before** any new messages/provider state are committed, so the old
+  committed state stays fully intact and no compaction is recorded.
+- **State update** — every call returns `LlmResponse` with a
+  `state_update: ProviderStateUpdate` (`Replace(new state)` or `Unchanged`).
+  For ordinary terminal responses the replacement baseline already contains
+  the request input **plus** the terminal output, so `logical_message_count`
+  and `logical_context_hash` are anchored to the **post-assistant** logical
+  context (request messages plus the assistant message the agent pushes); the
+  next turn then converts only the new user/tool suffix and never duplicates
+  assistant/reasoning/function-call items or ids. Only when a terminal
+  response carries no output items at all (the compatible-endpoint
+  visible-text recovery path) does the anchor stay at the request prefix, so
+  the assistant message is converted next turn instead of being dropped. The
+  agent commits the assistant message and the state baseline in **one
+  transaction** before any further LLM call or tool execution.
+
+#### `LlmResponse` and terminal response authority
+
+`LlmResponse` is the adapter's single return contract:
+
+| Field | Meaning |
+|-------|---------|
+| `blocks` | Final `ContentBlock`s for the TUI/agent |
+| `stop_reason` | Terminal stop reason |
+| `usage` | Token usage (when reported) |
+| `request_body` | Serialized JSON body actually sent (for session debugging) |
+| `state_update` | `ProviderStateUpdate::Replace(…)` or `Unchanged` |
+
+The terminal `response.completed` / `response.incomplete` object is
+**authoritative** for final blocks, tool calls, usage, and stop reason when it
+includes the completed output. Streamed deltas are used for live UI only; for
+compatible endpoints that omit the final message from the terminal object,
+already received output-text deltas are restored as the final text block, and
+missing output-message/function-call statuses are inferred from the terminal
+event type. Placeholder ids injected for such endpoints are never treated as
+provider identities.
+
+#### The `compaction` item round-trip
+
+A compaction item appears either in an explicit `/responses/compact` resource
+or in the terminal output of an ordinary request after automatic
+`context_management` compaction. In both cases it round-trips as **opaque
+state**, not content:
+
+1. `normalize_response` retains every terminal output item as JSON in output
+   order (`output_items`), including `compaction` items and every item type
+   known to the typed SDK (unmapped types such as file/web search produce no
+   `ContentBlock` but are retained). A terminal response may carry at most one
+   compaction item, and its `encrypted_content` must be non-empty. A truly
+   unknown future item type is rejected by the typed SDK boundary
+   (async-openai `OutputItem` has no `Unknown` variant): a hard protocol
+   error, never a silent drop or fallback.
+2. `state_update` packages those items into the next request's `input_items`
+   baseline, and `create_response` replays them **verbatim** on the next call.
+3. The item is **never** mapped to a `ContentBlock`: `encrypted_content` is
+   opaque provider state, not assistant text. It must not surface in TUI
+   rendering, `AgentUpdate::Info` messages, `tracing` output, or error strings.
+   User-facing diagnostics show only a **bounded compaction-id prefix**; the
+   full id is retained inside the provider state and SQLite metadata only.
+
+A compaction item that is announced in the stream (`output_item.added`) but
+never completed is a **hard protocol error** in the stream adapter's
+`finish()`: neither the done-sequence reconstruction nor visible-text recovery
+may run, because both would silently drop the compaction boundary and lose the
+compacted baseline for the next turn. The stream fails loudly; it never
+"recovers" by treating the streamed output text as the final result.
+
+Why not a `ContentBlock`? Because a `ContentBlock` is logical content the
+agent loop renders, persists, and may tool-dispatch over. A `compaction` item
+is protocol plumbing: it exists only to tell the endpoint that the baseline
+was compacted and carries an opaque payload Tact cannot interpret. Treating it
+as content would leak encrypted provider state into the UI and would break the
+round-trip (the exact JSON must be replayed, not reconstructed from visible
+fields).
+
+#### 6.2.3 Reasoning-history replay
+
+Responses reasoning items are not re-derived from visible text. Instead, Tact persists a versioned opaque signature (`openai-responses-v1:...`) inside `ContentBlock::Thinking`. The payload stores:
+
+- the full `ReasoningItem`
+- a map from local tool call ids to provider `function_call` item ids
+
+On a later request, `history::decode` can recover that state so `message_to_input` can emit:
+
+- a proper standalone `reasoning` item
+- `function_call` items carrying the matching provider item ids when available
+
+This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from the persisted baseline plus local messages rather than a server-side `previous_response_id` chain.
+
+**Encrypted boundary.** The reasoning `encrypted_content` may exist **only**
+inside this internal, non-renderable signature envelope: never in the visible
+`thinking` summary text, never in a renderable `ContentBlock::Text`, never in
+persisted output text, and never in error strings or `Info` diagnostics. This
+is the same "encrypted data stays opaque" rule as compaction payloads, but the
+carriers differ: compaction `encrypted_content` never enters any
+`ContentBlock` (it is **provider state only**, kept in the protocol baseline
+and request body), while reasoning encrypted data is carried by the internal
+signature of a `Thinking` block so it can be replayed as a native `reasoning`
+item.
 
 ### 6.3 Shared thinking configuration
 
@@ -500,7 +674,7 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | **No Anthropic SDK dependency** | Conversation, request, stop, stream-delta, and error types are all owned by `tact_llm`; Anthropic is spoken via custom HTTP + SSE only |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; for DeepSeek, `set_user_id` mutates the copy held on `Agent` |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
-| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, background mode, or Responses compaction endpoint |
+| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, or background mode (native compaction is supported) |
 
 ### Protocol compatibility gaps (internal Anthropic shape → wire)
 

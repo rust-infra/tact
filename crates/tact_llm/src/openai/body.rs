@@ -104,6 +104,7 @@ pub(crate) mod test_util {
             provider: kind,
             protocol: crate::OpenAiProtocol::default(),
             reasoning_effort: None,
+            responses_compact_threshold: None,
             api_key: String::new(),
             base_url: base_url.to_string(),
             model: model.to_string(),

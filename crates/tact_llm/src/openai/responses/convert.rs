@@ -9,7 +9,8 @@ use async_openai_responses::types::responses::{
 use super::history;
 use crate::{
     ContentBlock, CreateMessageParams, LlmError, Message, MessageContent, OpenAiReasoningEffort,
-    Role, ToolChoice, effective_reasoning_effort,
+    ProviderConversationState, ResponsesConversationState, Role, ToolChoice, context_hash,
+    effective_reasoning_effort,
 };
 
 fn responses_role(role: Role) -> ResponsesRole {
@@ -48,7 +49,7 @@ fn reasoning_item(signature: &str) -> Result<Option<InputItem>, LlmError> {
 }
 
 fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
-    let Message { role, content } = message;
+    let Message { role, content, .. } = message;
     if let MessageContent::Text { content } = content {
         return Ok(vec![message_item(
             *role,
@@ -139,14 +140,7 @@ fn tool_choice(tool_choice: &ToolChoice) -> ToolChoiceParam {
     }
 }
 
-fn normalize_assistant_history_items(body: &mut serde_json::Value) {
-    let Some(input) = body
-        .get_mut("input")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return;
-    };
-
+fn normalize_assistant_history_items(input: &mut [serde_json::Value]) {
     for (index, item) in input.iter_mut().enumerate() {
         if item.get("type").and_then(serde_json::Value::as_str) != Some("message")
             || item.get("role").and_then(serde_json::Value::as_str) != Some("assistant")
@@ -183,19 +177,82 @@ fn normalize_assistant_history_items(body: &mut serde_json::Value) {
     }
 }
 
+/// Validates that a persisted Responses state may be reused for the given
+/// request. The state version must be exactly 1, the provider and model must
+/// match, and the logical-message prefix represented by the state must hash
+/// to the recorded value. A mismatch is a hard protocol error; Tact must
+/// never silently duplicate, truncate, or reconstruct the baseline.
+fn validate_conversion_state(
+    state: &ResponsesConversationState,
+    request: &CreateMessageParams,
+) -> Result<(), LlmError> {
+    if state.version != 1 {
+        return Err(LlmError::Unsupported(format!(
+            "provider state version {} is unsupported; expected version 1",
+            state.version
+        )));
+    }
+    if state.provider != "openai_responses" {
+        return Err(LlmError::Unsupported(format!(
+            "provider state is bound to provider '{}', expected 'openai_responses'",
+            state.provider
+        )));
+    }
+    if state.model != request.model {
+        return Err(LlmError::Unsupported(format!(
+            "provider state is bound to model '{}', expected '{}'",
+            state.model, request.model
+        )));
+    }
+    if state.logical_message_count > request.messages.len() {
+        return Err(LlmError::Unsupported(format!(
+            "provider state covers {} logical messages but the request provides {}",
+            state.logical_message_count,
+            request.messages.len()
+        )));
+    }
+    let expected_hash = context_hash(&request.messages[..state.logical_message_count])?;
+    if expected_hash != state.logical_context_hash {
+        return Err(LlmError::Unsupported(
+            "provider state logical context hash mismatch; refusing to reuse a stale Responses baseline"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Builds a state-aware `/responses` request body.
+///
+/// Returns the serialized request body and the exact `input`-item JSON sent in
+/// this request (the state baseline plus the newly converted uncovered
+/// suffix). With no state, every logical message is converted. With an OpenAI
+/// Responses state, the provider/model binding and the logical prefix hash are
+/// validated before only the uncovered suffix is converted. The state baseline
+/// items are reused verbatim as JSON so unknown fields and future item types
+/// survive.
 pub(crate) fn create_response(
     request: &CreateMessageParams,
+    provider_state: Option<&ProviderConversationState>,
+    compact_threshold: Option<u32>,
     configured_effort: Option<OpenAiReasoningEffort>,
-) -> Result<serde_json::Value, LlmError> {
-    let mut input = Vec::new();
-    for message in &request.messages {
-        input.extend(message_to_input(message)?);
+) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
+    let (baseline, covered) = match provider_state {
+        None => (Vec::new(), 0),
+        Some(ProviderConversationState::OpenAiResponses(state)) => {
+            validate_conversion_state(state, request)?;
+            (state.input_items.clone(), state.logical_message_count)
+        }
+    };
+
+    let mut converted = Vec::new();
+    for message in &request.messages[covered..] {
+        converted.extend(message_to_input(message)?);
     }
 
     let mut builder = CreateResponseArgs::default();
     builder
         .model(request.model.clone())
-        .input(InputParam::Items(input))
+        .input(InputParam::Items(converted.clone()))
         .max_output_tokens(request.max_tokens)
         .include(vec![IncludeEnum::ReasoningEncryptedContent])
         .store(false);
@@ -245,7 +302,29 @@ pub(crate) fn create_response(
         LlmError::Unsupported(format!("build OpenAI Responses request: {error}"))
     })?;
     let mut body = serde_json::to_value(typed_request)?;
-    normalize_assistant_history_items(&mut body);
+
+    // The exact input for this request: the state baseline (verbatim JSON)
+    // followed by the newly converted uncovered items. Only the newly
+    // converted assistant-history items are normalized; baseline items are
+    // already in protocol shape and must not be rewritten.
+    let mut new_items = Vec::with_capacity(converted.len());
+    for item in converted {
+        new_items.push(serde_json::to_value(item)?);
+    }
+    normalize_assistant_history_items(&mut new_items);
+    let mut input_items = baseline;
+    input_items.extend(new_items);
+    body["input"] = serde_json::Value::Array(input_items.clone());
+
+    if let Some(threshold) = compact_threshold {
+        body["context_management"] = serde_json::json!([
+            {
+                "type": "compaction",
+                "compact_threshold": threshold,
+            }
+        ]);
+    }
+
     let budget_tokens = request
         .thinking
         .as_ref()
@@ -257,16 +336,44 @@ pub(crate) fn create_response(
     if let Some(effort) = effort {
         body["reasoning"]["effort"] = serde_json::Value::String(effort.as_str().to_owned());
     }
-    Ok(body)
+    Ok((body, input_items))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::create_response;
+    use super::super::normalize::parse_compact_resource;
+    use super::{create_response, message_to_input};
     use crate::{
         ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
-        RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
+        RequiredMessageParams, ResponsesConversationState, Role, Thinking, ThinkingType, Tool,
+        ToolChoice, context_hash,
     };
+
+    fn state_covering_first_message(request: &CreateMessageParams) -> ResponsesConversationState {
+        let first =
+            serde_json::to_value(&message_to_input(&request.messages[0]).unwrap()[0]).unwrap();
+        ResponsesConversationState {
+            version: 1,
+            provider: "openai_responses".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: request.model.clone(),
+            input_items: vec![first],
+            compaction_id: None,
+            is_compacted: false,
+            logical_message_count: 1,
+            logical_context_hash: context_hash(&request.messages[..1]).unwrap(),
+        }
+    }
+
+    fn compact_resource_without_compaction_item() -> serde_json::Value {
+        serde_json::json!({"id":"cmp-test","object":"response.compaction","output":[]})
+    }
+
+    fn compact_resource_with_empty_encrypted_content() -> serde_json::Value {
+        serde_json::json!({"id":"cmp-test","object":"response.compaction","output":[
+            {"type":"compaction","id":"cmp-item","encrypted_content":""}
+        ]})
+    }
 
     fn request_with_history() -> CreateMessageParams {
         let mut request = CreateMessageParams::new(RequiredMessageParams {
@@ -336,7 +443,7 @@ mod tests {
 
     #[test]
     fn converts_multimodal_tool_history_and_options() {
-        let body = create_response(&request_with_history(), None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
 
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["instructions"], "system instruction");
@@ -372,7 +479,7 @@ mod tests {
 
     #[test]
     fn omits_unscoped_signature_from_another_provider() {
-        let body = create_response(&request_with_history(), None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
 
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -391,7 +498,7 @@ mod tests {
         };
         signature.clear();
 
-        let body = create_response(&request, None).unwrap();
+        let (body, _) = create_response(&request, None, None, None).unwrap();
         assert!(
             body["input"]
                 .as_array()
@@ -418,7 +525,7 @@ mod tests {
         for (choice, expected) in cases {
             let mut request = request_with_history();
             request.tool_choice = Some(choice);
-            let body = create_response(&request, None).unwrap();
+            let (body, _) = create_response(&request, None, None, None).unwrap();
             assert_eq!(body["tool_choice"], expected);
         }
     }
@@ -440,28 +547,38 @@ mod tests {
             }),
         }]);
 
-        let body = create_response(&request, None).unwrap();
+        let (body, _) = create_response(&request, None, None, None).unwrap();
 
         assert_eq!(body["tool_choice"], serde_json::json!("auto"));
     }
 
     #[test]
     fn serializes_explicit_max_reasoning_effort() {
-        let body =
-            create_response(&request_with_history(), Some(OpenAiReasoningEffort::Max)).unwrap();
+        let (body, _) = create_response(
+            &request_with_history(),
+            None,
+            None,
+            Some(OpenAiReasoningEffort::Max),
+        )
+        .unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
     }
 
     #[test]
     fn explicit_reasoning_effort_wins_over_budget_fallback() {
-        let body =
-            create_response(&request_with_history(), Some(OpenAiReasoningEffort::Low)).unwrap();
+        let (body, _) = create_response(
+            &request_with_history(),
+            None,
+            None,
+            Some(OpenAiReasoningEffort::Low),
+        )
+        .unwrap();
         assert_eq!(body["reasoning"]["effort"], "low");
     }
 
     #[test]
     fn serializes_assistant_history_as_completed_output_message() {
-        let body = create_response(&request_with_history(), None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
         let assistant = body["input"]
             .as_array()
             .unwrap()
@@ -480,6 +597,196 @@ mod tests {
         assert_eq!(
             assistant["content"][0]["annotations"],
             serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn state_baseline_only_converts_uncovered_messages() {
+        let request = request_with_history();
+        let state = state_covering_first_message(&request);
+        let (body, sent_items) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(
+                state.clone(),
+            )),
+            Some(160_000),
+            None,
+        )
+        .unwrap();
+        // The baseline (first converted user message) is reused verbatim; only
+        // the uncovered suffix (assistant message, function call, function call
+        // output) is converted.
+        assert_eq!(sent_items.len(), 4);
+        assert_eq!(body["input"].as_array().unwrap().len(), 4);
+        assert_eq!(body["input"][0], state.input_items[0]);
+        assert_eq!(body["input"][1]["role"], "assistant");
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["call_id"] == "call-1")
+        );
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "function_call_output" && item["call_id"] == "call-1")
+        );
+    }
+
+    #[test]
+    fn responses_request_injects_context_management_and_keeps_stateless_fields() {
+        let request = request_with_history();
+        let (body, _) = create_response(&request, None, Some(160_000), None).unwrap();
+        assert_eq!(body["store"], false);
+        assert!(body.get("previous_response_id").is_none());
+        assert!(body.get("conversation").is_none());
+        assert_eq!(body["context_management"][0]["type"], "compaction");
+        assert_eq!(body["context_management"][0]["compact_threshold"], 160_000);
+    }
+
+    #[test]
+    fn omits_context_management_without_a_threshold() {
+        let request = request_with_history();
+        let (body, _) = create_response(&request, None, None, None).unwrap();
+        assert!(body.get("context_management").is_none());
+    }
+
+    #[test]
+    fn explicit_compact_requires_one_non_empty_compaction_item() {
+        let missing = compact_resource_without_compaction_item();
+        assert!(parse_compact_resource(missing).is_err());
+        let empty = compact_resource_with_empty_encrypted_content();
+        assert!(parse_compact_resource(empty).is_err());
+    }
+
+    #[test]
+    fn compact_resource_requires_expected_object_and_id() {
+        let missing_object = serde_json::json!({
+            "id":"cmp","output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(missing_object).is_err());
+
+        let wrong_object = serde_json::json!({
+            "id":"cmp","object":"response",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(wrong_object).is_err());
+
+        let missing_id = serde_json::json!({
+            "object":"response.compaction",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(missing_id).is_err());
+
+        let empty_id = serde_json::json!({
+            "id":"","object":"response.compaction",
+            "output":[{"type":"compaction","id":"item","encrypted_content":"opaque"}]
+        });
+        assert!(parse_compact_resource(empty_id).is_err());
+    }
+
+    #[test]
+    fn compact_resource_with_expected_object_and_id_is_accepted() {
+        let valid = serde_json::json!({
+            "id":"cmp-resource","object":"response.compaction",
+            "output":[{"type":"compaction","id":"cmp-item","encrypted_content":"opaque"}]
+        });
+        let parsed = parse_compact_resource(valid).unwrap();
+        assert_eq!(parsed.compaction_id, "cmp-item");
+    }
+
+    #[test]
+    fn explicit_compact_fixture_parses_to_replacement_baseline() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/explicit_compact.json")).unwrap();
+        let parsed = parse_compact_resource(value).unwrap();
+        assert_eq!(parsed.input_items.len(), 3);
+        assert_eq!(parsed.input_items[2]["type"], "compaction");
+        assert_eq!(parsed.compaction_id, "cmp_sanitized_01");
+        // The retained function-call outputs survive verbatim.
+        assert_eq!(parsed.input_items[0]["call_id"], "call_sanitized_1");
+    }
+
+    #[test]
+    fn state_with_mismatched_model_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.model = "other-model".to_string();
+        let error = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("other-model"));
+    }
+
+    #[test]
+    fn state_with_mismatched_logical_hash_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.logical_context_hash = "deadbeef".repeat(8);
+        let error = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("hash"));
+    }
+
+    #[test]
+    fn state_covering_more_messages_than_request_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.logical_message_count = request.messages.len() + 1;
+        assert!(
+            create_response(
+                &request,
+                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn state_with_wrong_provider_variant_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.provider = "anthropic".to_string();
+        assert!(
+            create_response(
+                &request,
+                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn state_with_unknown_version_is_rejected() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.version = 2;
+        assert!(
+            create_response(
+                &request,
+                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                None,
+                None,
+            )
+            .is_err()
         );
     }
 }
