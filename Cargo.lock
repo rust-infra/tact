@@ -4764,6 +4764,7 @@ dependencies = [
  "anyhow",
  "async-openai 0.20.0",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
  "cpal",
