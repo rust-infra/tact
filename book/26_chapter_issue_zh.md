@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-02 — pre-push 钩子不再把 `GIT_DIR` / `GIT_WORK_TREE` 泄漏给 `cargo test`
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | `scripts/check-rust.sh`、`.githooks/pre-push`、`crates/tact-ui/tests/subsystem_tools.rs` |
+| 现象 / 动机 | Git 会把 `GIT_DIR` / `GIT_WORK_TREE` 导出给钩子进程。pre-push 钩子运行 `cargo test -p tact-ui`，其中 `worktree_create_lists_and_shows_status` 测试派生的 `git` 命令继承了这些变量。结果 git 命令没有操作测试的隔离临时仓库，而是指向了真实仓库：测试的 `git worktree add` 注册了一个多余 worktree，其 setup 的 `git init` / `git add` / `git commit` 把破坏性的 `init` 提交追加到当前分支 HEAD——于是 `git push` 可能推送一个刚被自己 pre-push 测试污染过的仓库。 |
+| 决策 | 在两个钩子入口、任何子进程运行之前清除钩子注入的变量：在 `.githooks/pre-push` 与 `scripts/check-rust.sh` 顶部 `unset GIT_DIR GIT_WORK_TREE`。同时把 `core.hooksPath` 重新指向 `.githooks`，确保 git 使用受版本控制的钩子（之前安装的 `.git/hooks/pre-push` 是过期的内联副本）。 |
+| 改后行为 | `git push` 在干净的 git 环境中运行 fmt/clippy/build/test；集成测试只在 `tact-tool-test-*` 临时目录内创建 worktree 与提交，绝不动真实仓库。 |
+| 指针 | `.githooks/pre-push`；`scripts/check-rust.sh`；`scripts/install-git-hooks.sh`；`crates/tact/src/worktree/mod.rs`（仍基于 `current_dir`，钩子不得泄漏环境变量）；`crates/tact-ui/tests/subsystem_tools.rs` |
+
+---
+
 ## 1. 2026-08-02 — Google Cloud API key 语音转文字 provider
 
 | 字段 | 值 |

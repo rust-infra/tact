@@ -27,6 +27,21 @@ Newest entries first. Each entry should include:
 5. **Behavior after** — observable rules agents and users rely on  
 6. **Pointers** — code paths, specs, related book chapters  
 
+---
+
+## 1. 2026-08-02 — Pre-push hook no longer leaks `GIT_DIR`/`GIT_WORK_TREE` into `cargo test`
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | `scripts/check-rust.sh`, `.githooks/pre-push`, `crates/tact-ui/tests/subsystem_tools.rs` |
+| Symptom / motivation | Git exports `GIT_DIR` / `GIT_WORK_TREE` into hook processes. The pre-push hook ran `cargo test -p tact-ui`, and the `worktree_create_lists_and_shows_status` test spawned `git` commands that inherited those variables. Instead of operating on the test's isolated temp repo, the commands targeted the real repo: the test's `git worktree add` registered a stray worktree, and its setup `git init`/`git add`/`git commit` appended destructive `init` commits to the active branch's HEAD — so `git push` could push a repository that had just been polluted by its own pre-push test run. |
+| Decision | Clear the hook-injected variables in both hook entry points before any child process runs: `unset GIT_DIR GIT_WORK_TREE` at the top of `.githooks/pre-push` and of `scripts/check-rust.sh`. Also re-point `core.hooksPath` at `.githooks` so git actually uses the version-controlled hook (the previously installed `.git/hooks/pre-push` was a stale inline copy). |
+| Behavior after | `git push` runs fmt/clippy/build/test with a clean git environment; integration tests create worktrees and commits only inside their `tact-tool-test-*` temp dirs, never in the real repo. |
+| Pointers | `.githooks/pre-push`; `scripts/check-rust.sh`; `scripts/install-git-hooks.sh`; `crates/tact/src/worktree/mod.rs` (still `current_dir`-based; hooks must not leak env); `crates/tact-ui/tests/subsystem_tools.rs` |
+
+---
+
 ## 1. 2026-08-02 — Google Cloud API-key voice transcription provider
 
 | Field | Value |
@@ -40,7 +55,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-
+## 1. 2026-08-02 — Compaction handoff is now a typed message cell
 
 | Field | Value |
 |-------|-------|
