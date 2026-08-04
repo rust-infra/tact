@@ -244,7 +244,7 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
 - **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Model picker** — TUI `/model` uses configured `models = [...]` first and supplements OpenAI-compatible `openai`, `deepseek`, and `kimi` providers with a cached `GET {base_url}/models` result.
-- **Voice input** — optional microphone recording and transcription via OpenAI or a local `whisper.cpp` server, configured under `[voice]` (macOS-first).
+- **Voice input** — optional microphone recording and transcription via OpenAI, Google Cloud Speech-to-Text, or a local `whisper.cpp` server, configured under `[voice]` (macOS-first). Google API-key mode uses synchronous recognition for recordings up to 60 seconds.
 - **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 🧩 Plugin Marketplace
@@ -451,12 +451,12 @@ theme = "retro"                  # ink | ink-light | retro | brutal | nord | dar
 
 [voice]
 enabled = false                   # macOS-first microphone input
-# provider = "openai"             # openai | whisper_cpp
-# api_key = "..."                 # transcription key, separate from LLM key
-# base_url = "https://api.openai.com/v1"
-# model = "gpt-4o-mini-transcribe"
-# language = "zh"
-# max_duration_secs = 300
+# provider = "openai"             # openai | google | whisper_cpp
+# api_key = "..."                 # OpenAI/Google API key; separate from LLM key
+# base_url = "https://api.openai.com/v1" # Google: https://speech.googleapis.com/v1
+# model = "gpt-4o-mini-transcribe" # Google default: latest_short
+# language = "zh"                  # Google examples: zh-CN | en-US
+# max_duration_secs = 300           # Google maximum: 60; others: 600
 # voice_keybind = "ctrl+g"
 
 [tools]

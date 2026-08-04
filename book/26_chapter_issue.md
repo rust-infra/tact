@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-04 — Google voice transcription honors standard proxy environment variables
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | Ch 21, Ch 23 |
+| Symptom / motivation | The Google Speech-to-Text client was constructed with `reqwest::ClientBuilder::no_proxy()`. On networks where `speech.googleapis.com` is reachable only through `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`, recording completed but transcription bypassed the configured proxy and timed out or failed to connect. |
+| Decision | Remove the Google client's forced proxy bypass and let reqwest apply its standard proxy-environment resolution. Keep API-key-safe error reporting: connection errors are not rendered with the request URL because the Google API key is currently carried in the query string. |
+| Behavior after | Google voice transcription follows the process proxy environment, including the corresponding lowercase variable names and `NO_PROXY`; direct connections still work when no proxy is configured. A child-process regression test verifies that a request reaches a configured HTTP proxy rather than the original host. |
+| Pointers | `crates/tact/src/voice/transcriber.rs` (`GoogleTranscriber::new`, `google_transcriber_honors_http_proxy`); Ch 21 (voice configuration), Ch 23 (TUI voice flow) |
+
+---
+
 ## 1. 2026-08-02 — Pre-push hook no longer leaks `GIT_DIR`/`GIT_WORK_TREE` into `cargo test`
 
 | Field | Value |
@@ -39,6 +52,21 @@ Newest entries first. Each entry should include:
 | Decision | Clear the hook-injected variables in both hook entry points before any child process runs: `unset GIT_DIR GIT_WORK_TREE` at the top of `.githooks/pre-push` and of `scripts/check-rust.sh`. Also re-point `core.hooksPath` at `.githooks` so git actually uses the version-controlled hook (the previously installed `.git/hooks/pre-push` was a stale inline copy). |
 | Behavior after | `git push` runs fmt/clippy/build/test with a clean git environment; integration tests create worktrees and commits only inside their `tact-tool-test-*` temp dirs, never in the real repo. |
 | Pointers | `.githooks/pre-push`; `scripts/check-rust.sh`; `scripts/install-git-hooks.sh`; `crates/tact/src/worktree/mod.rs` (still `current_dir`-based; hooks must not leak env); `crates/tact-ui/tests/subsystem_tools.rs` |
+
+---
+
+## 1. 2026-08-02 — Google Cloud API-key voice transcription provider
+
+| Field | Value |
+|-------|-------|
+| Type | `feature` |
+| Related | Ch 21, Ch 23 |
+| Symptom / motivation | Voice input supported OpenAI-compatible transcription and local `whisper.cpp`, but users with a Google Cloud Speech-to-Text API key had no direct provider. |
+| Decision | Add `VoiceProvider::Google` using synchronous `POST {base_url}/speech:recognize?key=...` with base64 LINEAR16 mono 16 kHz WAV JSON. Reuse `voice.api_key`, `voice.language`, and `voice.model`; default to `https://speech.googleapis.com/v1` and `latest_short`. Limit Google recordings to `1..=60` seconds. Service Accounts, OAuth, long-running recognition, streaming, and automatic segmentation remain out of scope. |
+| Behavior after | Configuring `provider = "google"` sends a short recording to Google Cloud and concatenates returned `results[].alternatives[0].transcript` values into the existing TUI input flow. Missing keys, HTTP failures, malformed/empty responses, and cancellation are reported without exposing credentials. |
+| Pointers | `crates/tact/src/config/{types.rs,resolve.rs}`; `crates/tact/src/voice/transcriber.rs`; `docs/superpowers/specs/2026-08-02-google-voice-transcription-design.md`; Ch 21, Ch 23 |
+
+---
 
 ## 1. 2026-08-02 — Compaction handoff is now a typed message cell
 

@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-04 — Google 语音转写遵循标准代理环境变量
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 21、23 章 |
+| 现象 / 动机 | Google Speech-to-Text 客户端通过 `reqwest::ClientBuilder::no_proxy()` 构建。在只能经 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 访问 `speech.googleapis.com` 的网络中，录音虽能完成，转写请求却会绕过已配置代理，最终超时或连接失败。 |
+| 决策 | 移除 Google 客户端强制绕过代理的设置，改为使用 reqwest 的标准代理环境解析。继续保持 API key 安全的错误输出：由于 Google API key 目前位于查询参数中，连接错误不会连同可能含完整请求 URL 的底层错误一起展示。 |
+| 改后行为 | Google 语音转写会遵循进程代理环境，包括对应的小写变量和 `NO_PROXY`；未配置代理时仍直接连接。子进程回归测试会验证请求抵达已配置的 HTTP 代理，而不是原始主机。 |
+| 指针 | `crates/tact/src/voice/transcriber.rs`（`GoogleTranscriber::new`、`google_transcriber_honors_http_proxy`）；第 21 章（语音配置）、第 23 章（TUI 语音流程） |
+
+---
+
 ## 1. 2026-08-02 — pre-push 钩子不再把 `GIT_DIR` / `GIT_WORK_TREE` 泄漏给 `cargo test`
 
 | 字段 | 值 |
@@ -39,6 +52,21 @@
 | 决策 | 在两个钩子入口、任何子进程运行之前清除钩子注入的变量：在 `.githooks/pre-push` 与 `scripts/check-rust.sh` 顶部 `unset GIT_DIR GIT_WORK_TREE`。同时把 `core.hooksPath` 重新指向 `.githooks`，确保 git 使用受版本控制的钩子（之前安装的 `.git/hooks/pre-push` 是过期的内联副本）。 |
 | 改后行为 | `git push` 在干净的 git 环境中运行 fmt/clippy/build/test；集成测试只在 `tact-tool-test-*` 临时目录内创建 worktree 与提交，绝不动真实仓库。 |
 | 指针 | `.githooks/pre-push`；`scripts/check-rust.sh`；`scripts/install-git-hooks.sh`；`crates/tact/src/worktree/mod.rs`（仍基于 `current_dir`，钩子不得泄漏环境变量）；`crates/tact-ui/tests/subsystem_tools.rs` |
+
+---
+
+## 1. 2026-08-02 — Google Cloud API key 语音转文字 provider
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `feature` |
+| 相关 | 第 21、23 章 |
+| 现象 / 动机 | 语音输入已支持 OpenAI 兼容转写和本地 `whisper.cpp`，但持有 Google Cloud Speech-to-Text API key 的用户无法直接选择 Google provider。 |
+| 决策 | 新增 `VoiceProvider::Google`，使用同步 `POST {base_url}/speech:recognize?key=...`，发送 base64 编码的 LINEAR16、单声道、16 kHz WAV JSON。复用 `voice.api_key`、`voice.language`、`voice.model`；默认 `https://speech.googleapis.com/v1` 与 `latest_short`。Google 录音限制为 `1..=60` 秒。Service Account、OAuth、长任务识别、流式识别和自动分段仍不在范围内。 |
+| 改后行为 | 配置 `provider = "google"` 后，短录音会发送到 Google Cloud，并将返回的 `results[].alternatives[0].transcript` 合并后沿用现有 TUI 输入流程。缺少 key、HTTP 失败、JSON 错误、空结果和取消都会报告，且不暴露凭证。 |
+| 指针 | `crates/tact/src/config/{types.rs,resolve.rs}`；`crates/tact/src/voice/transcriber.rs`；`docs/superpowers/specs/2026-08-02-google-voice-transcription-design.md`；第 21、23 章 |
+
+---
 
 ## 1. 2026-08-02 — 压缩交接摘要改为类型化消息 cell
 

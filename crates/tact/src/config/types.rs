@@ -155,6 +155,7 @@ pub enum VoiceProvider {
     #[default]
     OpenAi,
     WhisperCpp,
+    Google,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -294,9 +295,12 @@ pub struct VoiceSettings {
 impl VoiceSettings {
     pub const DEFAULT_BASE_URL: &'static str = "https://api.openai.com/v1";
     pub const DEFAULT_WHISPER_CPP_BASE_URL: &'static str = "http://127.0.0.1:8080";
+    pub const DEFAULT_GOOGLE_BASE_URL: &'static str = "https://speech.googleapis.com/v1";
     pub const DEFAULT_MODEL: &'static str = "gpt-4o-mini-transcribe";
+    pub const DEFAULT_GOOGLE_MODEL: &'static str = "latest_short";
     pub const DEFAULT_LANGUAGE: &'static str = "zh";
     pub const DEFAULT_MAX_DURATION_SECS: u64 = 300;
+    pub const DEFAULT_GOOGLE_MAX_DURATION_SECS: u64 = 60;
 
     /// Disabled voice settings used when voice is not configured or invalid.
     pub fn disabled_defaults() -> Self {
@@ -437,6 +441,23 @@ protocol = "responses"
         .unwrap();
         let openai = absent.llm.providers.get("openai").unwrap();
         assert_eq!(openai.responses_compact_threshold, None);
+    }
+
+    #[test]
+    fn parse_google_voice_config() {
+        let cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+[voice]
+provider = "google"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.voice.provider, Some(VoiceProvider::Google));
     }
 
     #[test]

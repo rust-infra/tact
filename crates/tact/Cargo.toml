@@ -11,6 +11,7 @@ tool_refactor_macros = { path = "../tool_refactor_macros" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 dashmap = { workspace = true }

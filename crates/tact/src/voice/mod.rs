@@ -12,7 +12,7 @@ pub mod recorder;
 pub mod transcriber;
 pub mod wav;
 
-pub use transcriber::{OpenAiTranscriber, Transcriber, WhisperCppTranscriber};
+pub use transcriber::{GoogleTranscriber, OpenAiTranscriber, Transcriber, WhisperCppTranscriber};
 pub use wav::encode_wav_mono_16k;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +102,7 @@ pub fn spawn_worker(settings: VoiceSettings) -> VoiceWorkerHandle {
         crate::config::VoiceProvider::WhisperCpp => {
             Arc::new(WhisperCppTranscriber::new(settings.clone()))
         }
+        crate::config::VoiceProvider::Google => Arc::new(GoogleTranscriber::new(settings.clone())),
     };
     spawn_worker_with_components(
         settings.clone(),

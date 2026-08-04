@@ -205,18 +205,23 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
 | `ui.vision_image.jpeg_quality` | `80` (clamped 1–100) | — |
 | `voice.enabled` | `false` | — |
-| `voice.provider` | `openai` | `openai` / `whisper_cpp` |
-| `voice.base_url` | `https://api.openai.com/v1` (openai) / `http://127.0.0.1:8080` (whisper_cpp) | — |
-| `voice.model` | `gpt-4o-mini-transcribe` (openai) / empty (whisper_cpp) | — |
-| `voice.language` | `zh` | — |
-| `voice.max_duration_secs` | `300` (valid `1..=600`) | — |
+| `voice.provider` | `openai` | `openai` / `google` / `whisper_cpp` |
+| `voice.base_url` | `https://api.openai.com/v1` (openai) / `https://speech.googleapis.com/v1` (google) / `http://127.0.0.1:8080` (whisper_cpp) | — |
+| `voice.model` | `gpt-4o-mini-transcribe` (openai) / `latest_short` (google) / empty (whisper_cpp) | — |
+| `voice.language` | `zh` | Google examples: `zh-CN`, `en-US` |
+| `voice.max_duration_secs` | `300` (openai/whisper_cpp, valid `1..=600`) / `60` (google, valid `1..=60`) | — |
 | `voice.voice_keybind` | unset (mouse-only) | `ctrl+<char>` (e.g. `ctrl+g`) |
 
 ### `[voice]` — speech-to-text input (macOS-first)
 
 Independent API key and endpoint from `[llm.providers.*]`. `provider = "openai"` (default) sends
-audio to `{base_url}/audio/transcriptions` and requires `api_key`. `provider = "whisper_cpp"`
-sends to `{base_url}/inference` with no auth and no `model` field, for use with a local
+audio to `{base_url}/audio/transcriptions` and requires `api_key`. `provider = "google"` sends
+short WAV audio to Google's synchronous `{base_url}/speech:recognize` endpoint using `voice.api_key`
+as the query API key; its default model is `latest_short`, language examples are `zh-CN` and `en-US`,
+and `max_duration_secs` must be `1..=60`. Enable the Cloud Speech-to-Text API in the Google Cloud
+project. Google API-key mode does not support Service Accounts, OAuth, long-running recognition,
+streaming, or automatic segmentation. `provider = "whisper_cpp"` sends to `{base_url}/inference`
+with no auth and no `model` field, for use with a local
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) server. Transcripts are inserted into the
 input box for review (never auto-submitted). `enabled = false` hides the centered title-bar
 button. `enabled = true` without `api_key` (openai only) still shows the button and reports

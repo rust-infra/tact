@@ -188,19 +188,22 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
 | `voice.enabled` | `false` | — |
-| `voice.provider` | `openai` | `openai` / `whisper_cpp` |
-| `voice.base_url` | `https://api.openai.com/v1`（openai）/ `http://127.0.0.1:8080`（whisper_cpp） | — |
-| `voice.model` | `gpt-4o-mini-transcribe`（openai）/ 空（whisper_cpp） | — |
-| `voice.language` | `zh` | — |
-| `voice.max_duration_secs` | `300`（有效范围 `1..=600`） | — |
+| `voice.provider` | `openai` | `openai` / `google` / `whisper_cpp` |
+| `voice.base_url` | `https://api.openai.com/v1`（openai）/ `https://speech.googleapis.com/v1`（google）/ `http://127.0.0.1:8080`（whisper_cpp） | — |
+| `voice.model` | `gpt-4o-mini-transcribe`（openai）/ `latest_short`（google）/ 空（whisper_cpp） | — |
+| `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
+| `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
 | `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
 
 ### `[voice]` — 语音转文字输入（macOS 优先）
 
 API 密钥与端点独立于 `[llm.providers.*]`。`provider = "openai"`（默认）将音频发往
-`{base_url}/audio/transcriptions`，需要 `api_key`。`provider = "whisper_cpp"` 将音频发往
-`{base_url}/inference`，无需认证与 `model` 字段，适用于本地
-[whisper.cpp](https://github.com/ggerganov/whisper.cpp) 服务器。转写结果插入输入框供审阅（不会自动提交）。
+`{base_url}/audio/transcriptions`，需要 `api_key`。`provider = "google"` 将短 WAV 音频发往 Google
+Cloud 的同步 `{base_url}/speech:recognize` 端点，并使用 `voice.api_key` 作为 query API key；默认模型为
+`latest_short`，语言示例为 `zh-CN`、`en-US`，且 `max_duration_secs` 必须为 `1..=60`。请在 Google
+Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Service Account、OAuth、长任务识别、
+流式识别或自动分段。`provider = "whisper_cpp"` 将音频发往 `{base_url}/inference`，无需认证与
+`model` 字段，适用于本地 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) 服务器。转写结果插入输入框供审阅（不会自动提交）。
 `enabled = false` 隐藏标题栏居中按钮。`enabled = true` 但未配置 `api_key`（仅 openai）时仍显示按钮，
 点击会提示 `[voice].api_key`。可选 `voice_keybind = "ctrl+<char>"` 可在任意输入模式下切换录制；
 仅精确匹配时消费按键（其它键仍进入 Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在

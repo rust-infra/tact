@@ -84,6 +84,7 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
         .unwrap_or_else(|| match provider {
             VoiceProvider::WhisperCpp => VoiceSettings::DEFAULT_WHISPER_CPP_BASE_URL.to_string(),
             VoiceProvider::OpenAi => VoiceSettings::DEFAULT_BASE_URL.to_string(),
+            VoiceProvider::Google => VoiceSettings::DEFAULT_GOOGLE_BASE_URL.to_string(),
         });
     let model = toml_cfg
         .voice
@@ -93,19 +94,26 @@ fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
         .unwrap_or_else(|| match provider {
             VoiceProvider::WhisperCpp => String::new(),
             VoiceProvider::OpenAi => VoiceSettings::DEFAULT_MODEL.to_string(),
+            VoiceProvider::Google => VoiceSettings::DEFAULT_GOOGLE_MODEL.to_string(),
         });
     let language = match toml_cfg.voice.language.clone() {
         Some(language) if language.trim().is_empty() => None,
         Some(language) => Some(language),
         None => Some(VoiceSettings::DEFAULT_LANGUAGE.to_string()),
     };
-    let max_duration_secs = toml_cfg
-        .voice
-        .max_duration_secs
-        .unwrap_or(VoiceSettings::DEFAULT_MAX_DURATION_SECS);
-    if !(1..=600).contains(&max_duration_secs) {
+    let max_duration_secs = toml_cfg.voice.max_duration_secs.unwrap_or(match provider {
+        VoiceProvider::Google => VoiceSettings::DEFAULT_GOOGLE_MAX_DURATION_SECS,
+        VoiceProvider::OpenAi | VoiceProvider::WhisperCpp => {
+            VoiceSettings::DEFAULT_MAX_DURATION_SECS
+        }
+    });
+    let max_allowed = match provider {
+        VoiceProvider::Google => 60,
+        VoiceProvider::OpenAi | VoiceProvider::WhisperCpp => 600,
+    };
+    if !(1..=max_allowed).contains(&max_duration_secs) {
         anyhow::bail!(
-            "voice.max_duration_secs must be between 1 and 600 (got {max_duration_secs})"
+            "voice.max_duration_secs for {provider:?} must be between 1 and {max_allowed} (got {max_duration_secs})"
         );
     }
     let voice_keybind = toml_cfg.voice.voice_keybind.clone();
@@ -719,6 +727,40 @@ max_tokens = {subagent_max_tokens}
 "#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn google_voice_defaults_and_duration_limit() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.provider = Some(VoiceProvider::Google);
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.base_url, "https://speech.googleapis.com/v1");
+        assert_eq!(cfg.voice.model, "latest_short");
+        assert_eq!(cfg.voice.max_duration_secs, 60);
+
+        toml_cfg.voice.max_duration_secs = Some(60);
+        assert!(resolve_config(&empty_cli_args(), &toml_cfg, None).is_ok());
+
+        toml_cfg.voice.max_duration_secs = Some(61);
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Google"));
+        assert!(message.contains("between 1 and 60"));
+    }
+
+    #[test]
+    fn google_voice_uses_custom_model_language_and_base_url() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.voice.provider = Some(VoiceProvider::Google);
+        toml_cfg.voice.base_url = Some("http://localhost:9000/v1".to_string());
+        toml_cfg.voice.model = Some("latest_long".to_string());
+        toml_cfg.voice.language = Some("en-US".to_string());
+        toml_cfg.voice.max_duration_secs = Some(42);
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.voice.base_url, "http://localhost:9000/v1");
+        assert_eq!(cfg.voice.model, "latest_long");
+        assert_eq!(cfg.voice.language.as_deref(), Some("en-US"));
+        assert_eq!(cfg.voice.max_duration_secs, 42);
     }
 
     #[test]

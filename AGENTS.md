@@ -53,3 +53,8 @@ If only wording polish is needed on one language, that is fine; do not leave one
 ## Compaction (quick pointer)
 
 Current design: Codex-style rebuild — recent real user messages + `SUMMARY_PREFIX` handoff; entry path compacts **before** pushing `user_turn_message` and reserves incoming-turn size in `should_auto_compact`. Spec: `docs/superpowers/specs/2026-07-18-codex-style-compact-design.md`. Legacy single-summary path: `Agent::compact_history_legacy`.
+
+
+## NetWork Proxy
+
+export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_proxy=http://127.0.0.1:7890
