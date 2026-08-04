@@ -28,7 +28,7 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Command,
-        display_name: "$ Bg",
+        display_name: "⚙️ Background Run",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,

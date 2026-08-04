@@ -130,7 +130,7 @@ pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Command,
-        display_name: "$ Wt Run",
+        display_name: "🌿 Worktree Run",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
