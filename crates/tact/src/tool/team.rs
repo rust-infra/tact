@@ -90,7 +90,7 @@ pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "✉️ Msg",
+        display_name: "✉️ Send",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
