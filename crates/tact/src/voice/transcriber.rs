@@ -24,7 +24,6 @@ pub struct GoogleTranscriber {
 impl GoogleTranscriber {
     pub fn new(settings: VoiceSettings) -> Self {
         let client = reqwest::Client::builder()
-            .no_proxy()
             .timeout(Duration::from_secs(120))
             .build()
             .expect("reqwest client");
@@ -291,6 +290,15 @@ mod tests {
         }
     }
 
+    fn google_transcriber_without_proxy(settings: VoiceSettings) -> GoogleTranscriber {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("reqwest test client");
+        GoogleTranscriber { settings, client }
+    }
+
     #[test]
     fn parse_google_response_joins_results() {
         let body = br#"{"results":[{"alternatives":[{"transcript":" first "}]},{"alternatives":[{"transcript":"second"}]}]}"#;
@@ -347,11 +355,58 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let text = GoogleTranscriber::new(google_settings(&format!("{}/v1", server.uri())))
+        let text =
+            google_transcriber_without_proxy(google_settings(&format!("{}/v1", server.uri())))
+                .transcribe(vec![1, 2, 3], CancellationToken::new())
+                .await
+                .unwrap();
+        assert_eq!(text, "你好 Tact");
+    }
+
+    #[tokio::test]
+    async fn google_transcriber_honors_http_proxy() {
+        const CHILD_MARKER: &str = "TACT_GOOGLE_PROXY_TEST_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let text = GoogleTranscriber::new(google_settings(
+                "http://google-voice-proxy-test.invalid/v1",
+            ))
             .transcribe(vec![1, 2, 3], CancellationToken::new())
             .await
-            .unwrap();
-        assert_eq!(text, "你好 Tact");
+            .expect("Google transcription should use the configured HTTP proxy");
+            assert_eq!(text, "proxied");
+            return;
+        }
+
+        let proxy = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [{"alternatives": [{"transcript": "proxied"}]}]
+            })))
+            .mount(&proxy)
+            .await;
+
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .arg("--exact")
+            .arg("voice::transcriber::tests::google_transcriber_honors_http_proxy")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .env("HTTP_PROXY", proxy.uri())
+            .env("http_proxy", proxy.uri())
+            .env_remove("HTTPS_PROXY")
+            .env_remove("https_proxy")
+            .env_remove("ALL_PROXY")
+            .env_remove("all_proxy")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .kill_on_drop(true);
+
+        let status = tokio::time::timeout(Duration::from_secs(10), child.status())
+            .await
+            .expect("proxy child test timed out")
+            .expect("failed to launch proxy child test");
+        assert!(status.success(), "proxy child test failed: {status}");
     }
 
     #[tokio::test]
@@ -375,7 +430,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
             .mount(&server)
             .await;
-        let err = GoogleTranscriber::new(google_settings(&server.uri()))
+        let err = google_transcriber_without_proxy(google_settings(&server.uri()))
             .transcribe(vec![1, 2, 3], CancellationToken::new())
             .await
             .unwrap_err();
@@ -394,7 +449,7 @@ mod tests {
         let task = tokio::spawn({
             let cancel = cancel.clone();
             async move {
-                GoogleTranscriber::new(google_settings(&server.uri()))
+                google_transcriber_without_proxy(google_settings(&server.uri()))
                     .transcribe(vec![1, 2, 3], cancel)
                     .await
             }

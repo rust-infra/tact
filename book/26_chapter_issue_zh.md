@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-04 — Google 语音转写遵循标准代理环境变量
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `bugfix` |
+| 相关 | 第 21、23 章 |
+| 现象 / 动机 | Google Speech-to-Text 客户端通过 `reqwest::ClientBuilder::no_proxy()` 构建。在只能经 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 访问 `speech.googleapis.com` 的网络中，录音虽能完成，转写请求却会绕过已配置代理，最终超时或连接失败。 |
+| 决策 | 移除 Google 客户端强制绕过代理的设置，改为使用 reqwest 的标准代理环境解析。继续保持 API key 安全的错误输出：由于 Google API key 目前位于查询参数中，连接错误不会连同可能含完整请求 URL 的底层错误一起展示。 |
+| 改后行为 | Google 语音转写会遵循进程代理环境，包括对应的小写变量和 `NO_PROXY`；未配置代理时仍直接连接。子进程回归测试会验证请求抵达已配置的 HTTP 代理，而不是原始主机。 |
+| 指针 | `crates/tact/src/voice/transcriber.rs`（`GoogleTranscriber::new`、`google_transcriber_honors_http_proxy`）；第 21 章（语音配置）、第 23 章（TUI 语音流程） |
+
+---
+
 ## 1. 2026-08-02 — pre-push 钩子不再把 `GIT_DIR` / `GIT_WORK_TREE` 泄漏给 `cargo test`
 
 | 字段 | 值 |

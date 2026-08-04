@@ -194,6 +194,15 @@ api_key = ""
 # Examples: "ctrl+g", "ctrl+r", "ctrl+,"
 # voice_keybind = "ctrl+g"
 
+# Google Cloud Speech-to-Text example:
+# enabled = true
+# provider = "google"
+# api_key = "your-google-cloud-api-key"
+# base_url = "https://speech.googleapis.com/v1"
+# model = "latest_short"
+# language = "zh-CN"          # Or "en-US", depending on the audio language.
+# max_duration_secs = 60       # Google synchronous recognition allows 1–60 seconds.
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------

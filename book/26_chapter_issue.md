@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-04 — Google voice transcription honors standard proxy environment variables
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | Ch 21, Ch 23 |
+| Symptom / motivation | The Google Speech-to-Text client was constructed with `reqwest::ClientBuilder::no_proxy()`. On networks where `speech.googleapis.com` is reachable only through `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`, recording completed but transcription bypassed the configured proxy and timed out or failed to connect. |
+| Decision | Remove the Google client's forced proxy bypass and let reqwest apply its standard proxy-environment resolution. Keep API-key-safe error reporting: connection errors are not rendered with the request URL because the Google API key is currently carried in the query string. |
+| Behavior after | Google voice transcription follows the process proxy environment, including the corresponding lowercase variable names and `NO_PROXY`; direct connections still work when no proxy is configured. A child-process regression test verifies that a request reaches a configured HTTP proxy rather than the original host. |
+| Pointers | `crates/tact/src/voice/transcriber.rs` (`GoogleTranscriber::new`, `google_transcriber_honors_http_proxy`); Ch 21 (voice configuration), Ch 23 (TUI voice flow) |
+
+---
+
 ## 1. 2026-08-02 — Pre-push hook no longer leaks `GIT_DIR`/`GIT_WORK_TREE` into `cargo test`
 
 | Field | Value |
