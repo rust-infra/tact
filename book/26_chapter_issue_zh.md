@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-04 — `tact upgrade` 自升级命令
+
+| 字段 | 值 |
+|------|------|
+| 类型 | `feature` |
+| 相关 | README（CLI / 自升级）、第 21 章（配置：`install_without_llm` 路径） |
+| 现象 / 动机 | 用户没有就地升级到新版本的方式；升级只能手动重跑 `scripts/install.sh`（或重新源码构建）。 |
+| 决策 | 新增 `tact upgrade` CLI 子命令。它会扫描 GitHub release 列表（`GET /repos/{repo}/releases?per_page=100`），找到最新一个非 draft、非 prerelease、且资产里包含当前平台 `tact-ui-v<ver>-<triple>.tar.gz` 的 release——跳过没有构建资产的 tag（例如 `v1.1.1` 最初发布时资产为 0）——下载归档，对照该 release 发布的 `SHA256SUMS` 校验，然后在 Unix 上原子替换正在运行的二进制。参数：`--check`（只打印）、`--yes`（跳过 y/N 确认）、`--repo owner/name` 或 `TACT_UPGRADE_REPO`（跟踪 fork）。Windows 暂不支持就地升级，命令会引导用户重跑 `scripts/install.ps1`。该命令经 `install_without_llm` 解析配置，无需配置任何 LLM provider。 |
+| 改后行为 | `tact-ui upgrade --check` 打印当前版本与最新可安装版本；`tact-ui upgrade` 提示确认后（`y` 或 `--yes`）下载、校验 SHA-256 并替换可执行文件，最后提示重启。校验和不匹配会在替换前中止。 |
+| 指针 | `crates/tact/src/upgrade.rs`（`run_upgrade`、`find_latest_release_with_asset`、`replace_current_binary`）、`crates/tact/src/config/cli.rs`（`CliCommand::Upgrade`）、`crates/tact-ui/src/main.rs`（分发）、README §3 Run |
+
+---
+
 ## 1. 2026-08-04 — Google 语音转写遵循标准代理环境变量
 
 | 字段 | 值 |

@@ -159,7 +159,10 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
     let args = CliArgs::parse();
     let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
 
-    if args.list_sessions || matches!(args.command, Some(CliCommand::Plugin { .. })) {
+    if args.list_sessions
+        || matches!(args.command, Some(CliCommand::Plugin { .. }))
+        || matches!(args.command, Some(CliCommand::Upgrade { .. }))
+    {
         install_without_llm(resolve::resolve_non_llm_settings(
             &args,
             &toml_cfg,

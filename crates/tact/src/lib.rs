@@ -40,6 +40,7 @@ pub mod store;
 pub mod task;
 pub mod team;
 pub mod tool;
+pub mod upgrade;
 pub mod utils;
 pub mod voice;
 pub mod worktree;

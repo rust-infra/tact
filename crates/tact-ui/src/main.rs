@@ -16,6 +16,12 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
     }
 
+    // Self-upgrade does not need a session store or provider config.
+    if let Some(CliCommand::Upgrade { repo, yes, check }) = args.command.take() {
+        return tact::upgrade::run_upgrade(tact::upgrade::UpgradeOptions { repo, yes, check })
+            .await;
+    }
+
     let tact_path = TactPath::from_cwd()?;
     let db_path = tact_path.session_db_path();
     let session_store = open_sqlite_session_store(&db_path).await?;

@@ -57,7 +57,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 1. **`tact_llm::init_provider(config.llm.provider_info())`** — stores `ProviderInfo` for `get_llm_client()` ([Ch 22](./22_chapter_llm.md)).
 2. **`SETTINGS.set(config)`** — makes `config::settings()` available for the rest of the process.
 
-`install_without_llm()` skips provider init for commands like `--list-sessions` that never call the model.
+`install_without_llm()` skips provider init for commands like `--list-sessions`, `tact upgrade`, or the plugin CLI that never call the model.
 
 ---
 

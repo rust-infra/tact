@@ -196,6 +196,21 @@ tact-ui plugin marketplace list
 tact-ui plugin reload
 ```
 
+Self-upgrade is built in:
+
+```bash
+tact-ui upgrade --check   # check for a newer release without installing
+tact-ui upgrade           # prompt, then upgrade to the newest release binary
+tact-ui upgrade --yes     # skip the confirmation prompt
+```
+
+`tact upgrade` finds the newest GitHub release that ships a binary for your
+platform (asset-less tags and pre-releases are skipped), downloads it, verifies
+it against the published `SHA256SUMS`, and atomically replaces the running
+executable on macOS/Linux. Track a fork with `--repo owner/name` (or the
+`TACT_UPGRADE_REPO` environment variable). On Windows, re-run
+`scripts/install.ps1` to upgrade.
+
 ---
 
 ## Features
