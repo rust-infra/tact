@@ -13,7 +13,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    inject::inject_user_id, openai::{
+    inject::inject_user_id,
+    openai::{
         CompatibleConfig, OpenAiAdapter,
         body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body},
         compat::{create_assembled, stream_assembled},
@@ -127,11 +128,7 @@ impl LlmClient for DeepSeekAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ProviderKind, RequiredMessageParams,
-        openai::body::test_util::*,
-
-    };
+    use crate::{ProviderKind, RequiredMessageParams, openai::body::test_util::*};
 
     #[test]
     fn deepseek_hook_pairs_thinking_and_effort() {

@@ -46,8 +46,8 @@ pub use models::{
 pub use openai::OpenAiBodyHook;
 pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
-    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k27,
-    is_kimi_k3, is_kimi_usage_supported, model_uses_effort, read_provider, supports_vision,
+    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k3,
+    is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider, supports_vision,
 };
 pub use provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,

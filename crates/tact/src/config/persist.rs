@@ -175,7 +175,10 @@ pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("llm.providers.{provider} must be a table"))?;
     entry_table.insert("model".into(), toml::Value::String(model.to_string()));
-    entry_table.insert("reasoning_effort".into(), toml::Value::String(effort.to_string()));
+    entry_table.insert(
+        "reasoning_effort".into(),
+        toml::Value::String(effort.to_string()),
+    );
 
     let serialized =
         toml::to_string_pretty(&value).with_context(|| format!("serialize config {:?}", path))?;
@@ -211,7 +214,10 @@ pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
         .ok_or_else(|| anyhow::anyhow!("agent.subagent must be a table"))?;
 
     subagent_table.insert("model".into(), toml::Value::String(model.to_string()));
-    subagent_table.insert("reasoning_effort".into(), toml::Value::String(effort.to_string()));
+    subagent_table.insert(
+        "reasoning_effort".into(),
+        toml::Value::String(effort.to_string()),
+    );
 
     let serialized =
         toml::to_string_pretty(&value).with_context(|| format!("serialize config {:?}", path))?;

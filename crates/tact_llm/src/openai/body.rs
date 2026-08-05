@@ -145,8 +145,8 @@ mod tests {
 
     #[test]
     fn openai_hook_injects_explicit_max() {
-        let request =
-            sample_request_with_thinking().with_reasoning_effort(Some(crate::OpenAiReasoningEffort::Max));
+        let request = sample_request_with_thinking()
+            .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::Max));
         let provider = provider(ProviderKind::OpenAi, "gpt-5", "https://api.openai.com/v1");
         let mut body = empty_body();
 

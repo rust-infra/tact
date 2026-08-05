@@ -55,10 +55,7 @@ fn budget_option_labels(msgs: &crate::i18n::Messages, budgets: &[usize]) -> Vec<
     }
 }
 
-fn effort_label(
-    msgs: &crate::i18n::Messages,
-    effort: tact_llm::OpenAiReasoningEffort,
-) -> String {
+fn effort_label(msgs: &crate::i18n::Messages, effort: tact_llm::OpenAiReasoningEffort) -> String {
     use tact_llm::OpenAiReasoningEffort as E;
     match effort {
         E::Minimal => msgs.model_effort_minimal.to_string(),
@@ -196,12 +193,12 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     open_second_step(app, strip_current_marker(&chosen), false);
                 }
                 SelectKind::ModelProfileEffortPick { model, efforts } => {
-                    let effort = efforts
-                        .get(idx)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            efforts.last().copied().unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
-                        });
+                    let effort = efforts.get(idx).copied().unwrap_or_else(|| {
+                        efforts
+                            .last()
+                            .copied()
+                            .unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
+                    });
                     apply_model_and_effort_pick(app, model, effort);
                 }
                 SelectKind::ThinkBudgetPick { model, budgets } => {
@@ -238,12 +235,12 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     open_second_step(app, strip_current_marker(&chosen), true);
                 }
                 SelectKind::SubagentModelProfileEffortPick { model, efforts } => {
-                    let effort = efforts
-                        .get(idx)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            efforts.last().copied().unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
-                        });
+                    let effort = efforts.get(idx).copied().unwrap_or_else(|| {
+                        efforts
+                            .last()
+                            .copied()
+                            .unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
+                    });
                     apply_subagent_model_and_effort_pick(app, model, effort);
                 }
                 SelectKind::SubagentThinkBudgetPick { model, budgets } => {
@@ -339,8 +336,8 @@ fn open_second_step(app: &mut App, model: String, subagent: bool) {
         app.input_mode = InputMode::Normal;
         return;
     };
-    let profile = tact::config::try_settings()
-        .and_then(|s| s.llm.model_profiles.get(&model).cloned());
+    let profile =
+        tact::config::try_settings().and_then(|s| s.llm.model_profiles.get(&model).cloned());
 
     if tact_llm::model_uses_effort(&model, &provider) {
         let efforts = profile
@@ -508,9 +505,9 @@ fn apply_model_and_effort_pick(
             .replace("{}", &model)
             .replace("{}", effort.as_str()),
     );
-    let _ = app
-        .user_cmd_tx
-        .send(UserCommand::SetReasoningEffort(Some(effort.as_str().to_string())));
+    let _ = app.user_cmd_tx.send(UserCommand::SetReasoningEffort(Some(
+        effort.as_str().to_string(),
+    )));
 
     let Some(settings) = tact::config::try_settings() else {
         app.input_mode = InputMode::Normal;

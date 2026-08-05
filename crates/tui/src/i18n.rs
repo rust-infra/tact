@@ -448,10 +448,8 @@ impl Messages {
             model_effort_max: "Max",
             model_effort_switched_tmpl: "✓ Model set to {}; reasoning effort set to {}",
             model_persist_with_effort_prompt: "Save this model and reasoning effort to config?",
-            model_persisted_with_effort_tmpl:
-                "✓ Saved model {} and reasoning effort {} to config",
-            model_session_only_with_effort_tmpl:
-                "Model {} and reasoning effort {} apply only to this session",
+            model_persisted_with_effort_tmpl: "✓ Saved model {} and reasoning effort {} to config",
+            model_session_only_with_effort_tmpl: "Model {} and reasoning effort {} apply only to this session",
 
             // ---- /model-subagent ----
             model_subagent_select_prompt_tmpl: "Select subagent model ({})",
