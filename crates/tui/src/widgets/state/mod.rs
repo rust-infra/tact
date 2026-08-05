@@ -278,6 +278,8 @@ pub struct App {
     pub(crate) process_start_time: chrono::DateTime<chrono::Local>,
     /// Last uptime whole-second that triggered an idle dirty tick (dedupe redraws).
     pub(crate) last_uptime_tick_secs: Option<i64>,
+    /// Last git branch refresh time (throttle to avoid running `git` too often).
+    pub(crate) last_git_refresh: Option<std::time::Instant>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// Tool invocation blocks and diff popup state.

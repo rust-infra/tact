@@ -1406,6 +1406,7 @@ impl Agent {
                 "Use the provided tools to interact with the system and accomplish the task",
                 "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
                 "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
+                "Always end your response with a visible text conclusion; never exit after thinking alone without a text block — even a single-sentence summary of your reasoning result is enough.",
                 "When editing files, always re-read the file first if its content may have changed since you last read it",
                 "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
