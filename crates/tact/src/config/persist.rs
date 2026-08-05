@@ -1,4 +1,7 @@
 //! In-place TOML helpers for optional `/model` persistence.
+//!
+//! Uses `toml_edit` to preserve comments and original formatting when
+//! rewriting only the targeted keys.
 
 use std::path::Path;
 
@@ -7,28 +10,24 @@ use anyhow::Context as _;
 /// Rewrite `path` after applying `set` to the table reached by walking
 /// `keys` (creating missing tables as needed).
 ///
-/// Uses `toml::Value` round-trip; comments and original formatting may be lost.
+/// Uses `toml_edit::DocumentMut` to preserve comments and formatting.
 fn update_toml<F>(path: &Path, keys: &[&str], set: F) -> anyhow::Result<()>
 where
-    F: FnOnce(&mut toml::map::Map<String, toml::Value>) -> anyhow::Result<()>,
+    F: FnOnce(&mut toml_edit::Table) -> anyhow::Result<()>,
 {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read config file {:?}", path))?;
-    let mut value: toml::Value = content
+    let mut doc: toml_edit::DocumentMut = content
         .parse()
         .with_context(|| format!("parse error in config file {:?}", path))?;
 
-    let root = value
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("config root must be a table"))?;
-
     // Walk `keys`, creating missing intermediate tables along the way.
-    let mut table = root;
+    let mut table = doc.as_table_mut();
     let mut walked = String::from("config root");
     for key in keys {
         let entry = table
-            .entry((*key).to_string())
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            .entry(key)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
         table = entry
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("{walked}.{key} must be a table"))?;
@@ -38,30 +37,25 @@ where
 
     set(table)?;
 
-    let serialized =
-        toml::to_string_pretty(&value).with_context(|| format!("serialize config {:?}", path))?;
+    let serialized = doc.to_string();
     std::fs::write(path, serialized)
         .with_context(|| format!("cannot write config file {:?}", path))?;
     Ok(())
 }
 
 /// Set `llm.providers.<provider>.model` in `path` and rewrite the file.
-///
-/// Uses `toml::Value` round-trip; comments and original formatting may be lost.
 pub(super) fn update_provider_model_in_toml(
     path: &Path,
     provider: &str,
     model: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model".into(), toml::Value::String(model.to_string()));
+        t.insert("model", toml_edit::value(model));
         Ok(())
     })
 }
 
 /// Set `llm.providers.<provider>.model` and `thinking_budget` in `path` and rewrite the file.
-///
-/// Uses `toml::Value` round-trip; comments and original formatting may be lost.
 pub(super) fn update_provider_model_and_thinking_budget_in_toml(
     path: &Path,
     provider: &str,
@@ -71,15 +65,13 @@ pub(super) fn update_provider_model_and_thinking_budget_in_toml(
     let budget = i64::try_from(thinking_budget)
         .map_err(|_| anyhow::anyhow!("thinking_budget exceeds TOML integer range"))?;
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model".into(), toml::Value::String(model.to_string()));
-        t.insert("thinking_budget".into(), toml::Value::Integer(budget));
+        t.insert("model", toml_edit::value(model));
+        t.insert("thinking_budget", toml_edit::value(budget));
         Ok(())
     })
 }
 
 /// Set `agent.subagent.model` and `thinking_budget` in `path` and rewrite the file.
-///
-/// Uses `toml::Value` round-trip; comments and original formatting may be lost.
 pub(super) fn update_subagent_model_in_toml(
     path: &Path,
     model: &str,
@@ -88,8 +80,8 @@ pub(super) fn update_subagent_model_in_toml(
     let budget = i64::try_from(thinking_budget)
         .map_err(|_| anyhow::anyhow!("thinking_budget exceeds TOML integer range"))?;
     update_toml(path, &["agent", "subagent"], |t| {
-        t.insert("model".into(), toml::Value::String(model.to_string()));
-        t.insert("thinking_budget".into(), toml::Value::Integer(budget));
+        t.insert("model", toml_edit::value(model));
+        t.insert("thinking_budget", toml_edit::value(budget));
         Ok(())
     })
 }
@@ -102,11 +94,8 @@ pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
     effort: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model".into(), toml::Value::String(model.to_string()));
-        t.insert(
-            "reasoning_effort".into(),
-            toml::Value::String(effort.to_string()),
-        );
+        t.insert("model", toml_edit::value(model));
+        t.insert("reasoning_effort", toml_edit::value(effort));
         Ok(())
     })
 }
@@ -118,11 +107,8 @@ pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
     effort: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["agent", "subagent"], |t| {
-        t.insert("model".into(), toml::Value::String(model.to_string()));
-        t.insert(
-            "reasoning_effort".into(),
-            toml::Value::String(effort.to_string()),
-        );
+        t.insert("model", toml_edit::value(model));
+        t.insert("reasoning_effort", toml_edit::value(effort));
         Ok(())
     })
 }
@@ -171,6 +157,42 @@ model = "gpt-4o"
             cfg["llm"]["providers"]["kimi"]["api_key"].as_str(),
             Some("sk-test")
         );
+    }
+
+    #[test]
+    fn preserves_comments_and_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = r#"# Tact configuration
+[llm]
+# Default provider
+provider = "kimi"
+
+[llm.providers.kimi]
+# Your API key from https://platform.moonshot.cn
+api_key = "sk-test"
+model = "old-model"
+models = ["old-model", "new-model"]
+  # inline comment after array
+
+# OpenAI fallback (unused by default)
+[llm.providers.openai]
+api_key = "sk-other"
+model = "gpt-4o"
+"#;
+        std::fs::write(&path, original).unwrap();
+
+        update_provider_model_in_toml(&path, "kimi", "new-model").unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        // Verify comments are preserved
+        assert!(updated.contains("# Tact configuration"));
+        assert!(updated.contains("# Default provider"));
+        assert!(updated.contains("# Your API key from https://platform.moonshot.cn"));
+        assert!(updated.contains("# inline comment after array"));
+        assert!(updated.contains("# OpenAI fallback (unused by default)"));
+        // Verify the model was updated
+        assert!(updated.contains("model = \"new-model\""));
     }
 
     #[test]

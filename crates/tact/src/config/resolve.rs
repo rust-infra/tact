@@ -253,6 +253,16 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     {
         anyhow::bail!("protocol 'responses' is only supported for provider 'openai' or 'deepseek'");
     }
+
+    if protocol == OpenAiProtocol::Responses && provider == ProviderKind::DeepSeek {
+        anyhow::bail!(
+            "DeepSeek Responses protocol support is incomplete and not yet production-ready.\n\
+             Please set protocol = \"openai\" (Chat Completions) for the deepseek provider in config.toml:\n\
+               [llm.providers.deepseek]\n\
+               protocol = \"openai\"\n\
+             Or remove the protocol line (Chat Completions is the default)."
+        );
+    }
     let reasoning_effort = entry.reasoning_effort;
     if reasoning_effort.is_some()
         && provider != ProviderKind::OpenAi
@@ -352,6 +362,16 @@ fn resolve_subagent(
         .unwrap_or(OpenAiProtocol::default().as_str())
         .parse::<OpenAiProtocol>()
         .map_err(anyhow::Error::msg)?;
+
+    if protocol == OpenAiProtocol::Responses && provider_kind == ProviderKind::DeepSeek {
+        anyhow::bail!(
+            "subagent: DeepSeek Responses protocol support is incomplete and not yet production-ready.\n\
+             Please set protocol = \"openai\" (Chat Completions) for the deepseek provider entry in config.toml:\n\
+               [llm.providers.deepseek]\n\
+               protocol = \"openai\"\n\
+             Or remove the protocol line (Chat Completions is the default)."
+        );
+    }
 
     // Resolve reasoning_effort from the referenced provider entry
     let reasoning_effort = entry.reasoning_effort;
@@ -1093,7 +1113,7 @@ reasoning_effort = "extreme"
     }
 
     #[test]
-    fn deepseek_responses_protocol_resolves() {
+    fn reject_deepseek_responses_protocol() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1107,9 +1127,53 @@ protocol = "responses"
         )
         .unwrap();
 
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(resolved.llm.provider, ProviderKind::DeepSeek);
-        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::Responses);
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("DeepSeek Responses"),
+            "expected DeepSeek Responses rejection, got: {error}"
+        );
+        assert!(
+            error.contains("protocol = \"openai\""),
+            "expected hint to switch to Chat Completions, got: {error}"
+        );
+    }
+
+    #[test]
+    fn reject_subagent_deepseek_responses_protocol() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+protocol = "responses"
+
+[agent.subagent]
+provider = "deepseek"
+model = "deepseek-chat"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("subagent") && error.contains("DeepSeek Responses"),
+            "expected subagent DeepSeek Responses rejection, got: {error}"
+        );
+        assert!(
+            error.contains("protocol = \"openai\""),
+            "expected hint to switch to Chat Completions, got: {error}"
+        );
     }
 
     #[test]
