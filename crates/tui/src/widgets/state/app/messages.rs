@@ -69,8 +69,7 @@ impl App {
             );
         }
 
-        let version = env!("TACT_VERSION");
-        let title = format!("  Tact Agent  v{}", version);
+        let title = format!("  Tact Agent");
         self.append_msg(
             Line::from(Span::styled(
                 title.clone(),
