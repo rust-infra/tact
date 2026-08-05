@@ -33,9 +33,12 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             base_url: String::new(),
             model: "mock-model".to_string(),
             models: Vec::new(),
+            model_profiles: Default::default(),
             responses_compact_threshold: None,
         },
         agent: tact::config::AgentSettings {
+            model: "mock-model".to_string(),
+            reasoning_effort: None,
             model_context_window: 500_000,
             max_tokens: 8192,
             thinking_budget: 0,
@@ -159,7 +162,7 @@ pub fn build_responses_test_agent(
     let config = default_test_config();
     build_test_agent_with_provider(
         LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
-            "test-key", base_url, None, None,
+            "test-key", base_url, None,
         )),
         ui_tx,
         PermissionMode::Auto,

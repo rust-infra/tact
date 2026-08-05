@@ -46,11 +46,11 @@ impl OpenAiMultiModelAdapter {
         request: &CreateMessageParams,
         stream: bool,
     ) -> Result<serde_json::Value, LlmError> {
-        // Resolve the hook from the *live* provider each request so `/model`
-        // (and other in-process provider updates) pick the right body shape
-        // without rebuilding the long-lived client.
+        // Resolve the hook from the *static* provider each request so the
+        // body shape follows the per-request model (`/model` picks) without
+        // rebuilding the long-lived client.
         crate::read_provider(|provider| {
-            let hook = body_hook_for(provider, self.user_id.as_deref())?;
+            let hook = body_hook_for(provider, &request.model, self.user_id.as_deref())?;
             assemble_chat_completion_body(request, stream, provider, hook.as_ref())
         })
     }
@@ -92,13 +92,11 @@ mod tests {
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {
         let _guard = crate::provider::lock_provider_for_tests();
-        // Long-lived adapter is built once; `/model` only updates the global
-        // provider. Body hooks must follow the live model, not construction-time
-        // flavor.
+        // Long-lived adapter is built once; the per-request model drives the
+        // body hook, so `/model` picks change the wire shape without rebuilding.
         crate::init_provider(ProviderInfo {
             provider: ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::default(),
-            reasoning_effort: None,
             responses_compact_threshold: None,
             api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
@@ -108,13 +106,14 @@ mod tests {
             "sk-test",
             "https://api.openai.com/v1",
         )));
-        let request = sample_request_with_thinking();
+        let mut request = sample_request_with_thinking()
+            .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::Low));
 
         let openai_body = adapter.assemble_body(&request, false).unwrap();
         assert_eq!(openai_body["reasoning_effort"], "low");
         assert!(openai_body.get("thinking").is_none());
 
-        crate::set_model("kimi-k2.5").unwrap();
+        request.model = "kimi-k2.5".to_string();
         let kimi_body = adapter.assemble_body(&request, false).unwrap();
         assert_eq!(kimi_body["thinking"]["type"], "enabled");
         assert!(kimi_body.get("reasoning_effort").is_none());

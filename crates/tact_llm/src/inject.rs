@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::{CreateMessageParams, openai::reasoning_effort_from_budget};
+use crate::CreateMessageParams;
 
 /// Inject `user_id` into the request body for KV cache isolation.
 pub(crate) fn inject_user_id(body: &mut Value, user_id: Option<&str>) {
@@ -29,25 +29,18 @@ pub(crate) fn inject_reasoning_content(body: &mut Value, reasoning: &[Option<Str
     }
 }
 
-/// Budget tokens when thinking is enabled and maps to a non-empty effort band.
+/// Budget tokens when thinking is enabled (budget > 0).
 pub(crate) fn thinking_budget_enabled(request: &CreateMessageParams) -> Option<usize> {
     let thinking = request.thinking.as_ref()?;
-    reasoning_effort_from_budget(thinking.budget_tokens).map(|_| thinking.budget_tokens)
+    (thinking.budget_tokens > 0).then_some(thinking.budget_tokens)
 }
 
-/// OpenAI-style bands: `low` / `medium` / `high`.
-pub(crate) fn inject_openai_reasoning_effort(
-    body: &mut Value,
-    request: &CreateMessageParams,
-    configured: Option<crate::OpenAiReasoningEffort>,
-) {
-    let Some(thinking) = &request.thinking else {
-        if let Some(effort) = configured {
-            body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
-        }
-        return;
-    };
-    if let Some(effort) = crate::effective_reasoning_effort(configured, thinking.budget_tokens) {
+/// Inject `reasoning_effort` from the per-request explicit effort.
+///
+/// `None` (unconfigured) omits the field — the provider default applies
+/// (e.g. OpenAI medium). No budget-band fallback.
+pub(crate) fn inject_openai_reasoning_effort(body: &mut Value, request: &CreateMessageParams) {
+    if let Some(effort) = request.reasoning_effort {
         body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
     }
 }

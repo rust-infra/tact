@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    inject::{inject_user_id, thinking_budget_enabled},
+    inject::inject_user_id,
     openai::{
         CompatibleConfig, OpenAiAdapter,
         body::{BodyHookCtx, OpenAiBodyHook, assemble_chat_completion_body},
@@ -42,20 +42,21 @@ impl OpenAiBodyHook for DeepSeekBodyHook {
     }
 }
 
-/// DeepSeek official pair: `thinking` + `reasoning_effort` (`high` / `max`).
+/// DeepSeek official thinking: effort-driven (no budget on the wire).
 ///
-/// Docs: native effort is `high`/`max`; `low`/`medium` map to `high`. Default
-/// thinking toggle is enabled, so disabled must be sent explicitly.
+/// Docs (api-docs.deepseek.com/zh-cn/guides/thinking_mode): effort is
+/// `low/high/xhigh/max`, forwarded as-is (the server maps per model, e.g.
+/// flash vs pro). Thinking defaults ON with effort high, so `None` omits both;
+/// `Some` sends `thinking: enabled` + the raw effort. `minimal`/`medium` are
+/// not legal and must never reach this hook (UI tiers exclude them).
 fn inject_deepseek_thinking(body: &mut Value, request: &CreateMessageParams) {
-    match thinking_budget_enabled(request) {
-        Some(budget) => {
+    match request.reasoning_effort {
+        Some(effort) => {
             body["thinking"] = serde_json::json!({ "type": "enabled" });
-            // Map our budget bands onto DeepSeek's native high/max.
-            let effort = if budget > 32_000 { "max" } else { "high" };
-            body["reasoning_effort"] = Value::String(effort.to_owned());
+            body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
         }
         None => {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
+            // DeepSeek defaults thinking ON + effort high; omit = default.
         }
     }
 }
@@ -127,15 +128,12 @@ impl LlmClient for DeepSeekAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ProviderKind, RequiredMessageParams,
-        openai::body::test_util::*,
-        types::{Thinking as RequestThinking, ThinkingType},
-    };
+    use crate::{ProviderKind, RequiredMessageParams, openai::body::test_util::*};
 
     #[test]
     fn deepseek_hook_pairs_thinking_and_effort() {
-        let request = sample_request_with_thinking();
+        let request = sample_request_with_thinking()
+            .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::High));
         let provider = provider(
             ProviderKind::DeepSeek,
             "deepseek-v4-pro",
@@ -151,16 +149,13 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_hook_maps_high_budget_to_max() {
+    fn deepseek_hook_forwards_max_effort_raw() {
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: "deepseek-v4-pro".to_string(),
             messages: vec![],
             max_tokens: 1,
         })
-        .with_thinking(RequestThinking {
-            budget_tokens: 32_001,
-            type_: ThinkingType::Enabled,
-        });
+        .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::Max));
         let provider = provider(
             ProviderKind::DeepSeek,
             "deepseek-v4-pro",
@@ -173,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_hook_disables_thinking_when_off() {
+    fn deepseek_hook_omits_fields_when_effort_unset() {
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: "deepseek-v4-pro".to_string(),
             messages: vec![],
@@ -186,7 +181,8 @@ mod tests {
         );
         let mut body = empty_body();
         DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &[]));
-        assert_eq!(body["thinking"]["type"], "disabled");
+        // DeepSeek defaults thinking ON + effort high; None = omit both.
+        assert!(body.get("thinking").is_none());
         assert!(body.get("reasoning_effort").is_none());
     }
 

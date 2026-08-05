@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tact_llm::{OpenAiProtocol, ProviderInfo, ProviderKind};
 
 use super::{
@@ -251,9 +253,25 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
     {
         anyhow::bail!("protocol 'responses' is only supported for provider 'openai' or 'deepseek'");
     }
+
+    if protocol == OpenAiProtocol::Responses && provider == ProviderKind::DeepSeek {
+        anyhow::bail!(
+            "DeepSeek Responses protocol support is incomplete and not yet production-ready.\n\
+             Please set protocol = \"openai\" (Chat Completions) for the deepseek provider in config.toml:\n\
+               [llm.providers.deepseek]\n\
+               protocol = \"openai\"\n\
+             Or remove the protocol line (Chat Completions is the default)."
+        );
+    }
     let reasoning_effort = entry.reasoning_effort;
-    if reasoning_effort.is_some() && provider != ProviderKind::OpenAi {
-        anyhow::bail!("reasoning_effort is only supported for provider 'openai'");
+    if reasoning_effort.is_some()
+        && provider != ProviderKind::OpenAi
+        && provider != ProviderKind::DeepSeek
+        && provider != ProviderKind::Kimi
+    {
+        anyhow::bail!(
+            "reasoning_effort is only supported for provider 'openai', 'deepseek' or 'kimi'"
+        );
     }
 
     Ok(LlmSettings {
@@ -264,6 +282,7 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         base_url,
         model,
         models: entry.models.clone(),
+        model_profiles: HashMap::new(), // merged by `resolve_config`
         // Filled in by `resolve_config` once max_tokens and the model context
         // window are resolved (needs both for validation/derivation).
         responses_compact_threshold: None,
@@ -344,6 +363,16 @@ fn resolve_subagent(
         .parse::<OpenAiProtocol>()
         .map_err(anyhow::Error::msg)?;
 
+    if protocol == OpenAiProtocol::Responses && provider_kind == ProviderKind::DeepSeek {
+        anyhow::bail!(
+            "subagent: DeepSeek Responses protocol support is incomplete and not yet production-ready.\n\
+             Please set protocol = \"openai\" (Chat Completions) for the deepseek provider entry in config.toml:\n\
+               [llm.providers.deepseek]\n\
+               protocol = \"openai\"\n\
+             Or remove the protocol line (Chat Completions is the default)."
+        );
+    }
+
     // Resolve reasoning_effort from the referenced provider entry
     let reasoning_effort = entry.reasoning_effort;
 
@@ -388,6 +417,10 @@ fn resolve_subagent(
     )
     .map_err(|error| anyhow::anyhow!("invalid subagent token limits: {error:#}"))?;
 
+    // Subagent effort: subagent's own override wins, then the referenced
+    // provider entry's configured effort.
+    let subagent_reasoning_effort = subagent_cfg.reasoning_effort.or(reasoning_effort);
+
     Ok(Some(SubagentSettings {
         provider: ProviderInfo {
             api_key,
@@ -395,11 +428,11 @@ fn resolve_subagent(
             model,
             provider: provider_kind,
             protocol,
-            reasoning_effort,
             responses_compact_threshold,
         },
         max_tokens,
         thinking_budget,
+        reasoning_effort: subagent_reasoning_effort,
         models: entry.models.clone(),
     }))
 }
@@ -474,9 +507,12 @@ pub(super) fn resolve_non_llm_settings(
             base_url: String::new(),
             model: String::new(),
             models: Vec::new(),
+            model_profiles: HashMap::new(),
             responses_compact_threshold: None,
         },
         agent: AgentSettings {
+            model: String::new(),
+            reasoning_effort: None,
             max_tokens: 8_000,
             thinking_budget: 0,
             model_context_window: 200_000,
@@ -517,7 +553,7 @@ pub(super) fn resolve_config(
         .or_else(|| entry.and_then(|e| e.max_tokens))
         .or(toml_cfg.llm.max_tokens)
         .unwrap_or_else(|| {
-            if provider_info.is_kimi_k2x() {
+            if provider_info.is_kimi_k2x(&provider_info.model) {
                 32_000
             } else {
                 8_000
@@ -611,12 +647,30 @@ pub(super) fn resolve_config(
 
     let voice = resolve_voice(toml_cfg)?;
 
+    // Merge TOML model_profiles over built-in defaults (per model / per field).
+    let mut model_profiles = crate::config::builtin_model_profiles();
+    for (model, profile) in &toml_cfg.llm.model_profiles {
+        let merged = model_profiles.entry(model.clone()).or_default();
+        if !profile.thinking_budgets.is_empty() {
+            merged.thinking_budgets = profile.thinking_budgets.clone();
+        }
+        if !profile.reasoning_efforts.is_empty() {
+            merged.reasoning_efforts = profile.reasoning_efforts.clone();
+        }
+    }
+
+    let agent_model = llm.model.clone();
+    let agent_effort = llm.reasoning_effort;
+
     Ok(ResolvedConfig {
         llm: LlmSettings {
             responses_compact_threshold,
+            model_profiles,
             ..llm
         },
         agent: AgentSettings {
+            model: agent_model,
+            reasoning_effort: agent_effort,
             max_tokens,
             thinking_budget,
             model_context_window,
@@ -839,6 +893,7 @@ max_tokens = {subagent_max_tokens}
             model: Some("gpt-4o-mini".to_string()),
             max_tokens: None,
             thinking_budget: None,
+            reasoning_effort: None,
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
@@ -880,6 +935,7 @@ model = "kimi-k2.5"
             model: Some("gpt-4o-mini".to_string()),
             max_tokens: Some(16_000),
             thinking_budget: Some(8_000),
+            reasoning_effort: None,
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
@@ -904,6 +960,7 @@ model = "kimi-k2.5"
             model: Some("gpt-4o-mini".to_string()),
             max_tokens: Some(4_000),
             thinking_budget: Some(8_000),
+            reasoning_effort: None,
         });
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
         assert!(err.to_string().contains("thinking_budget"));
@@ -994,7 +1051,29 @@ reasoning_effort = "max"
     }
 
     #[test]
-    fn reject_reasoning_effort_for_non_openai_provider() {
+    fn reject_reasoning_effort_for_anthropic_provider() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "anthropic"
+
+[llm.providers.anthropic]
+api_key = "sk-test"
+model = "claude-sonnet-4-20250514"
+base_url = "https://api.anthropic.com"
+reasoning_effort = "max"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reasoning_effort is only supported for provider"));
+    }
+
+    #[test]
+    fn accepts_reasoning_effort_for_deepseek() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1008,10 +1087,11 @@ reasoning_effort = "max"
         )
         .unwrap();
 
-        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("reasoning_effort is only supported for provider 'openai'"));
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Max)
+        );
     }
 
     #[test]
@@ -1033,7 +1113,7 @@ reasoning_effort = "extreme"
     }
 
     #[test]
-    fn deepseek_responses_protocol_resolves() {
+    fn reject_deepseek_responses_protocol() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1047,9 +1127,53 @@ protocol = "responses"
         )
         .unwrap();
 
-        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(resolved.llm.provider, ProviderKind::DeepSeek);
-        assert_eq!(resolved.llm.protocol, tact_llm::OpenAiProtocol::Responses);
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("DeepSeek Responses"),
+            "expected DeepSeek Responses rejection, got: {error}"
+        );
+        assert!(
+            error.contains("protocol = \"openai\""),
+            "expected hint to switch to Chat Completions, got: {error}"
+        );
+    }
+
+    #[test]
+    fn reject_subagent_deepseek_responses_protocol() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-5"
+
+[llm.providers.deepseek]
+api_key = "sk-test"
+model = "deepseek-chat"
+protocol = "responses"
+
+[agent.subagent]
+provider = "deepseek"
+model = "deepseek-chat"
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("subagent") && error.contains("DeepSeek Responses"),
+            "expected subagent DeepSeek Responses rejection, got: {error}"
+        );
+        assert!(
+            error.contains("protocol = \"openai\""),
+            "expected hint to switch to Chat Completions, got: {error}"
+        );
     }
 
     #[test]

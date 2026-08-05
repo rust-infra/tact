@@ -192,6 +192,16 @@ async fn handle_user_command_with_account(
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
         }
+        UserCommand::SetReasoningEffort(effort) => {
+            let parsed = effort.as_deref().and_then(|raw| raw.parse().ok());
+            if effort.is_some() && parsed.is_none() {
+                eprintln!("[driver] ignoring unparseable reasoning effort: {effort:?}");
+            }
+            agent.set_reasoning_effort(parsed);
+        }
+        UserCommand::SetModel(model) => {
+            agent.set_model(model);
+        }
         _ => {}
     }
 }

@@ -8,9 +8,8 @@ use async_openai_responses::types::responses::{
 
 use super::history;
 use crate::{
-    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent, OpenAiReasoningEffort,
+    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent,
     ProviderConversationState, ResponsesConversationState, Role, ToolChoice, context_hash,
-    effective_reasoning_effort,
 };
 
 fn responses_role(role: Role) -> ResponsesRole {
@@ -234,7 +233,6 @@ pub(crate) fn create_response(
     request: &CreateMessageParams,
     provider_state: Option<&ProviderConversationState>,
     compact_threshold: Option<u32>,
-    configured_effort: Option<OpenAiReasoningEffort>,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
     let (baseline, covered) = match provider_state {
         None => (Vec::new(), 0),
@@ -291,7 +289,7 @@ pub(crate) fn create_response(
     {
         builder.tool_choice(ToolChoiceOptions::Auto);
     }
-    if request.thinking.is_some() || configured_effort.is_some() {
+    if request.thinking.is_some() || request.reasoning_effort.is_some() {
         builder.reasoning(Reasoning {
             effort: None,
             summary: Some(ReasoningSummary::Auto),
@@ -325,15 +323,8 @@ pub(crate) fn create_response(
         ]);
     }
 
-    let budget_tokens = request
-        .thinking
-        .as_ref()
-        .map_or(0, |thinking| thinking.budget_tokens);
-    let effort = match configured_effort {
-        Some(effort) => Some(effort),
-        None => effective_reasoning_effort(None, budget_tokens),
-    };
-    if let Some(effort) = effort {
+    // Explicit per-request effort; None = omit (provider default, e.g. medium).
+    if let Some(effort) = request.reasoning_effort {
         body["reasoning"]["effort"] = serde_json::Value::String(effort.as_str().to_owned());
     }
     Ok((body, input_items))
@@ -443,7 +434,7 @@ mod tests {
 
     #[test]
     fn converts_multimodal_tool_history_and_options() {
-        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
 
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["instructions"], "system instruction");
@@ -479,7 +470,7 @@ mod tests {
 
     #[test]
     fn omits_unscoped_signature_from_another_provider() {
-        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
 
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -498,7 +489,7 @@ mod tests {
         };
         signature.clear();
 
-        let (body, _) = create_response(&request, None, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None).unwrap();
         assert!(
             body["input"]
                 .as_array()
@@ -525,7 +516,7 @@ mod tests {
         for (choice, expected) in cases {
             let mut request = request_with_history();
             request.tool_choice = Some(choice);
-            let (body, _) = create_response(&request, None, None, None).unwrap();
+            let (body, _) = create_response(&request, None, None).unwrap();
             assert_eq!(body["tool_choice"], expected);
         }
     }
@@ -547,7 +538,7 @@ mod tests {
             }),
         }]);
 
-        let (body, _) = create_response(&request, None, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None).unwrap();
 
         assert_eq!(body["tool_choice"], serde_json::json!("auto"));
     }
@@ -555,22 +546,20 @@ mod tests {
     #[test]
     fn serializes_explicit_max_reasoning_effort() {
         let (body, _) = create_response(
-            &request_with_history(),
+            &request_with_history().with_reasoning_effort(Some(OpenAiReasoningEffort::Max)),
             None,
             None,
-            Some(OpenAiReasoningEffort::Max),
         )
         .unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
     }
 
     #[test]
-    fn explicit_reasoning_effort_wins_over_budget_fallback() {
+    fn serializes_explicit_low_reasoning_effort() {
         let (body, _) = create_response(
-            &request_with_history(),
+            &request_with_history().with_reasoning_effort(Some(OpenAiReasoningEffort::Low)),
             None,
             None,
-            Some(OpenAiReasoningEffort::Low),
         )
         .unwrap();
         assert_eq!(body["reasoning"]["effort"], "low");
@@ -578,7 +567,7 @@ mod tests {
 
     #[test]
     fn serializes_assistant_history_as_completed_output_message() {
-        let (body, _) = create_response(&request_with_history(), None, None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
         let assistant = body["input"]
             .as_array()
             .unwrap()
@@ -610,7 +599,6 @@ mod tests {
                 state.clone(),
             )),
             Some(160_000),
-            None,
         )
         .unwrap();
         // The baseline (first converted user message) is reused verbatim; only
@@ -639,7 +627,7 @@ mod tests {
     #[test]
     fn responses_request_injects_context_management_and_keeps_stateless_fields() {
         let request = request_with_history();
-        let (body, _) = create_response(&request, None, Some(160_000), None).unwrap();
+        let (body, _) = create_response(&request, None, Some(160_000)).unwrap();
         assert_eq!(body["store"], false);
         assert!(body.get("previous_response_id").is_none());
         assert!(body.get("conversation").is_none());
@@ -650,7 +638,7 @@ mod tests {
     #[test]
     fn omits_context_management_without_a_threshold() {
         let request = request_with_history();
-        let (body, _) = create_response(&request, None, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None).unwrap();
         assert!(body.get("context_management").is_none());
     }
 
@@ -719,7 +707,6 @@ mod tests {
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
             None,
-            None,
         )
         .unwrap_err()
         .to_string();
@@ -734,7 +721,6 @@ mod tests {
         let error = create_response(
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-            None,
             None,
         )
         .unwrap_err()
@@ -751,7 +737,6 @@ mod tests {
             create_response(
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-                None,
                 None
             )
             .is_err()
@@ -767,7 +752,6 @@ mod tests {
             create_response(
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-                None,
                 None
             )
             .is_err()
@@ -783,7 +767,6 @@ mod tests {
             create_response(
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-                None,
                 None,
             )
             .is_err()

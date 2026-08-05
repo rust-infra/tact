@@ -57,9 +57,10 @@ pub enum OpenAiProtocol {
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
-    pub model: String,
+    pub model: String, // static configured model (config-level heuristics)
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
+    pub responses_compact_threshold: Option<u32>,
 }
 ```
 
@@ -67,10 +68,13 @@ pub struct ProviderInfo {
 `build_client` (exhaustive match). TOML names are lowercase:
 `anthropic` | `openai` | `deepseek` | `kimi`.
 
-Installed at startup (and re-init under test overrides). The active provider is
-kept in an `RwLock` so the TUI `/model` command can change only the `model`
-string mid-session via `tact_llm::set_model` (in-flight streams keep the old id;
-`max_tokens` / thinking heuristics from process start are not recomputed).
+Installed at startup (and re-init under test overrides). The provider is a
+**static snapshot**: `/model` picks no longer mutate it. Per-agent model lives
+in `AgentSettings.model` (updated via `UserCommand::SetModel`), per-request in
+`CreateMessageParams.model` — wire shape heuristics (`is_kimi_k2x`, body hook
+selection) read the *request* model so `/model` picks change the wire without
+rebuilding the client. `RwLock<Option<ProviderInfo>>` is retained for
+test-support overrides; production install runs once.
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -109,16 +113,18 @@ sequenceDiagram
     Resolve-->>Init: ResolvedConfig
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
-    LlmInit->>State: set ProviderInfo
+    LlmInit->>State: set ProviderInfo (static)
     Install->>State: set ResolvedConfig
-    Note over State: `/model` may update model only
+    Note over State: `/model` updates AgentSettings.model (per-agent), never PROVIDER
     Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: dedicated provider adapter
 ```
 
 Provider initialization flows from Ch 21's resolved configuration into `tact_llm`.
-The active `ProviderInfo` is mutable for mid-session model switches (`set_model`).
+The active `ProviderInfo` is a **static snapshot**; mid-session `/model` switches
+update `AgentSettings.model` (per-agent), and the request model travels in
+`CreateMessageParams.model`.
 
 ---
 
@@ -534,25 +540,36 @@ item.
 
 ### 6.3 Shared thinking configuration
 
-**Thinking / reasoning injection:** the internal request always carries Anthropic-shaped `Thinking { budget_tokens }`. Provider body hooks rewrite that into each wire protocol:
+**Thinking / reasoning injection:** the internal request carries Anthropic-shaped `Thinking { budget_tokens }` plus an explicit per-request `reasoning_effort` (`CreateMessageParams.reasoning_effort`). Provider body hooks rewrite that into each wire protocol. The budget→effort band mapping is **removed**: `reasoning_effort = None` means omit the field (provider default applies); `Some` is forwarded as-is.
 
-| Provider | When thinking is set | Wire field |
-|----------|----------------------|------------|
+| Provider | When effort/thinking is set | Wire field |
+|----------|-----------------------------|------------|
 | Anthropic | always (native Messages type) | `thinking: { type, budget_tokens }` |
 | Kimi K2.5 | budget > 0 | `thinking: { type: "enabled" }`; otherwise `disabled` |
 | Kimi K2.6 | budget > 0 | `thinking: { type: "enabled", keep: "all" }`; otherwise `disabled` |
 | Kimi K2.7 / coding | skipped | *(thinking always on server-side)* |
-| DeepSeek | budget > 0 | `thinking: { type: "enabled" }` + `reasoning_effort: high\|max`; otherwise `thinking: disabled` |
-| OpenAI Chat Completions | explicit effort or budget > 0 | `reasoning_effort: none\|minimal\|low\|medium\|high\|xhigh\|max` |
-| OpenAI Responses | explicit effort or budget > 0 | `reasoning: { effort: none\|minimal\|low\|medium\|high\|xhigh\|max, summary: auto }` |
+| Kimi K3 / K3-256k | `Some(low\|high\|max)` | `thinking: { type: "enabled" }` + `reasoning_effort` 原值; `None` → omit (server default enabled + high) |
+| DeepSeek | `Some(low\|high\|xhigh\|max)` | `thinking: { type: "enabled" }` + `reasoning_effort` 原值（服务端按模型映射 flash/pro）; `None` → omit (default ON + high) |
+| OpenAI Chat Completions | `Some(...)` | `reasoning_effort: minimal\|low\|medium\|high\|xhigh\|max`; `None` → omit (default medium) |
+| OpenAI Responses | `Some(...)` | `reasoning: { effort, summary: auto }`; `None` → omit |
 
-OpenAI's optional per-provider `reasoning_effort` is forwarded unchanged and
-takes precedence over `thinking_budget`. When absent, the legacy bands remain:
-zero omits the field, `1..=10_000` maps to `low`, `10_001..=32_000` to
-`medium`, and larger budgets to `high`. Tact deliberately does not invent
-budget thresholds for `xhigh` or `max`. `ModelCallParams.reasoning_effort`
-reports the effective value to the TUI. Exact support is model-dependent; see
-the [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning).
+Effort is **per request**: it travels in `CreateMessageParams.reasoning_effort`
+from the agent's own `AgentSettings.reasoning_effort` (main agent and subagents
+are independent — no global effort state). The `[llm.providers.*].reasoning_effort`
+config value seeds the main agent snapshot; `/model` effort picks update it at
+runtime via `UserCommand::SetReasoningEffort`. `ModelCallParams.reasoning_effort`
+reports the session value to the TUI. Exact support is model-dependent; see the
+[OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning),
+[DeepSeek thinking mode](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode),
+and [Kimi Code models](https://www.kimi.com/code/docs/kimi-code/models.html).
+
+**`/model` second step** branches by the picked model's semantics
+(`tact_llm::model_uses_effort`, following the same heuristics as the body
+hooks): effort-semantic models (openai / deepseek / kimi k3、k3-256k) open an
+effort picker; budget-semantic models (anthropic / kimi coding 系) keep the
+budget picker. The selectable tiers come from
+`[llm.model_profiles."<model>"]` (or built-in defaults) when present, else
+provider defaults (openai 6 tiers, deepseek/kimi k3 3 tiers, budget 5 tiers).
 
 ---
 

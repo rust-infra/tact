@@ -6,18 +6,24 @@ use crate::{
     anthropic,
     client::LlmProvider,
     deepseek, kimi, openai,
-    types::{OpenAiProtocol, OpenAiReasoningEffort, ProviderKind},
+    types::{OpenAiProtocol, ProviderKind},
 };
 
 /// Holds private LLM configuration information.
+///
+/// This is a **static** snapshot installed at startup (see [`init_provider`]).
+/// It is never mutated at runtime: per-request model / reasoning effort are
+/// carried by [`crate::CreateMessageParams`], per-agent by `AgentSettings`.
 #[derive(Debug, Clone)]
 pub struct ProviderInfo {
     pub api_key: String,
     pub base_url: String,
+    /// Static configured model id (used by config-level heuristics such as
+    /// `is_kimi()` / account queries). The request model travels in
+    /// `CreateMessageParams.model` and may differ after `/model` picks.
     pub model: String,
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
-    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Optional OpenAI Responses `context_management.compact_threshold`
     /// (tokens). Only meaningful for `protocol = "responses"`; `None` omits
     /// `context_management` from ordinary `/responses` requests.
@@ -32,7 +38,6 @@ impl Default for ProviderInfo {
             model: String::new(),
             provider: ProviderKind::OpenAi,
             protocol: OpenAiProtocol::default(),
-            reasoning_effort: None,
             responses_compact_threshold: None,
         }
     }
@@ -114,7 +119,6 @@ impl ProviderInfo {
             openai::responses::OpenAiResponsesAdapter::new(
                 self.api_key.clone(),
                 base_url,
-                self.reasoning_effort,
                 self.responses_compact_threshold,
             ),
         ))
@@ -140,54 +144,62 @@ impl ProviderInfo {
         ))
     }
 
-    /// Returns true if the active target is a Kimi/Moonshot endpoint.
+    /// Returns true if the active target is a Kimi/Moonshot endpoint
+    /// (config-level: uses the static configured model).
     pub fn is_kimi(&self) -> bool {
+        self.is_kimi_with(&self.model)
+    }
+
+    /// Kimi endpoint check for an arbitrary model id (per-request wire shape).
+    pub(crate) fn is_kimi_with(&self, model: &str) -> bool {
         self.provider == ProviderKind::Kimi
             || self.base_url.contains("moonshot")
             || self.base_url.contains("kimi")
-            || self.model.contains("kimi")
+            || model.contains("kimi")
     }
 
     /// Returns true for the Kimi K2.x family (K2.5, K2.6, K2.7-code, ...).
     ///
     /// Also covers the stable `kimi-for-coding` model ID and the Kimi Code
     /// platform endpoint (`api.kimi.com/coding`), both of which always serve
-    /// the latest K2.x coding model.
-    pub fn is_kimi_k2x(&self) -> bool {
-        if !self.is_kimi() {
+    /// the latest K2.x coding model. `model` is the per-request model id so
+    /// wire shape follows `/model` picks.
+    pub fn is_kimi_k2x(&self, model: &str) -> bool {
+        if !self.is_kimi_with(model) {
             return false;
         }
-        if self.model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
+        if model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
             return true;
         }
-        self.model.contains("kimi-k2") || self.model.contains("k2.") || self.model.contains("k2-")
+        model.contains("kimi-k2") || model.contains("k2.") || model.contains("k2-")
     }
 
     /// Returns true specifically for K2.7-code and the Kimi Code stable model.
     ///
     /// `kimi-for-coding` and the `api.kimi.com/coding` endpoint currently map
-    /// to the latest K2.7-code model.
-    pub fn is_kimi_k27(&self) -> bool {
-        if !self.is_kimi() {
+    /// to the latest K2.7-code model. `model` is the per-request model id.
+    pub fn is_kimi_k27(&self, model: &str) -> bool {
+        if !self.is_kimi_with(model) {
             return false;
         }
-        if self.model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
+        if model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
             return true;
         }
-        self.model.contains("k2.7") || self.model.contains("k2-7")
+        model.contains("k2.7") || model.contains("k2-7")
     }
 
     /// Returns true for the Kimi Code platform, which has no balance API.
     ///
     /// Matches the official endpoint (`api.kimi.com/coding`) as well as the
     /// stable `kimi-for-coding` model ID served through a custom proxy.
-    pub fn is_kimi_coding(&self) -> bool {
-        self.base_url.contains("kimi.com/coding") || self.model == "kimi-for-coding"
+    /// `model` is the per-request model id.
+    pub fn is_kimi_coding(&self, model: &str) -> bool {
+        self.base_url.contains("kimi.com/coding") || model == "kimi-for-coding"
     }
 
     /// Returns true when Kimi balance queries are supported for the configured endpoint.
     pub fn is_kimi_balance_supported(&self) -> bool {
-        if !self.is_kimi() || self.is_kimi_coding() {
+        if !self.is_kimi() || self.is_kimi_coding(&self.model) {
             return false;
         }
         if self.base_url.is_empty() {
@@ -201,7 +213,7 @@ impl ProviderInfo {
 
     /// Returns true when Kimi Code usage quota queries are supported.
     pub fn is_kimi_usage_supported(&self) -> bool {
-        self.is_kimi_coding()
+        self.is_kimi_coding(&self.model)
     }
 
     /// Returns true when account balance or usage quota queries are supported.
@@ -228,7 +240,12 @@ impl ProviderInfo {
     }
 }
 
-/// The active LLM provider configuration (mutable so `/model` can switch models).
+/// The active LLM provider configuration — **static in production**.
+///
+/// `/model` picks no longer mutate this: per-agent model lives in
+/// `AgentSettings.model`, per-request in `CreateMessageParams.model`.
+/// `RwLock<Option<…>>` is retained (instead of `OnceLock`) so `test-support`
+/// overrides and unit tests can reinstall; production `install` runs once.
 static PROVIDER: RwLock<Option<ProviderInfo>> = RwLock::new(None);
 
 /// Serialize tests that mutate/read the process-global provider snapshot.
@@ -270,20 +287,6 @@ where
         .expect("LLM provider not initialized; call tact_llm::init_provider first"))
 }
 
-/// Update only the active model id (used by the TUI `/model` command).
-pub fn set_model(model: impl Into<String>) -> Result<(), String> {
-    let model = model.into();
-    if model.trim().is_empty() {
-        return Err("model must not be empty".to_string());
-    }
-    let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
-    let info = guard.as_mut().ok_or_else(|| {
-        "LLM provider not initialized; call tact_llm::init_provider first".to_string()
-    })?;
-    info.model = model;
-    Ok(())
-}
-
 /// Returns the active LLM client from the installed provider configuration.
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
     get_provider().build_client()
@@ -307,19 +310,19 @@ pub fn is_kimi() -> bool {
     read_provider(|p| p.is_kimi())
 }
 
-/// Returns true for the Kimi K2.x family.
+/// Returns true for the Kimi K2.x family (config-level: static model).
 pub fn is_kimi_k2x() -> bool {
-    read_provider(|p| p.is_kimi_k2x())
+    read_provider(|p| p.is_kimi_k2x(&p.model))
 }
 
-/// Returns true specifically for kimi-k2.7-code.
+/// Returns true specifically for kimi-k2.7-code (config-level: static model).
 pub fn is_kimi_k27() -> bool {
-    read_provider(|p| p.is_kimi_k27())
+    read_provider(|p| p.is_kimi_k27(&p.model))
 }
 
 /// Returns true for the Kimi Code platform (`api.kimi.com/coding`).
 pub fn is_kimi_coding() -> bool {
-    read_provider(|p| p.is_kimi_coding())
+    read_provider(|p| p.is_kimi_coding(&p.model))
 }
 
 /// Returns true when Kimi balance queries are supported for the configured endpoint.
@@ -344,6 +347,36 @@ pub fn supports_vision() -> bool {
     read_provider(|p| p.supports_vision())
 }
 
+/// Whether the given model id uses reasoning-effort semantics (vs thinking
+/// budget) for the configured provider, following the same heuristics as the
+/// wire body hooks so the `/model` second step always matches what is sent.
+///
+/// - openai (standard) → effort
+/// - deepseek (incl. openai + deepseek base_url/model) → effort
+/// - kimi k3 / k3-256k → effort; kimi coding 系 → budget (Thinking:ON)
+/// - anthropic → budget (native)
+pub fn model_uses_effort(model: &str, info: &ProviderInfo) -> bool {
+    match info.provider {
+        ProviderKind::DeepSeek => true,
+        ProviderKind::Anthropic => false,
+        ProviderKind::Kimi => is_kimi_k3(model),
+        ProviderKind::OpenAi => {
+            if info.is_kimi_with(model) {
+                is_kimi_k3(model)
+            } else {
+                // standard OpenAI or deepseek-compatible endpoint → effort
+                true
+            }
+        }
+    }
+}
+
+/// True for the Kimi K3 family (`k3`, `k3-256k`) which exposes
+/// `reasoning_effort: low/high/max` (default high).
+pub fn is_kimi_k3(model: &str) -> bool {
+    model == "k3" || model == "k3-256k"
+}
+
 #[cfg(test)]
 mod tests {
     use tact_protocol::{AgentUpdate, TokenUsageInfo};
@@ -364,7 +397,6 @@ mod tests {
         ProviderInfo {
             provider,
             protocol: OpenAiProtocol::default(),
-            reasoning_effort: None,
             responses_compact_threshold: None,
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
@@ -472,12 +504,12 @@ mod tests {
     #[test]
     fn is_kimi_k2x_and_k27() {
         let k25 = provider_info(ProviderKind::Kimi, "", "", "kimi-k2.5");
-        assert!(k25.is_kimi_k2x());
-        assert!(!k25.is_kimi_k27());
+        assert!(k25.is_kimi_k2x("kimi-k2.5"));
+        assert!(!k25.is_kimi_k27("kimi-k2.5"));
 
         let k27 = provider_info(ProviderKind::Kimi, "", "", "kimi-k2.7");
-        assert!(k27.is_kimi_k2x());
-        assert!(k27.is_kimi_k27());
+        assert!(k27.is_kimi_k2x("kimi-k2.7"));
+        assert!(k27.is_kimi_k27("kimi-k2.7"));
 
         let coding = provider_info(
             ProviderKind::OpenAi,
@@ -485,8 +517,8 @@ mod tests {
             "https://api.kimi.com/coding/v1",
             "kimi-for-coding",
         );
-        assert!(coding.is_kimi_k2x());
-        assert!(coding.is_kimi_k27());
+        assert!(coding.is_kimi_k2x("kimi-for-coding"));
+        assert!(coding.is_kimi_k27("kimi-for-coding"));
     }
 
     #[test]
@@ -497,7 +529,7 @@ mod tests {
             "https://api.kimi.com/coding/v1",
             "kimi-for-coding",
         );
-        assert!(coding.is_kimi_coding());
+        assert!(coding.is_kimi_coding("kimi-for-coding"));
         assert!(!coding.is_kimi_balance_supported());
         assert!(coding.is_kimi_usage_supported());
 
@@ -507,7 +539,7 @@ mod tests {
             "https://api.moonshot.cn/v1",
             "kimi-k2.5",
         );
-        assert!(!cn.is_kimi_coding());
+        assert!(!cn.is_kimi_coding("kimi-k2.5"));
         assert!(cn.is_kimi_balance_supported());
         assert!(!cn.is_kimi_usage_supported());
 
@@ -528,7 +560,7 @@ mod tests {
             "https://proxy.example.com/v1",
             "kimi-for-coding",
         );
-        assert!(proxy.is_kimi_coding());
+        assert!(proxy.is_kimi_coding("kimi-for-coding"));
         assert!(!proxy.is_kimi_balance_supported());
         assert!(proxy.is_kimi_usage_supported());
 
@@ -599,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn set_model_updates_and_rejects_empty() {
+    fn provider_is_immutable_after_install() {
         let _guard = super::lock_provider_for_tests();
         init_provider(provider_info(
             ProviderKind::Kimi,
@@ -607,11 +639,8 @@ mod tests {
             "https://api.moonshot.cn/v1",
             "kimi-k2.5",
         ));
-        set_model("kimi-for-coding").unwrap();
-        assert_eq!(get_provider().model, "kimi-for-coding");
-
-        assert!(set_model("").is_err());
-        assert!(set_model("   ").is_err());
-        assert_eq!(get_provider().model, "kimi-for-coding");
+        // The global provider is a static snapshot; per-agent model changes
+        // live in AgentSettings / CreateMessageParams, never here.
+        assert_eq!(get_provider().model, "kimi-k2.5");
     }
 }

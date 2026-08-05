@@ -25,9 +25,12 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             base_url: String::new(),
             model: "mock-model".to_string(),
             models: Vec::new(),
+            model_profiles: Default::default(),
             responses_compact_threshold: None,
         },
         agent: tact::config::AgentSettings {
+            model: "mock-model".to_string(),
+            reasoning_effort: None,
             model_context_window: 100_000,
             max_tokens: 8192,
             thinking_budget: 0,

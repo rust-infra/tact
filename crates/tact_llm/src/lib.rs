@@ -43,11 +43,11 @@ pub use models::{
     clear_models_cache_for_tests, ensure_api_model_ids, is_models_query_supported,
     merge_model_candidates, seed_models_cache_for_tests,
 };
-pub use openai::{current_reasoning_effort_from_budget, reasoning_effort_from_budget};
+pub use openai::OpenAiBodyHook;
 pub use provider::{
     ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
-    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k27,
-    is_kimi_usage_supported, read_provider, set_model, supports_vision,
+    is_deepseek, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x, is_kimi_k3,
+    is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider, supports_vision,
 };
 pub use provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
@@ -55,5 +55,4 @@ pub use provider_state::{
 pub use types::{
     CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort, ProviderKind,
     RequiredMessageParams, StopReason, Thinking, ThinkingType, Tool, ToolChoice,
-    effective_reasoning_effort,
 };

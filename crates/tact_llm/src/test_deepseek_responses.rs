@@ -49,7 +49,6 @@ fn deepseek_provider(
     ProviderInfo {
         provider: ProviderKind::DeepSeek,
         protocol: OpenAiProtocol::Responses,
-        reasoning_effort: None,
         responses_compact_threshold,
         api_key,
         base_url,

@@ -40,6 +40,29 @@ pub struct LlmTomlConfig {
 
     /// Per-provider credentials and optional overrides.
     pub providers: HashMap<String, ProviderEntryToml>,
+
+    /// Per-model thinking parameter options (model id → tiers).
+    ///
+    /// Arrays list the selectable values for that model in the `/model`
+    /// second step; empty = fall back to the default options
+    /// (5 budget tiers / provider-default effort tiers).
+    #[serde(default)]
+    pub model_profiles: HashMap<String, ModelProfileToml>,
+}
+
+/// Per-model thinking parameter options (TOML / runtime shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelProfileToml {
+    /// Selectable thinking budget tiers for this model (0 = off).
+    /// Only meaningful for budget-semantic models (anthropic / kimi coding 系).
+    #[serde(default)]
+    pub thinking_budgets: Vec<usize>,
+    /// Selectable reasoning effort tiers for this model.
+    /// Only meaningful for effort-semantic models
+    /// (openai 全系 / deepseek 全系 / kimi k3、k3-256k).
+    #[serde(default)]
+    pub reasoning_efforts: Vec<OpenAiReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -123,6 +146,9 @@ pub struct SubagentTomlConfig {
     pub max_tokens: Option<u32>,
     /// Optional thinking_budget override.
     pub thinking_budget: Option<usize>,
+    /// Optional reasoning effort override for subagent requests
+    /// (openai / deepseek / kimi k3 semantics).
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -198,6 +224,9 @@ pub struct LlmSettings {
     pub model: String,
     /// Candidate models for the `/model` TUI picker.
     pub models: Vec<String>,
+    /// Per-model thinking parameter options (TOML merged over built-ins).
+    /// Used by the `/model` second step to limit selectable tiers.
+    pub model_profiles: HashMap<String, ModelProfileToml>,
     /// Resolved OpenAI Responses `context_management.compact_threshold`
     /// (tokens). `Some` only for `protocol = "responses"`: either the
     /// configured `responses_compact_threshold` (validated against
@@ -215,7 +244,6 @@ impl LlmSettings {
             model: self.model.clone(),
             provider: self.provider,
             protocol: self.protocol,
-            reasoning_effort: self.reasoning_effort,
             responses_compact_threshold: self.responses_compact_threshold,
         }
     }
@@ -223,6 +251,12 @@ impl LlmSettings {
 
 #[derive(Debug, Clone)]
 pub struct AgentSettings {
+    /// Model id for this agent's requests (per-agent, not global).
+    /// Snapshot at resolve; `/model` picks update it at runtime via `SetModel`.
+    pub model: String,
+    /// Explicit reasoning effort for this agent session (openai / deepseek / kimi k3).
+    /// None = not configured (wire omits effort). NOT shared with subagents.
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     pub max_tokens: u32,
     pub thinking_budget: usize,
     pub model_context_window: usize,
@@ -239,12 +273,14 @@ pub struct AgentSettings {
 
 #[derive(Debug, Clone)]
 pub struct SubagentSettings {
-    /// The resolved provider configuration for subagents.
+    /// The resolved provider configuration for subagents (static identity).
     pub provider: ProviderInfo,
     /// Max output tokens.
     pub max_tokens: u32,
     /// Thinking budget (0 = off).
     pub thinking_budget: usize,
+    /// Explicit reasoning effort for subagent requests (openai / deepseek / kimi k3).
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Candidate model ids for the /model-subagent picker.
     pub models: Vec<String>,
 }
@@ -493,6 +529,7 @@ max_duration_secs = 45
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-5".to_string(),
             models: Vec::new(),
+            model_profiles: Default::default(),
             responses_compact_threshold: Some(160_000),
         };
 

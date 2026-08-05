@@ -59,16 +59,17 @@ pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
 pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let settings = crate::config::settings();
 
-    let (client, model_override, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
+    let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
         let client = sa.provider.build_client()?;
-        let model = sa.provider.model.clone();
         let mut agent_settings = settings.agent.clone();
+        agent_settings.model = sa.provider.model.clone();
         agent_settings.max_tokens = sa.max_tokens;
         agent_settings.thinking_budget = sa.thinking_budget;
-        (client, Some(model), agent_settings)
+        agent_settings.reasoning_effort = sa.reasoning_effort;
+        (client, agent_settings)
     } else {
         let client = get_llm_client()?;
-        (client, None, settings.agent.clone())
+        (client, settings.agent.clone())
     };
 
     let system_prompt = format!(
@@ -86,11 +87,6 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         AgentSystemPrompt::Static(system_prompt),
     )
     .with_agent_settings(agent_overrides);
-
-    // Set model override so agent_loop and compact_history use the subagent's model
-    if let Some(model) = model_override {
-        subagent.runtime.model_override = Some(model);
-    }
 
     let child_id = uuid::Uuid::new_v4().to_string();
     let ref_id = ctx.session_id.as_deref().unwrap_or("");

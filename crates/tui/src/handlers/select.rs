@@ -5,13 +5,28 @@ use crate::widgets::state::{App, InputMode, SelectKind};
 
 const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 
-fn nearest_thinking_budget_index(current: usize) -> usize {
-    THINKING_BUDGETS
+/// Default effort tiers per provider (no model mapping).
+///
+/// openai: minimal..max (official enum, default medium);
+/// deepseek: low/high/max (minimal/medium illegal, xhigh not offered in UI);
+/// kimi k3 family: low/high/max (default high).
+fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_llm::OpenAiReasoningEffort> {
+    use tact_llm::OpenAiReasoningEffort as E;
+    match info.provider {
+        tact_llm::ProviderKind::DeepSeek | tact_llm::ProviderKind::Kimi => {
+            vec![E::Low, E::High, E::Max]
+        }
+        _ => vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max],
+    }
+}
+
+fn nearest_budget_index(budgets: &[usize], current: usize) -> usize {
+    budgets
         .iter()
         .enumerate()
         .min_by_key(|(_, budget)| current.abs_diff(**budget))
         .map(|(index, _)| index)
-        .expect("THINKING_BUDGETS is non-empty")
+        .unwrap_or(0)
 }
 
 fn format_thinking_budget(budget: usize) -> String {
@@ -30,6 +45,31 @@ fn thinking_budget_options(msgs: &crate::i18n::Messages) -> Vec<String> {
         msgs.model_thinking_budget_high.to_string(),
         msgs.model_thinking_budget_max.to_string(),
     ]
+}
+
+fn budget_option_labels(msgs: &crate::i18n::Messages, budgets: &[usize]) -> Vec<String> {
+    if budgets == THINKING_BUDGETS {
+        thinking_budget_options(msgs)
+    } else {
+        budgets.iter().map(|b| format_thinking_budget(*b)).collect()
+    }
+}
+
+fn effort_label(msgs: &crate::i18n::Messages, effort: tact_llm::OpenAiReasoningEffort) -> String {
+    use tact_llm::OpenAiReasoningEffort as E;
+    match effort {
+        E::Minimal => msgs.model_effort_minimal.to_string(),
+        E::Low => msgs.model_effort_low.to_string(),
+        E::Medium => msgs.model_effort_medium.to_string(),
+        E::High => msgs.model_effort_high.to_string(),
+        E::Xhigh => msgs.model_effort_xhigh.to_string(),
+        E::Max => msgs.model_effort_max.to_string(),
+        // The effort picker never offers `None`; reaching it is a programming
+        // error (e.g. a profile that leaks a `None` tier).
+        E::None => {
+            unreachable!("OpenAiReasoningEffort::None is never offered in the effort picker")
+        }
+    }
 }
 
 /// Substitute the model first and the formatted thinking budget second.
@@ -86,13 +126,17 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     }
                     // Multi is only opened for agent ask_user; local flows stay single-select.
                     SelectKind::ModelPick
+                    | SelectKind::ModelProfileEffortPick { .. }
                     | SelectKind::ThinkBudgetPick { .. }
                     | SelectKind::PersistModelAndBudget { .. }
+                    | SelectKind::PersistModelAndEffort { .. }
                     | SelectKind::ViewSystemPrompt
                     | SelectKind::PermissionModePick
                     | SelectKind::SubagentModelPick
+                    | SelectKind::SubagentModelProfileEffortPick { .. }
                     | SelectKind::SubagentThinkBudgetPick { .. }
-                    | SelectKind::SubagentPersistModelAndBudget { .. } => {
+                    | SelectKind::SubagentPersistModelAndBudget { .. }
+                    | SelectKind::SubagentPersistModelAndEffort { .. } => {
                         app.input_mode = InputMode::Normal;
                     }
                 }
@@ -150,13 +194,22 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::ModelPick => {
-                    open_thinking_budget_picker(app, strip_current_marker(&chosen));
+                    open_second_step(app, strip_current_marker(&chosen), false);
                 }
-                SelectKind::ThinkBudgetPick { model } => {
-                    let thinking_budget = THINKING_BUDGETS
+                SelectKind::ModelProfileEffortPick { model, efforts } => {
+                    let effort = efforts.get(idx).copied().unwrap_or_else(|| {
+                        efforts
+                            .last()
+                            .copied()
+                            .unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
+                    });
+                    apply_model_and_effort_pick(app, model, effort);
+                }
+                SelectKind::ThinkBudgetPick { model, budgets } => {
+                    let thinking_budget = budgets
                         .get(idx)
                         .copied()
-                        .unwrap_or(*THINKING_BUDGETS.last().expect("non-empty budgets"));
+                        .unwrap_or(*budgets.last().unwrap_or(&0));
                     apply_model_and_budget_pick(app, model, thinking_budget);
                 }
                 SelectKind::PersistModelAndBudget {
@@ -164,6 +217,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     thinking_budget,
                 } => {
                     finish_persist_prompt(app, &chosen, &model, thinking_budget);
+                }
+                SelectKind::PersistModelAndEffort { model, effort } => {
+                    finish_persist_effort_prompt(app, &chosen, &model, effort);
                 }
                 SelectKind::PermissionModePick => {
                     let msgs = app.msgs();
@@ -180,13 +236,22 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::SubagentModelPick => {
-                    open_subagent_thinking_budget_picker(app, strip_current_marker(&chosen));
+                    open_second_step(app, strip_current_marker(&chosen), true);
                 }
-                SelectKind::SubagentThinkBudgetPick { model } => {
-                    let thinking_budget = THINKING_BUDGETS
+                SelectKind::SubagentModelProfileEffortPick { model, efforts } => {
+                    let effort = efforts.get(idx).copied().unwrap_or_else(|| {
+                        efforts
+                            .last()
+                            .copied()
+                            .unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
+                    });
+                    apply_subagent_model_and_effort_pick(app, model, effort);
+                }
+                SelectKind::SubagentThinkBudgetPick { model, budgets } => {
+                    let thinking_budget = budgets
                         .get(idx)
                         .copied()
-                        .unwrap_or(*THINKING_BUDGETS.last().expect("non-empty budgets"));
+                        .unwrap_or(*budgets.last().unwrap_or(&0));
                     apply_subagent_model_and_budget_pick(app, model, thinking_budget);
                 }
                 SelectKind::SubagentPersistModelAndBudget {
@@ -194,6 +259,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     thinking_budget,
                 } => {
                     finish_subagent_persist_prompt(app, &chosen, &model, thinking_budget);
+                }
+                SelectKind::SubagentPersistModelAndEffort { model, effort } => {
+                    finish_subagent_persist_effort_prompt(app, &chosen, &model, effort);
                 }
             }
         }
@@ -229,12 +297,28 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         &budget_label,
                     ));
                 }
+                SelectKind::PersistModelAndEffort { model, effort } => {
+                    app.add_system_message(
+                        msgs.model_session_only_with_effort_tmpl
+                            .replace("{}", &model)
+                            .replace("{}", effort.as_str()),
+                    );
+                }
+                SelectKind::SubagentPersistModelAndEffort { model, effort } => {
+                    app.add_system_message(
+                        msgs.model_session_only_with_effort_tmpl
+                            .replace("{}", &model)
+                            .replace("{}", effort.as_str()),
+                    );
+                }
                 SelectKind::Agent
                 | SelectKind::ModelPick
+                | SelectKind::ModelProfileEffortPick { .. }
                 | SelectKind::ThinkBudgetPick { .. }
                 | SelectKind::ViewSystemPrompt
                 | SelectKind::PermissionModePick
                 | SelectKind::SubagentModelPick
+                | SelectKind::SubagentModelProfileEffortPick { .. }
                 | SelectKind::SubagentThinkBudgetPick { .. } => {
                     app.add_system_message(msgs.selection_cancelled.to_string());
                 }
@@ -249,16 +333,104 @@ fn strip_current_marker(label: &str) -> String {
     label.strip_suffix(" *").unwrap_or(label).to_string()
 }
 
-fn open_thinking_budget_picker(app: &mut App, model: String) {
+/// `/model` second step: branch by the selected model's semantics.
+fn open_second_step(app: &mut App, model: String, subagent: bool) {
+    let provider = provider_for_second_step(subagent);
+    let Some(provider) = provider else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    let profile =
+        tact::config::try_settings().and_then(|s| s.llm.model_profiles.get(&model).cloned());
+
+    if tact_llm::model_uses_effort(&model, &provider) {
+        let efforts = profile
+            .and_then(|p| (!p.reasoning_efforts.is_empty()).then_some(p.reasoning_efforts))
+            .unwrap_or_else(|| default_effort_tiers(&provider));
+        open_effort_picker(app, model, efforts, subagent);
+    } else {
+        let budgets = profile
+            .and_then(|p| (!p.thinking_budgets.is_empty()).then_some(p.thinking_budgets))
+            .unwrap_or_else(|| THINKING_BUDGETS.to_vec());
+        open_budget_picker(app, model, budgets, subagent);
+    }
+}
+
+/// Provider identity used to decide the second step (main vs subagent).
+fn provider_for_second_step(subagent: bool) -> Option<tact_llm::ProviderInfo> {
+    if subagent {
+        tact::config::try_settings()
+            .and_then(|s| s.agent.subagent)
+            .map(|sa| sa.provider)
+    } else {
+        Some(tact_llm::get_provider())
+    }
+}
+
+fn open_effort_picker(
+    app: &mut App,
+    model: String,
+    efforts: Vec<tact_llm::OpenAiReasoningEffort>,
+    subagent: bool,
+) {
     let msgs = app.msgs();
-    let thinking_budget = tact::config::try_settings()
-        .map(|settings| settings.agent.thinking_budget)
-        .unwrap_or_default();
-    app.select_kind = SelectKind::ThinkBudgetPick { model };
+    // Default highlight: current session effort if listed, else first tier.
+    let current = if subagent {
+        tact::config::try_settings()
+            .and_then(|s| s.agent.subagent)
+            .and_then(|sa| sa.reasoning_effort)
+    } else {
+        tact::config::try_settings().and_then(|s| s.agent.reasoning_effort)
+    };
+    let selected = current
+        .and_then(|effort| efforts.iter().position(|e| *e == effort))
+        .unwrap_or(0);
+    let options: Vec<String> = efforts
+        .iter()
+        .map(|effort| effort_label(&msgs, *effort))
+        .collect();
+    let kind = if subagent {
+        SelectKind::SubagentModelProfileEffortPick { model, efforts }
+    } else {
+        SelectKind::ModelProfileEffortPick { model, efforts }
+    };
+    app.select_kind = kind;
+    app.select.set_local(
+        msgs.model_effort_prompt.to_string(),
+        options,
+        selected,
+        false,
+    );
+    app.input_mode = InputMode::Select;
+}
+
+fn open_budget_picker(app: &mut App, model: String, budgets: Vec<usize>, subagent: bool) {
+    let msgs = app.msgs();
+    // Current value differs per target: subagent budget vs main agent budget.
+    let thinking_budget = if subagent {
+        tact::config::try_settings()
+            .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+            .unwrap_or_default()
+    } else {
+        tact::config::try_settings()
+            .map(|settings| settings.agent.thinking_budget)
+            .unwrap_or_default()
+    };
+    let selected = nearest_budget_index(&budgets, thinking_budget);
+    let options = budget_option_labels(&msgs, &budgets);
+    let kind = if subagent {
+        SelectKind::SubagentThinkBudgetPick {
+            model,
+            budgets: budgets.clone(),
+        }
+    } else {
+        SelectKind::ThinkBudgetPick { model, budgets }
+    };
+    app.select_kind = kind;
     app.select.set_local(
         msgs.model_thinking_budget_prompt.to_string(),
-        thinking_budget_options(&msgs),
-        nearest_thinking_budget_index(thinking_budget),
+        options,
+        selected,
         false,
     );
     app.input_mode = InputMode::Select;
@@ -266,22 +438,24 @@ fn open_thinking_budget_picker(app: &mut App, model: String) {
 
 fn apply_model_and_budget_pick(app: &mut App, model: String, thinking_budget: usize) {
     let msgs = app.msgs();
-    if let Err(err) = tact_llm::set_model(model.clone()) {
-        app.add_system_message(msgs.model_switch_failed_tmpl.replace("{}", &err));
+    if model.trim().is_empty() {
+        app.add_system_message(
+            msgs.model_switch_failed_tmpl
+                .replace("{}", "model must not be empty"),
+        );
         app.input_mode = InputMode::Normal;
         return;
     }
-
+    let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
     tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
     app.status_bar.model_name = model.clone();
     if let Some(settings) = tact::config::try_settings() {
         // Keep out/think in sync immediately; agent may still be busy so
-        // SetThinkingBudget (and its ModelInfo) can arrive later.
+        // SetModel / SetThinkingBudget (and their ModelInfo) can arrive later.
         app.status_bar.model_max_tokens = settings.agent.max_tokens;
     }
     app.status_bar.model_thinking_budget = (thinking_budget > 0).then_some(thinking_budget as u32);
-    app.status_bar.model_reasoning_effort =
-        tact_llm::current_reasoning_effort_from_budget(thinking_budget).map(str::to_string);
+    app.status_bar.model_reasoning_effort = None; // budget semantics: no derived effort
     let budget_label = format_thinking_budget(thinking_budget);
     app.add_system_message(format_model_and_budget(
         msgs.model_switched_with_budget_tmpl,
@@ -322,6 +496,133 @@ fn apply_model_and_budget_pick(app: &mut App, model: String, thinking_budget: us
     app.input_mode = InputMode::Select;
 }
 
+/// Effort-semantic apply (openai / deepseek / kimi k3): model + effort, no budget.
+fn apply_model_and_effort_pick(
+    app: &mut App,
+    model: String,
+    effort: tact_llm::OpenAiReasoningEffort,
+) {
+    let msgs = app.msgs();
+    let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
+    tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
+    app.status_bar.model_name = model.clone();
+    if let Some(settings) = tact::config::try_settings() {
+        app.status_bar.model_max_tokens = settings.agent.max_tokens;
+    }
+    app.status_bar.model_reasoning_effort = Some(effort.as_str().to_string());
+    app.status_bar.model_thinking_budget = None; // effort semantics: budget not shown
+    app.add_system_message(
+        msgs.model_effort_switched_tmpl
+            .replace("{}", &model)
+            .replace("{}", effort.as_str()),
+    );
+    let _ = app.user_cmd_tx.send(UserCommand::SetReasoningEffort(Some(
+        effort.as_str().to_string(),
+    )));
+
+    open_effort_persist_prompt(
+        app,
+        model.clone(),
+        effort,
+        SelectKind::PersistModelAndEffort { model, effort },
+    );
+}
+
+/// Effort-semantic subagent apply: model + effort (session level).
+fn apply_subagent_model_and_effort_pick(
+    app: &mut App,
+    model: String,
+    effort: tact_llm::OpenAiReasoningEffort,
+) {
+    let msgs = app.msgs();
+    let current_budget = tact::config::try_settings()
+        .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+        .unwrap_or_default();
+    tact::config::update_subagent_model(model.clone(), current_budget);
+    tact::config::update_subagent_reasoning_effort(Some(effort));
+
+    app.add_system_message(
+        msgs.model_effort_switched_tmpl
+            .replace("{}", &model)
+            .replace("{}", effort.as_str()),
+    );
+
+    open_effort_persist_prompt(
+        app,
+        model.clone(),
+        effort,
+        SelectKind::SubagentPersistModelAndEffort { model, effort },
+    );
+}
+
+/// Shared effort persist flow: if no config file, session-only message; else
+/// ask whether to persist model + effort. `persist_kind` carries the target
+/// (main vs subagent) and the model/effort to persist.
+fn open_effort_persist_prompt(
+    app: &mut App,
+    model: String,
+    effort: tact_llm::OpenAiReasoningEffort,
+    persist_kind: SelectKind,
+) {
+    let msgs = app.msgs();
+    let Some(settings) = tact::config::try_settings() else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    if settings.config_path.is_none() {
+        app.add_system_message(
+            msgs.model_session_only_with_effort_tmpl
+                .replace("{}", &model)
+                .replace("{}", effort.as_str()),
+        );
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    app.select_kind = persist_kind;
+    app.select.set_local(
+        msgs.model_persist_with_effort_prompt.to_string(),
+        vec![
+            msgs.model_persist_yes.to_string(),
+            msgs.model_persist_no.to_string(),
+        ],
+        1,
+        false,
+    );
+    app.input_mode = InputMode::Select;
+}
+
+/// Shared persist-effort confirmation. `persist` is the main vs subagent API.
+fn finish_effort_persist(
+    app: &mut App,
+    chosen: &str,
+    model: &str,
+    effort: tact_llm::OpenAiReasoningEffort,
+    persist: impl FnOnce(&str, &str) -> anyhow::Result<()>,
+) {
+    let msgs = app.msgs();
+    let effort_str = effort.as_str();
+    if chosen == msgs.model_persist_yes {
+        match persist(model, effort_str) {
+            Ok(()) => app.add_system_message(
+                msgs.model_persisted_with_effort_tmpl
+                    .replace("{}", model)
+                    .replace("{}", effort_str),
+            ),
+            Err(err) => app.add_system_message(
+                msgs.model_persist_failed_tmpl
+                    .replace("{}", &err.to_string()),
+            ),
+        }
+    } else {
+        app.add_system_message(
+            msgs.model_session_only_with_effort_tmpl
+                .replace("{}", model)
+                .replace("{}", effort_str),
+        );
+    }
+    app.input_mode = InputMode::Normal;
+}
+
 fn finish_persist_prompt(app: &mut App, chosen: &str, model: &str, thinking_budget: usize) {
     let msgs = app.msgs();
     let budget_label = format_thinking_budget(thinking_budget);
@@ -348,6 +649,17 @@ fn finish_persist_prompt(app: &mut App, chosen: &str, model: &str, thinking_budg
         ));
     }
     app.input_mode = InputMode::Normal;
+}
+
+fn finish_persist_effort_prompt(
+    app: &mut App,
+    chosen: &str,
+    model: &str,
+    effort: tact_llm::OpenAiReasoningEffort,
+) {
+    finish_effort_persist(app, chosen, model, effort, |model, effort_str| {
+        tact::config::persist_active_provider_model_and_reasoning_effort(model, effort_str)
+    });
 }
 
 /// Open the `/model` SelectPopup from palette / slash command.
@@ -454,21 +766,6 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
     app.input_mode = InputMode::Select;
 }
 
-fn open_subagent_thinking_budget_picker(app: &mut App, model: String) {
-    let msgs = app.msgs();
-    let thinking_budget = tact::config::try_settings()
-        .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
-        .unwrap_or_default();
-    app.select_kind = SelectKind::SubagentThinkBudgetPick { model };
-    app.select.set_local(
-        msgs.model_thinking_budget_prompt.to_string(),
-        thinking_budget_options(&msgs),
-        nearest_thinking_budget_index(thinking_budget),
-        false,
-    );
-    app.input_mode = InputMode::Select;
-}
-
 fn apply_subagent_model_and_budget_pick(app: &mut App, model: String, thinking_budget: usize) {
     let msgs = app.msgs();
 
@@ -541,6 +838,17 @@ fn finish_subagent_persist_prompt(
     app.input_mode = InputMode::Normal;
 }
 
+fn finish_subagent_persist_effort_prompt(
+    app: &mut App,
+    chosen: &str,
+    model: &str,
+    effort: tact_llm::OpenAiReasoningEffort,
+) {
+    finish_effort_persist(app, chosen, model, effort, |model, effort_str| {
+        tact::config::persist_subagent_model_and_reasoning_effort(model, effort_str)
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -579,9 +887,12 @@ mod tests {
                 base_url: "https://api.moonshot.cn/v1".into(),
                 model: current.into(),
                 models: models.into_iter().map(str::to_string).collect(),
+                model_profiles: Default::default(),
                 responses_compact_threshold: None,
             },
             agent: tact::config::AgentSettings {
+                model: current.into(),
+                reasoning_effort: None,
                 max_tokens: 8000,
                 thinking_budget: 0,
                 model_context_window: 500_000,
@@ -613,7 +924,6 @@ mod tests {
         tact_llm::init_provider(ProviderInfo {
             provider: ProviderKind::Kimi,
             protocol: tact_llm::OpenAiProtocol::default(),
-            reasoning_effort: None,
             responses_compact_threshold: None,
             api_key: "sk-test".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
@@ -625,6 +935,32 @@ mod tests {
         install_models_config(models, current);
         let mut cfg = tact::config::settings();
         cfg.agent.thinking_budget = thinking_budget;
+        tact::config::install_or_override(cfg);
+    }
+
+    fn install_models_config_with_subagent(
+        models: Vec<&str>,
+        current: &str,
+        subagent_model: &str,
+        subagent_budget: usize,
+        subagent_effort: Option<tact_llm::OpenAiReasoningEffort>,
+    ) {
+        install_models_config(models, current);
+        let mut cfg = tact::config::settings();
+        cfg.agent.subagent = Some(tact::config::SubagentSettings {
+            provider: tact_llm::ProviderInfo {
+                provider: ProviderKind::Kimi,
+                protocol: tact_llm::OpenAiProtocol::default(),
+                responses_compact_threshold: None,
+                api_key: "sk-test".into(),
+                base_url: "https://api.moonshot.cn/v1".into(),
+                model: subagent_model.into(),
+            },
+            max_tokens: 4000,
+            thinking_budget: subagent_budget,
+            reasoning_effort: subagent_effort,
+            models: vec![subagent_model.to_string()],
+        });
         tact::config::install_or_override(cfg);
     }
 
@@ -739,7 +1075,8 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact_llm::get_provider().model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(app.status_bar.model_name, "kimi-for-coding");
         // No config_path → skip persist popup, return to Normal.
         assert!(matches!(app.input_mode, InputMode::Normal));
@@ -755,7 +1092,7 @@ thinking_budget = {thinking_budget}
 
     #[test]
     fn nearest_thinking_budget_ties_choose_the_lower_index() {
-        assert_eq!(nearest_thinking_budget_index(48_000), 2);
+        assert_eq!(nearest_budget_index(&THINKING_BUDGETS, 48_000), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -770,8 +1107,8 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact_llm::get_provider().model, "kimi-k2.5");
         assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert_eq!(app.status_bar.model_name, "status-before");
         assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
@@ -792,12 +1129,110 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(
-            matches!(app.select_kind, SelectKind::ThinkBudgetPick { ref model } if model == "kimi-for-coding")
+            matches!(app.select_kind, SelectKind::ThinkBudgetPick { ref model, .. } if model == "kimi-for-coding")
         );
-        assert_eq!(tact_llm::get_provider().model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert_eq!(app.select.options.len(), 5);
         assert_eq!(app.select.selected, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_budget_picker_highlights_subagent_budget_not_main_budget() {
+        // Regression: open_budget_picker must read the subagent's own
+        // thinking_budget for the highlight, not the main agent's.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config_with_subagent(
+            vec!["kimi-k2.5", "kimi-for-coding"],
+            "kimi-k2.5",
+            "kimi-for-coding",
+            64_000, // subagent budget
+            None,
+        );
+        // Seed the models cache so ensure_api_model_ids() does not hit the
+        // network (which would race other tests on the process-global cache).
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["kimi-for-coding".into()],
+        );
+        // Main agent budget differs (8_000); a bug would highlight index 2.
+        let mut cfg = tact::config::settings();
+        cfg.agent.thinking_budget = 8_000;
+        tact::config::install_or_override(cfg);
+
+        let mut app = make_app();
+        start_subagent_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::SubagentThinkBudgetPick { ref model, .. } if model == "kimi-for-coding"
+        ));
+        // 64_000 is the 4th of the 5 default budgets (0, 8K, 32K, 64K, 128K).
+        assert_eq!(app.select.selected, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn effort_picker_highlights_current_session_effort() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        // Kimi K3 model → effort-semantic second step.
+        install_models_config(vec!["k3", "k3-256k"], "k3");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into(), "k3-256k".into()],
+        );
+        let mut cfg = tact::config::settings();
+        cfg.agent.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::Max);
+        tact::config::install_or_override(cfg);
+
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Char('j'))); // k3-256k
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::ModelProfileEffortPick { .. }
+        ));
+        // Low / High / Max → Max is index 2.
+        assert_eq!(app.select.selected, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applying_effort_pick_updates_config_level_effort() {
+        // Regression: apply_model_and_effort_pick must keep config-level
+        // agent.reasoning_effort in sync so re-opening the picker (and
+        // subagent inheritance) sees the new value.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config(vec!["k3"], "k3");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into()],
+        );
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::ModelProfileEffortPick { .. }
+        ));
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
+
+        // No config path → session-only, back to normal mode.
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(
+            tact::config::settings().agent.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Low)
+        );
+        assert_eq!(tact::config::settings().llm.model, "k3");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -815,7 +1250,8 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Char('j')));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact_llm::get_provider().model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
         assert!(tact::config::settings().agent.max_tokens > 64_000);
         assert_eq!(app.status_bar.model_name, "kimi-for-coding");
@@ -860,7 +1296,7 @@ thinking_budget = {thinking_budget}
         let mut app = make_app();
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Esc));
-        assert_eq!(tact_llm::get_provider().model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
 
         start_model_picker(&mut app);
@@ -868,7 +1304,7 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
-        assert_eq!(tact_llm::get_provider().model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
@@ -922,7 +1358,8 @@ thinking_budget = {thinking_budget}
 
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
-        assert_eq!(tact_llm::get_provider().model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
+        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(app.raw_messages.iter().any(|message| {

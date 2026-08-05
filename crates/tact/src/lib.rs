@@ -49,11 +49,6 @@ pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
-/// Returns the model name from the active provider configuration.
-pub fn get_model() -> String {
-    tact_llm::get_provider().model
-}
-
 /// Constructs the active LLM client from the installed configuration.
 pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
     tact_llm::get_llm_client()
