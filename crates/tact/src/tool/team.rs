@@ -90,7 +90,7 @@ pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "✉️ Send",
+        display_name: "✉️ Team Send",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -125,7 +125,7 @@ pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "📢 Broadcast",
+        display_name: "📢 Team Broadcast",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -157,7 +157,7 @@ pub const READ_INBOX_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "📬 Inbox",
+        display_name: "📬 Team Inbox",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -192,7 +192,7 @@ pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata {
     domain: ToolDomain::Generic,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
-        display_name: "✅ Approve",
+        display_name: "✅ Team Approve",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,

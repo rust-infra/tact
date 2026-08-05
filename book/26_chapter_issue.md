@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-05 — Unify tool-family card labels (background + team)
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | Ch 7, Ch 26 (2026-07-28 entry: Distinct tool-card labels) |
+| Symptom / motivation | Two families still had mixed labels: `background_run` (`⚙️ Background Run`) vs `check_background` (`🔍 Check`) — the bare `Check` did not say what it checks; and team collaboration tools `send_message` / `broadcast` / `read_inbox` / `plan_approval` (`✉️ Send` / `📢 Broadcast` / `📬 Inbox` / `✅ Approve`) had no `Team` prefix while `spawn_teammate` / `list_teammates` (`👥 Team Spawn` / `👥 Team List`) did. |
+| Decision | Background family: rename `check_background` to `⚙️ Background Check`, sharing the `⚙️ Background` prefix with `background_run`. Team family: add the `Team` family name to the four collaboration tools, keeping their distinct icons (`✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`). Update the TUI `tool_display_name` fallback to match metadata in both families. Task stays on `# Task…` human titles via `format_task_tool_title`. |
+| Behavior after | Every family reads as one: `⚙️ Background Run` / `⚙️ Background Check`; `👥 Team Spawn` / `👥 Team List` / `✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`; `⏰ Cron …`; `🌿 Worktree …`; `🔌 Shutdown …`. |
+| Pointers | `crates/tact/src/tool/background_run.rs` (`CHECK_BACKGROUND_METADATA`); `crates/tact/src/tool/team.rs`; `crates/tui/src/widgets/tool_widget.rs` (`tool_display_name`) |
+
+---
+
 ## 1. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
 
 | Field | Value |
@@ -174,7 +187,7 @@ Newest entries first. Each entry should include:
 | Related | Ch 7, Ch 13–16, Ch 23 |
 | Symptom / motivation | Cron / worktree / team family tools shared one display label (e.g. all cron ops showed `⏰ Cron`). Header titles looked identical unless the user parsed `arg_summary` JSON. Generic `visual_kind` also ignored metadata `display_name` and always used the TUI fallback map. |
 | Decision | Append the verb to each shared family label (`⏰ Cron Create` / `Delete` / `List`, same pattern for Worktree / Team / Shutdown). Align `tool_display_name` fallbacks. Prefer non-empty presentation `display_name` when it differs from the raw tool id so metadata is the source of truth for Generic tools. Leave Task alone — it already uses `# Task…` human titles via `format_task_tool_title`. |
-| Behavior after | Tool cards show distinct action labels at a glance. `background_run` / `check_background` fallbacks match metadata (`$ Bg` / `🔍 Check`). |
+| Behavior after | Tool cards show distinct action labels at a glance. `background_run` / `check_background` fallbacks match metadata (`⚙️ Background Run` / `⚙️ Background Check`). |
 | Pointers | `crates/tact/src/tool/{cron,worktree,team}.rs`; `crates/tui/src/widgets/tool_widget.rs` (`display_name_from_presentation`, `tool_display_name`) |
 
 ---

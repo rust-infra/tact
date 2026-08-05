@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-05 — 统一工具族卡片文案（background + team）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 相关 | Ch 7、Ch 26（2026-07-28 条目：工具卡片标签区分） |
+| 症状/动机 | 两个工具族文案仍不统一：`background_run`（`⚙️ Background Run`）vs `check_background`（`🔍 Check`）——孤零零的 `Check` 看不出在检查什么；team 协作工具 `send_message` / `broadcast` / `read_inbox` / `plan_approval`（`✉️ Send` / `📢 Broadcast` / `📬 Inbox` / `✅ Approve`）不带 `Team` 前缀，而 `spawn_teammate` / `list_teammates`（`👥 Team Spawn` / `👥 Team List`）带。 |
+| 决策 | Background 族：`check_background` 改为 `⚙️ Background Check`，与 `background_run` 共用 `⚙️ Background` 前缀。Team 族：四个协作工具补上 `Team` 族名，保留各自图标（`✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`）。两族的 TUI `tool_display_name` fallback 同步为与 metadata 一致。Task 保持 `format_task_tool_title` 的 `# Task…` 人类标题。 |
+| 改后行为 | 每个工具族呈现为同一族：`⚙️ Background Run` / `⚙️ Background Check`；`👥 Team Spawn` / `👥 Team List` / `✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`；`⏰ Cron …`；`🌿 Worktree …`；`🔌 Shutdown …`。 |
+| 指针 | `crates/tact/src/tool/background_run.rs`（`CHECK_BACKGROUND_METADATA`）；`crates/tact/src/tool/team.rs`；`crates/tui/src/widgets/tool_widget.rs`（`tool_display_name`） |
+
+---
+
 ## 1. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
 
 | 字段 | 值 |
@@ -174,7 +187,7 @@
 | 相关 | 第 7、13–16、23 章 |
 | 现象 / 动机 | Cron / worktree / team 等同族工具共用一个 display 标签（例如所有 cron 操作都显示 `⏰ Cron`）。标题几乎一样，只能靠解析 `arg_summary` JSON 区分。`visual_kind = Generic` 时还会忽略 metadata 的 `display_name`，一律走 TUI fallback 表。 |
 | 决策 | 同族标签补上动词（`⏰ Cron Create` / `Delete` / `List`，Worktree / Team / Shutdown 同理）。同步 `tool_display_name` fallback。当 presentation `display_name` 非空且不等于原始 tool id 时优先使用它，让 Generic 工具以 metadata 为准。Task 不改——已有 `format_task_tool_title` 的 `# Task…` 人类标题。 |
-| 改后行为 | 工具卡片标题一眼可区分动作。`background_run` / `check_background` 的 fallback 与 metadata 对齐（`$ Bg` / `🔍 Check`）。 |
+| 改后行为 | 工具卡片标题一眼可区分动作。`background_run` / `check_background` 的 fallback 与 metadata 对齐（`⚙️ Background Run` / `⚙️ Background Check`）。 |
 | 指针 | `crates/tact/src/tool/{cron,worktree,team}.rs`；`crates/tui/src/widgets/tool_widget.rs`（`display_name_from_presentation`、`tool_display_name`） |
 
 ---
