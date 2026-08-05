@@ -69,7 +69,7 @@ impl App {
             );
         }
 
-        let title = format!("  Tact Agent");
+        let title = "  Tact Agent".to_string();
         self.append_msg(
             Line::from(Span::styled(
                 title.clone(),
