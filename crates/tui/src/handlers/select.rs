@@ -64,7 +64,11 @@ fn effort_label(msgs: &crate::i18n::Messages, effort: tact_llm::OpenAiReasoningE
         E::High => msgs.model_effort_high.to_string(),
         E::Xhigh => msgs.model_effort_xhigh.to_string(),
         E::Max => msgs.model_effort_max.to_string(),
-        E::None => msgs.model_effort_low.to_string(), // UI never offers none; placeholder
+        // The effort picker never offers `None`; reaching it is a programming
+        // error (e.g. a profile that leaks a `None` tier).
+        E::None => {
+            unreachable!("OpenAiReasoningEffort::None is never offered in the effort picker")
+        }
     }
 }
 
@@ -402,9 +406,16 @@ fn open_effort_picker(
 
 fn open_budget_picker(app: &mut App, model: String, budgets: Vec<usize>, subagent: bool) {
     let msgs = app.msgs();
-    let thinking_budget = tact::config::try_settings()
-        .map(|settings| settings.agent.thinking_budget)
-        .unwrap_or_default();
+    // Current value differs per target: subagent budget vs main agent budget.
+    let thinking_budget = if subagent {
+        tact::config::try_settings()
+            .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+            .unwrap_or_default()
+    } else {
+        tact::config::try_settings()
+            .map(|settings| settings.agent.thinking_budget)
+            .unwrap_or_default()
+    };
     let selected = nearest_budget_index(&budgets, thinking_budget);
     let options = budget_option_labels(&msgs, &budgets);
     let kind = if subagent {
@@ -493,7 +504,7 @@ fn apply_model_and_effort_pick(
 ) {
     let msgs = app.msgs();
     let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
-    tact::config::update_llm_model(model.clone());
+    tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
     app.status_bar.model_name = model.clone();
     if let Some(settings) = tact::config::try_settings() {
         app.status_bar.model_max_tokens = settings.agent.max_tokens;
@@ -927,6 +938,32 @@ mod tests {
         tact::config::install_or_override(cfg);
     }
 
+    fn install_models_config_with_subagent(
+        models: Vec<&str>,
+        current: &str,
+        subagent_model: &str,
+        subagent_budget: usize,
+        subagent_effort: Option<tact_llm::OpenAiReasoningEffort>,
+    ) {
+        install_models_config(models, current);
+        let mut cfg = tact::config::settings();
+        cfg.agent.subagent = Some(tact::config::SubagentSettings {
+            provider: tact_llm::ProviderInfo {
+                provider: ProviderKind::Kimi,
+                protocol: tact_llm::OpenAiProtocol::default(),
+                responses_compact_threshold: None,
+                api_key: "sk-test".into(),
+                base_url: "https://api.moonshot.cn/v1".into(),
+                model: subagent_model.into(),
+            },
+            max_tokens: 4000,
+            thinking_budget: subagent_budget,
+            reasoning_effort: subagent_effort,
+            models: vec![subagent_model.to_string()],
+        });
+        tact::config::install_or_override(cfg);
+    }
+
     fn install_models_config_with_path(
         models: Vec<&str>,
         current: &str,
@@ -1098,6 +1135,104 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert_eq!(app.select.options.len(), 5);
         assert_eq!(app.select.selected, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_budget_picker_highlights_subagent_budget_not_main_budget() {
+        // Regression: open_budget_picker must read the subagent's own
+        // thinking_budget for the highlight, not the main agent's.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config_with_subagent(
+            vec!["kimi-k2.5", "kimi-for-coding"],
+            "kimi-k2.5",
+            "kimi-for-coding",
+            64_000, // subagent budget
+            None,
+        );
+        // Seed the models cache so ensure_api_model_ids() does not hit the
+        // network (which would race other tests on the process-global cache).
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["kimi-for-coding".into()],
+        );
+        // Main agent budget differs (8_000); a bug would highlight index 2.
+        let mut cfg = tact::config::settings();
+        cfg.agent.thinking_budget = 8_000;
+        tact::config::install_or_override(cfg);
+
+        let mut app = make_app();
+        start_subagent_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::SubagentThinkBudgetPick { ref model, .. } if model == "kimi-for-coding"
+        ));
+        // 64_000 is the 4th of the 5 default budgets (0, 8K, 32K, 64K, 128K).
+        assert_eq!(app.select.selected, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn effort_picker_highlights_current_session_effort() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        // Kimi K3 model → effort-semantic second step.
+        install_models_config(vec!["k3", "k3-256k"], "k3");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into(), "k3-256k".into()],
+        );
+        let mut cfg = tact::config::settings();
+        cfg.agent.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::Max);
+        tact::config::install_or_override(cfg);
+
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Char('j'))); // k3-256k
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::ModelProfileEffortPick { .. }
+        ));
+        // Low / High / Max → Max is index 2.
+        assert_eq!(app.select.selected, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applying_effort_pick_updates_config_level_effort() {
+        // Regression: apply_model_and_effort_pick must keep config-level
+        // agent.reasoning_effort in sync so re-opening the picker (and
+        // subagent inheritance) sees the new value.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config(vec!["k3"], "k3");
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into()],
+        );
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
+
+        assert!(matches!(
+            app.select_kind,
+            SelectKind::ModelProfileEffortPick { .. }
+        ));
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
+
+        // No config path → session-only, back to normal mode.
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(
+            tact::config::settings().agent.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Low)
+        );
+        assert_eq!(tact::config::settings().llm.model, "k3");
     }
 
     #[tokio::test(flavor = "multi_thread")]

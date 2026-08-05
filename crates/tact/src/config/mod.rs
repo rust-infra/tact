@@ -14,7 +14,7 @@ mod persist;
 mod resolve;
 mod types;
 
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 use clap::Parser;
 pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, PluginSubcommand};
@@ -40,101 +40,107 @@ static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
 /// - deepseek (api-docs.deepseek.com/zh-cn/guides/thinking_mode): low/high/max.
 /// - kimi (www.kimi.com/code/docs/kimi-code/models.html): k3/k3-256k low/high/max;
 ///   coding 系 Thinking:ON fixed (budget tiers kept for the picker UI only).
+static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelProfileToml>> =
+    LazyLock::new(|| {
+        use OpenAiReasoningEffort as E;
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            "gpt-5.6".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::Medium, E::High],
+            },
+        );
+        m.insert(
+            "gpt-5.6-luna".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::Medium],
+            },
+        );
+        m.insert(
+            "gpt-5.6-terra".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::Medium],
+            },
+        );
+        m.insert(
+            "gpt-5.6-sol".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Medium, E::High, E::Max],
+            },
+        );
+        m.insert(
+            "gpt-4o".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::Medium, E::High],
+            },
+        );
+        m.insert(
+            "deepseek-v4-flash".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::High, E::Max],
+            },
+        );
+        m.insert(
+            "deepseek-v4-pro".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::High, E::Max],
+            },
+        );
+        m.insert(
+            "deepseek-reasoner".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::High, E::Max],
+            },
+        );
+        m.insert(
+            "k3".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::High, E::Max],
+            },
+        );
+        m.insert(
+            "k3-256k".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::High, E::Max],
+            },
+        );
+        m.insert(
+            "claude-sonnet-4-20250514".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![0, 8_000, 32_000],
+                reasoning_efforts: vec![],
+            },
+        );
+        m.insert(
+            "kimi-for-coding".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![0, 8_000, 32_000],
+                reasoning_efforts: vec![],
+            },
+        );
+        m.insert(
+            "kimi-for-coding-highspeed".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![0, 8_000, 32_000],
+                reasoning_efforts: vec![],
+            },
+        );
+        m
+    });
+
+/// Return a copy of the built-in model profiles (fallback base for TOML merge).
 pub fn builtin_model_profiles() -> std::collections::HashMap<String, ModelProfileToml> {
-    use OpenAiReasoningEffort as E;
-    let mut m = std::collections::HashMap::new();
-    m.insert(
-        "gpt-5.6".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::Medium, E::High],
-        },
-    );
-    m.insert(
-        "gpt-5.6-luna".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::Medium],
-        },
-    );
-    m.insert(
-        "gpt-5.6-terra".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::Medium],
-        },
-    );
-    m.insert(
-        "gpt-5.6-sol".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Medium, E::High, E::Max],
-        },
-    );
-    m.insert(
-        "gpt-4o".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::Medium, E::High],
-        },
-    );
-    m.insert(
-        "deepseek-v4-flash".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::High, E::Max],
-        },
-    );
-    m.insert(
-        "deepseek-v4-pro".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::High, E::Max],
-        },
-    );
-    m.insert(
-        "deepseek-reasoner".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::High, E::Max],
-        },
-    );
-    m.insert(
-        "k3".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::High, E::Max],
-        },
-    );
-    m.insert(
-        "k3-256k".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![],
-            reasoning_efforts: vec![E::Low, E::High, E::Max],
-        },
-    );
-    m.insert(
-        "claude-sonnet-4-20250514".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![0, 8_000, 32_000],
-            reasoning_efforts: vec![],
-        },
-    );
-    m.insert(
-        "kimi-for-coding".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![0, 8_000, 32_000],
-            reasoning_efforts: vec![],
-        },
-    );
-    m.insert(
-        "kimi-for-coding-highspeed".into(),
-        ModelProfileToml {
-            thinking_budgets: vec![0, 8_000, 32_000],
-            reasoning_efforts: vec![],
-        },
-    );
-    m
+    BUILTIN_MODEL_PROFILES.clone()
 }
 
 /// Install resolved settings for the process. Must be called once at startup.
@@ -197,6 +203,20 @@ pub fn update_llm_model(model: String) {
     }
 }
 
+/// Update the in-memory active model and reasoning effort for this session.
+///
+/// Mirrors [`update_llm_model_and_thinking_budget`] for effort-semantic
+/// providers: both fields must move together so the running agent, status bar,
+/// and config-level `agent.reasoning_effort` stay consistent.
+pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenAiReasoningEffort>) {
+    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    if let Some(cfg) = guard.as_mut() {
+        cfg.llm.model = model.clone();
+        cfg.agent.model = model;
+        cfg.agent.reasoning_effort = effort;
+    }
+}
+
 /// Update the in-memory active model and thinking budget for this session.
 ///
 /// When `thinking_budget` is active and not strictly smaller than `max_tokens`,
@@ -217,14 +237,13 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
 }
 
 /// Update the in-memory subagent model and thinking budget.
-#[allow(clippy::collapsible_if)]
 pub fn update_subagent_model(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
-    if let Some(cfg) = guard.as_mut() {
-        if let Some(ref mut sa) = cfg.agent.subagent {
-            sa.provider.model = model;
-            sa.thinking_budget = thinking_budget;
-        }
+    if let Some(cfg) = guard.as_mut()
+        && let Some(sa) = cfg.agent.subagent.as_mut()
+    {
+        sa.provider.model = model;
+        sa.thinking_budget = thinking_budget;
     }
 }
 
