@@ -143,6 +143,83 @@ pub(super) fn update_subagent_model_in_toml(
     Ok(())
 }
 
+/// Set `[llm.providers.<name>].model` + `reasoning_effort` in `path`.
+pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
+    path: &Path,
+    provider: &str,
+    model: &str,
+    effort: &str,
+) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read config file {:?}", path))?;
+    let mut value: toml::Value = content
+        .parse()
+        .with_context(|| format!("parse error in config file {:?}", path))?;
+
+    let root = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config root must be a table"))?;
+    let llm_table = root
+        .entry("llm".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("llm must be a table"))?;
+    let providers_table = llm_table
+        .entry("providers".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("llm.providers must be a table"))?;
+    let entry_table = providers_table
+        .entry(provider.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("llm.providers.{provider} must be a table"))?;
+    entry_table.insert("model".into(), toml::Value::String(model.to_string()));
+    entry_table.insert("reasoning_effort".into(), toml::Value::String(effort.to_string()));
+
+    let serialized =
+        toml::to_string_pretty(&value).with_context(|| format!("serialize config {:?}", path))?;
+    std::fs::write(path, serialized)
+        .with_context(|| format!("cannot write config file {:?}", path))?;
+    Ok(())
+}
+
+/// Set `[agent.subagent].model` + `reasoning_effort` in `path`.
+pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
+    path: &Path,
+    model: &str,
+    effort: &str,
+) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read config file {:?}", path))?;
+    let mut value: toml::Value = content
+        .parse()
+        .with_context(|| format!("parse error in config file {:?}", path))?;
+
+    let root = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config root must be a table"))?;
+    let agent_table = root
+        .entry("agent".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("agent must be a table"))?;
+    let subagent_table = agent_table
+        .entry("subagent".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("agent.subagent must be a table"))?;
+
+    subagent_table.insert("model".into(), toml::Value::String(model.to_string()));
+    subagent_table.insert("reasoning_effort".into(), toml::Value::String(effort.to_string()));
+
+    let serialized =
+        toml::to_string_pretty(&value).with_context(|| format!("serialize config {:?}", path))?;
+    std::fs::write(path, serialized)
+        .with_context(|| format!("cannot write config file {:?}", path))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;

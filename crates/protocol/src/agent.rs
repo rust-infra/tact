@@ -305,6 +305,14 @@ pub enum UserCommand {
     /// The TUI sends this after `/model` budget confirmation; config persistence
     /// is a separate optional local flow.
     SetThinkingBudget(usize),
+    /// Set the active agent session's reasoning effort (openai / deepseek / kimi k3).
+    /// `Some("low"|"medium"|...)` sets it; `None` clears (wire omits effort).
+    /// The TUI sends this after `/model` effort confirmation; config persistence
+    /// is a separate optional local flow.
+    SetReasoningEffort(Option<String>),
+    /// Set the active agent session's model (per-agent, not global).
+    /// The TUI sends this after `/model` model confirmation.
+    SetModel(String),
 }
 
 /// A single step in the execution plan.

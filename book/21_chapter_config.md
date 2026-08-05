@@ -88,7 +88,7 @@ Explicit `--config /path/to/file.toml` bypasses the search list.
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
 | `protocol` | entry → `chat_completions` default |
-| `reasoning_effort` | OpenAI entry → `thinking_budget` compatibility mapping |
+| `reasoning_effort` | entry (openai / deepseek / kimi) → provider default (model-dependent) |
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
@@ -105,6 +105,13 @@ Top-level sections in `TactTomlConfig`:
 provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi
 max_tokens = 32000         # optional global default
 thinking_budget = 32000
+
+# Optional per-model thinking parameter options (model id → selectable tiers).
+# The /model second step shows only these tiers for the picked model.
+# [llm.model_profiles."gpt-5.6"]
+# reasoning_efforts = ["low", "medium", "high"]
+# [llm.model_profiles."claude-sonnet-4-20250514"]
+# thinking_budgets = [0, 8000, 32000]
 
 [llm.providers.kimi]
 api_key = "sk-..."
@@ -176,13 +183,25 @@ support depends on the endpoint — DeepSeek currently does not implement it, so
 explicit compaction falls back to the local summary pipeline). There is no CLI
 override for this field.
 
-Optional `reasoning_effort` is also OpenAI-only and accepts `none`, `minimal`,
-`low`, `medium`, `high`, `xhigh`, or `max`. Availability is model-dependent.
-An explicit value is forwarded unchanged and overrides the compatibility
-mapping from `thinking_budget`; when omitted, the existing `low` / `medium` /
-`high` budget bands remain in effect. There is no CLI override for this field.
+Optional `reasoning_effort` is accepted for `openai`, `deepseek` and `kimi`
+providers and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
+`max`. Availability is model-dependent. An explicit value is forwarded
+unchanged on the wire (per request); when omitted, the provider default
+applies (e.g. OpenAI medium, DeepSeek enabled + high, Kimi K3 high). There is
+no CLI override for this field. Anthropic rejects it (native thinking budget,
+no effort field).
 
-Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, … }`
+Optional `[llm.model_profiles."<model>"]` entries list the selectable tiers
+for that model in the `/model` second step: `reasoning_efforts` for
+effort-semantic models (openai / deepseek / kimi k3、k3-256k),
+`thinking_budgets` for budget-semantic models (anthropic / kimi coding 系).
+Both fields are optional arrays; an empty entry for a model falls back to the
+provider defaults. TOML entries override the built-in defaults per model /
+per field (see `tact::config::builtin_model_profiles`). Cross-dimension
+entries (e.g. `thinking_budgets` on an effort-semantic model) are ignored,
+not errors.
+
+Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, model_profiles, … }`
 for the hot path. See `types.rs` for serde structs and unit tests.
 
 ---

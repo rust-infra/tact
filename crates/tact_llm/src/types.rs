@@ -82,19 +82,6 @@ impl fmt::Display for OpenAiReasoningEffort {
     }
 }
 
-/// Resolve an explicit OpenAI effort or fall back to the legacy token bands.
-pub fn effective_reasoning_effort(
-    configured: Option<OpenAiReasoningEffort>,
-    budget_tokens: usize,
-) -> Option<OpenAiReasoningEffort> {
-    configured.or(match budget_tokens {
-        0 => None,
-        1..=10_000 => Some(OpenAiReasoningEffort::Low),
-        10_001..=32_000 => Some(OpenAiReasoningEffort::Medium),
-        _ => Some(OpenAiReasoningEffort::High),
-    })
-}
-
 impl OpenAiProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -214,6 +201,11 @@ pub struct CreateMessageParams {
     pub tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    /// Explicit reasoning effort for this request (openai / deepseek / kimi k3).
+    /// `None` = omit from wire (provider default applies); this is per-request,
+    /// never read from a global provider state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<OpenAiReasoningEffort>,
 }
 
 impl From<RequiredMessageParams> for CreateMessageParams {
@@ -274,6 +266,12 @@ impl CreateMessageParams {
 
     pub fn with_thinking(mut self, thinking: Thinking) -> Self {
         self.thinking = Some(thinking);
+        self
+    }
+
+    /// Set the explicit per-request reasoning effort (openai / deepseek / kimi k3).
+    pub fn with_reasoning_effort(mut self, effort: Option<OpenAiReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 }
@@ -515,17 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn openai_reasoning_effort_rejects_unknown_and_overrides_budget() {
+    fn openai_reasoning_effort_rejects_unknown() {
         let error = OpenAiReasoningEffort::from_str("extreme").unwrap_err();
         assert!(error.contains("none|minimal|low|medium|high|xhigh|max"));
-        assert_eq!(
-            effective_reasoning_effort(Some(OpenAiReasoningEffort::Max), 1),
-            Some(OpenAiReasoningEffort::Max)
-        );
-        assert_eq!(effective_reasoning_effort(None, 0), None);
-        assert_eq!(
-            effective_reasoning_effort(None, 32_001),
-            Some(OpenAiReasoningEffort::High)
-        );
     }
 }

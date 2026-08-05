@@ -30,6 +30,20 @@ provider = "anthropic"
 # max_tokens = 8000
 # thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
+# Optional per-model thinking parameter options (model id → selectable tiers).
+# The /model second step shows only these tiers for the picked model; models
+# without an entry fall back to provider defaults (openai: minimal..max;
+# deepseek / kimi k3: low/high/max; anthropic / kimi coding: 5 budget tiers).
+# `reasoning_efforts` applies to effort-semantic models (openai / deepseek /
+# kimi k3/k3-256k); `thinking_budgets` to budget-semantic models (anthropic /
+# kimi-for-coding*). Cross-dimension entries are ignored, not errors.
+# [llm.model_profiles."gpt-5.6"]
+# reasoning_efforts = ["low", "medium", "high"]
+# [llm.model_profiles."deepseek-v4-flash"]
+# reasoning_efforts = ["low", "high", "max"]
+# [llm.model_profiles."claude-sonnet-4-20250514"]
+# thinking_budgets = [0, 8000, 32000]
+
 [llm.providers.anthropic]
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"

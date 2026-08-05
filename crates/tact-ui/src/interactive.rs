@@ -161,7 +161,7 @@ async fn run_interactive_locked(
 
     let theme = tact::config::settings().ui.theme.clone();
     let model_context_window = tact::config::settings().agent.model_context_window;
-    let model_name = tact::get_model();
+    let model_name = tact::config::settings().agent.model.clone();
     let model_max_tokens = tact::config::settings().agent.max_tokens;
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();

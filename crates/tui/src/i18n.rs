@@ -178,6 +178,19 @@ pub struct Messages {
     pub model_persisted_with_budget_tmpl: &'static str,
     pub model_session_only_with_budget_tmpl: &'static str,
 
+    // ---- effort semantics (openai / deepseek / kimi k3) ----
+    pub model_effort_prompt: &'static str,
+    pub model_effort_minimal: &'static str,
+    pub model_effort_low: &'static str,
+    pub model_effort_medium: &'static str,
+    pub model_effort_high: &'static str,
+    pub model_effort_xhigh: &'static str,
+    pub model_effort_max: &'static str,
+    pub model_effort_switched_tmpl: &'static str,
+    pub model_persist_with_effort_prompt: &'static str,
+    pub model_persisted_with_effort_tmpl: &'static str,
+    pub model_session_only_with_effort_tmpl: &'static str,
+
     // ---- 命令面板描述 ----
     pub cmd_theme: &'static str,
     pub cmd_model: &'static str,
@@ -426,6 +439,20 @@ impl Messages {
             model_persisted_with_budget_tmpl: "✓ Saved model {} and thinking budget {} to config",
             model_session_only_with_budget_tmpl: "Model {} and thinking budget {} apply only to this session",
 
+            model_effort_prompt: "Reasoning effort",
+            model_effort_minimal: "Minimal",
+            model_effort_low: "Low",
+            model_effort_medium: "Medium",
+            model_effort_high: "High",
+            model_effort_xhigh: "X-High",
+            model_effort_max: "Max",
+            model_effort_switched_tmpl: "✓ Model set to {}; reasoning effort set to {}",
+            model_persist_with_effort_prompt: "Save this model and reasoning effort to config?",
+            model_persisted_with_effort_tmpl:
+                "✓ Saved model {} and reasoning effort {} to config",
+            model_session_only_with_effort_tmpl:
+                "Model {} and reasoning effort {} apply only to this session",
+
             // ---- /model-subagent ----
             model_subagent_select_prompt_tmpl: "Select subagent model ({})",
             model_subagent_list_empty_tmpl: "No models configured for subagent. Add models = [...] under [llm.providers.{}]",
@@ -667,6 +694,18 @@ impl Messages {
             model_persist_with_budget_prompt: "将此模型和思考预算保存到配置文件？",
             model_persisted_with_budget_tmpl: "✓ 已将模型 {} 和思考预算 {} 保存到配置文件",
             model_session_only_with_budget_tmpl: "模型 {} 和思考预算 {} 仅在当前会话生效",
+
+            model_effort_prompt: "推理强度 (effort)",
+            model_effort_minimal: "Minimal",
+            model_effort_low: "Low",
+            model_effort_medium: "Medium",
+            model_effort_high: "High",
+            model_effort_xhigh: "X-High",
+            model_effort_max: "Max",
+            model_effort_switched_tmpl: "✓ 模型已设为 {}；推理强度已设为 {}",
+            model_persist_with_effort_prompt: "将此模型和推理强度保存到配置文件？",
+            model_persisted_with_effort_tmpl: "✓ 已将模型 {} 和推理强度 {} 保存到配置文件",
+            model_session_only_with_effort_tmpl: "模型 {} 和推理强度 {} 仅在当前会话生效",
 
             // ---- /model-subagent ----
             model_subagent_select_prompt_tmpl: "选择 Subagent 模型 ({})",

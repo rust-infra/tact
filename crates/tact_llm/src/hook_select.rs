@@ -12,8 +12,14 @@ use crate::{
 /// Pick a body hook from the active provider identity / heuristics.
 ///
 /// `user_id` is only applied when the selected hook is DeepSeek.
+/// Pick a body hook from the provider identity / heuristics.
+///
+/// `user_id` is only applied when the selected hook is DeepSeek. `model` is
+/// the per-request model id so the hook follows `/model` picks (wire shape
+/// matches what is actually requested).
 pub fn body_hook_for(
     info: &ProviderInfo,
+    model: &str,
     user_id: Option<&str>,
 ) -> Result<Arc<dyn OpenAiBodyHook>, LlmError> {
     let deepseek = || DeepSeekBodyHook::new(user_id.map(str::to_owned));
@@ -23,9 +29,9 @@ pub fn body_hook_for(
         ProviderKind::OpenAi => {
             // `provider = openai` may still point at a Moonshot/DeepSeek-compatible
             // base URL or model id — follow endpoint heuristics.
-            if info.is_kimi() {
+            if info.is_kimi_with(model) {
                 Ok(Arc::new(KimiBodyHook))
-            } else if info.base_url.contains("deepseek") || info.model.contains("deepseek") {
+            } else if info.base_url.contains("deepseek") || model.contains("deepseek") {
                 Ok(Arc::new(deepseek()))
             } else {
                 Ok(Arc::new(StandardOpenAiBodyHook))
@@ -53,26 +59,31 @@ mod tests {
             "https://api.moonshot.cn/v1",
         );
 
-        let request = sample_request_with_thinking();
+        let request = sample_request_with_thinking()
+            .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::High));
         let mut deepseek_body = empty_body();
-        body_hook_for(&deepseek, Some("u1"))
+        body_hook_for(&deepseek, "deepseek-chat", Some("u1"))
             .unwrap()
             .inject(&mut deepseek_body, &ctx(&request, &deepseek, &[]));
         assert_eq!(deepseek_body["user_id"], "u1");
         assert_eq!(deepseek_body["thinking"]["type"], "enabled");
         assert_eq!(deepseek_body["reasoning_effort"], "high");
 
+        let mut request_kimi = sample_request_with_thinking();
+        request_kimi.model = "kimi-k2.5".to_string();
         let mut kimi_body = empty_body();
-        body_hook_for(&kimi, None)
+        body_hook_for(&kimi, "kimi-k2.5", None)
             .unwrap()
-            .inject(&mut kimi_body, &ctx(&request, &kimi, &[]));
+            .inject(&mut kimi_body, &ctx(&request_kimi, &kimi, &[]));
         assert_eq!(kimi_body["thinking"]["type"], "enabled");
         assert!(kimi_body.get("reasoning_effort").is_none());
 
+        let mut request_kimi2 = sample_request_with_thinking();
+        request_kimi2.model = "kimi-k2.5".to_string();
         let mut heur_body = empty_body();
-        body_hook_for(&openai_kimi_url, None)
+        body_hook_for(&openai_kimi_url, "kimi-k2.5", None)
             .unwrap()
-            .inject(&mut heur_body, &ctx(&request, &openai_kimi_url, &[]));
+            .inject(&mut heur_body, &ctx(&request_kimi2, &openai_kimi_url, &[]));
         assert_eq!(heur_body["thinking"]["type"], "enabled");
         assert!(heur_body.get("reasoning_effort").is_none());
     }

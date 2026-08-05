@@ -218,10 +218,9 @@ impl LlmClient for AnthropicAdapter {
                                         .thinking
                                         .as_ref()
                                         .map(|t| t.budget_tokens as u32),
-                                    reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                                        crate::current_reasoning_effort_from_budget(t.budget_tokens)
-                                            .map(str::to_string)
-                                    }),
+                                    reasoning_effort: request
+                                        .reasoning_effort
+                                        .map(|effort| effort.as_str().to_string()),
                                     extra_body: request
                                         .thinking
                                         .as_ref()

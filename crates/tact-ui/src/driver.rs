@@ -192,6 +192,12 @@ async fn handle_user_command_with_account(
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
         }
+        UserCommand::SetReasoningEffort(effort) => {
+            agent.set_reasoning_effort(effort.and_then(|raw| raw.parse().ok()));
+        }
+        UserCommand::SetModel(model) => {
+            agent.set_model(model);
+        }
         _ => {}
     }
 }

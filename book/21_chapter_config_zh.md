@@ -88,7 +88,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
 | `protocol` | 条目 → 默认 `chat_completions` |
-| `reasoning_effort` | OpenAI 条目 → `thinking_budget` 兼容映射 |
+| `reasoning_effort` | entry（openai / deepseek / kimi）→ provider 默认（模型相关） |
 
 必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。未知 map 键或缺失活跃条目会在 resolve 时报错。
 
@@ -103,6 +103,13 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 provider = "kimi"          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi
 max_tokens = 32000         # 可选全局默认
 thinking_budget = 32000
+
+# 可选：按模型的思考参数选项（模型 id → 可选档位）。
+# /model 第二步只显示该模型映射的档位；无映射的模型回落 provider 默认档位。
+# [llm.model_profiles."gpt-5.6"]
+# reasoning_efforts = ["low", "medium", "high"]
+# [llm.model_profiles."claude-sonnet-4-20250514"]
+# thinking_budgets = [0, 8000, 32000]
 
 [llm.providers.kimi]
 api_key = "sk-..."
@@ -161,12 +168,20 @@ bash_timeout_secs = 1800
 可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，错误会如实透传而不回退）。此字段没有 CLI override。
 可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，显式压缩会回落本地摘要流水线）。此字段没有 CLI override。
 
-可选 `reasoning_effort` 同样仅对 OpenAI 有效，接受 `none`、`minimal`、
-`low`、`medium`、`high`、`xhigh` 或 `max`；具体可用值取决于模型。显式值会
-原样发送并覆盖 `thinking_budget` 的兼容映射；省略时仍使用现有的 `low` /
-`medium` / `high` budget 档位。此字段没有 CLI override。
+可选 `reasoning_effort` 对 `openai`、`deepseek` 与 `kimi` provider 有效，接受
+`none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；具体可用值取决于
+模型。显式值按请求原样发送；省略时使用 provider 默认（如 OpenAI medium、
+DeepSeek 思考开启 + effort high、Kimi K3 high）。此字段没有 CLI override。
+Anthropic 拒绝该字段（native thinking budget，无 effort 字段）。
 
-Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, … }` 供热路径使用。serde 结构与单元测试见 `types.rs`。
+可选 `[llm.model_profiles."<model>"]` 条目列出该模型在 `/model` 第二步的
+可选档位：`reasoning_efforts` 对应 effort 语义模型（openai / deepseek /
+kimi k3、k3-256k），`thinking_budgets` 对应 budget 语义模型（anthropic /
+kimi coding 系）。两个字段均为可选数组；某模型无条目时回落 provider 默认
+档位。TOML 条目按模型/按字段覆盖内置默认（见 `tact::config::builtin_model_profiles`）。
+跨维度条目（如 effort 语义模型写 `thinking_budgets`）会被忽略，不报错。
+
+Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, model_profiles, … }` 供热路径使用。serde 结构与单元测试见 `types.rs`。
 
 ---
 

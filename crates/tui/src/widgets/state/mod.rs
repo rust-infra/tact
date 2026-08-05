@@ -104,14 +104,28 @@ pub(crate) enum SelectKind {
     Agent,
     /// `/model` first step — choose a model before applying either value.
     ModelPick,
-    /// `/model` second step — choose a thinking budget before applying either value.
+    /// `/model` second step (effort-semantic models: openai/deepseek/kimi k3)
+    /// — choose a reasoning effort before applying. `efforts` = selectable
+    /// tiers for this model (mapped or provider default).
+    ModelProfileEffortPick {
+        model: String,
+        efforts: Vec<tact_llm::OpenAiReasoningEffort>,
+    },
+    /// `/model` second step — choose a thinking budget before applying.
+    /// `budgets` = selectable tiers for this model (mapped or default 5).
     ThinkBudgetPick {
         model: String,
+        budgets: Vec<usize>,
     },
     /// Optional combined "save to config?" prompt after session application.
     PersistModelAndBudget {
         model: String,
         thinking_budget: usize,
+    },
+    /// Optional "save model + reasoning effort to config?" prompt.
+    PersistModelAndEffort {
+        model: String,
+        effort: tact_llm::OpenAiReasoningEffort,
     },
     /// Prompt source selection for `/view-system-prompt`.
     ViewSystemPrompt,
@@ -119,12 +133,21 @@ pub(crate) enum SelectKind {
     PermissionModePick,
     /// `/model-subagent` flow
     SubagentModelPick,
+    SubagentModelProfileEffortPick {
+        model: String,
+        efforts: Vec<tact_llm::OpenAiReasoningEffort>,
+    },
     SubagentThinkBudgetPick {
         model: String,
+        budgets: Vec<usize>,
     },
     SubagentPersistModelAndBudget {
         model: String,
         thinking_budget: usize,
+    },
+    SubagentPersistModelAndEffort {
+        model: String,
+        effort: tact_llm::OpenAiReasoningEffort,
     },
 }
 

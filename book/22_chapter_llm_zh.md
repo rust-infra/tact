@@ -66,7 +66,7 @@ pub struct ProviderInfo {
 
 `ProviderKind` 是 config、CLI（`FromStr`）与 `build_client`（穷尽 match）的单一身份类型。TOML 名称为小写：`anthropic` | `openai` | `deepseek` | `kimi`。
 
-启动时安装（测试 override 下可 re-init）。活跃 provider 保存在 `RwLock` 中，TUI `/model` 命令可在 session 中仅通过 `tact_llm::set_model` 更改 `model` 字符串（进行中的流保留旧 id；进程启动时的 `max_tokens` / thinking 启发式不会重算）。
+启动时安装（测试 override 下可 re-init）。provider 是**静态快照**：`/model` 不再修改它。per-agent model 存于 `AgentSettings.model`（经 `UserCommand::SetModel` 更新）、per-request 存于 `CreateMessageParams.model`——wire 形状启发式（`is_kimi_k2x`、body hook 选择）读取 *request* model，因此 `/model` 切换无需重建 client 即可改变 wire。`RwLock<Option<ProviderInfo>>` 保留用于 test-support override；生产 install 只执行一次。
 
 ```rust
 // crates/tact/src/config/mod.rs
@@ -101,15 +101,15 @@ sequenceDiagram
     Resolve-->>Init: ResolvedConfig
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
-    LlmInit->>State: set ProviderInfo
+    LlmInit->>State: set ProviderInfo（静态）
     Install->>State: set ResolvedConfig
-    Note over State: `/model` 可能仅更新 model
+    Note over State: `/model` 更新 AgentSettings.model（per-agent），不触碰 PROVIDER
     Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
     Build-->>Provider: 专用 provider adapter
 ```
 
-Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 对 mid-session 模型切换（`set_model`）可变。
+Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 是**静态快照**；mid-session 的 `/model` 切换更新 `AgentSettings.model`（per-agent），请求模型随 `CreateMessageParams.model` 传递。
 
 ---
 
@@ -454,24 +454,33 @@ item。
 
 ### 6.3 共享 thinking 配置
 
-**Thinking / reasoning 注入：** 内部请求始终携带 Anthropic 形 `Thinking { budget_tokens }`。Provider body hook 将其改写为各 wire 协议：
+**Thinking / reasoning 注入：** 内部请求携带 Anthropic 形 `Thinking { budget_tokens }` 以及显式 per-request `reasoning_effort`（`CreateMessageParams.reasoning_effort`）。Provider body hook 将其改写为各 wire 协议。**budget→effort 波段映射已删除**：`reasoning_effort = None` 表示不发送该字段（使用 provider 默认），`Some` 原样发送。
 
-| Provider | thinking 设置时 | Wire 字段 |
-|----------|-----------------|-----------|
+| Provider | effort/thinking 设置时 | Wire 字段 |
+|----------|------------------------|-----------|
 | Anthropic | 始终（原生 Messages 类型） | `thinking: { type, budget_tokens }` |
 | Kimi K2.5 | budget > 0 | `thinking: { type: "enabled" }`；否则 `disabled` |
 | Kimi K2.6 | budget > 0 | `thinking: { type: "enabled", keep: "all" }`；否则 `disabled` |
 | Kimi K2.7 / coding | 跳过 | *（服务端始终开启 thinking）* |
-| DeepSeek | budget > 0 | `thinking: { type: "enabled" }` + `reasoning_effort: high\|max`；否则 `thinking: disabled` |
-| OpenAI Chat Completions | 配置显式 effort 或 budget > 0 | `reasoning_effort: none\|minimal\|low\|medium\|high\|xhigh\|max` |
-| OpenAI Responses | 配置显式 effort 或 budget > 0 | `reasoning: { effort: none\|minimal\|low\|medium\|high\|xhigh\|max, summary: auto }` |
+| Kimi K3 / K3-256k | `Some(low\|high\|max)` | `thinking: { type: "enabled" }` + `reasoning_effort` 原值；`None` → 不发送（服务端默认开启 + high） |
+| DeepSeek | `Some(low\|high\|xhigh\|max)` | `thinking: { type: "enabled" }` + `reasoning_effort` 原值（服务端按模型映射 flash/pro）；`None` → 不发送（默认开启 + high） |
+| OpenAI Chat Completions | `Some(...)` | `reasoning_effort: minimal\|low\|medium\|high\|xhigh\|max`；`None` → 不发送（默认 medium） |
+| OpenAI Responses | `Some(...)` | `reasoning: { effort, summary: auto }`；`None` → 不发送 |
 
-OpenAI 可在 provider 条目配置 `reasoning_effort`；显式值原样发送，并优先于
-`thinking_budget`。省略时保留旧档位：零值不发送该字段，`1..=10_000` 映射
-`low`，`10_001..=32_000` 映射 `medium`，更大 budget 映射 `high`。Tact 不为
-`xhigh` 或 `max` 虚构 budget 阈值。`ModelCallParams.reasoning_effort` 向 TUI
-报告实际值。具体支持取决于模型，参见
-[OpenAI reasoning 指南](https://developers.openai.com/api/docs/guides/reasoning)。
+effort 是 **per-request**：随 `CreateMessageParams.reasoning_effort` 从 agent 自己的
+`AgentSettings.reasoning_effort` 传递（主 agent 与 subagent 相互独立——无全局
+effort 状态）。`[llm.providers.*].reasoning_effort` 配置值作为主 agent 快照的
+种子；`/model` 的 effort 选择经 `UserCommand::SetReasoningEffort` 运行时更新。
+`ModelCallParams.reasoning_effort` 向 TUI 报告会话值。具体支持取决于模型，参见
+[OpenAI reasoning 指南](https://developers.openai.com/api/docs/guides/reasoning)、
+[DeepSeek thinking mode](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode)
+与 [Kimi Code models](https://www.kimi.com/code/docs/kimi-code/models.html)。
+
+**`/model` 第二步** 按所选模型的语义分流（`tact_llm::model_uses_effort`，与
+body hook 同一套启发式）：effort 语义模型（openai / deepseek / kimi k3、k3-256k）
+打开 effort 选择器；budget 语义模型（anthropic / kimi coding 系）保持 budget
+选择器。可选档位来自 `[llm.model_profiles."<model>"]`（或内置默认），否则回落
+provider 默认（openai 6 档、deepseek/kimi k3 3 档、budget 5 档）。
 
 ---
 

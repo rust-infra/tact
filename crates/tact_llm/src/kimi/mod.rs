@@ -21,7 +21,13 @@ use crate::{
 };
 
 /// Kimi / Moonshot hook: `thinking` object + historical `reasoning_content`.
-/// Does **not** send `reasoning_effort` (not in Kimi Chat Completions docs).
+///
+/// - k3 / k3-256k: explicit `reasoning_effort` (low/high/max, default high;
+///   [docs](https://www.kimi.com/code/docs/kimi-code/models.html)). `Some` →
+///   thinking enabled + raw effort; `None` → omit (server default enabled +
+///   high). Never send `thinking: disabled` — it routes K3/K2.7 to K2.6.
+/// - kimi-for-coding / highspeed (K2.7 Code): Thinking:ON fixed, skip.
+/// - other K2.x: budget>0 → enabled (keep all for k2.6), else disabled.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KimiBodyHook;
 
@@ -33,11 +39,21 @@ impl OpenAiBodyHook for KimiBodyHook {
 }
 
 fn inject_kimi_thinking(body: &mut Value, request: &CreateMessageParams, provider: &ProviderInfo) {
-    // K2.7-code forces thinking on; passing `thinking` (esp. disabled) errors.
-    if provider.is_kimi_k27() {
+    let model = request.model.as_str();
+    // K3 / K3-256k: effort-driven.
+    if crate::is_kimi_k3(model) {
+        if let Some(effort) = request.reasoning_effort {
+            body["thinking"] = serde_json::json!({ "type": "enabled" });
+            body["reasoning_effort"] = Value::String(effort.as_str().to_owned());
+        }
+        // None → omit: Kimi K3 defaults thinking enabled + effort high.
         return;
     }
-    if !provider.is_kimi_k2x() {
+    // K2.7-code forces thinking on; passing `thinking` (esp. disabled) errors.
+    if provider.is_kimi_k27(model) {
+        return;
+    }
+    if !provider.is_kimi_k2x(model) {
         return;
     }
     // Kimi defaults thinking to enabled when omitted — send disabled explicitly.
@@ -45,7 +61,7 @@ fn inject_kimi_thinking(body: &mut Value, request: &CreateMessageParams, provide
         body["thinking"] = serde_json::json!({ "type": "disabled" });
         return;
     }
-    if provider.model.contains("k2.6") || provider.model.contains("k2-6") {
+    if model.contains("k2.6") || model.contains("k2-6") {
         body["thinking"] = serde_json::json!({
             "type": "enabled",
             "keep": "all",
@@ -61,9 +77,8 @@ fn inject_kimi_thinking(body: &mut Value, request: &CreateMessageParams, provide
 #[derive(Clone)]
 pub struct KimiAdapter {
     adapter: OpenAiAdapter,
-    /// Snapshot used when the live global provider is no longer Kimi.
-    model: String,
-    base_url: String,
+    /// Static provider identity snapshot (model / base_url / kind).
+    provider: ProviderInfo,
 }
 
 impl KimiAdapter {
@@ -72,8 +87,14 @@ impl KimiAdapter {
         let base_url = adapter.base_url().to_string();
         Self {
             adapter,
-            model: model.into(),
-            base_url,
+            provider: ProviderInfo {
+                provider: ProviderKind::Kimi,
+                protocol: crate::OpenAiProtocol::default(),
+                responses_compact_threshold: None,
+                api_key: String::new(),
+                base_url,
+                model: model.into(),
+            },
         }
     }
 
@@ -81,37 +102,12 @@ impl KimiAdapter {
         self.adapter.base_url()
     }
 
-    /// Body-hook context is always [`ProviderKind::Kimi`].
-    ///
-    /// Model / base_url follow the live global provider when it is still Kimi
-    /// (so `/model` updates thinking flavor); otherwise fall back to the
-    /// construction snapshot. Never trust a non-Kimi global `provider` kind.
-    fn body_provider(&self) -> ProviderInfo {
-        crate::read_provider(|live| {
-            let (model, base_url) = if live.provider == ProviderKind::Kimi {
-                (live.model.clone(), live.base_url.clone())
-            } else {
-                (self.model.clone(), self.base_url.clone())
-            };
-            ProviderInfo {
-                provider: ProviderKind::Kimi,
-                protocol: crate::OpenAiProtocol::default(),
-                reasoning_effort: None,
-                responses_compact_threshold: None,
-                api_key: String::new(),
-                base_url,
-                model,
-            }
-        })
-    }
-
     fn assemble_body(
         &self,
         request: &CreateMessageParams,
         stream: bool,
     ) -> Result<Value, LlmError> {
-        let provider = self.body_provider();
-        assemble_chat_completion_body(request, stream, &provider, &KimiBodyHook)
+        assemble_chat_completion_body(request, stream, &self.provider, &KimiBodyHook)
     }
 }
 
@@ -157,7 +153,8 @@ mod tests {
 
     #[test]
     fn kimi_hook_skips_for_kimi_code_stable_id() {
-        let request = sample_request_with_thinking();
+        let mut request = sample_request_with_thinking();
+        request.model = "kimi-for-coding".to_string();
         let provider = provider(
             ProviderKind::OpenAi,
             "kimi-for-coding",
@@ -171,7 +168,8 @@ mod tests {
 
     #[test]
     fn kimi_hook_uses_preserved_thinking_for_k26() {
-        let request = sample_request_with_thinking();
+        let mut request = sample_request_with_thinking();
+        request.model = "kimi-k2.6".to_string();
         let provider = provider(ProviderKind::Kimi, "kimi-k2.6", "");
         let mut body = empty_body();
         KimiBodyHook.inject(&mut body, &ctx(&request, &provider, &[]));
@@ -196,7 +194,8 @@ mod tests {
 
     #[test]
     fn kimi_hook_echoes_reasoning_content() {
-        let request = sample_request_with_thinking();
+        let mut request = sample_request_with_thinking();
+        request.model = "kimi-k2.5".to_string();
         let provider = provider(
             ProviderKind::Kimi,
             "kimi-k2.5",

@@ -19,7 +19,7 @@ use self::{
     stream::ResponsesStreamState,
 };
 use crate::{
-    CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse, OpenAiReasoningEffort,
+    CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse,
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
 
@@ -117,7 +117,6 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
 pub struct OpenAiResponsesAdapter {
     client: Client<OpenAIConfig>,
     base_url: String,
-    reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Optional `context_management.compact_threshold` (tokens) sent on
     /// every ordinary `/responses` request. `None` omits `context_management`
     /// entirely; Tact never falls back to a local summary compaction for
@@ -129,7 +128,6 @@ impl OpenAiResponsesAdapter {
     pub fn new(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
-        reasoning_effort: Option<OpenAiReasoningEffort>,
         compact_threshold: Option<u32>,
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
@@ -141,7 +139,6 @@ impl OpenAiResponsesAdapter {
         Self {
             client: Client::with_config(config),
             base_url,
-            reasoning_effort,
             compact_threshold,
         }
     }
@@ -159,12 +156,7 @@ impl OpenAiResponsesAdapter {
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
-        create_response(
-            request,
-            provider_state,
-            self.compact_threshold,
-            self.reasoning_effort,
-        )
+        create_response(request, provider_state, self.compact_threshold)
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
@@ -329,7 +321,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         // items (including unknown/future item types) are preserved by
         // sending the request through the byot JSON path; no local summary
         // prompt or `create_message()` call is used.
-        let (body, _) = create_response(request, provider_state, None, None)?;
+        let (body, _) = create_response(request, provider_state, None)?;
         let compact_request = serde_json::json!({
             "model": request.model,
             "input": body["input"],
@@ -536,7 +528,7 @@ mod tests {
         super::OpenAiResponsesAdapter,
         crate::ResponsesConversationState,
     ) {
-        let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None, None);
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
         let state = crate::ResponsesConversationState {
             version: 1,
             provider: "openai_responses".to_string(),
@@ -612,7 +604,7 @@ mod tests {
             messages: vec![first_user.clone()],
             max_tokens: 128,
         });
-        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None, None);
+        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
             .stream_message(&request, None, None)
@@ -694,7 +686,7 @@ mod tests {
         })
         .with_system(system)
         .with_tools(tools.clone());
-        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None, None);
+        let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
             .stream_message(&request, None, None)
@@ -817,7 +809,6 @@ mod tests {
             model: "gpt-5".to_string(),
             provider: crate::ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::Responses,
-            reasoning_effort: None,
             responses_compact_threshold: compact_threshold,
         };
         let crate::LlmProvider::OpenAiResponses(adapter) = info.build_client().unwrap() else {
@@ -900,7 +891,6 @@ mod tests {
             model: "gpt-5".to_string(),
             provider: crate::ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::Responses,
-            reasoning_effort: None,
             responses_compact_threshold: Some(160_000),
         };
         let crate::LlmProvider::OpenAiResponses(adapter) = info.build_client().unwrap() else {
@@ -940,7 +930,6 @@ mod tests {
             model: "gpt-5.4-mini".to_string(),
             provider: crate::ProviderKind::OpenAi,
             protocol: crate::OpenAiProtocol::Responses,
-            reasoning_effort: None,
             responses_compact_threshold: None,
         }
         .build_client()

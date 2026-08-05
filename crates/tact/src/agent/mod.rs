@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tact_llm::{
     ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
-    ProviderConversationState, ProviderKind, ProviderStateUpdate, RequiredMessageParams, Role,
-    StopReason, Thinking, ThinkingType,
+    OpenAiReasoningEffort, ProviderConversationState, ProviderKind, ProviderStateUpdate,
+    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
@@ -94,9 +94,6 @@ pub struct AgentRuntime {
     pub cached_agents_md: Option<String>,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
     pub last_token_total: u32,
-    /// Override model name for subagents. When `Some`, agent_loop and
-    /// compact_history use this instead of `crate::get_model()`.
-    pub model_override: Option<String>,
     /// Provider-specific conversation state (currently only the OpenAI
     /// Responses protocol baseline). Loaded in [`Agent::ensure_session`],
     /// committed after every LLM response, and passed into every LLM call.
@@ -182,7 +179,6 @@ impl Agent {
                 cached_claude_md: None,
                 cached_agents_md: None,
                 last_token_total: 0,
-                model_override: None,
                 provider_state: None,
             },
             tool_context,
@@ -296,20 +292,40 @@ impl Agent {
         self.emit_model_status();
     }
 
+    /// Update this agent's session model (per-agent; never the global provider).
+    ///
+    /// Same queue semantics as [`set_thinking_budget`]: the TUI sends
+    /// `UserCommand::SetModel` behind an in-flight task; the resulting
+    /// `ModelInfo` resyncs the status bar.
+    pub fn set_model(&mut self, model: String) {
+        if model.trim().is_empty() {
+            return;
+        }
+        self.agent_settings.model = model;
+        self.emit_model_status();
+    }
+
+    /// Update this agent's session reasoning effort (per-agent; never the
+    /// global provider). `None` clears the explicit effort (wire omits it).
+    ///
+    /// Same queue semantics as [`set_thinking_budget`].
+    pub fn set_reasoning_effort(&mut self, effort: Option<OpenAiReasoningEffort>) {
+        self.agent_settings.reasoning_effort = effort;
+        self.emit_model_status();
+    }
+
     /// Push current model / token / thinking settings to the TUI status bar.
     fn emit_model_status(&self) {
-        let model_name = self
-            .runtime
-            .model_override
-            .clone()
-            .unwrap_or_else(crate::get_model);
+        let model_name = self.agent_settings.model.clone();
         let budget = self.thinking_budget();
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
             model: model_name,
             max_tokens: self.max_tokens(),
             thinking_budget: (budget > 0).then_some(budget as u32),
-            reasoning_effort: tact_llm::current_reasoning_effort_from_budget(budget)
-                .map(str::to_string),
+            reasoning_effort: self
+                .agent_settings
+                .reasoning_effort
+                .map(|effort| effort.as_str().to_string()),
             extra_body: None,
         }));
     }
@@ -435,11 +451,7 @@ impl Agent {
                 adapter.base_url()
             );
         }
-        let model = self
-            .runtime
-            .model_override
-            .clone()
-            .unwrap_or_else(crate::get_model);
+        let model = self.agent_settings.model.clone();
         if inner.model != model {
             anyhow::bail!(
                 "provider state is bound to model '{}', expected '{}'",
@@ -662,11 +674,7 @@ impl Agent {
             // Includes the current user turn plus history, or retained users +
             // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
-            let model_name = self
-                .runtime
-                .model_override
-                .clone()
-                .unwrap_or_else(crate::get_model);
+            let model_name = self.agent_settings.model.clone();
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: conversation_messages,
@@ -675,16 +683,17 @@ impl Agent {
             .with_system(&system_prompt)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
-            .with_thinking(self.thinking_config());
+            .with_thinking(self.thinking_config())
+            .with_reasoning_effort(self.agent_settings.reasoning_effort);
 
             self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                    tact_llm::current_reasoning_effort_from_budget(t.budget_tokens)
-                        .map(str::to_string)
-                }),
+                reasoning_effort: self
+                    .agent_settings
+                    .reasoning_effort
+                    .map(|effort| effort.as_str().to_string()),
                 extra_body: request
                     .thinking
                     .as_ref()
@@ -975,16 +984,13 @@ impl Agent {
     /// leave the old committed state intact; transient transport errors are
     /// retried with bounded backoff, protocol errors are not.
     async fn compact_responses_native(&mut self) -> Result<()> {
-        let model_name = self
-            .runtime
-            .model_override
-            .clone()
-            .unwrap_or_else(crate::get_model);
+        let model_name = self.agent_settings.model.clone();
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name,
             messages: self.runtime.context.clone(),
             max_tokens: self.max_tokens(),
-        });
+        })
+        .with_reasoning_effort(self.agent_settings.reasoning_effort);
         self.emit_update(AgentUpdate::Info("[native compact]".into()));
 
         let mut retry_attempt = 0;
@@ -1162,24 +1168,22 @@ impl Agent {
             model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
         );
 
-        let model_name = self
-            .runtime
-            .model_override
-            .clone()
-            .unwrap_or_else(crate::get_model);
+        let model_name = self.agent_settings.model.clone();
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
             messages: vec![Message::new_text(Role::User, prompt)],
             max_tokens: summary_max_tokens,
-        });
+        })
+        .with_reasoning_effort(self.agent_settings.reasoning_effort);
 
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
             model: model_name,
             max_tokens: request.max_tokens,
             thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-            reasoning_effort: request.thinking.as_ref().and_then(|t| {
-                tact_llm::current_reasoning_effort_from_budget(t.budget_tokens).map(str::to_string)
-            }),
+            reasoning_effort: self
+                .agent_settings
+                .reasoning_effort
+                .map(|effort| effort.as_str().to_string()),
             extra_body: request
                 .thinking
                 .as_ref()
@@ -1425,6 +1429,7 @@ impl Agent {
                 workdir,
                 &mut self.runtime.cached_dir_snapshot,
                 self.agent_settings.snapshot_max_items,
+                &self.agent_settings.model,
             ))
             .memory_guidance(MEMORY_GUIDANCE.trim())
             .build()?;
@@ -1453,6 +1458,7 @@ fn load_dynamic_context(
     workdir: &Path,
     cached_snapshot: &mut Option<String>,
     snapshot_limit: usize,
+    model: &str,
 ) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
@@ -1466,7 +1472,7 @@ fn load_dynamic_context(
     let mut lines = vec![
         format!("Current date: {}", Utc::now().date_naive()),
         format!("Working directory: {}", workdir.display()),
-        format!("Model: {}", crate::get_model()),
+        format!("Model: {model}"),
         format!("Platform: {}", std::env::consts::OS),
     ];
 
@@ -1740,9 +1746,12 @@ mod tests {
                     base_url: String::new(),
                     model: "mock-model".to_string(),
                     models: Vec::new(),
+                    model_profiles: Default::default(),
                     responses_compact_threshold: None,
                 },
                 agent: crate::config::AgentSettings {
+                    model: "mock-model".to_string(),
+                    reasoning_effort: None,
                     model_context_window: 500_000,
                     max_tokens: 8192,
                     thinking_budget: 0,
@@ -1793,6 +1802,8 @@ mod tests {
         .unwrap();
 
         let tiny = crate::config::AgentSettings {
+            model: "mock-model".to_string(),
+            reasoning_effort: None,
             model_context_window: 500,
             max_tokens: 1024,
             thinking_budget: 0,
@@ -1873,7 +1884,7 @@ mod tests {
     fn responses_test_agent(context_name: &str, base_url: &str) -> Agent {
         Agent::new(
             LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
-                "test-key", base_url, None, None,
+                "test-key", base_url, None,
             )),
             test_context(context_name),
             crate::tool::toolset(),
@@ -2333,6 +2344,8 @@ mod tests {
         // 400_000) so this test never depends on process-global config, which
         // parallel tests may override via `install_or_override`.
         let defaults = crate::config::AgentSettings {
+            model: "mock-model".to_string(),
+            reasoning_effort: None,
             model_context_window: 500_000,
             max_tokens: 8192,
             thinking_budget: 0,
@@ -2369,6 +2382,8 @@ mod tests {
         ensure_config();
         let mut agent = chat_completions_test_agent("non_responses_auto_compact");
         let tiny = crate::config::AgentSettings {
+            model: "mock-model".to_string(),
+            reasoning_effort: None,
             model_context_window: 1_000,
             max_tokens: 100,
             thinking_budget: 0,
@@ -2598,7 +2613,6 @@ mod tests {
             LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
                 "test-key",
                 server.uri(),
-                None,
                 None,
             )),
             tool_context,
