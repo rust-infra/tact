@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_reasoning_effort_wins_over_budget_fallback() {
+    fn serializes_explicit_low_reasoning_effort() {
         let (body, _) = create_response(
             &request_with_history().with_reasoning_effort(Some(OpenAiReasoningEffort::Low)),
             None,

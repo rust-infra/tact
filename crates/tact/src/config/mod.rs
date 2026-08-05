@@ -229,13 +229,12 @@ pub fn update_subagent_model(model: String, thinking_budget: usize) {
 }
 
 /// Update the in-memory subagent reasoning effort (session level).
-#[allow(clippy::collapsible_if)]
 pub fn update_subagent_reasoning_effort(effort: Option<OpenAiReasoningEffort>) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
-    if let Some(cfg) = guard.as_mut() {
-        if let Some(ref mut sa) = cfg.agent.subagent {
-            sa.reasoning_effort = effort;
-        }
+    if let Some(cfg) = guard.as_mut()
+        && let Some(sa) = cfg.agent.subagent.as_mut()
+    {
+        sa.reasoning_effort = effort;
     }
 }
 

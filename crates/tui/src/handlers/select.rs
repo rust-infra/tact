@@ -509,6 +509,51 @@ fn apply_model_and_effort_pick(
         effort.as_str().to_string(),
     )));
 
+    open_effort_persist_prompt(
+        app,
+        model.clone(),
+        effort,
+        SelectKind::PersistModelAndEffort { model, effort },
+    );
+}
+
+/// Effort-semantic subagent apply: model + effort (session level).
+fn apply_subagent_model_and_effort_pick(
+    app: &mut App,
+    model: String,
+    effort: tact_llm::OpenAiReasoningEffort,
+) {
+    let msgs = app.msgs();
+    let current_budget = tact::config::try_settings()
+        .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+        .unwrap_or_default();
+    tact::config::update_subagent_model(model.clone(), current_budget);
+    tact::config::update_subagent_reasoning_effort(Some(effort));
+
+    app.add_system_message(
+        msgs.model_effort_switched_tmpl
+            .replace("{}", &model)
+            .replace("{}", effort.as_str()),
+    );
+
+    open_effort_persist_prompt(
+        app,
+        model.clone(),
+        effort,
+        SelectKind::SubagentPersistModelAndEffort { model, effort },
+    );
+}
+
+/// Shared effort persist flow: if no config file, session-only message; else
+/// ask whether to persist model + effort. `persist_kind` carries the target
+/// (main vs subagent) and the model/effort to persist.
+fn open_effort_persist_prompt(
+    app: &mut App,
+    model: String,
+    effort: tact_llm::OpenAiReasoningEffort,
+    persist_kind: SelectKind,
+) {
+    let msgs = app.msgs();
     let Some(settings) = tact::config::try_settings() else {
         app.input_mode = InputMode::Normal;
         return;
@@ -522,8 +567,7 @@ fn apply_model_and_effort_pick(
         app.input_mode = InputMode::Normal;
         return;
     }
-
-    app.select_kind = SelectKind::PersistModelAndEffort { model, effort };
+    app.select_kind = persist_kind;
     app.select.set_local(
         msgs.model_persist_with_effort_prompt.to_string(),
         vec![
@@ -534,6 +578,38 @@ fn apply_model_and_effort_pick(
         false,
     );
     app.input_mode = InputMode::Select;
+}
+
+/// Shared persist-effort confirmation. `persist` is the main vs subagent API.
+fn finish_effort_persist(
+    app: &mut App,
+    chosen: &str,
+    model: &str,
+    effort: tact_llm::OpenAiReasoningEffort,
+    persist: impl FnOnce(&str, &str) -> anyhow::Result<()>,
+) {
+    let msgs = app.msgs();
+    let effort_str = effort.as_str();
+    if chosen == msgs.model_persist_yes {
+        match persist(model, effort_str) {
+            Ok(()) => app.add_system_message(
+                msgs.model_persisted_with_effort_tmpl
+                    .replace("{}", model)
+                    .replace("{}", effort_str),
+            ),
+            Err(err) => app.add_system_message(
+                msgs.model_persist_failed_tmpl
+                    .replace("{}", &err.to_string()),
+            ),
+        }
+    } else {
+        app.add_system_message(
+            msgs.model_session_only_with_effort_tmpl
+                .replace("{}", model)
+                .replace("{}", effort_str),
+        );
+    }
+    app.input_mode = InputMode::Normal;
 }
 
 fn finish_persist_prompt(app: &mut App, chosen: &str, model: &str, thinking_budget: usize) {
@@ -570,28 +646,9 @@ fn finish_persist_effort_prompt(
     model: &str,
     effort: tact_llm::OpenAiReasoningEffort,
 ) {
-    let msgs = app.msgs();
-    let effort_str = effort.as_str();
-    if chosen == msgs.model_persist_yes {
-        match tact::config::persist_active_provider_model_and_reasoning_effort(model, effort_str) {
-            Ok(()) => app.add_system_message(
-                msgs.model_persisted_with_effort_tmpl
-                    .replace("{}", model)
-                    .replace("{}", effort_str),
-            ),
-            Err(err) => app.add_system_message(
-                msgs.model_persist_failed_tmpl
-                    .replace("{}", &err.to_string()),
-            ),
-        }
-    } else {
-        app.add_system_message(
-            msgs.model_session_only_with_effort_tmpl
-                .replace("{}", model)
-                .replace("{}", effort_str),
-        );
-    }
-    app.input_mode = InputMode::Normal;
+    finish_effort_persist(app, chosen, model, effort, |model, effort_str| {
+        tact::config::persist_active_provider_model_and_reasoning_effort(model, effort_str)
+    });
 }
 
 /// Open the `/model` SelectPopup from palette / slash command.
@@ -740,52 +797,6 @@ fn apply_subagent_model_and_budget_pick(app: &mut App, model: String, thinking_b
     app.input_mode = InputMode::Select;
 }
 
-/// Effort-semantic subagent apply: model + effort (session level).
-fn apply_subagent_model_and_effort_pick(
-    app: &mut App,
-    model: String,
-    effort: tact_llm::OpenAiReasoningEffort,
-) {
-    let msgs = app.msgs();
-    let current_budget = tact::config::try_settings()
-        .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
-        .unwrap_or_default();
-    tact::config::update_subagent_model(model.clone(), current_budget);
-    tact::config::update_subagent_reasoning_effort(Some(effort));
-
-    app.add_system_message(
-        msgs.model_effort_switched_tmpl
-            .replace("{}", &model)
-            .replace("{}", effort.as_str()),
-    );
-
-    let Some(settings) = tact::config::try_settings() else {
-        app.input_mode = InputMode::Normal;
-        return;
-    };
-    if settings.config_path.is_none() {
-        app.add_system_message(
-            msgs.model_session_only_with_effort_tmpl
-                .replace("{}", &model)
-                .replace("{}", effort.as_str()),
-        );
-        app.input_mode = InputMode::Normal;
-        return;
-    }
-
-    app.select_kind = SelectKind::SubagentPersistModelAndEffort { model, effort };
-    app.select.set_local(
-        msgs.model_persist_with_effort_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
-        1,
-        false,
-    );
-    app.input_mode = InputMode::Select;
-}
-
 fn finish_subagent_persist_prompt(
     app: &mut App,
     chosen: &str,
@@ -822,28 +833,9 @@ fn finish_subagent_persist_effort_prompt(
     model: &str,
     effort: tact_llm::OpenAiReasoningEffort,
 ) {
-    let msgs = app.msgs();
-    let effort_str = effort.as_str();
-    if chosen == msgs.model_persist_yes {
-        match tact::config::persist_subagent_model_and_reasoning_effort(model, effort_str) {
-            Ok(()) => app.add_system_message(
-                msgs.model_persisted_with_effort_tmpl
-                    .replace("{}", model)
-                    .replace("{}", effort_str),
-            ),
-            Err(err) => app.add_system_message(
-                msgs.model_persist_failed_tmpl
-                    .replace("{}", &err.to_string()),
-            ),
-        }
-    } else {
-        app.add_system_message(
-            msgs.model_session_only_with_effort_tmpl
-                .replace("{}", model)
-                .replace("{}", effort_str),
-        );
-    }
-    app.input_mode = InputMode::Normal;
+    finish_effort_persist(app, chosen, model, effort, |model, effort_str| {
+        tact::config::persist_subagent_model_and_reasoning_effort(model, effort_str)
+    });
 }
 
 #[cfg(test)]
