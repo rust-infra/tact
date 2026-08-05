@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-04 — `tact upgrade` self-upgrade command
+
+| Field | Value |
+|-------|-------|
+| Type | `feature` |
+| Related | README (CLI / self-upgrade), Ch 21 (config: `install_without_llm` path) |
+| Symptom / motivation | Users had no in-place way to move to a newer release; upgrades meant re-running `scripts/install.sh` (or rebuilding from source) by hand. |
+| Decision | Add a `tact upgrade` CLI subcommand. It scans the GitHub releases list (`GET /repos/{repo}/releases?per_page=100`) for the newest non-draft, non-prerelease release whose assets include `tact-ui-v<ver>-<triple>.tar.gz` for the current platform — skipping tags published without build assets (e.g. `v1.1.1` initially shipped with zero assets) — downloads the archive, verifies it against the release's published `SHA256SUMS`, and atomically replaces the running binary on Unix. Flags: `--check` (print only), `--yes` (skip the y/N prompt), `--repo owner/name` or `TACT_UPGRADE_REPO` (track a fork). Windows is not yet supported in-place; the command points users at `scripts/install.ps1`. The command resolves config via `install_without_llm` so no LLM provider is required. |
+| Behavior after | `tact-ui upgrade --check` prints current vs latest-installable; `tact-ui upgrade` prompts and (on `y`/`--yes`) downloads, verifies SHA-256, and replaces the executable, printing a restart hint. A mismatched checksum aborts before replacement. |
+| Pointers | `crates/tact/src/upgrade.rs` (`run_upgrade`, `find_latest_release_with_asset`, `replace_current_binary`), `crates/tact/src/config/cli.rs` (`CliCommand::Upgrade`), `crates/tact-ui/src/main.rs` (dispatch), README §3 Run |
+
+---
+
 ## 1. 2026-08-04 — Google voice transcription honors standard proxy environment variables
 
 | Field | Value |

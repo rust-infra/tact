@@ -58,7 +58,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 1. **`tact_llm::init_provider(config.llm.provider_info())`** — 存储 `ProviderInfo` 供 `get_llm_client()` 使用（[Ch 22](./22_chapter_llm_zh.md)）。
 2. **`SETTINGS.set(config)`** — 使进程其余部分可通过 `config::settings()` 访问配置。
 
-`install_without_llm()` 跳过 provider 初始化，用于 `--list-sessions` 等从不调用模型的命令。
+`install_without_llm()` 跳过 provider 初始化，用于 `--list-sessions`、`tact upgrade`、插件 CLI 等从不调用模型的命令。
 
 ---
 

@@ -16,6 +16,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
+flate2 = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
 git2 = { workspace = true }
@@ -33,6 +34,7 @@ sqlx = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 tera = { workspace = true }
+tar = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "tracing"] }
 tokio-util = { workspace = true }
 cpal = { workspace = true }

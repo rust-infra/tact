@@ -93,6 +93,18 @@ pub enum CliCommand {
         /// The task prompt to execute
         prompt: String,
     },
+    /// Upgrade tact-ui to the latest GitHub release
+    Upgrade {
+        /// GitHub repository (owner/name) to check for releases
+        #[arg(long, env = "TACT_UPGRADE_REPO", default_value = "rust-infra/tact")]
+        repo: String,
+        /// Skip the interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+        /// Check for a newer version and print it without upgrading
+        #[arg(long)]
+        check: bool,
+    },
     /// Manage plugins and marketplaces
     Plugin {
         #[command(subcommand)]
