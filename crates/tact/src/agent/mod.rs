@@ -22,8 +22,9 @@ use crate::{
         estimate_message_tokens, micro_compact, recent_messages_for_summary,
         retained_user_message_token_budget, should_auto_compact, write_transcript,
     },
-    config::AgentSettings,
-    hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    config::{self, AgentSettings},
+    hook::{Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    invoke_hooks,
     mcp::MCPToolRouter,
     memory::MEMORY_GUIDANCE,
     permission::PermissionManager,
@@ -934,18 +935,36 @@ impl Agent {
         ))
     }
 
-    pub fn session_start(&mut self, hook: impl SessionStartFn + 'static) {
+    pub fn with_session_start(mut self, hook: impl SessionStartFn + 'static) -> Self {
         self.hooks.push(Hook::SessionStart(Box::new(hook)));
+        self
     }
 
-    pub fn post_tool(&mut self, hook: impl PostToolUseFn + 'static) {
+    pub fn with_post_tool(mut self, hook: impl PostToolUseFn + 'static) -> Self {
+        // RTK filter is opt-in — defaults to off for privacy.
+        if !config::settings().tools.rtk_filter {
+            return self;
+        }
         self.hooks.push(Hook::PostToolUse(Box::new(hook)));
+        self
     }
 
-    pub fn pre_tool(&mut self, hook: impl PreToolUseFn + 'static) {
+    pub fn with_pre_tool(mut self, hook: impl PreToolUseFn + 'static) -> Self {
         self.hooks.push(Hook::PreToolUse(Box::new(hook)));
+        self
     }
 
+    pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(SessionStart, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[SessionStart hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
     /// Returns hooks registered for the given [`HookTypes`] variant.
     pub fn hooks_by_type(&self, hook_type: HookTypes) -> Vec<&Hook> {
         self.hooks
@@ -1775,6 +1794,7 @@ mod tests {
                 tools: crate::config::ToolSettings {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                     bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
+                    rtk_filter: false,
                 },
                 voice: crate::config::VoiceSettings::disabled_defaults(),
                 permission_mode: None,

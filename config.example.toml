@@ -227,3 +227,7 @@ api_key = ""
 # Higher values mean lower priority, keeping TUI responsive during cargo test etc.
 # Set to 0 to disable (bash child processes run at normal priority).
 # bash_nice = 10
+# Pipe bash outputs through https://github.com/rtk-ai/rtk to reduce token usage
+# (default: false). Opt-in only: enabling this sends command output to an
+# external process — review rtk's privacy guarantees first.
+# rtk_filter = true

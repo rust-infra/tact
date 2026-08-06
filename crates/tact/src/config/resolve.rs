@@ -488,6 +488,8 @@ pub(super) fn resolve_non_llm_settings(
         .bash_nice
         .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
 
+    let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -531,6 +533,7 @@ pub(super) fn resolve_non_llm_settings(
         tools: ToolSettings {
             bash_timeout_secs,
             bash_nice,
+            rtk_filter,
         },
         voice,
         permission_mode,
@@ -631,6 +634,8 @@ pub(super) fn resolve_config(
         .bash_nice
         .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
 
+    let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -689,6 +694,7 @@ pub(super) fn resolve_config(
         tools: ToolSettings {
             bash_timeout_secs,
             bash_nice,
+            rtk_filter,
         },
         voice,
         permission_mode,

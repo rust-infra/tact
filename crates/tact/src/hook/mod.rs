@@ -12,6 +12,8 @@
 //! iterates over registered hooks of a given type and short-circuits on
 //! the first `Block`.
 
+pub mod rtk_filter;
+
 use std::pin::Pin;
 
 use anyhow::Result;

@@ -6,6 +6,7 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
+    hook::HookControl,
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
@@ -137,7 +138,7 @@ async fn run_interactive_locked(
     } else {
         tact_llm::get_provider().provider
     };
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         client.clone(),
         tool_context,
         tools,
@@ -147,7 +148,12 @@ async fn run_interactive_locked(
     )
     .with_ui_channel(agent_tx)
     .with_session(session_id.clone(), session_store.clone())
-    .with_provider_kind(provider_kind);
+    .with_provider_kind(provider_kind)
+    .with_session_start(|_at| Box::pin(async move { Ok(HookControl::Continue) }))
+    .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
+    .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
+    // SessionStart hooks fire once per session, right after initialization.
+    agent.dispatch_session_start_hooks().await?;
 
     let (history_save_tx, mut history_save_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();
