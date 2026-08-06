@@ -326,7 +326,9 @@ impl App {
             let width = self
                 .task_dag_popup
                 .as_ref()
-                .map_or(crate::widgets::state::DEFAULT_DAG_RENDER_WIDTH, |p| p.render_width);
+                .map_or(crate::widgets::state::DEFAULT_DAG_RENDER_WIDTH, |p| {
+                    p.render_width
+                });
             let (source, lines) =
                 render_task_dag_lines(&self.task_panel.snapshot, &self.theme, width);
             if let Some(p) = self.task_dag_popup.as_mut() {
@@ -1034,7 +1036,10 @@ mod lifecycle_tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(before.contains("old"), "baseline should list old task:\n{before}");
+        assert!(
+            before.contains("old"),
+            "baseline should list old task:\n{before}"
+        );
         assert!(!before.contains("new"), "new task not added yet:\n{before}");
 
         // A newer task is created while the popup is open.
@@ -1669,7 +1674,10 @@ mod lifecycle_tests {
             joined.contains("📊 任务统计：⏱ 01:05"),
             "elapsed part missing: {joined}"
         );
-        assert!(joined.contains("🧠 mock-model"), "model part missing: {joined}");
+        assert!(
+            joined.contains("🧠 mock-model"),
+            "model part missing: {joined}"
+        );
         assert!(
             joined.contains("150 tokens (prompt 100 · completion 50 · cache 10 · reasoning 5)"),
             "token part missing: {joined}"

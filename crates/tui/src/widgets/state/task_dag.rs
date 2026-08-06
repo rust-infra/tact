@@ -1,9 +1,6 @@
 //! Task dependency DAG → Mermaid → ratatui-markdown rendering.
 
-use ratatui::{
-    style::Color,
-    text::Line,
-};
+use ratatui::{style::Color, text::Line};
 use ratatui_markdown::{
     markdown::MarkdownRenderer,
     mermaid::theme::MermaidTheme,

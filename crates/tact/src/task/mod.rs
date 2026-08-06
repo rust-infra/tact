@@ -477,7 +477,8 @@ mod tests {
 
     #[test]
     fn update_add_blocked_by_creates_reverse_outgoing_edge() {
-        let (mut manager, _dir) = test_manager("update_add_blocked_by_creates_reverse_outgoing_edge");
+        let (mut manager, _dir) =
+            test_manager("update_add_blocked_by_creates_reverse_outgoing_edge");
         let blocker = manager.create("Blocker".to_string(), None).unwrap();
         let blocked = manager.create("Blocked".to_string(), None).unwrap();
 

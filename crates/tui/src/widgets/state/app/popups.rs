@@ -138,8 +138,11 @@ impl App {
     }
 
     pub(crate) fn open_task_dag_popup(&mut self) {
-        let (mermaid_source, lines) =
-            render_task_dag_lines(&self.task_panel.snapshot, &self.theme, DEFAULT_DAG_RENDER_WIDTH);
+        let (mermaid_source, lines) = render_task_dag_lines(
+            &self.task_panel.snapshot,
+            &self.theme,
+            DEFAULT_DAG_RENDER_WIDTH,
+        );
         self.task_dag_popup = Some(TaskDagPopup {
             lines,
             scroll: 0,
