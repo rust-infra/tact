@@ -11,6 +11,9 @@ pub(crate) struct LogScroll {
     pub(crate) state: ScrollbarState,
     /// Panel height.
     pub(crate) height: u16,
+    /// Last-known panel content width (set on render; used at table-build time
+    /// so streamed tables are laid out to fit before the panel wraps them).
+    pub(crate) width: u16,
     /// Visual line starting index list.
     pub(crate) visual_start: Vec<usize>,
     /// Cached visual lines (wrap_line results, excluding selection styles).
@@ -37,6 +40,7 @@ impl LogScroll {
             offset: 0,
             state: ScrollbarState::new(0),
             height: 10,
+            width: 80,
             visible_indices: Vec::new(),
             visual_start: Vec::new(),
             visual_cache: Vec::new(),

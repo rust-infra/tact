@@ -607,7 +607,11 @@ impl App {
                 // explanatory fence snippets embedded in prose.
                 if lang.is_empty() && !self.stream.paragraph.is_empty() {
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        let (styled, raw) = format_table(
+                            &self.stream.table_buffer,
+                            &self.theme,
+                            Some(self.log_scroll.width as usize),
+                        );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
                     }
@@ -623,7 +627,11 @@ impl App {
                     completed.extend(styled.into_iter().zip(raw));
                 }
                 if !self.stream.table_buffer.is_empty() {
-                    let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                    let (styled, raw) = format_table(
+                        &self.stream.table_buffer,
+                        &self.theme,
+                        Some(self.log_scroll.width as usize),
+                    );
                     completed.extend(styled.into_iter().zip(raw));
                     self.stream.table_buffer.clear();
                 }
@@ -674,7 +682,11 @@ impl App {
                         completed.extend(styled.into_iter().zip(raw));
                     }
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        let (styled, raw) = format_table(
+                            &self.stream.table_buffer,
+                            &self.theme,
+                            Some(self.log_scroll.width as usize),
+                        );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
                     }
@@ -685,7 +697,11 @@ impl App {
                     }
                 } else {
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(&self.stream.table_buffer, &self.theme);
+                        let (styled, raw) = format_table(
+                            &self.stream.table_buffer,
+                            &self.theme,
+                            Some(self.log_scroll.width as usize),
+                        );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
                     }
@@ -765,7 +781,8 @@ impl App {
                     plugin.id, plugin.marketplace, plugin.skill_count
                 )
             }));
-            let (styled, raw) = format_table(&rows, &self.theme);
+            let (styled, raw) =
+                format_table(&rows, &self.theme, Some(self.log_scroll.width as usize));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }
@@ -820,7 +837,8 @@ impl App {
                     marketplace.source.git_url()
                 )
             }));
-            let (styled, raw) = format_table(&rows, &self.theme);
+            let (styled, raw) =
+                format_table(&rows, &self.theme, Some(self.log_scroll.width as usize));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }

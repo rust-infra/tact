@@ -81,6 +81,9 @@ pub(crate) fn render_log_panel_with_borders(
     let max_width = area.width.saturating_sub(left + right) as usize;
     // 防止 `wrap_line` 拿到 0 宽度：
     let wrap_width = if max_width > 0 { max_width } else { 1 };
+    // Remember the content width: streamed tables are laid out against this
+    // width at build time so they never need post-hoc char wrapping.
+    app.log_scroll.width = wrap_width as u16;
 
     // `visible_indices_ver` 是**脏检测的版本号**。它存的是上次构建时 `messages.len()` 的值。这里的逻辑：
     // ```

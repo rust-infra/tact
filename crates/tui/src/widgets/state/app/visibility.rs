@@ -406,7 +406,11 @@ impl App {
         }
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
-            let (lines, raw_lines) = format_table(&self.stream.table_buffer, &self.theme);
+            let (lines, raw_lines) = format_table(
+                &self.stream.table_buffer,
+                &self.theme,
+                Some(self.log_scroll.width as usize),
+            );
             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             self.stream.table_buffer.clear();
         }

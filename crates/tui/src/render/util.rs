@@ -33,7 +33,7 @@ pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
 
 /// Split a single line of text at the specified display width, returning (prefix, remainder).
 /// The prefix display width ≤ max_width.
-fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
+pub(crate) fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
     if text.is_empty() || max_width == 0 {
         return ("", text);
     }
