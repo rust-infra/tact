@@ -1240,8 +1240,7 @@ impl Agent {
             .with_reasoning_effort(self.agent_settings.reasoning_effort);
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
-                    let truncated =
-                        matches!(response.stop_reason, Some(StopReason::MaxTokens));
+                    let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
                     if truncated && continuation_attempt < MAX_CONTINUATION_ATTEMPTS {
                         continuation_attempt = continuation_attempt.saturating_add(1);
                         blocks_all.extend(response.blocks.clone());

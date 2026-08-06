@@ -290,7 +290,8 @@ impl App {
         let n = lines.len();
         self.messages.splice(range.clone(), lines);
         self.raw_messages.splice(range.clone(), raw);
-        self.raw_message_types.splice(range.clone(), std::iter::repeat_n(msg_type, n));
+        self.raw_message_types
+            .splice(range.clone(), std::iter::repeat_n(msg_type, n));
         self.markdown_cells.splice(range, (0..n).map(|_| None));
     }
 

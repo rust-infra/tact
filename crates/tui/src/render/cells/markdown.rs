@@ -25,9 +25,7 @@ use ratatui::{
 };
 
 use crate::{
-    render::{
-        render_md::render_markdown_with_tables, renderable::Renderable, util::wrap_line,
-    },
+    render::{render_md::render_markdown_with_tables, renderable::Renderable, util::wrap_line},
     theme::Theme,
 };
 
@@ -112,14 +110,16 @@ impl MarkdownCell {
     /// `wrap_line`, so the returned line count is the exact visual height.
     fn render_if_needed(&self, width: u16) {
         let content_width = width.saturating_sub(self.indent_cols).max(1);
-        if self.cache.borrow().as_ref().is_some_and(|c| c.width == content_width) {
+        if self
+            .cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.width == content_width)
+        {
             return;
         }
-        let (styled, _raw) = render_markdown_with_tables(
-            &self.source,
-            &self.theme,
-            Some(content_width as usize),
-        );
+        let (styled, _raw) =
+            render_markdown_with_tables(&self.source, &self.theme, Some(content_width as usize));
         let lines = styled
             .into_iter()
             .flat_map(|line| wrap_line(&line, content_width as usize))
@@ -242,12 +242,9 @@ mod tests {
             .expect("draw");
         let buf = terminal.backend().buffer();
         let y = (0..buf.area.height)
-            .find(|&y| {
-                (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "T")
-            })
+            .find(|&y| (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "T"))
             .expect("heading text row");
-        let bold = (0..buf.area.width)
-            .any(|x| buf[(x, y)].modifier.contains(Modifier::BOLD));
+        let bold = (0..buf.area.width).any(|x| buf[(x, y)].modifier.contains(Modifier::BOLD));
         assert!(bold, "heading row should be bold");
     }
 
@@ -287,7 +284,10 @@ fn whole_doc() {}
         );
         // 结构元素全部保留。宽度感知路径下表格是管道风格（| A | B |）。
         assert!(text.contains("fn whole_doc() {}"), "{text}");
-        assert!(text.contains("item one") && text.contains("item two"), "{text}");
+        assert!(
+            text.contains("item one") && text.contains("item two"),
+            "{text}"
+        );
         assert!(
             text.contains("| A | B |") && text.contains("| 1 | 2 |"),
             "table rows must survive:\n{text}"
@@ -481,7 +481,10 @@ fn main() {
         let cell = MarkdownCell::new(md, &dark());
         let width = 60u16;
         let text = render_text(&cell, width);
-        println!("=== MarkdownCell render @ {width} cols (height {}) ===", cell.height(width));
+        println!(
+            "=== MarkdownCell render @ {width} cols (height {}) ===",
+            cell.height(width)
+        );
         for (i, line) in text.lines().enumerate() {
             println!("{:>3}|{}|", i, line.trim_end());
         }
@@ -506,10 +509,17 @@ mod integration_tests {
 
         let text = render_log_panel_text(&mut app, 80, 20);
         assert!(text.contains("Title"), "{text}");
-        assert!(text.contains("item one") && text.contains("item two"), "{text}");
+        assert!(
+            text.contains("item one") && text.contains("item two"),
+            "{text}"
+        );
         assert!(text.contains("fn hi() {}"), "{text}");
         // One physical message: the markdown is a single cell.
-        assert_eq!(app.messages.len(), 1, "MdInfo must append exactly one message");
+        assert_eq!(
+            app.messages.len(),
+            1,
+            "MdInfo must append exactly one message"
+        );
         assert!(app.markdown_cells[0].is_some());
         assert_eq!(app.raw_messages[0], md);
     }

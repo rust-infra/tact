@@ -396,9 +396,7 @@ fn full_frame_skills_command_renders_list_with_separator() {
     // Each skills block is one whole-Markdown message whose raw source keeps
     // the pipe-table syntax; rendered output must not show raw pipes.
     assert!(
-        app.raw_messages
-            .iter()
-            .any(|m| m.contains("| Skill |")),
+        app.raw_messages.iter().any(|m| m.contains("| Skill |")),
         "skills raw source should keep the markdown table: {:?}",
         app.raw_messages
     );
