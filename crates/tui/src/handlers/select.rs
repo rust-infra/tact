@@ -12,7 +12,7 @@ const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 /// kimi k3 family: low/high/max (default high).
 fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_llm::OpenAiReasoningEffort> {
     use tact_llm::OpenAiReasoningEffort as E;
-    match info.provider {
+    match &info.provider {
         tact_llm::ProviderKind::DeepSeek | tact_llm::ProviderKind::Kimi => {
             vec![E::Low, E::High, E::Max]
         }

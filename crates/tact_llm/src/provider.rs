@@ -57,6 +57,11 @@ impl ProviderInfo {
                 OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
                 OpenAiProtocol::Responses => self.build_openai_responses(),
             },
+            // Custom providers reuse the OpenAI protocol end to end.
+            ProviderKind::Custom(_) => match self.protocol {
+                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
+                OpenAiProtocol::Responses => self.build_openai_responses(),
+            },
         }
     }
 
@@ -389,11 +394,11 @@ pub fn supports_vision() -> bool {
 /// - kimi k3 / k3-256k → effort; kimi coding 系 → budget (Thinking:ON)
 /// - anthropic → budget (native)
 pub fn model_uses_effort(model: &str, info: &ProviderInfo) -> bool {
-    match info.provider {
+    match &info.provider {
         ProviderKind::DeepSeek => true,
         ProviderKind::Anthropic => false,
         ProviderKind::Kimi => is_kimi_k3(model),
-        ProviderKind::OpenAi => {
+        ProviderKind::OpenAi | ProviderKind::Custom(_) => {
             if info.is_kimi_with(model) {
                 is_kimi_k3(model)
             } else {

@@ -46,8 +46,11 @@ pub fn merge_model_candidates(config: &[String], api: &[String]) -> Vec<String> 
 pub fn is_models_query_supported() -> bool {
     read_provider(|p| {
         matches!(
-            p.provider,
-            ProviderKind::OpenAi | ProviderKind::DeepSeek | ProviderKind::Kimi
+            &p.provider,
+            ProviderKind::OpenAi
+                | ProviderKind::DeepSeek
+                | ProviderKind::Kimi
+                | ProviderKind::Custom(_)
         )
     })
 }

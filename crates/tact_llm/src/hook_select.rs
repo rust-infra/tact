@@ -23,12 +23,13 @@ pub fn body_hook_for(
     user_id: Option<&str>,
 ) -> Result<Arc<dyn OpenAiBodyHook>, LlmError> {
     let deepseek = || DeepSeekBodyHook::new(user_id.map(str::to_owned));
-    match info.provider {
+    match &info.provider {
         ProviderKind::DeepSeek => Ok(Arc::new(deepseek())),
         ProviderKind::Kimi => Ok(Arc::new(KimiBodyHook)),
-        ProviderKind::OpenAi => {
+        ProviderKind::OpenAi | ProviderKind::Custom(_) => {
             // `provider = openai` may still point at a Moonshot/DeepSeek-compatible
-            // base URL or model id — follow endpoint heuristics.
+            // base URL or model id — follow endpoint heuristics. Custom
+            // providers reuse the same OpenAI-compatible heuristics.
             if info.is_kimi_with(model) {
                 Ok(Arc::new(KimiBodyHook))
             } else if info.base_url.contains("deepseek") || model.contains("deepseek") {

@@ -93,9 +93,21 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
 | `protocol` | 条目 → 默认 `chat_completions` |
-| `reasoning_effort` | entry（openai / deepseek / kimi）→ provider 默认（模型相关） |
+| `reasoning_effort` | entry（openai / deepseek / kimi / 自定义）→ provider 默认（模型相关） |
 
-必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。未知 map 键或缺失活跃条目会在 resolve 时报错。
+必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。缺失活跃条目会在 resolve 时报错。
+
+不在内建列表（`anthropic | openai | deepseek | kimi`）中的任意 provider 名称会被接受为**自定义 OpenAI 兼容 provider**：复用 OpenAI 协议（默认 `chat_completions`，可选 `responses`），没有默认 `base_url`（必须在其条目上显式设置），并支持 `reasoning_effort`。示例：
+
+```toml
+[llm]
+provider = "moonshot"   # 任意名称均可
+
+[llm.providers.moonshot]
+api_key = "sk-..."
+base_url = "https://api.moonshot.cn/v1"   # 自定义 provider 必填
+model = "kimi-k2.5"
+```
 
 ---
 
@@ -105,7 +117,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 
 ```toml
 [llm]
-provider = "kimi"          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi
+provider = "kimi"          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi | 任意自定义名称
 max_tokens = 32000         # 可选全局默认
 thinking_budget = 32000
 

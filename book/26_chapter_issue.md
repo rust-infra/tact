@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-06 — Unknown provider names allowed as custom OpenAI-compatible providers
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact_llm/src/types.rs` (`ProviderKind::Custom`, `FromStr`), `crates/tact_llm/src/provider.rs` (`build_client`, `model_uses_effort`), `crates/tact_llm/src/hook_select.rs` (`body_hook_for`), `crates/tact_llm/src/models.rs` (`is_models_query_supported`), `crates/tact/src/config/resolve.rs` (`resolve_provider_kind`, `resolve_llm`, `resolve_subagent`), Ch 21 §3–§4 |
+| Symptom / motivation | `ProviderKind::from_str` rejected any name outside `anthropic | openai | deepseek | kimi`, so `llm.provider = "moonshot"` (or any self-hosted / gateway provider) failed with "unknown provider" even though the entry carried a working OpenAI-compatible `base_url`. The config layer could not express third-party OpenAI-compatible endpoints. |
+| Decision | Add `ProviderKind::Custom(String)` for every non-built-in name. Custom providers reuse the OpenAI protocol end to end: `build_client` dispatches to the OpenAI-compatible adapter (`chat_completions` default, `responses` opt-in), `body_hook_for` follows the same endpoint heuristics as `openai`, `/v1/models` supplementation is supported, and `reasoning_effort` is accepted. They have **no default `base_url`** — resolve fails with "base_url not configured" unless the entry sets one. Built-in gates are unchanged: `responses` protocol stays limited to `openai | deepseek | custom`, `reasoning_effort` to OpenAI-compatible providers (all but anthropic); the map-key validation loop in `resolve_llm` was removed (custom keys are no longer an error). `ProviderKind` lost `Copy` (it now owns a `String`); method receivers changed to `&self`. |
+| Behavior after | `llm.provider` / `--provider` accepts any name. Non-built-in names behave as custom OpenAI-compatible providers and require an explicit `base_url` in `[llm.providers.<name>]`. Missing active entries still error at resolve time. |
+| Pointers | `ProviderKind` in `crates/tact_llm/src/types.rs`; tests `provider_kind_from_str_accepts_unknown_as_custom` (tact_llm), `custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves` (tact config resolve); docs `book/21_chapter_config*.md` §3–§4, `config.example.toml` |
+
+---
+
 ## 1. 2026-08-06 — Account poller reports each outage once instead of every backoff tick
 
 | Field | Value |

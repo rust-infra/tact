@@ -11,12 +11,18 @@ use serde::{Deserialize, Serialize};
 use crate::Message;
 
 /// Typed LLM provider identity (config / CLI / runtime).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// [`ProviderKind::Custom`] accepts any name not covered by the built-ins and
+/// behaves as an OpenAI-compatible provider (Chat Completions / Responses).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Anthropic,
     OpenAi,
     DeepSeek,
     Kimi,
+    /// Arbitrary provider name from config (e.g. "moonshot", "xai", "ollama").
+    /// Reuses the OpenAI protocol; `base_url` must be configured explicitly.
+    Custom(String),
 }
 
 /// Wire protocol used by an OpenAI provider entry.
@@ -112,25 +118,29 @@ impl fmt::Display for OpenAiProtocol {
 }
 
 impl ProviderKind {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::DeepSeek => "deepseek",
             Self::Kimi => "kimi",
+            Self::Custom(name) => name,
         }
     }
 
-    pub fn default_base_url(self) -> Option<&'static str> {
+    pub fn default_base_url(&self) -> Option<&'static str> {
         match self {
             Self::Anthropic => None,
             Self::OpenAi => Some("https://api.openai.com/v1"),
             Self::DeepSeek => Some("https://api.deepseek.com"),
             Self::Kimi => Some("https://api.moonshot.cn/v1"),
+            // Custom providers are arbitrary OpenAI-compatible endpoints; the
+            // user must configure `base_url` explicitly.
+            Self::Custom(_) => None,
         }
     }
 
-    pub fn is_openai_compatible(self) -> bool {
+    pub fn is_openai_compatible(&self) -> bool {
         !matches!(self, Self::Anthropic)
     }
 
@@ -138,7 +148,8 @@ impl ProviderKind {
     ///
     /// DeepSeek V4 (chat/reasoner/v4/v4-pro) is a text-only model.
     /// Anthropic Claude 3+, OpenAI GPT-4o/V, and Kimi K2.x all support vision.
-    pub fn supports_vision(self) -> bool {
+    /// Custom OpenAI-compatible providers default to vision support.
+    pub fn supports_vision(&self) -> bool {
         !matches!(self, Self::DeepSeek)
     }
 }
@@ -152,9 +163,9 @@ impl FromStr for ProviderKind {
             "openai" => Ok(Self::OpenAi),
             "deepseek" => Ok(Self::DeepSeek),
             "kimi" => Ok(Self::Kimi),
-            other => Err(format!(
-                "unknown provider '{other}'; expected anthropic|openai|deepseek|kimi"
-            )),
+            "" => Err("provider name must not be empty".to_string()),
+            // Unknown providers are allowed and reuse the OpenAI protocol.
+            other => Ok(Self::Custom(other.to_string())),
         }
     }
 }
@@ -454,9 +465,17 @@ mod tests {
     }
 
     #[test]
-    fn provider_kind_from_str_rejects_unknown() {
-        assert!(ProviderKind::from_str("foo").is_err());
-        assert!(ProviderKind::from_str("moonshot").is_err());
+    fn provider_kind_from_str_accepts_unknown_as_custom() {
+        for name in ["foo", "moonshot", "xai", "ollama"] {
+            let kind = ProviderKind::from_str(name).unwrap();
+            assert_eq!(kind, ProviderKind::Custom(name.to_string()));
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(kind.to_string(), name);
+            assert!(kind.is_openai_compatible());
+            assert_eq!(kind.default_base_url(), None);
+            assert!(kind.supports_vision());
+        }
+        assert!(ProviderKind::from_str("").is_err());
     }
 
     #[test]

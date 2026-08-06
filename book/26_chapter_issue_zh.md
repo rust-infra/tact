@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-06 — 未知 provider 名称放行为自定义 OpenAI 兼容 provider
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `optimization` |
+| 相关 | `crates/tact_llm/src/types.rs`（`ProviderKind::Custom`、`FromStr`）、`crates/tact_llm/src/provider.rs`（`build_client`、`model_uses_effort`）、`crates/tact_llm/src/hook_select.rs`（`body_hook_for`）、`crates/tact_llm/src/models.rs`（`is_models_query_supported`）、`crates/tact/src/config/resolve.rs`（`resolve_provider_kind`、`resolve_llm`、`resolve_subagent`）、Ch 21 §3–§4 |
+| 症状 / 动机 | `ProviderKind::from_str` 拒绝 `anthropic | openai | deepseek | kimi` 之外的任何名称，因此 `llm.provider = "moonshot"`（或任何自建 / 网关 provider）即使条目里配好了可用的 OpenAI 兼容 `base_url`，也会报 "unknown provider"。配置层无法表达第三方 OpenAI 兼容端点。 |
+| 决策 | 为所有非内建名称新增 `ProviderKind::Custom(String)`。自定义 provider 全链路复用 OpenAI 协议：`build_client` 派发到 OpenAI 兼容适配器（默认 `chat_completions`，可选 `responses`），`body_hook_for` 与 `openai` 使用相同的端点启发式，支持 `/v1/models` 补充，并接受 `reasoning_effort`。它们**没有默认 `base_url`**——条目未设置时 resolve 报 "base_url not configured"。内建门禁不变：`responses` 协议仍限 `openai | deepseek | custom`，`reasoning_effort` 限 OpenAI 兼容 provider（即除 anthropic 外全部）；`resolve_llm` 中的 map key 校验循环已删除（自定义 key 不再报错）。`ProviderKind` 失去 `Copy`（现在持有 `String`），方法接收者改为 `&self`。 |
+| 变更后行为 | `llm.provider` / `--provider` 接受任意名称。非内建名称按自定义 OpenAI 兼容 provider 处理，必须在 `[llm.providers.<name>]` 中显式配置 `base_url`。缺失活跃条目仍在 resolve 时报错。 |
+| 指向 | `ProviderKind` 位于 `crates/tact_llm/src/types.rs`；测试 `provider_kind_from_str_accepts_unknown_as_custom`（tact_llm）、`custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves`（tact config resolve）；文档 `book/21_chapter_config*.md` §3–§4、`config.example.toml` |
+
+---
+
 ## 1. 2026-08-06 — 账户轮询每次故障只提示一次，而非每个退避周期都提示
 
 | 字段 | 值 |
