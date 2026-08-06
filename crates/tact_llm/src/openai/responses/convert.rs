@@ -292,7 +292,7 @@ pub(crate) fn create_response(
     if request.thinking.is_some() || request.reasoning_effort.is_some() {
         builder.reasoning(Reasoning {
             effort: None,
-            summary: Some(ReasoningSummary::Auto),
+            summary: Some(ReasoningSummary::Detailed),
         });
     }
 
@@ -473,7 +473,7 @@ mod tests {
         let (body, _) = create_response(&request_with_history(), None, None).unwrap();
 
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
-        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["summary"], "detailed");
         let input = body["input"].as_array().unwrap();
         assert!(input.iter().all(|item| item["type"] != "reasoning"));
     }

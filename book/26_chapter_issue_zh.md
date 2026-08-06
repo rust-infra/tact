@@ -29,7 +29,28 @@
 
 ---
 
-## 1. 2026-08-06 — 思考 effort 与预算在状态栏 / 配置中互斥
+## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 相关 | `crates/tact_llm/src/openai/responses/convert.rs`、Responses reasoning 请求构造 |
+| 症状 / 动机 | 普通 OpenAI Responses 请求发送 `reasoning.summary = auto`，因此即使启用了 reasoning，流式 thinking block 也可能只有 provider 自动选择的简短摘要。 |
+| 决策 | 保留 Responses API 的 `summary` 字段，但在 Tact 启用 reasoning 时请求 `ReasoningSummary::Detailed`（`"detailed"`）。流式解析无需修改，因为它已经消费 reasoning summary delta。 |
+| 变更后行为 | OpenAI Responses 的 thinking block 请求并显示详细 reasoning summary，不再使用自动摘要级别。 |
+| 指针 | 请求转换与回归断言：`crates/tact_llm/src/openai/responses/convert.rs`；相关 Responses 适配器：`crates/tact_llm/src/openai/responses/`。 |
+
+
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 相关 | `crates/tui/src/render/log.rs`、`crates/tui/src/render/cells/text.rs`、`crates/tui/src/render/log_render_tests.rs` |
+| 症状 / 动机 | 主日志区域先按整个面板内容宽度换行，绘制普通消息时再增加左侧缩进；满行消息因此会在右边界被截掉几列，且选区重绘使用了错误的换行宽度。 |
+| 决策 | 缓存换行时预先扣除该消息实际缩进；流式回复使用相同的回复缩进。`TextCell` 的选区换行直接使用扣除缩进后的可用宽度。 |
+| 变更后行为 | 主区域满行的普通、嵌套和流式文本会在实际可绘制宽度内换行，右侧字符不再丢失。 |
+| 指针 | 日志布局与换行缓存见 `render/log.rs`；文本绘制见 `render/cells/text.rs`；回归测试 `log_full_width_nested_line_wraps_before_indentation_clip`。 |
+
 
 | Field | Value |
 |-------|-------|

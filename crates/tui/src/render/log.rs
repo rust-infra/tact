@@ -188,10 +188,13 @@ pub(crate) fn render_log_panel_with_borders(
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
                     vec![Line::default()]
                 } else {
-                    wrap_line(&line, wrap_width)
+                    let indent = app.nested_log_indent(phys_idx) as usize;
+                    wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
                 }
             } else {
-                wrap_line(&line, wrap_width)
+                // The stream row uses the same reply indent as its TextCell.
+                let indent = (super::util::LOG_THINKING_INDENT + 1) as usize;
+                wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
             };
             app.log_scroll.visual_cache.extend(wrapped);
             app.log_scroll
