@@ -208,6 +208,10 @@ pub struct ToolsTomlConfig {
     /// Nice increment (0–19) applied to the bash sub-process group so TUI stays
     /// responsive during heavy commands (e.g. `cargo test`). 0 disables.
     pub bash_nice: Option<i32>,
+    /// When true, pipe bash outputs through `rtk pipe` to reduce token usage.
+    /// Defaults to false — opt-in only, because piping to an external process
+    /// has privacy implications.
+    pub rtk_filter: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +312,8 @@ pub struct UiSettings {
 pub struct ToolSettings {
     pub bash_timeout_secs: u64,
     pub bash_nice: i32,
+    /// Whether to pipe bash outputs through `rtk pipe` (opt-in, default false).
+    pub rtk_filter: bool,
 }
 
 impl ToolSettings {

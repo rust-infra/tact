@@ -446,6 +446,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             _ = tokio::time::sleep(Duration::from_millis(idle_ms)) => {
                 // Low-impact wake: idle ticks Up at most once/sec; active keeps spinner.
                 on_poll_timeout(&mut app);
+                // Periodically refresh git branch for the bottom bar (throttled to 5s).
+                app.maybe_refresh_git_branch();
             }
         }
 

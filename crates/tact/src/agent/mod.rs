@@ -22,8 +22,9 @@ use crate::{
         estimate_message_tokens, micro_compact, recent_messages_for_summary,
         retained_user_message_token_budget, should_auto_compact, write_transcript,
     },
-    config::AgentSettings,
-    hook::{Hook, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    config::{self, AgentSettings},
+    hook::{Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    invoke_hooks,
     mcp::MCPToolRouter,
     memory::MEMORY_GUIDANCE,
     permission::PermissionManager,
@@ -934,18 +935,36 @@ impl Agent {
         ))
     }
 
-    pub fn session_start(&mut self, hook: impl SessionStartFn + 'static) {
+    pub fn with_session_start(mut self, hook: impl SessionStartFn + 'static) -> Self {
         self.hooks.push(Hook::SessionStart(Box::new(hook)));
+        self
     }
 
-    pub fn post_tool(&mut self, hook: impl PostToolUseFn + 'static) {
+    pub fn with_post_tool(mut self, hook: impl PostToolUseFn + 'static) -> Self {
+        // RTK filter is opt-in — defaults to off for privacy.
+        if !config::settings().tools.rtk_filter {
+            return self;
+        }
         self.hooks.push(Hook::PostToolUse(Box::new(hook)));
+        self
     }
 
-    pub fn pre_tool(&mut self, hook: impl PreToolUseFn + 'static) {
+    pub fn with_pre_tool(mut self, hook: impl PreToolUseFn + 'static) -> Self {
         self.hooks.push(Hook::PreToolUse(Box::new(hook)));
+        self
     }
 
+    pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(SessionStart, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[SessionStart hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
     /// Returns hooks registered for the given [`HookTypes`] variant.
     pub fn hooks_by_type(&self, hook_type: HookTypes) -> Vec<&Hook> {
         self.hooks
@@ -1169,44 +1188,74 @@ impl Agent {
         );
 
         let model_name = self.agent_settings.model.clone();
-        let request = CreateMessageParams::new(RequiredMessageParams {
+        let initial_request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name.clone(),
-            messages: vec![Message::new_text(Role::User, prompt)],
+            messages: vec![Message::new_text(Role::User, prompt.clone())],
             max_tokens: summary_max_tokens,
         })
         .with_reasoning_effort(self.agent_settings.reasoning_effort);
 
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
-            model: model_name,
-            max_tokens: request.max_tokens,
-            thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
+            model: model_name.clone(),
+            max_tokens: initial_request.max_tokens,
+            thinking_budget: initial_request
+                .thinking
+                .as_ref()
+                .map(|t| t.budget_tokens as u32),
             reasoning_effort: self
                 .agent_settings
                 .reasoning_effort
                 .map(|effort| effort.as_str().to_string()),
-            extra_body: request
+            extra_body: initial_request
                 .thinking
                 .as_ref()
                 .map(|t| serde_json::json!({"thinking": t}).to_string()),
         }));
         // ── Stats: before compaction LLM call ──
         self.runtime.stats.prompt_count += 1;
-        let compact_prompt_chars = serde_json::to_string(&request)
+        let compact_prompt_chars = serde_json::to_string(&initial_request)
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
         self.runtime.stats.total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
+        // Summarization call with two independent recovery axes:
+        // - transient transport errors → bounded backoff retry (`retry_attempt`);
+        // - `MaxTokens` truncation → append the partial summary as an assistant
+        //   message plus a continuation prompt and re-call, mirroring the main
+        //   agent loop's output-limit recovery (`continuation_attempt`).
+        // When continuation attempts are exhausted, the partial summary is
+        // accepted as best-effort (the Codex-style rebuild keeps recent real
+        // user messages anyway).
         let mut retry_attempt = 0;
-        let (blocks, stop_reason, token_usage, request_body) = loop {
+        let mut continuation_attempt = 0u32;
+        let mut messages = vec![Message::new_text(Role::User, prompt.clone())];
+        let mut blocks_all: Vec<ContentBlock> = Vec::new();
+        let (stop_reason, token_usage, request_body) = loop {
+            let request = CreateMessageParams::new(RequiredMessageParams {
+                model: model_name.clone(),
+                messages: messages.clone(),
+                max_tokens: summary_max_tokens,
+            })
+            .with_reasoning_effort(self.agent_settings.reasoning_effort);
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
-                    break (
-                        response.blocks,
-                        response.stop_reason,
-                        response.usage,
-                        response.request_body,
-                    );
+                    let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
+                    if truncated && continuation_attempt < MAX_CONTINUATION_ATTEMPTS {
+                        continuation_attempt = continuation_attempt.saturating_add(1);
+                        blocks_all.extend(response.blocks.clone());
+                        messages.push(Message::new_blocks(Role::Assistant, response.blocks));
+                        messages.push(Message::new_text(
+                            Role::User,
+                            continuation_message(continuation_attempt).to_string(),
+                        ));
+                        self.emit_update(AgentUpdate::Info(format!(
+                            "[compact continue {continuation_attempt}/{MAX_CONTINUATION_ATTEMPTS}] summary truncated, continuing"
+                        )));
+                        continue;
+                    }
+                    blocks_all.extend(response.blocks);
+                    break (response.stop_reason, response.usage, response.request_body);
                 }
                 Err(error) => {
                     let error_text = error.to_string();
@@ -1225,6 +1274,7 @@ impl Agent {
                 }
             }
         };
+        let blocks = blocks_all;
 
         // ── Stats: after compaction LLM call ──
         self.runtime
@@ -1251,7 +1301,11 @@ impl Agent {
             .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
             .await;
         match stop_reason {
-            None | Some(StopReason::EndTurn) => {}
+            // `MaxTokens` is accepted when continuation attempts are exhausted:
+            // the partial summary is still usable (Codex-style rebuild keeps
+            // recent real user messages; a one-shot summary that ran out of
+            // output budget is a best-effort loss, not a fatal error).
+            None | Some(StopReason::EndTurn) | Some(StopReason::MaxTokens) => {}
             Some(reason) => {
                 anyhow::bail!("compaction summary ended with invalid stop reason: {reason:?}")
             }
@@ -1406,6 +1460,7 @@ impl Agent {
                 "Use the provided tools to interact with the system and accomplish the task",
                 "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
                 "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
+                "Always end your response with a visible text conclusion; never exit after thinking alone without a text block — even a single-sentence summary of your reasoning result is enough.",
                 "When editing files, always re-read the file first if its content may have changed since you last read it",
                 "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
                 "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
@@ -1774,6 +1829,7 @@ mod tests {
                 tools: crate::config::ToolSettings {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                     bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
+                    rtk_filter: false,
                 },
                 voice: crate::config::VoiceSettings::disabled_defaults(),
                 permission_mode: None,
@@ -2122,6 +2178,192 @@ mod tests {
         assert!(
             context_text.contains("compaction summary text"),
             "rebuilt context must contain the summary, got: {context_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_compact_continues_truncated_summary() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+
+        let context = test_context("local_compact_continue");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // First summary call hits the output limit (MaxTokens); the partial
+        // summary must be continued on the next call (EndTurn).
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("summary part one")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("summary part two")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_ui_channel(tx);
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::Assistant, "second turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("compact with truncated summary must continue and succeed");
+
+        // Both the truncated part and the continuation end up in the rebuilt
+        // context (the continuation request carries the partial assistant
+        // message, so both blocks are merged into the final summary).
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("summary part one"),
+            "truncated summary part missing: {context_text}"
+        );
+        assert!(
+            context_text.contains("summary part two"),
+            "continuation summary part missing: {context_text}"
+        );
+
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        assert!(
+            updates.iter().any(|u| {
+                matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 1/3]"))
+            }),
+            "expected a compact-continue Info update, got: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_compact_continues_through_multiple_truncations() {
+        ensure_config();
+        let context = test_context("local_compact_continue_multi");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx);
+
+        // Two consecutive truncations, then a completed call.
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("part one")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("part two")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("part three")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("compact must survive repeated truncations");
+
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("part one") && context_text.contains("part two"),
+            "all truncated parts must be retained: {context_text}"
+        );
+        assert!(
+            context_text.contains("part three"),
+            "final continuation part missing: {context_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_compact_accepts_partial_summary_when_continuations_exhausted() {
+        ensure_config();
+        let context = test_context("local_compact_continue_exhausted");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx);
+
+        // Every call is truncated: MAX_CONTINUATION_ATTEMPTS (3) continuations
+        // run, then the partial summary is accepted as best-effort instead of
+        // failing the whole compaction.
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("partial one")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("partial two")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("partial three")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("partial four")],
+                Some(StopReason::MaxTokens),
+            ),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        );
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("exhausted continuations must not fail compaction");
+
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("partial one") && context_text.contains("partial two"),
+            "partial summary must still be used: {context_text}"
         );
     }
 

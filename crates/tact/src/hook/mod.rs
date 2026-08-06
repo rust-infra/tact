@@ -12,6 +12,8 @@
 //! iterates over registered hooks of a given type and short-circuits on
 //! the first `Block`.
 
+pub mod rtk_filter;
+
 use std::pin::Pin;
 
 use anyhow::Result;
@@ -59,6 +61,7 @@ pub trait PostToolUseFn:
         &'tool LoopState,
         &'tool ToolUse,
         &'tool mut ToolResult,
+        tact_protocol::StepStatus,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
     + Send
     + Sync
@@ -87,6 +90,7 @@ impl<F> PostToolUseFn for F where
             &'tool LoopState,
             &'tool ToolUse,
             &'tool mut ToolResult,
+            tact_protocol::StepStatus,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
         + Send
         + Sync

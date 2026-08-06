@@ -41,7 +41,7 @@ pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 
-pub(crate) use task_dag::{TaskDagPopup, render_task_dag_lines};
+pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
 pub(crate) use tool_state::{
@@ -227,6 +227,10 @@ pub struct App {
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) raw_message_types: Vec<RawMessageType>,
+    /// Parallel to `raw_messages`: cached `MarkdownCell` when the message is
+    /// a whole-markdown notice (`AgentUpdate::MdInfo` / `/skills`), `None`
+    /// otherwise. `Some` doubles as the "render as MarkdownCell" marker.
+    pub(crate) markdown_cells: Vec<Option<crate::render::cells::markdown::MarkdownCell>>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
@@ -278,6 +282,8 @@ pub struct App {
     pub(crate) process_start_time: chrono::DateTime<chrono::Local>,
     /// Last uptime whole-second that triggered an idle dirty tick (dedupe redraws).
     pub(crate) last_uptime_tick_secs: Option<i64>,
+    /// Last git branch refresh time (throttle to avoid running `git` too often).
+    pub(crate) last_git_refresh: Option<std::time::Instant>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// Tool invocation blocks and diff popup state.

@@ -29,6 +29,97 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-06 — `/tasks-dag` popup does not show tasks added while it is open
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tui/src/widgets/state/app/agent.rs` (`on_tasks_changed`), `crates/tui/src/render/popups/task_dag_popup.rs`, Ch 23 (TUI) |
+| Symptom / motivation | The `/tasks-dag` popup rendered its Mermaid lines once when opened. `TasksChanged` updates refreshed `task_panel.snapshot` but never the popup, and the render loop only re-renders when the popup width changes — so tasks created while the popup was open (or between open and render) never appeared until closing and reopening. |
+| Decision | `on_tasks_changed` now refreshes an open DAG popup: it re-runs `render_task_dag_lines` with the latest snapshot at the popup's current `render_width` (falling back to `DEFAULT_DAG_RENDER_WIDTH` before the first width-aware frame) and swaps `lines`/`mermaid_source` in place, keeping the scroll offset. This complements the existing width-change re-render in `render_task_dag_popup`; both paths are idempotent. |
+| Behavior after | Newly created tasks appear in the open `/tasks-dag` popup immediately (next render frame) without closing it. |
+| Pointers | `on_tasks_changed` in `crates/tui/src/widgets/state/app/agent.rs`; regression test `tasks_dag_popup_refreshes_when_new_tasks_arrive` |
+
+---
+
+## 1. 2026-08-06 — `/tasks-dag` renders missing dependency edges (asymmetric task store)
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact/src/task/mod.rs` (`update`, `clear_dependency`), `crates/tui/src/widgets/state/task_dag.rs`, Ch 23 (TUI) |
+| Symptom / motivation | `/tasks-dag` showed task nodes but **no dependency arrows** for relationships created via `task_update`'s `addBlockedBy`: `update` mirrored `addBlocks` into the blocked task's `blocked_by`, but `addBlockedBy` never mirrored the blocker's `blocks` (outgoing DAG edge). `tasks_to_mermaid` draws edges only from `blocks`, so those dependencies were invisible. Additionally, `clear_dependency` (task completion) removed the completed id from others' `blocked_by` but left the completed task's own `blocks` — a ghost edge source. |
+| Decision | `update` now mirrors both directions: `add_blocked_by` also pushes the current task into each blocker's `blocks` (deduped, sorted), symmetric with the existing `add_blocks` branch. `clear_dependency` additionally clears the completed task's `blocks`. Because `update` holds a copy fetched before `clear_dependency`, the local copy is cleared too so the final write-back does not resurrect ghost edges. |
+| Behavior after | Every dependency — whether set via `addBlocks` or `addBlockedBy` — renders as `T{blocker} --> T{blocked}` in `/tasks-dag`. Completing a task removes its outgoing edges. |
+| Pointers | `crates/tact/src/task/mod.rs` (`update` add_blocked_by branch, `clear_dependency`); tests `update_add_blocked_by_creates_reverse_outgoing_edge`, `completing_task_clears_blocked_by` |
+
+---
+
+## 1. 2026-08-06 — Task completion shows a stats block (elapsed · model · tokens)
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tui/src/widgets/state/app/messages.rs` (`add_task_stats_block`), `crates/tui/src/widgets/state/app/agent.rs` (`TaskComplete` branch), Ch 23 (TUI) |
+| Symptom / motivation | After a task finished, the log showed only the task-end separator (elapsed label); token consumption and model name were visible only in the bottom status bar, which resets when the next task starts. A `// TODO Add task stats block` marker sat in the `TaskComplete` branch. |
+| Decision | The `TaskComplete` branch now calls `add_task_stats_block()` right after `add_task_end_separator()`. The block reads already-frozen state — `last_prompt_elapsed_secs` (set by the separator), `status_bar.model_name` (from `ModelInfo`) and `status_bar.token_*` (from `TokenUsage`) — so no new stats struct or duplicate collection was introduced (YAGNI). It renders one markdown line `📊 任务统计：⏱ mm:ss · 🧠 model · N tokens (prompt X · completion Y · cache Z · reasoning W)` through the existing `add_system_message` path; empty parts (no model, zero tokens) are omitted. |
+| Behavior after | Every completed task leaves a persistent stats line under the end separator showing elapsed time, model name, and token breakdown when available. Cancelled or failed tasks do not show the block. |
+| Pointers | `add_task_stats_block` in `crates/tui/src/widgets/state/app/messages.rs`; tests `task_complete_appends_task_stats_block`, `task_stats_block_skips_empty_parts` in `crates/tui/src/widgets/state/app/agent.rs` |
+
+---
+
+## 1. 2026-08-06 — `/tasks-dag` renders Mermaid via ratatui-markdown (replaces meraid)
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tui/src/widgets/state/task_dag.rs`, `crates/tui/src/render/popups/task_dag_popup.rs`, `crates/tui/src/theme.rs`, root `Cargo.toml` (`ratatui-markdown` git dep), Ch 23 (TUI) |
+| Symptom / motivation | The DAG popup used the `meraid` crate's Mono renderer (plain text, no theme, no markdown structure) and the workspace already carried an unused `ratatui-markdown` git dependency (its branch name `update-ratatui-0.30` was stale — the real branch is `chore/update-ratatui-0.30`, so the dependency could not even resolve). |
+| Decision | `/tasks-dag` now renders through `ratatui-markdown`: `tasks_to_mermaid` still emits `flowchart TD`, then `render_task_dag_lines` wraps it as `## Tasks DAG` + ` ```mermaid ` block + a `### Legend` list mapping `#id` back to each task's subject (node labels stay narrow: status glyph `○`/`◐`/`✓` + `#id`, since the fork's mermaid grammar terminates `[...]` text at the first `]`). A `DagTheme` adapter maps the app `Theme` into `RichTextTheme`/`MermaidTheme` (light/dark via `MermaidTheme::for_background`), and the popup re-renders at its actual width on first frame (`render_width` cache). The root dependency was fixed to the correct branch with `default-features = false, features = ["markdown", "mermaid"]` (drops `image`/`scroll`/`tree`/`viewer`). |
+| Behavior after | The popup shows a themed box-drawing flowchart plus a legend listing task subjects; the `y` copy shortcut still copies the raw Mermaid source. `meraid` is no longer a dependency of the tui crate. |
+| Pointers | `crates/tui/src/widgets/state/task_dag.rs` (`tasks_to_mermaid`, `render_task_dag_lines`, `DagTheme`), `crates/tui/src/render/popups/task_dag_popup.rs` (width-aware re-render), tests `tasks_dag_popup_renders_mermaid_markdown`, `ratatui_markdown_renders_diagram_and_legend` |
+
+---
+
+## 1. 2026-08-06 — Compaction summary continues after MaxTokens truncation
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | Ch 5 §3 (Summarization call), Ch 5 §4 (Validation), `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`), `crates/tact/src/recovery.rs` (`MAX_CONTINUATION_ATTEMPTS`, `continuation_message`) |
+| Symptom / motivation | When the compaction summary LLM call returned `MaxTokens` (output limit hit), the summary loop treated it as an invalid stop reason and bailed with `compaction summary ended with invalid stop reason: MaxTokens`. Compaction then failed outright even though the partial summary was perfectly usable — and with reasoning models the summary frequently runs up against its output budget. |
+| Decision | The summarization call now has two independent recovery axes: transient transport errors still retry with bounded backoff; `MaxTokens` truncation appends the partial summary as an assistant message plus a continuation prompt (same `continuation_message` selector as the main loop: direct-resume on attempt 1, convergence prompt on later attempts) and re-calls, up to `MAX_CONTINUATION_ATTEMPTS` (3). The request is rebuilt per attempt with the growing message history `[User(summary prompt), Assistant(partial), User(continue), …]`. When continuations are exhausted, the partial summary is accepted as best-effort instead of failing (the Codex-style rebuild keeps recent real user messages anyway); `MaxTokens` is therefore no longer an "invalid stop reason". |
+| Behavior after | A truncated summary emits `[compact continue n/3] summary truncated, continuing` Info updates and merges all partial blocks into the final summary; compaction succeeds instead of erroring. Refusal / other abnormal stop reasons and empty text still fail without replacing the old context. |
+| Pointers | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode` summary loop, stop-reason validation), tests `local_compact_continues_truncated_summary`, `local_compact_continues_through_multiple_truncations`, `local_compact_accepts_partial_summary_when_continuations_exhausted`, `crates/tact-ui/tests/recovery_compaction.rs` (`compact_summary_continues_truncated_response`), Ch 5 §3/§4 |
+
+---
+
+## 1. 2026-08-06 — First run auto-writes default config to ~/.tact/config.toml
+
+| Field | Value |
+|-------|-------|
+| Type  | `feature` |
+| Related | Ch 21 §3 (Config Sources and Priority), `config.example.toml`, `crates/tact/src/config/load.rs` |
+| Symptom / motivation | The install script ships only the binary — no config. First launch with no config file always failed at resolve with "LLM provider not configured", and the user had to know to copy `config.example.toml` manually (the doc said so, but nothing told them at runtime). |
+| Decision | `load_toml_config` now writes the default template to `~/.tact/config.toml` when no config exists on any search path, then parses and returns it. The template is embedded at compile time via `include_str!("../../../../config.example.toml")` so the first-run default never drifts from the checked-in example (currently `deepseek` + `protocol = "chat_completions"`). Only the user-global location is auto-created; project-level candidates (`./.tact/config.toml`, `./config.toml`) are never written so repos stay clean. A hint is printed: `[config] no config found; wrote default template to ... — edit it to add your API key`. |
+| Behavior after | First run with no config anywhere: tact-ui creates `~/.tact/config.toml` (template with placeholder `api_key`), prints the edit hint, then fails at resolve on the placeholder key exactly as before — the user edits the file and launches again. Existing configs are never touched or overwritten. Explicit `--config /path` that does not exist is still an error (never auto-created). Write failure (unknown/unwritable HOME) falls back to the previous empty-default behavior. |
+| Pointers | `crates/tact/src/config/load.rs` (`DEFAULT_CONFIG_TEMPLATE`, `write_default_config`, `load_toml_config`), `config.example.toml` (header comment), Ch 21 §3 |
+
+---
+
+## 1. 2026-08-06 — Session stats track RTK output-filter metrics
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `docs/token_usage_schema.md` (Session Stats Display), `crates/tact/src/hook/rtk_filter.rs`, `crates/tact/src/stats.rs` |
+| Symptom / motivation | With `tools.rtk_filter = true`, bash outputs are piped through `rtk pipe`, but nothing measured whether the filter actually ran, how much output it removed, or how long it took — users could not tell if RTK was saving tokens or silently passing everything through. |
+| Decision | `SessionStats` gains six relaxed-atomic counters (`rtk_calls`, `rtk_success_calls`, `rtk_failure_calls`, `rtk_saved_chars`, `rtk_input_chars`, `rtk_elapsed_ms`) mutated directly by the post-tool hook. Atomics (not plain `u64`) are required because hooks only receive `&Agent` (immutable). An attempt counts as a success only when `rtk pipe` exits 0 with non-empty stdout; saved chars are `raw_len − filtered_len` (saturating, counted in chars not bytes) on success only. `rtk_input_chars` accumulates every attempt's raw length (success or failure) so the session-wide savings rate reflects failed attempts as zero savings. The end-of-session summary gains an `RTK tokens saved` estimate using the 1 token ≈ 4 chars length heuristic and an `RTK savings rate` row (saved chars / input chars). |
+| Behavior after | Whenever at least one RTK attempt was recorded, the session stats popup / exit summary shows `RTK calls (s/f)`, `RTK chars saved`, `RTK tokens saved` (chars/4), `RTK savings rate` (saved/input %), and `RTK time`. Rows are hidden entirely when `rtk_filter` is off or no bash output was filtered. Failed bash executions (`StepStatus::Failed`) are excluded from both filtering and RTK stats — their output reaches the LLM intact. |
+| Pointers | `crates/tact/src/stats.rs` (`SessionStats::record_rtk`, RTK rows in `summary()`), `crates/tact/src/hook/rtk_filter.rs` (`pipe_through_rtk` → `(output, succeeded, elapsed_ms)`, `saved_chars`, `should_filter`, `create_rtk_post_tool_hook`), `crates/tact/src/hook/mod.rs` (`PostToolUseFn` now receives `StepStatus`), `docs/token_usage_schema.md` |
+
+---
+
 ## 1. 2026-08-05 — Unify tool-family card labels (background + team)
 
 | Field | Value |
@@ -505,7 +596,7 @@ Newest entries first. Each entry should include:
 
 **Symptom / motivation:** `task_*` tools dumped raw JSON; Log cards repeated full checklists; dependency graph was hard to see in-terminal.
 
-**Decision:** Human tool titles (`# Task.N · …`); sticky defaults expanded as a `blocks` tree with `#id`; `/tasks-dag` opens a meraid Mermaid Unicode popup (nodes: status + id only). `TaskSnapshot` carries `blocks`/`blocked_by`. Log does **not** append task system cards (progress lives in sticky + tool rows).
+**Decision:** Human tool titles (`# Task.N · …`); sticky defaults expanded as a `blocks` tree with `#id`; `/tasks-dag` opens a Mermaid DAG popup (nodes: status + id only; rendered via ratatui-markdown since 2026-08-06). `TaskSnapshot` carries `blocks`/`blocked_by`. Log does **not** append task system cards (progress lives in sticky + tool rows).
 
 **Behavior after:** Readable tool rows; sticky tree; slash DAG viewer; no task system spam in Log.
 

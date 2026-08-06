@@ -16,17 +16,10 @@ pub(crate) use mouse::handle_mouse_event;
 pub(crate) use normal::handle_normal_mode;
 pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
-use ratatui::{
-    style::Style,
-    text::{Line, Span},
-};
 pub(crate) use select::handle_select_mode;
 use tact_protocol::UserCommand;
 
-use crate::{
-    render::render_md::render_markdown_tui,
-    widgets::state::{App, InputMode, SelectKind, Status, log_messages::classify_system_message},
-};
+use crate::widgets::state::{App, InputMode, SelectKind, Status};
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -435,35 +428,18 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
-/// Render `/skills` via tui-markdown as a wrap-friendly list (not a GFM table).
-///
-/// Long skill descriptions make pipe/box tables wider than the log panel; the
-/// visual wrap then shatters column alignment. One skill per block wraps cleanly.
+/// `/skills` output is plain markdown (heading + pipe table) appended as a
+/// single whole-Markdown message and rendered by `MarkdownCell`.
 fn show_skills_command(app: &mut App) {
     app.add_new_line();
 
-    let title = "📋 Available skills";
-    let title_ty = classify_system_message(title);
-    app.append_msg(
-        Line::from(Span::styled(title, Style::default().fg(app.theme.accent))),
-        title.to_string(),
-        title_ty,
-    );
-    app.add_new_line();
-
     let md = skills_list_markdown(&app.skills_data);
-    if md.is_empty() {
-        let empty = "(no skills available)";
-        app.append_msg(
-            Line::from(Span::styled(empty, Style::default().fg(app.theme.fg))),
-            empty.to_string(),
-            classify_system_message(empty),
-        );
+    let md = if md.is_empty() {
+        "(no skills available)".to_string()
     } else {
-        let (styled, raw) = render_markdown_tui(&md, &app.theme);
-        let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
-        app.extend_msgs(styled, raw, ty);
-    }
+        md
+    };
+    app.append_markdown(md);
 
     // Trailing blank so the next `/skills` (or other system block) is not flush.
     app.add_new_line();
@@ -475,7 +451,11 @@ fn show_skills_command(app: &mut App) {
     }
 }
 
-/// Build wrap-friendly markdown from structured skill entries.
+/// Build markdown for the skill list: a heading plus a pipe table.
+///
+/// The output is plain markdown — `render_markdown_with_tables` picks the
+/// table rows and lays them out width-aware (long descriptions wrap inside
+/// the table), so no hand-built ratatui lines are needed.
 fn skills_list_markdown(skills: &[crate::widgets::state::SkillEntry]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -483,19 +463,24 @@ fn skills_list_markdown(skills: &[crate::widgets::state::SkillEntry]) -> String 
     let mut skills: Vec<_> = skills.iter().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut out = String::new();
+    let mut out = String::from("## 📋 Available skills\n\n");
+    out.push_str("| Skill | Description |\n");
+    out.push_str("| ----- | ----------- |\n");
     for (i, skill) in skills.iter().enumerate() {
         if i > 0 {
-            out.push('\n');
+            // Row separator: `format_table` recognizes these and renders a
+            // dashed divider matching the column widths.
+            out.push_str("| --- | --- |\n");
         }
-        // Inline code keeps `/` and `:` literal in namespaced skills.
-        out.push_str("**`");
-        out.push_str(&skill.name);
-        out.push_str("`**\n\n");
-        if !skill.description.is_empty() {
-            out.push_str(&skill.description);
-            out.push('\n');
-        }
+        // Inline code keeps `/` and `:` literal in namespaced skills. Cell
+        // text is flattened: newlines become spaces and `|` becomes a full
+        // width pipe so the pipe table stays well-formed.
+        let desc = skill
+            .description
+            .trim()
+            .replace('\n', " ")
+            .replace('|', "｜");
+        out.push_str(&format!("| `{}` | {} |\n", skill.name, desc));
     }
     out
 }
@@ -619,21 +604,25 @@ mod tests {
         ];
         let md = skills_list_markdown(&skills);
         assert!(
-            md.contains("**`code-reviewer`**"),
-            "missing bold name:\n{md}"
-        );
-        assert!(md.contains("代码审查专家"), "missing desc:\n{md}");
-        assert!(
-            md.contains("**`demo-test`**"),
-            "missing second skill:\n{md}"
+            md.contains("## 📋 Available skills"),
+            "missing heading:\n{md}"
         );
         assert!(
-            md.contains("测试 skill 加载功能"),
-            "missing second desc:\n{md}"
+            md.contains("| Skill | Description |"),
+            "missing table header:\n{md}"
         );
         assert!(
-            !md.contains("| Skill |"),
-            "must not emit a pipe table:\n{md}"
+            md.contains("| `code-reviewer` | 代码审查专家 |"),
+            "missing first skill row:\n{md}"
+        );
+        assert!(
+            md.contains("| `demo-test` | 测试 skill 加载功能 |"),
+            "missing second skill row:\n{md}"
+        );
+        // Between the two data rows there must be a row separator.
+        assert!(
+            md.contains("| `code-reviewer` | 代码审查专家 |\n| --- | --- |\n| `demo-test` | 测试 skill 加载功能 |"),
+            "missing row separator between skills:\n{md}"
         );
     }
 
@@ -646,12 +635,8 @@ mod tests {
         }];
         let md = skills_list_markdown(&skills);
         assert!(
-            md.contains("**`plugin:skill`**"),
+            md.contains("| `plugin:skill` | Plugin-provided skill |"),
             "namespaced name broken:\n{md}"
-        );
-        assert!(
-            md.contains("Plugin-provided skill"),
-            "description lost:\n{md}"
         );
     }
 

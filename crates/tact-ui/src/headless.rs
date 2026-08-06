@@ -131,6 +131,13 @@ async fn run_headless_locked(
     .with_session(session_id.clone(), session_store)
     .with_provider_kind(provider_kind);
 
+    // RTK filter is opt-in — `with_post_tool` no-ops unless the
+    // `tools.rtk_filter` setting is enabled.
+    agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
+
+    // SessionStart hooks fire once per session, before the first turn.
+    agent.dispatch_session_start_hooks().await?;
+
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;
 

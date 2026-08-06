@@ -224,6 +224,12 @@ pub enum AgentUpdate {
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)
     Info(String),
+    /// Markdown-formatted informational notice, delivered whole (one shot).
+    ///
+    /// Rendered by the TUI as a single Markdown cell (headings / lists /
+    /// tables / fenced code keep their formatting), unlike [`Info`] which is
+    /// treated as short single-line system text.
+    MdInfo(String),
     /// Session statistics (triggered by the /stats command)
     SessionStats(String),
 

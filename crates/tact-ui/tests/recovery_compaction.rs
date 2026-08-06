@@ -53,6 +53,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
             bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
+            rtk_filter: false,
         },
         voice: tact::config::VoiceSettings::disabled_defaults(),
         permission_mode: None,
@@ -300,12 +301,22 @@ async fn compact_summary_rejects_empty_text_response() {
 }
 
 #[tokio::test]
-async fn compact_summary_rejects_truncated_response() {
+async fn compact_summary_continues_truncated_response() {
+    // A `MaxTokens` summary is continued (up to MAX_CONTINUATION_ATTEMPTS);
+    // when continuations are exhausted the partial summary is accepted as
+    // best-effort instead of failing the whole compaction.
     let mock = MockClient::with_responder(|_request, idx| match idx {
         0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
-        _ => Ok((
+        // Summary call plus three continuation calls all hit the output budget.
+        1..=4 => Ok((
             vec![text_block("partial summary")],
             Some(StopReason::MaxTokens),
+            None,
+        )),
+        // Retried turn after the best-effort compaction.
+        _ => Ok((
+            vec![text_block("Recovered from truncated summary.")],
+            Some(StopReason::EndTurn),
             None,
         )),
     });
@@ -314,7 +325,20 @@ async fn compact_summary_rejects_truncated_response() {
     let (updates, _) =
         run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
 
-    assert!(error_contains(&updates, "invalid stop reason: MaxTokens"));
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 3/3]"))),
+        "expected exhausted continuation notices, got: {updates:?}"
+    );
+    assert!(
+        !error_contains(&updates, "invalid stop reason: MaxTokens"),
+        "a truncated summary must not fail compaction: {updates:?}"
+    );
+    assert!(task_completed_with(
+        &updates,
+        "Recovered from truncated summary."
+    ));
 }
 
 #[tokio::test]

@@ -10,6 +10,7 @@ use ratatui::{
 use crate::{
     render::{
         cells::{thinking::ThinkingCell, tool::ToolCell},
+        renderable::Renderable,
         util::wrap_line,
     },
     theme::Theme,
@@ -81,6 +82,9 @@ pub(crate) fn render_log_panel_with_borders(
     let max_width = area.width.saturating_sub(left + right) as usize;
     // 防止 `wrap_line` 拿到 0 宽度：
     let wrap_width = if max_width > 0 { max_width } else { 1 };
+    // Remember the content width: streamed tables are laid out against this
+    // width at build time so they never need post-hoc char wrapping.
+    app.log_scroll.width = wrap_width as u16;
 
     // `visible_indices_ver` 是**脏检测的版本号**。它存的是上次构建时 `messages.len()` 的值。这里的逻辑：
     // ```
@@ -142,6 +146,23 @@ pub(crate) fn render_log_panel_with_borders(
         let user_cont_tmpl = msgs.user_msg_cont;
 
         for logical_i in 0..total_logical {
+            // Whole-Markdown messages reserve one logical row; its visual
+            // height comes from the cached MarkdownCell (parsed once per
+            // width), and the rows are blank placeholders so the prefix-sum
+            // cache stays consistent (same pattern as tool placeholder rows).
+            if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i)
+                && let Some(cell) = app.markdown_cells.get(phys_idx).and_then(|c| c.as_ref())
+            {
+                let rows = cell.height(wrap_width as u16) as usize;
+                app.log_scroll
+                    .visual_cache
+                    .extend(std::iter::repeat_n(Line::default(), rows));
+                app.log_scroll
+                    .visual_start_cache
+                    .push(app.log_scroll.visual_cache.len());
+                continue;
+            }
+
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx])
                     || app.messages[phys_idx].spans.is_empty()
@@ -417,6 +438,16 @@ pub(crate) fn render_log_panel_with_borders(
                 logical_i += visual_rows - rows_before;
                 continue;
             }
+        }
+
+        // Whole-Markdown message: render the cached MarkdownCell at the
+        // logical row's visual start. `vs_cache` already reserved its rows.
+        if let Some(phys) = phys_idx
+            && let Some(cell) = app.markdown_cells.get(phys).and_then(|c| c.as_ref())
+        {
+            renderer.push(vs_cache[logical_i], cell);
+            logical_i += 1;
+            continue;
         }
 
         // Task-end rule: full-width line with centered elapsed label.

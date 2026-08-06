@@ -186,11 +186,26 @@ impl TaskManager {
             }
             if status == TaskStatus::Completed {
                 self.clear_dependency(task_id)?;
+                // Keep the local copy in sync with the store: clear_dependency
+                // cleared the stored record, but `task` was fetched before that
+                // and would otherwise be written back with ghost edges below.
+                task.blocks.clear();
             }
         }
 
         if !update.add_blocked_by.is_empty() {
-            merge_unique(&mut task.blocked_by, update.add_blocked_by);
+            merge_unique(&mut task.blocked_by, update.add_blocked_by.clone());
+            // Mirror of the add_blocks branch: keep the blocker's `blocks`
+            // (outgoing DAG edges) in sync so /tasks-dag renders the edge.
+            for blocker_id in update.add_blocked_by {
+                if let Ok(mut blocker) = self.get(blocker_id)
+                    && !blocker.blocks.contains(&task_id)
+                {
+                    blocker.blocks.push(task_id);
+                    blocker.blocks.sort_unstable();
+                    self.tasks.write(&task_key(blocker.id), &blocker)?;
+                }
+            }
         }
 
         if !update.add_blocks.is_empty() {
@@ -234,6 +249,14 @@ impl TaskManager {
                 task.blocked_by.retain(|id| *id != completed_id);
                 self.tasks.write(&task_key(task.id), &task)?;
             }
+        }
+        // Mirror: a completed task no longer blocks anyone, so drop its
+        // outgoing DAG edges too (otherwise /tasks-dag shows ghost edges).
+        if let Ok(mut completed) = self.get(completed_id)
+            && !completed.blocks.is_empty()
+        {
+            completed.blocks.clear();
+            self.tasks.write(&task_key(completed.id), &completed)?;
         }
         Ok(())
     }
@@ -453,6 +476,31 @@ mod tests {
     }
 
     #[test]
+    fn update_add_blocked_by_creates_reverse_outgoing_edge() {
+        let (mut manager, _dir) =
+            test_manager("update_add_blocked_by_creates_reverse_outgoing_edge");
+        let blocker = manager.create("Blocker".to_string(), None).unwrap();
+        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+
+        let updated = manager
+            .update(
+                blocked.id,
+                TaskUpdate {
+                    add_blocked_by: vec![blocker.id],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.blocked_by, vec![blocker.id]);
+
+        // Mirror: the blocker must gain an outgoing edge so /tasks-dag
+        // renders `T{blocker} --> T{blocked}`.
+        let blocker = manager.get(blocker.id).unwrap();
+        assert_eq!(blocker.blocks, vec![blocked.id]);
+    }
+
+    #[test]
     fn completing_task_clears_blocked_by() {
         let (mut manager, _dir) = test_manager("completing_task_clears_blocked_by");
         let blocker = manager.create("Blocker".to_string(), None).unwrap();
@@ -479,6 +527,9 @@ mod tests {
 
         let blocked = manager.get(blocked.id).unwrap();
         assert!(blocked.blocked_by.is_empty());
+        // Mirror: the completed task must not keep ghost outgoing edges.
+        let blocker = manager.get(blocker.id).unwrap();
+        assert!(blocker.blocks.is_empty());
     }
 
     #[test]

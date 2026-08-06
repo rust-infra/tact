@@ -7,7 +7,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::theme::Theme;
+use crate::{render::util::split_at_display_width, theme::Theme};
 
 /// Theme-aware StyleSheet for tui-markdown.
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +87,71 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
     apply_blockquote_indicator(&mut styled_lines, theme);
 
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
+    (styled_lines, raw_lines)
+}
+
+/// Render markdown with width-aware pipe tables.
+///
+/// Pipe-table rows (lines starting with `|`) are extracted and rendered by
+/// `format_table` with `available_width` — long cells wrap inside the table
+/// layout and columns stay aligned. Everything else is delegated to
+/// tui-markdown. System messages like `/skills` produce plain markdown and
+/// go through this single pipeline instead of hand-building ratatui lines.
+pub(crate) fn render_markdown_with_tables(
+    text: &str,
+    theme: &Theme,
+    available_width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let mut styled_lines = Vec::new();
+    let mut raw_lines = Vec::new();
+    let mut table_rows: Vec<String> = Vec::new();
+    let mut paragraph = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('|') {
+            // Start/continue a table: flush any pending prose first.
+            if !paragraph.trim().is_empty() {
+                let (s, r) = render_markdown_tui(&paragraph, theme);
+                styled_lines.extend(s);
+                raw_lines.extend(r);
+                paragraph.clear();
+            }
+            table_rows.push(line.to_string());
+        } else {
+            // Non-table line: flush a pending table before handling prose.
+            if !table_rows.is_empty() {
+                let (s, r) = format_table(&table_rows, theme, available_width);
+                styled_lines.extend(s);
+                raw_lines.extend(r);
+                table_rows.clear();
+            }
+            if trimmed.is_empty() {
+                // Blank line ends the current paragraph.
+                if !paragraph.trim().is_empty() {
+                    let (s, r) = render_markdown_tui(&paragraph, theme);
+                    styled_lines.extend(s);
+                    raw_lines.extend(r);
+                    paragraph.clear();
+                }
+            } else {
+                paragraph.push_str(line);
+                paragraph.push('\n');
+            }
+        }
+    }
+    // Flush trailing content.
+    if !table_rows.is_empty() {
+        let (s, r) = format_table(&table_rows, theme, available_width);
+        styled_lines.extend(s);
+        raw_lines.extend(r);
+    }
+    if !paragraph.trim().is_empty() {
+        let (s, r) = render_markdown_tui(&paragraph, theme);
+        styled_lines.extend(s);
+        raw_lines.extend(r);
+    }
+
     (styled_lines, raw_lines)
 }
 
@@ -207,7 +272,15 @@ fn pad_cell(cell: &str, width: usize) -> String {
 /// Parses Markdown table raw lines into column-aligned ratatui Lines.
 ///
 /// Column widths use Unicode display width so CJK headers/cells align with ASCII.
-pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
+/// When `available_width` is given, columns are shrunk to fit and long cells are
+/// wrapped *inside* the table layout (every wrapped sub-row keeps its pipes and
+/// padding), so the log panel's line wrapper never breaks a row and misaligns
+/// the columns.
+pub(crate) fn format_table(
+    lines: &[String],
+    theme: &Theme,
+    available_width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
     let rows: Vec<Vec<String>> = lines
         .iter()
         .map(|line| {
@@ -244,6 +317,12 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
         }
     }
 
+    // Shrink the widest columns until the whole table (padding + pipes) fits
+    // the available width — a single long cell must not blow up every column.
+    if let Some(avail) = available_width {
+        fit_columns_to_width(&mut col_widths, avail);
+    }
+
     let mut styled_lines = Vec::new();
     let mut raw_lines = Vec::new();
 
@@ -270,29 +349,119 @@ pub(crate) fn format_table(lines: &[String], theme: &Theme) -> (Vec<Line<'static
             continue;
         }
 
-        let mut cells = Vec::new();
-        for i in 0..col_count {
-            let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            let width = col_widths.get(i).copied().unwrap_or(0);
-            cells.push(pad_cell(cell, width));
+        // Wrap each cell to its column width; a row becomes several visual
+        // sub-rows, each still padded and pipe-separated so columns stay
+        // aligned across the wrap.
+        let wrapped: Vec<Vec<String>> = (0..col_count)
+            .map(|i| {
+                let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+                let width = col_widths.get(i).copied().unwrap_or(0);
+                wrap_cell(cell, width)
+            })
+            .collect();
+        let sub_rows = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+
+        for sub in 0..sub_rows {
+            let mut cells = Vec::new();
+            for (i, segs) in wrapped.iter().enumerate() {
+                let seg = segs.get(sub).map(|s| s.as_str()).unwrap_or("");
+                let width = col_widths.get(i).copied().unwrap_or(0);
+                cells.push(pad_cell(seg, width));
+            }
+            let line_text = format!("|{}|", cells.join("|"));
+
+            let styled = if row_idx == 0 && sub == 0 {
+                // Header: bold accent cells, dim pipes — keeps `#` / titles visually distinct.
+                styled_table_row(&cells, theme.accent, true, theme)
+            } else {
+                Line::from(Span::styled(
+                    line_text.clone(),
+                    Style::default().fg(theme.fg),
+                ))
+            };
+
+            styled_lines.push(styled);
+            raw_lines.push(line_text);
         }
-        let line_text = format!("|{}|", cells.join("|"));
-
-        let styled = if row_idx == 0 {
-            // Header: bold accent cells, dim pipes — keeps `#` / titles visually distinct.
-            styled_table_row(&cells, theme.accent, true, theme)
-        } else {
-            Line::from(Span::styled(
-                line_text.clone(),
-                Style::default().fg(theme.fg),
-            ))
-        };
-
-        styled_lines.push(styled);
-        raw_lines.push(line_text);
     }
 
     (styled_lines, raw_lines)
+}
+
+/// Minimum content width a column keeps when shrinking to fit.
+const MIN_COL_WIDTH: usize = 8;
+
+/// Shrink the widest columns until the rendered table fits `available_width`.
+///
+/// A rendered row costs `sum(widths) + 3 * col_count + 1` display columns:
+/// two padding spaces per cell plus one pipe per column and a leading pipe.
+fn fit_columns_to_width(col_widths: &mut [usize], available_width: usize) {
+    let row_width = |widths: &[usize]| widths.iter().sum::<usize>() + 3 * widths.len() + 1;
+    let mut overflow = row_width(col_widths).saturating_sub(available_width);
+    while overflow > 0 {
+        // Widest column still above the floor.
+        let mut target = None;
+        let mut widest = MIN_COL_WIDTH;
+        for (i, &w) in col_widths.iter().enumerate() {
+            if w > widest {
+                widest = w;
+                target = Some(i);
+            }
+        }
+        let Some(idx) = target else { break };
+        let reduce = (col_widths[idx] - MIN_COL_WIDTH).min(overflow);
+        col_widths[idx] -= reduce;
+        overflow = overflow.saturating_sub(reduce);
+    }
+}
+
+/// Wrap a cell into segments of at most `width` display columns.
+///
+/// Prefers breaking at whitespace (word wrap); tokens that still exceed the
+/// width (URLs, CJK runs without spaces) fall back to display-width splits so
+/// CJK text never panics or overflows.
+fn wrap_cell(cell: &str, width: usize) -> Vec<String> {
+    if cell.is_empty() || width == 0 || cell_display_width(cell) <= width {
+        return vec![cell.to_string()];
+    }
+    let mut segs = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for word in cell.split_whitespace() {
+        let word_w = cell_display_width(word);
+        if cur_w > 0 && cur_w + 1 + word_w > width {
+            segs.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        if word_w > width {
+            // Long token: hard-split by display width.
+            if cur_w > 0 {
+                segs.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            let mut rest = word;
+            while cell_display_width(rest) > width {
+                let (seg, rem) = split_at_display_width(rest, width);
+                segs.push(seg.to_string());
+                rest = rem;
+            }
+            if !rest.is_empty() {
+                cur = rest.to_string();
+                cur_w = cell_display_width(rest);
+            }
+        } else {
+            if cur_w > 0 {
+                cur.push(' ');
+                cur_w += 1;
+            }
+            cur.push_str(word);
+            cur_w += word_w;
+        }
+    }
+    if !cur.is_empty() {
+        segs.push(cur);
+    }
+    segs
 }
 
 /// Build a table row as alternating pipe + cell spans.
@@ -419,7 +588,7 @@ mod tests {
             "| --- | --- |".to_string(),
             "| foo | 1 |".to_string(),
         ];
-        let (styled, raw) = format_table(&rows, &theme());
+        let (styled, raw) = format_table(&rows, &theme(), None);
         assert!(!styled.is_empty());
         assert!(raw.iter().any(|r| r.contains("foo")));
         // Header + separator + body
@@ -449,7 +618,7 @@ mod tests {
             "| 3 | 'gamma_a1b2.json' | JSON | {\"name\":\"gamma\"} |".to_string(),
             "| 5 | 'epsilon.env' | 环境变量 | 测试配置 |".to_string(),
         ];
-        let (_styled, raw) = format_table(&rows, &theme());
+        let (_styled, raw) = format_table(&rows, &theme(), None);
         assert_eq!(raw.len(), 5, "header + sep + 3 data rows");
 
         // All rows must have the same display width and pipe positions.
@@ -489,7 +658,7 @@ mod tests {
             "|---|------|------|".to_string(),
             "| 1 | a.txt | hello |".to_string(),
         ];
-        let (styled, _raw) = format_table(&rows, &theme());
+        let (styled, _raw) = format_table(&rows, &theme(), None);
         let header = &styled[0];
         assert!(
             header
@@ -504,6 +673,193 @@ mod tests {
                 .iter()
                 .all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
             "body row should not be bold"
+        );
+    }
+
+    #[test]
+    fn format_table_wraps_long_cells_without_breaking_alignment() {
+        // A long description would previously widen the column past the panel
+        // and the log wrapper would char-split the row, dropping the pipes.
+        let rows = vec![
+            "| Name | Description |".to_string(),
+            "| --- | --- |".to_string(),
+            "| alpha | a very long description that definitely exceeds the available width and must be wrapped |".to_string(),
+        ];
+        let (styled, raw) = format_table(&rows, &theme(), Some(40));
+        assert!(
+            raw.len() >= 4,
+            "long cell should wrap into sub-rows:\n{}",
+            raw.join("\n")
+        );
+
+        // Every emitted line (including wrapped sub-rows) stays within the
+        // panel width and keeps the same pipe positions.
+        let pipe_display_cols = |s: &str| -> Vec<usize> {
+            let mut cols = Vec::new();
+            let mut col = 0;
+            for ch in s.chars() {
+                if ch == '|' {
+                    cols.push(col);
+                }
+                col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            cols
+        };
+        let cols: Vec<Vec<usize>> = raw.iter().map(|r| pipe_display_cols(r)).collect();
+        assert!(
+            cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe columns misaligned after wrap:\n{}",
+            raw.join("\n")
+        );
+        assert_eq!(
+            cols[0].len(),
+            3,
+            "every wrapped row keeps leading + inner + trailing pipe"
+        );
+        assert!(
+            raw.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 40),
+            "no line may exceed the available width:\n{}",
+            raw.join("\n")
+        );
+        assert_eq!(styled.len(), raw.len());
+        // First body sub-row stays in the stream; the wrapped continuation is
+        // a normal line, never a second bold header.
+        assert!(raw[3].contains('|'), "continuation keeps pipes");
+    }
+
+    #[test]
+    fn format_table_wraps_long_cjk_cells() {
+        // CJK runs have no spaces — wrapping must fall back to display-width
+        // splits without panicking or overflowing the column.
+        let rows = vec![
+            "| 列名 | 描述 |".to_string(),
+            "| --- | --- |".to_string(),
+            "| x | 这是一段非常长的中文描述内容没有任何空格只能按显示宽度拆分成多行显示 |"
+                .to_string(),
+        ];
+        let (_styled, raw) = format_table(&rows, &theme(), Some(30));
+        assert!(
+            raw.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 30),
+            "CJK wrap must stay within width:\n{}",
+            raw.join("\n")
+        );
+        assert!(raw.len() > 3, "CJK cell should wrap:\n{}", raw.join("\n"));
+    }
+
+    #[test]
+    fn format_table_fits_available_width() {
+        // One pathological cell must not widen other columns beyond the panel.
+        let rows = vec![
+            "| A | B |".to_string(),
+            "| --- | --- |".to_string(),
+            "| short | https://example.com/very/long/url/that/should/be/wrapped |".to_string(),
+        ];
+        let (_styled, raw) = format_table(&rows, &theme(), Some(50));
+        assert!(
+            raw.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 50),
+            "table must fit available width:\n{}",
+            raw.join("\n")
+        );
+        // Both columns were shrunk (the long URL column can no longer be 60+).
+        let sep = &raw[1];
+        let dash_run = sep.split('|').nth(2).unwrap_or("").trim();
+        assert!(
+            dash_run.len() <= 40,
+            "column B should be shrunk: {dash_run:?}"
+        );
+    }
+
+    #[test]
+    fn format_table_renders_row_separators_aligned() {
+        // `/skills` style: header separator plus a separator between rows.
+        let rows = vec![
+            "| Skill | Description |".to_string(),
+            "| ----- | ----------- |".to_string(),
+            "| a | first skill |".to_string(),
+            "| --- | --- |".to_string(),
+            "| b | second skill |".to_string(),
+        ];
+        let (_styled, raw) = format_table(&rows, &theme(), None);
+        assert_eq!(
+            raw.len(),
+            5,
+            "header + sep + row + row-sep + row:\n{}",
+            raw.join("\n")
+        );
+        // The row separator is a dashed divider, not a data row.
+        assert!(
+            raw[3].chars().all(|c| matches!(c, '|' | '-' | ' ')),
+            "row separator should be dashed:\n{}",
+            raw[3]
+        );
+        assert!(
+            raw[3].contains("---"),
+            "row separator should contain dashes:\n{}",
+            raw[3]
+        );
+        // All rows — including the separators — keep identical pipe columns.
+        let pipe_cols: Vec<Vec<usize>> = raw
+            .iter()
+            .map(|r| {
+                r.char_indices()
+                    .filter(|(_, c)| *c == '|')
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .collect();
+        assert!(
+            pipe_cols.windows(2).all(|w| w[0] == w[1]),
+            "pipe columns misaligned with row separators:\n{}",
+            raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_markdown_with_tables_mixes_prose_and_width_aware_table() {
+        let md = "\
+## 📋 Available skills
+
+| Skill | Description |
+| ----- | ----------- |
+| code-reviewer | A very long description that keeps going and definitely exceeds the available width of the panel and must wrap inside the table |
+| demo-test | 测试 skill 加载功能 |
+
+Plain trailing paragraph.
+";
+        let (styled, raw) = render_markdown_with_tables(md, &theme(), Some(50));
+        assert!(!styled.is_empty());
+
+        // Table rows are width-aware: every emitted line fits and pipes align.
+        let table_lines: Vec<&String> = raw.iter().filter(|l| l.contains('|')).collect();
+        assert!(
+            !table_lines.is_empty(),
+            "expected table rows:\n{}",
+            raw.join("\n")
+        );
+        assert!(
+            table_lines
+                .iter()
+                .all(|l| UnicodeWidthStr::width(l.as_str()) <= 50),
+            "table lines must fit available width:\n{}",
+            raw.join("\n")
+        );
+        // Wrapped continuation rows keep the pipes (alignment preserved).
+        assert!(
+            table_lines.len() > 3,
+            "long description should wrap into extra sub-rows:\n{}",
+            raw.join("\n")
+        );
+        // Heading is rendered by tui-markdown (not swallowed by table logic).
+        assert!(
+            raw.iter().any(|l| l.contains("Available skills")),
+            "heading missing:\n{}",
+            raw.join("\n")
+        );
+        // Trailing prose survives after the table.
+        assert!(
+            raw.iter().any(|l| l.contains("Plain trailing paragraph")),
+            "trailing prose missing:\n{}",
+            raw.join("\n")
         );
     }
 }

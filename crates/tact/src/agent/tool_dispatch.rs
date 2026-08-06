@@ -636,18 +636,23 @@ impl Agent {
                     tool_use_id: prep_id.clone(),
                     content,
                 };
-                let (exec_output, final_status) =
-                    match invoke_hooks!(PostToolUse, self, &tool_use, &mut tool_result) {
-                        Ok(HookControl::Continue) => (tool_result.content, exec_status),
-                        Ok(HookControl::Block(reason)) => (
-                            format!("Tool blocked by PostToolUse hook: {reason}"),
-                            StepStatus::Failed,
-                        ),
-                        Err(error) => (
-                            format!("PostToolUse hook failed: {error}"),
-                            StepStatus::Failed,
-                        ),
-                    };
+                let (exec_output, final_status) = match invoke_hooks!(
+                    PostToolUse,
+                    self,
+                    &tool_use,
+                    &mut tool_result,
+                    exec_status
+                ) {
+                    Ok(HookControl::Continue) => (tool_result.content, exec_status),
+                    Ok(HookControl::Block(reason)) => (
+                        format!("Tool blocked by PostToolUse hook: {reason}"),
+                        StepStatus::Failed,
+                    ),
+                    Err(error) => (
+                        format!("PostToolUse hook failed: {error}"),
+                        StepStatus::Failed,
+                    ),
+                };
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let task_before = prepared[pi].task_before.clone();

@@ -307,7 +307,7 @@ flowchart LR
     New -->|serialized into prompt| SumLLM[summarization LLM]
 ```
 
-**3. Summarization call** — a fresh non-streaming `create_message` (at most 2,000 output tokens, no tools, no thinking) reserves output and 10% safety headroom before selecting input. If the fixed summary instructions alone exceed this input limit, compaction fails early because no valid summary request can be constructed, even after removing all history. Transient transport failures get up to three retries with backoff. `MaxTokens`, refusal/other abnormal stop reasons, and empty text are rejected without replacing the old context. The prompt asks the model to preserve:
+**3. Summarization call** — a fresh non-streaming `create_message` (at most 2,000 output tokens, no tools, no thinking) reserves output and 10% safety headroom before selecting input. If the fixed summary instructions alone exceed this input limit, compaction fails early because no valid summary request can be constructed, even after removing all history. Transient transport failures get up to three retries with backoff. A `MaxTokens` summary is **continued** (up to three times): the partial summary is appended as an assistant message plus a continuation prompt (`[compact continue n/3]`), mirroring the main loop's output-limit recovery; when continuations are exhausted the partial summary is accepted as best-effort (the Codex-style rebuild keeps recent real user messages anyway). Refusal / other abnormal stop reasons and empty text are still rejected without replacing the old context. The prompt asks the model to preserve:
 
 1. Current goal and accomplishments  
 2. Findings, decisions, architectural insights  
@@ -437,7 +437,7 @@ The asymmetry is intentional:
 
 ### Compaction failure behavior
 
-The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason, or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to three times before failing.
+The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason (a truncated `MaxTokens` summary is continued first; only non-continuable failures count), or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to three times before failing.
 
 **5. Bookkeeping**
 
