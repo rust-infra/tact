@@ -123,9 +123,11 @@ flowchart TB
 
 ```text
 [Recovery] compact (1/3): context too large
-[Recovery] backoff (2/3): retrying in 4.3s
+[Recovery] backoff (2/3): retrying in 4.3s — http request failed: error sending request for url
 [Recovery] continue (1/3): output truncated
 ```
+
+`backoff` 与 `compact retry` 行会追加底层错误（通过 `error_summary` 折叠为单行、超过 200 字符截断），因此重试不仅说明何时，还会说明*为什么*重试。
 
 对于输出上限恢复，第 1 次续写使用直接接续提示。如果模型再次被截断，第 2、3 次续写切换到收敛提示：停止扩展分析，不再重复场景，只返回包含结论、已确认问题和最小修复建议的简洁结构化结果。尝试计数和最多 3 次的上限保持不变。
 

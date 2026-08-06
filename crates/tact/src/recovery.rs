@@ -20,6 +20,8 @@
 //!   transport categories.
 //! - [`is_prompt_too_long_error`] / [`is_transient_transport_error`]:
 //!   classify error strings to route recovery decisions.
+//! - [`error_summary`]: collapses an error into a single readable line so
+//!   recovery status messages say *why* a retry is happening.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -107,6 +109,23 @@ pub fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_secs_f64(base + jitter)
 }
 
+/// Maximum length of the single-line error summary embedded in recovery
+/// status messages. Long chains are truncated so the TUI line stays readable.
+const MAX_ERROR_SUMMARY_CHARS: usize = 200;
+
+/// Collapses an error message into a single readable line for recovery
+/// status messages: runs of whitespace (including newlines) become single
+/// spaces, and overly long messages are truncated with an ellipsis.
+pub fn error_summary(error_text: &str) -> String {
+    let collapsed: String = error_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_ERROR_SUMMARY_CHARS {
+        collapsed
+    } else {
+        let truncated: String = collapsed.chars().take(MAX_ERROR_SUMMARY_CHARS).collect();
+        format!("{truncated}…")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +172,29 @@ mod tests {
         assert!(prompt.contains("concise"));
         assert!(prompt.contains("actionable"));
         assert!(prompt.contains("repeat"));
+    }
+
+    #[test]
+    fn error_summary_preserves_short_errors() {
+        assert_eq!(error_summary("request timed out"), "request timed out");
+    }
+
+    #[test]
+    fn error_summary_collapses_whitespace_and_truncates() {
+        let long = format!("line one\nline two   line three{}", " x".repeat(300));
+        let summary = error_summary(&long);
+        assert!(!summary.contains('\n'));
+        assert!(!summary.contains("  "));
+        assert_eq!(summary.chars().count(), MAX_ERROR_SUMMARY_CHARS + 1);
+        assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn error_summary_keeps_chain_separators() {
+        let summary = error_summary("http request failed: error sending request for url");
+        assert_eq!(
+            summary,
+            "http request failed: error sending request for url"
+        );
     }
 }

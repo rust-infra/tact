@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-06 — 恢复重试消息附带底层错误
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact/src/recovery.rs`（`error_summary`）、`crates/tact/src/agent/mod.rs`（backoff / compact retry 消息点）、第 6 章恢复消息 |
+| Symptom / motivation | `[Recovery] backoff (1/10): retrying in 1.9s` 只说明了*何时*重试，没有说明*为什么*——底层传输错误（超时、连接重置、限流……）完全不可见，用户看到 8 次以上退避却不知道哪里失败。压缩摘要的重试消息（`[compact retry 1/3] retrying in 1.9s`）也有同样的问题。 |
+| Decision | 在 `recovery.rs` 新增 `error_summary`：将空白/换行折叠为单行，超过 200 字符以省略号截断。主循环 backoff 消息追加完整 anyhow 链（外层上下文 → 根因，以 `": "` 连接）；两处压缩重试消息追加客户端错误字符串。原有标签、计数与延时文本保持不变，因此匹配 `contains("Recovery") && contains("backoff")` 的测试仍可通过。 |
+| Behavior after | 恢复重试会报告原因，例如 `[Recovery] backoff (2/10): retrying in 4.3s — http request failed: error sending request for url`。 |
+| Pointers | `error_summary` 及其单元测试位于 `crates/tact/src/recovery.rs`；消息点在 `crates/tact/src/agent/mod.rs`；文档 `book/06_chapter_recovery*.md` 恢复消息一节 |
+
+---
+
 ## 1. 2026-08-06 — 未知 provider 名称放行为自定义 OpenAI 兼容 provider
 
 | 字段 | 值 |

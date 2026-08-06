@@ -31,7 +31,7 @@ use crate::{
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
         MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
-        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message,
+        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message, error_summary,
         is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
@@ -736,8 +736,15 @@ impl Agent {
                     {
                         let delay = backoff_delay(self.runtime.recovery_state.transport_attempts);
                         self.runtime.recovery_state.transport_attempts += 1;
+                        let summary = error_summary(
+                            &error
+                                .chain()
+                                .map(|cause| cause.to_string())
+                                .collect::<Vec<_>>()
+                                .join(": "),
+                        );
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] backoff ({}/{}): retrying in {:.1}s",
+                            "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
                             self.runtime.recovery_state.transport_attempts,
                             MAX_TRANSPORT_ATTEMPTS,
                             delay.as_secs_f64()
@@ -1030,8 +1037,9 @@ impl Agent {
                     }
                     retry_attempt = retry_attempt.saturating_add(1);
                     let delay = backoff_delay(retry_attempt.saturating_sub(1));
+                    let summary = error_summary(&error_text);
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s",
+                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;
@@ -1266,8 +1274,9 @@ impl Agent {
                     }
                     retry_attempt = retry_attempt.saturating_add(1);
                     let delay = backoff_delay(retry_attempt.saturating_sub(1));
+                    let summary = error_summary(&error_text);
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s",
+                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;
