@@ -207,13 +207,17 @@ pub fn update_llm_model(model: String) {
 ///
 /// Mirrors [`update_llm_model_and_thinking_budget`] for effort-semantic
 /// providers: both fields must move together so the running agent, status bar,
-/// and config-level `agent.reasoning_effort` stay consistent.
+/// and config-level `agent.reasoning_effort` stay consistent. Effort and budget
+/// semantics are mutually exclusive, so picking an effort clears any stale
+/// `thinking_budget` (otherwise the bottom bar would show `think high(32K)`
+/// with a meaningless budget for an effort-semantic model).
 pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenAiReasoningEffort>) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
         cfg.agent.reasoning_effort = effort;
+        cfg.agent.thinking_budget = 0;
     }
 }
 
@@ -222,12 +226,15 @@ pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenA
 /// When `thinking_budget` is active and not strictly smaller than `max_tokens`,
 /// expands `max_tokens` to `budget + 1` so the session settings match the agent
 /// auto-expand rule used by [`crate::agent::Agent::set_thinking_budget`].
+/// Budget and effort semantics are mutually exclusive, so setting a budget
+/// clears any stale `reasoning_effort`.
 pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write().expect("tact config lock poisoned");
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
         cfg.agent.thinking_budget = thinking_budget;
+        cfg.agent.reasoning_effort = None;
         if thinking_budget > 0 && (cfg.agent.max_tokens as usize) <= thinking_budget {
             cfg.agent.max_tokens = u32::try_from(thinking_budget)
                 .unwrap_or(u32::MAX)
@@ -244,6 +251,7 @@ pub fn update_subagent_model(model: String, thinking_budget: usize) {
     {
         sa.provider.model = model;
         sa.thinking_budget = thinking_budget;
+        sa.reasoning_effort = None;
     }
 }
 
@@ -254,6 +262,7 @@ pub fn update_subagent_reasoning_effort(effort: Option<OpenAiReasoningEffort>) {
         && let Some(sa) = cfg.agent.subagent.as_mut()
     {
         sa.reasoning_effort = effort;
+        sa.thinking_budget = 0;
     }
 }
 

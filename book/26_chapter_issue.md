@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-06 — Thinking effort and budget are mutually exclusive in status bar / config
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact/src/agent/mod.rs` (`set_thinking_budget` / `set_reasoning_effort`), `crates/tact/src/config/mod.rs` (`update_llm_model_and_*`, `update_subagent_*`), `crates/tact/src/config/persist.rs` (TOML removals), `crates/tui/src/render/bar.rs` (`format_think_segment`), Ch 23 §6.6 |
+| Symptom / motivation | On OpenAI Chat Completions (effort semantics), the bottom bar showed `think high(32K)`: `high` was the real `reasoning_effort`, but the `32K` was a stale `thinking_budget` left over from a previous budget-semantic model (claude / kimi-for-coding). The budget is meaningless for effort models and is never sent on the wire, yet it rendered next to the effort because neither the runtime setters, the in-memory config updaters, nor the TOML persist path cleared the other field. |
+| Decision | Make effort and budget **mutually exclusive** end to end: `set_thinking_budget` clears `reasoning_effort` and `set_reasoning_effort` zeroes `thinking_budget`; the config update fns (`update_llm_model_and_thinking_budget` / `update_llm_model_and_reasoning_effort` and their subagent twins) do the same; the TOML persist fns remove the opposite key from the provider/subagent entry. In the status bar, `format_think_segment` now gives effort precedence (effort present → `think high`, stale budget ignored; budget only → `think 32K`), and an effort without any budget still renders instead of disappearing. |
+| Behavior after | Effort-semantic models show `think high` (never `think high(32K)`); budget-semantic models show `think 32K`. Picking an effort removes the stored `thinking_budget` from config.toml; picking a budget removes `reasoning_effort`. Legacy configs that still contain both fields render effort-only and self-heal on the next `/model` persist. |
+| Pointers | `format_think_segment` + tests in `crates/tui/src/render/bar.rs`; setters in `crates/tact/src/agent/mod.rs`; config updaters in `crates/tact/src/config/mod.rs`; TOML removals + tests in `crates/tact/src/config/persist.rs`; driver test `set_reasoning_effort_clears_stale_thinking_budget`; TUI test `applying_effort_pick_clears_stale_thinking_budget`; docs `book/23_chapter_tui*.md` §6.6 |
+
+---
+
 ## 1. 2026-08-06 — Recovery retry messages include the underlying error
 
 | Field | Value |

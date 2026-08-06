@@ -56,6 +56,9 @@ pub(super) fn update_provider_model_in_toml(
 }
 
 /// Set `llm.providers.<provider>.model` and `thinking_budget` in `path` and rewrite the file.
+///
+/// Budget and effort semantics are mutually exclusive: writing a budget also
+/// removes any stale `reasoning_effort` from the provider entry.
 pub(super) fn update_provider_model_and_thinking_budget_in_toml(
     path: &Path,
     provider: &str,
@@ -67,11 +70,15 @@ pub(super) fn update_provider_model_and_thinking_budget_in_toml(
     update_toml(path, &["llm", "providers", provider], |t| {
         t.insert("model", toml_edit::value(model));
         t.insert("thinking_budget", toml_edit::value(budget));
+        t.remove("reasoning_effort");
         Ok(())
     })
 }
 
 /// Set `agent.subagent.model` and `thinking_budget` in `path` and rewrite the file.
+///
+/// Writing a budget also removes any stale `reasoning_effort` (mutually
+/// exclusive semantics, same as the main agent).
 pub(super) fn update_subagent_model_in_toml(
     path: &Path,
     model: &str,
@@ -82,11 +89,16 @@ pub(super) fn update_subagent_model_in_toml(
     update_toml(path, &["agent", "subagent"], |t| {
         t.insert("model", toml_edit::value(model));
         t.insert("thinking_budget", toml_edit::value(budget));
+        t.remove("reasoning_effort");
         Ok(())
     })
 }
 
 /// Set `[llm.providers.<name>].model` + `reasoning_effort` in `path`.
+///
+/// Writing an effort also removes any stale `thinking_budget` from the provider
+/// entry, so a model switch to effort semantics does not leave a meaningless
+/// `think (32K)` behind in the status bar.
 pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
     path: &Path,
     provider: &str,
@@ -96,11 +108,15 @@ pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
     update_toml(path, &["llm", "providers", provider], |t| {
         t.insert("model", toml_edit::value(model));
         t.insert("reasoning_effort", toml_edit::value(effort));
+        t.remove("thinking_budget");
         Ok(())
     })
 }
 
 /// Set `[agent.subagent].model` + `reasoning_effort` in `path`.
+///
+/// Writing an effort also removes any stale `thinking_budget` (mutually
+/// exclusive semantics, same as the main agent).
 pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
     path: &Path,
     model: &str,
@@ -109,6 +125,7 @@ pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
     update_toml(path, &["agent", "subagent"], |t| {
         t.insert("model", toml_edit::value(model));
         t.insert("reasoning_effort", toml_edit::value(effort));
+        t.remove("thinking_budget");
         Ok(())
     })
 }
@@ -255,6 +272,84 @@ thinking_budget = 64000
         assert_eq!(
             cfg["llm"]["providers"]["kimi"]["thinking_budget"].as_integer(),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn persisting_effort_removes_stale_thinking_budget() {
+        // Regression: switching an effort-semantic model must not leave a
+        // stale thinking_budget in config.toml — it would resurface as a
+        // meaningless `think high(32K)` after restart.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "sk-test"
+model = "old-model"
+thinking_budget = 32000
+"#,
+        )
+        .unwrap();
+
+        update_provider_model_and_reasoning_effort_in_toml(&path, "kimi", "k3", "high").unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            cfg["llm"]["providers"]["kimi"]["model"].as_str(),
+            Some("k3")
+        );
+        assert_eq!(
+            cfg["llm"]["providers"]["kimi"]["reasoning_effort"].as_str(),
+            Some("high")
+        );
+        assert!(
+            cfg["llm"]["providers"]["kimi"]
+                .get("thinking_budget")
+                .is_none(),
+            "effort persist must remove the stale thinking_budget"
+        );
+    }
+
+    #[test]
+    fn persisting_budget_removes_stale_reasoning_effort() {
+        // Regression: switching to a budget-semantic model must not leave a
+        // stale reasoning_effort in config.toml (mutually exclusive semantics).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[llm]
+provider = "kimi"
+
+[llm.providers.kimi]
+api_key = "sk-test"
+model = "k3"
+reasoning_effort = "high"
+"#,
+        )
+        .unwrap();
+
+        update_provider_model_and_thinking_budget_in_toml(&path, "kimi", "kimi-for-coding", 64_000)
+            .unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            cfg["llm"]["providers"]["kimi"]["model"].as_str(),
+            Some("kimi-for-coding")
+        );
+        assert_eq!(
+            cfg["llm"]["providers"]["kimi"]["thinking_budget"].as_integer(),
+            Some(64_000)
+        );
+        assert!(
+            cfg["llm"]["providers"]["kimi"]
+                .get("reasoning_effort")
+                .is_none(),
+            "budget persist must remove the stale reasoning_effort"
         );
     }
 }

@@ -136,14 +136,18 @@ fn format_out_tokens(label: &str, max_tokens: u32) -> Option<String> {
     }
 }
 
-/// Thinking segment: `"think high(32K)"`, `"think 32K"`, or `None`.
+/// Thinking segment: `"think high"`, `"think 32K"`, or `None`.
+///
+/// Effort takes precedence over budget: effort and budget are mutually
+/// exclusive semantics (effort-semantic models never send a budget), so a
+/// stale `thinking_budget` left over from a budget-semantic model must not
+/// render a meaningless `think high(32K)` next to an explicit effort.
 fn format_think_segment(label: &str, effort: Option<&str>, budget: Option<u32>) -> Option<String> {
-    let budget = budget.filter(|b| *b > 0)?;
-    let b = format_tokens_compact(budget as u64);
-    match effort.filter(|e| !e.is_empty()) {
-        Some(level) => Some(format!("{label} {level}({b})")),
-        None => Some(format!("{label} {b}")),
+    if let Some(level) = effort.filter(|e| !e.is_empty()) {
+        return Some(format!("{label} {level}"));
     }
+    let budget = budget.filter(|b| *b > 0)?;
+    Some(format!("{label} {}", format_tokens_compact(budget as u64)))
 }
 
 /// Format one balance entry: `"¤ CNY 9.60"`.
@@ -674,14 +678,14 @@ mod render_tests {
     }
 
     #[test]
-    fn format_think_with_effort_and_budget() {
+    fn format_think_with_effort_takes_precedence_over_stale_budget() {
         assert_eq!(
             super::format_think_segment("思考", Some("high"), Some(32_000)),
-            Some("思考 high(32K)".into())
+            Some("思考 high".into())
         );
         assert_eq!(
             super::format_think_segment("think", Some("medium"), Some(8_000)),
-            Some("think medium(8K)".into())
+            Some("think medium".into())
         );
     }
 
@@ -695,12 +699,18 @@ mod render_tests {
 
     #[test]
     fn format_think_omitted_without_budget() {
-        assert_eq!(
-            super::format_think_segment("think", Some("high"), None),
-            None
-        );
         assert_eq!(super::format_think_segment("think", None, Some(0)), None);
         assert_eq!(super::format_think_segment("think", None, None), None);
+    }
+
+    #[test]
+    fn format_think_shows_effort_without_budget() {
+        // Effort-semantic models (openai / deepseek / kimi k3) have no budget;
+        // the effort alone must still render so the bar does not lose the info.
+        assert_eq!(
+            super::format_think_segment("think", Some("high"), None),
+            Some("think high".into())
+        );
     }
 
     #[test]
@@ -870,9 +880,7 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("mock-model")
-                && text.contains("out 128K")
-                && text.contains("think high(32K)"),
+            text.contains("mock-model") && text.contains("out 128K") && text.contains("think high"),
             "bottom bar should show model + out + think effort, got:\n{text}"
         );
     }

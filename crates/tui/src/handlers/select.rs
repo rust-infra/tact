@@ -1237,6 +1237,40 @@ thinking_budget = {thinking_budget}
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn applying_effort_pick_clears_stale_thinking_budget() {
+        // Regression: an effort pick for an effort-semantic model (k3) must
+        // clear a stale thinking_budget left over from a budget-semantic model
+        // (kimi-for-coding) — otherwise the bottom bar renders `think high(32K)`.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config_with_budget(vec!["k3"], "k3", 32_000);
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into()],
+        );
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
+
+        assert_eq!(
+            tact::config::settings().agent.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Low)
+        );
+        assert_eq!(
+            tact::config::settings().agent.thinking_budget,
+            0,
+            "effort pick must clear stale thinking budget"
+        );
+        assert_eq!(app.status_bar.model_thinking_budget, None);
+        assert_eq!(
+            app.status_bar.model_reasoning_effort,
+            Some("low".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn confirmed_budget_applies_model_and_budget_for_this_session() {
         let _lock = MODELS_TEST_LOCK.lock().await;
         install_models_config_with_budget(

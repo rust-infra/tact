@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-06 — 思考 effort 与预算在状态栏 / 配置中互斥
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact/src/agent/mod.rs`（`set_thinking_budget` / `set_reasoning_effort`）、`crates/tact/src/config/mod.rs`（`update_llm_model_and_*`、`update_subagent_*`）、`crates/tact/src/config/persist.rs`（TOML 移除）、`crates/tui/src/render/bar.rs`（`format_think_segment`）、第 23 章 §6.6 |
+| Symptom / motivation | 使用 OpenAI Chat Completions（effort 语义）时，底栏显示 `think high(32K)`：`high` 是真实的 `reasoning_effort`，而 `32K` 是之前预算语义模型（claude / kimi-for-coding）残留的 `thinking_budget`。预算对 effort 模型毫无意义、也绝不会发到线上，但由于运行时 setter、内存配置更新函数、TOML 持久化路径都不会清掉另一字段，它仍会显示在 effort 旁边。 |
+| Decision | 端到端地让 effort 与预算**互斥**：`set_thinking_budget` 清掉 `reasoning_effort`，`set_reasoning_effort` 将 `thinking_budget` 归零；配置更新函数（`update_llm_model_and_thinking_budget` / `update_llm_model_and_reasoning_effort` 及其 subagent 对应项）同样处理；TOML 持久化函数从 provider/subagent 条目中移除相反键。状态栏 `format_think_segment` 改为 effort 优先（有 effort → `think high`，忽略残留预算；只有预算 → `think 32K`），且仅有 effort 时仍会渲染而不是消失。 |
+| Behavior after | effort 语义模型显示 `think high`（绝不会是 `think high(32K)`）；预算语义模型显示 `think 32K`。选择 effort 会从 config.toml 移除已存的 `thinking_budget`；选择预算会移除 `reasoning_effort`。旧配置若同时包含两个字段，显示只取 effort，并在下次 `/model` 持久化时自愈。 |
+| Pointers | `format_think_segment` 及其测试位于 `crates/tui/src/render/bar.rs`；setter 位于 `crates/tact/src/agent/mod.rs`；配置更新函数位于 `crates/tact/src/config/mod.rs`；TOML 移除及其测试位于 `crates/tact/src/config/persist.rs`；driver 测试 `set_reasoning_effort_clears_stale_thinking_budget`；TUI 测试 `applying_effort_pick_clears_stale_thinking_budget`；文档 `book/23_chapter_tui*.md` §6.6 |
+
+---
+
 ## 1. 2026-08-06 — 恢复重试消息附带底层错误
 
 | Field | Value |

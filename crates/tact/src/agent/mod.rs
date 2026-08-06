@@ -275,6 +275,10 @@ impl Agent {
     /// Update the thinking budget used when constructing subsequent LLM requests.
     /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
     ///
+    /// Budget semantics and effort semantics are mutually exclusive: setting a
+    /// budget clears any stale reasoning effort, so the status bar never shows
+    /// a meaningless `think high(32K)` for a budget-semantic model.
+    ///
     /// If the new budget is active and not strictly smaller than the current
     /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
     /// warning is emitted to the UI channel.
@@ -285,6 +289,7 @@ impl Agent {
     /// previous budget.
     pub fn set_thinking_budget(&mut self, budget: usize) {
         self.agent_settings.thinking_budget = budget;
+        self.agent_settings.reasoning_effort = None;
         if let Some(msg) =
             Self::ensure_max_tokens_gt_thinking_budget(&mut self.agent_settings.max_tokens, budget)
         {
@@ -309,9 +314,15 @@ impl Agent {
     /// Update this agent's session reasoning effort (per-agent; never the
     /// global provider). `None` clears the explicit effort (wire omits it).
     ///
+    /// Effort semantics and budget semantics are mutually exclusive: setting an
+    /// effort clears any stale thinking budget, so the status bar never shows a
+    /// meaningless `(32K)` next to an explicit effort for effort-semantic models
+    /// (openai / deepseek / kimi k3).
+    ///
     /// Same queue semantics as [`set_thinking_budget`].
     pub fn set_reasoning_effort(&mut self, effort: Option<OpenAiReasoningEffort>) {
         self.agent_settings.reasoning_effort = effort;
+        self.agent_settings.thinking_budget = 0;
         self.emit_model_status();
     }
 
