@@ -193,6 +193,41 @@ impl App {
         }
     }
 
+    /// Append a task-completion stats block right after the task-end separator.
+    ///
+    /// Reads the already-frozen `last_prompt_elapsed_secs` and the status-bar
+    /// token/model snapshots; deliberately adds no new state (YAGNI — the data
+    /// is already collected by `add_task_end_separator` / `TokenUsage` /
+    /// `ModelInfo` updates).
+    pub(crate) fn add_task_stats_block(&mut self) {
+        let secs = self.last_prompt_elapsed_secs.unwrap_or(0).max(0);
+        let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
+
+        let mut parts = vec![format!("⏱ {mm_ss}")];
+        if !self.status_bar.model_name.is_empty() {
+            parts.push(format!("🧠 {}", self.status_bar.model_name));
+        }
+        let tokens = self.status_bar.token_total;
+        if tokens > 0 {
+            let mut detail = format!("{tokens} tokens");
+            let sub: Vec<String> = [
+                ("prompt", self.status_bar.token_prompt),
+                ("completion", self.status_bar.token_completion),
+                ("cache", self.status_bar.token_cache_hit),
+                ("reasoning", self.status_bar.token_reasoning),
+            ]
+            .into_iter()
+            .filter(|(_, v)| *v > 0)
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect();
+            if !sub.is_empty() {
+                detail.push_str(&format!(" ({})", sub.join(" · ")));
+            }
+            parts.push(detail);
+        }
+        self.add_system_message(format!("📊 任务统计：{}", parts.join(" · ")));
+    }
+
     /// Add a user input message and record it in task history.
     pub(crate) fn add_user_message(&mut self, content: String) {
         // Insert a blank line as separator first

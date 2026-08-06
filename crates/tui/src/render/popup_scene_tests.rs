@@ -944,7 +944,7 @@ fn open_diff_popup_after_read_file_step_finish() {
 }
 
 #[test]
-fn tasks_dag_popup_renders_mermaid_unicode() {
+fn tasks_dag_popup_renders_mermaid_markdown() {
     use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
     let mut app = make_app();
@@ -975,11 +975,11 @@ fn tasks_dag_popup_renders_mermaid_unicode() {
         "popup chrome missing, got:\n{text}"
     );
     assert!(
-        text.contains('#') || text.contains('─') || text.contains("[x]") || text.contains("[ ]"),
-        "expected dag content, got:\n{text}"
+        text.contains('─') || text.contains('│') || text.contains('#'),
+        "expected mermaid diagram content, got:\n{text}"
     );
     assert!(
-        !text.contains("root") && !text.contains("child"),
-        "node labels must omit subjects, got:\n{text}"
+        text.contains("root") && text.contains("child"),
+        "legend should list subjects, got:\n{text}"
     );
 }

@@ -29,6 +29,58 @@
 
 ---
 
+## 1. 2026-08-06 — `/tasks-dag` 弹窗打开期间新建的任务不显示
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `bugfix` |
+| 关联 | `crates/tui/src/widgets/state/app/agent.rs`（`on_tasks_changed`）、`crates/tui/src/render/popups/task_dag_popup.rs`、Ch 23（TUI） |
+| 症状 / 动机 | `/tasks-dag` 弹窗打开时渲染一次 Mermaid 行。`TasksChanged` 更新只刷新 `task_panel.snapshot`，从不刷新弹窗内容；渲染循环只在弹窗宽度变化时重渲染——因此弹窗打开期间新建的任务（或在打开与渲染之间加入的任务）在关闭重开前永远不会显示。 |
+| 决策 | `on_tasks_changed` 现在会刷新已打开的 DAG 弹窗：用最新快照在弹窗当前 `render_width`（首帧宽度感知前回退到 `DEFAULT_DAG_RENDER_WIDTH`）重新执行 `render_task_dag_lines`，原地替换 `lines`/`mermaid_source`，保持滚动偏移。与 `render_task_dag_popup` 中既有的宽度变化重渲染互补，两条路径均幂等。 |
+| 行为变化 | 弹窗打开期间新建的任务会在下一渲染帧立即出现，无需关闭弹窗。 |
+| 指针 | `on_tasks_changed` 位于 `crates/tui/src/widgets/state/app/agent.rs`；回归测试 `tasks_dag_popup_refreshes_when_new_tasks_arrive` |
+
+---
+
+## 1. 2026-08-06 — `/tasks-dag` 依赖边缺失（任务存储不对称）
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `bugfix` |
+| 关联 | `crates/tact/src/task/mod.rs`（`update`、`clear_dependency`）、`crates/tui/src/widgets/state/task_dag.rs`、Ch 23（TUI） |
+| 症状 / 动机 | `/tasks-dag` 只显示任务节点，**不显示通过 `task_update` 的 `addBlockedBy` 建立的依赖箭头**：`update` 会把 `addBlocks` 镜像到被阻塞任务的 `blocked_by`，但 `addBlockedBy` 从不镜像 blocker 的 `blocks`（DAG 出边）。`tasks_to_mermaid` 只从 `blocks` 画边，因此这类依赖完全不可见。另外，`clear_dependency`（任务完成时）只把已完成 id 从他人 `blocked_by` 移除，却留下已完成任务自己的 `blocks`，成为幽灵边来源。 |
+| 决策 | `update` 现在双向镜像：`add_blocked_by` 也会把当前任务 id 写入每个 blocker 的 `blocks`（去重排序），与既有 `add_blocks` 分支对称。`clear_dependency` 额外清空已完成任务的 `blocks`；由于 `update` 持有的是 `clear_dependency` 之前取的副本，本地副本也同步清空，避免最终写回复活幽灵边。 |
+| 行为变化 | 无论通过 `addBlocks` 还是 `addBlockedBy` 建立的依赖，都会在 `/tasks-dag` 中渲染为 `T{blocker} --> T{blocked}`。完成任务后其出边被移除。 |
+| 指针 | `crates/tact/src/task/mod.rs`（`update` 的 add_blocked_by 分支、`clear_dependency`）；测试 `update_add_blocked_by_creates_reverse_outgoing_edge`、`completing_task_clears_blocked_by` |
+
+---
+
+## 1. 2026-08-06 — 任务完成后显示统计块（耗时 · 模型 · tokens）
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `optimization` |
+| 关联 | `crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）、`crates/tui/src/widgets/state/app/agent.rs`（`TaskComplete` 分支）、Ch 23（TUI） |
+| 症状 / 动机 | 任务结束后日志区只有任务结束分隔线（耗时标签），token 消耗与模型名仅显示在底部状态栏，且下一个任务开始时会被重置。`TaskComplete` 分支中留有 `// TODO Add task stats block` 标记。 |
+| 决策 | `TaskComplete` 分支在 `add_task_end_separator()` 之后调用 `add_task_stats_block()`。统计块直接读取已冻结的状态——`last_prompt_elapsed_secs`（由分隔线设置）、`status_bar.model_name`（来自 `ModelInfo`）与 `status_bar.token_*`（来自 `TokenUsage`）——因此不新增统计结构体或重复收集（YAGNI）。通过现有 `add_system_message` 路径渲染一行 markdown：`📊 任务统计：⏱ mm:ss · 🧠 model · N tokens (prompt X · completion Y · cache Z · reasoning W)`；无模型或零 token 时省略相应片段。 |
+| 行为变化 | 每个完成的任务都会在结束分隔线下方留下一行持久统计：耗时、模型名以及可用的 token 明细。取消或失败的任务不显示统计块。 |
+| 指针 | `add_task_stats_block` 位于 `crates/tui/src/widgets/state/app/messages.rs`；测试 `task_complete_appends_task_stats_block`、`task_stats_block_skips_empty_parts` 位于 `crates/tui/src/widgets/state/app/agent.rs` |
+
+---
+
+## 1. 2026-08-06 — `/tasks-dag` 改用 ratatui-markdown 渲染 Mermaid（替换 meraid）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 相关 | `crates/tui/src/widgets/state/task_dag.rs`、`crates/tui/src/render/popups/task_dag_popup.rs`、`crates/tui/src/theme.rs`、根 `Cargo.toml`（`ratatui-markdown` git 依赖）、Ch 23（TUI） |
+| 现象 / 动机 | DAG 弹窗原先用 `meraid` crate 的 Mono 渲染器（纯文本、无主题、无 markdown 结构）；而 workspace 里已有一个闲置的 `ratatui-markdown` git 依赖，且其分支名 `update-ratatui-0.30` 已失效（真实分支是 `chore/update-ratatui-0.30`），该依赖根本无法解析。 |
+| 决策 | `/tasks-dag` 改走 `ratatui-markdown`：`tasks_to_mermaid` 仍生成 `flowchart TD`，`render_task_dag_lines` 将其包装为 `## Tasks DAG` + ` ```mermaid ` 代码块 + `### Legend` 列表（把 `#id` 映射回各任务 subject；节点标签保持窄：状态字形 `○`/`◐`/`✓` + `#id`，因为 fork 的 mermaid 语法遇到第一个 `]` 就结束 `[...]` 文本）。新增 `DagTheme` 适配器把应用 `Theme` 映射为 `RichTextTheme`/`MermaidTheme`（明暗主题由 `MermaidTheme::for_background` 决定），弹窗在首帧按真实宽度重渲染（`render_width` 缓存）。根依赖修正为正确分支并精简为 `default-features = false, features = ["markdown", "mermaid"]`（去掉 `image`/`scroll`/`tree`/`viewer`）。 |
+| 改后行为 | 弹窗显示带主题的框线流程图 + 列出任务 subject 的图例；`y` 复制快捷键仍复制原始 Mermaid 源码。`meraid` 不再是 tui crate 的依赖。 |
+| 指针 | `crates/tui/src/widgets/state/task_dag.rs`（`tasks_to_mermaid`、`render_task_dag_lines`、`DagTheme`）、`crates/tui/src/render/popups/task_dag_popup.rs`（按宽度重渲染）、测试 `tasks_dag_popup_renders_mermaid_markdown`、`ratatui_markdown_renders_diagram_and_legend` |
+
+---
+
 ## 1. 2026-08-06 — 压缩摘要 MaxTokens 截断后自动续写
 
 | 字段 | 值 |
@@ -545,7 +597,7 @@
 
 **现象 / 动机：** `task_*` 工具行是 raw JSON；Log 卡重复整板 checklist；终端里难看依赖关系。
 
-**决策：** 可读 tool 标题（`# Task.N · …`）；sticky 默认展开为 `blocks` 树并带 `#id`；`/tasks-dag` 用 meraid 弹窗渲 Mermaid Unicode（节点仅状态+id）。`TaskSnapshot` 携带 `blocks`/`blocked_by`。Log **不再**追加任务系统卡（进度看 sticky + tool 行）。
+**决策：** 可读 tool 标题（`# Task.N · …`）；sticky 默认展开为 `blocks` 树并带 `#id`；`/tasks-dag` 弹窗渲染 Mermaid DAG（节点仅状态+id；2026-08-06 起改用 ratatui-markdown 渲染）。`TaskSnapshot` 携带 `blocks`/`blocked_by`。Log **不再**追加任务系统卡（进度看 sticky + tool 行）。
 
 **改后行为：** tool 行可读；sticky 树形；slash 可看 DAG；Log 不再刷任务系统消息。
 

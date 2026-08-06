@@ -1,16 +1,31 @@
-//! Task dependency DAG → Mermaid → terminal text (meraid).
+//! Task dependency DAG → Mermaid → ratatui-markdown rendering.
 
-use tact_protocol::TaskSnapshot;
+use ratatui::{
+    style::Color,
+    text::Line,
+};
+use ratatui_markdown::{
+    markdown::MarkdownRenderer,
+    mermaid::theme::MermaidTheme,
+    theme::{CodeColors, Generation, RichTextTheme},
+};
+use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
-use meraid::theme::ThemeType;
+use crate::theme::Theme;
 
-/// Overlay popup holding pre-rendered DAG lines.
+/// Width used to pre-render the DAG before the popup's actual width is known
+/// (the popup re-renders at its real width on the first frame).
+pub(crate) const DEFAULT_DAG_RENDER_WIDTH: usize = 100;
+
+/// Overlay popup holding the pre-rendered DAG lines.
 #[derive(Debug, Clone)]
 pub(crate) struct TaskDagPopup {
-    pub lines: Vec<String>,
+    pub lines: Vec<Line<'static>>,
     pub scroll: u16,
     /// Mermaid source (for copy).
     pub mermaid_source: String,
+    /// Width the current `lines` were rendered for (re-render on change).
+    pub render_width: usize,
 }
 
 /// Build a Mermaid `flowchart TD` from task snapshots (`blocks` edges).
@@ -22,7 +37,7 @@ pub(crate) fn tasks_to_mermaid(tasks: &[TaskSnapshot]) -> String {
     }
     for t in tasks {
         let label = node_label(t);
-        out.push_str(&format!("  T{}[\"{}\"]\n", t.id, label));
+        out.push_str(&format!("  T{}[{}]\n", t.id, label));
     }
     for t in tasks {
         for &child in &t.blocks {
@@ -35,49 +50,142 @@ pub(crate) fn tasks_to_mermaid(tasks: &[TaskSnapshot]) -> String {
 }
 
 fn node_label(t: &TaskSnapshot) -> String {
-    // Keep nodes narrow: status marker + id only (subject overflows the popup).
-    format!("{marker} #{id}", marker = t.status.marker(), id = t.id)
+    // Keep nodes narrow: status glyph + id only (subject overflows the popup).
+    // No `[`/`]` in labels — ratatui-markdown's mermaid grammar ends `[...]`
+    // node text at the first `]`, so `[x]`-style markers would break parsing.
+    format!("{glyph} #{id}", glyph = status_glyph(t.status), id = t.id)
 }
 
-/// Render tasks to Unicode DAG lines via meraid (Mono, no ANSI).
-pub(crate) fn render_task_dag_lines(tasks: &[TaskSnapshot]) -> (String, Vec<String>) {
+fn status_glyph(status: TaskStatusSnapshot) -> &'static str {
+    match status {
+        TaskStatusSnapshot::Pending => "○",
+        TaskStatusSnapshot::InProgress => "◐",
+        TaskStatusSnapshot::Completed => "✓",
+    }
+}
+
+/// DAG markdown: heading + mermaid diagram + legend mapping ids to subjects
+/// (node labels stay narrow, so the legend is where subjects are readable).
+fn tasks_to_markdown(tasks: &[TaskSnapshot], source: &str) -> String {
+    let mut out = String::from("## Tasks DAG\n\n```mermaid\n");
+    out.push_str(source);
+    out.push_str("```\n\n### Legend\n");
+    for t in tasks {
+        // Backticks in subjects would break inline code — flatten them.
+        let subject = t.subject.replace('`', "'");
+        out.push_str(&format!(
+            "- `#{id}` {subject} — `{marker}`\n",
+            id = t.id,
+            subject = subject,
+            marker = t.status.marker(),
+        ));
+    }
+    out
+}
+
+/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
+#[derive(Clone, Copy)]
+pub(crate) struct DagTheme<'a> {
+    pub theme: &'a Theme,
+}
+
+impl RichTextTheme for DagTheme<'_> {
+    fn generation(&self) -> Generation {
+        Generation(0)
+    }
+
+    fn get_text_color(&self) -> Color {
+        self.theme.fg
+    }
+
+    fn get_muted_text_color(&self) -> Color {
+        self.theme.muted_fg()
+    }
+
+    fn get_primary_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_popup_selected_background(&self) -> Color {
+        self.theme.highlight
+    }
+
+    fn get_border_color(&self) -> Color {
+        self.theme.border
+    }
+
+    fn get_focused_border_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_secondary_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_info_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_key_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_string_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_json_number_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_json_bool_color(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_json_null_color(&self) -> Color {
+        self.theme.muted
+    }
+
+    fn get_accent_yellow(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_code_colors(&self) -> CodeColors {
+        CodeColors::default()
+    }
+
+    fn get_mermaid_theme(&self) -> MermaidTheme {
+        MermaidTheme::for_background(self.theme.bg)
+    }
+}
+
+/// Render the task DAG (mermaid diagram + legend) via ratatui-markdown.
+pub(crate) fn render_task_dag_lines(
+    tasks: &[TaskSnapshot],
+    theme: &Theme,
+    width: usize,
+) -> (String, Vec<Line<'static>>) {
     let source = tasks_to_mermaid(tasks);
     if tasks.is_empty() {
         return (
             source,
             vec![
-                "No tasks in this session yet.".into(),
-                "Create/update tasks first, then /tasks-dag again.".into(),
+                Line::from("No tasks in this session yet."),
+                Line::from("Create/update tasks first, then /tasks-dag again."),
             ],
         );
     }
-    match meraid::render(&source, ThemeType::Mono) {
-        Ok(text) => {
-            let lines: Vec<String> = text.lines().map(str::to_string).collect();
-            if lines.is_empty() {
-                (source, vec!["(empty render)".into()])
-            } else {
-                (source, lines)
-            }
-        }
-        Err(err) => (
-            source.clone(),
-            vec![
-                format!("meraid render failed: {err}"),
-                String::new(),
-                "Mermaid source:".into(),
-            ]
-            .into_iter()
-            .chain(source.lines().map(str::to_string))
-            .collect(),
-        ),
-    }
+    let md = tasks_to_markdown(tasks, &source);
+    let renderer = MarkdownRenderer::new(width);
+    let blocks = renderer.parse(&md);
+    let lines = renderer.render(&blocks, &DagTheme { theme });
+    (source, lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::TaskStatusSnapshot;
+    use crate::theme::ThemeName;
 
     fn snap(id: u64, subject: &str, blocks: Vec<u64>) -> TaskSnapshot {
         TaskSnapshot {
@@ -105,16 +213,42 @@ mod tests {
         assert!(src.contains("T1 --> T3"), "{src}");
     }
 
+    fn joined(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn meraid_renders_non_empty_unicode() {
+    fn ratatui_markdown_renders_diagram_and_legend() {
         let tasks = vec![snap(1, "root", vec![2]), snap(2, "child", vec![])];
-        let (src, lines) = render_task_dag_lines(&tasks);
+        let theme = Theme::from(ThemeName::Dark);
+        let (src, lines) = render_task_dag_lines(&tasks, &theme, 80);
         assert!(src.contains("T1 --> T2"));
         assert!(lines.len() > 1, "{lines:?}");
-        let joined = lines.join("\n");
+        let text = joined(&lines);
         assert!(
-            joined.contains('─') || joined.contains('-') || joined.contains('│'),
-            "expected box art, got:\n{joined}"
+            text.contains('─') || text.contains('│'),
+            "expected mermaid box art, got:\n{text}"
         );
+        assert!(text.contains('#'), "expected node ids, got:\n{text}");
+        // Legend maps ids back to subjects.
+        assert!(
+            text.contains("root") && text.contains("child"),
+            "legend should list subjects, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn node_labels_avoid_status_markers() {
+        let tasks = vec![snap(1, "root", vec![])];
+        let src = tasks_to_mermaid(&tasks);
+        // ratatui-markdown's mermaid grammar terminates `[...]` text at the
+        // first `]`; `[x]`/`[ ]`-style status markers would break parsing.
+        assert!(!src.contains("[x]"), "{src}");
+        assert!(!src.contains("[>]"), "{src}");
+        assert!(!src.contains("[ ]"), "{src}");
     }
 }

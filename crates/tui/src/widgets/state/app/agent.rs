@@ -194,7 +194,9 @@ impl App {
                 self.status = Status::Done;
                 self.freeze_last_prompt_cost();
                 self.task_done_time = Some(chrono::Local::now());
-                // TODO Add task stats block
+                // Task stats block: elapsed is frozen by add_task_end_separator,
+                // token/model snapshots live in the status bar.
+                self.add_task_stats_block();
             }
             AgentUpdate::TaskCancelled => {
                 // Cancel exits without TaskComplete; must leave Planning/Executing
@@ -316,6 +318,21 @@ impl App {
         self.task_panel.apply_snapshot(tasks);
         if self.task_panel.visible && !was_visible {
             self.task_panel.expanded = true;
+        }
+        // Keep an open /tasks-dag popup in sync: its lines were rendered when
+        // the popup opened and would otherwise never show later task changes
+        // (the render loop only re-renders on width changes).
+        if self.task_dag_popup.is_some() {
+            let width = self
+                .task_dag_popup
+                .as_ref()
+                .map_or(crate::widgets::state::DEFAULT_DAG_RENDER_WIDTH, |p| p.render_width);
+            let (source, lines) =
+                render_task_dag_lines(&self.task_panel.snapshot, &self.theme, width);
+            if let Some(p) = self.task_dag_popup.as_mut() {
+                p.lines = lines;
+                p.mermaid_source = source;
+            }
         }
     }
 
@@ -991,6 +1008,76 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn tasks_dag_popup_refreshes_when_new_tasks_arrive() {
+        let mut app = make_app();
+        // Baseline: one task, open the DAG popup.
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![TaskSnapshot {
+                id: 1,
+                subject: "old".into(),
+                status: TaskStatusSnapshot::Pending,
+                owner: String::new(),
+                blocks: Vec::new(),
+                blocked_by: Vec::new(),
+                ..Default::default()
+            }],
+            reason: TasksChangeReason::Created,
+        });
+        app.open_task_dag_popup();
+        assert!(app.task_dag_popup.is_some());
+        let before = app
+            .task_dag_popup
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(before.contains("old"), "baseline should list old task:\n{before}");
+        assert!(!before.contains("new"), "new task not added yet:\n{before}");
+
+        // A newer task is created while the popup is open.
+        app.handle_agent_update(AgentUpdate::TasksChanged {
+            tasks: vec![
+                TaskSnapshot {
+                    id: 1,
+                    subject: "old".into(),
+                    status: TaskStatusSnapshot::Pending,
+                    owner: String::new(),
+                    blocks: Vec::new(),
+                    blocked_by: Vec::new(),
+                    ..Default::default()
+                },
+                TaskSnapshot {
+                    id: 2,
+                    subject: "new".into(),
+                    status: TaskStatusSnapshot::Pending,
+                    owner: String::new(),
+                    blocks: Vec::new(),
+                    blocked_by: Vec::new(),
+                    ..Default::default()
+                },
+            ],
+            reason: TasksChangeReason::Created,
+        });
+
+        let after = app
+            .task_dag_popup
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            after.contains("new"),
+            "open DAG popup must refresh with newly added tasks, got:\n{after}"
+        );
+    }
+
+    #[test]
     fn tasks_changed_hides_when_no_open_items() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::TasksChanged {
@@ -1550,6 +1637,58 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
         assert!(matches!(app.status, Status::Done));
         assert!(app.task_done_time.is_some());
+    }
+
+    #[test]
+    fn task_complete_appends_task_stats_block() {
+        use tact_protocol::{ModelCallParams, TokenUsageInfo};
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TokenUsage(TokenUsageInfo {
+            prompt: 100,
+            completion: 50,
+            total: 150,
+            prompt_cache_hit_tokens: 10,
+            prompt_cache_miss_tokens: 90,
+            reasoning_tokens: 5,
+        }));
+        app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
+            model: "mock-model".into(),
+            max_tokens: 8192,
+            thinking_budget: None,
+            reasoning_effort: None,
+            extra_body: None,
+        }));
+        // Frozen elapsed time: separator reuses it when no start time is set.
+        app.last_prompt_elapsed_secs = Some(65);
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+
+        let joined = app.raw_messages.join("\n");
+        assert!(
+            joined.contains("📊 任务统计：⏱ 01:05"),
+            "elapsed part missing: {joined}"
+        );
+        assert!(joined.contains("🧠 mock-model"), "model part missing: {joined}");
+        assert!(
+            joined.contains("150 tokens (prompt 100 · completion 50 · cache 10 · reasoning 5)"),
+            "token part missing: {joined}"
+        );
+    }
+
+    #[test]
+    fn task_stats_block_skips_empty_parts() {
+        let mut app = make_app();
+        app.last_prompt_elapsed_secs = Some(5);
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+
+        let joined = app.raw_messages.join("\n");
+        let stats_line = joined
+            .lines()
+            .find(|l| l.contains("📊 任务统计："))
+            .expect("stats block missing");
+        assert_eq!(stats_line, "📊 任务统计：⏱ 00:05");
     }
 
     #[test]

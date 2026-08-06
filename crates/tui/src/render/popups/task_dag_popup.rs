@@ -1,4 +1,4 @@
-//! `/tasks-dag` scrollable Mermaid→Unicode popup.
+//! `/tasks-dag` scrollable Mermaid popup (rendered via ratatui-markdown).
 
 use ratatui::{
     Frame,
@@ -8,18 +8,9 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, render_task_dag_lines};
 
 pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    let popup = match &app.task_dag_popup {
-        Some(p) => p,
-        None => return,
-    };
-    let total = popup.lines.len();
-    if total == 0 {
-        return;
-    }
-
     let popup_area = super::centered_popup_area(area);
     let footer: &[super::FooterHint] = &[
         super::FooterHint {
@@ -38,6 +29,30 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
     let inner =
         super::render_popup_chrome(frame, popup_area, &app.theme, " tasks-dag ", Some(footer));
 
+    // The mermaid layout depends on width; re-render when the popup width changes.
+    let width = inner.width as usize;
+    if app
+        .task_dag_popup
+        .as_ref()
+        .is_some_and(|p| p.render_width != width)
+    {
+        let (source, lines) = render_task_dag_lines(&app.task_panel.snapshot, &app.theme, width);
+        if let Some(p) = app.task_dag_popup.as_mut() {
+            p.lines = lines;
+            p.mermaid_source = source;
+            p.render_width = width;
+        }
+    }
+
+    let popup = match &app.task_dag_popup {
+        Some(p) => p,
+        None => return,
+    };
+    let total = popup.lines.len();
+    if total == 0 {
+        return;
+    }
+
     let content_height = inner.height as usize;
     let max_scroll = total.saturating_sub(1);
     let scroll = (popup.scroll as usize).min(max_scroll);
@@ -52,15 +67,8 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
             .add_modifier(Modifier::BOLD),
     )));
     text.push_line(Line::from(""));
-
-    let max_chars = popup_area.width.saturating_sub(4) as usize;
-    for line in &popup.lines[start_line..end_line] {
-        let display: String = line.chars().take(max_chars).collect();
-        text.push_line(Line::from(Span::styled(
-            display,
-            Style::default().fg(app.theme.fg),
-        )));
-    }
+    text.lines
+        .extend(popup.lines[start_line..end_line].iter().cloned());
 
     let para = Paragraph::new(text).wrap(Wrap { trim: false });
 
