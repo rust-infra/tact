@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-06 — Session stats track RTK output-filter metrics
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `docs/token_usage_schema.md` (Session Stats Display), `crates/tact/src/hook/rtk_filter.rs`, `crates/tact/src/stats.rs` |
+| Symptom / motivation | With `tools.rtk_filter = true`, bash outputs are piped through `rtk pipe`, but nothing measured whether the filter actually ran, how much output it removed, or how long it took — users could not tell if RTK was saving tokens or silently passing everything through. |
+| Decision | `SessionStats` gains five relaxed-atomic counters (`rtk_calls`, `rtk_success_calls`, `rtk_failure_calls`, `rtk_saved_chars`, `rtk_elapsed_ms`) mutated directly by the post-tool hook. Atomics (not plain `u64`) are required because hooks only receive `&Agent` (immutable). An attempt counts as a success only when `rtk pipe` exits 0 with non-empty stdout; saved chars are `raw_len − filtered_len` (saturating, counted in chars not bytes) on success only. The end-of-session summary gains an `RTK tokens saved` estimate using the 1 token ≈ 4 chars length heuristic. |
+| Behavior after | Whenever at least one RTK attempt was recorded, the session stats popup / exit summary shows `RTK calls (s/f)`, `RTK chars saved`, `RTK tokens saved` (chars/4), and `RTK time`. Rows are hidden entirely when `rtk_filter` is off or no bash output was filtered. |
+| Pointers | `crates/tact/src/stats.rs` (`SessionStats::record_rtk`, RTK rows in `summary()`), `crates/tact/src/hook/rtk_filter.rs` (`pipe_through_rtk` → `(output, succeeded, elapsed_ms)`, `saved_chars`, `create_rtk_post_tool_hook`), `docs/token_usage_schema.md` |
+
+---
+
 ## 1. 2026-08-05 — Unify tool-family card labels (background + team)
 
 | Field | Value |

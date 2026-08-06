@@ -275,12 +275,21 @@ Tool calls
 | Cache miss tokens |      XX |
 | Cache hit rate   |   XX.X% |
 | Reasoning tokens |      XX |
+| RTK calls (s/f)  | XX (s/f) |
+| RTK chars saved  |      XX |
+| RTK tokens saved |    ~XX |
+| RTK time         |   XX.Xs |
 ─────────────────────────────────────────────
 ```
 
 The tools table is omitted when there were no tool calls. Cache and reasoning
 rows (and the trailing metrics table that holds them / tool timing aggregates)
-are only shown when those counters are non-zero / present.
+are only shown when those counters are non-zero / present. RTK rows appear
+whenever the RTK output filter (`tools.rtk_filter = true`) recorded at least
+one attempt: `RTK calls (s/f)` is total/success/failure attempts, `RTK chars
+saved` is the raw−filtered character delta of successful compressions, `RTK
+tokens saved` is that delta divided by 4 (1 token ≈ 4 chars length heuristic),
+and `RTK time` is the total wall-clock time spent in `rtk pipe`.
 
 ## Code Locations
 

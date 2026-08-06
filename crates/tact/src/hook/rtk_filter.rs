@@ -25,43 +25,72 @@ fn rtk_on_path() -> bool {
 
 /// Filter `raw` through `rtk pipe` (auto-detect mode).
 ///
-/// Returns the filtered output on success, or the original `raw` on any
-/// error (rtk not found, timeout, non-zero exit, spawn failure, etc.).
-fn pipe_through_rtk(raw: &str) -> String {
+/// Returns `(output, succeeded, elapsed_ms)`:
+/// - `output` is the filtered text on success, or the original `raw` on any
+///   error (rtk not found, non-zero exit, spawn failure, etc.).
+/// - `succeeded` is `true` only when rtk exited 0 and produced non-empty
+///   stdout (i.e. filtering actually applied).
+/// - `elapsed_ms` is the wall-clock time of the attempt.
+///
+/// Takes ownership of `raw` so failure paths return it unchanged without
+/// copying.
+fn pipe_through_rtk(raw: String) -> (String, bool, u64) {
     let filter_available = RTK_AVAILABLE.get_or_init(rtk_on_path);
     if !filter_available {
-        return raw.to_string();
+        return (raw, false, 0);
     }
 
-    match Command::new("rtk")
+    let start = std::time::Instant::now();
+    let mut child = match Command::new("rtk")
         .arg("pipe")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        Ok(mut child) => {
-            use std::io::Write;
-            if child.stdin.as_mut().unwrap().write_all(raw.as_bytes()).is_err() {
-                return raw.to_string();
-            }
-            drop(child.stdin.take());
+        Ok(child) => child,
+        Err(_) => return (raw, false, start.elapsed().as_millis() as u64),
+    };
 
-            match child.wait_with_output() {
-                Ok(out) if out.status.success() && !out.stdout.is_empty() => {
-                    String::from_utf8_lossy(&out.stdout).into_owned()
-                }
-                _ => raw.to_string(),
-            }
+    use std::io::Write;
+    if let Some(mut stdin) = child.stdin.take() {
+        let write_ok = stdin.write_all(raw.as_bytes()).is_ok();
+        drop(stdin); // close the pipe so the child can finish
+        if !write_ok {
+            let _ = child.wait(); // reap the child before returning
+            return (raw, false, start.elapsed().as_millis() as u64);
         }
-        Err(_) => raw.to_string(),
+    }
+
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            // Fast path: reuse the child's stdout buffer when it is already
+            // valid UTF-8; fall back to a lossy copy only on invalid input.
+            let filtered = String::from_utf8(out.stdout)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+            (filtered, true, start.elapsed().as_millis() as u64)
+        }
+        _ => (raw, false, start.elapsed().as_millis() as u64),
     }
 }
 
+/// Characters removed by a successful compression; `0` on failure.
+///
+/// Counted in characters (not bytes) to match the other session stats and
+/// the "tokens ≈ chars/4" length heuristic. `raw_chars` is passed in so the
+/// caller can count it once before `raw` is moved into `pipe_through_rtk`.
+fn saved_chars(raw_chars: u64, filtered: &str, succeeded: bool) -> u64 {
+    if !succeeded {
+        return 0;
+    }
+    raw_chars.saturating_sub(filtered.chars().count() as u64)
+}
+
 /// Creates a `PostToolUse` hook that pipes `bash` tool outputs through
-/// `rtk pipe` when RTK is installed.
+/// `rtk pipe` when RTK is installed. Every attempt is recorded in the
+/// session stats (success/failure counts, saved chars, elapsed time).
 pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
-    |_agent: &crate::LoopState, tool_use: &super::ToolUse, tool_result: &mut super::ToolResult| {
+    |agent: &crate::LoopState, tool_use: &super::ToolUse, tool_result: &mut super::ToolResult| {
         Box::pin(async move {
             if tool_use.name != "bash" {
                 return Ok(HookControl::Continue);
@@ -69,7 +98,15 @@ pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
             if tool_result.content.is_empty() {
                 return Ok(HookControl::Continue);
             }
-            tool_result.content = pipe_through_rtk(&tool_result.content);
+            // Take ownership of the content instead of cloning: the filtered
+            // output replaces it anyway, so failure paths can hand the
+            // original back without a copy.
+            let raw = std::mem::take(&mut tool_result.content);
+            let raw_chars = raw.chars().count() as u64;
+            let (filtered, succeeded, elapsed_ms) = pipe_through_rtk(raw);
+            let saved = saved_chars(raw_chars, &filtered, succeeded);
+            agent.runtime.stats.record_rtk(succeeded, saved, elapsed_ms);
+            tool_result.content = filtered;
             Ok(HookControl::Continue)
         })
     }
@@ -92,10 +129,28 @@ mod tests {
     #[test]
     fn filtering_empty_input_returns_empty() {
         // pipe_through_rtk always returns the original when RTK isn't
-        // installed — this test verifies empty input is handled.
-        let result = pipe_through_rtk("");
-        // When rtk isn't available, returns the empty original; when rtk is
-        // available, rtk pipe of empty stdin also produces empty stdout.
-        assert_eq!(result, "");
+        // installed — this test verifies empty input is handled and that
+        // no filtering is reported as a success.
+        let (out, succeeded, _elapsed) = pipe_through_rtk(String::new());
+        assert_eq!(out, "");
+        assert!(!succeeded, "empty rtk output must not count as a success");
+    }
+
+    #[test]
+    fn saved_chars_counts_only_successful_compressions() {
+        let hello_world_chars = "hello world".chars().count() as u64;
+        assert_eq!(saved_chars(hello_world_chars, "hello", true), 6);
+        // Saturated: a longer filtered output saves nothing.
+        assert_eq!(
+            saved_chars("hi".chars().count() as u64, "hello world", true),
+            0
+        );
+        // Failed attempts never count savings.
+        assert_eq!(saved_chars(hello_world_chars, "hello", false), 0);
+        // Counted in characters, not bytes.
+        assert_eq!(
+            saved_chars("你好世界".chars().count() as u64, "你好", true),
+            2
+        );
     }
 }
