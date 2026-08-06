@@ -74,9 +74,14 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 | 2 | `./config.toml` |
 | 3 | `~/.tact/config.toml` |
 
-若均不存在，使用空的 `TactTomlConfig::default()`。
+若均不存在，tact-ui 首次运行会在 `~/.tact/config.toml` 自动写入一份
+`config.example.toml` 的副本（编译期嵌入模板，与仓库内的 example 保持同步），
+并提示用户编辑填入 API key。只有用户全局位置会被自动创建——不会污染项目目录。
+若模板写入失败（HOME 未知或不可写），则使用空的 `TactTomlConfig::default()`，
+由常规的 "not configured" resolve 错误引导用户。
 
-显式 `--config /path/to/file.toml` 会跳过上述搜索列表。
+显式 `--config /path/to/file.toml` 会跳过上述搜索列表；显式路径不存在时报错
+（不会自动创建）。
 
 ### 合并规则：CLI > TOML 条目 > TOML 全局 > 默认值
 

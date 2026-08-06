@@ -73,9 +73,16 @@ When `--config` is **not** passed, `load_toml_config` scans in order and uses th
 | 2 | `./config.toml` |
 | 3 | `~/.tact/config.toml` |
 
-If none exist, an empty `TactTomlConfig::default()` is used.
+If none exist, tact-ui writes a copy of `config.example.toml` to
+`~/.tact/config.toml` on first run (the embedded template stays in sync with
+the checked-in example) and prints a hint to edit it and add the API key.
+Only the user-global location is auto-created — project directories are never
+polluted. If the template cannot be written (unknown/unwritable HOME), an
+empty `TactTomlConfig::default()` is used and the normal "not configured"
+resolve error guides the user.
 
-Explicit `--config /path/to/file.toml` bypasses the search list.
+Explicit `--config /path/to/file.toml` bypasses the search list; a missing
+explicit path is an error (never auto-created).
 
 ### Merge rule: CLI > TOML entry > TOML global > defaults
 

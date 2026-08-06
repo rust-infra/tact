@@ -1,6 +1,9 @@
 # tact configuration (TOML)
 #
-# Copy to one of these locations (auto-discovered):
+# On first run, when no config file exists anywhere, tact-ui writes a copy
+# of this template to ~/.tact/config.toml automatically (edit it to add your
+# API key). You can also copy it manually to one of these locations
+# (auto-discovered, first match wins):
 #   ./.tact/config.toml      project-level
 #   ./config.toml            project-level (alternative)
 #   ~/.tact/config.toml      user-global
@@ -24,7 +27,7 @@
 # Credentials live under providers — not as flat fields on [llm].
 # Switch with llm.provider or --provider (anthropic | openai | deepseek | kimi).
 [llm]
-provider = "anthropic"
+provider = "deepseek"
 
 # Optional globals (overridable per provider entry, then by CLI flags)
 # max_tokens = 8000
@@ -45,6 +48,7 @@ provider = "anthropic"
 # thinking_budgets = [0, 8000, 32000]
 
 [llm.providers.anthropic]
+# Not active by default — switch [llm] provider to "anthropic" to use it.
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
 # Anthropic has no default base_url — required
@@ -69,14 +73,13 @@ protocol = "responses"
 # falls back to local summary compaction for protocol = "responses".
 
 [llm.providers.deepseek]
+# Active by default in this example (see [llm] provider above).
 api_key = "sk-..."
 model = "deepseek-chat"
+protocol = "chat_completions"
 # base_url defaults to https://api.deepseek.com
-# Optional protocol: omit or set "chat_completions" (default) for the DeepSeek
-# Chat Completions API; "responses" talks to {base_url}/responses with the same
-# Responses semantics as the openai provider (automatic context_management
-# compaction, reasoning effort). Explicit /responses/compact is not implemented
-# by DeepSeek, so explicit compaction falls back to the local summary pipeline.
+# protocol = "chat_completions" is the OpenAI-compatible Chat Completions API
+# (default). This example does not use protocol = "responses".
 
 [llm.providers.kimi]
 api_key = "sk-..."
