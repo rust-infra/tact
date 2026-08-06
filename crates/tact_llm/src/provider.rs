@@ -212,15 +212,44 @@ impl ProviderInfo {
     }
 
     /// Returns true when Kimi Code usage quota queries are supported.
+    ///
+    /// Kimi Code serves `GET /v1/usages` only on the official endpoint
+    /// (`https://api.kimi.com/coding`); custom proxies / gateways are treated
+    /// as unsupported so their API keys are never sent to `api.kimi.com`.
     pub fn is_kimi_usage_supported(&self) -> bool {
-        self.is_kimi_coding(&self.model)
+        if !self.is_kimi_coding(&self.model) {
+            return false;
+        }
+        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("api.kimi.com")
+                && url.path().contains("coding")
+        })
+    }
+
+    /// Returns true when DeepSeek balance queries are supported for the configured endpoint.
+    ///
+    /// DeepSeek serves `GET /user/balance` only on the official endpoint;
+    /// custom proxies / gateways are treated as unsupported so their API keys
+    /// are never sent to `api.deepseek.com`.
+    pub fn is_deepseek_balance_supported(&self) -> bool {
+        let is_deepseekish = self.provider == ProviderKind::DeepSeek
+            || self.base_url.contains("deepseek")
+            || self.model.contains("deepseek");
+        if !is_deepseekish {
+            return false;
+        }
+        if self.base_url.is_empty() {
+            return self.provider == ProviderKind::DeepSeek;
+        }
+        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
+            url.scheme() == "https" && url.host_str() == Some("api.deepseek.com")
+        })
     }
 
     /// Returns true when account balance or usage quota queries are supported.
     pub fn is_account_query_supported(&self) -> bool {
-        self.provider == ProviderKind::DeepSeek
-            || self.base_url.contains("deepseek")
-            || self.model.contains("deepseek")
+        self.is_deepseek_balance_supported()
             || self.is_kimi_balance_supported()
             || self.is_kimi_usage_supported()
     }
@@ -323,6 +352,11 @@ pub fn is_kimi_k27() -> bool {
 /// Returns true for the Kimi Code platform (`api.kimi.com/coding`).
 pub fn is_kimi_coding() -> bool {
     read_provider(|p| p.is_kimi_coding(&p.model))
+}
+
+/// Returns true when DeepSeek balance queries are supported for the configured endpoint.
+pub fn is_deepseek_balance_supported() -> bool {
+    read_provider(|p| p.is_deepseek_balance_supported())
 }
 
 /// Returns true when Kimi balance queries are supported for the configured endpoint.
@@ -552,8 +586,8 @@ mod tests {
         assert!(!proxy_balance.is_kimi_balance_supported());
         assert!(!proxy_balance.is_account_query_supported());
 
-        // kimi-for-coding behind a custom proxy is still Kimi Code:
-        // no balance API, usage quota supported.
+        // kimi-for-coding behind a custom proxy is still Kimi Code for wire
+        // shape, but has no usage quota API: no account queries at all.
         let proxy = provider_info(
             ProviderKind::OpenAi,
             "",
@@ -562,7 +596,8 @@ mod tests {
         );
         assert!(proxy.is_kimi_coding("kimi-for-coding"));
         assert!(!proxy.is_kimi_balance_supported());
-        assert!(proxy.is_kimi_usage_supported());
+        assert!(!proxy.is_kimi_usage_supported());
+        assert!(!proxy.is_account_query_supported());
 
         assert!(coding.is_account_query_supported());
         assert!(cn.is_account_query_supported());
@@ -574,6 +609,125 @@ mod tests {
             "claude-sonnet-4",
         );
         assert!(!anthropic.is_account_query_supported());
+    }
+
+    #[test]
+    fn is_deepseek_balance_supported_only_for_official_endpoint() {
+        let official = provider_info(
+            ProviderKind::DeepSeek,
+            "",
+            "https://api.deepseek.com",
+            "deepseek-chat",
+        );
+        assert!(official.is_deepseek_balance_supported());
+        assert!(official.is_account_query_supported());
+
+        // `/v1` suffix resolves to the same official host.
+        let official_v1 = provider_info(
+            ProviderKind::DeepSeek,
+            "",
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+        );
+        assert!(official_v1.is_deepseek_balance_supported());
+
+        // Empty base URL defaults to the official endpoint (config resolution).
+        let empty_base = provider_info(ProviderKind::DeepSeek, "", "", "deepseek-chat");
+        assert!(empty_base.is_deepseek_balance_supported());
+
+        // A DeepSeek model served through a custom proxy has no balance API.
+        let proxy = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://proxy.example.com/v1",
+            "deepseek-chat",
+        );
+        assert!(!proxy.is_deepseek_balance_supported());
+        assert!(!proxy.is_account_query_supported());
+
+        // Host-name spoofing and plain HTTP are rejected.
+        let spoofed = provider_info(
+            ProviderKind::DeepSeek,
+            "",
+            "https://api.deepseek.com.evil.example/v1",
+            "deepseek-chat",
+        );
+        assert!(!spoofed.is_deepseek_balance_supported());
+
+        let http = provider_info(
+            ProviderKind::DeepSeek,
+            "",
+            "http://api.deepseek.com/v1",
+            "deepseek-chat",
+        );
+        assert!(!http.is_deepseek_balance_supported());
+
+        let anthropic = provider_info(
+            ProviderKind::Anthropic,
+            "",
+            "https://api.anthropic.com",
+            "claude-sonnet-4",
+        );
+        assert!(!anthropic.is_deepseek_balance_supported());
+    }
+
+    #[test]
+    fn is_kimi_usage_supported_only_for_official_endpoint() {
+        let official = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
+        assert!(official.is_kimi_usage_supported());
+        assert!(official.is_account_query_supported());
+
+        // Custom proxy serving kimi-for-coding: wire shape is still coding,
+        // but there is no usage quota API behind a proxy.
+        let proxy = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://proxy.example.com/v1",
+            "kimi-for-coding",
+        );
+        assert!(proxy.is_kimi_coding("kimi-for-coding"));
+        assert!(!proxy.is_kimi_usage_supported());
+        assert!(!proxy.is_account_query_supported());
+
+        // Official host without the /coding path is not the Kimi Code API.
+        let bare_host = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://api.kimi.com",
+            "kimi-for-coding",
+        );
+        assert!(!bare_host.is_kimi_usage_supported());
+
+        // Host-name spoofing and plain HTTP are rejected.
+        let spoofed = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "https://api.kimi.com.evil.example/coding/v1",
+            "kimi-for-coding",
+        );
+        assert!(!spoofed.is_kimi_usage_supported());
+
+        let http = provider_info(
+            ProviderKind::OpenAi,
+            "",
+            "http://api.kimi.com/coding/v1",
+            "kimi-for-coding",
+        );
+        assert!(!http.is_kimi_usage_supported());
+
+        // Moonshot (non-coding) endpoint: no usage quota API.
+        let cn = provider_info(
+            ProviderKind::Kimi,
+            "",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        );
+        assert!(!cn.is_kimi_usage_supported());
     }
 
     #[test]

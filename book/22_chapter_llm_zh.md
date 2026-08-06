@@ -123,8 +123,11 @@ Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `Provi
 | `is_kimi_k2x()` | K2.x 家族 — 驱动 **32k max_tokens** 默认值与 Kimi thinking wire shape |
 | `is_kimi_k27()` | K2.7-code / `kimi-for-coding` / `api.kimi.com/coding` |
 | `is_deepseek()` | `provider == DeepSeek`，**或** URL/model 含 deepseek |
+| `is_deepseek_balance_supported()` | 仅官方 HTTPS `api.deepseek.com`（无代理回退） |
+| `is_kimi_balance_supported()` | 仅官方 HTTPS `api.moonshot.cn` / `api.moonshot.ai` |
+| `is_kimi_usage_supported()` | 仅官方 HTTPS `api.kimi.com/coding`（无代理回退） |
 
-因此 `provider = openai` + Moonshot 兼容 `base_url` 在 thinking 注入上仍按 Kimi 行为。余额轮询仅对官方 HTTPS `api.moonshot.cn` / `api.moonshot.ai` 主机启用；自定义代理绝不会把凭据转发给 Moonshot。更推荐专用 `[llm.providers.kimi]` 条目。
+因此 `provider = openai` + Moonshot 兼容 `base_url` 在 thinking 注入上仍按 Kimi 行为。余额轮询仅对官方 HTTPS `api.moonshot.cn` / `api.moonshot.ai`（Kimi）与 `api.deepseek.com`（DeepSeek）主机启用；Kimi Code 用量配额仅限 `api.kimi.com/coding`。自定义代理绝不会把凭据转发给官方余额 / 用量端点。更推荐专用 `[llm.providers.kimi]` 条目。
 
 ---
 
@@ -522,17 +525,19 @@ self.runtime.client.set_user_id(&session_id);
 
 | 函数 | 端点 | 使用时机 |
 |------|------|----------|
-| `query_deepseek_balance()` | `GET .../user/balance` | TUI 启动 + 周期 timer + `/balance` 命令 |
+| `query_deepseek_balance()` | `GET https://api.deepseek.com/user/balance` | TUI 启动 + 周期 timer + `/balance` 命令 |
 | `query_kimi_balance()` | `GET .../v1/users/me/balance` on `api.moonshot.cn` 或 `api.moonshot.ai` | 同上 |
-| `query_kimi_code_usage()` | `GET .../v1/usages` on `api.kimi.com/coding` | Kimi Code 订阅配额 |
+| `query_kimi_code_usage()` | `GET https://api.kimi.com/coding/v1/usages` | Kimi Code 订阅配额 |
 
 `query_*_balance()` 返回 `tact_protocol::BalanceInfo`，并通过独立 account channel 路由为 `AccountUpdate::Balance`。Kimi Code 用量返回 `UsageQuotaInfo` 为 `AccountUpdate::UsageQuota`。
 
-**Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AccountUpdate::UsageQuota`（`week` + `5h` 窗口）。
+**Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AccountUpdate::UsageQuota`（`week` + `5h` 窗口）。用量 API 仅限官方端点（HTTPS、主机精确为 `api.kimi.com`、含 `/coding` 路径）：提供 `kimi-for-coding` 的自定义代理视为不支持，其 API key 绝不会发送到 `api.kimi.com`。
 
-**凭据边界：** Kimi 余额轮询仅在 `base_url` 使用 HTTPS 且主机精确为 `api.moonshot.cn` 或 `api.moonshot.ai` 时启用。自定义 OpenAI 兼容代理视为不支持，代理 API key 绝不会发送到官方 Moonshot 余额端点。
+**DeepSeek 端点：** 余额 API 仅存在于官方主机。`query_deepseek_balance()` 仅在 `base_url` 使用 HTTPS 且主机精确为 `api.deepseek.com` 时启用（`/v1` 后缀可以；空 base URL 解析为官方默认）。面向 DeepSeek 模型的自定义 OpenAI 兼容代理视为不支持，其 API key 绝不会发送到 `api.deepseek.com`。
 
-**轮询：** `interactive.rs` 仅在 `account::is_supported()` 为 true 时执行一次启动查询并启动 `account::spawn_poller`。`/balance` 命令通过 command driver 复用同一 `query_once` 路径。
+**凭据边界：** Kimi 余额轮询仅在 `base_url` 使用 HTTPS 且主机精确为 `api.moonshot.cn` 或 `api.moonshot.ai` 时启用。自定义 OpenAI 兼容代理视为不支持，代理 API key 绝不会发送到官方 Moonshot 余额端点。同样的边界也适用于 DeepSeek（`api.deepseek.com`）与 Kimi Code 用量（`api.kimi.com/coding`）。
+
+**轮询：** `interactive.rs` 仅在 `account::is_supported()` 为 true 时执行一次启动查询并启动 `account::spawn_poller`。`/balance` 命令通过 command driver 复用同一 `query_once` 路径。失败时 poller 指数退避（10 s → 20 s → … → 5 min），且连续故障期间只转发**第一条** `AccountUpdate::Error`；后续重试保持静默，直到查询再次成功才复位——因此一次故障只弹一条提示，而不是每个退避周期都弹。
 
 ```mermaid
 sequenceDiagram

@@ -138,11 +138,16 @@ Heuristic helpers on `ProviderInfo` (also exported at crate root):
 | `is_kimi_k2x()` | K2.x family — drives the **32k max_tokens** default and Kimi thinking wire shape |
 | `is_kimi_k27()` | K2.7-code / `kimi-for-coding` / `api.kimi.com/coding` |
 | `is_deepseek()` | `provider == DeepSeek`, **or** URL/model contains deepseek |
+| `is_deepseek_balance_supported()` | official HTTPS `api.deepseek.com` only (no proxy fallback) |
+| `is_kimi_balance_supported()` | official HTTPS `api.moonshot.cn` / `api.moonshot.ai` only |
+| `is_kimi_usage_supported()` | official HTTPS `api.kimi.com/coding` only (no proxy fallback) |
 
 So `provider = openai` + a Moonshot-compatible `base_url` still behaves as Kimi
 for thinking injection. Balance polling is enabled only for the official HTTPS
-`api.moonshot.cn` / `api.moonshot.ai` hosts; custom proxies never forward their
-credentials to Moonshot. Prefer a dedicated `[llm.providers.kimi]` entry.
+`api.moonshot.cn` / `api.moonshot.ai` hosts (Kimi) and `api.deepseek.com`
+(DeepSeek); Kimi Code usage quota only on `api.kimi.com/coding`. Custom proxies
+never forward their credentials to an official balance / usage endpoint. Prefer
+a dedicated `[llm.providers.kimi]` entry.
 
 ---
 
@@ -611,22 +616,34 @@ Intent: per-session KV cache isolation on DeepSeek (and compatible proxies), red
 
 | Function | Endpoint | When used |
 |----------|----------|-----------|
-| `query_deepseek_balance()` | `GET .../user/balance` | TUI startup + periodic timer + `/balance` command |
+| `query_deepseek_balance()` | `GET https://api.deepseek.com/user/balance` | TUI startup + periodic timer + `/balance` command |
 | `query_kimi_balance()` | `GET .../v1/users/me/balance` on `api.moonshot.cn` or `api.moonshot.ai` | Same |
-| `query_kimi_code_usage()` | `GET .../v1/usages` on `api.kimi.com/coding` | Kimi Code subscription quota |
+| `query_kimi_code_usage()` | `GET https://api.kimi.com/coding/v1/usages` | Kimi Code subscription quota |
 
 `query_*_balance()` returns `tact_protocol::BalanceInfo`, routed on the separate account channel as `AccountUpdate::Balance`. Kimi Code usage returns `UsageQuotaInfo` as `AccountUpdate::UsageQuota`.
 
-**Kimi Code endpoint:** `api.kimi.com/coding` has no balance REST API. Use `query_kimi_code_usage()` instead; surfaced as `AccountUpdate::UsageQuota` on the bottom bar (`week` + `5h` windows).
+**Kimi Code endpoint:** `api.kimi.com/coding` has no balance REST API. Use `query_kimi_code_usage()` instead; surfaced as `AccountUpdate::UsageQuota` on the bottom bar (`week` + `5h` windows). The usage API is official-endpoint only (HTTPS, exact host `api.kimi.com`, `/coding` path): custom proxies serving `kimi-for-coding` are treated as unsupported and their API keys are never sent to `api.kimi.com`.
+
+**DeepSeek endpoint:** the balance API exists only on the official host.
+`query_deepseek_balance()` is enabled exclusively when `base_url` uses HTTPS
+with the exact host `api.deepseek.com` (a `/v1` suffix is fine; an empty base
+URL resolves to the official default). Custom OpenAI-compatible proxies
+targeting DeepSeek models are treated as unsupported and their API keys are
+never sent to `api.deepseek.com`.
 
 **Credential boundary:** Kimi balance polling is enabled only when `base_url`
 uses HTTPS with the exact host `api.moonshot.cn` or `api.moonshot.ai`. Custom
 OpenAI-compatible proxies are treated as unsupported and their API keys are
-never sent to an official Moonshot balance endpoint.
+never sent to an official Moonshot balance endpoint. The same boundary applies
+to DeepSeek (`api.deepseek.com`) and Kimi Code usage (`api.kimi.com/coding`).
 
 **Polling:** `interactive.rs` performs one startup query and starts
 `account::spawn_poller` only when `account::is_supported()` is true. The
 `/balance` command uses the same `query_once` path through the command driver.
+On failure the poller backs off (10 s → 20 s → … → 5 min) and forwards only the
+**first** `AccountUpdate::Error` of a consecutive outage; later retries stay
+silent until a query succeeds again, so a single outage shows one flash message
+instead of one per backoff tick.
 
 ```mermaid
 sequenceDiagram
