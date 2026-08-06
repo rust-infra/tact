@@ -227,6 +227,10 @@ pub struct App {
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
     pub(crate) raw_message_types: Vec<RawMessageType>,
+    /// Parallel to `raw_messages`: cached `MarkdownCell` when the message is
+    /// a whole-markdown notice (`AgentUpdate::MdInfo` / `/skills`), `None`
+    /// otherwise. `Some` doubles as the "render as MarkdownCell" marker.
+    pub(crate) markdown_cells: Vec<Option<crate::render::cells::markdown::MarkdownCell>>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,

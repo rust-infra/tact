@@ -67,6 +67,7 @@ impl App {
             messages: Vec::new(),
             raw_messages: Vec::new(),
             raw_message_types: Vec::new(),
+            markdown_cells: Vec::new(),
             plan: PlanPanel::default(),
             status: Status::Idle,
             agent_rx,

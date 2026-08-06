@@ -2,7 +2,10 @@ use arboard::Clipboard;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ratatui::{layout::Rect, text::Line};
 
-use crate::widgets::{state::*, tool_widget::ToolPhase};
+use crate::{
+    render::cells::markdown::MarkdownCell,
+    widgets::{state::*, tool_widget::ToolPhase},
+};
 
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
@@ -229,6 +232,22 @@ impl App {
         self.messages.push(line_msg);
         self.raw_messages.push(raw_msg);
         self.raw_message_types.push(msg_type);
+        self.markdown_cells.push(None);
+    }
+
+    /// Append a whole-Markdown notice as a single message.
+    ///
+    /// The raw source is stored verbatim (newlines included); `messages`
+    /// keeps an empty placeholder row. The `MarkdownCell` lives in
+    /// `markdown_cells` so rendering can cache the parsed layout across
+    /// frames (see `render_log_panel` Phase 1/3).
+    pub(crate) fn append_markdown(&mut self, content: impl Into<String>) {
+        let content = content.into();
+        let cell = MarkdownCell::new(&content, &self.theme);
+        self.messages.push(Line::from(""));
+        self.raw_messages.push(content);
+        self.raw_message_types.push(RawMessageType::LLM);
+        self.markdown_cells.push(Some(cell));
     }
 
     pub(crate) fn append_blank(&mut self, msg_type: RawMessageType) {
@@ -257,6 +276,7 @@ impl App {
         self.messages.insert(idx, line_msg);
         self.raw_messages.insert(idx, raw_msg);
         self.raw_message_types.insert(idx, msg_type);
+        self.markdown_cells.insert(idx, None);
     }
 
     pub(crate) fn splice_msgs(
@@ -270,20 +290,22 @@ impl App {
         let n = lines.len();
         self.messages.splice(range.clone(), lines);
         self.raw_messages.splice(range.clone(), raw);
-        self.raw_message_types
-            .splice(range, std::iter::repeat_n(msg_type, n));
+        self.raw_message_types.splice(range.clone(), std::iter::repeat_n(msg_type, n));
+        self.markdown_cells.splice(range, (0..n).map(|_| None));
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
         self.messages.drain(range.clone());
         self.raw_messages.drain(range.clone());
-        self.raw_message_types.drain(range);
+        self.raw_message_types.drain(range.clone());
+        self.markdown_cells.drain(range);
     }
 
     pub(crate) fn remove_msg(&mut self, idx: usize) {
         self.messages.remove(idx);
         self.raw_messages.remove(idx);
         self.raw_message_types.remove(idx);
+        self.markdown_cells.remove(idx);
     }
 
     /// Sentinel row — rendered as a full-width rule with frozen elapsed label.

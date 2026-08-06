@@ -19,10 +19,7 @@ pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 use tact_protocol::UserCommand;
 
-use crate::{
-    render::render_md::render_markdown_with_tables,
-    widgets::state::{App, InputMode, SelectKind, Status, log_messages::classify_system_message},
-};
+use crate::widgets::state::{App, InputMode, SelectKind, Status};
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -431,8 +428,8 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
-/// `/skills` output is plain markdown (heading + pipe table) rendered through
-/// the shared width-aware pipeline; no hand-built ratatui lines.
+/// `/skills` output is plain markdown (heading + pipe table) appended as a
+/// single whole-Markdown message and rendered by `MarkdownCell`.
 fn show_skills_command(app: &mut App) {
     app.add_new_line();
 
@@ -442,10 +439,7 @@ fn show_skills_command(app: &mut App) {
     } else {
         md
     };
-    let (styled, raw) =
-        render_markdown_with_tables(&md, &app.theme, Some(app.log_scroll.width as usize));
-    let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
-    app.extend_msgs(styled, raw, ty);
+    app.append_markdown(md);
 
     // Trailing blank so the next `/skills` (or other system block) is not flush.
     app.add_new_line();

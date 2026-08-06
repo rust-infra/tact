@@ -237,6 +237,10 @@ impl App {
             AgentUpdate::Info(msg) => {
                 self.add_system_message(msg);
             }
+            // Whole-Markdown notice, rendered as a single MarkdownCell
+            AgentUpdate::MdInfo(msg) => {
+                self.append_markdown(msg);
+            }
             AgentUpdate::SessionStats(stats_text) => {
                 // GFM pipe tables from SessionStats::summary(); tui-markdown draws box borders.
                 let (rendered, _) = render_markdown_tui(&stats_text, &self.theme);
