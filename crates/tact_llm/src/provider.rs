@@ -242,9 +242,8 @@ impl ProviderInfo {
         if self.base_url.is_empty() {
             return self.provider == ProviderKind::DeepSeek;
         }
-        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
-            url.scheme() == "https" && url.host_str() == Some("api.deepseek.com")
-        })
+        reqwest::Url::parse(&self.base_url)
+            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"))
     }
 
     /// Returns true when account balance or usage quota queries are supported.
