@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-06 — 压缩摘要 MaxTokens 截断后自动续写
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 相关 | Ch 5 §3（摘要调用）、Ch 5 §4（校验）、`crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`）、`crates/tact/src/recovery.rs`（`MAX_CONTINUATION_ATTEMPTS`、`continuation_message`） |
+| 症状 / 动机 | 压缩摘要的 LLM 调用返回 `MaxTokens`（输出上限）时，摘要循环把它当作非法 stop reason 直接报错 `compaction summary ended with invalid stop reason: MaxTokens`，压缩整体失败——尽管部分摘要完全可用。对推理模型而言，摘要经常撞上输出预算。 |
+| 决策 | 摘要调用现在有两条独立的恢复轴：瞬时传输错误仍按有界退避重试；`MaxTokens` 截断则把已产生的部分摘要作为 assistant 消息、追加一条续写提示（与主循环相同的 `continuation_message` 选择器：第 1 次用直接续写提示，之后用收敛提示）再次调用，最多 `MAX_CONTINUATION_ATTEMPTS`（3）次。每次尝试按增长的消息历史重建请求：`[User(摘要提示), Assistant(部分摘要), User(继续), …]`。续写次数耗尽后，部分摘要被接受为 best-effort 而不是报错（Codex-style 重建反正会保留最近的真实用户消息）；`MaxTokens` 因此不再是"非法 stop reason"。 |
+| 变更后行为 | 截断的摘要会发出 `[compact continue n/3] summary truncated, continuing` Info，并把所有部分块合并进最终摘要，压缩成功而不是报错。拒绝 / 其它异常终止原因和空文本仍会失败且不替换旧 context。 |
+| 指针 | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode` 摘要循环、stop reason 校验），测试 `local_compact_continues_truncated_summary`、`local_compact_continues_through_multiple_truncations`、`local_compact_accepts_partial_summary_when_continuations_exhausted`，Ch 5 §3/§4 |
+
+---
+
 ## 1. 2026-08-06 — 首次运行自动生成默认配置 ~/.tact/config.toml
 
 | 字段 | 值 |
