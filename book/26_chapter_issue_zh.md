@@ -36,9 +36,9 @@
 | 类型 | `optimization` |
 | 相关 | `docs/token_usage_schema.md`（Session Stats Display）、`crates/tact/src/hook/rtk_filter.rs`、`crates/tact/src/stats.rs` |
 | 症状/动机 | 开启 `tools.rtk_filter = true` 后，bash 输出会经 `rtk pipe` 压缩，但没有任何指标说明过滤器是否真的生效、删掉了多少输出、花了多久——用户无法判断 RTK 是在省 token 还是悄悄原样透传。 |
-| 决策 | `SessionStats` 新增五个 relaxed 原子计数器（`rtk_calls`、`rtk_success_calls`、`rtk_failure_calls`、`rtk_saved_chars`、`rtk_elapsed_ms`），由 post-tool 钩子直接累加。必须用原子量（而非普通 `u64`），因为钩子只能拿到 `&Agent`（不可变）。只有 `rtk pipe` 以 0 退出且 stdout 非空才算一次成功；节省字符数仅在成功时按 `raw_len − filtered_len`（饱和计算，按字符而非字节）累加。会话结束摘要新增 `RTK tokens saved` 估算，采用 1 token ≈ 4 字符的长度启发式。 |
-| 改后行为 | 只要记录到至少一次 RTK 尝试，会话统计弹窗 / 退出摘要即显示 `RTK calls (s/f)`、`RTK chars saved`、`RTK tokens saved`（chars/4）与 `RTK time`。未开启 `rtk_filter` 或没有 bash 输出被过滤时，这些行完全不显示。 |
-| 指针 | `crates/tact/src/stats.rs`（`SessionStats::record_rtk`、`summary()` 中的 RTK 行）、`crates/tact/src/hook/rtk_filter.rs`（`pipe_through_rtk` → `(output, succeeded, elapsed_ms)`、`saved_chars`、`create_rtk_post_tool_hook`）、`docs/token_usage_schema.md` |
+| 决策 | `SessionStats` 新增六个 relaxed 原子计数器（`rtk_calls`、`rtk_success_calls`、`rtk_failure_calls`、`rtk_saved_chars`、`rtk_input_chars`、`rtk_elapsed_ms`），由 post-tool 钩子直接累加。必须用原子量（而非普通 `u64`），因为钩子只能拿到 `&Agent`（不可变）。只有 `rtk pipe` 以 0 退出且 stdout 非空才算一次成功；节省字符数仅在成功时按 `raw_len − filtered_len`（饱和计算，按字符而非字节）累加。`rtk_input_chars` 累计每次尝试的原始长度（成功与失败都计），使会话级节省率能把失败尝试按零节省计入。会话结束摘要新增 `RTK tokens saved` 估算（1 token ≈ 4 字符的长度启发式）与 `RTK savings rate` 行（节省字符 / 输入字符）。 |
+| 改后行为 | 只要记录到至少一次 RTK 尝试，会话统计弹窗 / 退出摘要即显示 `RTK calls (s/f)`、`RTK chars saved`、`RTK tokens saved`（chars/4）、`RTK savings rate`（saved/input %）与 `RTK time`。未开启 `rtk_filter` 或没有 bash 输出被过滤时，这些行完全不显示。失败的 bash 执行（`StepStatus::Failed`）既不参与过滤也不计入 RTK 统计——其输出完整进入 LLM 上下文。 |
+| 指针 | `crates/tact/src/stats.rs`（`SessionStats::record_rtk`、`summary()` 中的 RTK 行）、`crates/tact/src/hook/rtk_filter.rs`（`pipe_through_rtk` → `(output, succeeded, elapsed_ms)`、`saved_chars`、`should_filter`、`create_rtk_post_tool_hook`）、`crates/tact/src/hook/mod.rs`（`PostToolUseFn` 现接收 `StepStatus`）、`docs/token_usage_schema.md` |
 
 ---
 

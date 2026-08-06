@@ -50,6 +50,9 @@ pub struct SessionStats {
     pub rtk_failure_calls: AtomicU64,
     /// Total characters removed by successful compressions (raw − filtered).
     pub rtk_saved_chars: AtomicU64,
+    /// Total raw input characters across all attempts (successes and
+    /// failures), used to compute the session-wide savings rate.
+    pub rtk_input_chars: AtomicU64,
     /// Total wall-clock time spent running `rtk pipe` in milliseconds.
     pub rtk_elapsed_ms: AtomicU64,
     /// When the session started.
@@ -79,6 +82,7 @@ impl Default for SessionStats {
             rtk_success_calls: AtomicU64::new(0),
             rtk_failure_calls: AtomicU64::new(0),
             rtk_saved_chars: AtomicU64::new(0),
+            rtk_input_chars: AtomicU64::new(0),
             rtk_elapsed_ms: AtomicU64::new(0),
             start_time: Instant::now(),
         }
@@ -251,13 +255,17 @@ impl SessionStats {
     ///
     /// Atomics are used because post-tool hooks only receive `&Agent`
     /// (immutable), so counters are updated via `fetch_add`.
-    pub fn record_rtk(&self, succeeded: bool, saved_chars: u64, elapsed_ms: u64) {
+    pub fn record_rtk(&self, succeeded: bool, input_chars: u64, saved_chars: u64, elapsed_ms: u64) {
         self.rtk_calls.fetch_add(1, Ordering::Relaxed);
         if succeeded {
             self.rtk_success_calls.fetch_add(1, Ordering::Relaxed);
         } else {
             self.rtk_failure_calls.fetch_add(1, Ordering::Relaxed);
         }
+        // Input chars are counted on every attempt (success or failure) so the
+        // session-wide savings rate reflects failed attempts as zero savings.
+        self.rtk_input_chars
+            .fetch_add(input_chars, Ordering::Relaxed);
         self.rtk_saved_chars
             .fetch_add(saved_chars, Ordering::Relaxed);
         self.rtk_elapsed_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
@@ -382,11 +390,18 @@ impl SessionStats {
                 let success = self.rtk_success_calls.load(Ordering::Relaxed);
                 let failure = self.rtk_failure_calls.load(Ordering::Relaxed);
                 let saved_chars = self.rtk_saved_chars.load(Ordering::Relaxed);
+                let input_chars = self.rtk_input_chars.load(Ordering::Relaxed);
                 let elapsed_ms = self.rtk_elapsed_ms.load(Ordering::Relaxed);
+                let savings_rate = if input_chars > 0 {
+                    (saved_chars as f64 / input_chars as f64) * 100.0
+                } else {
+                    0.0
+                };
                 trail_rows.push(("RTK calls (s/f)", fmt_count_sf(rtk_calls, success, failure)));
                 trail_rows.push(("RTK chars saved", saved_chars.to_string()));
                 // 1 token ≈ 4 chars heuristic (length-based estimate).
                 trail_rows.push(("RTK tokens saved", format!("~{}", saved_chars / 4)));
+                trail_rows.push(("RTK savings rate", format!("{savings_rate:.1}%")));
                 trail_rows.push(("RTK time", fmt_duration(Duration::from_millis(elapsed_ms))));
             }
 
@@ -434,13 +449,14 @@ mod tests {
     #[test]
     fn record_rtk_accumulates_and_summarizes() {
         let s = SessionStats::default();
-        s.record_rtk(true, 1000, 50);
-        s.record_rtk(true, 2500, 30);
-        s.record_rtk(false, 0, 10);
+        s.record_rtk(true, 5000, 1000, 50);
+        s.record_rtk(true, 10_000, 2500, 30);
+        s.record_rtk(false, 500, 0, 10);
         assert_eq!(s.rtk_calls.load(Ordering::Relaxed), 3);
         assert_eq!(s.rtk_success_calls.load(Ordering::Relaxed), 2);
         assert_eq!(s.rtk_failure_calls.load(Ordering::Relaxed), 1);
         assert_eq!(s.rtk_saved_chars.load(Ordering::Relaxed), 3500);
+        assert_eq!(s.rtk_input_chars.load(Ordering::Relaxed), 15_500);
         assert_eq!(s.rtk_elapsed_ms.load(Ordering::Relaxed), 90);
 
         let text = s.summary();
@@ -460,6 +476,14 @@ mod tests {
         assert!(
             text.contains("~875"),
             "tokens saved should be chars/4:\n{text}"
+        );
+        assert!(
+            text.contains("RTK savings rate"),
+            "missing savings rate:\n{text}"
+        );
+        assert!(
+            text.contains("22.6%"),
+            "savings rate should be saved/input (3500/15500):\n{text}"
         );
         assert!(text.contains("RTK time"), "missing RTK time:\n{text}");
     }

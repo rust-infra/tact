@@ -278,6 +278,7 @@ Tool calls
 | RTK calls (s/f)  | XX (s/f) |
 | RTK chars saved  |      XX |
 | RTK tokens saved |    ~XX |
+| RTK savings rate |  XX.X% |
 | RTK time         |   XX.Xs |
 ─────────────────────────────────────────────
 ```
@@ -289,7 +290,11 @@ whenever the RTK output filter (`tools.rtk_filter = true`) recorded at least
 one attempt: `RTK calls (s/f)` is total/success/failure attempts, `RTK chars
 saved` is the raw−filtered character delta of successful compressions, `RTK
 tokens saved` is that delta divided by 4 (1 token ≈ 4 chars length heuristic),
-and `RTK time` is the total wall-clock time spent in `rtk pipe`.
+`RTK savings rate` is saved chars over all raw input chars (successes and
+failures, so failed attempts count as zero savings), and `RTK time` is the
+total wall-clock time spent in `rtk pipe`. Failed bash executions
+(`StepStatus::Failed`) are skipped entirely — they are neither filtered nor
+counted, so error output reaches the LLM intact.
 
 ## Code Locations
 

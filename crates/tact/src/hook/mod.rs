@@ -61,6 +61,7 @@ pub trait PostToolUseFn:
         &'tool LoopState,
         &'tool ToolUse,
         &'tool mut ToolResult,
+        tact_protocol::StepStatus,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
     + Send
     + Sync
@@ -89,6 +90,7 @@ impl<F> PostToolUseFn for F where
             &'tool LoopState,
             &'tool ToolUse,
             &'tool mut ToolResult,
+            tact_protocol::StepStatus,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
         + Send
         + Sync

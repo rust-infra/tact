@@ -86,16 +86,30 @@ fn saved_chars(raw_chars: u64, filtered: &str, succeeded: bool) -> u64 {
     raw_chars.saturating_sub(filtered.chars().count() as u64)
 }
 
+/// Whether a tool result should be piped through `rtk pipe`.
+///
+/// Only successful (`StepStatus::Success`) bash results are compression
+/// candidates. Failed executions (non-zero exit, timeout, cancellation) keep
+/// their full output: error text must stay intact for debugging and must not
+/// be counted in RTK savings statistics.
+fn should_filter(name: &str, status: tact_protocol::StepStatus, content: &str) -> bool {
+    name == "bash" && status == tact_protocol::StepStatus::Success && !content.is_empty()
+}
+
 /// Creates a `PostToolUse` hook that pipes `bash` tool outputs through
 /// `rtk pipe` when RTK is installed. Every attempt is recorded in the
 /// session stats (success/failure counts, saved chars, elapsed time).
+///
+/// Failed tool executions (`StepStatus::Failed`, e.g. non-zero exit) are
+/// passed through **unfiltered**: error output must stay byte-exact for the
+/// LLM to debug, and is not counted in RTK stats.
 pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
-    |agent: &crate::LoopState, tool_use: &super::ToolUse, tool_result: &mut super::ToolResult| {
+    |agent: &crate::LoopState,
+     tool_use: &super::ToolUse,
+     tool_result: &mut super::ToolResult,
+     status: tact_protocol::StepStatus| {
         Box::pin(async move {
-            if tool_use.name != "bash" {
-                return Ok(HookControl::Continue);
-            }
-            if tool_result.content.is_empty() {
+            if !should_filter(&tool_use.name, status, &tool_result.content) {
                 return Ok(HookControl::Continue);
             }
             // Take ownership of the content instead of cloning: the filtered
@@ -105,7 +119,10 @@ pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
             let raw_chars = raw.chars().count() as u64;
             let (filtered, succeeded, elapsed_ms) = pipe_through_rtk(raw);
             let saved = saved_chars(raw_chars, &filtered, succeeded);
-            agent.runtime.stats.record_rtk(succeeded, saved, elapsed_ms);
+            agent
+                .runtime
+                .stats
+                .record_rtk(succeeded, raw_chars, saved, elapsed_ms);
             tool_result.content = filtered;
             Ok(HookControl::Continue)
         })
@@ -152,5 +169,20 @@ mod tests {
             saved_chars("你好世界".chars().count() as u64, "你好", true),
             2
         );
+    }
+
+    #[test]
+    fn should_filter_only_successful_bash_output() {
+        let success = tact_protocol::StepStatus::Success;
+        let failed = tact_protocol::StepStatus::Failed;
+        // Success + bash + non-empty → filter.
+        assert!(should_filter("bash", success, "some output"));
+        // Failed executions never filter, regardless of content.
+        assert!(!should_filter("bash", failed, "some output"));
+        assert!(!should_filter("bash", failed, ""));
+        // Non-bash tools are not candidates (read_file, mcp tools, ...).
+        assert!(!should_filter("read_file", success, "some output"));
+        // Empty content is not a candidate.
+        assert!(!should_filter("bash", success, ""));
     }
 }
