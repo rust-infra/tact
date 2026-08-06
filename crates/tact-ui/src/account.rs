@@ -249,7 +249,7 @@ mod tests {
             .await
             .expect("timeout waiting for poller shutdown");
         assert!(
-            matches!(shutdown, None),
+            shutdown.is_none(),
             "poller must shut down silently after NotSupported, got {shutdown:?}"
         );
     }
@@ -271,7 +271,7 @@ mod tests {
             .await
             .expect("timeout waiting for poller shutdown");
         assert!(
-            matches!(shutdown, None),
+            shutdown.is_none(),
             "NotSupported must terminate silently, got {shutdown:?}"
         );
     }
