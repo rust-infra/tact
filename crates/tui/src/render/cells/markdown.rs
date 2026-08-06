@@ -495,7 +495,6 @@ fn main() {
 mod integration_tests {
     use tact_protocol::AgentUpdate;
 
-    use super::*;
     use crate::{
         render::test_harness::{make_app, render_log_panel_text},
         widgets::state::RawMessageType,
