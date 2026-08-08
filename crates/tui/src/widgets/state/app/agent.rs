@@ -14,6 +14,7 @@ use tact_protocol::{
 use crate::{
     render::render_md::{
         format_table, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
+        render_plain_markdown,
     },
     widgets::{
         state::*,
@@ -546,11 +547,12 @@ impl App {
     /// never becomes a `CodeBlock` card. Every other block — ordinary code,
     /// invalid Mermaid, or an interrupted (unclosed) Mermaid fence — keeps
     /// the existing code-card overlay fallback (blank placeholder region +
-    /// `CodeBlock` entry) so no source is dropped. An unclosed Mermaid fence
-    /// previews its raw source with a plain `text` language (the reconstructed
-    /// fence must not be re-routed through the Mermaid renderer), while the
-    /// card keeps the original `lang` metadata. Resets
-    /// `code_block_is_mermaid` once the buffered block is finalized.
+    /// `CodeBlock` entry) so no source is dropped. The fallback styled preview
+    /// is rendered through the plain (non-Mermaid) code path exactly once, so
+    /// a reconstructed fallback fence is never re-routed through the Mermaid
+    /// renderer, while the card keeps the original `lang` metadata and raw
+    /// content. Resets `code_block_is_mermaid` once the buffered block is
+    /// finalized.
     pub(crate) fn finish_stream_code_block(
         &mut self,
         lang: String,
@@ -569,7 +571,6 @@ impl App {
             return;
         }
 
-        let source = format!("```{lang}\n{}\n```", lines.join("\n"));
         if closed
             && is_mermaid
             && let Some(diagram) = render_mermaid_block(
@@ -593,15 +594,15 @@ impl App {
         // rendering. Without a recorded placeholder range, append the rendered
         // content directly instead.
         //
-        // An unclosed Mermaid fence must keep readable raw source in its styled
-        // preview: re-rendering the reconstructed closed fence through the
-        // Mermaid route would draw a diagram for a fence that never closed.
-        // Use a plain `text` language for that preview source only; the card
-        // keeps the original `lang`.
-        let preview_lang = if is_mermaid && !closed { "text" } else { &lang };
-        let preview_source = format!("```{preview_lang}\n{}\n```", lines.join("\n"));
+        // The styled preview is rendered through the plain (non-Mermaid) code
+        // path exactly once: re-routing the reconstructed fence through the
+        // Mermaid router could draw a diagram for a fence that never closed
+        // (or re-parse an invalid one), and a nested literal ```mermaid line
+        // inside the buffered source must stay code content. The card keeps
+        // the original `lang` metadata and raw `content`.
+        let preview_source = format!("```{lang}\n{}\n```", lines.join("\n"));
         const MAX_CODE_PREVIEW: usize = 30;
-        let (styled, _) = render_markdown_tui(&preview_source, &self.theme);
+        let (styled, raw) = render_plain_markdown(&preview_source, &self.theme, None);
         match start_idx {
             Some(start) => {
                 let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
@@ -624,7 +625,6 @@ impl App {
                 });
             }
             None => {
-                let (styled, raw) = render_markdown_tui(&preview_source, &self.theme);
                 self.extend_msgs(styled, raw, RawMessageType::LLM);
             }
         }

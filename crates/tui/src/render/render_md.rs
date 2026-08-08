@@ -170,11 +170,15 @@ type SegmentRenderer = fn(&str, &Theme, Option<usize>) -> (Vec<Line<'static>>, V
 /// `width` (bounded to [`DEFAULT_RENDER_WIDTH`] when no width is given);
 /// every other chunk (prose, pipe tables, non-Mermaid code fences) is
 /// delegated to `render_segment` with the caller's width passed through
-/// unchanged — `None` keeps meaning "unlimited" for table layout. When a
-/// Mermaid fence cannot be rendered (or is never closed) the original fence
-/// text goes through the existing code renderer instead, so no source is ever
-/// dropped. Returns styled lines plus their raw text, keeping the same shape
-/// as the existing renderers.
+/// unchanged — `None` keeps meaning "unlimited" for table layout. Only
+/// *top-level* Mermaid fences are routed: while scanning, non-Mermaid fenced
+/// blocks ( ` ```rust `, ` ```text `, bare ` ``` `, …) are tracked so a
+/// literal ` ```mermaid ` line inside ordinary code is passed through
+/// unchanged until its matching closing fence — it is code content, never a
+/// diagram. When a Mermaid fence cannot be rendered (or is never closed) the
+/// original fence text goes through the existing code renderer instead, so no
+/// source is ever dropped. Returns styled lines plus their raw text, keeping
+/// the same shape as the existing renderers.
 fn route_mermaid_fences(
     text: &str,
     theme: &Theme,
@@ -190,60 +194,82 @@ fn route_mermaid_fences(
     let mermaid_width = width.unwrap_or(DEFAULT_RENDER_WIDTH).max(1);
 
     let mut lines = text.lines();
+    let mut in_non_mermaid_fence = false;
     while let Some(line) = lines.next() {
-        if mermaid_fence_opener(line).is_none() {
+        if in_non_mermaid_fence {
+            // Inside an ordinary fenced block: pass everything through until
+            // its closing fence, so a literal ```mermaid inside e.g. ```rust
+            // is never mistaken for a top-level diagram.
+            chunk.push_str(line);
+            chunk.push('\n');
+            if line.trim() == "```" {
+                in_non_mermaid_fence = false;
+            }
+            continue;
+        }
+
+        if mermaid_fence_opener(line).is_some() {
+            // Collect source lines until a trimmed closing fence.
+            let mut source = String::new();
+            let mut closed = false;
+            for src in lines.by_ref() {
+                if src.trim() == "```" {
+                    closed = true;
+                    break;
+                }
+                source.push_str(src);
+                source.push('\n');
+            }
+
+            // Flush preceding prose so the diagram keeps its position in the doc.
+            flush_segment(
+                &mut styled_lines,
+                &mut raw_lines,
+                &mut chunk,
+                theme,
+                width,
+                render_segment,
+            );
+
+            if !closed {
+                // Unclosed fence: keep it as ordinary code content, never drop it.
+                let block = format!("```mermaid\n{source}");
+                let (s, r) = render_plain_markdown(&block, theme, width);
+                styled_lines.extend(s);
+                raw_lines.extend(r);
+                continue;
+            }
+
+            match render_mermaid_block(&source, theme, mermaid_width) {
+                Some(rendered) => {
+                    for line in rendered {
+                        let raw = line.to_string();
+                        raw_lines.push(raw);
+                        styled_lines.push(line);
+                    }
+                }
+                None => {
+                    // Invalid diagram: send the original fence through the code renderer.
+                    let block = format!("```mermaid\n{source}```");
+                    let (s, r) = render_plain_markdown(&block, theme, width);
+                    styled_lines.extend(s);
+                    raw_lines.extend(r);
+                }
+            }
+            continue;
+        }
+
+        if is_fence_opener(line) {
+            // Ordinary (non-Mermaid) fence opener: track the block so any
+            // Mermaid-looking line inside it stays literal code content.
+            in_non_mermaid_fence = true;
             chunk.push_str(line);
             chunk.push('\n');
             continue;
         }
 
-        // Collect source lines until a trimmed closing fence.
-        let mut source = String::new();
-        let mut closed = false;
-        for src in lines.by_ref() {
-            if src.trim() == "```" {
-                closed = true;
-                break;
-            }
-            source.push_str(src);
-            source.push('\n');
-        }
-
-        // Flush preceding prose so the diagram keeps its position in the doc.
-        flush_segment(
-            &mut styled_lines,
-            &mut raw_lines,
-            &mut chunk,
-            theme,
-            width,
-            render_segment,
-        );
-
-        if !closed {
-            // Unclosed fence: keep it as ordinary code content, never drop it.
-            let block = format!("```mermaid\n{source}");
-            let (s, r) = render_plain_markdown(&block, theme, width);
-            styled_lines.extend(s);
-            raw_lines.extend(r);
-            continue;
-        }
-
-        match render_mermaid_block(&source, theme, mermaid_width) {
-            Some(rendered) => {
-                for line in rendered {
-                    let raw = line.to_string();
-                    raw_lines.push(raw);
-                    styled_lines.push(line);
-                }
-            }
-            None => {
-                // Invalid diagram: send the original fence through the code renderer.
-                let block = format!("```mermaid\n{source}```");
-                let (s, r) = render_plain_markdown(&block, theme, width);
-                styled_lines.extend(s);
-                raw_lines.extend(r);
-            }
-        }
+        chunk.push_str(line);
+        chunk.push('\n');
     }
 
     flush_segment(
@@ -285,6 +311,15 @@ fn mermaid_fence_opener(line: &str) -> Option<()> {
     lang.eq_ignore_ascii_case("mermaid").then_some(())
 }
 
+/// Detect any Markdown fence opener.
+///
+/// A line whose trimmed form starts with three backticks opens a fence,
+/// whether its language is `mermaid`, another language (`rust`, `text`, …),
+/// or absent (a bare ` ``` ` with no info string).
+fn is_fence_opener(line: &str) -> bool {
+    line.trim().starts_with("```")
+}
+
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
 ///
 /// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
@@ -299,8 +334,11 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
     )
 }
 
-/// The plain tui-markdown chunk renderer (no width-aware tables).
-fn render_plain_markdown(
+/// The plain tui-markdown chunk renderer (no width-aware tables, no Mermaid
+/// routing). Fallback code-card previews go through this path directly so a
+/// reconstructed fallback fence is never re-routed through the Mermaid
+/// renderer.
+pub(crate) fn render_plain_markdown(
     text: &str,
     theme: &Theme,
     _width: Option<usize>,
@@ -849,6 +887,63 @@ mod tests {
         let text = raw.join("\n");
 
         assert!(text.contains("fn kept() {}"), "code source missing: {text}");
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_non_mermaid_fence_is_literal() {
+        // A literal ```mermaid line inside an ordinary (non-Mermaid) fenced
+        // block is code content, not a diagram: only top-level Mermaid fences
+        // may be routed. The nested fence must survive unchanged and no box-art
+        // may appear.
+        for lang in ["text", "rust"] {
+            let md = format!("```{lang}\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n");
+            let (lines, raw) = render_markdown_tui(&md, &theme());
+            let text = raw.join("\n");
+
+            assert!(
+                text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+                "literal Mermaid fence inside ```{lang} must stay code content: {text}"
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+                "nested Mermaid fence must not render a diagram (```{lang}): {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_markdown_with_tables_mermaid_fence_inside_non_mermaid_fence_is_literal() {
+        // Same guarantee through the width-aware tables pipeline: the router
+        // must pass a non-Mermaid fenced block through before the table
+        // scanner (or the inner markdown pass) ever sees its lines.
+        let md = "\
+prose
+
+```text
+```mermaid
+sequenceDiagram
+  Alice->>Bob: Hello
+```
+";
+        let (lines, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("prose"),
+            "surrounding prose must survive: {text}"
+        );
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ```text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "nested Mermaid fence must not render a diagram: {text}"
+        );
     }
 
     #[test]

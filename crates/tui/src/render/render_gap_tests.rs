@@ -356,6 +356,59 @@ fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid() {
     );
 }
 
+#[test]
+fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid_with_nested_fence() {
+    // The buffered Mermaid source itself contains a literal ```mermaid fence
+    // line. The fallback preview must be rendered through the plain code path
+    // exactly once: re-routing the reconstructed preview fence through the
+    // Mermaid router would parse the nested fence as a real diagram and draw
+    // box-art inside the code card.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```mermaid\nflowchart TD\n  A --> B\n"
+            .into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "unclosed Mermaid must use code fallback"
+    );
+    let block = &app.code_blocks[0];
+    assert_eq!(
+        block.lang, "mermaid",
+        "card must keep the original language metadata"
+    );
+    assert!(
+        block.content.contains("sequenceDiagram") && block.content.contains("A --> B"),
+        "fallback lost source: {:?}",
+        block.content
+    );
+    let preview = block
+        .styled
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        preview.contains("sequenceDiagram")
+            && preview.contains("Alice")
+            && preview.contains("A --> B"),
+        "styled preview must contain the raw source, got:\n{preview}"
+    );
+    assert!(
+        !preview.contains('─') && !preview.contains('│'),
+        "styled preview must not contain diagram box-art, got:\n{preview}"
+    );
+    assert!(
+        text.contains("mermaid"),
+        "code card should still render in the log, got:\n{text}"
+    );
+}
+
 // --- P1: Normal mode, plan states, popup scroll, file picker highlight, focus ---
 
 #[test]
