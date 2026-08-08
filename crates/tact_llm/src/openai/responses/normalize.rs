@@ -182,10 +182,9 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
             OutputItem::Compaction(_) => {}
             // Unmapped output items known to the typed SDK (file search, web
             // search, computer use, …) produce no ContentBlock but are
-            // retained as JSON in `output_items`. A truly unknown future item
-            // type is rejected earlier by the typed SDK boundary (async-openai
-            // `OutputItem` has no `Unknown` variant): hard protocol error,
-            // never a silent drop or fallback.
+            // retained as JSON in `output_items`. Truly unknown future items
+            // are filtered by the raw wire boundary before this typed
+            // normalization path and are restored from the raw sequence.
             _ => {}
         }
     }

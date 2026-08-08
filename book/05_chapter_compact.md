@@ -328,9 +328,9 @@ protocol baseline through the Responses API instead of running a local
 summarizer. The local pipeline above (steps 1–4, `compact_history_local`)
 remains the path for **non-Responses** providers (Anthropic, DeepSeek, Kimi,
 Chat Completions); it is **never** used as a fallback for OpenAI Responses.
-The one exception is DeepSeek + Responses (see "DeepSeek exception" below).
+DeepSeek and Kimi Responses configurations are currently rejected during config resolution until their endpoints pass the same native-compaction and state-continuation verification.
 
-The native path has six properties:
+The native path has seven properties:
 
 1. **Ordinary request + `context_management`** — every `/responses` request
    built by `create_response` carries
@@ -367,14 +367,14 @@ The native path has six properties:
    unsupported (a hard protocol error, never a silent local summary). Tact
    resets `last_token_total` to 0 after native compaction because the next
    request's input is the compacted baseline, not the pre-compact prompt.
+7. **Raw item preservation** — the adapter parses the response envelope before
+   typed normalization. Known items feed Tact content/state logic; unknown
+   input/output items remain raw JSON in the protocol baseline and are replayed
+   on the next request. Unknown harmless stream events are ignored, while an
+   incomplete protocol-state item still fails the response.
 
-**DeepSeek exception** — DeepSeek + `protocol = "responses"` accepts
-`context_management` on ordinary requests (automatic endpoint-side compaction
-works), but its `/responses/compact` is **not** implemented (live-verified
-2026-08-02: it returns an empty body). `compact_history` therefore routes
-DeepSeek + Responses to the local summary pipeline (`compact_history_local`),
-clears the old `provider_state` baseline, and persists messages + `None` state
-atomically. OpenAI Responses keeps the strict no-fallback contract above.
+**Provider availability note** — The generic adapter can still be constructed by lower-level tests for endpoint experiments, but normal configuration keeps DeepSeek and Kimi Responses disabled until their endpoint capabilities are verified.
+
 
 **Protocol contract and verification status** — the automatic-compaction
 replacement baseline (the single `compaction` item first, followed by the
@@ -383,8 +383,9 @@ captured from the target endpoint during design
 (`crates/tact_llm/src/openai/responses/fixtures/automatic_compact.json`); it
 has **not** been verified against a live endpoint. Hard validation remains in
 force: zero or multiple `compaction` items and empty `encrypted_content` are
-protocol errors, and a truly unknown output item type is rejected by the typed
-SDK boundary (no silent drop, no fallback — see [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)).
+protocol errors, and a malformed known output item is rejected by the typed
+normalizer. A truly unknown output item is retained by the raw wire boundary
+and replayed on the next request (see [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)).
 An endpoint whose compaction contract differs from the fixture fails loudly
 with a protocol error rather than being papered over.
 
