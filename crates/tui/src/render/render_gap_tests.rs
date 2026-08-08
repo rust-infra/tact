@@ -328,10 +328,27 @@ fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid() {
         1,
         "unclosed Mermaid must use code fallback"
     );
-    let content = &app.code_blocks[0].content;
+    let block = &app.code_blocks[0];
     assert!(
-        content.contains("sequenceDiagram") && content.contains("Alice->>Bob: Hello"),
-        "fallback lost source: {content:?}"
+        block.content.contains("sequenceDiagram") && block.content.contains("Alice->>Bob: Hello"),
+        "fallback lost source: {:?}",
+        block.content
+    );
+    // The card preview must show the readable raw source, not a diagram drawn
+    // from a fence that never actually closed.
+    let preview = block
+        .styled
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        preview.contains("sequenceDiagram") && preview.contains("Alice"),
+        "styled preview must contain the raw source, got:\n{preview}"
+    );
+    assert!(
+        !preview.contains('─') && !preview.contains('│'),
+        "styled preview must not contain diagram box-art, got:\n{preview}"
     );
     assert!(
         text.contains("mermaid"),

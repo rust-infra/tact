@@ -546,7 +546,10 @@ impl App {
     /// never becomes a `CodeBlock` card. Every other block — ordinary code,
     /// invalid Mermaid, or an interrupted (unclosed) Mermaid fence — keeps
     /// the existing code-card overlay fallback (blank placeholder region +
-    /// `CodeBlock` entry) so no source is dropped. Resets
+    /// `CodeBlock` entry) so no source is dropped. An unclosed Mermaid fence
+    /// previews its raw source with a plain `text` language (the reconstructed
+    /// fence must not be re-routed through the Mermaid renderer), while the
+    /// card keeps the original `lang` metadata. Resets
     /// `code_block_is_mermaid` once the buffered block is finalized.
     pub(crate) fn finish_stream_code_block(
         &mut self,
@@ -556,6 +559,7 @@ impl App {
         stream_end: usize,
         closed: bool,
     ) {
+        let is_mermaid = self.stream.code_block_is_mermaid;
         self.stream.code_block_is_mermaid = false;
 
         if lines.is_empty() {
@@ -567,7 +571,7 @@ impl App {
 
         let source = format!("```{lang}\n{}\n```", lines.join("\n"));
         if closed
-            && lang.eq_ignore_ascii_case("mermaid")
+            && is_mermaid
             && let Some(diagram) = render_mermaid_block(
                 &lines.join("\n"),
                 &self.theme,
@@ -588,8 +592,16 @@ impl App {
         // with a sized blank region and store a CodeBlock overlay for card
         // rendering. Without a recorded placeholder range, append the rendered
         // content directly instead.
+        //
+        // An unclosed Mermaid fence must keep readable raw source in its styled
+        // preview: re-rendering the reconstructed closed fence through the
+        // Mermaid route would draw a diagram for a fence that never closed.
+        // Use a plain `text` language for that preview source only; the card
+        // keeps the original `lang`.
+        let preview_lang = if is_mermaid && !closed { "text" } else { &lang };
+        let preview_source = format!("```{preview_lang}\n{}\n```", lines.join("\n"));
         const MAX_CODE_PREVIEW: usize = 30;
-        let (styled, _) = render_markdown_tui(&source, &self.theme);
+        let (styled, _) = render_markdown_tui(&preview_source, &self.theme);
         match start_idx {
             Some(start) => {
                 let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
@@ -612,7 +624,7 @@ impl App {
                 });
             }
             None => {
-                let (styled, raw) = render_markdown_tui(&source, &self.theme);
+                let (styled, raw) = render_markdown_tui(&preview_source, &self.theme);
                 self.extend_msgs(styled, raw, RawMessageType::LLM);
             }
         }
@@ -722,7 +734,13 @@ impl App {
                 self.stream.code_block = true;
                 self.stream.code_block_buffer.clear();
                 self.stream.code_block_lang = lang.clone();
-                self.stream.code_block_is_mermaid = lang.eq_ignore_ascii_case("mermaid");
+                // Match `mermaid_fence_opener`: detect Mermaid from the first
+                // whitespace-separated info token, case-insensitively, without
+                // changing the stored language metadata for ordinary code.
+                self.stream.code_block_is_mermaid = lang
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|token| token.eq_ignore_ascii_case("mermaid"));
                 self.stream.code_block_start_idx = Some(self.messages.len());
                 self.stream.code_block_line_count = 1;
 
