@@ -172,13 +172,17 @@ type SegmentRenderer = fn(&str, &Theme, Option<usize>) -> (Vec<Line<'static>>, V
 /// delegated to `render_segment` with the caller's width passed through
 /// unchanged — `None` keeps meaning "unlimited" for table layout. Only
 /// *top-level* Mermaid fences are routed: while scanning, non-Mermaid fenced
-/// blocks ( ` ```rust `, ` ```text `, bare ` ``` `, …) are tracked so a
-/// literal ` ```mermaid ` line inside ordinary code is passed through
-/// unchanged until its matching closing fence — it is code content, never a
-/// diagram. When a Mermaid fence cannot be rendered (or is never closed) the
-/// original fence text goes through the existing code renderer instead, so no
-/// source is ever dropped. Returns styled lines plus their raw text, keeping
-/// the same shape as the existing renderers.
+/// blocks ( ` ```rust `, ` ```text `, bare ` ``` `, `~~~text`, ` ````text `,
+/// …) are tracked with their opener marker (`` ` `` or `~`) and run length so
+/// a literal ` ```mermaid ` line inside ordinary code is passed through
+/// unchanged until a matching closing fence — it is code content, never a
+/// diagram. A fence closes only on a line of the same marker with at least
+/// the opener's run length and a whitespace-only suffix, so an inner ` ``` `
+/// inside a ` ````text ` block is content, not the close. When a Mermaid
+/// fence cannot be rendered (or is never closed) the original fence text goes
+/// through the existing code renderer instead, so no source is ever dropped.
+/// Returns styled lines plus their raw text, keeping the same shape as the
+/// existing renderers.
 fn route_mermaid_fences(
     text: &str,
     theme: &Theme,
@@ -194,16 +198,18 @@ fn route_mermaid_fences(
     let mermaid_width = width.unwrap_or(DEFAULT_RENDER_WIDTH).max(1);
 
     let mut lines = text.lines();
-    let mut in_non_mermaid_fence = false;
+    let mut fence: Option<Fence> = None;
     while let Some(line) = lines.next() {
-        if in_non_mermaid_fence {
-            // Inside an ordinary fenced block: pass everything through until
-            // its closing fence, so a literal ```mermaid inside e.g. ```rust
-            // is never mistaken for a top-level diagram.
+        if let Some(opener) = fence {
+            // Inside an ordinary fenced block: pass everything through until a
+            // matching closing fence (same marker, at least the opener's run
+            // length, whitespace-only suffix), so a literal ```mermaid inside
+            // e.g. ~~~text or ````text is never mistaken for a top-level
+            // diagram.
             chunk.push_str(line);
             chunk.push('\n');
-            if line.trim() == "```" {
-                in_non_mermaid_fence = false;
+            if is_fence_closer(line, opener) {
+                fence = None;
             }
             continue;
         }
@@ -259,10 +265,11 @@ fn route_mermaid_fences(
             continue;
         }
 
-        if is_fence_opener(line) {
-            // Ordinary (non-Mermaid) fence opener: track the block so any
-            // Mermaid-looking line inside it stays literal code content.
-            in_non_mermaid_fence = true;
+        if let Some(opener) = parse_fence_opener(line) {
+            // Ordinary (non-Mermaid) fence opener — backtick or tilde, run
+            // length ≥ 3: track the block so any Mermaid-looking line inside
+            // it stays literal code content.
+            fence = Some(opener);
             chunk.push_str(line);
             chunk.push('\n');
             continue;
@@ -311,13 +318,50 @@ fn mermaid_fence_opener(line: &str) -> Option<()> {
     lang.eq_ignore_ascii_case("mermaid").then_some(())
 }
 
-/// Detect any Markdown fence opener.
+/// A Markdown fenced-block descriptor: the fence marker character (`` ` `` or
+/// `~`) and the length of its opening run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fence {
+    marker: char,
+    run_len: usize,
+}
+
+/// Minimum fence run length required by CommonMark (``` / ~~~).
+const MIN_FENCE_RUN: usize = 3;
+
+/// Parse a valid CommonMark-style fence opener.
 ///
-/// A line whose trimmed form starts with three backticks opens a fence,
-/// whether its language is `mermaid`, another language (`rust`, `text`, …),
-/// or absent (a bare ` ``` ` with no info string).
-fn is_fence_opener(line: &str) -> bool {
-    line.trim().starts_with("```")
+/// A line whose trimmed form starts with at least three backticks or tildes
+/// opens a fence; the remainder is the info string. Backtick fences reject an
+/// info string containing a backtick (CommonMark); tilde fences accept any
+/// info string.
+fn parse_fence_opener(line: &str) -> Option<Fence> {
+    let trimmed = line.trim();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let run_len = trimmed.chars().take_while(|&c| c == marker).count();
+    if run_len < MIN_FENCE_RUN {
+        return None;
+    }
+    if marker == '`' && trimmed[run_len..].contains('`') {
+        return None;
+    }
+    Some(Fence { marker, run_len })
+}
+
+/// Recognize a closing fence for `opener`.
+///
+/// The closing line must start (after trimming) with the same marker, have a
+/// run at least as long as the opener's, and contain only whitespace after the
+/// run — a shorter run, a different marker, or any non-whitespace suffix is
+/// content, not a close. (Marker runs are ASCII, so byte indices equal char
+/// indices.)
+fn is_fence_closer(line: &str, opener: Fence) -> bool {
+    let trimmed = line.trim();
+    let run_len = trimmed.chars().take_while(|&c| c == opener.marker).count();
+    run_len >= opener.run_len && trimmed[run_len..].chars().all(char::is_whitespace)
 }
 
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
@@ -911,6 +955,49 @@ mod tests {
                 "nested Mermaid fence must not render a diagram (```{lang}): {text}"
             );
         }
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_tilde_fence_is_literal() {
+        // A literal ```mermaid block inside a non-Mermaid tilde fence
+        // (~~~text) is code content, never a diagram: the router must track
+        // tilde fences just like backtick fences.
+        let md = "~~~text\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n~~~\n";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ~~~text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "literal Mermaid fence inside ~~~text must not render a diagram: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_longer_backtick_fence_is_literal() {
+        // A four-backtick ```text fence containing a literal ```mermaid line
+        // and an inner ``` line must stay literal code until the four-backtick
+        // close: the inner three-backtick line is content, not the closing
+        // fence, and no diagram may be routed.
+        let md = "````text\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n````\n";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ````text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "literal Mermaid fence inside ````text must not render a diagram: {text}"
+        );
     }
 
     #[test]
