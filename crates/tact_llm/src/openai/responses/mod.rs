@@ -898,6 +898,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_response_state_update_retains_unknown_output_item() {
+        let server = MockServer::start().await;
+        let mut response = completed_response_value();
+        response["output"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::json!({
+                "type": "future_item",
+                "id": "future-1",
+                "payload": {"x": 1}
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let info = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        };
+        let crate::LlmProvider::OpenAiResponses(adapter) = info.build_client().unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        let response = adapter
+            .create_message(&simple_request(), None)
+            .await
+            .expect("unknown output item must not abort ordinary response");
+        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
+            state,
+        )) = response.state_update
+        else {
+            panic!("expected Responses state replacement");
+        };
+        assert_eq!(state.input_items[0]["type"], "message");
+        assert_eq!(state.input_items[1]["type"], "future_item");
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn ordinary_responses_request_includes_context_management_when_threshold_configured() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
