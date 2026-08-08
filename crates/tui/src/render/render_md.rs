@@ -167,20 +167,27 @@ type SegmentRenderer = fn(&str, &Theme, Option<usize>) -> (Vec<Line<'static>>, V
 /// Route complete, top-level `mermaid` fences out of `text`.
 ///
 /// A closed ` ```mermaid ` fence is rendered by `render_mermaid_block` at
-/// `width`; every other chunk (prose, pipe tables, non-Mermaid code fences)
-/// is delegated to `render_segment`. When a Mermaid fence cannot be rendered
-/// (or is never closed) the original fence text goes through the existing
-/// code renderer instead, so no source is ever dropped. Returns styled lines
-/// plus their raw text, keeping the same shape as the existing renderers.
+/// `width` (bounded to [`DEFAULT_RENDER_WIDTH`] when no width is given);
+/// every other chunk (prose, pipe tables, non-Mermaid code fences) is
+/// delegated to `render_segment` with the caller's width passed through
+/// unchanged — `None` keeps meaning "unlimited" for table layout. When a
+/// Mermaid fence cannot be rendered (or is never closed) the original fence
+/// text goes through the existing code renderer instead, so no source is ever
+/// dropped. Returns styled lines plus their raw text, keeping the same shape
+/// as the existing renderers.
 fn route_mermaid_fences(
     text: &str,
     theme: &Theme,
-    width: usize,
+    width: Option<usize>,
     render_segment: SegmentRenderer,
 ) -> (Vec<Line<'static>>, Vec<String>) {
     let mut styled_lines = Vec::new();
     let mut raw_lines = Vec::new();
     let mut chunk = String::new();
+
+    // Mermaid layout needs a concrete width; tables/prose keep the caller's
+    // optional width untouched (None = unlimited).
+    let mermaid_width = width.unwrap_or(DEFAULT_RENDER_WIDTH).max(1);
 
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
@@ -215,13 +222,13 @@ fn route_mermaid_fences(
         if !closed {
             // Unclosed fence: keep it as ordinary code content, never drop it.
             let block = format!("```mermaid\n{source}");
-            let (s, r) = render_plain_markdown(&block, theme, Some(width));
+            let (s, r) = render_plain_markdown(&block, theme, width);
             styled_lines.extend(s);
             raw_lines.extend(r);
             continue;
         }
 
-        match render_mermaid_block(&source, theme, width.max(1)) {
+        match render_mermaid_block(&source, theme, mermaid_width) {
             Some(rendered) => {
                 for line in rendered {
                     let raw = line.to_string();
@@ -232,7 +239,7 @@ fn route_mermaid_fences(
             None => {
                 // Invalid diagram: send the original fence through the code renderer.
                 let block = format!("```mermaid\n{source}```");
-                let (s, r) = render_plain_markdown(&block, theme, Some(width));
+                let (s, r) = render_plain_markdown(&block, theme, width);
                 styled_lines.extend(s);
                 raw_lines.extend(r);
             }
@@ -256,11 +263,11 @@ fn flush_segment(
     raw_lines: &mut Vec<String>,
     chunk: &mut String,
     theme: &Theme,
-    width: usize,
+    width: Option<usize>,
     render_segment: SegmentRenderer,
 ) {
     if !chunk.trim().is_empty() {
-        let (s, r) = render_segment(chunk, theme, Some(width));
+        let (s, r) = render_segment(chunk, theme, width);
         styled_lines.extend(s);
         raw_lines.extend(r);
         chunk.clear();
@@ -284,7 +291,12 @@ fn mermaid_fence_opener(line: &str) -> Option<()> {
 /// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
 /// tui-markdown pipeline.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
-    route_mermaid_fences(text, theme, DEFAULT_RENDER_WIDTH, render_plain_markdown)
+    route_mermaid_fences(
+        text,
+        theme,
+        Some(DEFAULT_RENDER_WIDTH),
+        render_plain_markdown,
+    )
 }
 
 /// The plain tui-markdown chunk renderer (no width-aware tables).
@@ -336,8 +348,7 @@ pub(crate) fn render_markdown_with_tables(
     theme: &Theme,
     available_width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    let width = available_width.unwrap_or(DEFAULT_RENDER_WIDTH);
-    route_mermaid_fences(text, theme, width, render_prose_and_tables)
+    route_mermaid_fences(text, theme, available_width, render_prose_and_tables)
 }
 
 /// The width-aware chunk renderer (pipe tables + tui-markdown).
@@ -842,8 +853,9 @@ mod tests {
 
     #[test]
     fn render_markdown_with_tables_routes_mermaid_before_table_scan() {
-        // The diagram source contains `|`-prefixed lines that must not be
-        // mistaken for a pipe table, and prose tables around it must survive.
+        // The diagram source contains a valid `|` inside a node label that
+        // must be rendered as diagram art, never parsed as a pipe table.
+        // Prose tables around it must survive.
         let md = "\
 | A | B |
 | --- | --- |
@@ -851,7 +863,7 @@ mod tests {
 
 ```mermaid
 flowchart LR
-  A[Start] --> B[End]
+  A[Start] --> B[Step | done]
 ```
 
 Trailing prose.
@@ -862,6 +874,10 @@ Trailing prose.
         assert!(
             styled.iter().any(|l| l.to_string().contains('─')),
             "expected diagram box art: {text}"
+        );
+        assert!(
+            text.contains("Step | done"),
+            "node label with `|` must render inside the diagram: {text}"
         );
         assert!(
             text.contains("| A | B |") && text.contains("| 1 | 2 |"),
@@ -1247,6 +1263,24 @@ Plain trailing paragraph.
             raw.iter().any(|l| l.contains("Plain trailing paragraph")),
             "trailing prose missing:\n{}",
             raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_markdown_with_tables_none_width_keeps_unlimited_table() {
+        // `None` must flow through to `format_table` unchanged (unlimited):
+        // a long cell stays on a single row instead of being wrapped at the
+        // nominal 80-column width.
+        let cell = "word ".repeat(40); // ~200 chars
+        let long_cell = cell.trim_end();
+        let md = format!("| A | B |\n| --- | --- |\n| 1 | {long_cell} |");
+        let (_styled, raw) = render_markdown_with_tables(&md, &theme(), None);
+        let text = raw.join("\n");
+
+        let full_row = format!("| 1 | {long_cell} |");
+        assert!(
+            text.lines().any(|l| l == full_row),
+            "long cell must stay on one row when width is None:\n{text}"
         );
     }
 }
