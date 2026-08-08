@@ -5,6 +5,10 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use ratatui_markdown::{
+    mermaid::{render_mermaid, theme::MermaidTheme},
+    theme::{CodeColors, Generation, RichTextTheme},
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{render::util::split_at_display_width, theme::Theme};
@@ -58,6 +62,98 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
     fn metadata_block(&self) -> Style {
         Style::new().fg(self.theme.warning)
     }
+}
+
+/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
+///
+/// Shared by the Mermaid renderer and the `/tasks-dag` popup so both use the
+/// exact same color mapping.
+#[derive(Clone, Copy)]
+pub(crate) struct TuiRichTextTheme<'a> {
+    pub theme: &'a Theme,
+}
+
+impl RichTextTheme for TuiRichTextTheme<'_> {
+    fn generation(&self) -> Generation {
+        Generation(0)
+    }
+
+    fn get_text_color(&self) -> Color {
+        self.theme.fg
+    }
+
+    fn get_muted_text_color(&self) -> Color {
+        self.theme.muted_fg()
+    }
+
+    fn get_primary_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_popup_selected_background(&self) -> Color {
+        self.theme.highlight
+    }
+
+    fn get_border_color(&self) -> Color {
+        self.theme.border
+    }
+
+    fn get_focused_border_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_secondary_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_info_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_key_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_string_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_json_number_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_json_bool_color(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_json_null_color(&self) -> Color {
+        self.theme.muted
+    }
+
+    fn get_accent_yellow(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_code_colors(&self) -> CodeColors {
+        CodeColors::default()
+    }
+
+    fn get_mermaid_theme(&self) -> MermaidTheme {
+        MermaidTheme::for_background(self.theme.bg)
+    }
+}
+
+/// Render a Mermaid diagram through ratatui-markdown with the app theme.
+///
+/// Returns `None` when the source cannot be parsed or rendered so callers can
+/// fall back to ordinary code rendering.
+#[allow(dead_code)] // consumed by main-area markdown routing (wired in by a later task); exercised by unit tests
+pub(crate) fn render_mermaid_block(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+) -> Option<Vec<Line<'static>>> {
+    render_mermaid(source, width.max(1), None, &TuiRichTextTheme { theme })
 }
 
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
@@ -497,6 +593,29 @@ mod tests {
 
     fn theme() -> Theme {
         Theme::from(ThemeName::from_str("retro").unwrap())
+    }
+
+    #[test]
+    fn render_mermaid_sequence_returns_terminal_lines() {
+        let source = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob-->>Alice: Hi";
+        let lines = render_mermaid_block(source, &theme(), 80).expect("valid sequence diagram");
+        let text = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Alice"), "participant missing: {text}");
+        assert!(text.contains("Bob"), "participant missing: {text}");
+        assert!(text.contains("Hello"), "message missing: {text}");
+        assert!(
+            text.contains('─') || text.contains('>'),
+            "diagram art missing: {text}"
+        );
+        assert!(
+            !text.contains("sequenceDiagram"),
+            "raw source leaked: {text}"
+        );
     }
 
     #[test]
