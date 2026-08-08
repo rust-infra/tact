@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-08 — Subagent model picker uses its own provider
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | `/model-subagent` merged configured subagent models with API model IDs fetched from the main agent's active provider, so separate main/subagent providers could show the wrong models. |
+| Decision | Query the `/models` endpoint using the resolved subagent provider's `base_url` and `api_key`; keep configured provider `models = [...]` as the primary candidates and preserve cache keying by `(base_url, api_key)`. |
+| Behavior after | The subagent picker shows configured and API-discovered models belonging to the subagent provider. The main `/model` picker keeps using the main provider. |
+| Pointers | `crates/tact_llm/src/models.rs`, `crates/tui/src/handlers/select.rs`; regression test `explicit_provider_model_query_uses_subagent_credentials`; design: `docs/superpowers/specs/2026-08-08-subagent-model-picker-provider-design.md`; plan: `docs/superpowers/plans/2026-08-08-subagent-model-picker-provider.md`. |
+
 ## 1. 2026-08-06 — OpenAI Responses exposes detailed reasoning summaries
 
 | Field | Value |

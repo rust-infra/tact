@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-08 — Subagent 模型选择器使用自身 provider
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | `/model-subagent` 会把 subagent 配置的模型与主 agent 当前 provider 的 API 模型列表合并；当两者使用不同 provider 时，选择器可能显示错误的模型。 |
+| 决策 | 使用已解析的 subagent provider 的 `base_url` 和 `api_key` 查询 `/models`；保留 provider 配置中的 `models = [...]` 作为主要候选，并继续按 `(base_url, api_key)` 缓存。 |
+| 变更后行为 | Subagent 选择器只显示属于 subagent provider 的配置模型和 API 发现模型；主 agent 的 `/model` 选择器仍使用主 provider。 |
+| 指针 | `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`；回归测试 `explicit_provider_model_query_uses_subagent_credentials`；设计：`docs/superpowers/specs/2026-08-08-subagent-model-picker-provider-design.md`；计划：`docs/superpowers/plans/2026-08-08-subagent-model-picker-provider.md`。 |
+
 ## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 
 | 字段 | 值 |

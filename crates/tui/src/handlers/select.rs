@@ -724,15 +724,13 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
         return;
     };
 
-    let api_ids = if tact_llm::is_models_query_supported() {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(tact_llm::ensure_api_model_ids()))
-            }
-            Err(_) => Vec::new(),
-        }
-    } else {
-        Vec::new()
+    let api_ids = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(tact_llm::ensure_api_model_ids_for_provider(
+                &subagent.provider,
+            ))
+        }),
+        Err(_) => Vec::new(),
     };
 
     let subagent_provider_name = subagent.provider.provider.as_str();
