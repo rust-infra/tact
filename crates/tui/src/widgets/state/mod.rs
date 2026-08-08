@@ -41,6 +41,7 @@ pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 
+pub(crate) use app::messages::{TASK_STATS_COPY_BTN, is_task_stats_line};
 pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
@@ -179,11 +180,33 @@ pub(crate) struct CodeBlock {
     pub styled: Vec<Line<'static>>,
 }
 
+/// A successfully rendered Mermaid diagram spliced into the log as terminal art.
+///
+/// Unlike [`CodeBlock`], there is no card chrome — `start_idx..end_idx` covers
+/// the diagram rows themselves. Double-click opens [`MermaidPopup`] so the
+/// original fence body can be copied.
+#[derive(Debug, Clone)]
+pub(crate) struct MermaidBlock {
+    /// First diagram line index in messages (inclusive).
+    pub start_idx: usize,
+    /// One-past-last diagram line index in messages.
+    pub end_idx: usize,
+    /// Fence body only (no ```mermaid / closing ```).
+    pub source: String,
+}
+
 /// Code block popup state (similar to ThinkingPopup / DiffPopup).
 #[derive(Debug, Clone)]
 pub(crate) struct CodePopup {
     pub block_idx: usize,
     pub lang: String,
+    pub scroll: u16,
+}
+
+/// Mermaid source popup (double-click a rendered diagram in the log).
+#[derive(Debug, Clone)]
+pub(crate) struct MermaidPopup {
+    pub block_idx: usize,
     pub scroll: u16,
 }
 
@@ -292,6 +315,10 @@ pub struct App {
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
+    /// Successfully rendered Mermaid diagrams (source retained for copy popup).
+    pub(crate) mermaid_blocks: Vec<MermaidBlock>,
+    /// Mermaid source popup (double-click a rendered diagram).
+    pub(crate) mermaid_popup: Option<MermaidPopup>,
     /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
     pub(crate) task_dag_popup: Option<TaskDagPopup>,
     /// Subagent live-output / markdown summary popup.

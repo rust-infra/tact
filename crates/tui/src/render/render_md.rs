@@ -145,6 +145,11 @@ impl RichTextTheme for TuiRichTextTheme<'_> {
 
 /// Render a Mermaid diagram through ratatui-markdown with the app theme.
 ///
+/// Sequence diagrams are handled by Tact's own renderer (see
+/// [`mermaid_sequence`]) because the upstream sequence renderer mishandles
+/// `participant X as 名称` aliases, the `+`/`-` activation shorthand, and
+/// CJK arrow labels.
+///
 /// Returns `None` when the source cannot be parsed or rendered so callers can
 /// fall back to ordinary code rendering.
 pub(crate) fn render_mermaid_block(
@@ -152,7 +157,16 @@ pub(crate) fn render_mermaid_block(
     theme: &Theme,
     width: usize,
 ) -> Option<Vec<Line<'static>>> {
-    render_mermaid(source, width.max(1), None, &TuiRichTextTheme { theme })
+    let width = width.max(1);
+    if source
+        .lines()
+        .next()
+        .map(str::trim)
+        .is_some_and(|l| l.starts_with("sequenceDiagram"))
+    {
+        return super::mermaid_sequence::render_sequence_diagram(source, width, theme);
+    }
+    render_mermaid(source, width, None, &TuiRichTextTheme { theme })
 }
 
 /// Layout width used when a caller has no explicit width to pass.

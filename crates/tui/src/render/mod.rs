@@ -7,6 +7,7 @@ mod layout;
 mod log;
 mod log_column;
 mod log_style;
+mod mermaid_sequence;
 pub(crate) mod popups;
 pub(crate) mod render_md;
 pub(crate) mod renderable;

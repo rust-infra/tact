@@ -32,6 +32,56 @@ Newest entries first. Each entry should include:
 
 
 
+## 1. 2026-08-09 — Task-stats `[copy]` copies the last turn
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | After a turn finished, users had no one-click way to copy that turn's conversation from the task-stats row. |
+| Decision | Append a `[copy]` button on each `📊 任务统计：` row; click copies log text from after the previous stats row (or session start) up to but not including the current stats row, skipping blanks and task-end separators. |
+| Behavior after | Click `[copy]` on a stats line → clipboard gets that turn's user/assistant content; earlier turns are excluded. |
+| Pointers | `add_task_stats_block` / `copy_turn_ending_at_stats` in `messages.rs`; mouse hit in `handlers/mouse.rs`; regression `copy_turn_ending_at_stats_copies_last_turn_only`. |
+
+## 1. 2026-08-09 — Mermaid diagram copy popup (double-click → source)
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Successfully rendered Mermaid diagrams discarded their fence body when splicing ASCII art into the log, so users could not recover the source for re-editing. |
+| Decision | Keep a `MermaidBlock { start_idx, end_idx, source }` per successful render; double-click opens a Mermaid popup; popup `y` copies the source. Log selection yank stays ASCII. |
+| Behavior after | Double-click any diagram row → source popup (`y` / `j/k` / `Esc`); failed Mermaid still uses the code-card path. |
+| Pointers | Spec `docs/superpowers/specs/2026-08-09-mermaid-diagram-copy-popup-design.md`; `finish_stream_code_block`; `popups/mermaid_popup.rs`; regressions `log_renders_streamed_mermaid_without_code_card`, `mermaid_popup_copy_uses_source_not_ascii`. |
+
+## 1. 2026-08-09 — Mermaid sequence self-messages draw a U-shaped loop
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Self-messages (`A->>A`) rendered as a one-cell stub `<│◀`, which looked like broken chevrons rather than a return-to-self arrow. |
+| Decision | Render self-messages as a two-row box-drawing loop (`│──┐` / `│◀─┘`, or left-side `┌──│` / `└─▶│` on the last participant) with the label beside the loop. |
+| Behavior after | Self calls read as a clear U-turn on the lifeline; last-column self-messages loop left so the shape stays inside the diagram. |
+| Pointers | `crates/tui/src/render/mermaid_sequence.rs` (`self_loop_rows`); regressions `self_message_draws_u_shaped_loop`, `self_message_on_last_participant_loops_left`. |
+
+## 1. 2026-08-09 — Mermaid sequence labels no longer drop characters or shift columns
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The custom `sequenceDiagram` renderer dropped any label glyph whose display cells overlapped a lifeline (e.g. `submitTask` → `ubmitTask` / `submi│Task`), and left a ghost space after each width-2 CJK glyph so label rows were wider than lifeline/arrow rows — lifelines looked jagged and arrows appeared broken on multi-participant diagrams. |
+| Decision | In `label_row`, clear continuation cells of wide glyphs to empty spans, and reflow label characters past occupied lifeline cells instead of skipping them. |
+| Behavior after | Long ASCII and CJK arrow labels keep every character (split around `│` when needed) and every diagram row shares the same display width, so lifelines stay vertically aligned. |
+| Pointers | `crates/tui/src/render/mermaid_sequence.rs` (`label_row`); regressions `cjk_label_keeps_same_display_width_as_lifeline_row`, `long_ascii_label_is_not_eaten_by_lifelines`, `self_message_keeps_lifeline_intact`. |
+
+## 1. 2026-08-08 — TUI renders Mermaid sequence diagrams with its own renderer
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The upstream `ratatui-markdown` sequence renderer mishandled three common inputs: `participant A as 用户` aliases were shown verbatim, the `+`/`-` activation shorthand (`A->>+B`) created phantom participant columns (`+B`, `-B`, …), and 2-column CJK arrow labels could overwrite a lifeline (or be dropped), so labelled arrows looked misaligned. |
+| Decision | Route `sequenceDiagram` fences in the TUI through Tact's own renderer (`crates/tui/src/render/mermaid_sequence.rs`); all other Mermaid diagram types keep using `ratatui-markdown`. The new renderer parses `as` aliases, strips `+`/`-` activation prefixes before participant lookup, and places label glyphs by display column only when every cell of the glyph's width is free. |
+| Behavior after | Only declared participants render as columns; `A->>+B` targets participant `B`; CJK labels stay centered between lifelines and never overwrite a `│`. Unparseable sources still fall back to ordinary code rendering. |
+| Pointers | `crates/tui/src/render/mermaid_sequence.rs`; routing: `crates/tui/src/render/render_md.rs` (`render_mermaid_block`); regression tests in `mermaid_sequence.rs`. |
+
 ## 1. 2026-08-08 — Subagent model picker uses its own provider
 
 | Field | Value |

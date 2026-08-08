@@ -469,6 +469,12 @@ impl App {
                         block.end_idx -= 1;
                     }
                 }
+                for block in &mut self.mermaid_blocks {
+                    if block.start_idx > idx {
+                        block.start_idx -= 1;
+                        block.end_idx -= 1;
+                    }
+                }
                 for block in &mut self.tools.blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
@@ -577,6 +583,12 @@ impl App {
             adjust(&mut active.phys_idx);
         }
         for block in &mut self.code_blocks {
+            if block.start_idx >= at {
+                block.start_idx = (block.start_idx as isize + delta).max(0) as usize;
+                block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
+            }
+        }
+        for block in &mut self.mermaid_blocks {
             if block.start_idx >= at {
                 block.start_idx = (block.start_idx as isize + delta).max(0) as usize;
                 block.end_idx = (block.end_idx as isize + delta).max(0) as usize;

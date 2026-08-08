@@ -216,6 +216,18 @@ fn log_renders_streamed_mermaid_without_code_card() {
         app.code_blocks.is_empty(),
         "valid Mermaid must not become a code card"
     );
+    assert_eq!(
+        app.mermaid_blocks.len(),
+        1,
+        "valid Mermaid must retain source metadata"
+    );
+    assert!(
+        app.mermaid_blocks[0]
+            .source
+            .contains("Alice->>Bob: Hello"),
+        "mermaid source missing: {}",
+        app.mermaid_blocks[0].source
+    );
     assert!(
         text.contains("Alice") && text.contains("Bob"),
         "diagram missing: {text}"
@@ -224,6 +236,31 @@ fn log_renders_streamed_mermaid_without_code_card() {
         !text.contains("sequenceDiagram"),
         "raw Mermaid leaked: {text}"
     );
+}
+
+#[test]
+fn mermaid_popup_copy_uses_source_not_ascii() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    assert_eq!(app.mermaid_blocks.len(), 1);
+    let ascii = app.raw_messages[app.mermaid_blocks[0].start_idx].clone();
+    assert!(
+        !ascii.contains("sequenceDiagram"),
+        "raw_messages should hold ASCII diagram, got: {ascii}"
+    );
+
+    app.open_mermaid_popup(0);
+    let popup = app.mermaid_popup.as_ref().expect("popup open");
+    assert_eq!(
+        app.mermaid_blocks[popup.block_idx].source, "sequenceDiagram\n  Alice->>Bob: Hello",
+        "popup must point at Mermaid source"
+    );
+    // Exercise the copy path (system clipboard may or may not be available).
+    app.copy_mermaid_popup();
 }
 
 #[test]
@@ -240,6 +277,10 @@ fn log_falls_back_to_code_card_for_invalid_streamed_mermaid() {
         app.code_blocks.len(),
         1,
         "invalid Mermaid should use code fallback"
+    );
+    assert!(
+        app.mermaid_blocks.is_empty(),
+        "invalid Mermaid must not register a MermaidBlock"
     );
     assert!(
         text.contains("not valid Mermaid"),

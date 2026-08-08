@@ -107,6 +107,8 @@ impl App {
             tools: ToolState::default(),
             code_blocks: Vec::new(),
             code_popup: None,
+            mermaid_blocks: Vec::new(),
+            mermaid_popup: None,
             task_dag_popup: None,
             subagent_popup: None,
             system_prompt_popup: None,

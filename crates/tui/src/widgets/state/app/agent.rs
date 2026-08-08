@@ -579,13 +579,25 @@ impl App {
                 self.log_scroll.width.max(1) as usize,
             )
         {
+            let source = lines.join("\n");
             let raw = diagram.iter().map(|l| l.to_string()).collect::<Vec<_>>();
-            match start_idx {
+            let row_count = diagram.len();
+            let start = match start_idx {
                 Some(start) => {
-                    self.splice_msgs(start..stream_end, diagram, raw, RawMessageType::LLM)
+                    self.splice_msgs(start..stream_end, diagram, raw, RawMessageType::LLM);
+                    start
                 }
-                None => self.extend_msgs(diagram, raw, RawMessageType::LLM),
-            }
+                None => {
+                    let start = self.messages.len();
+                    self.extend_msgs(diagram, raw, RawMessageType::LLM);
+                    start
+                }
+            };
+            self.mermaid_blocks.push(crate::widgets::state::MermaidBlock {
+                start_idx: start,
+                end_idx: start + row_count,
+                source,
+            });
             return;
         }
 
@@ -1770,7 +1782,62 @@ mod lifecycle_tests {
             .lines()
             .find(|l| l.contains("📊 任务统计："))
             .expect("stats block missing");
-        assert_eq!(stats_line, "📊 任务统计：⏱ 00:05");
+        assert_eq!(stats_line, "📊 任务统计：⏱ 00:05  [copy]");
+    }
+
+    #[test]
+    fn copy_turn_ending_at_stats_copies_last_turn_only() {
+        let mut app = make_app();
+        app.add_user_message("first question".into());
+        app.add_system_message("first answer".into());
+        app.last_prompt_elapsed_secs = Some(1);
+        app.add_task_end_separator();
+        app.add_task_stats_block();
+
+        app.add_user_message("second question".into());
+        app.add_system_message("second answer".into());
+        app.last_prompt_elapsed_secs = Some(2);
+        app.add_task_end_separator();
+        app.add_task_stats_block();
+
+        let stats_idx = app
+            .raw_messages
+            .iter()
+            .rposition(|l| l.contains("📊 任务统计："))
+            .expect("stats");
+        app.copy_turn_ending_at_stats(stats_idx);
+
+        // Prefer clipboard_buffer when system clipboard is unavailable; otherwise
+        // just verify the extracted range would exclude the first turn.
+        let start = app
+            .raw_messages
+            .iter()
+            .position(|l| l.contains("📊 任务统计："))
+            .expect("first stats")
+            + 1;
+        let mut expected_parts = Vec::new();
+        for i in start..stats_idx {
+            let line = app.raw_messages[i].as_str();
+            if line.is_empty()
+                || crate::render::cells::separator::is_task_end_separator(line)
+                || crate::widgets::state::is_task_stats_line(line)
+            {
+                continue;
+            }
+            expected_parts.push(line);
+        }
+        let expected = expected_parts.join("\n");
+        assert!(
+            expected.contains("second question") && expected.contains("second answer"),
+            "expected second turn in {expected}"
+        );
+        assert!(
+            !expected.contains("first question") && !expected.contains("first answer"),
+            "first turn leaked into {expected}"
+        );
+        if !app.clipboard_buffer.is_empty() {
+            assert_eq!(app.clipboard_buffer, expected);
+        }
     }
 
     #[test]

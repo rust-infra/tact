@@ -32,6 +32,56 @@
 
 
 
+## 1. 2026-08-09 — 任务统计行 `[copy]` 复制最近一轮
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 回合结束后，用户无法从任务统计行一键复制本轮对话。 |
+| 决策 | 在每条 `📊 任务统计：` 行追加 `[copy]` 按钮；点击后复制「上一轮统计行之后（或会话开头）到当前统计行之前」的日志文本，跳过空行与任务结束分隔线。 |
+| 变更后行为 | 点击统计行的 `[copy]` → 剪贴板为本轮用户/助手内容；不包含更早回合。 |
+| 指针 | `messages.rs` 的 `add_task_stats_block` / `copy_turn_ending_at_stats`；`handlers/mouse.rs` 命中；回归测试 `copy_turn_ending_at_stats_copies_last_turn_only`。 |
+
+## 1. 2026-08-09 — Mermaid 图双击弹窗复制源码
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 成功渲染的 Mermaid 在把 ASCII 图拼进日志时丢掉了 fence 正文，用户无法再取回源码以便编辑。 |
+| 决策 | 每次成功渲染保留 `MermaidBlock { start_idx, end_idx, source }`；双击打开 Mermaid 弹窗；弹窗 `y` 复制源码。主区选区 yank 仍为 ASCII。 |
+| 变更后行为 | 双击任意 diagram 行 → 源码弹窗（`y` / `j/k` / `Esc`）；失败 Mermaid 仍走 code-card 路径。 |
+| 指针 | Spec `docs/superpowers/specs/2026-08-09-mermaid-diagram-copy-popup-design.md`；`finish_stream_code_block`；`popups/mermaid_popup.rs`；回归测试 `log_renders_streamed_mermaid_without_code_card`、`mermaid_popup_copy_uses_source_not_ascii`。 |
+
+## 1. 2026-08-09 — Mermaid 时序图自消息改为 U 形回环
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 自消息（`A->>A`）只画成单格 `<│◀`，看起来像断开的尖括号，而不像指向自己的回环箭头。 |
+| 决策 | 将自消息画成两行盒线回环（`│──┐` / `│◀─┘`；末列参与者用左侧 `┌──│` / `└─▶│`），标签放在回环旁。 |
+| 变更后行为 | 自调用在生命线上呈现清晰的 U 形折返；末列自消息向左回环，避免画出图外。 |
+| 指针 | `crates/tui/src/render/mermaid_sequence.rs`（`self_loop_rows`）；回归测试 `self_message_draws_u_shaped_loop`、`self_message_on_last_participant_loops_left`。 |
+
+## 1. 2026-08-09 — Mermaid 时序图标签不再掉字或错位
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 自有 `sequenceDiagram` 渲染器会丢弃落在生命线上的标签字形（如 `submitTask` → `ubmitTask` / `submi│Task`），且每个 2 列宽 CJK 字形后留下幽灵空格，使标签行比生命线/箭头行更宽——多参与者图上生命线看起来断裂，箭头也像缺段。 |
+| 决策 | 在 `label_row` 中把宽字形的续格清空为空 span，并将标签字符绕过已占用的生命线单元格重排，而不是直接跳过。 |
+| 变更后行为 | 长 ASCII / CJK 箭头标签保留全部字符（必要时在 `│` 两侧拆开），各行显示宽度一致，生命线保持纵向对齐。 |
+| 指针 | `crates/tui/src/render/mermaid_sequence.rs`（`label_row`）；回归测试 `cjk_label_keeps_same_display_width_as_lifeline_row`、`long_ascii_label_is_not_eaten_by_lifelines`、`self_message_keeps_lifeline_intact`。 |
+
+## 1. 2026-08-08 — TUI 使用自有渲染器绘制 Mermaid 时序图
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 上游 `ratatui-markdown` 的时序图渲染器对三类常见输入处理有误：`participant A as 用户` 别名被原样展示；`+`/`-` 激活简写（`A->>+B`）会产生幻影参与者列（`+B`、`-B` 等）；2 列宽的 CJK 箭头描述可能盖住生命线（或被丢弃），导致带描述的箭头看起来对不齐。 |
+| 决策 | 在 TUI 中把 `sequenceDiagram` 代码块路由到 Tact 自有的渲染器（`crates/tui/src/render/mermaid_sequence.rs`）；其他 Mermaid 图类型继续使用 `ratatui-markdown`。新渲染器解析 `as` 别名，在参与者查找前去除 `+`/`-` 激活前缀，并按显示列放置标签字形，仅当字形宽度内所有单元格都空闲时才绘制。 |
+| 变更后行为 | 只有声明的参与者渲染为列；`A->>+B` 指向参与者 `B`；CJK 标签在生命线之间居中，且不会覆盖 `│`。无法解析的源码仍回退到普通代码渲染。 |
+| 指针 | `crates/tui/src/render/mermaid_sequence.rs`；路由：`crates/tui/src/render/render_md.rs`（`render_mermaid_block`）；回归测试位于 `mermaid_sequence.rs`。 |
+
 ## 1. 2026-08-08 — Subagent 模型选择器使用自身 provider
 
 | 字段 | 值 |
