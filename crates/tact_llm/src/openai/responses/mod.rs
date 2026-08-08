@@ -899,6 +899,14 @@ mod tests {
         serde_json::from_slice(&requests[0].body).unwrap()
     }
 
+    #[test]
+    fn unknown_output_fixture_is_well_formed() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/unknown_output_item.json")).unwrap();
+        assert_eq!(fixture["output"][0]["type"], "future_item");
+        assert_eq!(fixture["output"][1]["type"], "message");
+    }
+
     #[tokio::test]
     async fn ordinary_response_state_update_retains_unknown_output_item() {
         let server = MockServer::start().await;
@@ -1029,6 +1037,39 @@ mod tests {
             body["context_management"][0]["compact_threshold"],
             serde_json::json!(160_000),
             "streamed ordinary request must carry the configured threshold, got: {body}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_stream_fixture_keeps_visible_text_and_state_item() {
+        let server = MockServer::start().await;
+        let sse = include_str!("fixtures/unknown_event_stream.jsonl");
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
+        let response = adapter
+            .stream_message(&simple_request(), None, None)
+            .await
+            .expect("unknown stream event must not abort response");
+        assert!(response.blocks.iter().any(|block| {
+            matches!(block, crate::ContentBlock::Text { text } if text == "hello")
+        }));
+        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
+            state,
+        )) = response.state_update
+        else {
+            panic!("expected Responses state replacement");
+        };
+        assert!(
+            state
+                .input_items
+                .iter()
+                .any(|item| item["type"] == "future_item")
         );
         server.verify().await;
     }
