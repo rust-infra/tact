@@ -438,10 +438,9 @@ impl Agent {
 
     /// Validate a loaded Responses provider state against the active client.
     ///
-    /// The state records the provider name, base URL, and request model it was
-    /// created for. Reusing it with a different provider/base URL/model would
-    /// silently corrupt the conversation, so a mismatch is a hard error and is
-    /// never silently reset or dropped.
+    /// Provider and base URL must match. Model mismatches are intentionally
+    /// allowed for experimentation; the provider may reject incompatible
+    /// opaque state at request time.
     fn validate_provider_state_binding(&self, state: &ProviderConversationState) -> Result<()> {
         let ProviderConversationState::OpenAiResponses(inner) = state;
         let LlmProvider::OpenAiResponses(adapter) = &self.runtime.client else {
@@ -461,14 +460,6 @@ impl Agent {
                 "provider state is bound to base URL '{}', expected '{}'",
                 inner.base_url,
                 adapter.base_url()
-            );
-        }
-        let model = self.agent_settings.model.clone();
-        if inner.model != model {
-            anyhow::bail!(
-                "provider state is bound to model '{}', expected '{}'",
-                inner.model,
-                model
             );
         }
         Ok(())

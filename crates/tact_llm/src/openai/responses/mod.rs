@@ -160,12 +160,10 @@ impl OpenAiResponsesAdapter {
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
-    /// provider, base URL, and request model before it is reused.
-    fn validate_state_binding(
-        &self,
-        state: &ResponsesConversationState,
-        model: &str,
-    ) -> Result<(), LlmError> {
+    /// provider and base URL. Model mismatches are intentionally allowed for
+    /// experimentation; the provider may reject incompatible opaque state at
+    /// request time.
+    fn validate_state_binding(&self, state: &ResponsesConversationState) -> Result<(), LlmError> {
         if state.provider != "openai_responses" {
             return Err(LlmError::Unsupported(format!(
                 "provider state is bound to provider '{}', expected 'openai_responses'",
@@ -176,12 +174,6 @@ impl OpenAiResponsesAdapter {
             return Err(LlmError::Unsupported(format!(
                 "provider state is bound to base URL '{}', expected '{}'",
                 state.base_url, self.base_url
-            )));
-        }
-        if state.model != model {
-            return Err(LlmError::Unsupported(format!(
-                "provider state is bound to model '{}', expected '{}'",
-                state.model, model
             )));
         }
         Ok(())
@@ -225,7 +217,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         ui_tx: Option<UnboundedSender<AgentUpdate>>,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
-            self.validate_state_binding(state, &request.model)?;
+            self.validate_state_binding(state)?;
         }
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
@@ -292,7 +284,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
-            self.validate_state_binding(state, &request.model)?;
+            self.validate_state_binding(state)?;
         }
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
@@ -314,7 +306,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
-            self.validate_state_binding(state, &request.model)?;
+            self.validate_state_binding(state)?;
         }
         // The compact request carries the current protocol baseline plus any
         // logical messages not yet represented in it. The exact JSON input
@@ -544,10 +536,10 @@ mod tests {
     }
 
     #[test]
-    fn state_binding_accepts_matching_provider_base_url_and_model() {
+    fn state_binding_accepts_matching_provider_and_base_url() {
         let (adapter, state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
         adapter
-            .validate_state_binding(&state, "gpt-5")
+            .validate_state_binding(&state)
             .expect("matching binding is valid");
     }
 
@@ -556,7 +548,7 @@ mod tests {
         let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
         state.provider = "anthropic".to_string();
         let error = adapter
-            .validate_state_binding(&state, "gpt-5")
+            .validate_state_binding(&state)
             .unwrap_err()
             .to_string();
         assert!(error.contains("anthropic"));
@@ -568,21 +560,19 @@ mod tests {
         let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
         state.base_url = "https://other.example.com/v1".to_string();
         let error = adapter
-            .validate_state_binding(&state, "gpt-5")
+            .validate_state_binding(&state)
             .unwrap_err()
             .to_string();
         assert!(error.contains("other.example.com"));
     }
 
     #[test]
-    fn state_binding_rejects_another_model() {
+    fn state_binding_allows_another_model_for_experiment() {
         let (adapter, mut state) = adapter_with_state("https://api.openai.com/v1", "gpt-5");
         state.model = "gpt-4o".to_string();
-        let error = adapter
-            .validate_state_binding(&state, "gpt-5")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("gpt-4o"));
+        adapter
+            .validate_state_binding(&state)
+            .expect("model mismatch should not be rejected by local state validation");
     }
 
     /// Run with:

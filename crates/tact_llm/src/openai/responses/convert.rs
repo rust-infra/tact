@@ -177,10 +177,10 @@ fn normalize_assistant_history_items(input: &mut [serde_json::Value]) {
 }
 
 /// Validates that a persisted Responses state may be reused for the given
-/// request. The state version must be exactly 1, the provider and model must
-/// match, and the logical-message prefix represented by the state must hash
-/// to the recorded value. A mismatch is a hard protocol error; Tact must
-/// never silently duplicate, truncate, or reconstruct the baseline.
+/// request. The state version and provider must match, and the logical-message
+/// prefix represented by the state must hash to the recorded value. The model
+/// is intentionally not checked here so callers can experiment with model
+/// changes; the provider may still reject incompatible wire state.
 fn validate_conversion_state(
     state: &ResponsesConversationState,
     request: &CreateMessageParams,
@@ -195,12 +195,6 @@ fn validate_conversion_state(
         return Err(LlmError::Unsupported(format!(
             "provider state is bound to provider '{}', expected 'openai_responses'",
             state.provider
-        )));
-    }
-    if state.model != request.model {
-        return Err(LlmError::Unsupported(format!(
-            "provider state is bound to model '{}', expected '{}'",
-            state.model, request.model
         )));
     }
     if state.logical_message_count > request.messages.len() {
@@ -699,18 +693,16 @@ mod tests {
     }
 
     #[test]
-    fn state_with_mismatched_model_is_rejected() {
+    fn state_with_mismatched_model_is_allowed_for_experiment() {
         let request = request_with_history();
         let mut state = state_covering_first_message(&request);
         state.model = "other-model".to_string();
-        let error = create_response(
+        create_response(
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
             None,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("other-model"));
+        .expect("model mismatch should not be rejected by local state validation");
     }
 
     #[test]
