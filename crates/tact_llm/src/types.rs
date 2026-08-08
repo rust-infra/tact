@@ -217,6 +217,9 @@ pub struct CreateMessageParams {
     /// never read from a global provider state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Responses-only request fields; ignored by non-Responses adapters.
+    #[serde(skip)]
+    pub responses_options: Option<crate::openai::responses::ResponsesRequestOptions>,
 }
 
 impl From<RequiredMessageParams> for CreateMessageParams {
@@ -283,6 +286,15 @@ impl CreateMessageParams {
     /// Set the explicit per-request reasoning effort (openai / deepseek / kimi k3).
     pub fn with_reasoning_effort(mut self, effort: Option<OpenAiReasoningEffort>) -> Self {
         self.reasoning_effort = effort;
+        self
+    }
+
+    /// Set Responses-only request options. Other adapters ignore this field.
+    pub fn with_responses_options(
+        mut self,
+        options: crate::openai::responses::ResponsesRequestOptions,
+    ) -> Self {
+        self.responses_options = Some(options);
         self
     }
 }

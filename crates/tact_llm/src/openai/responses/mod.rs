@@ -1,7 +1,10 @@
 mod convert;
 mod history;
 mod normalize;
+mod request_options;
 mod stream;
+
+pub use request_options::ResponsesRequestOptions;
 
 use async_openai_responses::{
     Client,

@@ -294,6 +294,9 @@ pub(crate) fn create_response(
         LlmError::Unsupported(format!("build OpenAI Responses request: {error}"))
     })?;
     let mut body = serde_json::to_value(typed_request)?;
+    if let Some(options) = &request.responses_options {
+        options.apply_to(&mut body)?;
+    }
 
     // The exact input for this request: the state baseline (verbatim JSON)
     // followed by the newly converted uncovered items. Only the newly
@@ -326,6 +329,7 @@ pub(crate) fn create_response(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
     use super::{create_response, message_to_input};
     use crate::{
@@ -690,6 +694,26 @@ mod tests {
         assert_eq!(parsed.compaction_id, "cmp_sanitized_01");
         // The retained function-call outputs survive verbatim.
         assert_eq!(parsed.input_items[0]["call_id"], "call_sanitized_1");
+    }
+
+    #[test]
+    fn responses_request_options_are_patched_into_wire_body() {
+        let request = request_with_history().with_responses_options(ResponsesRequestOptions {
+            parallel_tool_calls: Some(false),
+            ..Default::default()
+        });
+        let (body, _) = create_response(&request, None, None).unwrap();
+        assert_eq!(body["parallel_tool_calls"], false);
+    }
+
+    #[test]
+    fn responses_options_are_not_serialized_as_anthropic_fields() {
+        let request = request_with_history().with_responses_options(ResponsesRequestOptions {
+            user: Some("user-1".into()),
+            ..Default::default()
+        });
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert!(serialized.get("responses_options").is_none());
     }
 
     #[test]
