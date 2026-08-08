@@ -311,4 +311,40 @@ mod tests {
             "SetThinkingBudget must emit ModelInfo so the TUI bar resyncs"
         );
     }
+
+    #[tokio::test]
+    async fn set_reasoning_effort_clears_stale_thinking_budget() {
+        // Regression: switching an effort-semantic model (openai / deepseek /
+        // kimi k3) must not leave a stale thinking budget behind — the bottom
+        // bar would otherwise render a meaningless `think high(32K)`.
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetThinkingBudget(32_000),
+            &work_dir,
+        )
+        .await;
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetReasoningEffort(Some("high".to_string())),
+            &work_dir,
+        )
+        .await;
+
+        let mut last: Option<tact_protocol::ModelCallParams> = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::ModelInfo(params) = update {
+                last = Some(params);
+            }
+        }
+        let last = last.expect("SetReasoningEffort must emit ModelInfo so the TUI bar resyncs");
+        assert_eq!(last.reasoning_effort, Some("high".to_string()));
+        assert_eq!(
+            last.thinking_budget, None,
+            "effort pick must clear stale thinking budget"
+        );
+    }
 }

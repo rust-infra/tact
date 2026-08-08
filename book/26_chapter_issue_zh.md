@@ -29,6 +29,129 @@
 
 ---
 
+
+
+## 1. 2026-08-08 — DeepSeek 与 Kimi Responses 保持配置门控
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 通用 Responses adapter 可以为 OpenAI-compatible 端点构造，但 DeepSeek/Kimi 的原生压缩与状态续传尚未验证达到生产契约；若直接允许正常配置，会把未支持的 fallback 行为误认为已支持。 |
+| 决策 | 继续在配置解析阶段拒绝 DeepSeek/Kimi 的 `protocol = "responses"`。底层 adapter 构造仍可用于隔离端点测试；生产配置在原生 Responses 能力验证完成前使用 Chat Completions。 |
+| 变更后行为 | DeepSeek/Kimi 用户会得到明确的配置错误，不会进入未经验证的 Responses 路径。OpenAI 与明确配置的自定义 OpenAI-compatible provider 保留现有 Responses 路由。 |
+| 指针 | `crates/tact/src/config/resolve.rs`；provider 构造：`crates/tact_llm/src/provider.rs`；相关设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；压缩行为：第 5 章。 |
+
+
+## 1. 2026-08-08 — OpenAI Responses 保留未知 wire item
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | typed `async-openai` Responses 枚举会在 Tact 有机会保留新 output item 之前直接拒绝它，使 provider state 无法前向兼容；同时共享的 Chat/Anthropic 请求模型没有明确的 Responses 专用字段扩展边界。 |
+| 决策 | 在 typed normalization 之前先解析 raw Responses envelope；已知 item 正常转换，未知 input/output item 作为 raw JSON 保留。增加只由 Responses adapter 消费的 `ResponsesRequestOptions`，并提供保守的 provider capability metadata；只有出现可复现的 SDK 阻塞时才 fork `async-openai`。 |
+| 变更后行为 | 无害的未知流事件不再中断响应。未知 output item 可以跨普通/流式 turn、session state 序列化和下一次 Responses 请求保留。Responses 专用请求字段不会出现在 Chat Completions 或 Anthropic payload 中。 |
+| 指针 | `crates/tact_llm/src/openai/responses/wire.rs`、`request_options.rs`、`stream.rs`、`provider.rs`；设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；计划：`docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`；压缩：第 5 章与 `docs/compaction.md`。 |
+
+
+## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 相关 | `crates/tact_llm/src/openai/responses/convert.rs`、Responses reasoning 请求构造 |
+| 症状 / 动机 | 普通 OpenAI Responses 请求发送 `reasoning.summary = auto`，因此即使启用了 reasoning，流式 thinking block 也可能只有 provider 自动选择的简短摘要。 |
+| 决策 | 保留 Responses API 的 `summary` 字段，但在 Tact 启用 reasoning 时请求 `ReasoningSummary::Detailed`（`"detailed"`）。流式解析无需修改，因为它已经消费 reasoning summary delta。 |
+| 变更后行为 | OpenAI Responses 的 thinking block 请求并显示详细 reasoning summary，不再使用自动摘要级别。 |
+| 指针 | 请求转换与回归断言：`crates/tact_llm/src/openai/responses/convert.rs`；相关 Responses 适配器：`crates/tact_llm/src/openai/responses/`。 |
+
+
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 相关 | `crates/tui/src/render/log.rs`、`crates/tui/src/render/cells/text.rs`、`crates/tui/src/render/log_render_tests.rs` |
+| 症状 / 动机 | 主日志区域先按整个面板内容宽度换行，绘制普通消息时再增加左侧缩进；满行消息因此会在右边界被截掉几列，且选区重绘使用了错误的换行宽度。 |
+| 决策 | 缓存换行时预先扣除该消息实际缩进；流式回复使用相同的回复缩进。`TextCell` 的选区换行直接使用扣除缩进后的可用宽度。 |
+| 变更后行为 | 主区域满行的普通、嵌套和流式文本会在实际可绘制宽度内换行，右侧字符不再丢失。 |
+| 指针 | 日志布局与换行缓存见 `render/log.rs`；文本绘制见 `render/cells/text.rs`；回归测试 `log_full_width_nested_line_wraps_before_indentation_clip`。 |
+
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact/src/agent/mod.rs`（`set_thinking_budget` / `set_reasoning_effort`）、`crates/tact/src/config/mod.rs`（`update_llm_model_and_*`、`update_subagent_*`）、`crates/tact/src/config/persist.rs`（TOML 移除）、`crates/tui/src/render/bar.rs`（`format_think_segment`）、第 23 章 §6.6 |
+| Symptom / motivation | 使用 OpenAI Chat Completions（effort 语义）时，底栏显示 `think high(32K)`：`high` 是真实的 `reasoning_effort`，而 `32K` 是之前预算语义模型（claude / kimi-for-coding）残留的 `thinking_budget`。预算对 effort 模型毫无意义、也绝不会发到线上，但由于运行时 setter、内存配置更新函数、TOML 持久化路径都不会清掉另一字段，它仍会显示在 effort 旁边。 |
+| Decision | 端到端地让 effort 与预算**互斥**：`set_thinking_budget` 清掉 `reasoning_effort`，`set_reasoning_effort` 将 `thinking_budget` 归零；配置更新函数（`update_llm_model_and_thinking_budget` / `update_llm_model_and_reasoning_effort` 及其 subagent 对应项）同样处理；TOML 持久化函数从 provider/subagent 条目中移除相反键。状态栏 `format_think_segment` 改为 effort 优先（有 effort → `think high`，忽略残留预算；只有预算 → `think 32K`），且仅有 effort 时仍会渲染而不是消失。 |
+| Behavior after | effort 语义模型显示 `think high`（绝不会是 `think high(32K)`）；预算语义模型显示 `think 32K`。选择 effort 会从 config.toml 移除已存的 `thinking_budget`；选择预算会移除 `reasoning_effort`。旧配置若同时包含两个字段，显示只取 effort，并在下次 `/model` 持久化时自愈。 |
+| Pointers | `format_think_segment` 及其测试位于 `crates/tui/src/render/bar.rs`；setter 位于 `crates/tact/src/agent/mod.rs`；配置更新函数位于 `crates/tact/src/config/mod.rs`；TOML 移除及其测试位于 `crates/tact/src/config/persist.rs`；driver 测试 `set_reasoning_effort_clears_stale_thinking_budget`；TUI 测试 `applying_effort_pick_clears_stale_thinking_budget`；文档 `book/23_chapter_tui*.md` §6.6 |
+
+---
+
+## 1. 2026-08-06 — 恢复重试消息附带底层错误
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact/src/recovery.rs`（`error_summary`）、`crates/tact/src/agent/mod.rs`（backoff / compact retry 消息点）、第 6 章恢复消息 |
+| Symptom / motivation | `[Recovery] backoff (1/10): retrying in 1.9s` 只说明了*何时*重试，没有说明*为什么*——底层传输错误（超时、连接重置、限流……）完全不可见，用户看到 8 次以上退避却不知道哪里失败。压缩摘要的重试消息（`[compact retry 1/3] retrying in 1.9s`）也有同样的问题。 |
+| Decision | 在 `recovery.rs` 新增 `error_summary`：将空白/换行折叠为单行，超过 200 字符以省略号截断。主循环 backoff 消息追加完整 anyhow 链（外层上下文 → 根因，以 `": "` 连接）；两处压缩重试消息追加客户端错误字符串。原有标签、计数与延时文本保持不变，因此匹配 `contains("Recovery") && contains("backoff")` 的测试仍可通过。 |
+| Behavior after | 恢复重试会报告原因，例如 `[Recovery] backoff (2/10): retrying in 4.3s — http request failed: error sending request for url`。 |
+| Pointers | `error_summary` 及其单元测试位于 `crates/tact/src/recovery.rs`；消息点在 `crates/tact/src/agent/mod.rs`；文档 `book/06_chapter_recovery*.md` 恢复消息一节 |
+
+---
+
+## 1. 2026-08-06 — 未知 provider 名称放行为自定义 OpenAI 兼容 provider
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `optimization` |
+| 相关 | `crates/tact_llm/src/types.rs`（`ProviderKind::Custom`、`FromStr`）、`crates/tact_llm/src/provider.rs`（`build_client`、`model_uses_effort`）、`crates/tact_llm/src/hook_select.rs`（`body_hook_for`）、`crates/tact_llm/src/models.rs`（`is_models_query_supported`）、`crates/tact/src/config/resolve.rs`（`resolve_provider_kind`、`resolve_llm`、`resolve_subagent`）、Ch 21 §3–§4 |
+| 症状 / 动机 | `ProviderKind::from_str` 拒绝 `anthropic | openai | deepseek | kimi` 之外的任何名称，因此 `llm.provider = "moonshot"`（或任何自建 / 网关 provider）即使条目里配好了可用的 OpenAI 兼容 `base_url`，也会报 "unknown provider"。配置层无法表达第三方 OpenAI 兼容端点。 |
+| 决策 | 为所有非内建名称新增 `ProviderKind::Custom(String)`。自定义 provider 全链路复用 OpenAI 协议：`build_client` 派发到 OpenAI 兼容适配器（默认 `chat_completions`，可选 `responses`），`body_hook_for` 与 `openai` 使用相同的端点启发式，支持 `/v1/models` 补充，并接受 `reasoning_effort`。它们**没有默认 `base_url`**——条目未设置时 resolve 报 "base_url not configured"。内建门禁不变：`responses` 协议仍限 `openai | deepseek | custom`，`reasoning_effort` 限 OpenAI 兼容 provider（即除 anthropic 外全部）；`resolve_llm` 中的 map key 校验循环已删除（自定义 key 不再报错）。`ProviderKind` 失去 `Copy`（现在持有 `String`），方法接收者改为 `&self`。 |
+| 变更后行为 | `llm.provider` / `--provider` 接受任意名称。非内建名称按自定义 OpenAI 兼容 provider 处理，必须在 `[llm.providers.<name>]` 中显式配置 `base_url`。缺失活跃条目仍在 resolve 时报错。 |
+| 指向 | `ProviderKind` 位于 `crates/tact_llm/src/types.rs`；测试 `provider_kind_from_str_accepts_unknown_as_custom`（tact_llm）、`custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves`（tact config resolve）；文档 `book/21_chapter_config*.md` §3–§4、`config.example.toml` |
+
+---
+
+## 1. 2026-08-06 — 账户轮询每次故障只提示一次，而非每个退避周期都提示
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `optimization` |
+| 关联 | `crates/tact-ui/src/account.rs`（`poll_loop`、`spawn_poller`）、`crates/tui/src/widgets/state/app/agent.rs`（`handle_account_update` flash）、Ch 22 §9 |
+| 症状 / 动机 | `spawn_poller` 把每次失败的余额 / 用量查询都转发为 `AccountUpdate::Error`。在持续故障（如断网）时，TUI 每 10 s → 20 s → … → 5 min 弹一次错误提示，永不停歇——变成通知风暴（「骚扰」），掩盖了应用的真实状态。 |
+| 决策 | 把循环抽取为可测试的 `poll_loop(query, tx, next_delay)`，并加入 `error_notified` 标志：连续故障期间只转发**第一条**失败；后续重试保持静默，退避继续。一次成功查询会复位标志，因此恢复后的新一轮故障会再次提示一次。`NotSupported` 仍静默终止循环（不变）；启动查询与 `/balance` 命令保留一次性错误上报（用户主动触发，不算骚扰）。 |
+| 行为变化 | 一次故障 = 一条 flash 提示，之后静默退避重试直到恢复；恢复后恢复正常 5–15 s 轮询，下一次故障再提示一次。 |
+| 指针 | `crates/tact-ui/src/account.rs` 中的 `poll_loop` / `spawn_poller`；测试 `poller_forwards_error_once_per_outage_then_resumes`、`poller_stops_on_not_supported_without_error_flash`；文档 `book/22_chapter_llm*.md` §9 |
+
+---
+
+## 1. 2026-08-06 — Kimi Code 用量查询仅限官方 `https://api.kimi.com/coding` 端点
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `bugfix` |
+| 关联 | `crates/tact_llm/src/account.rs`（`query_kimi_code_usage`、`kimi_usage_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_kimi_usage_supported`、`is_account_query_supported`）、`crates/tact-ui/src/account.rs`（`query_once`）、Ch 22 §3 / §9 |
+| 症状 / 动机 | `kimi_usage_url_from_base_url` 从任意配置的 base URL 推导 `{origin}/v1/usages`，导致 `kimi-for-coding` 模型挂在自定义 OpenAI 兼容代理后时，会把代理的 API key 发往猜测出来的用量端点。`is_kimi_usage_supported` 此前等于 `is_kimi_coding(&model)`——任何提供 `kimi-for-coding` 的代理都返回 true，因此 TUI 配额组件也会轮询代理。 |
+| 决策 | 与 DeepSeek / Kimi 余额的「凭据边界」对齐：`kimi_usage_url_from_base_url` 仅在 HTTPS 且主机精确为 `api.kimi.com`、路径含 `/coding`（允许 `/v1` 后缀）时返回官方 URL；其余返回 `None`，`query_kimi_code_usage` 报错「Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding」。`ProviderInfo::is_kimi_usage_supported` 要求同样的官方主机 / 路径，因此代理配置下 `is_account_query_supported` 为 false，TUI 隐藏配额组件。`is_kimi_coding` 本身不变——它仍用于识别 Kimi Code 平台（含代理）以决定 wire shape。 |
+| 行为变化 | Kimi Code 用量轮询仅在 `base_url` 指向官方 `https://api.kimi.com/coding` 端点时可用。自定义代理（即使 model 是 `kimi-for-coding`）视为不支持；代理配置的 API key 永远不会发送到 `api.kimi.com`。 |
+| 指针 | `crates/tact_llm/src/account.rs` 中的 `kimi_usage_url_from_base_url` + 测试 `kimi_usage_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_kimi_usage_supported` + 测试 `is_kimi_usage_supported_only_for_official_endpoint`；文档 `book/22_chapter_llm*.md` §3 / §9 |
+
+---
+
+## 1. 2026-08-06 — DeepSeek 余额查询仅限官方 `https://api.deepseek.com` 端点
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `bugfix` |
+| 关联 | `crates/tact_llm/src/account.rs`（`query_deepseek_balance`、`deepseek_balance_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_deepseek_balance_supported`、`is_account_query_supported`）、`crates/tact-ui/src/account.rs`（`query_once`）、Ch 22 §3 / §9 |
+| 症状 / 动机 | `query_deepseek_balance` 从任意配置的 base URL 推导 `{origin}/user/balance`，导致 DeepSeek 模型挂在自定义 OpenAI 兼容代理后时，会把代理的 API key 发往猜测出来的余额端点。DeepSeek 只在官方主机提供 `GET /user/balance`；该回退逻辑错误，可能把凭据泄露到错误主机或产生令人困惑的 404/403。 |
+| 决策 | 与 Kimi 的「凭据边界」对齐：`deepseek_balance_url_from_base_url` 仅在 base URL 为空（配置默认）或为 HTTPS 且主机精确为 `api.deepseek.com`（允许 `/v1` 后缀）时返回官方 URL；其余返回 `None`，`query_deepseek_balance` 报错「DeepSeek balance API is only available for the official endpoint https://api.deepseek.com」。`ProviderInfo::is_deepseek_balance_supported` 门控 `is_account_query_supported`，因此代理配置下 TUI 底栏余额组件直接隐藏而非反复报错。 |
+| 行为变化 | DeepSeek 余额轮询 / `/balance` 仅在 `base_url` 指向官方端点时可用。自定义代理（即使 model 是 `deepseek-*`）视为不支持；代理配置的 API key 永远不会发送到 `api.deepseek.com`。 |
+| 指针 | `crates/tact_llm/src/account.rs` 中的 `deepseek_balance_url_from_base_url` + 测试 `deepseek_balance_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_deepseek_balance_supported` + 测试 `is_deepseek_balance_supported_only_for_official_endpoint`；文档 `book/22_chapter_llm*.md` §3 / §9 |
+
+---
+
 ## 1. 2026-08-06 — `/tasks-dag` 弹窗打开期间新建的任务不显示
 
 | 字段 | 值 |

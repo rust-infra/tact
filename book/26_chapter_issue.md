@@ -29,6 +29,128 @@ Newest entries first. Each entry should include:
 
 ---
 
+
+
+## 1. 2026-08-08 — DeepSeek and Kimi Responses remain configuration-gated
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The generic Responses adapter can be constructed for OpenAI-compatible endpoints, but DeepSeek/Kimi native compaction and state-continuation behavior are not verified to the production contract. Allowing them through normal config would make unsupported fallback behavior look supported. |
+| Decision | Keep DeepSeek and Kimi `protocol = "responses"` rejected at config resolution. Lower-level adapter construction remains available for isolated endpoint tests; production configuration uses Chat Completions until native Responses capabilities are verified. |
+| Behavior after | DeepSeek/Kimi users receive a clear configuration error instead of entering an unverified Responses path. OpenAI and explicitly configured custom OpenAI-compatible providers retain their existing Responses routes. |
+| Pointers | `crates/tact/src/config/resolve.rs`; provider construction: `crates/tact_llm/src/provider.rs`; related design: `docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`; compaction behavior: Ch 5. |
+
+
+## 1. 2026-08-08 — OpenAI Responses preserves unknown wire items
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The typed `async-openai` Responses enum rejects a newly introduced output item before Tact can preserve it, making forward-compatible provider state impossible. Tact also had no explicit request extension for Responses-only fields outside the shared Chat/Anthropic request model. |
+| Decision | Parse the raw Responses envelope before typed normalization; normalize known items while retaining unknown input/output items as raw JSON. Add a `ResponsesRequestOptions` boundary consumed only by the Responses adapter, and expose conservative provider capability metadata without forking `async-openai` until a reproducible SDK blocker exists. |
+| Behavior after | Unknown harmless stream events no longer abort a response. Unknown output items survive ordinary and streamed turns, session state serialization, and the next Responses request. Responses-only request options do not appear in Chat Completions or Anthropic payloads. |
+| Pointers | `crates/tact_llm/src/openai/responses/wire.rs`, `request_options.rs`, `stream.rs`, `provider.rs`; design: `docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`; plan: `docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`; compaction: Ch 5 and `docs/compaction.md`. |
+
+
+## 1. 2026-08-06 — OpenAI Responses exposes detailed reasoning summaries
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | `crates/tact_llm/src/openai/responses/convert.rs`, Responses reasoning request construction |
+| Symptom / motivation | Ordinary OpenAI Responses requests asked for `reasoning.summary = auto`, so the streamed thinking block could contain only a short provider-selected summary even when reasoning was enabled. |
+| Decision | Keep the Responses API `summary` field, but request `ReasoningSummary::Detailed` (`"detailed"`) whenever Tact enables reasoning. No changes are needed to stream parsing, which already consumes reasoning summary deltas. |
+| Behavior after | OpenAI Responses thinking blocks request and display the detailed reasoning summary rather than the automatic summary level. |
+| Pointers | Request conversion and regression assertion: `crates/tact_llm/src/openai/responses/convert.rs`; related Responses adapter: `crates/tact_llm/src/openai/responses/`. |
+
+
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Related | `crates/tui/src/render/log.rs`, `crates/tui/src/render/cells/text.rs`, `crates/tui/src/render/log_render_tests.rs` |
+| Symptom / motivation | The main log area wrapped lines to the full panel content width, then added a left indent while drawing ordinary messages. Full-width messages were consequently clipped by several columns at the right edge; selection redraws also used the wrong wrap width. |
+| Decision | Subtract each message's actual indent before caching wrapped lines; use the same reply indent for the streaming row. Make `TextCell` selection wrapping use the already-available width after indentation. |
+| Behavior after | Full-width ordinary, nested, and streaming text wraps within its actual drawable width, so right-edge characters are preserved. |
+| Pointers | Layout and wrap cache: `render/log.rs`; text drawing: `render/cells/text.rs`; regression test: `log_full_width_nested_line_wraps_before_indentation_clip`. |
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact/src/agent/mod.rs` (`set_thinking_budget` / `set_reasoning_effort`), `crates/tact/src/config/mod.rs` (`update_llm_model_and_*`, `update_subagent_*`), `crates/tact/src/config/persist.rs` (TOML removals), `crates/tui/src/render/bar.rs` (`format_think_segment`), Ch 23 §6.6 |
+| Symptom / motivation | On OpenAI Chat Completions (effort semantics), the bottom bar showed `think high(32K)`: `high` was the real `reasoning_effort`, but the `32K` was a stale `thinking_budget` left over from a previous budget-semantic model (claude / kimi-for-coding). The budget is meaningless for effort models and is never sent on the wire, yet it rendered next to the effort because neither the runtime setters, the in-memory config updaters, nor the TOML persist path cleared the other field. |
+| Decision | Make effort and budget **mutually exclusive** end to end: `set_thinking_budget` clears `reasoning_effort` and `set_reasoning_effort` zeroes `thinking_budget`; the config update fns (`update_llm_model_and_thinking_budget` / `update_llm_model_and_reasoning_effort` and their subagent twins) do the same; the TOML persist fns remove the opposite key from the provider/subagent entry. In the status bar, `format_think_segment` now gives effort precedence (effort present → `think high`, stale budget ignored; budget only → `think 32K`), and an effort without any budget still renders instead of disappearing. |
+| Behavior after | Effort-semantic models show `think high` (never `think high(32K)`); budget-semantic models show `think 32K`. Picking an effort removes the stored `thinking_budget` from config.toml; picking a budget removes `reasoning_effort`. Legacy configs that still contain both fields render effort-only and self-heal on the next `/model` persist. |
+| Pointers | `format_think_segment` + tests in `crates/tui/src/render/bar.rs`; setters in `crates/tact/src/agent/mod.rs`; config updaters in `crates/tact/src/config/mod.rs`; TOML removals + tests in `crates/tact/src/config/persist.rs`; driver test `set_reasoning_effort_clears_stale_thinking_budget`; TUI test `applying_effort_pick_clears_stale_thinking_budget`; docs `book/23_chapter_tui*.md` §6.6 |
+
+---
+
+## 1. 2026-08-06 — Recovery retry messages include the underlying error
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact/src/recovery.rs` (`error_summary`), `crates/tact/src/agent/mod.rs` (backoff / compact-retry emit sites), Ch 6 §Recovery messages |
+| Symptom / motivation | `[Recovery] backoff (1/10): retrying in 1.9s` said *when* the next retry happened but never *why* — the underlying transport error (timeout, connection reset, rate limit, …) was invisible, so a user watching 8+ backoff ticks had no idea what was failing. The compaction summary retries (`[compact retry 1/3] retrying in 1.9s`) had the same defect. |
+| Decision | Add `error_summary` in `recovery.rs`: collapse whitespace/newlines to a single line, truncate at 200 chars with an ellipsis. The main-loop backoff message appends the full anyhow chain (outer context → root cause, joined by `": "`); both compaction retry messages append the client error string. Existing tags, counters, and delay text are unchanged, so tests matching `contains("Recovery") && contains("backoff")` keep passing. |
+| Behavior after | Recovery retries report the reason, e.g. `[Recovery] backoff (2/10): retrying in 4.3s — http request failed: error sending request for url`. |
+| Pointers | `error_summary` + unit tests in `crates/tact/src/recovery.rs`; emit sites in `crates/tact/src/agent/mod.rs`; docs `book/06_chapter_recovery*.md` §Recovery messages |
+
+---
+
+## 1. 2026-08-06 — Unknown provider names allowed as custom OpenAI-compatible providers
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact_llm/src/types.rs` (`ProviderKind::Custom`, `FromStr`), `crates/tact_llm/src/provider.rs` (`build_client`, `model_uses_effort`), `crates/tact_llm/src/hook_select.rs` (`body_hook_for`), `crates/tact_llm/src/models.rs` (`is_models_query_supported`), `crates/tact/src/config/resolve.rs` (`resolve_provider_kind`, `resolve_llm`, `resolve_subagent`), Ch 21 §3–§4 |
+| Symptom / motivation | `ProviderKind::from_str` rejected any name outside `anthropic | openai | deepseek | kimi`, so `llm.provider = "moonshot"` (or any self-hosted / gateway provider) failed with "unknown provider" even though the entry carried a working OpenAI-compatible `base_url`. The config layer could not express third-party OpenAI-compatible endpoints. |
+| Decision | Add `ProviderKind::Custom(String)` for every non-built-in name. Custom providers reuse the OpenAI protocol end to end: `build_client` dispatches to the OpenAI-compatible adapter (`chat_completions` default, `responses` opt-in), `body_hook_for` follows the same endpoint heuristics as `openai`, `/v1/models` supplementation is supported, and `reasoning_effort` is accepted. They have **no default `base_url`** — resolve fails with "base_url not configured" unless the entry sets one. Built-in gates are unchanged: `responses` protocol stays limited to `openai | deepseek | custom`, `reasoning_effort` to OpenAI-compatible providers (all but anthropic); the map-key validation loop in `resolve_llm` was removed (custom keys are no longer an error). `ProviderKind` lost `Copy` (it now owns a `String`); method receivers changed to `&self`. |
+| Behavior after | `llm.provider` / `--provider` accepts any name. Non-built-in names behave as custom OpenAI-compatible providers and require an explicit `base_url` in `[llm.providers.<name>]`. Missing active entries still error at resolve time. |
+| Pointers | `ProviderKind` in `crates/tact_llm/src/types.rs`; tests `provider_kind_from_str_accepts_unknown_as_custom` (tact_llm), `custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves` (tact config resolve); docs `book/21_chapter_config*.md` §3–§4, `config.example.toml` |
+
+---
+
+## 1. 2026-08-06 — Account poller reports each outage once instead of every backoff tick
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tact-ui/src/account.rs` (`poll_loop`, `spawn_poller`), `crates/tui/src/widgets/state/app/agent.rs` (`handle_account_update` flash), Ch 22 §9 |
+| Symptom / motivation | `spawn_poller` forwarded every failed balance / usage query as `AccountUpdate::Error`. On a persistent outage (e.g. network down) the TUI flashed an error every 10 s → 20 s → … → 5 min, forever — a notification storm ("骚扰") that obscured the real state of the app. |
+| Decision | Extract the loop into a testable `poll_loop(query, tx, next_delay)` and add an `error_notified` flag: only the **first** failure of a consecutive outage is forwarded; later retries stay silent while backoff continues. A successful query resets the flag, so a fresh outage after recovery reports once again. `NotSupported` still terminates the loop silently (unchanged), and the explicit startup query + `/balance` command keep their one-shot error reporting (user-triggered, not spam). |
+| Behavior after | One outage = one flash message, then silent retries with backoff until recovery; after recovery the normal 5–15 s polling resumes and the next outage flashes once again. |
+| Pointers | `poll_loop` / `spawn_poller` in `crates/tact-ui/src/account.rs`; tests `poller_forwards_error_once_per_outage_then_resumes`, `poller_stops_on_not_supported_without_error_flash`; docs `book/22_chapter_llm*.md` §9 |
+
+---
+
+## 1. 2026-08-06 — Kimi Code usage quota query restricted to the official `https://api.kimi.com/coding` endpoint
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact_llm/src/account.rs` (`query_kimi_code_usage`, `kimi_usage_url_from_base_url`), `crates/tact_llm/src/provider.rs` (`is_kimi_usage_supported`, `is_account_query_supported`), `crates/tact-ui/src/account.rs` (`query_once`), Ch 22 §3 / §9 |
+| Symptom / motivation | `kimi_usage_url_from_base_url` derived `{origin}/v1/usages` from any configured base URL, so a `kimi-for-coding` model behind a custom OpenAI-compatible proxy would send the proxy's API key to a guessed usage endpoint. `is_kimi_usage_supported` was `is_kimi_coding(&model)` — true for any proxy serving `kimi-for-coding` — so the TUI quota widget polled proxies too. |
+| Decision | Mirror the DeepSeek / Kimi balance "credential boundary": `kimi_usage_url_from_base_url` returns the official URL only for HTTPS with the exact host `api.kimi.com` and a `/coding` path (a `/v1` suffix is accepted); anything else returns `None` and `query_kimi_code_usage` bails with "Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding". `ProviderInfo::is_kimi_usage_supported` requires the same official host/path, so `is_account_query_supported` is false for proxy configurations and the TUI hides the quota widget. `is_kimi_coding` itself is unchanged — it still identifies the Kimi Code platform (including proxies) for wire shape. |
+| Behavior after | Kimi Code usage polling works only when `base_url` targets the official `https://api.kimi.com/coding` endpoint. Custom proxies (even with `kimi-for-coding`) report "not supported"; the API key is never sent to `api.kimi.com` from a proxy configuration. |
+| Pointers | `kimi_usage_url_from_base_url` + test `kimi_usage_url_derivation` in `crates/tact_llm/src/account.rs`; `is_kimi_usage_supported` + test `is_kimi_usage_supported_only_for_official_endpoint` in `crates/tact_llm/src/provider.rs`; docs `book/22_chapter_llm*.md` §3 / §9 |
+
+---
+
+## 1. 2026-08-06 — DeepSeek balance query restricted to the official `https://api.deepseek.com` endpoint
+
+| Field | Value |
+|-------|-------|
+| Type  | `bugfix` |
+| Related | `crates/tact_llm/src/account.rs` (`query_deepseek_balance`, `deepseek_balance_url_from_base_url`), `crates/tact_llm/src/provider.rs` (`is_deepseek_balance_supported`, `is_account_query_supported`), `crates/tact-ui/src/account.rs` (`query_once`), Ch 22 §3 / §9 |
+| Symptom / motivation | `query_deepseek_balance` derived `{origin}/user/balance` from any configured base URL, so DeepSeek models behind a custom OpenAI-compatible proxy would send the proxy's API key to a guessed balance endpoint. DeepSeek only serves `GET /user/balance` on the official host; the fallback was wrong and could leak credentials to the wrong host or surface confusing 404/403 errors. |
+| Decision | Mirror the Kimi "credential boundary": `deepseek_balance_url_from_base_url` returns the official URL only for an empty base URL (config default) or HTTPS with the exact host `api.deepseek.com` (a `/v1` suffix is accepted); anything else returns `None` and `query_deepseek_balance` bails with "DeepSeek balance API is only available for the official endpoint https://api.deepseek.com". `ProviderInfo::is_deepseek_balance_supported` gates `is_account_query_supported`, so the TUI bottom-bar balance widget is hidden for proxy configurations instead of showing errors. |
+| Behavior after | DeepSeek balance polling / `/balance` works only when `base_url` targets the official endpoint. Custom proxies (even with a `deepseek-*` model) report "not supported"; the API key is never sent to `api.deepseek.com` from a proxy configuration. |
+| Pointers | `deepseek_balance_url_from_base_url` + test `deepseek_balance_url_derivation` in `crates/tact_llm/src/account.rs`; `is_deepseek_balance_supported` + test `is_deepseek_balance_supported_only_for_official_endpoint` in `crates/tact_llm/src/provider.rs`; docs `book/22_chapter_llm*.md` §3 / §9 |
+
+---
+
 ## 1. 2026-08-06 — `/tasks-dag` popup does not show tasks added while it is open
 
 | Field | Value |

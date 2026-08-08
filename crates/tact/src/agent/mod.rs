@@ -31,7 +31,7 @@ use crate::{
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
         MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
-        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message,
+        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message, error_summary,
         is_prompt_too_long_error, is_transient_transport_error,
     },
     stats::SessionStats,
@@ -275,6 +275,10 @@ impl Agent {
     /// Update the thinking budget used when constructing subsequent LLM requests.
     /// An in-flight request already owns its `CreateMessageParams` and is unchanged.
     ///
+    /// Budget semantics and effort semantics are mutually exclusive: setting a
+    /// budget clears any stale reasoning effort, so the status bar never shows
+    /// a meaningless `think high(32K)` for a budget-semantic model.
+    ///
     /// If the new budget is active and not strictly smaller than the current
     /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
     /// warning is emitted to the UI channel.
@@ -285,6 +289,7 @@ impl Agent {
     /// previous budget.
     pub fn set_thinking_budget(&mut self, budget: usize) {
         self.agent_settings.thinking_budget = budget;
+        self.agent_settings.reasoning_effort = None;
         if let Some(msg) =
             Self::ensure_max_tokens_gt_thinking_budget(&mut self.agent_settings.max_tokens, budget)
         {
@@ -309,9 +314,15 @@ impl Agent {
     /// Update this agent's session reasoning effort (per-agent; never the
     /// global provider). `None` clears the explicit effort (wire omits it).
     ///
+    /// Effort semantics and budget semantics are mutually exclusive: setting an
+    /// effort clears any stale thinking budget, so the status bar never shows a
+    /// meaningless `(32K)` next to an explicit effort for effort-semantic models
+    /// (openai / deepseek / kimi k3).
+    ///
     /// Same queue semantics as [`set_thinking_budget`].
     pub fn set_reasoning_effort(&mut self, effort: Option<OpenAiReasoningEffort>) {
         self.agent_settings.reasoning_effort = effort;
+        self.agent_settings.thinking_budget = 0;
         self.emit_model_status();
     }
 
@@ -427,10 +438,9 @@ impl Agent {
 
     /// Validate a loaded Responses provider state against the active client.
     ///
-    /// The state records the provider name, base URL, and request model it was
-    /// created for. Reusing it with a different provider/base URL/model would
-    /// silently corrupt the conversation, so a mismatch is a hard error and is
-    /// never silently reset or dropped.
+    /// Provider and base URL must match. Model mismatches are intentionally
+    /// allowed for experimentation; the provider may reject incompatible
+    /// opaque state at request time.
     fn validate_provider_state_binding(&self, state: &ProviderConversationState) -> Result<()> {
         let ProviderConversationState::OpenAiResponses(inner) = state;
         let LlmProvider::OpenAiResponses(adapter) = &self.runtime.client else {
@@ -450,14 +460,6 @@ impl Agent {
                 "provider state is bound to base URL '{}', expected '{}'",
                 inner.base_url,
                 adapter.base_url()
-            );
-        }
-        let model = self.agent_settings.model.clone();
-        if inner.model != model {
-            anyhow::bail!(
-                "provider state is bound to model '{}', expected '{}'",
-                inner.model,
-                model
             );
         }
         Ok(())
@@ -736,8 +738,15 @@ impl Agent {
                     {
                         let delay = backoff_delay(self.runtime.recovery_state.transport_attempts);
                         self.runtime.recovery_state.transport_attempts += 1;
+                        let summary = error_summary(
+                            &error
+                                .chain()
+                                .map(|cause| cause.to_string())
+                                .collect::<Vec<_>>()
+                                .join(": "),
+                        );
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] backoff ({}/{}): retrying in {:.1}s",
+                            "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
                             self.runtime.recovery_state.transport_attempts,
                             MAX_TRANSPORT_ATTEMPTS,
                             delay.as_secs_f64()
@@ -1030,8 +1039,9 @@ impl Agent {
                     }
                     retry_attempt = retry_attempt.saturating_add(1);
                     let delay = backoff_delay(retry_attempt.saturating_sub(1));
+                    let summary = error_summary(&error_text);
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s",
+                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;
@@ -1266,8 +1276,9 @@ impl Agent {
                     }
                     retry_attempt = retry_attempt.saturating_add(1);
                     let delay = backoff_delay(retry_attempt.saturating_sub(1));
+                    let summary = error_summary(&error_text);
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s",
+                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
                         delay.as_secs_f64()
                     )));
                     tokio::time::sleep(delay).await;

@@ -122,9 +122,11 @@ Each recovery emits an `AgentUpdate::Info` line visible in the TUI, e.g.:
 
 ```text
 [Recovery] compact (1/3): context too large
-[Recovery] backoff (2/3): retrying in 4.3s
+[Recovery] backoff (2/3): retrying in 4.3s — http request failed: error sending request for url
 [Recovery] continue (1/3): output truncated
 ```
+
+The `backoff` and `compact retry` lines append the underlying error (collapsed to one line, truncated at 200 chars via `error_summary`), so a retry says *why* it is retrying, not just when.
 
 For output-limit recovery, attempt 1 uses the direct-resume prompt. If the model is truncated again, attempts 2 and 3 switch to a convergence prompt that stops expansion and requests only a concise structured result containing the conclusion, verified issues, and minimal fixes. The attempt counter and three-attempt cap are unchanged.
 

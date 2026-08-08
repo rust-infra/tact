@@ -25,7 +25,10 @@
 # ---------------------------------------------------------------------------
 # Active provider selects which [llm.providers.*] entry is used.
 # Credentials live under providers — not as flat fields on [llm].
-# Switch with llm.provider or --provider (anthropic | openai | deepseek | kimi).
+# Switch with llm.provider or --provider.
+# Built-in identities: anthropic | openai | deepseek | kimi. Any other name
+# is accepted as a custom OpenAI-compatible provider (OpenAI Chat Completions
+# / Responses protocol) and requires an explicit base_url in its entry.
 [llm]
 provider = "deepseek"
 

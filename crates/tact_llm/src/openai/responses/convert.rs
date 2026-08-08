@@ -177,10 +177,10 @@ fn normalize_assistant_history_items(input: &mut [serde_json::Value]) {
 }
 
 /// Validates that a persisted Responses state may be reused for the given
-/// request. The state version must be exactly 1, the provider and model must
-/// match, and the logical-message prefix represented by the state must hash
-/// to the recorded value. A mismatch is a hard protocol error; Tact must
-/// never silently duplicate, truncate, or reconstruct the baseline.
+/// request. The state version and provider must match, and the logical-message
+/// prefix represented by the state must hash to the recorded value. The model
+/// is intentionally not checked here so callers can experiment with model
+/// changes; the provider may still reject incompatible wire state.
 fn validate_conversion_state(
     state: &ResponsesConversationState,
     request: &CreateMessageParams,
@@ -195,12 +195,6 @@ fn validate_conversion_state(
         return Err(LlmError::Unsupported(format!(
             "provider state is bound to provider '{}', expected 'openai_responses'",
             state.provider
-        )));
-    }
-    if state.model != request.model {
-        return Err(LlmError::Unsupported(format!(
-            "provider state is bound to model '{}', expected '{}'",
-            state.model, request.model
         )));
     }
     if state.logical_message_count > request.messages.len() {
@@ -292,7 +286,7 @@ pub(crate) fn create_response(
     if request.thinking.is_some() || request.reasoning_effort.is_some() {
         builder.reasoning(Reasoning {
             effort: None,
-            summary: Some(ReasoningSummary::Auto),
+            summary: Some(ReasoningSummary::Detailed),
         });
     }
 
@@ -300,6 +294,9 @@ pub(crate) fn create_response(
         LlmError::Unsupported(format!("build OpenAI Responses request: {error}"))
     })?;
     let mut body = serde_json::to_value(typed_request)?;
+    if let Some(options) = &request.responses_options {
+        options.apply_to(&mut body)?;
+    }
 
     // The exact input for this request: the state baseline (verbatim JSON)
     // followed by the newly converted uncovered items. Only the newly
@@ -332,6 +329,7 @@ pub(crate) fn create_response(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
     use super::{create_response, message_to_input};
     use crate::{
@@ -473,7 +471,7 @@ mod tests {
         let (body, _) = create_response(&request_with_history(), None, None).unwrap();
 
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
-        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["summary"], "detailed");
         let input = body["input"].as_array().unwrap();
         assert!(input.iter().all(|item| item["type"] != "reasoning"));
     }
@@ -699,18 +697,36 @@ mod tests {
     }
 
     #[test]
-    fn state_with_mismatched_model_is_rejected() {
+    fn responses_request_options_are_patched_into_wire_body() {
+        let request = request_with_history().with_responses_options(ResponsesRequestOptions {
+            parallel_tool_calls: Some(false),
+            ..Default::default()
+        });
+        let (body, _) = create_response(&request, None, None).unwrap();
+        assert_eq!(body["parallel_tool_calls"], false);
+    }
+
+    #[test]
+    fn responses_options_are_not_serialized_as_anthropic_fields() {
+        let request = request_with_history().with_responses_options(ResponsesRequestOptions {
+            user: Some("user-1".into()),
+            ..Default::default()
+        });
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert!(serialized.get("responses_options").is_none());
+    }
+
+    #[test]
+    fn state_with_mismatched_model_is_allowed_for_experiment() {
         let request = request_with_history();
         let mut state = state_covering_first_message(&request);
         state.model = "other-model".to_string();
-        let error = create_response(
+        create_response(
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
             None,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("other-model"));
+        .expect("model mismatch should not be rejected by local state validation");
     }
 
     #[test]

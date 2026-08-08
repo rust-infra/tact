@@ -11,24 +11,40 @@ use crate::provider::read_provider;
 /// reuse across calls.
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
+/// Derive the DeepSeek balance API URL from the configured base URL.
+///
+/// Returns `None` unless the URL targets the official DeepSeek API host.
+///
+/// DeepSeek only serves `GET /user/balance` on the official endpoint; custom
+/// OpenAI-compatible proxies / gateways do not implement it. The API key is
+/// therefore never sent anywhere but `https://api.deepseek.com`.
+fn deepseek_balance_url_from_base_url(base_url: &str) -> Option<String> {
+    if base_url.is_empty() {
+        return Some("https://api.deepseek.com/user/balance".to_string());
+    }
+
+    let parsed = reqwest::Url::parse(base_url).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("api.deepseek.com") {
+        return None;
+    }
+    Some("https://api.deepseek.com/user/balance".to_string())
+}
+
 /// Query DeepSeek account balance.
 ///
 /// Calls `GET https://api.deepseek.com/user/balance` with the provided API key.
 /// Returns `BalanceInfo` on success.
+///
+/// Only supported when the configured base URL targets the official DeepSeek
+/// API host (`https://api.deepseek.com`, with or without a `/v1` suffix).
 pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
     let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
 
-    // Construct the balance endpoint URL from the base URL
-    let balance_url = if base_url.contains("api.deepseek.com") {
-        "https://api.deepseek.com/user/balance".to_string()
-    } else {
-        // Extract origin from base_url and append /user/balance
-        let origin = base_url
-            .trim_end_matches('/')
-            .trim_end_matches("/v1")
-            .trim_end_matches("/v1/");
-        format!("{origin}/user/balance")
-    };
+    let balance_url = deepseek_balance_url_from_base_url(&base_url).ok_or_else(|| {
+        anyhow::anyhow!(
+            "DeepSeek balance API is only available for the official endpoint https://api.deepseek.com"
+        )
+    })?;
 
     let resp = CLIENT
         .get(&balance_url)
@@ -198,20 +214,25 @@ pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> 
 
 /// Derive the Kimi Code usage API URL from the configured base URL.
 ///
-/// Works for the official endpoint and for custom proxies serving the
-/// `kimi-for-coding` model. Falls back to the official endpoint when the
-/// base URL is empty.
-fn kimi_usage_url_from_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "https://api.kimi.com/coding/v1/usages".to_string();
+/// Returns `None` unless the URL targets the official Kimi Code API host
+/// (`https://api.kimi.com/coding`). Custom OpenAI-compatible proxies do not
+/// serve the usage quota API; the API key is never sent to `api.kimi.com`
+/// from a proxy configuration.
+fn kimi_usage_url_from_base_url(base_url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(base_url).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("api.kimi.com") {
+        return None;
     }
+    if !parsed.path().contains("coding") {
+        return None;
+    }
+    let trimmed = parsed.path().trim_end_matches('/');
     let api_base = if trimmed.ends_with("/v1") {
         trimmed.to_string()
     } else {
         format!("{trimmed}/v1")
     };
-    format!("{api_base}/usages")
+    Some(format!("https://api.kimi.com{api_base}/usages"))
 }
 
 /// Parse a quota number reported as a JSON string.
@@ -296,19 +317,17 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 }
 
 /// Query Kimi Code subscription quota (`GET .../v1/usages`).
+///
+/// Only supported when the configured base URL targets the official Kimi Code
+/// endpoint (`https://api.kimi.com/coding`).
 pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
-    let (api_key, base_url, is_kimi_coding) = read_provider(|p| {
-        (
-            p.api_key.clone(),
-            p.base_url.clone(),
-            p.is_kimi_coding(&p.model),
-        )
-    });
+    let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
 
-    if !is_kimi_coding {
-        anyhow::bail!("usage quota API is only available on Kimi Code (api.kimi.com/coding)");
-    }
-    let usage_url = kimi_usage_url_from_base_url(&base_url);
+    let usage_url = kimi_usage_url_from_base_url(&base_url).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding"
+        )
+    })?;
 
     let resp = CLIENT
         .get(&usage_url)
@@ -343,25 +362,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kimi_usage_url_derivation() {
+    fn deepseek_balance_url_derivation() {
         assert_eq!(
-            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1"),
-            "https://api.kimi.com/coding/v1/usages"
+            deepseek_balance_url_from_base_url("https://api.deepseek.com"),
+            Some("https://api.deepseek.com/user/balance".to_string())
         );
         assert_eq!(
-            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1/"),
-            "https://api.kimi.com/coding/v1/usages"
+            deepseek_balance_url_from_base_url("https://api.deepseek.com/v1"),
+            Some("https://api.deepseek.com/user/balance".to_string())
         );
-        // Custom proxy serving kimi-for-coding: derive from the proxy base.
         assert_eq!(
-            kimi_usage_url_from_base_url("https://proxy.example.com"),
-            "https://proxy.example.com/v1/usages"
+            deepseek_balance_url_from_base_url("https://api.deepseek.com/v1/"),
+            Some("https://api.deepseek.com/user/balance".to_string())
         );
         // Empty base URL falls back to the official endpoint.
         assert_eq!(
-            kimi_usage_url_from_base_url(""),
-            "https://api.kimi.com/coding/v1/usages"
+            deepseek_balance_url_from_base_url(""),
+            Some("https://api.deepseek.com/user/balance".to_string())
         );
+        // Custom proxies / gateways do not serve the DeepSeek balance API.
+        assert_eq!(
+            deepseek_balance_url_from_base_url("https://proxy.example.com/v1"),
+            None
+        );
+        // Host-name spoofing and plain HTTP are rejected too.
+        assert_eq!(
+            deepseek_balance_url_from_base_url("https://api.deepseek.com.evil.example/v1"),
+            None
+        );
+        assert_eq!(
+            deepseek_balance_url_from_base_url("http://api.deepseek.com/v1"),
+            None
+        );
+    }
+
+    #[test]
+    fn kimi_usage_url_derivation() {
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1"),
+            Some("https://api.kimi.com/coding/v1/usages".to_string())
+        );
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com/coding/v1/"),
+            Some("https://api.kimi.com/coding/v1/usages".to_string())
+        );
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com/coding"),
+            Some("https://api.kimi.com/coding/v1/usages".to_string())
+        );
+        // Custom proxy serving kimi-for-coding has no usage quota API.
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://proxy.example.com/v1"),
+            None
+        );
+        // Official host without the /coding path is not the Kimi Code API.
+        assert_eq!(kimi_usage_url_from_base_url("https://api.kimi.com"), None);
+        // Host-name spoofing and plain HTTP are rejected too.
+        assert_eq!(
+            kimi_usage_url_from_base_url("https://api.kimi.com.evil.example/coding/v1"),
+            None
+        );
+        assert_eq!(
+            kimi_usage_url_from_base_url("http://api.kimi.com/coding/v1"),
+            None
+        );
+        // Empty base URL has no coding default (Kimi defaults to Moonshot).
+        assert_eq!(kimi_usage_url_from_base_url(""), None);
     }
 
     #[test]

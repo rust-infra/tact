@@ -64,7 +64,7 @@ impl TextCell {
 
     /// Build the visual line list for rendering (selection overlay or cache).
     fn build_lines(&self, width: u16) -> Vec<Line<'_>> {
-        let wrap_width = width + self.indent_cols;
+        let wrap_width = width;
         if let Some((sel_start, sel_end)) = self.selection_range {
             // Whole-line selection can reuse the cached wrap and only flip style.
             if sel_start == 0 && sel_end == self.raw_text.len() {

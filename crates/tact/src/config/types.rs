@@ -246,7 +246,7 @@ impl LlmSettings {
             api_key: self.api_key.clone(),
             base_url: self.base_url.clone(),
             model: self.model.clone(),
-            provider: self.provider,
+            provider: self.provider.clone(),
             protocol: self.protocol,
             responses_compact_threshold: self.responses_compact_threshold,
         }

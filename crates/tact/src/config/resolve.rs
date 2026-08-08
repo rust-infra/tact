@@ -144,7 +144,7 @@ fn resolve_provider_kind(
         .or_else(|| toml_cfg.llm.provider.clone())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "LLM provider not configured. Set llm.provider in config.toml or pass --provider anthropic|openai|deepseek|kimi"
+                "LLM provider not configured. Set llm.provider in config.toml or pass --provider"
             )
         })?;
     raw.parse::<ProviderKind>().map_err(anyhow::Error::msg)
@@ -199,10 +199,6 @@ fn resolve_responses_compact_threshold(
 fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmSettings> {
     let provider = resolve_provider_kind(args, toml_cfg)?;
 
-    for key in toml_cfg.llm.providers.keys() {
-        key.parse::<ProviderKind>().map_err(anyhow::Error::msg)?;
-    }
-
     let entry = toml_cfg
         .llm
         .providers
@@ -248,10 +244,14 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         .parse::<OpenAiProtocol>()
         .map_err(anyhow::Error::msg)?;
     if protocol == OpenAiProtocol::Responses
-        && provider != ProviderKind::OpenAi
-        && provider != ProviderKind::DeepSeek
+        && !matches!(
+            provider,
+            ProviderKind::OpenAi | ProviderKind::DeepSeek | ProviderKind::Custom(_)
+        )
     {
-        anyhow::bail!("protocol 'responses' is only supported for provider 'openai' or 'deepseek'");
+        anyhow::bail!(
+            "protocol 'responses' is only supported for provider 'openai', 'deepseek' or custom OpenAI-compatible providers"
+        );
     }
 
     if protocol == OpenAiProtocol::Responses && provider == ProviderKind::DeepSeek {
@@ -264,13 +264,9 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
         );
     }
     let reasoning_effort = entry.reasoning_effort;
-    if reasoning_effort.is_some()
-        && provider != ProviderKind::OpenAi
-        && provider != ProviderKind::DeepSeek
-        && provider != ProviderKind::Kimi
-    {
+    if reasoning_effort.is_some() && !provider.is_openai_compatible() {
         anyhow::bail!(
-            "reasoning_effort is only supported for provider 'openai', 'deepseek' or 'kimi'"
+            "reasoning_effort is only supported for provider 'openai', 'deepseek', 'kimi' or custom OpenAI-compatible providers"
         );
     }
 
@@ -1201,7 +1197,9 @@ protocol = "responses"
         let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("only supported for provider 'openai' or 'deepseek'"));
+        assert!(error.contains(
+            "only supported for provider 'openai', 'deepseek' or custom OpenAI-compatible providers"
+        ));
     }
 
     #[test]
@@ -1222,7 +1220,9 @@ protocol = "responses"
         let error = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("only supported for provider 'openai' or 'deepseek'"));
+        assert!(error.contains(
+            "only supported for provider 'openai', 'deepseek' or custom OpenAI-compatible providers"
+        ));
     }
 
     #[test]
@@ -1501,7 +1501,7 @@ model = "gpt-4o"
     }
 
     #[test]
-    fn invalid_provider_map_key_errors() {
+    fn custom_provider_in_map_resolves() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1517,10 +1517,8 @@ model = "kimi-k2.5"
 "#,
         )
         .unwrap();
-        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unknown provider"));
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.llm.provider, ProviderKind::OpenAi);
     }
 
     #[test]
@@ -1543,7 +1541,7 @@ model = "kimi-k2.5"
     }
 
     #[test]
-    fn unknown_provider_name_errors() {
+    fn custom_provider_resolves_with_openai_protocol() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1551,14 +1549,37 @@ provider = "foo"
 
 [llm.providers.foo]
 api_key = "sk-test"
-model = "gpt-4o"
+base_url = "https://foo.example.com/v1"
+model = "foo-1"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.provider,
+            ProviderKind::Custom("foo".to_string())
+        );
+        assert_eq!(resolved.llm.protocol, OpenAiProtocol::ChatCompletions);
+        assert_eq!(resolved.llm.base_url, "https://foo.example.com/v1");
+    }
+
+    #[test]
+    fn custom_provider_without_base_url_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "foo"
+
+[llm.providers.foo]
+api_key = "sk-test"
+model = "foo-1"
 "#,
         )
         .unwrap();
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("unknown provider"));
+        assert!(err.contains("base_url not configured"));
     }
 
     #[test]
