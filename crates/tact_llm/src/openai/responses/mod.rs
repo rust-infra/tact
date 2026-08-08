@@ -1,3 +1,4 @@
+mod capabilities;
 mod convert;
 mod history;
 mod normalize;
@@ -5,6 +6,7 @@ mod request_options;
 mod stream;
 mod wire;
 
+pub use capabilities::{ResponsesCapabilities, ResponsesToolKind};
 pub use request_options::ResponsesRequestOptions;
 
 use async_openai_responses::{Client, config::OpenAIConfig, types::responses::ResponseStreamEvent};
