@@ -212,9 +212,18 @@ fn log_renders_streamed_mermaid_without_code_card() {
 
     let text = render_main_area_text(&mut app, 100, 30);
 
-    assert!(app.code_blocks.is_empty(), "valid Mermaid must not become a code card");
-    assert!(text.contains("Alice") && text.contains("Bob"), "diagram missing: {text}");
-    assert!(!text.contains("sequenceDiagram"), "raw Mermaid leaked: {text}");
+    assert!(
+        app.code_blocks.is_empty(),
+        "valid Mermaid must not become a code card"
+    );
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram missing: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid leaked: {text}"
+    );
 }
 
 #[test]
@@ -227,8 +236,15 @@ fn log_falls_back_to_code_card_for_invalid_streamed_mermaid() {
 
     let text = render_main_area_text(&mut app, 100, 30);
 
-    assert_eq!(app.code_blocks.len(), 1, "invalid Mermaid should use code fallback");
-    assert!(text.contains("not valid Mermaid"), "fallback lost source: {text}");
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "invalid Mermaid should use code fallback"
+    );
+    assert!(
+        text.contains("not valid Mermaid"),
+        "fallback lost source: {text}"
+    );
 }
 
 #[test]
@@ -284,8 +300,14 @@ fn flush_renders_streamed_mermaid_without_trailing_newline() {
         app.code_blocks.is_empty(),
         "valid Mermaid must not become a code card"
     );
-    assert!(text.contains("Alice") && text.contains("Bob"), "diagram missing: {text}");
-    assert!(!text.contains("sequenceDiagram"), "raw Mermaid leaked: {text}");
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram missing: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid leaked: {text}"
+    );
 }
 
 #[test]

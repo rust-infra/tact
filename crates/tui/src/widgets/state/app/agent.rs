@@ -12,7 +12,9 @@ use tact_protocol::{
 };
 
 use crate::{
-    render::render_md::{format_table, is_horizontal_rule, render_markdown_tui, render_mermaid_block},
+    render::render_md::{
+        format_table, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
+    },
     widgets::{
         state::*,
         tool_widget::{ToolPhase, ToolWidget},
@@ -574,12 +576,9 @@ impl App {
         {
             let raw = diagram.iter().map(|l| l.to_string()).collect::<Vec<_>>();
             match start_idx {
-                Some(start) => self.splice_msgs(
-                    start..stream_end,
-                    diagram,
-                    raw,
-                    RawMessageType::LLM,
-                ),
+                Some(start) => {
+                    self.splice_msgs(start..stream_end, diagram, raw, RawMessageType::LLM)
+                }
                 None => self.extend_msgs(diagram, raw, RawMessageType::LLM),
             }
             return;
