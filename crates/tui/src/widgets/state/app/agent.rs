@@ -12,7 +12,10 @@ use tact_protocol::{
 };
 
 use crate::{
-    render::render_md::{format_table, is_horizontal_rule, render_markdown_tui},
+    render::render_md::{
+        format_table, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
+        render_plain_markdown,
+    },
     widgets::{
         state::*,
         tool_widget::{ToolPhase, ToolWidget},
@@ -535,6 +538,98 @@ impl App {
         self.freeze_last_prompt_cost();
     }
 
+    /// Finalize a buffered stream code block — either closed by a fence inside
+    /// `apply_stream_chunk`, or cut off by the stream ending in
+    /// `flush_stream_pending`.
+    ///
+    /// `closed` reports whether a closing fence was actually seen. Valid,
+    /// *closed* Mermaid is spliced directly into the log as diagram lines and
+    /// never becomes a `CodeBlock` card. Every other block — ordinary code,
+    /// invalid Mermaid, or an interrupted (unclosed) Mermaid fence — keeps
+    /// the existing code-card overlay fallback (blank placeholder region +
+    /// `CodeBlock` entry) so no source is dropped. The fallback styled preview
+    /// is rendered through the plain (non-Mermaid) code path exactly once, so
+    /// a reconstructed fallback fence is never re-routed through the Mermaid
+    /// renderer, while the card keeps the original `lang` metadata and raw
+    /// content. Resets `code_block_is_mermaid` once the buffered block is
+    /// finalized.
+    pub(crate) fn finish_stream_code_block(
+        &mut self,
+        lang: String,
+        lines: Vec<String>,
+        start_idx: Option<usize>,
+        stream_end: usize,
+        closed: bool,
+    ) {
+        let is_mermaid = self.stream.code_block_is_mermaid;
+        self.stream.code_block_is_mermaid = false;
+
+        if lines.is_empty() {
+            if let Some(start) = start_idx {
+                self.drain_msgs(start..stream_end);
+            }
+            return;
+        }
+
+        if closed
+            && is_mermaid
+            && let Some(diagram) = render_mermaid_block(
+                &lines.join("\n"),
+                &self.theme,
+                self.log_scroll.width.max(1) as usize,
+            )
+        {
+            let raw = diagram.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+            match start_idx {
+                Some(start) => {
+                    self.splice_msgs(start..stream_end, diagram, raw, RawMessageType::LLM)
+                }
+                None => self.extend_msgs(diagram, raw, RawMessageType::LLM),
+            }
+            return;
+        }
+
+        // Existing code-card fallback: replace the streaming placeholder rows
+        // with a sized blank region and store a CodeBlock overlay for card
+        // rendering. Without a recorded placeholder range, append the rendered
+        // content directly instead.
+        //
+        // The styled preview is rendered through the plain (non-Mermaid) code
+        // path exactly once: re-routing the reconstructed fence through the
+        // Mermaid router could draw a diagram for a fence that never closed
+        // (or re-parse an invalid one), and a nested literal ```mermaid line
+        // inside the buffered source must stay code content. The card keeps
+        // the original `lang` metadata and raw `content`.
+        let preview_source = format!("```{lang}\n{}\n```", lines.join("\n"));
+        const MAX_CODE_PREVIEW: usize = 30;
+        let (styled, raw) = render_plain_markdown(&preview_source, &self.theme, None);
+        match start_idx {
+            Some(start) => {
+                let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
+                let placeholders: Vec<Line<'static>> =
+                    (0..placeholder_count).map(|_| Line::from("")).collect();
+                let raw_placeholders: Vec<String> =
+                    (0..placeholder_count).map(|_| String::new()).collect();
+                self.splice_msgs(
+                    start..stream_end,
+                    placeholders,
+                    raw_placeholders,
+                    RawMessageType::LLM,
+                );
+                self.code_blocks.push(CodeBlock {
+                    start_idx: start,
+                    end_idx: start + placeholder_count,
+                    lang,
+                    content: lines.join("\n"),
+                    styled,
+                });
+            }
+            None => {
+                self.extend_msgs(styled, raw, RawMessageType::LLM);
+            }
+        }
+    }
+
     fn apply_stream_chunk(&mut self, text: String) {
         self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
@@ -553,44 +648,16 @@ impl App {
             let is_code_fence_close = trimmed == "```" && self.stream.code_block;
 
             if is_code_fence_close {
-                // Completed: replace streaming placeholders with a sized blank region,
-                // then store a CodeBlock overlay for card rendering.
-                const MAX_CODE_PREVIEW: usize = 30;
+                // Completed: finalize the buffered block — valid Mermaid is
+                // spliced in as diagram lines, everything else becomes a
+                // CodeBlock card (see finish_stream_code_block).
                 let lang = std::mem::take(&mut self.stream.code_block_lang);
                 let lines = std::mem::take(&mut self.stream.code_block_buffer);
-
-                if let Some(start_idx) = self.stream.code_block_start_idx.take() {
-                    let stream_end = start_idx + self.stream.code_block_line_count;
-
-                    if !lines.is_empty() {
-                        let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                        let (styled, _) = render_markdown_tui(&code_text, &self.theme);
-                        let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2; // +2 for card border
-                        let placeholders: Vec<Line<'static>> =
-                            (0..placeholder_count).map(|_| Line::from("")).collect();
-                        let raw_placeholders: Vec<String> =
-                            (0..placeholder_count).map(|_| String::new()).collect();
-                        self.splice_msgs(
-                            start_idx..stream_end,
-                            placeholders,
-                            raw_placeholders,
-                            RawMessageType::LLM,
-                        );
-                        self.code_blocks.push(CodeBlock {
-                            start_idx,
-                            end_idx: start_idx + placeholder_count,
-                            lang,
-                            content: lines.join("\n"),
-                            styled,
-                        });
-                    } else {
-                        self.drain_msgs(start_idx..stream_end);
-                    }
-                } else if !lines.is_empty() {
-                    let code_text = format!("```{}\n{}\n```", lang, lines.join("\n"));
-                    let (styled, raw) = render_markdown_tui(&code_text, &self.theme);
-                    completed.extend(styled.into_iter().zip(raw));
-                }
+                let start_idx = self.stream.code_block_start_idx.take();
+                let stream_end = start_idx
+                    .map(|s| s + self.stream.code_block_line_count)
+                    .unwrap_or(0);
+                self.finish_stream_code_block(lang, lines, start_idx, stream_end, true);
                 self.stream.code_block = false;
                 self.stream.code_block_line_count = 0;
             } else if self.stream.code_block {
@@ -667,6 +734,13 @@ impl App {
                 self.stream.code_block = true;
                 self.stream.code_block_buffer.clear();
                 self.stream.code_block_lang = lang.clone();
+                // Match `mermaid_fence_opener`: detect Mermaid from the first
+                // whitespace-separated info token, case-insensitively, without
+                // changing the stored language metadata for ordinary code.
+                self.stream.code_block_is_mermaid = lang
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|token| token.eq_ignore_ascii_case("mermaid"));
                 self.stream.code_block_start_idx = Some(self.messages.len());
                 self.stream.code_block_line_count = 1;
 

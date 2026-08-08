@@ -203,6 +203,51 @@ fn log_renders_streamed_code_block_card() {
 }
 
 #[test]
+fn log_renders_streamed_mermaid_without_code_card() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert!(
+        app.code_blocks.is_empty(),
+        "valid Mermaid must not become a code card"
+    );
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram missing: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid leaked: {text}"
+    );
+}
+
+#[test]
+fn log_falls_back_to_code_card_for_invalid_streamed_mermaid() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nnot valid Mermaid\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "invalid Mermaid should use code fallback"
+    );
+    assert!(
+        text.contains("not valid Mermaid"),
+        "fallback lost source: {text}"
+    );
+}
+
+#[test]
 fn flush_consumes_closing_fence_without_trailing_newline() {
     // Stream ends with ``` and no final \n — the close fence stays in stream.buffer.
     // Flush must treat it as a close, not re-render it as leaked ``` lines.
@@ -236,6 +281,131 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
     assert!(
         text.contains("Commit: abc") && (text.contains("当前状态") || text.contains("a")),
         "cards/content should still render, got:\n{text}"
+    );
+}
+
+#[test]
+fn flush_renders_streamed_mermaid_without_trailing_newline() {
+    // Stream ends with ``` and no final \n — the close fence stays in
+    // stream.buffer and flush must finalize a valid diagram, never a code card.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert!(
+        app.code_blocks.is_empty(),
+        "valid Mermaid must not become a code card"
+    );
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram missing: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid leaked: {text}"
+    );
+}
+
+#[test]
+fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid() {
+    // The Mermaid body is fully parseable, but the closing fence never
+    // arrives: the stream was interrupted, so the buffered block must take
+    // the code-card fallback and retain its source — never splice a diagram.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "unclosed Mermaid must use code fallback"
+    );
+    let block = &app.code_blocks[0];
+    assert!(
+        block.content.contains("sequenceDiagram") && block.content.contains("Alice->>Bob: Hello"),
+        "fallback lost source: {:?}",
+        block.content
+    );
+    // The card preview must show the readable raw source, not a diagram drawn
+    // from a fence that never actually closed.
+    let preview = block
+        .styled
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        preview.contains("sequenceDiagram") && preview.contains("Alice"),
+        "styled preview must contain the raw source, got:\n{preview}"
+    );
+    assert!(
+        !preview.contains('─') && !preview.contains('│'),
+        "styled preview must not contain diagram box-art, got:\n{preview}"
+    );
+    assert!(
+        text.contains("mermaid"),
+        "code card should still render in the log, got:\n{text}"
+    );
+}
+
+#[test]
+fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid_with_nested_fence() {
+    // The buffered Mermaid source itself contains a literal ```mermaid fence
+    // line. The fallback preview must be rendered through the plain code path
+    // exactly once: re-routing the reconstructed preview fence through the
+    // Mermaid router would parse the nested fence as a real diagram and draw
+    // box-art inside the code card.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```mermaid\nflowchart TD\n  A --> B\n"
+            .into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "unclosed Mermaid must use code fallback"
+    );
+    let block = &app.code_blocks[0];
+    assert_eq!(
+        block.lang, "mermaid",
+        "card must keep the original language metadata"
+    );
+    assert!(
+        block.content.contains("sequenceDiagram") && block.content.contains("A --> B"),
+        "fallback lost source: {:?}",
+        block.content
+    );
+    let preview = block
+        .styled
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        preview.contains("sequenceDiagram")
+            && preview.contains("Alice")
+            && preview.contains("A --> B"),
+        "styled preview must contain the raw source, got:\n{preview}"
+    );
+    assert!(
+        !preview.contains('─') && !preview.contains('│'),
+        "styled preview must not contain diagram box-art, got:\n{preview}"
+    );
+    assert!(
+        text.contains("mermaid"),
+        "code card should still render in the log, got:\n{text}"
     );
 }
 

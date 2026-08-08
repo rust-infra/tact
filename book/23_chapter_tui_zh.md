@@ -334,7 +334,16 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 `render_md.rs` 经 `tui-markdown` 与自定义 `TuiStyleSheet`（标题、代码、链接、引用）转换 assistant markdown。Code block 统一深色背景；表格列对齐。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
-**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。真正带显式语言标签的流式代码块（例如 ```rust）仍走 code-card 路径。
+**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。带显式语言标签的流式代码块仍走 code-card 路径，唯一的例外自 2026-08-08 起：完整的 `mermaid` fence 会渲染为终端图（见下）。
+
+**Mermaid fenced block**（自 2026-08-08 起）：
+
+- 完整的 ```mermaid fenced block 在主日志区渲染为**终端图**，不再生成 code card。
+- 支持的图类型跟随固定的 `ratatui-markdown` Mermaid 渲染器（flowchart/graph、sequenceDiagram、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）；不支持的图类型回退为代码。
+- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。
+- 无效或不支持的 Mermaid 回退到普通 code block/card，原始源码仍可读。
+- 普通显式语言 fence（```rust 等）保留原有 code-card 行为。
+- 宽度变化与视口滚动沿用现有 log 布局/缓存行为——diagram 行一旦拼接即为普通日志行。
 
 ### 6.8 Popups
 

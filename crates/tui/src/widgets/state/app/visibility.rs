@@ -416,52 +416,26 @@ impl App {
         }
         // Flush incomplete code block (interrupted stream)
         if self.stream.code_block {
-            const MAX_CODE_PREVIEW: usize = 30;
             // Line-oriented streaming only consumes text after `\n`. A final
             // closing fence (or last content line) may still sit in `buffer`
-            // without a trailing newline — fold it in before building the card.
+            // without a trailing newline — fold it in before finalizing.
             let pending = std::mem::take(&mut self.stream.buffer);
             let pending_trim = pending.trim();
-            if pending_trim == "```" {
-                // Proper close fence without `\n` — discard, do not add to content.
+            let closed = pending_trim == "```";
+            if closed {
+                // Proper close fence without `\n` — discard, do not add to
+                // content; the block is still a valid closed block.
             } else if !pending.is_empty() {
                 self.stream.code_block_buffer.push(pending);
             }
 
             let lang = std::mem::take(&mut self.stream.code_block_lang);
             let code_lines = std::mem::take(&mut self.stream.code_block_buffer);
-
-            if let Some(start_idx) = self.stream.code_block_start_idx.take() {
-                let stream_end = start_idx + self.stream.code_block_line_count;
-                if !code_lines.is_empty() {
-                    let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
-                    let (styled, _) = render_markdown_tui(&code_text, &self.theme);
-                    let placeholder_count = styled.len().min(MAX_CODE_PREVIEW) + 2;
-                    let placeholders: Vec<Line<'static>> =
-                        (0..placeholder_count).map(|_| Line::from("")).collect();
-                    let raw_placeholders: Vec<String> =
-                        (0..placeholder_count).map(|_| String::new()).collect();
-                    self.splice_msgs(
-                        start_idx..stream_end,
-                        placeholders,
-                        raw_placeholders,
-                        RawMessageType::LLM,
-                    );
-                    self.code_blocks.push(CodeBlock {
-                        start_idx,
-                        end_idx: start_idx + placeholder_count,
-                        lang,
-                        content: code_lines.join("\n"),
-                        styled,
-                    });
-                } else {
-                    self.drain_msgs(start_idx..stream_end);
-                }
-            } else if !code_lines.is_empty() {
-                let code_text = format!("```{}\n{}\n```", lang, code_lines.join("\n"));
-                let (lines, raw_lines) = render_markdown_tui(&code_text, &self.theme);
-                self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
-            }
+            let start_idx = self.stream.code_block_start_idx.take();
+            let stream_end = start_idx
+                .map(|s| s + self.stream.code_block_line_count)
+                .unwrap_or(0);
+            self.finish_stream_code_block(lang, code_lines, start_idx, stream_end, closed);
             self.stream.code_block = false;
             self.stream.code_block_line_count = 0;
         }
