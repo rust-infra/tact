@@ -288,6 +288,35 @@ fn flush_renders_streamed_mermaid_without_trailing_newline() {
     assert!(!text.contains("sequenceDiagram"), "raw Mermaid leaked: {text}");
 }
 
+#[test]
+fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid() {
+    // The Mermaid body is fully parseable, but the closing fence never
+    // arrives: the stream was interrupted, so the buffered block must take
+    // the code-card fallback and retain its source — never splice a diagram.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(
+        app.code_blocks.len(),
+        1,
+        "unclosed Mermaid must use code fallback"
+    );
+    let content = &app.code_blocks[0].content;
+    assert!(
+        content.contains("sequenceDiagram") && content.contains("Alice->>Bob: Hello"),
+        "fallback lost source: {content:?}"
+    );
+    assert!(
+        text.contains("mermaid"),
+        "code card should still render in the log, got:\n{text}"
+    );
+}
+
 // --- P1: Normal mode, plan states, popup scroll, file picker highlight, focus ---
 
 #[test]

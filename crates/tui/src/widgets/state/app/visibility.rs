@@ -421,8 +421,10 @@ impl App {
             // without a trailing newline — fold it in before finalizing.
             let pending = std::mem::take(&mut self.stream.buffer);
             let pending_trim = pending.trim();
-            if pending_trim == "```" {
-                // Proper close fence without `\n` — discard, do not add to content.
+            let closed = pending_trim == "```";
+            if closed {
+                // Proper close fence without `\n` — discard, do not add to
+                // content; the block is still a valid closed block.
             } else if !pending.is_empty() {
                 self.stream.code_block_buffer.push(pending);
             }
@@ -433,7 +435,7 @@ impl App {
             let stream_end = start_idx
                 .map(|s| s + self.stream.code_block_line_count)
                 .unwrap_or(0);
-            self.finish_stream_code_block(lang, code_lines, start_idx, stream_end);
+            self.finish_stream_code_block(lang, code_lines, start_idx, stream_end, closed);
             self.stream.code_block = false;
             self.stream.code_block_line_count = 0;
         }

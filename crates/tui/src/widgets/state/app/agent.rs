@@ -539,17 +539,20 @@ impl App {
     /// `apply_stream_chunk`, or cut off by the stream ending in
     /// `flush_stream_pending`.
     ///
-    /// Valid Mermaid is spliced directly into the log as diagram lines and
-    /// never becomes a `CodeBlock` card. Every other block keeps the existing
-    /// code-card overlay fallback (blank placeholder region + `CodeBlock`
-    /// entry) so no source is dropped. Resets `code_block_is_mermaid` once
-    /// the buffered block is finalized.
+    /// `closed` reports whether a closing fence was actually seen. Valid,
+    /// *closed* Mermaid is spliced directly into the log as diagram lines and
+    /// never becomes a `CodeBlock` card. Every other block — ordinary code,
+    /// invalid Mermaid, or an interrupted (unclosed) Mermaid fence — keeps
+    /// the existing code-card overlay fallback (blank placeholder region +
+    /// `CodeBlock` entry) so no source is dropped. Resets
+    /// `code_block_is_mermaid` once the buffered block is finalized.
     pub(crate) fn finish_stream_code_block(
         &mut self,
         lang: String,
         lines: Vec<String>,
         start_idx: Option<usize>,
         stream_end: usize,
+        closed: bool,
     ) {
         self.stream.code_block_is_mermaid = false;
 
@@ -561,7 +564,8 @@ impl App {
         }
 
         let source = format!("```{lang}\n{}\n```", lines.join("\n"));
-        if lang.eq_ignore_ascii_case("mermaid")
+        if closed
+            && lang.eq_ignore_ascii_case("mermaid")
             && let Some(diagram) = render_mermaid_block(
                 &lines.join("\n"),
                 &self.theme,
@@ -642,7 +646,7 @@ impl App {
                 let stream_end = start_idx
                     .map(|s| s + self.stream.code_block_line_count)
                     .unwrap_or(0);
-                self.finish_stream_code_block(lang, lines, start_idx, stream_end);
+                self.finish_stream_code_block(lang, lines, start_idx, stream_end, true);
                 self.stream.code_block = false;
                 self.stream.code_block_line_count = 0;
             } else if self.stream.code_block {
