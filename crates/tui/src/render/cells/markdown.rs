@@ -5,9 +5,11 @@
 //! through the shared width-aware pipeline (`render_markdown_with_tables`):
 //! pipe-table rows are extracted and laid out against the panel width via
 //! `format_table` (columns shrink, long cells wrap inside the table, pipes
-//! stay aligned), everything else goes to tui-markdown directly
-//! (`render_markdown_tui`, the themed `from_str` pipeline), so headings /
-//! lists / blockquotes / fenced code keep their theme styling.
+//! stay aligned), complete top-level ` ```mermaid ` fences are rendered as
+//! terminal diagrams at the same content width, and everything else goes to
+//! tui-markdown directly (`render_markdown_tui`, the themed `from_str`
+//! pipeline), so headings / lists / blockquotes / fenced code keep their
+//! theme styling.
 //!
 //! Rendering is lazy and cached per content width: the cell stores only the
 //! source text until the log renderer asks for its height, and re-layouts
@@ -230,6 +232,24 @@ mod tests {
         assert!(text.contains("Title"), "{text}");
         assert!(text.contains("item one"), "{text}");
         assert!(text.contains("item two"), "{text}");
+    }
+
+    #[test]
+    fn markdown_cell_renders_mermaid_at_the_requested_width() {
+        let cell = MarkdownCell::new(
+            "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```",
+            &dark(),
+        );
+        let text = render_text(&cell, 60);
+
+        assert!(
+            text.contains("Alice") && text.contains("Bob"),
+            "diagram missing: {text}"
+        );
+        assert!(
+            !text.contains("sequenceDiagram"),
+            "raw Mermaid leaked: {text}"
+        );
     }
 
     #[test]

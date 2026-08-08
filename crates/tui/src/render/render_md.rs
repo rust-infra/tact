@@ -147,7 +147,6 @@ impl RichTextTheme for TuiRichTextTheme<'_> {
 ///
 /// Returns `None` when the source cannot be parsed or rendered so callers can
 /// fall back to ordinary code rendering.
-#[allow(dead_code)] // consumed by main-area markdown routing (wired in by a later task); exercised by unit tests
 pub(crate) fn render_mermaid_block(
     source: &str,
     theme: &Theme,
@@ -156,8 +155,144 @@ pub(crate) fn render_mermaid_block(
     render_mermaid(source, width.max(1), None, &TuiRichTextTheme { theme })
 }
 
+/// Layout width used when a caller has no explicit width to pass.
+///
+/// `render_markdown_tui` has no width parameter; Mermaid fences inside it are
+/// laid out at a nominal 80 columns.
+const DEFAULT_RENDER_WIDTH: usize = 80;
+
+/// Renderer for one non-Mermaid chunk of Markdown (prose, tables, code fences).
+type SegmentRenderer = fn(&str, &Theme, Option<usize>) -> (Vec<Line<'static>>, Vec<String>);
+
+/// Route complete, top-level `mermaid` fences out of `text`.
+///
+/// A closed ` ```mermaid ` fence is rendered by `render_mermaid_block` at
+/// `width`; every other chunk (prose, pipe tables, non-Mermaid code fences)
+/// is delegated to `render_segment`. When a Mermaid fence cannot be rendered
+/// (or is never closed) the original fence text goes through the existing
+/// code renderer instead, so no source is ever dropped. Returns styled lines
+/// plus their raw text, keeping the same shape as the existing renderers.
+fn route_mermaid_fences(
+    text: &str,
+    theme: &Theme,
+    width: usize,
+    render_segment: SegmentRenderer,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let mut styled_lines = Vec::new();
+    let mut raw_lines = Vec::new();
+    let mut chunk = String::new();
+
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if mermaid_fence_opener(line).is_none() {
+            chunk.push_str(line);
+            chunk.push('\n');
+            continue;
+        }
+
+        // Collect source lines until a trimmed closing fence.
+        let mut source = String::new();
+        let mut closed = false;
+        for src in lines.by_ref() {
+            if src.trim() == "```" {
+                closed = true;
+                break;
+            }
+            source.push_str(src);
+            source.push('\n');
+        }
+
+        // Flush preceding prose so the diagram keeps its position in the doc.
+        flush_segment(
+            &mut styled_lines,
+            &mut raw_lines,
+            &mut chunk,
+            theme,
+            width,
+            render_segment,
+        );
+
+        if !closed {
+            // Unclosed fence: keep it as ordinary code content, never drop it.
+            let block = format!("```mermaid\n{source}");
+            let (s, r) = render_plain_markdown(&block, theme, Some(width));
+            styled_lines.extend(s);
+            raw_lines.extend(r);
+            continue;
+        }
+
+        match render_mermaid_block(&source, theme, width.max(1)) {
+            Some(rendered) => {
+                for line in rendered {
+                    let raw = line.to_string();
+                    raw_lines.push(raw);
+                    styled_lines.push(line);
+                }
+            }
+            None => {
+                // Invalid diagram: send the original fence through the code renderer.
+                let block = format!("```mermaid\n{source}```");
+                let (s, r) = render_plain_markdown(&block, theme, Some(width));
+                styled_lines.extend(s);
+                raw_lines.extend(r);
+            }
+        }
+    }
+
+    flush_segment(
+        &mut styled_lines,
+        &mut raw_lines,
+        &mut chunk,
+        theme,
+        width,
+        render_segment,
+    );
+    (styled_lines, raw_lines)
+}
+
+/// Render one pending non-Mermaid chunk through the segment renderer.
+fn flush_segment(
+    styled_lines: &mut Vec<Line<'static>>,
+    raw_lines: &mut Vec<String>,
+    chunk: &mut String,
+    theme: &Theme,
+    width: usize,
+    render_segment: SegmentRenderer,
+) {
+    if !chunk.trim().is_empty() {
+        let (s, r) = render_segment(chunk, theme, Some(width));
+        styled_lines.extend(s);
+        raw_lines.extend(r);
+        chunk.clear();
+    }
+}
+
+/// Detect a top-level `mermaid` fence opener.
+///
+/// A line whose trimmed form starts with three backticks opens a fence; the
+/// info string after the backticks must be `mermaid` (case-insensitive).
+fn mermaid_fence_opener(line: &str) -> Option<()> {
+    let trimmed = line.trim();
+    let info = trimmed.strip_prefix("```")?;
+    let lang = info.split_whitespace().next().unwrap_or("");
+    lang.eq_ignore_ascii_case("mermaid").then_some(())
+}
+
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
+///
+/// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
+/// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
+/// tui-markdown pipeline.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
+    route_mermaid_fences(text, theme, DEFAULT_RENDER_WIDTH, render_plain_markdown)
+}
+
+/// The plain tui-markdown chunk renderer (no width-aware tables).
+fn render_plain_markdown(
+    text: &str,
+    theme: &Theme,
+    _width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
     let options = tui_markdown::Options::new(TuiStyleSheet::new(*theme));
     let safe_text = escape_task_list_markers(text);
     let tui_text = tui_markdown::from_str_with_options(safe_text.as_ref(), &options);
@@ -191,9 +326,22 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
 /// Pipe-table rows (lines starting with `|`) are extracted and rendered by
 /// `format_table` with `available_width` — long cells wrap inside the table
 /// layout and columns stay aligned. Everything else is delegated to
-/// tui-markdown. System messages like `/skills` produce plain markdown and
-/// go through this single pipeline instead of hand-building ratatui lines.
+/// tui-markdown. Complete top-level ` ```mermaid ` fences are routed to the
+/// Mermaid renderer *before* the table scanner runs, so `|` lines inside a
+/// diagram are never mistaken for table rows. System messages like `/skills`
+/// produce plain markdown and go through this single pipeline instead of
+/// hand-building ratatui lines.
 pub(crate) fn render_markdown_with_tables(
+    text: &str,
+    theme: &Theme,
+    available_width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let width = available_width.unwrap_or(DEFAULT_RENDER_WIDTH);
+    route_mermaid_fences(text, theme, width, render_prose_and_tables)
+}
+
+/// The width-aware chunk renderer (pipe tables + tui-markdown).
+fn render_prose_and_tables(
     text: &str,
     theme: &Theme,
     available_width: Option<usize>,
@@ -615,6 +763,126 @@ mod tests {
         assert!(
             !text.contains("sequenceDiagram"),
             "raw source leaked: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_flowchart_uses_box_art() {
+        let md = "```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains('─') || line.to_string().contains('│')),
+            "expected flowchart box art: {text}"
+        );
+        assert!(!text.contains("flowchart TD"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_invalid_mermaid_falls_back_to_code() {
+        let md = "```mermaid\nnot a valid diagram\n```";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("not a valid diagram"),
+            "fallback lost source: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_keeps_surrounding_prose() {
+        let md = "before\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\nafter";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(lines.iter().any(|l| l.to_string().contains('─')), "{text}");
+        assert!(text.contains("before"), "leading prose missing: {text}");
+        assert!(text.contains("after"), "trailing prose missing: {text}");
+    }
+
+    #[test]
+    fn render_markdown_unclosed_mermaid_fence_keeps_source() {
+        let md = "```mermaid\nflowchart TD\n  A --> B\n";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("flowchart TD") && text.contains("A --> B"),
+            "unclosed fence must keep its source: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_opener_is_case_insensitive() {
+        let md = "```MERMAID\npie title T\n  \"A\" : 1\n```";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.to_string().contains('█') || l.to_string().contains('%')),
+            "uppercase opener should still render: {text}"
+        );
+        assert!(!text.contains("pie title T"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_non_mermaid_fence_stays_code() {
+        let md = "```rust\nfn kept() {}\n```";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(text.contains("fn kept() {}"), "code source missing: {text}");
+    }
+
+    #[test]
+    fn render_markdown_with_tables_routes_mermaid_before_table_scan() {
+        // The diagram source contains `|`-prefixed lines that must not be
+        // mistaken for a pipe table, and prose tables around it must survive.
+        let md = "\
+| A | B |
+| --- | --- |
+| 1 | 2 |
+
+```mermaid
+flowchart LR
+  A[Start] --> B[End]
+```
+
+Trailing prose.
+";
+        let (styled, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            styled.iter().any(|l| l.to_string().contains('─')),
+            "expected diagram box art: {text}"
+        );
+        assert!(
+            text.contains("| A | B |") && text.contains("| 1 | 2 |"),
+            "pipe table must survive: {text}"
+        );
+        assert!(
+            text.contains("Trailing prose."),
+            "trailing prose must survive: {text}"
+        );
+        assert!(!text.contains("flowchart LR"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_with_tables_invalid_mermaid_falls_back() {
+        let md = "```mermaid\nnot a valid diagram\n```";
+        let (_lines, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("not a valid diagram"),
+            "fallback lost source: {text}"
         );
     }
 
