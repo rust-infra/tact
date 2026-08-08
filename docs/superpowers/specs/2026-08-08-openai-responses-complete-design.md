@@ -36,7 +36,7 @@
 
 ### 1. 请求能力
 
-Responses request builder 需要覆盖 Tact 当前请求模型可以表达的字段：
+Responses request builder 需要覆盖 Tact 运行时拥有或明确暴露的 Responses-specific 请求字段：
 
 - `model`；
 - `input`，包括 message、image、reasoning、function call 和 function call output；
@@ -50,7 +50,7 @@ Responses request builder 需要覆盖 Tact 当前请求模型可以表达的字
 - `store` 与状态复用策略；
 - `context_management` 和 native compaction threshold。
 
-Tact 不应把 Responses 专有字段错误地映射为 Chat Completions 字段；无法表达的字段必须在配置或请求边界给出明确错误。
+当前 `CreateMessageParams` 主要是 Anthropic/Chat Completions 形状，因此不能假设它已经能表达这些字段。实现需要增加一个明确的 `ResponsesRequestOptions` 请求扩展（或等价的 typed/raw boundary），由 Responses adapter 消费；非 Responses adapter 必须忽略或拒绝该扩展，不能把 Responses 字段误映射到 Chat Completions。无法表达的字段必须在配置或请求边界给出明确错误。
 
 ### 2. 输入和输出转换
 
@@ -64,7 +64,7 @@ Tact 不应把 Responses 专有字段错误地映射为 Chat Completions 字段�
 - output message、annotations 和可见文本；
 - response status、incomplete details、usage 和 stop reason。
 
-协议状态与用户可见内容必须分离：
+协议状态与用户可见内容必须分离。由于 typed `Response` 在遇到未知 output item 时可能在反序列化阶段直接失败，raw envelope 解析必须先于 typed normalization：先按 `type` 解析事件/响应外壳，再将已知 item 交给强类型转换，未知 item 保留为原始 JSON。terminal output 的顺序和 state update 必须基于这组 raw item 保持。
 
 - compaction item 不得变成普通 `ContentBlock`；
 - hosted tool call 不得变成本地 `ToolUse`；
@@ -101,11 +101,14 @@ Hosted Tools 与本地 function tools 使用不同的数据流：
 - 本地 function tool：Tact 调度并执行，使用现有 `ToolUse` / `ToolResult` 流程。
 - Hosted Tool：OpenAI 执行，Tact 只记录、展示和保存其生命周期，不进入本地 tool dispatcher。
 
-分阶段支持：
+分阶段支持，并为每个官方 tool family 建立 capability matrix：
 
 1. `web_search`：请求声明、output item 生命周期、查询、来源和失败信息。
 2. `file_search`：请求声明、搜索结果、引用和详情展示。
-3. `computer` / `computer_use_preview`：先完成协议解析和明确的 capability gate；只有建立权限确认、截图/坐标输入和动作安全边界后，才允许执行。
+3. `code_interpreter`、`image_generation`、`local_shell`、shell、`custom`、namespace、apply_patch、tool search 和 remote MCP 相关 item：先完成 raw/typed 协议解析和 capability gate，再分别决定是否能映射到 Tact 的执行与展示模型；web search 的 preview/versioned tool names 也必须纳入同一矩阵。
+4. `computer` / `computer_use_preview`：先完成协议解析和明确的 capability gate；只有建立权限确认、截图/坐标输入和动作安全边界后，才允许执行。
+
+每个 tool family 必须明确标注为“已支持执行”“仅 provider 执行并展示”“仅解析并拒绝执行”或“未实现且显式报错”，不能以一个笼统的 `hosted_tools` 布尔值代替。
 
 Hosted Tool 的未知字段和原始 action/result 必须保存在 raw JSON 中。TUI 应复用统一 ToolWidget/Step 生命周期，而不是为每种 hosted tool 建立独立渲染分支。
 
@@ -246,7 +249,7 @@ env -u http_proxy -u https_proxy -u all_proxy cargo test -p tact agent::tests::r
 2. 未知事件不破坏普通响应，未知 item 可 state round-trip。
 3. function tool 多轮、reasoning、图片、refusal、usage 和失败恢复有测试。
 4. native compact、session restore 和 SQLite 原子持久化有测试。
-5. web_search 和 file_search 的 hosted 生命周期与 TUI 展示有测试。
+5. 每个官方 Responses tool family 都有 capability matrix；已支持的 family 有请求、流式、失败和 TUI 测试，未支持的 family 有明确 gate/错误测试。
 6. provider capability 与配置错误信息准确，不支持能力不会静默降级。
 7. 双语文档和配置示例与实际行为一致。
 8. `cargo fmt --check`、目标 crate 测试和 workspace clippy 串行通过。

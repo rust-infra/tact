@@ -1,0 +1,36 @@
+{
+  "created_at": 1,
+  "completed_at": 2,
+  "id": "resp_unknown_item",
+  "model": "gpt-5",
+  "object": "response",
+  "output": [
+    {
+      "type": "future_item",
+      "id": "future-1",
+      "payload": {"x": 1}
+    },
+    {
+      "type": "message",
+      "id": "msg-1",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": null,
+          "text": "hello"
+        }
+      ]
+    }
+  ],
+  "status": "completed",
+  "usage": {
+    "input_tokens": 1,
+    "input_tokens_details": {"cached_tokens": 0},
+    "output_tokens": 1,
+    "output_tokens_details": {"reasoning_tokens": 0},
+    "total_tokens": 2
+  }
+}

@@ -327,10 +327,10 @@ flowchart LR
 管理协议基线（baseline），而不是运行本地摘要器。上文步骤 1–4（
 `compact_history_local`）的本地流水线仍然是**非 Responses** provider
 （Anthropic、DeepSeek、Kimi、Chat Completions）的路径；它**永远不会**作为
-OpenAI Responses 的回退方案。唯一例外是 DeepSeek + Responses（见下文
-"DeepSeek 例外"）。
+OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前会在配置解析阶段拒绝，
+直到对应端点通过同样的原生压缩与状态续传验证。
 
-原生路径有六个性质：
+原生路径有七个性质：
 
 1. **普通请求 + `context_management`** — `create_response` 构建的每个
    `/responses` 请求在解析出阈值后都会携带
@@ -361,21 +361,21 @@ OpenAI Responses 的回退方案。唯一例外是 DeepSeek + Responses（见下
 6. **不回退** — 不支持原生压缩的 Responses 端点是硬性协议错误，绝不静默走
    本地摘要。原生压缩后 Tact 会把 `last_token_total` 重置为 0，因为下一次
    请求的输入是压缩后的基线，而不是压缩前的大 prompt。
+7. **原始 item 保留** — adapter 会先解析 response envelope，再进行 typed
+   normalization。已知 item 用于构造 Tact 内容和状态；未知 input/output item
+   以 raw JSON 保留在协议基线中，并在下一次请求中回放。无害的未知流事件会被
+   忽略，但未完成的协议状态 item 仍会使响应失败。
 
-**DeepSeek 例外** — DeepSeek + `protocol = "responses"` 在普通请求上接受
-`context_management`（端点侧自动压缩可用），但其 `/responses/compact` **没有**
-实现（2026-08-02 实测：返回空响应体）。因此 `compact_history` 会把 DeepSeek +
-Responses 路由到本地摘要流水线（`compact_history_local`），清掉旧的
-`provider_state` 基线，并以原子方式持久化消息 + `None` 状态。OpenAI Responses
-仍保持上述严格"不回退"契约。
+**Provider 可用性说明** — 底层测试仍可以构造通用 adapter 做端点实验，但正常配置会在能力验证完成前保持 DeepSeek 与 Kimi Responses 禁用。
+
 
 **协议契约与验证状态** — 自动压缩的替换基线（单个 `compaction` item 置前，
 后跟本次 response 的非 compaction 输出 items）来源于设计阶段从目标端点捕获
 的脱敏 fixture
 （`crates/tact_llm/src/openai/responses/fixtures/automatic_compact.json`），
 **尚未**经过真实端点验证。硬性校验仍然生效：零个或多个 `compaction` item、
-空的 `encrypted_content` 都是协议错误；真正未知的输出 item 类型会被 typed
-SDK 边界拒绝（不静默丢弃、不回退，见
+空的 `encrypted_content` 都是协议错误；格式错误的已知输出 item 会被 typed
+normalizer 拒绝，真正未知的输出 item 会由 raw wire 边界保留并在下一轮请求中回放（见
 [Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)）。
 与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
 

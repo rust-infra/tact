@@ -29,6 +29,8 @@
 
 ---
 
+
+
 ## 1. 2026-08-08 — Subagent 模型选择器使用自身 provider
 
 | 字段 | 值 |
@@ -38,6 +40,28 @@
 | 决策 | 使用已解析的 subagent provider 的 `base_url` 和 `api_key` 查询 `/models`；保留 provider 配置中的 `models = [...]` 作为主要候选，并继续按 `(base_url, api_key)` 缓存。 |
 | 变更后行为 | Subagent 选择器只显示属于 subagent provider 的配置模型和 API 发现模型；主 agent 的 `/model` 选择器仍使用主 provider。 |
 | 指针 | `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`；回归测试 `explicit_provider_model_query_uses_subagent_credentials`；设计：`docs/superpowers/specs/2026-08-08-subagent-model-picker-provider-design.md`；计划：`docs/superpowers/plans/2026-08-08-subagent-model-picker-provider.md`。 |
+
+## 1. 2026-08-08 — DeepSeek 与 Kimi Responses 保持配置门控
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 通用 Responses adapter 可以为 OpenAI-compatible 端点构造，但 DeepSeek/Kimi 的原生压缩与状态续传尚未验证达到生产契约；若直接允许正常配置，会把未支持的 fallback 行为误认为已支持。 |
+| 决策 | 继续在配置解析阶段拒绝 DeepSeek/Kimi 的 `protocol = "responses"`。底层 adapter 构造仍可用于隔离端点测试；生产配置在原生 Responses 能力验证完成前使用 Chat Completions。 |
+| 变更后行为 | DeepSeek/Kimi 用户会得到明确的配置错误，不会进入未经验证的 Responses 路径。OpenAI 与明确配置的自定义 OpenAI-compatible provider 保留现有 Responses 路由。 |
+| 指针 | `crates/tact/src/config/resolve.rs`；provider 构造：`crates/tact_llm/src/provider.rs`；相关设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；压缩行为：第 5 章。 |
+
+
+## 1. 2026-08-08 — OpenAI Responses 保留未知 wire item
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | typed `async-openai` Responses 枚举会在 Tact 有机会保留新 output item 之前直接拒绝它，使 provider state 无法前向兼容；同时共享的 Chat/Anthropic 请求模型没有明确的 Responses 专用字段扩展边界。 |
+| 决策 | 在 typed normalization 之前先解析 raw Responses envelope；已知 item 正常转换，未知 input/output item 作为 raw JSON 保留。增加只由 Responses adapter 消费的 `ResponsesRequestOptions`，并提供保守的 provider capability metadata；只有出现可复现的 SDK 阻塞时才 fork `async-openai`。 |
+| 变更后行为 | 无害的未知流事件不再中断响应。未知 output item 可以跨普通/流式 turn、session state 序列化和下一次 Responses 请求保留。Responses 专用请求字段不会出现在 Chat Completions 或 Anthropic payload 中。 |
+| 指针 | `crates/tact_llm/src/openai/responses/wire.rs`、`request_options.rs`、`stream.rs`、`provider.rs`；设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；计划：`docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`；压缩：第 5 章与 `docs/compaction.md`。 |
+
 
 ## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 

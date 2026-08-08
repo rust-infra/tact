@@ -44,6 +44,20 @@ impl Default for ProviderInfo {
 }
 
 impl ProviderInfo {
+    /// Returns the conservative capabilities for the configured Responses endpoint.
+    pub fn responses_capabilities(&self) -> Option<openai::responses::ResponsesCapabilities> {
+        if self.protocol != OpenAiProtocol::Responses {
+            return None;
+        }
+        Some(match self.provider {
+            ProviderKind::OpenAi => openai::responses::ResponsesCapabilities::official_openai(),
+            ProviderKind::Anthropic => return None,
+            ProviderKind::DeepSeek | ProviderKind::Kimi | ProviderKind::Custom(_) => {
+                openai::responses::ResponsesCapabilities::custom_provider()
+            }
+        })
+    }
+
     /// Build an LLM client for this provider configuration.
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider {
@@ -457,6 +471,23 @@ mod tests {
             panic!("expected OpenAi adapter for openai");
         };
         assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn openai_responses_exposes_core_capabilities() {
+        let info = ProviderInfo {
+            api_key: "key".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-5".into(),
+            provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        };
+        let capabilities = info.responses_capabilities().unwrap();
+        assert!(capabilities.responses);
+        assert!(capabilities.streaming);
+        assert!(capabilities.compact);
+        assert!(capabilities.hosted_tools.is_empty());
     }
 
     #[test]

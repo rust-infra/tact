@@ -16,6 +16,9 @@ tact implements **three-tier progressive compaction**:
 > endpoint, replacing the opaque protocol baseline (never the logical context).
 > Endpoints without native compaction are unsupported — no local-summary
 > fallback. See [book/05_chapter_compact.md](../book/05_chapter_compact.md).
+> The Responses wire baseline is retained as raw JSON. Known items are
+> normalized for Tact content, while unknown input/output items are preserved
+> and replayed on the next request instead of being silently dropped.
 
 ```mermaid
 flowchart TB
