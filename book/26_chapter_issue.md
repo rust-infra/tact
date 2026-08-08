@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-08 — Main-area Markdown renders complete Mermaid fences as terminal diagrams
+
+| Field | Value |
+|-------|-------|
+| Type  | `optimization` |
+| Related | `crates/tui/src/render/render_md.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/widgets/state/app/visibility.rs`, `crates/tui/src/widgets/state/stream_state.rs`, Ch 23 §6.7 |
+| Symptom / motivation | Every explicit-language streamed fence — including ```mermaid — was promoted to a `CodeBlock` card overlay when it closed, so Mermaid source appeared as syntax-tinted code instead of a diagram. |
+| Decision | Route complete, top-level `mermaid` fences through a shared `render_mermaid_block` helper (`ratatui-markdown::mermaid::render_mermaid` with the app-theme adapter) in `render_md.rs`; mark the buffered streamed fence as Mermaid in `stream_state.rs`; on a valid closed fence, `agent.rs` / `visibility.rs` splice the diagram lines into the log instead of pushing a `CodeBlock`. The code-card fallback is kept for invalid, unsupported, or unclosed Mermaid so no source is ever dropped. |
+| Behavior after | A complete ```mermaid fence renders as a themed terminal diagram at the log width (nominal 80 columns in fixed-width Markdown paths); a valid streamed Mermaid block closes without creating a code card; invalid/unsupported/unclosed Mermaid and ordinary explicit-language fences keep the existing code-card path; width re-layout and viewport scrolling use the existing log layout/cache behavior. |
+| Pointers | `render_md.rs` (`render_mermaid_block`, `route_mermaid_fences`) and tests `render_mermaid_sequence_returns_terminal_lines`, `render_markdown_mermaid_flowchart_uses_box_art`, `render_markdown_invalid_mermaid_falls_back_to_code`, `render_markdown_unclosed_mermaid_fence_keeps_source`; `stream_state.rs` (`code_block_is_mermaid`); `agent.rs` (`finish_stream_code_block`), `visibility.rs` (`flush_stream_pending`); regressions in `render_gap_tests.rs` (`log_renders_streamed_mermaid_without_code_card`, `log_falls_back_to_code_card_for_invalid_streamed_mermaid`, `flush_renders_streamed_mermaid_without_trailing_newline`, `flush_falls_back_to_code_card_for_unclosed_streamed_mermaid`), `cells/markdown.rs` (`markdown_cell_renders_mermaid_at_the_requested_width`); spec `docs/superpowers/specs/2026-08-08-mermaid-main-rendering-design.md`; plan `docs/superpowers/plans/2026-08-08-mermaid-main-rendering.md`; docs `book/23_chapter_tui*.md` §6.7 |
+
+---
+
 ## 1. 2026-08-06 — OpenAI Responses exposes detailed reasoning summaries
 
 | Field | Value |

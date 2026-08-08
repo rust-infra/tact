@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-08 — 主区域 Markdown 将完整 Mermaid fence 渲染为终端图
+
+| 字段 | 值 |
+|------|-----|
+| 类型  | `optimization` |
+| 相关 | `crates/tui/src/render/render_md.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/widgets/state/app/visibility.rs`、`crates/tui/src/widgets/state/stream_state.rs`、第 23 章 §6.7 |
+| 症状 / 动机 | 所有带显式语言标签的流式 fence——包括 ```mermaid——闭合时都会被提升为 `CodeBlock` card overlay，因此 Mermaid 源码只显示为语法着色的代码，而不是图。 |
+| 决策 | 在 `render_md.rs` 中把完整、顶层 `mermaid` fence 路由到共享的 `render_mermaid_block` 辅助函数（`ratatui-markdown::mermaid::render_mermaid` + 应用主题适配器）；在 `stream_state.rs` 中标记当前缓冲的流式 fence 是否为 Mermaid；`agent.rs` / `visibility.rs` 在合法闭合 fence 时直接把 diagram 行拼接进日志，而不是 push `CodeBlock`。无效、不支持或未闭合的 Mermaid 保留 code-card 回退，绝不丢弃源码。 |
+| 变更后行为 | 完整的 ```mermaid fence 以日志宽度渲染为带主题的终端图（定宽 Markdown 路径使用名义 80 列）；合法的流式 Mermaid block 闭合后不再创建 code card；无效/不支持/未闭合的 Mermaid 与普通显式语言 fence 仍走原有 code-card 路径；宽度重排与视口滚动沿用现有 log 布局/缓存行为。 |
+| 指针 | `render_md.rs`（`render_mermaid_block`、`route_mermaid_fences`）及测试 `render_mermaid_sequence_returns_terminal_lines`、`render_markdown_mermaid_flowchart_uses_box_art`、`render_markdown_invalid_mermaid_falls_back_to_code`、`render_markdown_unclosed_mermaid_fence_keeps_source`；`stream_state.rs`（`code_block_is_mermaid`）；`agent.rs`（`finish_stream_code_block`）、`visibility.rs`（`flush_stream_pending`）；`render_gap_tests.rs` 回归测试（`log_renders_streamed_mermaid_without_code_card`、`log_falls_back_to_code_card_for_invalid_streamed_mermaid`、`flush_renders_streamed_mermaid_without_trailing_newline`、`flush_falls_back_to_code_card_for_unclosed_streamed_mermaid`）、`cells/markdown.rs`（`markdown_cell_renders_mermaid_at_the_requested_width`）；spec `docs/superpowers/specs/2026-08-08-mermaid-main-rendering-design.md`；plan `docs/superpowers/plans/2026-08-08-mermaid-main-rendering.md`；文档 `book/23_chapter_tui*.md` §6.7 |
+
+---
+
 ## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 
 | 字段 | 值 |

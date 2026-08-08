@@ -337,7 +337,16 @@ pub(crate) trait Renderable {
 
 `render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
-**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Real streamed code blocks with an explicit language tag (for example ```rust) still use the code-card path.
+**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Streamed code blocks with an explicit language tag still use the code-card path, with one exception since 2026-08-08: a complete `mermaid` fence is rendered as a terminal diagram instead (see below).
+
+**Mermaid fenced blocks** (since 2026-08-08):
+
+- A complete ```mermaid fenced block is rendered as a **terminal diagram** in the main log instead of a code card.
+- Supported diagram types follow the pinned `ratatui-markdown` Mermaid renderer (flowchart/graph, sequenceDiagram, pie, gantt, stateDiagram, classDiagram, quadrantChart, block); unsupported diagram types fall back to code.
+- Streaming buffers the whole block until its closing fence; when rendering succeeds, the diagram lines are spliced into the log directly and **no code card** is created.
+- Invalid or unsupported Mermaid falls back to the normal code block/card, so the original source stays readable.
+- Ordinary explicit-language fences (```rust and similar) keep their existing code-card behavior.
+- Width changes and viewport scrolling use the existing log layout/cache behavior — once spliced in, diagram lines are ordinary log lines.
 
 ### 6.8 Popups
 
