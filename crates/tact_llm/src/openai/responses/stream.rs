@@ -24,6 +24,7 @@ pub(crate) struct ResponsesStreamState {
     /// hard-fail in `finish()` rather than fall back to visible-text recovery,
     /// which would silently drop the compacted baseline.
     pending_compactions: BTreeSet<u32>,
+    raw_terminal_output: Option<Vec<serde_json::Value>>,
 }
 
 impl ResponsesStreamState {
@@ -77,6 +78,17 @@ impl ResponsesStreamState {
         &mut self,
         event: ResponseStreamEvent,
     ) -> Result<Vec<AgentUpdate>, LlmError> {
+        self.apply_with_raw(event, None)
+    }
+
+    pub(crate) fn apply_with_raw(
+        &mut self,
+        event: ResponseStreamEvent,
+        raw_output_items: Option<Vec<serde_json::Value>>,
+    ) -> Result<Vec<AgentUpdate>, LlmError> {
+        if raw_output_items.is_some() {
+            self.raw_terminal_output = raw_output_items;
+        }
         if let ResponseStreamEvent::ResponseError(event) = event {
             let code = event.code.as_deref().unwrap_or("unknown_error");
             let param = event
@@ -142,6 +154,7 @@ impl ResponsesStreamState {
             done_items,
             pending_added,
             pending_compactions,
+            raw_terminal_output,
             ..
         } = self;
         let response = terminal.ok_or_else(|| {
@@ -204,6 +217,9 @@ impl ResponsesStreamState {
             normalized
                 .blocks
                 .push(crate::ContentBlock::Text { text: output_text });
+        }
+        if let Some(raw_output_items) = raw_terminal_output {
+            normalized.output_items = raw_output_items;
         }
         Ok(normalized)
     }

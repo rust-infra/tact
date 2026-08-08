@@ -3,14 +3,11 @@ mod history;
 mod normalize;
 mod request_options;
 mod stream;
+mod wire;
 
 pub use request_options::ResponsesRequestOptions;
 
-use async_openai_responses::{
-    Client,
-    config::OpenAIConfig,
-    types::responses::{Response, ResponseStreamEvent},
-};
+use async_openai_responses::{Client, config::OpenAIConfig, types::responses::ResponseStreamEvent};
 use futures_util::StreamExt;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
@@ -20,6 +17,7 @@ use self::{
     convert::create_response,
     normalize::{NormalizedResponse, parse_compact_resource},
     stream::ResponsesStreamState,
+    wire::parse_response_envelope,
 };
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse,
@@ -84,14 +82,19 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
     event
 }
 
-fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmError> {
-    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+struct ParsedStreamEvent {
+    event: ResponseStreamEvent,
+    raw_output_items: Option<Vec<Value>>,
+}
+
+fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>, LlmError> {
+    let Some(event_type) = event.get("type").and_then(Value::as_str).map(str::to_owned) else {
         return Err(LlmError::StreamParse(
             "missing field `type` in OpenAI Responses stream event".to_string(),
         ));
     };
     let consumed = matches!(
-        event_type,
+        event_type.as_str(),
         "error"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
@@ -106,13 +109,40 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
     if !consumed {
         return Ok(None);
     }
-    serde_json::from_value(normalize_stream_event_json(event))
-        .map(Some)
+
+    let mut event = normalize_stream_event_json(event);
+    let raw_output_items = if matches!(
+        event_type.as_str(),
+        "response.completed" | "response.incomplete" | "response.failed"
+    ) {
+        let Some(response) = event.get("response").cloned() else {
+            return Err(LlmError::StreamParse(
+                "terminal OpenAI Responses event is missing response".to_string(),
+            ));
+        };
+        let envelope = wire::parse_response_envelope(response)?;
+        event["response"] = serde_json::to_value(envelope.typed)?;
+        Some(envelope.output_items)
+    } else {
+        None
+    };
+
+    serde_json::from_value(event)
+        .map(|event| {
+            Some(ParsedStreamEvent {
+                event,
+                raw_output_items,
+            })
+        })
         .map_err(|error| {
             LlmError::StreamParse(format!(
                 "deserialize OpenAI Responses stream event: {error}"
             ))
         })
+}
+
+fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmError> {
+    Ok(parse_stream_event_with_raw(event)?.map(|parsed| parsed.event))
 }
 
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
@@ -235,8 +265,8 @@ impl LlmClient for OpenAiResponsesAdapter {
 
         while let Some(result) = response_stream.next().await {
             let event = match result {
-                Ok(event) => match parse_stream_event(event)? {
-                    Some(event) => event,
+                Ok(event) => match parse_stream_event_with_raw(event)? {
+                    Some(parsed) => (parsed.event, parsed.raw_output_items),
                     None => continue,
                 },
                 Err(error) => {
@@ -248,7 +278,7 @@ impl LlmClient for OpenAiResponsesAdapter {
                     return Err(LlmError::from(error));
                 }
             };
-            let updates = match state.apply(event) {
+            let updates = match state.apply_with_raw(event.0, event.1) {
                 Ok(updates) => updates,
                 Err(error) => {
                     if let Some(update) = state.close_thinking()
@@ -295,10 +325,12 @@ impl LlmClient for OpenAiResponsesAdapter {
         let response = self
             .client
             .responses()
-            .create_byot::<_, Response>(wire_request)
+            .create_byot::<_, Value>(wire_request)
             .await
             .map_err(LlmError::from)?;
-        let normalized = normalize::normalize_response(response)?;
+        let envelope = parse_response_envelope(response)?;
+        let mut normalized = normalize::normalize_response(envelope.typed)?;
+        normalized.output_items = envelope.output_items;
         let state_update = self.state_update(&normalized, request, input_items)?;
         Ok(Self::into_result(normalized, request_body, state_update))
     }
@@ -358,7 +390,8 @@ impl LlmClient for OpenAiResponsesAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_stream_event_json, parse_stream_event};
+    use super::stream::ResponsesStreamState;
+    use super::{normalize_stream_event_json, parse_stream_event, parse_stream_event_with_raw};
     use crate::{
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Tool,
@@ -395,6 +428,54 @@ mod tests {
         .unwrap();
 
         assert!(event.is_none());
+    }
+
+    #[test]
+    fn parses_terminal_unknown_item_with_raw_output_metadata() {
+        let mut response = super::normalize::tests::completed_response_json();
+        response["output"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::json!({
+                "type": "future_item",
+                "id": "future-1",
+                "payload": {"x": 1}
+            }),
+        );
+        let parsed = parse_stream_event_with_raw(serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": response
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(parsed.raw_output_items.is_some());
+        assert_eq!(parsed.raw_output_items.unwrap()[0]["type"], "future_item");
+    }
+
+    #[test]
+    fn stream_finish_retains_unknown_terminal_items_for_state() {
+        let mut response = super::normalize::tests::completed_response_json();
+        response["output"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::json!({
+                "type": "future_item",
+                "id": "future-1",
+                "payload": {"x": 1}
+            }),
+        );
+        let parsed = parse_stream_event_with_raw(serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": response
+        }))
+        .unwrap()
+        .unwrap();
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply_with_raw(parsed.event, parsed.raw_output_items)
+            .unwrap();
+        let normalized = state.finish().unwrap();
+        assert_eq!(normalized.output_items[0]["type"], "future_item");
     }
 
     #[test]
