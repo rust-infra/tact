@@ -55,7 +55,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             "gpt-5.6-luna".into(),
             ModelProfileToml {
                 thinking_budgets: vec![],
-                reasoning_efforts: vec![E::Low, E::Medium],
+                reasoning_efforts: vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max],
             },
         );
         m.insert(
@@ -141,6 +141,24 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
 /// Return a copy of the built-in model profiles (fallback base for TOML merge).
 pub fn builtin_model_profiles() -> std::collections::HashMap<String, ModelProfileToml> {
     BUILTIN_MODEL_PROFILES.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::builtin_model_profiles;
+    use tact_llm::OpenAiReasoningEffort as E;
+
+    #[test]
+    fn gpt_5_6_luna_exposes_all_reasoning_effort_tiers() {
+        let profiles = builtin_model_profiles();
+        let profile = profiles
+            .get("gpt-5.6-luna")
+            .expect("built-in gpt-5.6-luna profile");
+        assert_eq!(
+            profile.reasoning_efforts,
+            vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max]
+        );
+    }
 }
 
 /// Install resolved settings for the process. Must be called once at startup.
