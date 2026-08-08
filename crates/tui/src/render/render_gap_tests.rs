@@ -203,6 +203,35 @@ fn log_renders_streamed_code_block_card() {
 }
 
 #[test]
+fn log_renders_streamed_mermaid_without_code_card() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert!(app.code_blocks.is_empty(), "valid Mermaid must not become a code card");
+    assert!(text.contains("Alice") && text.contains("Bob"), "diagram missing: {text}");
+    assert!(!text.contains("sequenceDiagram"), "raw Mermaid leaked: {text}");
+}
+
+#[test]
+fn log_falls_back_to_code_card_for_invalid_streamed_mermaid() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nnot valid Mermaid\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert_eq!(app.code_blocks.len(), 1, "invalid Mermaid should use code fallback");
+    assert!(text.contains("not valid Mermaid"), "fallback lost source: {text}");
+}
+
+#[test]
 fn flush_consumes_closing_fence_without_trailing_newline() {
     // Stream ends with ``` and no final \n — the close fence stays in stream.buffer.
     // Flush must treat it as a close, not re-render it as leaked ``` lines.
@@ -237,6 +266,26 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
         text.contains("Commit: abc") && (text.contains("当前状态") || text.contains("a")),
         "cards/content should still render, got:\n{text}"
     );
+}
+
+#[test]
+fn flush_renders_streamed_mermaid_without_trailing_newline() {
+    // Stream ends with ``` and no final \n — the close fence stays in
+    // stream.buffer and flush must finalize a valid diagram, never a code card.
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    assert!(
+        app.code_blocks.is_empty(),
+        "valid Mermaid must not become a code card"
+    );
+    assert!(text.contains("Alice") && text.contains("Bob"), "diagram missing: {text}");
+    assert!(!text.contains("sequenceDiagram"), "raw Mermaid leaked: {text}");
 }
 
 // --- P1: Normal mode, plan states, popup scroll, file picker highlight, focus ---
