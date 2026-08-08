@@ -143,6 +143,7 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
         })
 }
 
+#[cfg(test)]
 fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmError> {
     Ok(parse_stream_event_with_raw(event)?.map(|parsed| parsed.event))
 }
@@ -331,8 +332,15 @@ impl LlmClient for OpenAiResponsesAdapter {
             .await
             .map_err(LlmError::from)?;
         let envelope = parse_response_envelope(response)?;
-        let mut normalized = normalize::normalize_response(envelope.typed)?;
-        normalized.output_items = envelope.output_items;
+        let wire::RawResponseEnvelope {
+            value,
+            typed,
+            output_items,
+            unknown_output_items,
+        } = envelope;
+        drop((value, unknown_output_items));
+        let mut normalized = normalize::normalize_response(typed)?;
+        normalized.output_items = output_items;
         let state_update = self.state_update(&normalized, request, input_items)?;
         Ok(Self::into_result(normalized, request_body, state_update))
     }

@@ -74,6 +74,7 @@ impl ResponsesStreamState {
         Ok(self.close_thinking().into_iter().collect())
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(
         &mut self,
         event: ResponseStreamEvent,
