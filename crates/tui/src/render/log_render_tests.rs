@@ -276,6 +276,20 @@ fn log_sys_tool_message_uses_extra_indent() {
 }
 
 #[test]
+fn log_full_width_nested_line_wraps_before_indentation_clip() {
+    let mut app = make_app();
+    let line = "abcdefghijklmnopqrstuvwxyz";
+    app.append_msg(Line::from(line), line.into(), RawMessageType::SysTool);
+
+    let text = render_log_panel_text(&mut app, 30, 12);
+
+    assert!(
+        text.contains("yz"),
+        "right edge must not lose characters: {text}"
+    );
+    assert_eq!(app.log_scroll.visual_cache.len(), 2);
+}
+#[test]
 fn log_narrow_width_wraps_long_paragraph() {
     let mut app = make_app();
     app.add_system_message("word ".repeat(40));

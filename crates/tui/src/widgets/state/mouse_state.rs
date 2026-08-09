@@ -137,6 +137,8 @@ pub(crate) struct MouseState {
     pub(crate) popup_text_drag_origin: Option<PopupTextHit>,
     /// code block popup area (used to determine if click is inside the popup).
     pub(crate) code_popup_area: Rect,
+    /// Mermaid source popup area.
+    pub(crate) mermaid_popup_area: Rect,
     /// `/tasks-dag` popup area.
     pub(crate) task_dag_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.
@@ -150,6 +152,8 @@ pub(crate) struct MouseState {
     pub(crate) last_click_tool: Option<usize>,
     /// Index of the code block hit by the last click (used for double-click popup open).
     pub(crate) last_click_code: Option<usize>,
+    /// Index of the Mermaid block hit by the last click (used for double-click popup open).
+    pub(crate) last_click_mermaid: Option<usize>,
 }
 
 impl MouseState {

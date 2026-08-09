@@ -211,9 +211,22 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.mouse.last_click_time = Some(now);
     app.mouse.last_click_pos = Some(pos);
 
-    let Some(_phys_idx) = app.visible_message_index(line_idx) else {
+    let Some(phys_idx) = app.visible_message_index(line_idx) else {
         return;
     };
+
+    // Task-stats `[copy]` button: copy this turn's log text.
+    if let Some(raw) = app.raw_messages.get(phys_idx)
+        && crate::widgets::state::is_task_stats_line(raw)
+        && let Some(btn_at) = raw.find(crate::widgets::state::TASK_STATS_COPY_BTN)
+        && let Some((_, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
+        && byte >= btn_at
+    {
+        app.copy_turn_ending_at_stats(phys_idx);
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
 
     let thinking_hit = app
         .find_thinking_at_logical(line_idx)
@@ -264,6 +277,27 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     }
 
     app.mouse.last_click_code = None;
+    let mermaid_hit = app.mermaid_blocks.iter().enumerate().find(|(_, b)| {
+        app.phys_to_logical_fast(b.start_idx)
+            .is_some_and(|si| line_idx >= si)
+            && app
+                .phys_to_logical_fast(b.end_idx)
+                .is_some_and(|ei| line_idx < ei)
+    });
+    if let Some((mermaid_idx, _block)) = mermaid_hit {
+        if app.mouse.click_count == 1 {
+            app.mouse.last_click_mermaid = Some(mermaid_idx);
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+        } else if app.mouse.click_count == 2 && app.mouse.last_click_mermaid == Some(mermaid_idx) {
+            app.open_mermaid_popup(mermaid_idx);
+        } else if app.mouse.click_count >= 3 {
+            handle_log_triple_click(app, line_idx, false);
+        }
+        return;
+    }
+
+    app.mouse.last_click_mermaid = None;
     if app.mouse.click_count == 2 {
         if let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
             && let Some((ws, we)) = app.find_word_bounds(line_idx, byte)

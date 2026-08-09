@@ -38,6 +38,7 @@ impl App {
         self.thinking.popup.is_some()
             || self.tools.popup.is_some()
             || self.code_popup.is_some()
+            || self.mermaid_popup.is_some()
             || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
             || self.subagent_popup.is_some()
@@ -49,6 +50,8 @@ impl App {
         } else if let Some(p) = self.tools.popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.code_popup.as_mut() {
+            Some(&mut p.scroll)
+        } else if let Some(p) = self.mermaid_popup.as_mut() {
             Some(&mut p.scroll)
         } else if let Some(p) = self.task_dag_popup.as_mut() {
             Some(&mut p.scroll)
@@ -80,6 +83,8 @@ impl App {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
+        } else if self.mermaid_popup.is_some() {
+            self.close_mermaid_popup();
         } else if self.task_dag_popup.is_some() {
             self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
@@ -102,6 +107,8 @@ impl App {
             Some(self.mouse.diff_popup_area)
         } else if self.code_popup.is_some() {
             Some(self.mouse.code_popup_area)
+        } else if self.mermaid_popup.is_some() {
+            Some(self.mouse.mermaid_popup_area)
         } else if self.task_dag_popup.is_some() {
             Some(self.mouse.task_dag_popup_area)
         } else if self.subagent_popup.is_some() {
@@ -125,6 +132,8 @@ impl App {
             self.copy_diff_popup();
         } else if self.code_popup.is_some() {
             self.copy_code_popup();
+        } else if self.mermaid_popup.is_some() {
+            self.copy_mermaid_popup();
         } else if self.subagent_popup.is_some() {
             self.copy_subagent_popup();
         } else if self.task_dag_popup.is_some() {
@@ -697,6 +706,38 @@ impl App {
             return;
         };
         let text = self.code_blocks[popup.block_idx].content.clone();
+        self.copy_text(&text);
+    }
+
+    // ========== Mermaid Popup ==========
+
+    /// Open the Mermaid source popup for a rendered diagram block.
+    pub(crate) fn open_mermaid_popup(&mut self, block_idx: usize) {
+        if block_idx < self.mermaid_blocks.len()
+            && !self.mermaid_blocks[block_idx].source.is_empty()
+        {
+            self.mermaid_popup = Some(MermaidPopup {
+                block_idx,
+                scroll: 0,
+            });
+        }
+    }
+
+    /// Close the Mermaid source popup.
+    pub(crate) fn close_mermaid_popup(&mut self) {
+        self.mermaid_popup = None;
+        self.mouse.mermaid_popup_area = Rect::default();
+    }
+
+    /// Copy the Mermaid fence body to the clipboard.
+    pub(crate) fn copy_mermaid_popup(&mut self) {
+        let Some(popup) = &self.mermaid_popup else {
+            return;
+        };
+        if popup.block_idx >= self.mermaid_blocks.len() {
+            return;
+        }
+        let text = self.mermaid_blocks[popup.block_idx].source.clone();
         self.copy_text(&text);
     }
 }

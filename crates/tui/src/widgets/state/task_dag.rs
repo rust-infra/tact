@@ -1,14 +1,10 @@
 //! Task dependency DAG → Mermaid → ratatui-markdown rendering.
 
-use ratatui::{style::Color, text::Line};
-use ratatui_markdown::{
-    markdown::MarkdownRenderer,
-    mermaid::theme::MermaidTheme,
-    theme::{CodeColors, Generation, RichTextTheme},
-};
+use ratatui::text::Line;
+use ratatui_markdown::markdown::MarkdownRenderer;
 use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
-use crate::theme::Theme;
+use crate::{render::render_md::TuiRichTextTheme, theme::Theme};
 
 /// Width used to pre-render the DAG before the popup's actual width is known
 /// (the popup re-renders at its real width on the first frame).
@@ -80,82 +76,6 @@ fn tasks_to_markdown(tasks: &[TaskSnapshot], source: &str) -> String {
     out
 }
 
-/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
-#[derive(Clone, Copy)]
-pub(crate) struct DagTheme<'a> {
-    pub theme: &'a Theme,
-}
-
-impl RichTextTheme for DagTheme<'_> {
-    fn generation(&self) -> Generation {
-        Generation(0)
-    }
-
-    fn get_text_color(&self) -> Color {
-        self.theme.fg
-    }
-
-    fn get_muted_text_color(&self) -> Color {
-        self.theme.muted_fg()
-    }
-
-    fn get_primary_color(&self) -> Color {
-        self.theme.accent
-    }
-
-    fn get_popup_selected_background(&self) -> Color {
-        self.theme.highlight
-    }
-
-    fn get_border_color(&self) -> Color {
-        self.theme.border
-    }
-
-    fn get_focused_border_color(&self) -> Color {
-        self.theme.accent
-    }
-
-    fn get_secondary_color(&self) -> Color {
-        self.theme.success
-    }
-
-    fn get_info_color(&self) -> Color {
-        self.theme.heading
-    }
-
-    fn get_json_key_color(&self) -> Color {
-        self.theme.heading
-    }
-
-    fn get_json_string_color(&self) -> Color {
-        self.theme.success
-    }
-
-    fn get_json_number_color(&self) -> Color {
-        self.theme.accent
-    }
-
-    fn get_json_bool_color(&self) -> Color {
-        self.theme.warning
-    }
-
-    fn get_json_null_color(&self) -> Color {
-        self.theme.muted
-    }
-
-    fn get_accent_yellow(&self) -> Color {
-        self.theme.warning
-    }
-
-    fn get_code_colors(&self) -> CodeColors {
-        CodeColors::default()
-    }
-
-    fn get_mermaid_theme(&self) -> MermaidTheme {
-        MermaidTheme::for_background(self.theme.bg)
-    }
-}
-
 /// Render the task DAG (mermaid diagram + legend) via ratatui-markdown.
 pub(crate) fn render_task_dag_lines(
     tasks: &[TaskSnapshot],
@@ -175,7 +95,7 @@ pub(crate) fn render_task_dag_lines(
     let md = tasks_to_markdown(tasks, &source);
     let renderer = MarkdownRenderer::new(width);
     let blocks = renderer.parse(&md);
-    let lines = renderer.render(&blocks, &DagTheme { theme });
+    let lines = renderer.render(&blocks, &TuiRichTextTheme { theme });
     (source, lines)
 }
 

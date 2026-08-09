@@ -6,12 +6,21 @@ use ratatui::{
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use crate::{
-    render::render_md::render_markdown_tui,
+    render::{cells::separator::is_task_end_separator, render_md::render_markdown_tui},
     widgets::state::{
         log_messages::{SystemMsgStyle, classify_system_message},
         *,
     },
 };
+
+/// Prefix for the per-turn stats row appended after each task-end separator.
+pub(crate) const TASK_STATS_PREFIX: &str = "📊 任务统计：";
+/// Clickable copy affordance appended to each task-stats row.
+pub(crate) const TASK_STATS_COPY_BTN: &str = "[copy]";
+
+pub(crate) fn is_task_stats_line(raw: &str) -> bool {
+    raw.starts_with(TASK_STATS_PREFIX)
+}
 
 impl App {
     pub(crate) fn add_startup_logo(&mut self) {
@@ -198,7 +207,9 @@ impl App {
     /// Reads the already-frozen `last_prompt_elapsed_secs` and the status-bar
     /// token/model snapshots; deliberately adds no new state (YAGNI — the data
     /// is already collected by `add_task_end_separator` / `TokenUsage` /
-    /// `ModelInfo` updates).
+    /// `ModelInfo` updates). A trailing `[copy]` button copies this turn's
+    /// log text (from the previous stats row, or session start, up to but not
+    /// including this stats row).
     pub(crate) fn add_task_stats_block(&mut self) {
         let secs = self.last_prompt_elapsed_secs.unwrap_or(0).max(0);
         let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
@@ -225,7 +236,54 @@ impl App {
             }
             parts.push(detail);
         }
-        self.add_system_message(format!("📊 任务统计：{}", parts.join(" · ")));
+        let body = format!("{TASK_STATS_PREFIX}{}", parts.join(" · "));
+        let raw = format!("{body}  {TASK_STATS_COPY_BTN}");
+        let line = Line::from(vec![
+            Span::styled(body, Style::default().fg(self.theme.accent)),
+            Span::raw("  "),
+            Span::styled(
+                TASK_STATS_COPY_BTN.to_string(),
+                Style::default()
+                    .fg(self.theme.heading)
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]);
+        self.append_msg(line, raw, RawMessageType::LLM);
+        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
+            self.log_scroll.offset = u16::MAX;
+        }
+    }
+
+    /// Copy the turn that ends at the given task-stats physical row.
+    ///
+    /// Range: after the previous stats line (or session start) .. `stats_phys`
+    /// (exclusive). Skips blank rows, task-end separators, and other stats rows.
+    pub(crate) fn copy_turn_ending_at_stats(&mut self, stats_phys: usize) {
+        let Some(raw) = self.raw_messages.get(stats_phys) else {
+            return;
+        };
+        if !is_task_stats_line(raw) {
+            return;
+        }
+        let start = (0..stats_phys)
+            .rev()
+            .find(|&i| is_task_stats_line(&self.raw_messages[i]))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut parts: Vec<&str> = Vec::new();
+        for i in start..stats_phys {
+            let line = self.raw_messages[i].as_str();
+            if line.is_empty() || is_task_end_separator(line) || is_task_stats_line(line) {
+                continue;
+            }
+            parts.push(line);
+        }
+        let text = parts.join("\n");
+        if text.is_empty() {
+            return;
+        }
+        self.copy_text(&text);
     }
 
     /// Add a user input message and record it in task history.

@@ -13,7 +13,7 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
-    /// Active LLM provider (`anthropic` | `openai` | `deepseek` | `kimi`); selects `[llm.providers.<name>]`
+    /// Active LLM provider (built-ins: `anthropic` | `openai` | `deepseek` | `kimi`; any other name = custom OpenAI-compatible); selects `[llm.providers.<name>]`
     #[arg(long)]
     pub provider: Option<String>,
 

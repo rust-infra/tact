@@ -3,7 +3,7 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use crate::provider::read_provider;
+use crate::provider::{ProviderInfo, read_provider};
 use crate::types::ProviderKind;
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
@@ -43,22 +43,37 @@ pub fn merge_model_candidates(config: &[String], api: &[String]) -> Vec<String> 
     out
 }
 
+fn provider_supports_models_query(provider: &ProviderKind) -> bool {
+    matches!(
+        provider,
+        ProviderKind::OpenAi
+            | ProviderKind::DeepSeek
+            | ProviderKind::Kimi
+            | ProviderKind::Custom(_)
+    )
+}
+
 pub fn is_models_query_supported() -> bool {
-    read_provider(|p| {
-        matches!(
-            p.provider,
-            ProviderKind::OpenAi | ProviderKind::DeepSeek | ProviderKind::Kimi
-        )
-    })
+    read_provider(|p| provider_supports_models_query(&p.provider))
+}
+
+/// Session-cached API model ids for the given provider.
+/// Soft-fails to empty. Skips HTTP when unsupported.
+pub async fn ensure_api_model_ids_for_provider(provider: &ProviderInfo) -> Vec<String> {
+    if !provider_supports_models_query(&provider.provider) {
+        return Vec::new();
+    }
+    ensure_api_model_ids_for_credentials(&provider.base_url, &provider.api_key).await
 }
 
 /// Session-cached API model ids for the active provider.
 /// Soft-fails to empty. Skips HTTP when unsupported.
 pub async fn ensure_api_model_ids() -> Vec<String> {
-    if !is_models_query_supported() {
-        return Vec::new();
-    }
-    let (base_url, api_key) = read_provider(|p| (p.base_url.clone(), p.api_key.clone()));
+    let provider = read_provider(Clone::clone);
+    ensure_api_model_ids_for_provider(&provider).await
+}
+
+async fn ensure_api_model_ids_for_credentials(base_url: &str, api_key: &str) -> Vec<String> {
     {
         let guard = CACHE.lock().expect("models cache poisoned");
         if let Some(c) = guard.as_ref()
@@ -68,11 +83,11 @@ pub async fn ensure_api_model_ids() -> Vec<String> {
             return c.ids.clone();
         }
     }
-    let ids = fetch_model_ids(&base_url, &api_key).await;
+    let ids = fetch_model_ids(base_url, api_key).await;
     let mut guard = CACHE.lock().expect("models cache poisoned");
     *guard = Some(ModelsCache {
-        base_url,
-        api_key,
+        base_url: base_url.to_string(),
+        api_key: api_key.to_string(),
         ids: ids.clone(),
     });
     ids
@@ -204,6 +219,33 @@ mod tests {
         assert!(is_models_query_supported());
         init_provider_for_test(ProviderKind::Anthropic, "https://api.anthropic.com");
         assert!(!is_models_query_supported());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn explicit_provider_model_query_uses_subagent_credentials() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        init_provider_for_test(ProviderKind::OpenAi, "https://main.example/v1");
+        seed_models_cache_for_tests(
+            "https://subagent.example/v1",
+            "sk-subagent",
+            vec!["subagent-model".into()],
+        );
+
+        let subagent = ProviderInfo {
+            api_key: "sk-subagent".into(),
+            base_url: "https://subagent.example/v1".into(),
+            model: "subagent-model".into(),
+            provider: ProviderKind::DeepSeek,
+            protocol: crate::OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+        };
+
+        assert_eq!(
+            ensure_api_model_ids_for_provider(&subagent).await,
+            vec!["subagent-model".to_string()]
+        );
     }
 
     #[tokio::test]

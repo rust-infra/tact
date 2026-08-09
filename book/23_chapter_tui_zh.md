@@ -326,7 +326,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
 - 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
-- 第 2 行：模型名、`输出`/`out`、`思考 high(32K)`/`think …`、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
+- 第 2 行：模型名、`输出`/`out`、`思考 high`/`think high`（effort）或 `思考 32K`/`think 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
@@ -334,7 +334,17 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 `render_md.rs` 经 `tui-markdown` 与自定义 `TuiStyleSheet`（标题、代码、链接、引用）转换 assistant markdown。Code block 统一深色背景；表格列对齐。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
-**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。真正带显式语言标签的流式代码块（例如 ```rust）仍走 code-card 路径。
+**流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。带显式语言标签的流式代码块仍走 code-card 路径，唯一的例外自 2026-08-08 起：完整的 `mermaid` fence 会渲染为终端图（见下）。
+
+**Mermaid fenced block**（自 2026-08-08 起）：
+
+- 完整的 ```mermaid fenced block 在主日志区渲染为**终端图**，不再生成 code card。
+- 支持的图类型跟随固定的 `ratatui-markdown` Mermaid 渲染器（flowchart/graph、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）。`sequenceDiagram` 使用 Tact 自有渲染器（`mermaid_sequence.rs`），以正确处理别名、`+/-` 激活简写以及 CJK/宽字符标签对齐；不支持的图类型回退为代码。
+- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开源码弹窗。
+- **双击**任意 diagram 行 → Mermaid 弹窗；弹窗内 **`y`** 复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
+- 无效或不支持的 Mermaid 回退到普通 code block/card，原始源码仍可读。
+- 普通显式语言 fence（```rust 等）保留原有 code-card 行为。
+- 宽度变化与视口滚动沿用现有 log 布局/缓存行为——diagram 行一旦拼接即为普通日志行。
 
 ### 6.8 Popups
 
@@ -349,6 +359,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Thinking detail | 双击 thinking card；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
 | Tool/file detail | 双击 tool card | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
+| Mermaid source | 双击已渲染的 Mermaid 图 | `popups/mermaid_popup.rs` |
 
 Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击外部关闭，显示 `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` 提示。`diff_popup` 经 `cached_content` 懒加载全文 — 热路径 `render()` 内无文件 I/O。
 

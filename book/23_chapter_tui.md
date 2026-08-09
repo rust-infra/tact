@@ -329,7 +329,7 @@ pub(crate) trait Renderable {
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
-- Row 2: model name, `out`/`输出`, `think high(32K)`/`思考 …`, `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
+- Row 2: model name, `out`/`输出`, `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
@@ -337,7 +337,17 @@ pub(crate) trait Renderable {
 
 `render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
-**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Real streamed code blocks with an explicit language tag (for example ```rust) still use the code-card path.
+**Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Streamed code blocks with an explicit language tag still use the code-card path, with one exception since 2026-08-08: a complete `mermaid` fence is rendered as a terminal diagram instead (see below).
+
+**Mermaid fenced blocks** (since 2026-08-08):
+
+- A complete ```mermaid fenced block is rendered as a **terminal diagram** in the main log instead of a code card.
+- Supported diagram types follow the pinned `ratatui-markdown` Mermaid renderer (flowchart/graph, pie, gantt, stateDiagram, classDiagram, quadrantChart, block). `sequenceDiagram` uses Tact's own renderer (`mermaid_sequence.rs`) so aliases, `+/-` activation shorthand, and CJK/wide labels stay aligned; unsupported diagram types fall back to code.
+- Streaming buffers the whole block until its closing fence; when rendering succeeds, the diagram lines are spliced into the log directly and **no code card** is created. The fence body is retained in a `MermaidBlock` so double-click can open a source popup.
+- **Double-click** any diagram row → Mermaid popup; popup **`y`** copies the Mermaid source. Log selection / Normal **`y`** still copies the visible ASCII diagram.
+- Invalid or unsupported Mermaid falls back to the normal code block/card, so the original source stays readable.
+- Ordinary explicit-language fences (```rust and similar) keep their existing code-card behavior.
+- Width changes and viewport scrolling use the existing log layout/cache behavior — once spliced in, diagram lines are ordinary log lines.
 
 ### 6.8 Popups
 
@@ -352,6 +362,7 @@ pub(crate) trait Renderable {
 | Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
 | Tool/file detail | double-click tool card | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
+| Mermaid source | double-click rendered Mermaid diagram | `popups/mermaid_popup.rs` |
 
 Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_area` for click-outside-to-close, and show `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` hints. `diff_popup` lazy-loads full content via `cached_content` — no file I/O inside hot `render()` paths.
 

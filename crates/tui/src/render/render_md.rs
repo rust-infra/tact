@@ -5,6 +5,10 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use ratatui_markdown::{
+    mermaid::{render_mermaid, theme::MermaidTheme},
+    theme::{CodeColors, Generation, RichTextTheme},
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{render::util::split_at_display_width, theme::Theme};
@@ -60,8 +64,343 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
     }
 }
 
+/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
+///
+/// Shared by the Mermaid renderer and the `/tasks-dag` popup so both use the
+/// exact same color mapping.
+#[derive(Clone, Copy)]
+pub(crate) struct TuiRichTextTheme<'a> {
+    pub theme: &'a Theme,
+}
+
+impl RichTextTheme for TuiRichTextTheme<'_> {
+    fn generation(&self) -> Generation {
+        Generation(0)
+    }
+
+    fn get_text_color(&self) -> Color {
+        self.theme.fg
+    }
+
+    fn get_muted_text_color(&self) -> Color {
+        self.theme.muted_fg()
+    }
+
+    fn get_primary_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_popup_selected_background(&self) -> Color {
+        self.theme.highlight
+    }
+
+    fn get_border_color(&self) -> Color {
+        self.theme.border
+    }
+
+    fn get_focused_border_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_secondary_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_info_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_key_color(&self) -> Color {
+        self.theme.heading
+    }
+
+    fn get_json_string_color(&self) -> Color {
+        self.theme.success
+    }
+
+    fn get_json_number_color(&self) -> Color {
+        self.theme.accent
+    }
+
+    fn get_json_bool_color(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_json_null_color(&self) -> Color {
+        self.theme.muted
+    }
+
+    fn get_accent_yellow(&self) -> Color {
+        self.theme.warning
+    }
+
+    fn get_code_colors(&self) -> CodeColors {
+        CodeColors::default()
+    }
+
+    fn get_mermaid_theme(&self) -> MermaidTheme {
+        MermaidTheme::for_background(self.theme.bg)
+    }
+}
+
+/// Render a Mermaid diagram through ratatui-markdown with the app theme.
+///
+/// Sequence diagrams are handled by Tact's own renderer (see
+/// [`mermaid_sequence`]) because the upstream sequence renderer mishandles
+/// `participant X as 名称` aliases, the `+`/`-` activation shorthand, and
+/// CJK arrow labels.
+///
+/// Returns `None` when the source cannot be parsed or rendered so callers can
+/// fall back to ordinary code rendering.
+pub(crate) fn render_mermaid_block(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+) -> Option<Vec<Line<'static>>> {
+    let width = width.max(1);
+    if source
+        .lines()
+        .next()
+        .map(str::trim)
+        .is_some_and(|l| l.starts_with("sequenceDiagram"))
+    {
+        return super::mermaid_sequence::render_sequence_diagram(source, width, theme);
+    }
+    render_mermaid(source, width, None, &TuiRichTextTheme { theme })
+}
+
+/// Layout width used when a caller has no explicit width to pass.
+///
+/// `render_markdown_tui` has no width parameter; Mermaid fences inside it are
+/// laid out at a nominal 80 columns.
+const DEFAULT_RENDER_WIDTH: usize = 80;
+
+/// Renderer for one non-Mermaid chunk of Markdown (prose, tables, code fences).
+type SegmentRenderer = fn(&str, &Theme, Option<usize>) -> (Vec<Line<'static>>, Vec<String>);
+
+/// Route complete, top-level `mermaid` fences out of `text`.
+///
+/// A closed ` ```mermaid ` fence is rendered by `render_mermaid_block` at
+/// `width` (bounded to [`DEFAULT_RENDER_WIDTH`] when no width is given);
+/// every other chunk (prose, pipe tables, non-Mermaid code fences) is
+/// delegated to `render_segment` with the caller's width passed through
+/// unchanged — `None` keeps meaning "unlimited" for table layout. Only
+/// *top-level* Mermaid fences are routed: while scanning, non-Mermaid fenced
+/// blocks ( ` ```rust `, ` ```text `, bare ` ``` `, `~~~text`, ` ````text `,
+/// …) are tracked with their opener marker (`` ` `` or `~`) and run length so
+/// a literal ` ```mermaid ` line inside ordinary code is passed through
+/// unchanged until a matching closing fence — it is code content, never a
+/// diagram. A fence closes only on a line of the same marker with at least
+/// the opener's run length and a whitespace-only suffix, so an inner ` ``` `
+/// inside a ` ````text ` block is content, not the close. When a Mermaid
+/// fence cannot be rendered (or is never closed) the original fence text goes
+/// through the existing code renderer instead, so no source is ever dropped.
+/// Returns styled lines plus their raw text, keeping the same shape as the
+/// existing renderers.
+fn route_mermaid_fences(
+    text: &str,
+    theme: &Theme,
+    width: Option<usize>,
+    render_segment: SegmentRenderer,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let mut styled_lines = Vec::new();
+    let mut raw_lines = Vec::new();
+    let mut chunk = String::new();
+
+    // Mermaid layout needs a concrete width; tables/prose keep the caller's
+    // optional width untouched (None = unlimited).
+    let mermaid_width = width.unwrap_or(DEFAULT_RENDER_WIDTH).max(1);
+
+    let mut lines = text.lines();
+    let mut fence: Option<Fence> = None;
+    while let Some(line) = lines.next() {
+        if let Some(opener) = fence {
+            // Inside an ordinary fenced block: pass everything through until a
+            // matching closing fence (same marker, at least the opener's run
+            // length, whitespace-only suffix), so a literal ```mermaid inside
+            // e.g. ~~~text or ````text is never mistaken for a top-level
+            // diagram.
+            chunk.push_str(line);
+            chunk.push('\n');
+            if is_fence_closer(line, opener) {
+                fence = None;
+            }
+            continue;
+        }
+
+        if mermaid_fence_opener(line).is_some() {
+            // Collect source lines until a trimmed closing fence.
+            let mut source = String::new();
+            let mut closed = false;
+            for src in lines.by_ref() {
+                if src.trim() == "```" {
+                    closed = true;
+                    break;
+                }
+                source.push_str(src);
+                source.push('\n');
+            }
+
+            // Flush preceding prose so the diagram keeps its position in the doc.
+            flush_segment(
+                &mut styled_lines,
+                &mut raw_lines,
+                &mut chunk,
+                theme,
+                width,
+                render_segment,
+            );
+
+            if !closed {
+                // Unclosed fence: keep it as ordinary code content, never drop it.
+                let block = format!("```mermaid\n{source}");
+                let (s, r) = render_plain_markdown(&block, theme, width);
+                styled_lines.extend(s);
+                raw_lines.extend(r);
+                continue;
+            }
+
+            match render_mermaid_block(&source, theme, mermaid_width) {
+                Some(rendered) => {
+                    for line in rendered {
+                        let raw = line.to_string();
+                        raw_lines.push(raw);
+                        styled_lines.push(line);
+                    }
+                }
+                None => {
+                    // Invalid diagram: send the original fence through the code renderer.
+                    let block = format!("```mermaid\n{source}```");
+                    let (s, r) = render_plain_markdown(&block, theme, width);
+                    styled_lines.extend(s);
+                    raw_lines.extend(r);
+                }
+            }
+            continue;
+        }
+
+        if let Some(opener) = parse_fence_opener(line) {
+            // Ordinary (non-Mermaid) fence opener — backtick or tilde, run
+            // length ≥ 3: track the block so any Mermaid-looking line inside
+            // it stays literal code content.
+            fence = Some(opener);
+            chunk.push_str(line);
+            chunk.push('\n');
+            continue;
+        }
+
+        chunk.push_str(line);
+        chunk.push('\n');
+    }
+
+    flush_segment(
+        &mut styled_lines,
+        &mut raw_lines,
+        &mut chunk,
+        theme,
+        width,
+        render_segment,
+    );
+    (styled_lines, raw_lines)
+}
+
+/// Render one pending non-Mermaid chunk through the segment renderer.
+fn flush_segment(
+    styled_lines: &mut Vec<Line<'static>>,
+    raw_lines: &mut Vec<String>,
+    chunk: &mut String,
+    theme: &Theme,
+    width: Option<usize>,
+    render_segment: SegmentRenderer,
+) {
+    if !chunk.trim().is_empty() {
+        let (s, r) = render_segment(chunk, theme, width);
+        styled_lines.extend(s);
+        raw_lines.extend(r);
+        chunk.clear();
+    }
+}
+
+/// Detect a top-level `mermaid` fence opener.
+///
+/// A line whose trimmed form starts with three backticks opens a fence; the
+/// info string after the backticks must be `mermaid` (case-insensitive).
+fn mermaid_fence_opener(line: &str) -> Option<()> {
+    let trimmed = line.trim();
+    let info = trimmed.strip_prefix("```")?;
+    let lang = info.split_whitespace().next().unwrap_or("");
+    lang.eq_ignore_ascii_case("mermaid").then_some(())
+}
+
+/// A Markdown fenced-block descriptor: the fence marker character (`` ` `` or
+/// `~`) and the length of its opening run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fence {
+    marker: char,
+    run_len: usize,
+}
+
+/// Minimum fence run length required by CommonMark (``` / ~~~).
+const MIN_FENCE_RUN: usize = 3;
+
+/// Parse a valid CommonMark-style fence opener.
+///
+/// A line whose trimmed form starts with at least three backticks or tildes
+/// opens a fence; the remainder is the info string. Backtick fences reject an
+/// info string containing a backtick (CommonMark); tilde fences accept any
+/// info string.
+fn parse_fence_opener(line: &str) -> Option<Fence> {
+    let trimmed = line.trim();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let run_len = trimmed.chars().take_while(|&c| c == marker).count();
+    if run_len < MIN_FENCE_RUN {
+        return None;
+    }
+    if marker == '`' && trimmed[run_len..].contains('`') {
+        return None;
+    }
+    Some(Fence { marker, run_len })
+}
+
+/// Recognize a closing fence for `opener`.
+///
+/// The closing line must start (after trimming) with the same marker, have a
+/// run at least as long as the opener's, and contain only whitespace after the
+/// run — a shorter run, a different marker, or any non-whitespace suffix is
+/// content, not a close. (Marker runs are ASCII, so byte indices equal char
+/// indices.)
+fn is_fence_closer(line: &str, opener: Fence) -> bool {
+    let trimmed = line.trim();
+    let run_len = trimmed.chars().take_while(|&c| c == opener.marker).count();
+    run_len >= opener.run_len && trimmed[run_len..].chars().all(char::is_whitespace)
+}
+
 /// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
+///
+/// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
+/// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
+/// tui-markdown pipeline.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
+    route_mermaid_fences(
+        text,
+        theme,
+        Some(DEFAULT_RENDER_WIDTH),
+        render_plain_markdown,
+    )
+}
+
+/// The plain tui-markdown chunk renderer (no width-aware tables, no Mermaid
+/// routing). Fallback code-card previews go through this path directly so a
+/// reconstructed fallback fence is never re-routed through the Mermaid
+/// renderer.
+pub(crate) fn render_plain_markdown(
+    text: &str,
+    theme: &Theme,
+    _width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
     let options = tui_markdown::Options::new(TuiStyleSheet::new(*theme));
     let safe_text = escape_task_list_markers(text);
     let tui_text = tui_markdown::from_str_with_options(safe_text.as_ref(), &options);
@@ -95,9 +434,21 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
 /// Pipe-table rows (lines starting with `|`) are extracted and rendered by
 /// `format_table` with `available_width` — long cells wrap inside the table
 /// layout and columns stay aligned. Everything else is delegated to
-/// tui-markdown. System messages like `/skills` produce plain markdown and
-/// go through this single pipeline instead of hand-building ratatui lines.
+/// tui-markdown. Complete top-level ` ```mermaid ` fences are routed to the
+/// Mermaid renderer *before* the table scanner runs, so `|` lines inside a
+/// diagram are never mistaken for table rows. System messages like `/skills`
+/// produce plain markdown and go through this single pipeline instead of
+/// hand-building ratatui lines.
 pub(crate) fn render_markdown_with_tables(
+    text: &str,
+    theme: &Theme,
+    available_width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    route_mermaid_fences(text, theme, available_width, render_prose_and_tables)
+}
+
+/// The width-aware chunk renderer (pipe tables + tui-markdown).
+fn render_prose_and_tables(
     text: &str,
     theme: &Theme,
     available_width: Option<usize>,
@@ -500,6 +851,254 @@ mod tests {
     }
 
     #[test]
+    fn render_mermaid_sequence_returns_terminal_lines() {
+        let source = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob-->>Alice: Hi";
+        let lines = render_mermaid_block(source, &theme(), 80).expect("valid sequence diagram");
+        let text = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Alice"), "participant missing: {text}");
+        assert!(text.contains("Bob"), "participant missing: {text}");
+        assert!(text.contains("Hello"), "message missing: {text}");
+        assert!(
+            text.contains('─') || text.contains('>'),
+            "diagram art missing: {text}"
+        );
+        assert!(
+            !text.contains("sequenceDiagram"),
+            "raw source leaked: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_flowchart_uses_box_art() {
+        let md = "```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains('─') || line.to_string().contains('│')),
+            "expected flowchart box art: {text}"
+        );
+        assert!(!text.contains("flowchart TD"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_invalid_mermaid_falls_back_to_code() {
+        let md = "```mermaid\nnot a valid diagram\n```";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("not a valid diagram"),
+            "fallback lost source: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_keeps_surrounding_prose() {
+        let md = "before\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\nafter";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(lines.iter().any(|l| l.to_string().contains('─')), "{text}");
+        assert!(text.contains("before"), "leading prose missing: {text}");
+        assert!(text.contains("after"), "trailing prose missing: {text}");
+    }
+
+    #[test]
+    fn render_markdown_unclosed_mermaid_fence_keeps_source() {
+        let md = "```mermaid\nflowchart TD\n  A --> B\n";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("flowchart TD") && text.contains("A --> B"),
+            "unclosed fence must keep its source: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_opener_is_case_insensitive() {
+        let md = "```MERMAID\npie title T\n  \"A\" : 1\n```";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.to_string().contains('█') || l.to_string().contains('%')),
+            "uppercase opener should still render: {text}"
+        );
+        assert!(!text.contains("pie title T"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_non_mermaid_fence_stays_code() {
+        let md = "```rust\nfn kept() {}\n```";
+        let (_lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(text.contains("fn kept() {}"), "code source missing: {text}");
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_non_mermaid_fence_is_literal() {
+        // A literal ```mermaid line inside an ordinary (non-Mermaid) fenced
+        // block is code content, not a diagram: only top-level Mermaid fences
+        // may be routed. The nested fence must survive unchanged and no box-art
+        // may appear.
+        for lang in ["text", "rust"] {
+            let md = format!("```{lang}\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n");
+            let (lines, raw) = render_markdown_tui(&md, &theme());
+            let text = raw.join("\n");
+
+            assert!(
+                text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+                "literal Mermaid fence inside ```{lang} must stay code content: {text}"
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+                "nested Mermaid fence must not render a diagram (```{lang}): {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_tilde_fence_is_literal() {
+        // A literal ```mermaid block inside a non-Mermaid tilde fence
+        // (~~~text) is code content, never a diagram: the router must track
+        // tilde fences just like backtick fences.
+        let md = "~~~text\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n~~~\n";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ~~~text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "literal Mermaid fence inside ~~~text must not render a diagram: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_mermaid_fence_inside_longer_backtick_fence_is_literal() {
+        // A four-backtick ```text fence containing a literal ```mermaid line
+        // and an inner ``` line must stay literal code until the four-backtick
+        // close: the inner three-backtick line is content, not the closing
+        // fence, and no diagram may be routed.
+        let md = "````text\n```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n````\n";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ````text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "literal Mermaid fence inside ````text must not render a diagram: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_with_tables_mermaid_fence_inside_non_mermaid_fence_is_literal() {
+        // Same guarantee through the width-aware tables pipeline: the router
+        // must pass a non-Mermaid fenced block through before the table
+        // scanner (or the inner markdown pass) ever sees its lines.
+        let md = "\
+prose
+
+```text
+```mermaid
+sequenceDiagram
+  Alice->>Bob: Hello
+```
+";
+        let (lines, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("prose"),
+            "surrounding prose must survive: {text}"
+        );
+        assert!(
+            text.contains("sequenceDiagram") && text.contains("Alice->>Bob: Hello"),
+            "literal Mermaid fence inside ```text must stay code content: {text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.to_string().contains('─') || l.to_string().contains('│')),
+            "nested Mermaid fence must not render a diagram: {text}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_with_tables_routes_mermaid_before_table_scan() {
+        // The diagram source contains a valid `|` inside a node label that
+        // must be rendered as diagram art, never parsed as a pipe table.
+        // Prose tables around it must survive.
+        let md = "\
+| A | B |
+| --- | --- |
+| 1 | 2 |
+
+```mermaid
+flowchart LR
+  A[Start] --> B[Step | done]
+```
+
+Trailing prose.
+";
+        let (styled, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            styled.iter().any(|l| l.to_string().contains('─')),
+            "expected diagram box art: {text}"
+        );
+        assert!(
+            text.contains("Step | done"),
+            "node label with `|` must render inside the diagram: {text}"
+        );
+        assert!(
+            text.contains("| A | B |") && text.contains("| 1 | 2 |"),
+            "pipe table must survive: {text}"
+        );
+        assert!(
+            text.contains("Trailing prose."),
+            "trailing prose must survive: {text}"
+        );
+        assert!(!text.contains("flowchart LR"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
+    fn render_markdown_with_tables_invalid_mermaid_falls_back() {
+        let md = "```mermaid\nnot a valid diagram\n```";
+        let (_lines, raw) = render_markdown_with_tables(md, &theme(), Some(40));
+        let text = raw.join("\n");
+
+        assert!(
+            text.contains("not a valid diagram"),
+            "fallback lost source: {text}"
+        );
+    }
+
+    #[test]
     fn render_markdown_heading_and_list() {
         let md = "# Title\n\n- item one\n- item two";
         let (lines, raw) = render_markdown_tui(md, &theme());
@@ -860,6 +1459,24 @@ Plain trailing paragraph.
             raw.iter().any(|l| l.contains("Plain trailing paragraph")),
             "trailing prose missing:\n{}",
             raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_markdown_with_tables_none_width_keeps_unlimited_table() {
+        // `None` must flow through to `format_table` unchanged (unlimited):
+        // a long cell stays on a single row instead of being wrapped at the
+        // nominal 80-column width.
+        let cell = "word ".repeat(40); // ~200 chars
+        let long_cell = cell.trim_end();
+        let md = format!("| A | B |\n| --- | --- |\n| 1 | {long_cell} |");
+        let (_styled, raw) = render_markdown_with_tables(&md, &theme(), None);
+        let text = raw.join("\n");
+
+        let full_row = format!("| 1 | {long_cell} |");
+        assert!(
+            text.lines().any(|l| l == full_row),
+            "long cell must stay on one row when width is None:\n{text}"
         );
     }
 }

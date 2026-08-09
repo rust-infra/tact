@@ -95,11 +95,27 @@ explicit path is an error (never auto-created).
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
 | `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
 | `protocol` | entry → `chat_completions` default |
-| `reasoning_effort` | entry (openai / deepseek / kimi) → provider default (model-dependent) |
+| `reasoning_effort` | entry (openai / deepseek / kimi / custom) → provider default (model-dependent) |
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
-Unknown map keys or missing active entries error at resolve time.
+Missing active entries error at resolve time.
+
+Any provider name not in the built-in list (`anthropic | openai | deepseek |
+kimi`) is accepted as a **custom OpenAI-compatible provider**: it reuses the
+OpenAI protocol (`chat_completions` by default, `responses` opt-in), has no
+default `base_url` (must be set explicitly on its entry), and supports
+`reasoning_effort`. Example:
+
+```toml
+[llm]
+provider = "moonshot"   # any name works
+
+[llm.providers.moonshot]
+api_key = "sk-..."
+base_url = "https://api.moonshot.cn/v1"   # required for custom providers
+model = "kimi-k2.5"
+```
 
 ---
 
@@ -109,7 +125,7 @@ Top-level sections in `TactTomlConfig`:
 
 ```toml
 [llm]
-provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi
+provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi | any custom name
 max_tokens = 32000         # optional global default
 thinking_budget = 32000
 

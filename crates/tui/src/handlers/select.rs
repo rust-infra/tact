@@ -12,7 +12,7 @@ const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 /// kimi k3 family: low/high/max (default high).
 fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_llm::OpenAiReasoningEffort> {
     use tact_llm::OpenAiReasoningEffort as E;
-    match info.provider {
+    match &info.provider {
         tact_llm::ProviderKind::DeepSeek | tact_llm::ProviderKind::Kimi => {
             vec![E::Low, E::High, E::Max]
         }
@@ -724,15 +724,13 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
         return;
     };
 
-    let api_ids = if tact_llm::is_models_query_supported() {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(tact_llm::ensure_api_model_ids()))
-            }
-            Err(_) => Vec::new(),
-        }
-    } else {
-        Vec::new()
+    let api_ids = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(tact_llm::ensure_api_model_ids_for_provider(
+                &subagent.provider,
+            ))
+        }),
+        Err(_) => Vec::new(),
     };
 
     let subagent_provider_name = subagent.provider.provider.as_str();
@@ -1234,6 +1232,40 @@ thinking_budget = {thinking_budget}
             Some(tact_llm::OpenAiReasoningEffort::Low)
         );
         assert_eq!(tact::config::settings().llm.model, "k3");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applying_effort_pick_clears_stale_thinking_budget() {
+        // Regression: an effort pick for an effort-semantic model (k3) must
+        // clear a stale thinking_budget left over from a budget-semantic model
+        // (kimi-for-coding) — otherwise the bottom bar renders `think high(32K)`.
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config_with_budget(vec!["k3"], "k3", 32_000);
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["k3".into()],
+        );
+        let mut app = make_app();
+        start_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
+
+        assert_eq!(
+            tact::config::settings().agent.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::Low)
+        );
+        assert_eq!(
+            tact::config::settings().agent.thinking_budget,
+            0,
+            "effort pick must clear stale thinking budget"
+        );
+        assert_eq!(app.status_bar.model_thinking_budget, None);
+        assert_eq!(
+            app.status_bar.model_reasoning_effort,
+            Some("low".to_string())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
