@@ -167,6 +167,19 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
     let consumed = matches!(
         event_type.as_str(),
         "error"
+            | "response.created"
+            | "response.queued"
+            | "response.in_progress"
+            | "response.content_part.added"
+            | "response.content_part.done"
+            | "response.output_text.done"
+            | "response.refusal.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done"
+            | "response.function_call_arguments.delta"
+            | "response.function_call_arguments.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
             | "response.output_text.delta"
@@ -766,6 +779,112 @@ mod tests {
         .unwrap();
 
         assert!(event.is_some());
+    }
+
+    #[test]
+    fn accepts_supported_lifecycle_and_completion_events() {
+        let response = super::normalize::tests::completed_response_json();
+        let events = [
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 1,
+                "response": response
+            }),
+            serde_json::json!({
+                "type": "response.queued",
+                "sequence_number": 2,
+                "response": super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.in_progress",
+                "sequence_number": 3,
+                "response": super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.content_part.added",
+                "sequence_number": 4,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": null}
+            }),
+            serde_json::json!({
+                "type": "response.content_part.done",
+                "sequence_number": 5,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "done", "annotations": [], "logprobs": null}
+            }),
+            serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 6,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "done",
+                "logprobs": []
+            }),
+            serde_json::json!({
+                "type": "response.refusal.done",
+                "sequence_number": 7,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "refusal": "no"
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_part.added",
+                "sequence_number": 8,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""}
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_part.done",
+                "sequence_number": 9,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": "done"}
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_text.done",
+                "sequence_number": 10,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "text": "done"
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_text.done",
+                "sequence_number": 11,
+                "item_id": "rs",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "done"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "sequence_number": 12,
+                "item_id": "fc",
+                "output_index": 1,
+                "delta": "{\"x\":"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "sequence_number": 13,
+                "item_id": "fc",
+                "output_index": 1,
+                "name": null,
+                "arguments": "{\"x\":1}"
+            }),
+        ];
+
+        for value in events {
+            assert!(parse_stream_event(value).unwrap().is_some());
+        }
     }
 
     fn adapter_with_state(
