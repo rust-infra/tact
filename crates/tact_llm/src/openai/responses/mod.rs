@@ -11,9 +11,7 @@ pub use request_options::ResponsesRequestOptions;
 
 use std::sync::Arc;
 
-use async_openai_responses::{
-    Client, config::Config, types::responses::ResponseStreamEvent,
-};
+use async_openai_responses::{Client, config::Config, types::responses::ResponseStreamEvent};
 use futures_util::StreamExt;
 use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
@@ -248,7 +246,7 @@ impl OpenAiResponsesAdapter {
             Arc::new(ApiKeyProvider::new(api_key)),
             base_url,
             compact_threshold,
-            SharedHttpClient::new(),
+            SharedHttpClient::default(),
         )
     }
 

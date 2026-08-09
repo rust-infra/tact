@@ -74,7 +74,7 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         agent_settings.reasoning_effort = sa.reasoning_effort;
         (client, agent_settings)
     } else {
-        let client = get_llm_client()?;
+        let client = get_llm_client().await?;
         (client, settings.agent.clone())
     };
 

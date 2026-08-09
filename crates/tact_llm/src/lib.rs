@@ -32,8 +32,8 @@ mod test_openai;
 
 // Re-export account query APIs at the crate root (existing public surface).
 pub use account::{
-    query_deepseek_balance, query_deepseek_balance_for, query_kimi_balance,
-    query_kimi_balance_for, query_kimi_code_usage, query_kimi_code_usage_for,
+    query_deepseek_balance, query_deepseek_balance_for, query_kimi_balance, query_kimi_balance_for,
+    query_kimi_code_usage, query_kimi_code_usage_for,
 };
 pub use auth::{ApiKeyProvider, Credential, CredentialProvider};
 pub use client::{LlmClient, LlmProvider, LlmRequestBody, LlmResponse};
@@ -52,15 +52,16 @@ pub use models::{
 pub use openai::OpenAiBodyHook;
 pub use profile::ProviderProfile;
 pub use provider::{
-    Client, ProviderInfo, get_llm_client, get_provider, init_provider, is_account_query_supported,
-    is_deepseek, is_deepseek_balance_supported, is_kimi, is_kimi_balance_supported,
-    is_kimi_coding, is_kimi_k2x, is_kimi_k3, is_kimi_k27, is_kimi_usage_supported,
-    model_uses_effort, read_provider, supports_vision,
+    Client, ProviderInfo, get_llm_client, get_provider, init_provider,
+    init_provider_with_credentials, is_account_query_supported, is_deepseek,
+    is_deepseek_balance_supported, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x,
+    is_kimi_k3, is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider,
+    supports_vision,
 };
-pub use transport::SharedHttpClient;
 pub use provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
+pub use transport::SharedHttpClient;
 pub use types::{
     ChatCompletionsDialect, CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort,
     ProviderKind, RequiredMessageParams, StopReason, Thinking, ThinkingType, Tool, ToolChoice,

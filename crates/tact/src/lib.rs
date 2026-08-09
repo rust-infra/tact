@@ -50,8 +50,8 @@ pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
 /// Constructs the active LLM client from the installed configuration.
-pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    tact_llm::get_llm_client()
+pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
+    tact_llm::get_llm_client().await
 }
 
 pub type LoopState = Agent;

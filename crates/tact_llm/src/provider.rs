@@ -6,12 +6,10 @@ use async_openai::config::Config;
 use secrecy::ExposeSecret;
 
 use crate::{
-    anthropic,
+    ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient, anthropic,
     client::LlmProvider,
     openai,
-    CredentialProvider, SharedHttpClient,
     types::{OpenAiProtocol, ProviderKind},
-    ProviderProfile,
 };
 
 /// Holds private LLM configuration information.
@@ -116,9 +114,9 @@ impl ProviderInfo {
         let config = self.openai_compatible_config()?;
         let profile = self.profile_for_base_url(config.api_base())?;
         let adapter = openai::OpenAiAdapter::new(config);
-        Ok(LlmProvider::ChatCompletions(openai::ChatCompletionsAdapter::new(
-            profile, adapter,
-        )))
+        Ok(LlmProvider::ChatCompletions(
+            openai::ChatCompletionsAdapter::new(profile, adapter),
+        ))
     }
 
     fn profile_for_base_url(&self, base_url: &str) -> anyhow::Result<ProviderProfile> {
@@ -329,10 +327,7 @@ impl Client {
         credentials: Arc<dyn CredentialProvider>,
     ) -> anyhow::Result<LlmProvider> {
         let credentials_for_responses = credentials.clone();
-        let secret = credentials
-            .resolve()
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let secret = credentials.resolve().await.map_err(anyhow::Error::from)?;
         if secret.expose_secret().is_empty() {
             anyhow::bail!("api_key not configured for provider '{}'", profile.provider);
         }
@@ -351,7 +346,10 @@ impl Client {
             ProviderKind::Anthropic => Ok(LlmProvider::Anthropic(
                 anthropic::AnthropicAdapter::new(secret.expose_secret().clone(), base_url),
             )),
-            ProviderKind::DeepSeek | ProviderKind::Kimi | ProviderKind::OpenAi | ProviderKind::Custom(_)
+            ProviderKind::DeepSeek
+            | ProviderKind::Kimi
+            | ProviderKind::OpenAi
+            | ProviderKind::Custom(_)
                 if profile.protocol == OpenAiProtocol::Responses =>
             {
                 Ok(LlmProvider::OpenAiResponses(
@@ -359,13 +357,19 @@ impl Client {
                         credentials_for_responses,
                         base_url,
                         profile.responses_compact_threshold,
-                        SharedHttpClient::new(),
+                        SharedHttpClient::default(),
                     ),
                 ))
             }
-            ProviderKind::DeepSeek | ProviderKind::Kimi | ProviderKind::OpenAi | ProviderKind::Custom(_) => {
-                let adapter =
-                    openai::OpenAiAdapter::with_auth(base_url, SharedHttpClient::default(), credentials);
+            ProviderKind::DeepSeek
+            | ProviderKind::Kimi
+            | ProviderKind::OpenAi
+            | ProviderKind::Custom(_) => {
+                let adapter = openai::OpenAiAdapter::with_auth(
+                    base_url,
+                    SharedHttpClient::default(),
+                    credentials,
+                );
                 Ok(LlmProvider::ChatCompletions(
                     openai::ChatCompletionsAdapter::new(profile, adapter),
                 ))
@@ -382,6 +386,11 @@ impl Client {
 /// overrides and unit tests can reinstall; production `install` runs once.
 static PROVIDER: RwLock<Option<ProviderInfo>> = RwLock::new(None);
 
+/// The process-global credential provider installed alongside
+/// [`PROVIDER`]. Kept separate so a future browser-OAuth flow can be injected
+/// without changing the provider snapshot.
+static CREDENTIALS: RwLock<Option<Arc<dyn CredentialProvider>>> = RwLock::new(None);
+
 /// Serialize tests that mutate/read the process-global provider snapshot.
 #[cfg(test)]
 pub(crate) fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
@@ -389,13 +398,41 @@ pub(crate) fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().expect("provider test lock poisoned")
 }
 
-/// Install the active LLM provider configuration.
+/// Install the active LLM provider configuration with its static API key.
 ///
 /// Safe to call again under `test-support` overrides; production `install` still
 /// runs once per process.
 pub fn init_provider(info: ProviderInfo) {
+    let credentials = Arc::new(ApiKeyProvider::new(info.api_key.clone()));
+    init_provider_with_credentials(info, credentials);
+}
+
+/// Install the active LLM provider configuration with an explicit credential
+/// provider (e.g. a future browser-OAuth flow).
+///
+/// Safe to call again under `test-support` overrides; production `install` still
+/// runs once per process.
+pub fn init_provider_with_credentials(
+    info: ProviderInfo,
+    credentials: Arc<dyn CredentialProvider>,
+) {
     let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
     *guard = Some(info);
+    drop(guard);
+    let mut guard = CREDENTIALS.write().expect("LLM credential lock poisoned");
+    *guard = Some(credentials);
+}
+
+pub(crate) fn active_credential_provider() -> Arc<dyn CredentialProvider> {
+    try_active_credential_provider()
+        .expect("LLM credentials not initialized; call tact_llm::init_provider first")
+}
+
+pub(crate) fn try_active_credential_provider() -> Option<Arc<dyn CredentialProvider>> {
+    CREDENTIALS
+        .read()
+        .expect("LLM credential lock poisoned")
+        .clone()
 }
 
 /// Returns a snapshot of the active LLM provider configuration.
@@ -422,8 +459,13 @@ where
 }
 
 /// Returns the active LLM client from the installed provider configuration.
-pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    get_provider().build_client()
+///
+/// The credential is resolved once here so misconfiguration fails fast;
+/// adapters still resolve again per request so expiring credentials can be
+/// refreshed without rebuilding the client.
+pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
+    let profile = get_provider().to_profile();
+    Client::new(profile, active_credential_provider()).await
 }
 
 /// Returns `true` if the configured provider is DeepSeek.
@@ -518,15 +560,55 @@ pub fn is_kimi_k3(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::future::BoxFuture;
+    use secrecy::SecretString;
     use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
     use super::*;
     use crate::{
-        ApiKeyProvider,
+        ApiKeyProvider, LlmError,
         client::{LlmClient, LlmProvider},
         mock::MockClient,
         types::{CreateMessageParams, RequiredMessageParams, StopReason},
     };
+
+    #[derive(Debug, Clone)]
+    struct CountingCredential {
+        key: Arc<SecretString>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingCredential {
+        fn new(key: &str) -> Self {
+            Self {
+                key: Arc::new(SecretString::from(key.to_string())),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl CredentialProvider for CountingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let key = self.key.clone();
+            Box::pin(async move { Ok((*key).clone()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingCredential;
+
+    impl CredentialProvider for FailingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            Box::pin(async { Err(LlmError::Auth("test credential unavailable".to_string())) })
+        }
+    }
 
     fn provider_info(
         provider: ProviderKind,
@@ -958,12 +1040,9 @@ mod tests {
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-5".to_string(),
         };
-        let provider = Client::new(
-            profile,
-            Arc::new(ApiKeyProvider::new("sk-test")),
-        )
-        .await
-        .expect("client construction must succeed");
+        let provider = Client::new(profile, Arc::new(ApiKeyProvider::new("sk-test")))
+            .await
+            .expect("client construction must succeed");
         let LlmProvider::ChatCompletions(adapter) = provider else {
             panic!("expected unified Chat Completions adapter");
         };
@@ -984,5 +1063,48 @@ mod tests {
             Ok(_) => panic!("empty api key must fail fast"),
         };
         assert!(error.to_string().contains("api_key not configured"));
+    }
+
+    #[tokio::test]
+    async fn client_new_preserves_credential_error_source() {
+        let profile = ProviderProfile {
+            provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+        };
+        let error = match Client::new(profile, Arc::new(FailingCredential)).await {
+            Ok(_) => panic!("client construction must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("test credential unavailable"));
+        assert!(
+            error.downcast_ref::<LlmError>().is_some(),
+            "credential error must be preserved in the chain"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes global provider only
+    async fn get_llm_client_uses_installed_credential_provider() {
+        let _guard = lock_provider_for_tests();
+        let credentials = CountingCredential::new("sk-oauth");
+        init_provider_with_credentials(
+            provider_info(
+                ProviderKind::OpenAi,
+                "",
+                "https://api.openai.com/v1",
+                "gpt-5",
+            ),
+            Arc::new(credentials.clone()),
+        );
+
+        let client = get_llm_client()
+            .await
+            .expect("client construction must succeed");
+        assert!(matches!(client, LlmProvider::ChatCompletions(_)));
+        assert_eq!(credentials.calls(), 1);
     }
 }

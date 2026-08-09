@@ -76,7 +76,7 @@ async fn run_interactive_locked(
     let _keep_lock = session_lock;
     let input_history = session_store.load_input_history(&session_id).await?;
 
-    let client = get_llm_client()?;
+    let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(&tact_path);
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;

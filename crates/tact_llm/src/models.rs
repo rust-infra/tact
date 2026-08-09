@@ -1,11 +1,11 @@
 //! OpenAI-compatible `GET {base_url}/models` for `/model` picker supplement.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::provider::{ProviderInfo, get_provider};
+use crate::provider::{ProviderInfo, get_provider, try_active_credential_provider};
 use crate::types::ProviderKind;
 use crate::{ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient};
 
@@ -62,8 +62,19 @@ pub fn is_models_query_supported() -> bool {
 /// Soft-fails to empty. Skips HTTP when unsupported.
 pub async fn ensure_api_model_ids_for_provider(provider: &ProviderInfo) -> Vec<String> {
     let profile = provider.to_profile();
-    let credentials = ApiKeyProvider::new(provider.api_key.clone());
-    ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await
+    let credentials = credentials_for_provider(provider);
+    ensure_api_model_ids_for(&profile, credentials.as_ref(), &SharedHttpClient::default()).await
+}
+
+/// Uses the provider's explicit API key when present, otherwise falls back to
+/// the process-global credential provider (e.g. browser-OAuth in the future).
+fn credentials_for_provider(provider: &ProviderInfo) -> Arc<dyn CredentialProvider> {
+    if provider.api_key.is_empty() {
+        try_active_credential_provider()
+            .unwrap_or_else(|| Arc::new(ApiKeyProvider::new(String::new())))
+    } else {
+        Arc::new(ApiKeyProvider::new(provider.api_key.clone()))
+    }
 }
 
 /// Session-cached API model ids for the active provider.
@@ -188,13 +199,13 @@ mod tests {
         }
 
         fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
+            self.calls.load(Ordering::Relaxed)
         }
     }
 
     impl CredentialProvider for CountingCredential {
         fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::Relaxed);
             let key = self.key.clone();
             Box::pin(async move { Ok((*key).clone()) })
         }
@@ -205,11 +216,7 @@ mod tests {
 
     impl CredentialProvider for FailingCredential {
         fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
-            Box::pin(async {
-                Err(LlmError::Auth(
-                    "test credential unavailable".to_string(),
-                ))
-            })
+            Box::pin(async { Err(LlmError::Auth("test credential unavailable".to_string())) })
         }
     }
 
@@ -321,6 +328,34 @@ mod tests {
         assert_eq!(
             ensure_api_model_ids_for_provider(&subagent).await,
             vec!["subagent-model".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
+    async fn provider_without_key_uses_global_credentials() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        crate::init_provider_with_credentials(
+            ProviderInfo {
+                api_key: String::new(),
+                base_url: "https://main.example/v1".into(),
+                model: "test-model".into(),
+                provider: ProviderKind::OpenAi,
+                protocol: crate::OpenAiProtocol::default(),
+                responses_compact_threshold: None,
+            },
+            Arc::new(CountingCredential::new("sk-global")),
+        );
+        seed_models_cache_for_tests(
+            "https://main.example/v1",
+            "sk-global",
+            vec!["global-model".into()],
+        );
+
+        assert_eq!(
+            ensure_api_model_ids().await,
+            vec!["global-model".to_string()]
         );
     }
 

@@ -314,7 +314,10 @@ impl Config for CompatibleConfig {
         }
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
-        headers.insert(reqwest13::header::USER_AGENT, "Claude Code".parse().unwrap());
+        headers.insert(
+            reqwest13::header::USER_AGENT,
+            "Claude Code".parse().unwrap(),
+        );
         headers
     }
 
@@ -358,7 +361,7 @@ impl OpenAiAdapter {
         let api_key = config.api_key.expose_secret().clone();
         Self {
             config,
-            http: SharedHttpClient::new(),
+            http: SharedHttpClient::default(),
             credentials: Arc::new(ApiKeyProvider::new(api_key)),
         }
     }

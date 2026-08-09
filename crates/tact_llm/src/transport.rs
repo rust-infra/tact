@@ -1,6 +1,6 @@
 //! Shared HTTP transport for provider and account adapters.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Shared [`reqwest`] client with the project's standard read timeout.
@@ -13,12 +13,11 @@ pub struct SharedHttpClient(Arc<reqwest13::Client>);
 impl SharedHttpClient {
     /// Build a client with a 120-second read timeout (matching the previous
     /// per-adapter defaults).
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self, reqwest13::Error> {
         let client = reqwest13::Client::builder()
             .read_timeout(Duration::from_secs(120))
-            .build()
-            .expect("failed to build reqwest client");
-        Self(Arc::new(client))
+            .build()?;
+        Ok(Self(Arc::new(client)))
     }
 
     /// Borrow the underlying [`reqwest::Client`].
@@ -29,6 +28,11 @@ impl SharedHttpClient {
 
 impl Default for SharedHttpClient {
     fn default() -> Self {
-        Self::new()
+        static CLIENT: OnceLock<SharedHttpClient> = OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                SharedHttpClient::try_new().expect("failed to build shared reqwest client")
+            })
+            .clone()
     }
 }

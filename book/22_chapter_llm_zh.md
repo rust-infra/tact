@@ -15,8 +15,10 @@
 ```mermaid
 flowchart TB
     Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
-    PI --> Build[get_llm_client → Client::new]
-    Auth[CredentialProvider] --> Build
+    Config --> Cred[Credentials RwLock]
+    PI --> Get[get_llm_client]
+    Cred --> Get
+    Get --> Build[Client::new]
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
     LP --> ChatCompletions[ChatCompletionsAdapter]
@@ -97,11 +99,14 @@ pub fn install(config: ResolvedConfig) {
 运行时访问：
 
 ```rust
-let mut client = tact_llm::get_llm_client()?;
+let mut client = tact_llm::get_llm_client().await?;
 client.set_user_id(&session_id);   // DeepSeek per-session KV cache 隔离
 ```
 
-`ProviderInfo::build_client()` 是同步兼容层，内部包装
+运行时入口是 `get_llm_client()`（async）：克隆活跃 `ProviderProfile`，读取
+`init_provider` / `init_provider_with_credentials` 安装的进程级
+`CredentialProvider`，并委托给 `Client::new(profile, credentials)`。
+`ProviderInfo::build_client()` 仍是同步兼容/测试层，内部包装
 `Client::new(profile, Arc::new(ApiKeyProvider::new(api_key)))`。扁平化的
 `LlmProvider` 只有四个 variant：`Anthropic`、`ChatCompletions`、
 `OpenAiResponses` 与 `Mock`。`anthropic` 构建 `AnthropicAdapter`；任意 OpenAI
@@ -116,6 +121,7 @@ sequenceDiagram
     participant Install as config::install
     participant State as SETTINGS / PROVIDER RwLock
     participant LlmInit as tact_llm::init_provider
+    participant Cred as Credentials RwLock
     participant Get as get_llm_client
     participant Build as Client::new(profile, credentials)
     participant Provider as LlmProvider
@@ -125,10 +131,12 @@ sequenceDiagram
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
     LlmInit->>State: set ProviderInfo（静态）
+    LlmInit->>Cred: set CredentialProvider
     Install->>State: set ResolvedConfig
     Note over State: `/model` 更新 AgentSettings.model（per-agent），不触碰 PROVIDER
     Get->>State: clone ProviderInfo snapshot
-    Get->>Build: build_client(info)
+    Get->>Cred: active CredentialProvider
+    Get->>Build: Client::new(profile, credentials)
     Build-->>Provider: 扁平化 provider adapter
 ```
 
@@ -598,8 +606,9 @@ self.runtime.client.set_user_id(&session_id);
 每个查询也有显式入口（`query_deepseek_balance_for`、`query_kimi_balance_for`、
 `query_kimi_code_usage_for`），签名是
 `(&ProviderProfile, &dyn CredentialProvider, &SharedHttpClient)`。表中零参名称
-保留为兼容包装，内部读取全局 provider 快照与静态 API key；请求通过共享
-transport 在请求时解析凭据。
+保留为兼容包装，内部读取全局 provider 快照与进程级 credential provider。
+端点在 resolve 凭据之前校验，因此不支持的代理不会触发授权流程或发送 key；
+请求通过共享 transport 在请求时解析凭据。
 
 **Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AccountUpdate::UsageQuota`（`week` + `5h` 窗口）。用量 API 仅限官方端点（HTTPS、主机精确为 `api.kimi.com`、含 `/coding` 路径）：提供 `kimi-for-coding` 的自定义代理视为不支持，其 API key 绝不会发送到 `api.kimi.com`。
 
@@ -653,9 +662,9 @@ sequenceDiagram
 | `tact_llm/src/content.rs` | 自有 `ContentBlock`、`Message`、`ContentBlockDelta`、`StreamUsage` 等 |
 | `tact_llm/src/profile.rs` | 无凭据 `ProviderProfile` 以及 endpoint/model 启发式 |
 | `tact_llm/src/auth.rs` | `Credential`、`CredentialProvider`、`ApiKeyProvider` |
-| `tact_llm/src/transport.rs` | 共享 reqwest client（`SharedHttpClient`） |
+| `tact_llm/src/transport.rs` | 进程级共享 reqwest client（`SharedHttpClient`） |
 | `tact_llm/src/client.rs` | `LlmClient`、扁平化 `LlmProvider` variant、session user-id 路由 |
-| `tact_llm/src/provider.rs` | `ProviderInfo` 兼容快照、全局初始化、`Client::new` |
+| `tact_llm/src/provider.rs` | `ProviderInfo` 兼容快照、全局初始化 + credentials、`Client::new` |
 | `tact_llm/src/account.rs` | DeepSeek 余额与 Kimi 余额/额度查询 |
 | `tact_llm/src/models.rs` | `/models` picker 缓存，显式 credential/transport 入口 |
 | `tact_llm/src/anthropic/mod.rs` | Messages API 流式 + 非流式 |

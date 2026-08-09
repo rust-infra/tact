@@ -14,8 +14,10 @@ Implementation: `crates/tact_llm/src/` (`lib.rs`, `client.rs`, `provider.rs`, `p
 ```mermaid
 flowchart TB
     Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
-    PI --> Build[get_llm_client → Client::new]
-    Auth[CredentialProvider] --> Build
+    Config --> Cred[Credentials RwLock]
+    PI --> Get[get_llm_client]
+    Cred --> Get
+    Get --> Build[Client::new]
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
     LP --> ChatCompletions[ChatCompletionsAdapter]
@@ -110,12 +112,15 @@ pub fn install(config: ResolvedConfig) {
 Runtime access:
 
 ```rust
-let mut client = tact_llm::get_llm_client()?;
+let mut client = tact_llm::get_llm_client().await?;
 client.set_user_id(&session_id);   // DeepSeek per-session KV cache isolation
 ```
 
-`build_client()` validates non-empty `api_key` and matches on `ProviderKind`.
-`ProviderInfo::build_client()` is a synchronous compatibility layer that wraps
+The runtime entry is `get_llm_client()` (async): it clones the active
+`ProviderProfile`, takes the process-global `CredentialProvider` installed by
+`init_provider` / `init_provider_with_credentials`, and delegates to
+`Client::new(profile, credentials)`. `ProviderInfo::build_client()` remains a
+synchronous compatibility/test layer that wraps
 `Client::new(profile, Arc::new(ApiKeyProvider::new(api_key)))`. The flattened
 `LlmProvider` has exactly four variants: `Anthropic`, `ChatCompletions`,
 `OpenAiResponses`, and `Mock`. `anthropic` builds `AnthropicAdapter`; any
@@ -131,6 +136,7 @@ sequenceDiagram
     participant Install as config::install
     participant State as SETTINGS / PROVIDER RwLock
     participant LlmInit as tact_llm::init_provider
+    participant Cred as Credentials RwLock
     participant Get as get_llm_client
     participant Build as Client::new(profile, credentials)
     participant Provider as LlmProvider
@@ -140,10 +146,12 @@ sequenceDiagram
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
     LlmInit->>State: set ProviderInfo (static)
+    LlmInit->>Cred: set CredentialProvider
     Install->>State: set ResolvedConfig
     Note over State: `/model` updates AgentSettings.model (per-agent), never PROVIDER
     Get->>State: clone ProviderInfo snapshot
-    Get->>Build: build_client(info)
+    Get->>Cred: active CredentialProvider
+    Get->>Build: Client::new(profile, credentials)
     Build-->>Provider: flattened provider adapter
 ```
 
@@ -698,7 +706,9 @@ Each query also has an explicit entry (`query_deepseek_balance_for`,
 `query_kimi_balance_for`, `query_kimi_code_usage_for`) taking
 `(&ProviderProfile, &dyn CredentialProvider, &SharedHttpClient)`. The
 zero-argument names in the table remain as compatibility wrappers that read the
-global provider snapshot and a static API key. Requests resolve credentials at
+global provider snapshot and the process-global credential provider. Endpoint
+support is checked before credentials resolve, so unsupported proxies never
+trigger an authorization flow or send the key; requests resolve credentials at
 request time through the shared transport.
 
 **Kimi Code endpoint:** `api.kimi.com/coding` has no balance REST API. Use `query_kimi_code_usage()` instead; surfaced as `AccountUpdate::UsageQuota` on the bottom bar (`week` + `5h` windows). The usage API is official-endpoint only (HTTPS, exact host `api.kimi.com`, `/coding` path): custom proxies serving `kimi-for-coding` are treated as unsupported and their API keys are never sent to `api.kimi.com`.
@@ -768,9 +778,9 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 | `tact_llm/src/content.rs` | Owned `ContentBlock`, `Message`, `ContentBlockDelta`, `StreamUsage`, … |
 | `tact_llm/src/profile.rs` | Credential-free `ProviderProfile` plus endpoint/model heuristics |
 | `tact_llm/src/auth.rs` | `Credential`, `CredentialProvider`, `ApiKeyProvider` |
-| `tact_llm/src/transport.rs` | Shared reqwest client (`SharedHttpClient`) |
+| `tact_llm/src/transport.rs` | Process-wide shared reqwest client (`SharedHttpClient`) |
 | `tact_llm/src/client.rs` | `LlmClient`, flattened `LlmProvider` variants, session user-id routing |
-| `tact_llm/src/provider.rs` | `ProviderInfo` compatibility snapshot, global init, `Client::new` |
+| `tact_llm/src/provider.rs` | `ProviderInfo` compatibility snapshot, global init + credentials, `Client::new` |
 | `tact_llm/src/account.rs` | DeepSeek balance and Kimi balance/quota queries |
 | `tact_llm/src/models.rs` | `/models` picker cache with explicit credential/transport entry |
 | `tact_llm/src/anthropic/mod.rs` | Messages API streaming + non-streaming |

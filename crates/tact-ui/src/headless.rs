@@ -73,7 +73,7 @@ async fn run_headless_locked(
     session_store: DynSessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let client = get_llm_client()?;
+    let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(&tact_path);
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
