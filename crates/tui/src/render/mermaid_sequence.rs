@@ -341,8 +341,8 @@ fn label_row(
                 spans[cx] = Span::styled(ch.to_string(), label_style);
                 // Consume the remaining display columns of a wide glyph so a
                 // leftover space does not inflate the row.
-                for p in (cx + 1)..(cx + cw) {
-                    spans[p] = Span::styled(String::new(), label_style);
+                for span in spans.iter_mut().take(cx + cw).skip(cx + 1) {
+                    *span = Span::styled(String::new(), label_style);
                 }
                 cx += cw;
                 placed = true;
@@ -483,8 +483,8 @@ fn place_label_from(
             let free = (cx..cx + cw).all(|p| p < spans.len() && spans[p].content == " ");
             if free {
                 spans[cx] = Span::styled(ch.to_string(), label_style);
-                for p in (cx + 1)..(cx + cw) {
-                    spans[p] = Span::styled(String::new(), label_style);
+                for span in spans.iter_mut().take(cx + cw).skip(cx + 1) {
+                    *span = Span::styled(String::new(), label_style);
                 }
                 cx += cw;
                 placed = true;
@@ -514,8 +514,8 @@ fn place_label_end_at(spans: &mut [Span<'static>], end: usize, text: &str, label
             break;
         }
         spans[cx] = Span::styled(ch.to_string(), label_style);
-        for p in (cx + 1)..(cx + cw) {
-            spans[p] = Span::styled(String::new(), label_style);
+        for span in spans.iter_mut().take(cx + cw).skip(cx + 1) {
+            *span = Span::styled(String::new(), label_style);
         }
         cx += cw;
     }
@@ -683,7 +683,8 @@ mod tests {
         let label_w: usize = label.spans.iter().map(|s| s.content.width()).sum();
         let life_w: usize = life.spans.iter().map(|s| s.content.width()).sum();
         assert_eq!(
-            label_w, life_w,
+            label_w,
+            life_w,
             "CJK ghost cells inflated label row (label={label_w} life={life_w}):\n{}",
             lines
                 .iter()

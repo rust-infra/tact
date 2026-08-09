@@ -593,11 +593,12 @@ impl App {
                     start
                 }
             };
-            self.mermaid_blocks.push(crate::widgets::state::MermaidBlock {
-                start_idx: start,
-                end_idx: start + row_count,
-                source,
-            });
+            self.mermaid_blocks
+                .push(crate::widgets::state::MermaidBlock {
+                    start_idx: start,
+                    end_idx: start + row_count,
+                    source,
+                });
             return;
         }
 

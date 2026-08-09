@@ -713,7 +713,8 @@ impl App {
 
     /// Open the Mermaid source popup for a rendered diagram block.
     pub(crate) fn open_mermaid_popup(&mut self, block_idx: usize) {
-        if block_idx < self.mermaid_blocks.len() && !self.mermaid_blocks[block_idx].source.is_empty()
+        if block_idx < self.mermaid_blocks.len()
+            && !self.mermaid_blocks[block_idx].source.is_empty()
         {
             self.mermaid_popup = Some(MermaidPopup {
                 block_idx,

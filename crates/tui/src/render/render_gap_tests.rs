@@ -222,9 +222,7 @@ fn log_renders_streamed_mermaid_without_code_card() {
         "valid Mermaid must retain source metadata"
     );
     assert!(
-        app.mermaid_blocks[0]
-            .source
-            .contains("Alice->>Bob: Hello"),
+        app.mermaid_blocks[0].source.contains("Alice->>Bob: Hello"),
         "mermaid source missing: {}",
         app.mermaid_blocks[0].source
     );
