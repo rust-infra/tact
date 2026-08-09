@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use async_openai_responses::types::responses::{
     OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
@@ -56,24 +57,12 @@ fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
 }
 
 /// Builds the terminal update for a completed or failed web search call.
-fn web_search_finished(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
+fn web_search_finished(
+    index: u32,
+    call: &WebSearchToolCall,
+    duration_us: Option<u64>,
+) -> AgentUpdate {
     let query = web_search_query(call);
-    let sources = match &call.action {
-        Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
-            search
-                .sources
-                .as_ref()
-                .map(|sources| {
-                    sources
-                        .iter()
-                        .map(|source| source.url.clone())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default()
-        }
-        _ => String::new(),
-    };
     let presentation = ToolPresentationInfo::generic("web_search");
     let (idx, tool_id) = (index as usize, call.id.clone());
     match call.status {
@@ -110,12 +99,8 @@ fn web_search_finished(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
                 arg_full: None,
                 status: StepStatus::Success,
                 message: "web search completed".to_string(),
-                detail: if sources.is_empty() {
-                    None
-                } else {
-                    Some(sources)
-                },
-                duration_us: None,
+                detail: None,
+                duration_us,
                 permission_label: None,
                 presentation,
             },
@@ -142,6 +127,11 @@ pub(crate) struct ResponsesStreamState {
     /// which would silently drop the compacted baseline.
     pending_compactions: BTreeSet<u32>,
     raw_terminal_output: Option<Vec<serde_json::Value>>,
+    /// Maps Responses output indices to the zero-based ordinal of hosted tool
+    /// calls in this response. `output_index` also counts messages/reasoning,
+    /// so it must not be rendered as the tool step number.
+    web_search_step_indices: BTreeMap<u32, usize>,
+    web_search_started_at: BTreeMap<u32, Instant>,
 }
 
 impl ResponsesStreamState {
@@ -245,7 +235,15 @@ impl ResponsesStreamState {
                     // (the provider may populate `action` only later, at
                     // `output_item.done`).
                     if let OutputItem::WebSearchCall(call) = &event.item {
-                        return Ok(vec![web_search_started(event.output_index, call)]);
+                        self.web_search_started_at
+                            .entry(event.output_index)
+                            .or_insert_with(Instant::now);
+                        let next_idx = self.web_search_step_indices.len();
+                        let step_idx = *self
+                            .web_search_step_indices
+                            .entry(event.output_index)
+                            .or_insert(next_idx);
+                        return Ok(vec![web_search_started(step_idx as u32, call)]);
                     }
                 }
                 Vec::new()
@@ -263,8 +261,21 @@ impl ResponsesStreamState {
                     && let Some(OutputItem::WebSearchCall(call)) =
                         self.done_items.get(&event.output_index)
                 {
+                    let next_idx = self.web_search_step_indices.len();
+                    let step_idx = *self
+                        .web_search_step_indices
+                        .entry(event.output_index)
+                        .or_insert(next_idx);
+                    let duration_us = self
+                        .web_search_started_at
+                        .remove(&event.output_index)
+                        .map(|started| started.elapsed().as_micros() as u64);
                     // Terminal status for the web search tool card.
-                    return Ok(vec![web_search_finished(event.output_index, call)]);
+                    return Ok(vec![web_search_finished(
+                        step_idx as u32,
+                        call,
+                        duration_us,
+                    )]);
                 }
                 Vec::new()
             }
@@ -968,6 +979,85 @@ mod tests {
     }
 
     #[test]
+    fn web_search_added_uses_tool_ordinal_not_output_index() {
+        let mut state = super::ResponsesStreamState::default();
+        let updates = state
+            .apply(output_item_added(
+                1,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match &updates[0] {
+            AgentUpdate::StepStarted { idx, .. } => {
+                assert_eq!(*idx, 0, "the first hosted tool must render as step 1")
+            }
+            other => panic!("expected StepStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_searches_are_numbered_by_tool_order_within_a_response() {
+        let mut state = super::ResponsesStreamState::default();
+        let first = state
+            .apply(output_item_added(
+                1,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let second = state
+            .apply(output_item_added(
+                3,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match (&first[0], &second[0]) {
+            (
+                AgentUpdate::StepStarted { idx: first_idx, .. },
+                AgentUpdate::StepStarted {
+                    idx: second_idx, ..
+                },
+            ) => {
+                assert_eq!(*first_idx, 0);
+                assert_eq!(*second_idx, 1);
+            }
+            other => panic!("expected two StepStarted updates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_step_numbering_is_scoped_to_each_response_stream() {
+        let mut first_turn = super::ResponsesStreamState::default();
+        let first = first_turn
+            .apply(output_item_added(
+                2,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let mut second_turn = super::ResponsesStreamState::default();
+        let second = second_turn
+            .apply(output_item_added(
+                4,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match (&first[0], &second[0]) {
+            (
+                AgentUpdate::StepStarted { idx: first_idx, .. },
+                AgentUpdate::StepStarted {
+                    idx: second_idx, ..
+                },
+            ) => {
+                assert_eq!(*first_idx, 0);
+                assert_eq!(*second_idx, 0);
+            }
+            other => panic!("expected two StepStarted updates, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn web_search_added_emits_running_tool_card() {
         let mut state = super::ResponsesStreamState::default();
         // added without action → query empty, running card
@@ -1022,9 +1112,32 @@ mod tests {
                 assert_eq!(result.tool, "web_search");
                 assert_eq!(result.arg_summary, "Rust async");
                 assert_eq!(result.status, StepStatus::Success);
-                let detail = result.detail.as_deref().unwrap_or_default();
-                assert!(detail.contains("https://example.com/a"));
-                assert!(detail.contains("https://example.com/b"));
+                assert!(result.duration_us.is_some());
+                assert!(result.detail.is_none(), "web search output is hidden");
+            }
+            other => panic!("expected StepFinished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_finished_hides_output_detail() {
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let updates = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("S&P 500")),
+            ))
+            .unwrap();
+
+        match &updates[0] {
+            AgentUpdate::StepFinished { result, .. } => {
+                assert!(result.detail.is_none(), "web search output is hidden");
             }
             other => panic!("expected StepFinished, got {other:?}"),
         }

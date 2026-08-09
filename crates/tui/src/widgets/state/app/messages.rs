@@ -283,7 +283,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.copy_text(&text);
+        self.copy_text_without_preview(&text);
     }
 
     /// Add a user input message and record it in task history.

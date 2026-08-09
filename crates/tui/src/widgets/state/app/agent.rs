@@ -1815,6 +1815,9 @@ mod lifecycle_tests {
             .rposition(|l| l.contains("📊 任务统计："))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
+        let copy_notice = app.raw_messages.last().expect("copy notice");
+        assert!(copy_notice.contains("已复制") || copy_notice.contains("Copied"));
+        assert!(!copy_notice.contains("second question"));
 
         // Prefer clipboard_buffer when system clipboard is unavailable; otherwise
         // just verify the extracted range would exclude the first turn.

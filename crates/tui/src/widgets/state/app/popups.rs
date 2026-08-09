@@ -10,13 +10,29 @@ use crate::{
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
     pub(crate) fn copy_text(&mut self, text: &str) {
+        self.copy_text_inner(text, true);
+    }
+
+    /// Copy text without exposing its contents in the system message.
+    pub(crate) fn copy_text_without_preview(&mut self, text: &str) {
+        self.copy_text_inner(text, false);
+    }
+
+    fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
         let preview: String = text.chars().take(40).collect();
+        let copied = |template: &str| {
+            if include_preview {
+                template.replace("{}", &preview)
+            } else {
+                template.replace(": {}", "")
+            }
+        };
 
         if let Ok(mut clip) = Clipboard::new()
             && clip.set_text(text).is_ok()
         {
             let msgs = self.msgs();
-            self.add_system_message(msgs.copied_tmpl.replace("{}", &preview));
+            self.add_system_message(copied(msgs.copied_tmpl));
             return;
         }
 
@@ -24,13 +40,13 @@ impl App {
         let osc52 = format!("\x1b]52;c;{}\x07", encoded);
         if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
             let msgs = self.msgs();
-            self.add_system_message(msgs.copied_terminal_tmpl.replace("{}", &preview));
+            self.add_system_message(copied(msgs.copied_terminal_tmpl));
             return;
         }
 
         self.clipboard_buffer = text.to_string();
         let msgs = self.msgs();
-        self.add_system_message(msgs.copied_internal_tmpl.replace("{}", &preview));
+        self.add_system_message(copied(msgs.copied_internal_tmpl));
     }
 
     /// True when thinking / tool-diff / code overlay popup is open.
