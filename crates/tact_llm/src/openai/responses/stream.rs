@@ -288,6 +288,19 @@ impl ResponsesStreamState {
             ResponseStreamEvent::ResponseFailed(event) => {
                 return self.set_terminal(event.response);
             }
+            ResponseStreamEvent::ResponseCreated(_)
+            | ResponseStreamEvent::ResponseQueued(_)
+            | ResponseStreamEvent::ResponseInProgress(_)
+            | ResponseStreamEvent::ResponseContentPartAdded(_)
+            | ResponseStreamEvent::ResponseContentPartDone(_)
+            | ResponseStreamEvent::ResponseOutputTextDone(_)
+            | ResponseStreamEvent::ResponseRefusalDone(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryPartAdded(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryPartDone(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryTextDone(_)
+            | ResponseStreamEvent::ResponseReasoningTextDone(_)
+            | ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(_)
+            | ResponseStreamEvent::ResponseFunctionCallArgumentsDone(_) => Vec::new(),
             _ => Vec::new(),
         })
     }
@@ -447,6 +460,97 @@ mod tests {
             normalized.blocks.last(),
             Some(ContentBlock::ToolUse { id, .. }) if id == "call_1"
         ));
+    }
+
+    #[test]
+    fn ignores_non_rendering_response_events_without_changing_stream_state() {
+        let mut state = ResponsesStreamState::default();
+        let events = [
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 1,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.queued",
+                "sequence_number": 2,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.in_progress",
+                "sequence_number": 3,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 4,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "answer",
+                "logprobs": []
+            }),
+            serde_json::json!({
+                "type": "response.refusal.done",
+                "sequence_number": 5,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "refusal": "no"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "sequence_number": 6,
+                "item_id": "fc",
+                "output_index": 1,
+                "delta": "{}"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "sequence_number": 7,
+                "item_id": "fc",
+                "output_index": 1,
+                "name": null,
+                "arguments": "{}"
+            }),
+        ];
+
+        for value in events {
+            assert!(state.apply(event(value)).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn output_text_done_does_not_duplicate_streamed_text() {
+        let mut state = ResponsesStreamState::default();
+        let delta = state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        assert!(delta.iter().any(|update| matches!(
+            update,
+            AgentUpdate::StreamChunk(text) if text == "answer"
+        )));
+
+        let done = state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 2,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        assert!(done.is_empty());
     }
 
     #[test]
