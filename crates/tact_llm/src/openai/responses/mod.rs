@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_unconsumed_events_without_deserializing_provider_specific_items() {
+    fn parses_content_part_events_without_deserializing_provider_specific_items() {
         let event = parse_stream_event(serde_json::json!({
             "type": "response.content_part.added",
             "sequence_number": 1,
@@ -549,7 +549,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(event.is_none());
+        assert!(event.is_some());
     }
 
     #[test]
