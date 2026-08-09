@@ -8,27 +8,30 @@
 use super::OpenAiAdapter;
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    hook_select::body_hook_for,
+    ProviderProfile,
+    hook_select::hook_for_dialect,
     openai::{
         body::assemble_chat_completion_body,
         compat::{create_assembled, stream_assembled},
     },
 };
 
-/// OpenAI-labeled client that re-selects body hooks from the live provider.
+/// Unified Chat Completions client that re-selects body hooks per request.
 ///
 /// Holds an optional DeepSeek `user_id` (session id) so heuristic DeepSeek
 /// endpoints still get KV-cache isolation after a mid-session model switch.
 #[derive(Clone)]
-pub struct OpenAiMultiModelAdapter {
+pub struct ChatCompletionsAdapter {
     adapter: OpenAiAdapter,
+    profile: ProviderProfile,
     user_id: Option<String>,
 }
 
-impl OpenAiMultiModelAdapter {
-    pub fn new(adapter: OpenAiAdapter) -> Self {
+impl ChatCompletionsAdapter {
+    pub fn new(profile: ProviderProfile, adapter: OpenAiAdapter) -> Self {
         Self {
             adapter,
+            profile,
             user_id: None,
         }
     }
@@ -46,17 +49,16 @@ impl OpenAiMultiModelAdapter {
         request: &CreateMessageParams,
         stream: bool,
     ) -> Result<serde_json::Value, LlmError> {
-        // Resolve the hook from the *static* provider each request so the
-        // body shape follows the per-request model (`/model` picks) without
-        // rebuilding the long-lived client.
-        crate::read_provider(|provider| {
-            let hook = body_hook_for(provider, &request.model, self.user_id.as_deref())?;
-            assemble_chat_completion_body(request, stream, provider, hook.as_ref())
-        })
+        // Resolve the dialect from the profile each request so the body shape
+        // follows the per-request model (`/model` picks) without rebuilding
+        // the long-lived client.
+        let dialect = self.profile.dialect_for(&request.model)?;
+        let hook = hook_for_dialect(dialect, self.user_id.as_deref());
+        assemble_chat_completion_body(request, stream, &self.profile, hook.as_ref())
     }
 }
 
-impl LlmClient for OpenAiMultiModelAdapter {
+impl LlmClient for ChatCompletionsAdapter {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
@@ -85,27 +87,26 @@ impl LlmClient for OpenAiMultiModelAdapter {
 mod tests {
     use super::*;
     use crate::{
-        ProviderInfo, ProviderKind,
+        OpenAiProtocol, ProviderKind, ProviderProfile,
         openai::{CompatibleConfig, body::test_util::sample_request_with_thinking},
     };
 
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {
-        let _guard = crate::provider::lock_provider_for_tests();
-        // Long-lived adapter is built once; the per-request model drives the
-        // body hook, so `/model` picks change the wire shape without rebuilding.
-        crate::init_provider(ProviderInfo {
+        let profile = ProviderProfile {
             provider: ProviderKind::OpenAi,
-            protocol: crate::OpenAiProtocol::default(),
+            protocol: OpenAiProtocol::default(),
             responses_compact_threshold: None,
-            api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
-        });
-        let adapter = OpenAiMultiModelAdapter::new(OpenAiAdapter::new(CompatibleConfig::new(
-            "sk-test",
-            "https://api.openai.com/v1",
-        )));
+        };
+        let adapter = ChatCompletionsAdapter::new(
+            profile,
+            OpenAiAdapter::new(CompatibleConfig::new(
+                "sk-test",
+                "https://api.openai.com/v1",
+            )),
+        );
         let mut request = sample_request_with_thinking()
             .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::Low));
 

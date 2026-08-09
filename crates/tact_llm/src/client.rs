@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     ContentBlock, CreateMessageParams, LlmError, ProviderConversationState, ProviderStateUpdate,
-    StopReason, anthropic, deepseek, kimi, mock::MockClient, openai,
+    StopReason, anthropic, mock::MockClient, openai,
 };
 
 /// Serialized JSON request body actually sent to the LLM API (for session debugging).
@@ -75,10 +75,8 @@ pub trait LlmClient: Send + Sync {
 #[derive(Clone)]
 pub enum LlmProvider {
     Anthropic(anthropic::AnthropicAdapter),
-    OpenAi(openai::OpenAiMultiModelAdapter),
+    ChatCompletions(openai::ChatCompletionsAdapter),
     OpenAiResponses(openai::responses::OpenAiResponsesAdapter),
-    DeepSeek(deepseek::DeepSeekAdapter),
-    Kimi(kimi::KimiAdapter),
     /// Mock provider for integration tests. Returns predetermined responses.
     Mock(MockClient),
 }
@@ -92,12 +90,10 @@ impl LlmClient for LlmProvider {
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, ui_tx).await,
-            LlmProvider::OpenAi(o) => o.stream_message(request, provider_state, ui_tx).await,
+            LlmProvider::ChatCompletions(c) => c.stream_message(request, provider_state, ui_tx).await,
             LlmProvider::OpenAiResponses(o) => {
                 o.stream_message(request, provider_state, ui_tx).await
             }
-            LlmProvider::DeepSeek(d) => d.stream_message(request, provider_state, ui_tx).await,
-            LlmProvider::Kimi(k) => k.stream_message(request, provider_state, ui_tx).await,
             LlmProvider::Mock(m) => m.stream_message(request, provider_state, ui_tx).await,
         }
     }
@@ -109,10 +105,8 @@ impl LlmClient for LlmProvider {
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.create_message(request, provider_state).await,
-            LlmProvider::OpenAi(o) => o.create_message(request, provider_state).await,
+            LlmProvider::ChatCompletions(c) => c.create_message(request, provider_state).await,
             LlmProvider::OpenAiResponses(o) => o.create_message(request, provider_state).await,
-            LlmProvider::DeepSeek(d) => d.create_message(request, provider_state).await,
-            LlmProvider::Kimi(k) => k.create_message(request, provider_state).await,
             LlmProvider::Mock(m) => m.create_message(request, provider_state).await,
         }
     }
@@ -124,10 +118,8 @@ impl LlmClient for LlmProvider {
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.compact(request, provider_state).await,
-            LlmProvider::OpenAi(o) => o.compact(request, provider_state).await,
+            LlmProvider::ChatCompletions(c) => c.compact(request, provider_state).await,
             LlmProvider::OpenAiResponses(o) => o.compact(request, provider_state).await,
-            LlmProvider::DeepSeek(d) => d.compact(request, provider_state).await,
-            LlmProvider::Kimi(k) => k.compact(request, provider_state).await,
             LlmProvider::Mock(m) => m.compact(request, provider_state).await,
         }
     }
@@ -141,11 +133,9 @@ impl LlmProvider {
     /// Anthropic / Kimi / Mock — no-op.
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {
-            LlmProvider::OpenAi(o) => o.set_user_id(user_id.to_string()),
-            LlmProvider::DeepSeek(d) => d.set_user_id(user_id.to_string()),
+            LlmProvider::ChatCompletions(c) => c.set_user_id(user_id.to_string()),
             LlmProvider::Anthropic(_)
             | LlmProvider::OpenAiResponses(_)
-            | LlmProvider::Kimi(_)
             | LlmProvider::Mock(_) => {}
         }
     }

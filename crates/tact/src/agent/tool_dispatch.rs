@@ -316,6 +316,7 @@ impl Agent {
                         self.emit_update(AgentUpdate::StepFailed {
                             idx: step_idx,
                             tool_id: id.clone(),
+                            arg_summary: String::new(),
                             error: msg.clone(),
                         });
                         prepared.push(PreparedTool {
@@ -422,6 +423,7 @@ impl Agent {
                             self.emit_update(AgentUpdate::StepFailed {
                                 idx: step_idx,
                                 tool_id: id.clone(),
+                                arg_summary: String::new(),
                                 error: msg.clone(),
                             });
                             PreparedState::Resolved(msg)
@@ -485,6 +487,7 @@ impl Agent {
                                     self.emit_update(AgentUpdate::StepFailed {
                                         idx: step_idx,
                                         tool_id: id.clone(),
+                                        arg_summary: String::new(),
                                         error: msg.clone(),
                                     });
                                     PreparedState::Resolved(msg)
@@ -498,6 +501,7 @@ impl Agent {
                     self.emit_update(AgentUpdate::StepFailed {
                         idx: step_idx,
                         tool_id: id.clone(),
+                        arg_summary: String::new(),
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
@@ -507,6 +511,7 @@ impl Agent {
                     self.emit_update(AgentUpdate::StepFailed {
                         idx: step_idx,
                         tool_id: id.clone(),
+                        arg_summary: String::new(),
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
@@ -819,6 +824,7 @@ impl Agent {
             self.emit_update(AgentUpdate::StepFailed {
                 idx: step_idx,
                 tool_id: id.clone(),
+                arg_summary: String::new(),
                 error: TOOL_CANCELLED_MSG.to_string(),
             });
             prepared.push(PreparedTool {

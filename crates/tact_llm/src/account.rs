@@ -1,15 +1,14 @@
 //! Provider account balance / usage queries.
 
-use std::{sync::LazyLock, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
+use secrecy::ExposeSecret;
 
-use crate::provider::read_provider;
-
-/// Shared reqwest client for account queries — avoids per-call connection-pool
-/// churn. Balance / usage queries are infrequent, but we still get TLS session
-/// reuse across calls.
-static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+use crate::{
+    ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient,
+    provider::get_provider,
+};
 
 /// Derive the DeepSeek balance API URL from the configured base URL.
 ///
@@ -38,17 +37,34 @@ fn deepseek_balance_url_from_base_url(base_url: &str) -> Option<String> {
 /// Only supported when the configured base URL targets the official DeepSeek
 /// API host (`https://api.deepseek.com`, with or without a `/v1` suffix).
 pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
-    let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
+    let provider = get_provider();
+    let profile = provider.to_profile();
+    let credentials = Arc::new(ApiKeyProvider::new(provider.api_key));
+    query_deepseek_balance_for(&profile, credentials.as_ref(), &SharedHttpClient::default()).await
+}
 
-    let balance_url = deepseek_balance_url_from_base_url(&base_url).ok_or_else(|| {
+/// Query DeepSeek account balance with explicit credentials and transport.
+///
+/// Calls `GET https://api.deepseek.com/user/balance` with the resolved
+/// credential. Only supported when the configured base URL targets the
+/// official DeepSeek API host.
+pub async fn query_deepseek_balance_for(
+    profile: &ProviderProfile,
+    credentials: &dyn CredentialProvider,
+    http: &SharedHttpClient,
+) -> anyhow::Result<tact_protocol::BalanceInfo> {
+    let secret = credentials.resolve().await?;
+
+    let balance_url = deepseek_balance_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!(
             "DeepSeek balance API is only available for the official endpoint https://api.deepseek.com"
         )
     })?;
 
-    let resp = CLIENT
+    let resp = http
+        .inner()
         .get(&balance_url)
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {}", secret.expose_secret()))
         .timeout(Duration::from_millis(5000))
         .send()
         .await
@@ -179,16 +195,32 @@ fn parse_kimi_balance_response(
 /// Calls `GET .../v1/users/me/balance` on `api.moonshot.cn` or `api.moonshot.ai`.
 /// Returns `BalanceInfo` on success.
 pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
-    let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
+    let provider = get_provider();
+    let profile = provider.to_profile();
+    let credentials = Arc::new(ApiKeyProvider::new(provider.api_key));
+    query_kimi_balance_for(&profile, credentials.as_ref(), &SharedHttpClient::default()).await
+}
 
-    let balance_url = kimi_balance_url_from_base_url(&base_url).ok_or_else(|| {
+/// Query Kimi/Moonshot account balance with explicit credentials and transport.
+///
+/// Calls `GET .../v1/users/me/balance` on `api.moonshot.cn` or
+/// `api.moonshot.ai` with the resolved credential.
+pub async fn query_kimi_balance_for(
+    profile: &ProviderProfile,
+    credentials: &dyn CredentialProvider,
+    http: &SharedHttpClient,
+) -> anyhow::Result<tact_protocol::BalanceInfo> {
+    let secret = credentials.resolve().await?;
+
+    let balance_url = kimi_balance_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!("Kimi balance API is only available for official Moonshot API endpoints")
     })?;
-    let currency = kimi_balance_currency(&base_url);
+    let currency = kimi_balance_currency(&profile.base_url);
 
-    let resp = CLIENT
+    let resp = http
+        .inner()
         .get(&balance_url)
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {}", secret.expose_secret()))
         .timeout(Duration::from_millis(5000))
         .send()
         .await
@@ -321,17 +353,33 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 /// Only supported when the configured base URL targets the official Kimi Code
 /// endpoint (`https://api.kimi.com/coding`).
 pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
-    let (api_key, base_url) = read_provider(|p| (p.api_key.clone(), p.base_url.clone()));
+    let provider = get_provider();
+    let profile = provider.to_profile();
+    let credentials = Arc::new(ApiKeyProvider::new(provider.api_key));
+    query_kimi_code_usage_for(&profile, credentials.as_ref(), &SharedHttpClient::default()).await
+}
 
-    let usage_url = kimi_usage_url_from_base_url(&base_url).ok_or_else(|| {
+/// Query Kimi Code subscription quota with explicit credentials and transport.
+///
+/// Only supported when the configured base URL targets the official Kimi Code
+/// endpoint (`https://api.kimi.com/coding`).
+pub async fn query_kimi_code_usage_for(
+    profile: &ProviderProfile,
+    credentials: &dyn CredentialProvider,
+    http: &SharedHttpClient,
+) -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+    let secret = credentials.resolve().await?;
+
+    let usage_url = kimi_usage_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!(
             "Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding"
         )
     })?;
 
-    let resp = CLIENT
+    let resp = http
+        .inner()
         .get(&usage_url)
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {}", secret.expose_secret()))
         .header("Accept", "application/json")
         .header("User-Agent", "Claude Code")
         .timeout(Duration::from_millis(5000))
@@ -360,6 +408,32 @@ pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuota
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::future::BoxFuture;
+
+    use crate::{LlmError, ProviderKind};
+
+    #[derive(Debug)]
+    struct FailingCredential;
+
+    impl CredentialProvider for FailingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<secrecy::SecretString, LlmError>> {
+            Box::pin(async {
+                Err(LlmError::Auth(
+                    "test credential unavailable".to_string(),
+                ))
+            })
+        }
+    }
+
+    fn deepseek_profile() -> ProviderProfile {
+        ProviderProfile {
+            provider: ProviderKind::DeepSeek,
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            model: "deepseek-chat".to_string(),
+            protocol: crate::OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+        }
+    }
 
     #[test]
     fn deepseek_balance_url_derivation() {
@@ -519,5 +593,19 @@ mod tests {
         let info = parse_kimi_balance_response(body, "USD").unwrap();
         assert!(!info.is_available);
         assert_eq!(info.balance_infos[0].currency, "USD");
+    }
+
+    #[tokio::test]
+    async fn explicit_deepseek_balance_forwards_credential_errors() {
+        let profile = deepseek_profile();
+        let error = query_deepseek_balance_for(
+            &profile,
+            &FailingCredential,
+            &SharedHttpClient::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("test credential unavailable"));
     }
 }

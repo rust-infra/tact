@@ -1,10 +1,127 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use async_openai_responses::types::responses::{OutputItem, Response, ResponseStreamEvent};
-use tact_protocol::{AgentUpdate, ThinkingChunk};
+use async_openai_responses::types::responses::{
+    OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
+};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::normalize::{NormalizedResponse, normalize_response};
 use crate::LlmError;
+
+/// Extracts the search query from a `WebSearchToolCall` (empty when the
+/// provider has not populated the action yet — `output_item.added` events
+/// can precede the action).
+fn web_search_query(call: &WebSearchToolCall) -> String {
+    match &call.action {
+        Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
+            search.query.clone()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Builds the diagnostic detail for a failed or non-terminal web search
+/// call: the reported status, the query, and the provider's raw action JSON
+/// (truncated) so a failure shows what the provider actually returned instead
+/// of a bare "web search failed".
+fn web_search_failure_detail(call: &WebSearchToolCall, query: &str) -> String {
+    const MAX_ACTION_CHARS: usize = 300;
+    let mut action = call
+        .action
+        .as_ref()
+        .map(|action| {
+            serde_json::to_string(action).unwrap_or_else(|_| "<unserializable>".to_string())
+        })
+        .unwrap_or_else(|| "none".to_string());
+    if action.len() > MAX_ACTION_CHARS {
+        action.truncate(MAX_ACTION_CHARS);
+        action.push('…');
+    }
+    format!(
+        "status: {:?}, query: {query:?}, action: {action}",
+        call.status
+    )
+}
+
+/// Builds the `StepStarted` update for an in-progress web search call.
+fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
+    AgentUpdate::StepStarted {
+        idx: index as usize,
+        tool_id: call.id.clone(),
+        tool_name: "web_search".to_string(),
+        arg_summary: web_search_query(call),
+        arg_full: web_search_query(call),
+        presentation: ToolPresentationInfo::generic("web_search"),
+    }
+}
+
+/// Builds the terminal update for a completed or failed web search call.
+fn web_search_finished(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
+    let query = web_search_query(call);
+    let sources = match &call.action {
+        Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
+            search
+                .sources
+                .as_ref()
+                .map(|sources| {
+                    sources
+                        .iter()
+                        .map(|source| source.url.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    let presentation = ToolPresentationInfo::generic("web_search");
+    let (idx, tool_id) = (index as usize, call.id.clone());
+    match call.status {
+        WebSearchToolCallStatus::Failed => AgentUpdate::StepFailed {
+            idx,
+            tool_id,
+            arg_summary: web_search_query(call),
+            error: format!(
+                "web search failed ({})",
+                web_search_failure_detail(call, &query)
+            ),
+        },
+        // `output_item.done` normally carries a terminal status. If a
+        // compatible endpoint reports `in_progress` / `searching` here, the
+        // item ended without a terminal status: surface it as a failure
+        // rather than silently claiming success.
+        WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
+            AgentUpdate::StepFailed {
+                idx,
+                tool_id,
+                arg_summary: web_search_query(call),
+                error: format!(
+                    "web search ended without terminal status ({})",
+                    web_search_failure_detail(call, &query)
+                ),
+            }
+        }
+        WebSearchToolCallStatus::Completed => AgentUpdate::StepFinished {
+            idx,
+            tool_id,
+            result: StepResult {
+                tool: "web_search".to_string(),
+                arg_summary: query,
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "web search completed".to_string(),
+                detail: if sources.is_empty() {
+                    None
+                } else {
+                    Some(sources)
+                },
+                duration_us: None,
+                permission_label: None,
+                presentation,
+            },
+        },
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ResponsesStreamState {
@@ -124,15 +241,31 @@ impl ResponsesStreamState {
                     if matches!(&event.item, OutputItem::Compaction(_)) {
                         self.pending_compactions.insert(event.output_index);
                     }
+                    // Surface in-progress web search as a running tool card
+                    // (the provider may populate `action` only later, at
+                    // `output_item.done`).
+                    if let OutputItem::WebSearchCall(call) = &event.item {
+                        return Ok(vec![web_search_started(event.output_index, call)]);
+                    }
                 }
                 Vec::new()
             }
             ResponseStreamEvent::ResponseOutputItemDone(event) => {
                 // Idempotent by `output_index`: a repeated `done` event
-                // overwrites the same slot and never duplicates output.
+                // overwrites the same slot (last one wins) without
+                // re-emitting — `insert` returns `None` only on first insert.
                 self.pending_added.remove(&event.output_index);
                 self.pending_compactions.remove(&event.output_index);
-                self.done_items.insert(event.output_index, event.item);
+                if self
+                    .done_items
+                    .insert(event.output_index, event.item)
+                    .is_none()
+                    && let Some(OutputItem::WebSearchCall(call)) =
+                        self.done_items.get(&event.output_index)
+                {
+                    // Terminal status for the web search tool card.
+                    return Ok(vec![web_search_finished(event.output_index, call)]);
+                }
                 Vec::new()
             }
             ResponseStreamEvent::ResponseCompleted(event) => {
@@ -229,7 +362,7 @@ impl ResponsesStreamState {
 #[cfg(test)]
 mod tests {
     use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, ThinkingChunk};
+    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
 
     use super::ResponsesStreamState;
     use crate::ContentBlock;
@@ -811,5 +944,209 @@ mod tests {
             )
             .unwrap();
         assert_eq!(streamed_update, direct_update);
+    }
+
+    // ── Hosted web search tool-card events ────────────────────────────
+
+    fn web_search_call_json(status: &str, query: Option<&str>) -> serde_json::Value {
+        let action = query.map(|q| {
+            serde_json::json!({
+                "type": "search",
+                "query": q,
+                "sources": [
+                    {"type": "url", "url": "https://example.com/a"},
+                    {"type": "url", "url": "https://example.com/b"}
+                ]
+            })
+        });
+        serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": status,
+            "action": action
+        })
+    }
+
+    #[test]
+    fn web_search_added_emits_running_tool_card() {
+        let mut state = super::ResponsesStreamState::default();
+        // added without action → query empty, running card
+        let updates = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            AgentUpdate::StepStarted {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                ..
+            } => {
+                assert_eq!(*idx, 0);
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(tool_name, "web_search");
+                assert!(arg_summary.is_empty(), "no action yet → empty query");
+            }
+            other => panic!("expected StepStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_added_then_done_emits_started_then_finished() {
+        let mut state = super::ResponsesStreamState::default();
+        let started = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("searching", None),
+            ))
+            .unwrap();
+        let finished = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+
+        assert!(matches!(&started[0], AgentUpdate::StepStarted { .. }));
+        assert_eq!(finished.len(), 1);
+        match &finished[0] {
+            AgentUpdate::StepFinished {
+                tool_id, result, ..
+            } => {
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(result.tool, "web_search");
+                assert_eq!(result.arg_summary, "Rust async");
+                assert_eq!(result.status, StepStatus::Success);
+                let detail = result.detail.as_deref().unwrap_or_default();
+                assert!(detail.contains("https://example.com/a"));
+                assert!(detail.contains("https://example.com/b"));
+            }
+            other => panic!("expected StepFinished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_failed_emits_step_failed() {
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let failed = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("failed", Some("Rust async")),
+            ))
+            .unwrap();
+
+        assert_eq!(failed.len(), 1);
+        match &failed[0] {
+            AgentUpdate::StepFailed {
+                tool_id,
+                arg_summary,
+                error,
+                ..
+            } => {
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(
+                    arg_summary, "Rust async",
+                    "failed card keeps the query in its title"
+                );
+                assert!(error.contains("web search failed"));
+                assert!(
+                    error.contains("status: Failed"),
+                    "failure must report the provider status, got: {error}"
+                );
+                assert!(
+                    error.contains("query: \"Rust async\""),
+                    "failure must report the query, got: {error}"
+                );
+                assert!(
+                    error.contains("action:"),
+                    "failure must include the provider's action detail, got: {error}"
+                );
+            }
+            other => panic!("expected StepFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_done_with_non_terminal_status_is_a_failure() {
+        // `output_item.done` must carry a terminal status. Compatible
+        // endpoints reporting `searching` / `in_progress` at done are
+        // surfaced as failures, never as silent success.
+        for status in ["in_progress", "searching"] {
+            let mut state = super::ResponsesStreamState::default();
+            let _ = state
+                .apply(output_item_added(0, web_search_call_json(status, None)))
+                .unwrap();
+            let updates = state
+                .apply(output_item_done(0, web_search_call_json(status, Some("q"))))
+                .unwrap();
+
+            assert_eq!(updates.len(), 1);
+            match &updates[0] {
+                AgentUpdate::StepFailed { tool_id, error, .. } => {
+                    assert_eq!(tool_id, "ws_1");
+                    assert!(
+                        error.contains("without terminal status"),
+                        "expected non-terminal-status failure, got: {error}"
+                    );
+                }
+                other => panic!("expected StepFailed for {status}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_web_search_items_emit_no_tool_events() {
+        let mut state = super::ResponsesStreamState::default();
+        let updates = state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "in_progress", "content": []}),
+            ))
+            .unwrap();
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn duplicate_web_search_done_emits_finished_only_once() {
+        // A repeated `output_item.done` for the same index overwrites the
+        // slot (last one wins) but must not re-emit `StepFinished`: the
+        // running card was already finalized on the first `done`.
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let first = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(matches!(&first[0], AgentUpdate::StepFinished { .. }));
+
+        let duplicate = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+        assert!(
+            duplicate.is_empty(),
+            "duplicate done must not re-emit StepFinished, got: {duplicate:?}"
+        );
     }
 }

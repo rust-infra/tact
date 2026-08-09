@@ -3,10 +3,12 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_llm::{Message, Role, get_llm_client};
+use tact_llm::{ApiKeyProvider, Client, Message, Role, get_llm_client};
 use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
@@ -60,7 +62,11 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
     let settings = crate::config::settings();
 
     let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
-        let client = sa.provider.build_client()?;
+        let client = Client::new(
+            sa.provider.to_profile(),
+            Arc::new(ApiKeyProvider::new(sa.provider.api_key.clone())),
+        )
+        .await?;
         let mut agent_settings = settings.agent.clone();
         agent_settings.model = sa.provider.model.clone();
         agent_settings.max_tokens = sa.max_tokens;

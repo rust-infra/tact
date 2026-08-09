@@ -5,7 +5,7 @@ This chapter covers the `tact_llm` crate: provider selection, adapter constructi
 
 Configuration that feeds this layer is resolved in [Ch 21 Configuration](./21_chapter_config.md). The agent loop consumes the client via `Agent::stream_message` ([Ch 18 Agent Main Loop](./18_chapter_agent_loop.md)).
 
-Implementation: `crates/tact_llm/src/` (`lib.rs`, `client.rs`, `provider.rs`, `types.rs`, `content.rs`, `anthropic/`, `openai/`, `deepseek/`, `kimi/`, `convert.rs`).
+Implementation: `crates/tact_llm/src/` (`lib.rs`, `client.rs`, `provider.rs`, `profile.rs`, `auth.rs`, `transport.rs`, `types.rs`, `content.rs`, `anthropic/`, `openai/`, `convert.rs`).
 
 ---
 
@@ -14,13 +14,14 @@ Implementation: `crates/tact_llm/src/` (`lib.rs`, `client.rs`, `provider.rs`, `t
 ```mermaid
 flowchart TB
     Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
-    PI --> Build[get_llm_client → build_client]
+    PI --> Build[get_llm_client → Client::new]
+    Auth[CredentialProvider] --> Build
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
-    LP --> OpenAi[OpenAiAdapter]
+    LP --> ChatCompletions[ChatCompletionsAdapter]
     LP --> Responses[OpenAiResponsesAdapter]
     Anthropic --> API1[Messages API SSE]
-    OpenAi --> API2[Chat Completions SSE]
+    ChatCompletions --> API2[Chat Completions SSE]
     Responses --> API3[Responses API SSE]
     Agent[Agent::stream_message] --> LlmClient[LlmClient trait]
     LlmClient --> LP
@@ -32,14 +33,16 @@ Three adapter families share one trait:
 | Adapter | Providers | HTTP API |
 |---------|-----------|----------|
 | `AnthropicAdapter` | `anthropic` | Anthropic Messages (`/messages`) |
-| `OpenAiAdapter` | `openai`, `deepseek`, `kimi` | OpenAI-compatible Chat Completions |
-| `OpenAiResponsesAdapter` | `openai` with `protocol = "responses"` | OpenAI Responses (`/responses`) |
+| `ChatCompletionsAdapter` | `openai`, `deepseek`, `kimi`, `custom` | OpenAI-compatible Chat Completions |
+| `OpenAiResponsesAdapter` | any OpenAI-compatible entry with `protocol = "responses"` | OpenAI Responses (`/responses`) |
 
-DeepSeek and Kimi reuse `OpenAiAdapter` with different default base URLs from config resolution.
+DeepSeek and Kimi are not separate adapters: `ProviderProfile::dialect_for(model)`
+selects a `ChatCompletionsDialect` (`Standard` / `DeepSeek` / `Kimi`) per
+request, and the corresponding body hook shapes the wire JSON.
 
 ---
 
-## 2. ProviderInfo and Initialization
+## 2. Configuration, Profile, and Credentials
 
 ```rust
 pub enum ProviderKind {
@@ -47,6 +50,7 @@ pub enum ProviderKind {
     OpenAi,
     DeepSeek,
     Kimi,
+    Custom(String),
 }
 
 pub enum OpenAiProtocol {
@@ -55,18 +59,37 @@ pub enum OpenAiProtocol {
 }
 
 pub struct ProviderInfo {
-    pub api_key: String,
+    pub api_key: String, // compatibility snapshot; adapters no longer read this
     pub base_url: String,
     pub model: String, // static configured model (config-level heuristics)
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
     pub responses_compact_threshold: Option<u32>,
 }
+
+pub struct ProviderProfile {
+    pub provider: ProviderKind,
+    pub base_url: String,
+    pub model: String,
+    pub protocol: OpenAiProtocol,
+    pub responses_compact_threshold: Option<u32>,
+}
+
+pub trait CredentialProvider: Send + Sync {
+    async fn resolve(&self) -> Result<SecretString, LlmError>;
+}
 ```
 
 `ProviderKind` is the single identity type for config, CLI (`FromStr`), and
-`build_client` (exhaustive match). TOML names are lowercase:
-`anthropic` | `openai` | `deepseek` | `kimi`.
+`Client::new` (exhaustive match). TOML names are lowercase: `anthropic` |
+`openai` | `deepseek` | `kimi`; any other name becomes `Custom(String)` and
+reuses the OpenAI protocol with an explicit `base_url`.
+
+Configuration and authentication are orthogonal. `ProviderProfile` is the
+credential-free snapshot passed to adapters, account queries, and model
+queries. `CredentialProvider` resolves credentials at request time, which is
+the extension point for a future browser-OAuth flow; `ApiKeyProvider` is the
+current static API-key implementation.
 
 Installed at startup (and re-init under test overrides). The provider is a
 **static snapshot**: `/model` picks no longer mutate it. Per-agent model lives
@@ -92,10 +115,13 @@ client.set_user_id(&session_id);   // DeepSeek per-session KV cache isolation
 ```
 
 `build_client()` validates non-empty `api_key` and matches on `ProviderKind`.
-Anthropic, DeepSeek, and Kimi select their dedicated variants. OpenAI then
-matches `protocol`: `chat_completions` selects `LlmProvider::OpenAi`, while
-`responses` selects `LlmProvider::OpenAiResponses`. The protocol defaults to
-`chat_completions`; `responses` is rejected for non-OpenAI providers.
+`ProviderInfo::build_client()` is a synchronous compatibility layer that wraps
+`Client::new(profile, Arc::new(ApiKeyProvider::new(api_key)))`. The flattened
+`LlmProvider` has exactly four variants: `Anthropic`, `ChatCompletions`,
+`OpenAiResponses`, and `Mock`. `anthropic` builds `AnthropicAdapter`; any
+OpenAI-compatible entry with `protocol = "responses"` builds
+`OpenAiResponsesAdapter`; everything else builds `ChatCompletionsAdapter`.
+The protocol defaults to `chat_completions`.
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +132,7 @@ sequenceDiagram
     participant State as SETTINGS / PROVIDER RwLock
     participant LlmInit as tact_llm::init_provider
     participant Get as get_llm_client
-    participant Build as build_client
+    participant Build as Client::new(profile, credentials)
     participant Provider as LlmProvider
 
     Init->>Resolve: merge TOML and CLI (no env layer)
@@ -118,7 +144,7 @@ sequenceDiagram
     Note over State: `/model` updates AgentSettings.model (per-agent), never PROVIDER
     Get->>State: clone ProviderInfo snapshot
     Get->>Build: build_client(info)
-    Build-->>Provider: dedicated provider adapter
+    Build-->>Provider: flattened provider adapter
 ```
 
 Provider initialization flows from Ch 21's resolved configuration into `tact_llm`.
@@ -130,7 +156,7 @@ update `AgentSettings.model` (per-agent), and the request model travels in
 
 ## 3. Kimi / DeepSeek Detection Helpers
 
-Heuristic helpers on `ProviderInfo` (also exported at crate root):
+Heuristic helpers on `ProviderProfile` (also exported at crate root):
 
 | Function | Purpose |
 |----------|---------|
@@ -279,7 +305,12 @@ The Anthropic adapter does not attach the session `user_id` to request metadata.
 
 ### 6.1 Chat Completions and compatible providers
 
-`openai/mod.rs` provides the shared Chat Completions HTTP/SSE transport. Dedicated `deepseek/mod.rs`, `kimi/mod.rs`, and `openai/multi_model.rs` adapters select provider-specific body hooks after the common request conversion.
+`openai/mod.rs` provides the shared Chat Completions HTTP/SSE transport, and
+`openai/multi_model.rs` exposes `ChatCompletionsAdapter`. DeepSeek and Kimi are
+not separate adapters: `ProviderProfile::dialect_for(model)` selects a
+`ChatCompletionsDialect` (`Standard` / `DeepSeek` / `Kimi`) per request, and the
+corresponding body hook in `openai/body.rs` shapes the JSON after the common
+request conversion.
 
 Notable behaviors:
 
@@ -369,9 +400,9 @@ required token field that is missing, not an unsigned integer, or larger than
 `u32` is a hard protocol error — values are never truncated, wrapped, or
 clamped.
 
-Unsupported in this adapter: server-hosted tools, background responses,
-Conversations, and `previous_response_id`. Native compaction is supported:
-ordinary requests carry `context_management` when a compact threshold is
+Unsupported in this adapter: background responses, Conversations, and
+`previous_response_id`. Native compaction is supported: ordinary requests
+carry `context_management` when a compact threshold is
 resolved, and `compact()` sends an explicit `POST /responses/compact` request
 ([Ch 5](./05_chapter_compact.md)).
 
@@ -410,6 +441,47 @@ Two details matter for multi-turn correctness:
 
 - `flush_message_content` emits accumulated text/image parts as one message **before** emitting standalone reasoning or tool items, preserving the order required by the Responses API.
 - `normalize_assistant_history_items` rewrites assistant history into completed output messages because some compatible endpoints reject prior assistant turns if they are replayed as plain assistant input text.
+
+#### 6.2.1.1 Hosted tools: native web search
+
+Hosted web search is a **Responses-protocol capability**, independent of the
+endpoint/provider behind the protocol. Choosing `protocol = "responses"`
+automatically injects a `Tool::WebSearch` alongside the function tools on
+every ordinary `/responses` request
+(`create_response(..., native_web_search = true)`) — for OpenAI, DeepSeek,
+and custom OpenAI-compatible endpoints alike. There is no per-provider switch
+and no capability negotiation: the protocol is the contract. The Provider
+executes the search server-side and returns a thin `web_search_call` marker
+item followed by an assistant message whose text already embeds the results
+as inline markdown links with `url_citation` annotations.
+
+Design rules:
+
+- **Injection, not replacement.** `native_web_search` only *adds* a hosted
+  tool. An MCP-provided `web_search` function tool (if any) is left untouched
+  as `Tool::Function`; the two mechanisms can coexist.
+- **Provider-only execution.** The `web_search_call` output item is surfaced
+  as a **tool card** through the existing `StepStarted` / `StepFinished` /
+  `StepFailed` events (mapping `WebSearchToolCallStatus`), not as a
+  `ContentBlock::ToolUse`. The stream adapter emits a running card on
+  `output_item.added` (status `in_progress` / `searching`, query may be empty
+  because the provider populates `action` only later) and the terminal card on
+  `output_item.done` (completed → success with sources as detail, failed →
+  `StepFailed`). The terminal stop reason remains `completed` (not `tool_use`),
+  so the agent loop finishes normally and never dispatches the call through
+  `execute_tool_call`.
+- **Wire compatibility.** Some compatible endpoints emit the search action
+  with a `queries` array instead of the singular `query` (async-openai 0.41.x
+  models `query` only). `wire::normalize_web_search_call_query` fills `query`
+  from `queries` for typed parsing; the raw item JSON is preserved verbatim so
+  follow-up turns replay the provider's own shape.
+- **Protocol, not endpoint.** The adapter injects the hosted tool on every
+  ordinary Responses request regardless of provider kind. Kimi never reaches
+  this adapter (it has its own Chat Completions adapter); a custom
+  OpenAI-compatible gateway speaking the Responses protocol gets the hosted
+  tool too.
+- **Compaction path.** `/responses/compact` requests pass
+  `native_web_search = false`: the compact endpoint accepts no tools.
 
 #### 6.2.2 Compaction interaction: where Responses differs
 
@@ -605,8 +677,8 @@ self.runtime.client.set_user_id(&session_id);
 
 | Adapter | Injection site |
 |---------|----------------|
-| DeepSeek (including heuristic selection through the OpenAI adapter) | Top-level `"user_id"` in request JSON |
-| Anthropic / Kimi / native OpenAI | Not injected |
+| `ChatCompletionsAdapter` with DeepSeek dialect | Top-level `"user_id"` in request JSON |
+| Anthropic / Responses / other Chat Completions dialects / Mock | Not injected |
 
 Intent: per-session KV cache isolation on DeepSeek (and compatible proxies), reducing cross-session cache pollution.
 
@@ -621,6 +693,13 @@ Intent: per-session KV cache isolation on DeepSeek (and compatible proxies), red
 | `query_kimi_code_usage()` | `GET https://api.kimi.com/coding/v1/usages` | Kimi Code subscription quota |
 
 `query_*_balance()` returns `tact_protocol::BalanceInfo`, routed on the separate account channel as `AccountUpdate::Balance`. Kimi Code usage returns `UsageQuotaInfo` as `AccountUpdate::UsageQuota`.
+
+Each query also has an explicit entry (`query_deepseek_balance_for`,
+`query_kimi_balance_for`, `query_kimi_code_usage_for`) taking
+`(&ProviderProfile, &dyn CredentialProvider, &SharedHttpClient)`. The
+zero-argument names in the table remain as compatibility wrappers that read the
+global provider snapshot and a static API key. Requests resolve credentials at
+request time through the shared transport.
 
 **Kimi Code endpoint:** `api.kimi.com/coding` has no balance REST API. Use `query_kimi_code_usage()` instead; surfaced as `AccountUpdate::UsageQuota` on the bottom bar (`week` + `5h` windows). The usage API is official-endpoint only (HTTPS, exact host `api.kimi.com`, `/coding` path): custom proxies serving `kimi-for-coding` are treated as unsupported and their API keys are never sent to `api.kimi.com`.
 
@@ -687,12 +766,16 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 |------|------|
 | `tact_llm/src/types.rs` | `ProviderKind`, `OpenAiProtocol`, request types, and provider-agnostic `StopReason` |
 | `tact_llm/src/content.rs` | Owned `ContentBlock`, `Message`, `ContentBlockDelta`, `StreamUsage`, … |
-| `tact_llm/src/client.rs` | `LlmClient`, dedicated `LlmProvider` variants, session user-id routing |
-| `tact_llm/src/provider.rs` | `ProviderInfo`, provider initialization, client construction, detection helpers |
+| `tact_llm/src/profile.rs` | Credential-free `ProviderProfile` plus endpoint/model heuristics |
+| `tact_llm/src/auth.rs` | `Credential`, `CredentialProvider`, `ApiKeyProvider` |
+| `tact_llm/src/transport.rs` | Shared reqwest client (`SharedHttpClient`) |
+| `tact_llm/src/client.rs` | `LlmClient`, flattened `LlmProvider` variants, session user-id routing |
+| `tact_llm/src/provider.rs` | `ProviderInfo` compatibility snapshot, global init, `Client::new` |
 | `tact_llm/src/account.rs` | DeepSeek balance and Kimi balance/quota queries |
+| `tact_llm/src/models.rs` | `/models` picker cache with explicit credential/transport entry |
 | `tact_llm/src/anthropic/mod.rs` | Messages API streaming + non-streaming |
-| `tact_llm/src/openai/` | Chat Completions transport/hooks plus the isolated Responses converter, normalizer, and stream state |
-| `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider-specific thinking and history hooks |
+| `tact_llm/src/openai/` | Chat Completions transport plus the isolated Responses converter, normalizer, and stream state |
+| `tact_llm/src/openai/body.rs` | `ChatCompletionsDialect` body hooks (`Standard` / `DeepSeek` / `Kimi`) |
 | `tact_llm/src/convert.rs` | Request translation, Image → `image_url`, Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` wrapper, `set_user_id` in `with_session` |
 | `crates/tact/src/compact/mod.rs` | `create_message` for summarization |
@@ -703,12 +786,13 @@ Balance checks stay outside `Agent::agent_loop`; the TUI owns the timer and comm
 
 | Gap | Detail |
 |-----|--------|
-| **Four named providers only** | `ProviderKind` / `FromStr` reject unknown names; generic OpenAI proxies must use `provider = "openai"` |
+| **Built-ins plus `Custom(String)`** | `ProviderKind` recognizes `anthropic` / `openai` / `deepseek` / `kimi`; arbitrary names become OpenAI-compatible custom providers with an explicit `base_url` |
 | **No retry in adapters** | Transport retry/backoff lives in agent recovery, not `tact_llm` |
 | **No Anthropic SDK dependency** | Conversation, request, stop, stream-delta, and error types are all owned by `tact_llm`; Anthropic is spoken via custom HTTP + SSE only |
 | **Adapter rebuilt per `get_llm_client()` call** | New adapter instance each call; for DeepSeek, `set_user_id` mutates the copy held on `Agent` |
+| **API key only today** | `CredentialProvider` is the seam for browser OAuth, but `ApiKeyProvider` is currently the only implementation |
 | **No vision capability gate** | Attached images are always sent as multimodal parts; text-only models/proxies may return 400 on `image_url` |
-| **Responses core subset only** | No Conversations, `previous_response_id`, hosted tools, or background mode (native compaction is supported) |
+| **Responses core subset only** | No Conversations, `previous_response_id`, or background mode; hosted web search is injected on any `protocol = "responses"` endpoint (native compaction is supported) |
 
 ### Protocol compatibility gaps (internal Anthropic shape → wire)
 

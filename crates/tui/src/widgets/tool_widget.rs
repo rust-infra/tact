@@ -67,6 +67,9 @@ fn kind_from_presentation(
         "bash" | "shell" | "background_run" | "worktree_run" => {
             tact_protocol::ToolVisualKind::Command
         }
+        // Hosted web search renders like a command output card so its
+        // sources detail (URL list) is expandable.
+        "web_search" => tact_protocol::ToolVisualKind::Command,
         "task_create" | "task_update" | "task_get" | "task_list" => {
             tact_protocol::ToolVisualKind::Task
         }
@@ -94,6 +97,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "edit_file" => "✏️ Edit".to_string(),
         "apply_patch" => "📝 Patch".to_string(),
         "bash" | "shell" => "$ Bash".to_string(),
+        "web_search" => "🔍 Web Search".to_string(),
         "run_command" => "Command".to_string(),
         "spawn_subagent" => "🤖 Subagent".to_string(),
         "ask_user" => "❓ Ask".to_string(),
@@ -840,6 +844,27 @@ mod tests {
             .with_phase(ToolPhase::Running);
 
         assert_eq!(widget.title_text(), "$ Bash  echo hello");
+    }
+
+    #[test]
+    fn web_search_title_and_detail_render_as_command() {
+        let (theme, msgs) = fixture();
+        let widget = ToolWidget::new(&theme, &msgs)
+            .with_tool("web_search")
+            .with_arg_summary("Rust async best practices")
+            .with_phase(ToolPhase::Success)
+            .with_detail("https://example.com/a\nhttps://example.com/b");
+
+        assert_eq!(
+            widget.title_text(),
+            "🔍 Web Search  Rust async best practices"
+        );
+        let output = widget.build();
+        // Sources detail must be expandable (Command visual kind).
+        assert!(
+            output.layout.has_detail_card,
+            "sources detail should render"
+        );
     }
 
     #[test]

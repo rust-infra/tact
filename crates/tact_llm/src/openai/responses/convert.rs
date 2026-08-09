@@ -3,7 +3,7 @@ use async_openai_responses::types::responses::{
     FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum, InputContent,
     InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType, OutputStatus,
     Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction,
-    ToolChoiceOptions, ToolChoiceParam,
+    ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
 };
 
 use super::history;
@@ -223,10 +223,16 @@ fn validate_conversion_state(
 /// validated before only the uncovered suffix is converted. The state baseline
 /// items are reused verbatim as JSON so unknown fields and future item types
 /// survive.
+///
+/// When `native_web_search` is true, a `Tool::WebSearch` is injected
+/// alongside the function tools so the Provider can execute web search
+/// server-side. This is independent of any MCP-provided `web_search`
+/// function tool — it never inspects or replaces tool names.
 pub(crate) fn create_response(
     request: &CreateMessageParams,
     provider_state: Option<&ProviderConversationState>,
     compact_threshold: Option<u32>,
+    native_web_search: bool,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
     let (baseline, covered) = match provider_state {
         None => (Vec::new(), 0),
@@ -258,8 +264,14 @@ pub(crate) fn create_response(
     if let Some(top_p) = request.top_p {
         builder.top_p(top_p);
     }
-    if let Some(tools) = &request.tools {
-        builder.tools(
+    // Collect all tools: function tools from the request plus (when
+    // enabled) the native web search hosted tool. Native web search is an
+    // additional tool — it does not replace or inspect any function tool
+    // (MCP-provided web_search stays as-is).
+    let mut response_tools: Vec<ResponsesTool> = request
+        .tools
+        .as_ref()
+        .map(|tools| {
             tools
                 .iter()
                 .map(|tool| {
@@ -271,16 +283,24 @@ pub(crate) fn create_response(
                         defer_loading: None,
                     })
                 })
-                .collect::<Vec<_>>(),
-        );
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if native_web_search {
+        response_tools.push(ResponsesTool::WebSearch(WebSearchTool {
+            user_location: None,
+            search_context_size: None,
+            filters: None,
+            search_content_types: None,
+        }));
+    }
+    let has_tools = !response_tools.is_empty();
+    if has_tools {
+        builder.tools(response_tools);
     }
     if let Some(choice) = &request.tool_choice {
         builder.tool_choice(tool_choice(choice));
-    } else if request
-        .tools
-        .as_ref()
-        .is_some_and(|tools| !tools.is_empty())
-    {
+    } else if has_tools {
         builder.tool_choice(ToolChoiceOptions::Auto);
     }
     if request.thinking.is_some() || request.reasoning_effort.is_some() {
@@ -432,7 +452,7 @@ mod tests {
 
     #[test]
     fn converts_multimodal_tool_history_and_options() {
-        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
 
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["instructions"], "system instruction");
@@ -468,7 +488,7 @@ mod tests {
 
     #[test]
     fn omits_unscoped_signature_from_another_provider() {
-        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
 
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
         assert_eq!(body["reasoning"]["summary"], "detailed");
@@ -487,7 +507,7 @@ mod tests {
         };
         signature.clear();
 
-        let (body, _) = create_response(&request, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None, false).unwrap();
         assert!(
             body["input"]
                 .as_array()
@@ -514,7 +534,7 @@ mod tests {
         for (choice, expected) in cases {
             let mut request = request_with_history();
             request.tool_choice = Some(choice);
-            let (body, _) = create_response(&request, None, None).unwrap();
+            let (body, _) = create_response(&request, None, None, false).unwrap();
             assert_eq!(body["tool_choice"], expected);
         }
     }
@@ -536,7 +556,7 @@ mod tests {
             }),
         }]);
 
-        let (body, _) = create_response(&request, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None, false).unwrap();
 
         assert_eq!(body["tool_choice"], serde_json::json!("auto"));
     }
@@ -547,6 +567,7 @@ mod tests {
             &request_with_history().with_reasoning_effort(Some(OpenAiReasoningEffort::Max)),
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
@@ -558,6 +579,7 @@ mod tests {
             &request_with_history().with_reasoning_effort(Some(OpenAiReasoningEffort::Low)),
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(body["reasoning"]["effort"], "low");
@@ -565,7 +587,7 @@ mod tests {
 
     #[test]
     fn serializes_assistant_history_as_completed_output_message() {
-        let (body, _) = create_response(&request_with_history(), None, None).unwrap();
+        let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
         let assistant = body["input"]
             .as_array()
             .unwrap()
@@ -597,6 +619,7 @@ mod tests {
                 state.clone(),
             )),
             Some(160_000),
+            false,
         )
         .unwrap();
         // The baseline (first converted user message) is reused verbatim; only
@@ -625,7 +648,7 @@ mod tests {
     #[test]
     fn responses_request_injects_context_management_and_keeps_stateless_fields() {
         let request = request_with_history();
-        let (body, _) = create_response(&request, None, Some(160_000)).unwrap();
+        let (body, _) = create_response(&request, None, Some(160_000), false).unwrap();
         assert_eq!(body["store"], false);
         assert!(body.get("previous_response_id").is_none());
         assert!(body.get("conversation").is_none());
@@ -636,7 +659,7 @@ mod tests {
     #[test]
     fn omits_context_management_without_a_threshold() {
         let request = request_with_history();
-        let (body, _) = create_response(&request, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None, false).unwrap();
         assert!(body.get("context_management").is_none());
     }
 
@@ -702,7 +725,7 @@ mod tests {
             parallel_tool_calls: Some(false),
             ..Default::default()
         });
-        let (body, _) = create_response(&request, None, None).unwrap();
+        let (body, _) = create_response(&request, None, None, false).unwrap();
         assert_eq!(body["parallel_tool_calls"], false);
     }
 
@@ -725,6 +748,7 @@ mod tests {
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
             None,
+            false,
         )
         .expect("model mismatch should not be rejected by local state validation");
     }
@@ -738,6 +762,7 @@ mod tests {
             &request,
             Some(&crate::ProviderConversationState::OpenAiResponses(state)),
             None,
+            false,
         )
         .unwrap_err()
         .to_string();
@@ -753,7 +778,8 @@ mod tests {
             create_response(
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-                None
+                None,
+                false
             )
             .is_err()
         );
@@ -768,7 +794,8 @@ mod tests {
             create_response(
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
-                None
+                None,
+                false
             )
             .is_err()
         );
@@ -784,8 +811,90 @@ mod tests {
                 &request,
                 Some(&crate::ProviderConversationState::OpenAiResponses(state)),
                 None,
+                false,
             )
             .is_err()
+        );
+    }
+
+    // ── Native web search injection ─────────────────────────────────
+
+    #[test]
+    fn native_web_search_injects_hosted_tool() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "hello")],
+            max_tokens: 256,
+        });
+        // No function tools — only native web search.
+        let (body, _) = create_response(&request, None, None, true).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "web_search");
+    }
+
+    #[test]
+    fn native_web_search_off_omits_hosted_tool() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "hello")],
+            max_tokens: 256,
+        });
+        let (body, _) = create_response(&request, None, None, false).unwrap();
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn native_web_search_coexists_with_function_tools() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "run pwd")],
+            max_tokens: 128,
+        })
+        .with_tools(vec![Tool {
+            name: "bash".to_string(),
+            description: Some("Run a command".to_string()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}}
+            }),
+        }]);
+
+        let (body, _) = create_response(&request, None, None, true).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        let types: Vec<&str> = tools.iter().map(|t| t["type"].as_str().unwrap()).collect();
+        assert!(types.contains(&"web_search"));
+        assert!(types.contains(&"function"));
+    }
+
+    #[test]
+    fn native_web_search_does_not_replace_mcp_web_search() {
+        // An MCP-provided `web_search` function tool must stay as a
+        // function — native web search is an ADDITIONAL hosted tool.
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::new_text(Role::User, "search for AI news")],
+            max_tokens: 256,
+        })
+        .with_tools(vec![Tool {
+            name: "web_search".to_string(),
+            description: Some("Search the web via MCP server".to_string()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}}
+            }),
+        }]);
+
+        let (body, _) = create_response(&request, None, None, true).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        // Both exist: the MCP web_search as a function, plus native hosted tool.
+        assert!(tools.iter().any(|t| t["type"] == "web_search"));
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["type"] == "function" && t["name"] == "web_search")
         );
     }
 }

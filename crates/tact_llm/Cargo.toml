@@ -12,9 +12,11 @@ async-openai = { workspace = true }
 async-openai-responses = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
+reqwest13 = { workspace = true }
 eventsource-stream = { workspace = true }
 reqwest-eventsource = { workspace = true }
 secrecy = { workspace = true }
+secrecy10 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

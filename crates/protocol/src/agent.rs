@@ -202,6 +202,11 @@ pub enum AgentUpdate {
     StepFailed {
         idx: usize,
         tool_id: String,
+        /// Tool argument summary (e.g. the web-search query) so a failed
+        /// card keeps a distinguishable title even when the failure arrives
+        /// without one. The TUI falls back to the `StepStarted` summary when
+        /// this is empty.
+        arg_summary: String,
         error: String,
     },
     /// Incremental text produced while a tool invocation is still running.

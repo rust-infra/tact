@@ -31,6 +31,16 @@
 
 
 
+## 1. 2026-08-09 — OpenAI Responses 托管 web search（`protocol = "responses"`）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| PR | https://github.com/laohanlinux/tact/pull/62（分支 `feat/responses-web-search`） |
+| 症状 / 动机 | Responses adapter 只发送 function tools，OpenAI `protocol = "responses"` 会话没有托管（provider 执行）web search；用户只能自接 MCP `web_search` function tool，或退回 Chat Completions。 |
+| 决策 | Hosted web search 是 **Responses 协议级能力**，与协议背后的端点/provider 无关：只要选择 `protocol = "responses"`，adapter 就在每次普通 `/responses` 请求中注入 `Tool::WebSearch`（`create_response(..., native_web_search = true)`；只有 `/responses/compact` 传 `false`——压缩端点不接受 tools）——OpenAI、DeepSeek 与 custom OpenAI-compatible 端点一视同仁，没有按 provider 的开关（`OpenAiResponsesAdapter` 不再有 `native_web_search` 标志；`ResponsesCapabilities::hosted_tools` 对每个 Responses 端点都包含 `WebSearch`）。Provider 在服务端执行搜索，Tact 只通过真实 Step 事件渲染工具卡片（`output_item.added` → `StepStarted`，每个 index 首次 `output_item.done` → `StepFinished`/`StepFailed`；`done` 时仍为 `in_progress`/`searching` 一律判失败）。`web_search_call` 永远不会变成 `ContentBlock::ToolUse`，stop reason 保持 `completed`。兼容端点若在 search action 返回 `queries` 数组而非单数 `query`，由 `wire::normalize_web_search_call_query` 处理（仅在 typed 解析时回填 `query`，原始 item 按原样回放）。`AgentUpdate::StepFailed` 新增 `arg_summary`，失败卡片标题能保留 query。DeepSeek 保留代码路径，但配置解析仍按 #57 拒绝，直到其 Responses 支持重新启用。 |
+| 改后行为 | 任意 `protocol = "responses"` 会话——OpenAI、DeepSeek 或 custom OpenAI-compatible——都自动获得托管 web search；TUI 显示 `🔍 Web Search` 卡片，标题为 query，sources 为可展开详情；失败携带 status/query/action 诊断。 |
+| 指针 | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`、`crates/tact_llm/src/provider.rs`（`build_openai_responses`）、`crates/tui/src/widgets/tool_widget.rs`、AGENTS.md "Hosted tools (Provider-executed) — design invariants"、[Ch 22 §6.2.1.1](./22_chapter_llm_zh.md)。 |
 
 ## 1. 2026-08-09 — 任务统计行 `[copy]` 复制最近一轮
 

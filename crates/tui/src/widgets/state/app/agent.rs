@@ -178,8 +178,9 @@ impl App {
             AgentUpdate::StepFailed {
                 idx,
                 tool_id,
+                arg_summary,
                 error,
-            } => self.on_step_failed(idx, tool_id, error),
+            } => self.on_step_failed(idx, tool_id, arg_summary, error),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -509,13 +510,20 @@ impl App {
         }
     }
 
-    fn on_step_failed(&mut self, idx: usize, tool_id: String, error: String) {
+    fn on_step_failed(&mut self, idx: usize, tool_id: String, arg_summary: String, error: String) {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
             let elapsed_us = active.started_at.elapsed().as_micros() as u64;
             let tool_name = active.output.tool_name.clone();
-            let arg_summary = active.output.arg_summary.clone();
+            // Prefer the summary carried by the failure (e.g. a web-search
+            // query that was only populated at `done`), falling back to the
+            // `StepStarted` value so regular tool failures keep their title.
+            let arg_summary = if arg_summary.is_empty() {
+                active.output.arg_summary.clone()
+            } else {
+                arg_summary
+            };
             let msgs = self.msgs();
             let output = ToolWidget::new(&self.theme, &msgs)
                 .with_tool(tool_name)
@@ -1889,9 +1897,38 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
             tool_id: "tool_read_1".into(),
+            arg_summary: String::new(),
             error: "file not found".into(),
         });
         assert!(matches!(app.status, Status::Idle));
+    }
+
+    #[test]
+    fn step_failed_keeps_arg_summary_in_failed_card_title() {
+        let mut app = make_app();
+        // Started without a query (action not yet populated), then failed with
+        // the query carried on the failure: the failed card title must show it.
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "ws_1".into(),
+            tool_name: "web_search".into(),
+            arg_summary: String::new(),
+            arg_full: String::new(),
+            presentation: tact_protocol::ToolPresentationInfo::generic("web_search"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            tool_id: "ws_1".into(),
+            arg_summary: "Rust async".into(),
+            error: "web search failed (status: Failed, query: \"Rust async\")".into(),
+        });
+
+        let block = app.tools.blocks.last().expect("failed tool block");
+        let title = &block.output.title_raw;
+        assert!(
+            title.contains("Rust async"),
+            "failed card title must keep the query, got: {title}"
+        );
     }
 
     #[test]

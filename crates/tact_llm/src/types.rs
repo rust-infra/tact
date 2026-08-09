@@ -36,6 +36,26 @@ pub enum OpenAiProtocol {
     Responses,
 }
 
+/// Wire dialect used by a Chat Completions request.
+///
+/// DeepSeek and Kimi are not separate providers: they share the
+/// OpenAI-compatible transport and only differ in the body fields injected by
+/// their [`crate::OpenAiBodyHook`] implementations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatCompletionsDialect {
+    Standard,
+    DeepSeek,
+    Kimi,
+}
+
+impl ChatCompletionsDialect {
+    /// Whether this dialect injects a top-level `user_id` for KV-cache
+    /// isolation. Only DeepSeek currently supports it.
+    pub fn supports_user_id(self) -> bool {
+        matches!(self, Self::DeepSeek)
+    }
+}
+
 /// Reasoning effort forwarded to OpenAI reasoning models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

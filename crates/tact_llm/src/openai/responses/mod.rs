@@ -9,8 +9,15 @@ mod wire;
 pub use capabilities::{ResponsesCapabilities, ResponsesToolKind};
 pub use request_options::ResponsesRequestOptions;
 
-use async_openai_responses::{Client, config::OpenAIConfig, types::responses::ResponseStreamEvent};
+use std::sync::Arc;
+
+use async_openai_responses::{
+    Client, config::Config, types::responses::ResponseStreamEvent,
+};
 use futures_util::StreamExt;
+use reqwest13::header::{AUTHORIZATION, HeaderMap};
+use secrecy::ExposeSecret as LegacyExposeSecret;
+use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
@@ -22,9 +29,63 @@ use self::{
     wire::parse_response_envelope,
 };
 use crate::{
-    CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse,
-    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
+    ApiKeyProvider, CreateMessageParams, CredentialProvider, LlmClient, LlmError, LlmRequestBody,
+    LlmResponse, ProviderConversationState, ProviderStateUpdate, ResponsesConversationState,
+    SharedHttpClient, context_hash,
 };
+
+/// Custom async-openai config for the Responses protocol.
+///
+/// Unlike the SDK's `OpenAIConfig`, this never injects an `OpenAI-Beta`
+/// header and leaves authorization to the credential provider so expiring
+/// tokens can be refreshed per request.
+#[derive(Clone, Debug)]
+struct ResponsesCompatConfig {
+    api_base: String,
+    api_key: Option<SecretString>,
+    empty_api_key: SecretString,
+}
+
+impl ResponsesCompatConfig {
+    fn new(api_base: String, api_key: Option<SecretString>) -> Self {
+        Self {
+            api_base,
+            api_key,
+            empty_api_key: SecretString::from(String::new()),
+        }
+    }
+}
+
+impl Config for ResponsesCompatConfig {
+    fn headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(api_key) = &self.api_key {
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {}", api_key.expose_secret())
+                    .parse()
+                    .expect("bearer header value is valid"),
+            );
+        }
+        headers
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.api_base, path)
+    }
+
+    fn query(&self) -> Vec<(&str, &str)> {
+        vec![]
+    }
+
+    fn api_base(&self) -> &str {
+        &self.api_base
+    }
+
+    fn api_key(&self) -> &SecretString {
+        self.api_key.as_ref().unwrap_or(&self.empty_api_key)
+    }
+}
 
 fn set_default_id(value: &mut Value, default_id: String) {
     let Some(object) = value.as_object_mut() else {
@@ -36,8 +97,18 @@ fn set_default_id(value: &mut Value, default_id: String) {
 }
 
 fn normalize_stream_event_json(mut event: Value) -> Value {
-    let event_type = event.get("type").and_then(Value::as_str);
-    let terminal_status = match event_type {
+    let event_type = event.get("type").and_then(Value::as_str).map(str::to_owned);
+    // Compatible endpoints may emit a `web_search_call` search action with a
+    // `queries` array instead of the singular `query`; normalize the item
+    // before the typed stream parser deserializes it.
+    if matches!(
+        event_type.as_deref(),
+        Some("response.output_item.added" | "response.output_item.done")
+    ) && let Some(item) = event.get_mut("item")
+    {
+        wire::normalize_web_search_call_query(item);
+    }
+    let terminal_status = match event_type.as_deref() {
         Some("response.completed") => Some("completed"),
         Some("response.incomplete") => Some("incomplete"),
         Some("response.failed") => Some("failed"),
@@ -149,9 +220,16 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
 }
 
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
+///
+/// Hosted web search is a **Responses-protocol capability**, independent of
+/// the endpoint/provider behind it: every ordinary `/responses` request
+/// injects the hosted `Tool::WebSearch` alongside function tools, the provider
+/// executes it server-side, and Tact only renders it. The
+/// `/responses/compact` path never sends tools.
 #[derive(Clone)]
 pub struct OpenAiResponsesAdapter {
-    client: Client<OpenAIConfig>,
+    credentials: Arc<dyn CredentialProvider>,
+    http: SharedHttpClient,
     base_url: String,
     /// Optional `context_management.compact_threshold` (tokens) sent on
     /// every ordinary `/responses` request. `None` omits `context_management`
@@ -166,15 +244,26 @@ impl OpenAiResponsesAdapter {
         base_url: impl Into<String>,
         compact_threshold: Option<u32>,
     ) -> Self {
-        let base_url = base_url.into().trim_end_matches('/').to_string();
-        let config = OpenAIConfig::new()
-            .with_api_key(api_key)
-            .with_api_base(base_url.clone())
-            .with_org_id("")
-            .with_project_id("");
-        Self {
-            client: Client::with_config(config),
+        Self::new_with_auth(
+            Arc::new(ApiKeyProvider::new(api_key)),
             base_url,
+            compact_threshold,
+            SharedHttpClient::new(),
+        )
+    }
+
+    /// Build the adapter with request-time credential resolution and a shared
+    /// HTTP transport.
+    pub fn new_with_auth(
+        credentials: Arc<dyn CredentialProvider>,
+        base_url: impl Into<String>,
+        compact_threshold: Option<u32>,
+        http: SharedHttpClient,
+    ) -> Self {
+        Self {
+            credentials,
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
             compact_threshold,
         }
     }
@@ -183,16 +272,27 @@ impl OpenAiResponsesAdapter {
         &self.base_url
     }
 
+    /// Builds the SDK client for the current request after resolving
+    /// credentials, so OAuth-style flows can refresh tokens between calls.
+    async fn sdk_client(&self) -> Result<Client<ResponsesCompatConfig>, LlmError> {
+        let secret = self.credentials.resolve().await?;
+        let key = SecretString::from(LegacyExposeSecret::expose_secret(&secret).clone());
+        let config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        Ok(Client::build(self.http.inner().clone(), config))
+    }
+
     /// Builds the ordinary `/responses` wire request for this adapter,
     /// including `context_management` when a compact threshold is
     /// configured. Shared by the streaming and non-streaming paths so the
-    /// configured threshold can never be dropped by one of them.
+    /// configured threshold can never be dropped by one of them. Hosted web
+    /// search is always injected (`native_web_search = true`) because it is a
+    /// Responses-protocol capability — this path is never `/responses/compact`.
     fn build_wire_request(
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
-        create_response(request, provider_state, self.compact_threshold)
+        create_response(request, provider_state, self.compact_threshold, true)
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
@@ -258,8 +358,8 @@ impl LlmClient for OpenAiResponsesAdapter {
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)?;
-        let mut response_stream = self
-            .client
+        let client = self.sdk_client().await?;
+        let mut response_stream = client
             .responses()
             .create_stream_byot::<_, Value>(wire_request)
             .await
@@ -325,8 +425,8 @@ impl LlmClient for OpenAiResponsesAdapter {
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)?;
-        let response = self
-            .client
+        let client = self.sdk_client().await?;
+        let response = client
             .responses()
             .create_byot::<_, Value>(wire_request)
             .await
@@ -358,14 +458,14 @@ impl LlmClient for OpenAiResponsesAdapter {
         // items (including unknown/future item types) are preserved by
         // sending the request through the byot JSON path; no local summary
         // prompt or `create_message()` call is used.
-        let (body, _) = create_response(request, provider_state, None)?;
+        let (body, _) = create_response(request, provider_state, None, false)?;
         let compact_request = serde_json::json!({
             "model": request.model,
             "input": body["input"],
         });
         let request_body = serde_json::to_vec(&compact_request)?;
-        let resource = self
-            .client
+        let client = self.sdk_client().await?;
+        let resource = client
             .responses()
             .compact_byot::<_, Value>(compact_request)
             .await
@@ -406,6 +506,7 @@ mod tests {
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Tool,
     };
+    use async_openai_responses::types::responses::OutputItem;
 
     #[test]
     fn fills_missing_output_text_annotations_for_terminal_events() {
@@ -510,6 +611,68 @@ mod tests {
             .unwrap();
 
             assert!(event.is_some());
+        }
+    }
+
+    #[test]
+    fn parses_web_search_call_item_with_queries_array() {
+        // Compatible endpoints emit the search action with a `queries` array
+        // instead of the singular `query`; the stream parser must normalize
+        // the item before typed deserialization.
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            let event = parse_stream_event(serde_json::json!({
+                "type": event_type,
+                "sequence_number": 1,
+                "output_index": 0,
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws-1",
+                    "status": "completed",
+                    "action": {"type": "search", "queries": ["Tokyo weather", "ws_call_id=ws-1"]}
+                }
+            }))
+            .unwrap()
+            .expect("event must parse");
+
+            match event {
+                async_openai_responses::types::responses::ResponseStreamEvent::ResponseOutputItemAdded(
+                    ev,
+                ) => {
+                    let OutputItem::WebSearchCall(call) = &ev.item else {
+                        panic!("expected WebSearchCall item");
+                    };
+                    assert_eq!(
+                        call.action
+                            .as_ref()
+                            .and_then(|action| match action {
+                                async_openai_responses::types::responses::WebSearchToolCallAction::Search(
+                                    search,
+                                ) => Some(search.query.as_str()),
+                                _ => None,
+                            }),
+                        Some("Tokyo weather")
+                    );
+                }
+                async_openai_responses::types::responses::ResponseStreamEvent::ResponseOutputItemDone(
+                    ev,
+                ) => {
+                    let OutputItem::WebSearchCall(call) = &ev.item else {
+                        panic!("expected WebSearchCall item");
+                    };
+                    assert_eq!(
+                        call.action
+                            .as_ref()
+                            .and_then(|action| match action {
+                                async_openai_responses::types::responses::WebSearchToolCallAction::Search(
+                                    search,
+                                ) => Some(search.query.as_str()),
+                                _ => None,
+                            }),
+                        Some("Tokyo weather")
+                    );
+                }
+                other => panic!("expected output item event, got {other:?}"),
+            }
         }
     }
 

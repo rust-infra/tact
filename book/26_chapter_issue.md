@@ -31,6 +31,16 @@ Newest entries first. Each entry should include:
 
 
 
+## 1. 2026-08-09 — Hosted web search for OpenAI Responses (`protocol = "responses"`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| PR | https://github.com/laohanlinux/tact/pull/62 (branch `feat/responses-web-search`) |
+| Symptom / motivation | The Responses adapter only sent function tools, so OpenAI `protocol = "responses"` sessions had no hosted (provider-executed) web search; users had to wire an MCP `web_search` function tool or drop to Chat Completions. |
+| Decision | Hosted web search is a **Responses-protocol capability**, independent of the endpoint/provider: the adapter injects `Tool::WebSearch` on every ordinary `/responses` request whenever `protocol = "responses"` is chosen (`create_response(..., native_web_search = true)`; `false` only for `/responses/compact`, which accepts no tools) — for OpenAI, DeepSeek, and custom OpenAI-compatible endpoints alike, with no per-provider switch (`OpenAiResponsesAdapter` has no `native_web_search` flag; `ResponsesCapabilities::hosted_tools` includes `WebSearch` for every Responses endpoint). The provider executes the search server-side; Tact only renders a tool card from real Step events (`StepStarted` on `output_item.added`, `StepFinished`/`StepFailed` on the first `output_item.done` per index; `in_progress`/`searching` at `done` is a defensive failure). `web_search_call` never becomes `ContentBlock::ToolUse`, and stop reason stays `completed`. Compatible endpoints that emit the search action as a `queries` array instead of the singular `query` are handled by `wire::normalize_web_search_call_query` (fills `query` for typed parsing only; raw items are replayed verbatim). `AgentUpdate::StepFailed` gained `arg_summary` so failed cards keep the query in the title. DeepSeek keeps the code path but remains rejected at config resolution (#57) until its Responses support is re-enabled. |
+| Behavior after | Any `protocol = "responses"` session — OpenAI, DeepSeek, or custom OpenAI-compatible — automatically gets hosted web search; the TUI shows a `🔍 Web Search` card with the query as title and sources as expandable detail; failures carry status/query/action diagnostics. |
+| Pointers | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`, `crates/tact_llm/src/provider.rs` (`build_openai_responses`), `crates/tui/src/widgets/tool_widget.rs`, AGENTS.md "Hosted tools (Provider-executed) — design invariants", [Ch 22 §6.2.1.1](./22_chapter_llm.md). |
 
 ## 1. 2026-08-09 — Task-stats `[copy]` copies the last turn
 

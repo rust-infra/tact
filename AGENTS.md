@@ -54,6 +54,66 @@ If only wording polish is needed on one language, that is fine; do not leave one
 
 Current design: Codex-style rebuild — recent real user messages + `SUMMARY_PREFIX` handoff; entry path compacts **before** pushing `user_turn_message` and reserves incoming-turn size in `should_auto_compact`. Spec: `docs/superpowers/specs/2026-07-18-codex-style-compact-design.md`. Legacy single-summary path: `Agent::compact_history_legacy`.
 
+## Hosted tools (Provider-executed) — design invariants
+
+Hosted web search is a **Responses-protocol capability**, independent of the
+endpoint/provider behind the protocol. The Responses adapter injects the
+hosted `Tool::WebSearch` on **every** ordinary `/responses` request whenever
+the user chooses `protocol = "responses"` — for OpenAI, DeepSeek, and custom
+OpenAI-compatible endpoints alike. There is no per-provider switch and no
+capability negotiation: the protocol is the contract. The only exception is
+the `/responses/compact` path, which never sends tools. Do **not** regress
+these invariants. The same rules apply to **any future hosted tool**
+(file search, computer use, …): a hosted tool is one the Provider executes
+and Tact only renders.
+
+1. **Injection, never replacement.** `native_web_search` only *adds* a hosted
+   tool in `create_response`; it must never inspect or rewrite tool names.
+   An MCP-provided `web_search` function tool stays `Tool::Function` and both
+   mechanisms coexist. Hosted-tool injection is `false` only for the
+   `/responses/compact` path (the compact endpoint accepts no tools).
+2. **Provider executes; Tact only renders.** A hosted-tool output item (e.g.
+   `web_search_call`) must **never** become a `ContentBlock::ToolUse` (which
+   would enter `execute_tool_call`). Terminal stop reason stays `completed`
+   (not `tool_use`), so the agent loop finishes normally.
+3. **Drive the TUI via real Step events.** In `stream.rs`, emit
+   `StepStarted` on `output_item.added` (query may be empty — the provider
+   populates `action` later) and `StepFinished`/`StepFailed` on
+   `output_item.done` (emitted only on the **first** `done` for an index:
+   repeated `done` events overwrite the slot without re-emitting). Map
+   hosted-tool status enums exhaustively (for web search, all four
+   `WebSearchToolCallStatus` variants: `completed` → success, `failed` →
+   failed, and `in_progress`/`searching` at `done` → defensive failure,
+   never silent success). Do **not** add dedicated SSE events
+   (`response.web_search_call.in_progress/searching/completed`) —
+   `output_item.added/done` fully covers the lifecycle; keep the stream
+   whitelist minimal. (The dedicated events *do* exist in the official
+   OpenAI spec and async-openai, but their payload is only
+   `output_index`/`item_id`/`sequence_number` — no query or sources — so
+   subscribing to them adds nothing for the tool card; the query/sources
+   live on the `WebSearchToolCall.action` at `done`.)
+4. **Unified TUI rendering for hosted tools.** Every hosted tool renders
+   through the same `ToolWidget` as local tools — same ✓/✗ meta-row symbols,
+   same expandable detail card. The only hosted-tool specifics are:
+   - map its visual kind so result detail is expandable
+     (`kind_from_presentation` fallback: `web_search` →
+     `ToolVisualKind::Command`; add new hosted tools there too);
+   - have a readable display name (`tool_display_name`: `web_search` →
+     `🔍 Web Search`; add new hosted tools there too).
+   Do **not** introduce per-tool rendering flags (e.g. a
+   `suppress_phase_prefix`-style switch was tried and removed — hosted tools
+   keep the standard ✓/✗ meta row).
+5. **Query/sources come from the item's `action`** at `done`; the `added`
+   event may carry no action. Never require `include` for
+   `web_search_call.action.sources` — the provider fills sources in the item
+   by default.
+6. **Wire compatibility shim.** Some compatible endpoints (e.g. DeepSeek
+   Responses) emit `web_search_call` search actions with a `queries` array
+   instead of the singular `query` that async-openai 0.41.x models.
+   `wire::normalize_web_search_call_query` fills `query` from `queries` only
+   for typed parsing; the raw item JSON is preserved verbatim so follow-up
+   turns replay the provider's own shape.
+
 
 ## NetWork Proxy
 

@@ -1,16 +1,17 @@
 //! OpenAI-compatible `GET {base_url}/models` for `/model` picker supplement.
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::provider::{ProviderInfo, read_provider};
-use crate::types::ProviderKind;
+use secrecy::{ExposeSecret, SecretString};
 
-static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+use crate::provider::{ProviderInfo, get_provider};
+use crate::types::ProviderKind;
+use crate::{ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient};
 
 struct ModelsCache {
     base_url: String,
-    api_key: String,
+    api_key: SecretString,
     ids: Vec<String>,
 }
 
@@ -54,40 +55,59 @@ fn provider_supports_models_query(provider: &ProviderKind) -> bool {
 }
 
 pub fn is_models_query_supported() -> bool {
-    read_provider(|p| provider_supports_models_query(&p.provider))
+    provider_supports_models_query(&get_provider().provider)
 }
 
 /// Session-cached API model ids for the given provider.
 /// Soft-fails to empty. Skips HTTP when unsupported.
 pub async fn ensure_api_model_ids_for_provider(provider: &ProviderInfo) -> Vec<String> {
-    if !provider_supports_models_query(&provider.provider) {
-        return Vec::new();
-    }
-    ensure_api_model_ids_for_credentials(&provider.base_url, &provider.api_key).await
+    let profile = provider.to_profile();
+    let credentials = ApiKeyProvider::new(provider.api_key.clone());
+    ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await
 }
 
 /// Session-cached API model ids for the active provider.
 /// Soft-fails to empty. Skips HTTP when unsupported.
 pub async fn ensure_api_model_ids() -> Vec<String> {
-    let provider = read_provider(Clone::clone);
+    let provider = get_provider();
     ensure_api_model_ids_for_provider(&provider).await
 }
 
-async fn ensure_api_model_ids_for_credentials(base_url: &str, api_key: &str) -> Vec<String> {
+/// Session-cached API model ids for an explicit profile, credential, and
+/// transport. Soft-fails to empty. Skips HTTP when unsupported.
+pub async fn ensure_api_model_ids_for(
+    profile: &ProviderProfile,
+    credentials: &dyn CredentialProvider,
+    http: &SharedHttpClient,
+) -> Vec<String> {
+    if !provider_supports_models_query(&profile.provider) {
+        return Vec::new();
+    }
+    let Ok(secret) = credentials.resolve().await else {
+        return Vec::new();
+    };
+    ensure_api_model_ids_for_credentials(&profile.base_url, &secret, http).await
+}
+
+async fn ensure_api_model_ids_for_credentials(
+    base_url: &str,
+    secret: &SecretString,
+    http: &SharedHttpClient,
+) -> Vec<String> {
     {
         let guard = CACHE.lock().expect("models cache poisoned");
         if let Some(c) = guard.as_ref()
             && c.base_url == base_url
-            && c.api_key == api_key
+            && c.api_key.expose_secret().as_str() == secret.expose_secret().as_str()
         {
             return c.ids.clone();
         }
     }
-    let ids = fetch_model_ids(base_url, api_key).await;
+    let ids = fetch_model_ids(base_url, secret.expose_secret(), http).await;
     let mut guard = CACHE.lock().expect("models cache poisoned");
     *guard = Some(ModelsCache {
         base_url: base_url.to_string(),
-        api_key: api_key.to_string(),
+        api_key: secret.clone(),
         ids: ids.clone(),
     });
     ids
@@ -102,14 +122,15 @@ pub fn clear_models_cache_for_tests() {
 pub fn seed_models_cache_for_tests(base_url: &str, api_key: &str, ids: Vec<String>) {
     *CACHE.lock().expect("models cache poisoned") = Some(ModelsCache {
         base_url: base_url.to_string(),
-        api_key: api_key.to_string(),
+        api_key: SecretString::from(api_key.to_string()),
         ids,
     });
 }
 
-async fn fetch_model_ids(base_url: &str, api_key: &str) -> Vec<String> {
+async fn fetch_model_ids(base_url: &str, api_key: &str, http: &SharedHttpClient) -> Vec<String> {
     let url = models_url_from_base_url(base_url);
-    let resp = match CLIENT
+    let resp = match http
+        .inner()
         .get(&url)
         .header("Authorization", format!("Bearer {api_key}"))
         .timeout(Duration::from_millis(5000))
@@ -133,7 +154,7 @@ async fn fetch_model_ids(base_url: &str, api_key: &str) -> Vec<String> {
 fn cached_api_model_ids_for_tests(base_url: &str, api_key: &str) -> Option<Vec<String>> {
     let guard = CACHE.lock().expect("models cache poisoned");
     guard.as_ref().and_then(|c| {
-        if c.base_url == base_url && c.api_key == api_key {
+        if c.base_url == base_url && c.api_key.expose_secret().as_str() == api_key {
             Some(c.ids.clone())
         } else {
             None
@@ -144,8 +165,63 @@ fn cached_api_model_ids_for_tests(base_url: &str, api_key: &str) -> Option<Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::future::BoxFuture;
+
     use crate::provider::lock_provider_for_tests;
-    use crate::{ProviderInfo, ProviderKind};
+    use crate::{LlmError, ProviderInfo, ProviderKind};
+
+    #[derive(Debug)]
+    struct CountingCredential {
+        key: Arc<SecretString>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingCredential {
+        fn new(key: &str) -> Self {
+            Self {
+                key: Arc::new(SecretString::from(key.to_string())),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CredentialProvider for CountingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let key = self.key.clone();
+            Box::pin(async move { Ok((*key).clone()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingCredential;
+
+    impl CredentialProvider for FailingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            Box::pin(async {
+                Err(LlmError::Auth(
+                    "test credential unavailable".to_string(),
+                ))
+            })
+        }
+    }
+
+    fn openai_profile(base_url: &str) -> ProviderProfile {
+        ProviderProfile {
+            provider: ProviderKind::OpenAi,
+            base_url: base_url.to_string(),
+            model: "test-model".to_string(),
+            protocol: crate::OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+        }
+    }
 
     fn init_provider_for_test(kind: ProviderKind, base_url: &str) {
         crate::init_provider(ProviderInfo {
@@ -278,5 +354,92 @@ mod tests {
         // Different base_url → cache miss → soft-fail empty (unreachable host).
         init_provider_for_test(ProviderKind::OpenAi, "http://127.0.0.1:1/v1");
         assert!(ensure_api_model_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_credentials_resolve_per_request_and_hit_cache() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        let credentials = CountingCredential::new("sk-cache-hit");
+        let profile = openai_profile("https://main.example/v1");
+        seed_models_cache_for_tests(
+            "https://main.example/v1",
+            "sk-cache-hit",
+            vec!["cached-model".into()],
+        );
+
+        assert_eq!(
+            ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await,
+            vec!["cached-model".to_string()]
+        );
+        assert_eq!(credentials.calls(), 1);
+        assert_eq!(
+            ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await,
+            vec!["cached-model".to_string()]
+        );
+        assert_eq!(credentials.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn models_cache_distinguishes_credentials() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        let first = CountingCredential::new("sk-first");
+        let second = CountingCredential::new("sk-second");
+        let profile = openai_profile("https://same.example/v1");
+        seed_models_cache_for_tests(
+            "https://same.example/v1",
+            "sk-first",
+            vec!["first-model".into()],
+        );
+
+        assert_eq!(
+            ensure_api_model_ids_for(&profile, &first, &SharedHttpClient::default()).await,
+            vec!["first-model".to_string()]
+        );
+        // Different secret misses the cache and soft-fails on the closed port.
+        assert!(
+            ensure_api_model_ids_for(&profile, &second, &SharedHttpClient::default())
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            cached_api_model_ids_for_tests("https://same.example/v1", "sk-second").as_deref(),
+            Some(&[][..])
+        );
+    }
+
+    #[tokio::test]
+    async fn models_query_soft_fails_when_credential_resolve_fails() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        let profile = openai_profile("https://main.example/v1");
+
+        assert!(
+            ensure_api_model_ids_for(&profile, &FailingCredential, &SharedHttpClient::default())
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn models_query_skips_unsupported_provider_without_resolving() {
+        let _guard = lock_provider_for_tests();
+        clear_models_cache_for_tests();
+        let credentials = CountingCredential::new("sk-never-resolved");
+        let profile = ProviderProfile {
+            provider: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-sonnet".to_string(),
+            protocol: crate::OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+        };
+
+        assert!(
+            ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default())
+                .await
+                .is_empty()
+        );
+        assert_eq!(credentials.calls(), 0);
     }
 }

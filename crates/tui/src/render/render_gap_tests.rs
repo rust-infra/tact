@@ -541,6 +541,7 @@ fn plan_panel_lists_failed_step_description() {
     app.handle_agent_update(AgentUpdate::StepFailed {
         idx: 0,
         tool_id: "fail1".into(),
+        arg_summary: String::new(),
         error: "file not found".into(),
     });
 
