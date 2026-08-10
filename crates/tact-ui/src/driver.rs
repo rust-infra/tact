@@ -180,6 +180,25 @@ async fn handle_user_command_with_account(
             let stats_text = agent.runtime.stats.summary();
             agent.emit_update(AgentUpdate::SessionStats(stats_text));
         }
+        UserCommand::QueryBackground(task_id) => {
+            match agent
+                .tool_context
+                .background_manager
+                .check(task_id.as_deref())
+            {
+                Ok(output) => {
+                    // Fenced code block keeps the one-line-per-task listing (and
+                    // the single-task pretty JSON) aligned and copyable.
+                    let md = format!("## ⚙️ Background Tasks\n\n```text\n{output}\n```");
+                    agent.emit_update(AgentUpdate::MdInfo(md));
+                }
+                Err(err) => {
+                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                        "Background check failed: {err}"
+                    ))));
+                }
+            }
+        }
         UserCommand::SetPermissionMode(mode) => {
             let parsed = match mode.as_str() {
                 "plan" => tact::permission::PermissionMode::Plan,
@@ -346,5 +365,53 @@ mod tests {
             last.thinking_budget, None,
             "effort pick must clear stale thinking budget"
         );
+    }
+
+    #[tokio::test]
+    async fn query_background_emits_mdinfo_listing_when_no_tasks() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::QueryBackground(None), &work_dir).await;
+
+        let mut saw_md = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                assert!(md.contains("Background Tasks"), "md: {md}");
+                assert!(md.contains("No background tasks."), "md: {md}");
+                saw_md = true;
+            }
+        }
+        assert!(
+            saw_md,
+            "QueryBackground must emit MdInfo with the task listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_background_unknown_id_emits_error() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::QueryBackground(Some("deadbeef".into())),
+            &work_dir,
+        )
+        .await;
+
+        let mut saw_error = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::Error(err) = update {
+                assert!(
+                    err.to_string().contains("Unknown background task"),
+                    "err: {err}"
+                );
+                saw_error = true;
+            }
+        }
+        assert!(saw_error, "QueryBackground with unknown id must emit Error");
     }
 }

@@ -205,7 +205,6 @@ impl ProviderProfile {
             )),
         }
     }
-
 }
 
 /// True for the Kimi K3 family (`k3`, `k3-256k`) which exposes
@@ -230,7 +229,11 @@ mod tests {
 
     #[test]
     fn kimi_heuristics_follow_kind_url_and_model() {
-        let kimi = profile(ProviderKind::Kimi, "https://api.moonshot.cn/v1", "kimi-k2.5");
+        let kimi = profile(
+            ProviderKind::Kimi,
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+        );
         assert!(kimi.is_kimi());
         assert!(kimi.is_kimi_k2x("kimi-k2.5"));
         assert!(!kimi.is_kimi_k27("kimi-k2.5"));
@@ -249,14 +252,22 @@ mod tests {
         assert!(!coding.is_kimi_balance_supported());
         assert!(coding.is_kimi_usage_supported());
 
-        let proxy = profile(ProviderKind::OpenAi, "https://proxy.example.com/v1", "kimi-k2.5");
+        let proxy = profile(
+            ProviderKind::OpenAi,
+            "https://proxy.example.com/v1",
+            "kimi-k2.5",
+        );
         assert!(!proxy.is_kimi_balance_supported());
         assert!(!proxy.is_account_query_supported());
     }
 
     #[test]
     fn deepseek_balance_only_on_official_endpoint() {
-        let official = profile(ProviderKind::DeepSeek, "https://api.deepseek.com/v1", "deepseek-chat");
+        let official = profile(
+            ProviderKind::DeepSeek,
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+        );
         assert!(official.is_deepseek_balance_supported());
         assert!(official.is_account_query_supported());
 
@@ -280,31 +291,38 @@ mod tests {
 
     #[test]
     fn supports_vision_rejects_deepseek_like_targets() {
-        assert!(!profile(
-            ProviderKind::DeepSeek,
-            "https://api.deepseek.com",
-            "deepseek-chat"
-        )
-        .supports_vision());
-        assert!(!profile(
-            ProviderKind::OpenAi,
-            "https://proxy.example.com/v1",
-            "deepseek-chat"
-        )
-        .supports_vision());
-        assert!(profile(
-            ProviderKind::OpenAi,
-            "https://api.openai.com/v1",
-            "gpt-5"
-        )
-        .supports_vision());
+        assert!(
+            !profile(
+                ProviderKind::DeepSeek,
+                "https://api.deepseek.com",
+                "deepseek-chat"
+            )
+            .supports_vision()
+        );
+        assert!(
+            !profile(
+                ProviderKind::OpenAi,
+                "https://proxy.example.com/v1",
+                "deepseek-chat"
+            )
+            .supports_vision()
+        );
+        assert!(
+            profile(ProviderKind::OpenAi, "https://api.openai.com/v1", "gpt-5").supports_vision()
+        );
     }
 
     #[test]
     fn responses_capabilities_follow_protocol_and_provider() {
-        let mut responses = profile(ProviderKind::Custom("gateway".into()), "https://g.example", "gpt-5");
+        let mut responses = profile(
+            ProviderKind::Custom("gateway".into()),
+            "https://g.example",
+            "gpt-5",
+        );
         responses.protocol = OpenAiProtocol::Responses;
-        let capabilities = responses.responses_capabilities().expect("responses capabilities");
+        let capabilities = responses
+            .responses_capabilities()
+            .expect("responses capabilities");
         assert!(capabilities.responses);
         assert_eq!(
             capabilities.hosted_tools,
@@ -349,9 +367,15 @@ mod tests {
                 .unwrap(),
             ChatCompletionsDialect::Standard
         );
-        assert!(profile(ProviderKind::Anthropic, "https://api.anthropic.com", "claude")
+        assert!(
+            profile(
+                ProviderKind::Anthropic,
+                "https://api.anthropic.com",
+                "claude"
+            )
             .dialect_for("claude")
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -360,5 +384,4 @@ mod tests {
         assert!(!ChatCompletionsDialect::Standard.supports_user_id());
         assert!(!ChatCompletionsDialect::Kimi.supports_user_id());
     }
-
 }

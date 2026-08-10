@@ -414,6 +414,17 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 clear_input: true,
             }
         }
+        "background" => {
+            // `/background` lists all background tasks; `/background <id>`
+            // shows one task (pretty JSON). The optional id comes from the
+            // remaining input after the command token.
+            let task_id = app.input.split_whitespace().nth(1).map(str::to_string);
+            let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
         "lang" => {
             app.toggle_language();
             CommandExecOutcome {
@@ -697,6 +708,32 @@ mod tests {
             user_cmd_rx.try_recv().is_err(),
             "Done must not dispatch Cancel"
         );
+    }
+
+    #[test]
+    fn background_command_dispatches_list_all() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.input = "/background".into();
+        let outcome = execute_palette_command(&mut app, "background");
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected QueryBackground"),
+            UserCommand::QueryBackground(None)
+        ));
+    }
+
+    #[test]
+    fn background_command_forwards_task_id() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.input = "/background 018f3a2c".into();
+        let outcome = execute_palette_command(&mut app, "background");
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected QueryBackground"),
+            UserCommand::QueryBackground(Some(id)) if id == "018f3a2c"
+        ));
     }
 
     #[test]

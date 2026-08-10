@@ -99,8 +99,11 @@ mod tests {
             "kimi-k2.5",
             "https://api.moonshot.cn/v1",
         );
-        let openai_kimi_url_profile =
-            profile(ProviderKind::OpenAi, "kimi-k2.5", "https://api.moonshot.cn/v1");
+        let openai_kimi_url_profile = profile(
+            ProviderKind::OpenAi,
+            "kimi-k2.5",
+            "https://api.moonshot.cn/v1",
+        );
 
         let request = sample_request_with_thinking()
             .with_reasoning_effort(Some(crate::OpenAiReasoningEffort::High));

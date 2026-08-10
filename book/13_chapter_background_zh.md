@@ -17,6 +17,10 @@
 
 两工具仅在主 `toolset()` 中。`check_background` 无 `task_id` 时列出所有已知任务（按开始时间排序）；未知 id 返回错误（`Unknown background task <id>`）。
 
+TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`，并把结果以 Markdown（`AgentUpdate::MdInfo`）渲染到日志（[Ch 23](./23_chapter_tui_zh.md) §3）。
+
+**实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。
+
 ---
 
 ## 2. 数据模型
@@ -53,6 +57,7 @@ sequenceDiagram
     participant Agent
     participant BM as BackgroundManager
     participant Task as tokio::spawn
+    participant TUI as TUI card
     participant FS as .tact/background/tasks/
 
     Agent->>BM: background_run("cargo build")
@@ -63,7 +68,11 @@ sequenceDiagram
 
     Note over Task: runs concurrently with the agent loop
 
-    Task->>Task: await output (timeout 120s, kill_on_drop)
+    loop stdout/stderr 实时推送
+        Task->>TUI: ToolProgress (约 50ms 节流)
+    end
+    Task->>Task: await exit (timeout 120s, kill_on_drop)
+    Task->>TUI: BackgroundTaskFinished (✓/✗ + 最终输出)
     Task->>FS: write record (completed/error + output)
 
     Agent->>BM: check_background("018f3a2c")
@@ -78,7 +87,8 @@ sequenceDiagram
 | Shell | `sh -c <command>`，cwd = `ToolContext.work_dir` |
 | 校验 | `crate::shell::validate_shell_command` — 与 `bash` 相同硬 blocklist（`sudo`、`rm -rf /`、…） |
 | 超时 | 固定 120 秒；到期 status 变为 `Error`，附带 `"Error: Timeout (120s)"` |
-| 输出上限 | stdout+stderr 前 50,000 字符；其余丢弃 |
+| 实时推送 | stdout/stderr 增量读取并以 `AgentUpdate::ToolProgress` 推送（约 50ms 一批，实时预览保留最近 ~4 KB）；不再等完成后一次性缓冲 |
+| 输出上限 | stdout+stderr 前 50,000 字符持久化到记录；其余丢弃 |
 | 退出码 | 非零退出 → `Error`；退出码本身不记录 |
 | 进程清理 | `kill_on_drop(true)` — future 被 drop 时子进程被 kill |
 
@@ -113,7 +123,7 @@ output: "Process interrupted (agent restarted)"
 
 `background_run` 立即返回，因此对调度器（[任务与工具调度](./11_chapter_task_zh.md)）是廉价调用 —— 但作为 shell 邻近工具，其权限分类来自 [权限模型](./10_chapter_permission_zh.md)，工具名为 `background_run` 而非 `bash`。
 
-**无完成通知**：agent（或驱动它的模型）必须轮询 `check_background`。模型常自行发现 `background_run` → 继续其他工作 → 结束前 `check_background` 的模式。[sleep 工具](./07_chapter_tool_zh.md) 部分存在是为使该轮询循环可行。
+**TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**：它必须轮询 `check_background` 才能在 context 中看到结果。模型常自行发现 `background_run` → 继续其他工作 → 结束前 `check_background` 的模式。[sleep 工具](./07_chapter_tool_zh.md) 部分存在是为使该轮询循环可行。
 
 与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 而是在记录本身硬 cap 50k 字符，轮询时完整 JSON（含 output）进入 context。
 
@@ -138,7 +148,7 @@ output: "Process interrupted (agent restarted)"
 | 缺口 | 详情 |
 |------|------|
 | 固定 120s 超时 | 不可配置；长构建或测试套件恒为 `Error: Timeout` |
-| 无完成 push | Agent 须轮询；任务完成时无 `AgentUpdate` 或通知 |
+| 模型无完成 push | TUI 卡片会收到 `BackgroundTaskFinished`，但 **模型** 仍无完成 push，须轮询 `check_background` |
 | 无取消工具 | 运行中任务无法被模型 kill；仅超时或进程退出结束 |
 | 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |

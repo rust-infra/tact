@@ -82,6 +82,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("lang", "Toggle language (EN/中文)"),
     ("stats", "Show session statistics"),
     ("tasks-dag", "Show task dependency DAG"),
+    ("background", "Check background task status"),
 ];
 
 /// A skill available in the TUI slash / palette picker.

@@ -16,6 +16,10 @@ Background tasks are the "fire-and-forget" counterpart to the synchronous `bash`
 
 Both tools are in the main `toolset()` only. `check_background` with no `task_id` lists all known tasks sorted by start time; with an unknown id it returns an error (`Unknown background task <id>`).
 
+TUI users do not need the model to call a tool to see background jobs: the **`/background`** slash command lists all tasks, and **`/background <id>`** shows a single task (pretty JSON). It sends `UserCommand::QueryBackground(Option<String>)` to the command driver, which calls the same `SharedBackgroundManager::check` and renders the result into the log as Markdown (`AgentUpdate::MdInfo`) — see [Ch 23](./23_chapter_tui.md) §3.
+
+**Live output (bash-like).** While a task runs, its stdout/stderr stream into the `background_run` tool card in real time (throttled to ~50 ms batches, last ~4 KB kept for the live preview), exactly like the synchronous `bash` card. The card stays in a running state even though the invocation already returned, and closes with ✓/✗, elapsed time, and the final output when the process exits (see §3 and §6).
+
 ---
 
 ## 2. Data Model
@@ -52,6 +56,7 @@ sequenceDiagram
     participant Agent
     participant BM as BackgroundManager
     participant Task as tokio::spawn
+    participant TUI as TUI card
     participant FS as .tact/background/tasks/
 
     Agent->>BM: background_run("cargo build")
@@ -62,7 +67,11 @@ sequenceDiagram
 
     Note over Task: runs concurrently with the agent loop
 
-    Task->>Task: await output (timeout 120s, kill_on_drop)
+    loop stdout/stderr streaming
+        Task->>TUI: ToolProgress (throttled ~50ms)
+    end
+    Task->>Task: await exit (timeout 120s, kill_on_drop)
+    Task->>TUI: BackgroundTaskFinished (✓/✗ + final output)
     Task->>FS: write record (completed/error + output)
 
     Agent->>BM: check_background("018f3a2c")
@@ -77,7 +86,8 @@ Details worth knowing:
 | Shell | `sh -c <command>`, cwd = `ToolContext.work_dir` |
 | Validation | `crate::shell::validate_shell_command` — same hard blocklist as `bash` (`sudo`, `rm -rf /`, …) |
 | Timeout | Fixed 120 seconds; on expiry status becomes `Error` with `"Error: Timeout (120s)"` |
-| Output cap | First 50,000 chars of stdout+stderr; the rest is dropped |
+| Live streaming | stdout/stderr are read incrementally and pushed as `AgentUpdate::ToolProgress` (≈50 ms batches, last ~4 KB kept in the live preview); no output is buffered until completion |
+| Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the rest is dropped |
 | Exit code | Non-zero exit → `Error`; the code itself is not recorded |
 | Process cleanup | `kill_on_drop(true)` — the child is killed if the future is dropped |
 
@@ -112,7 +122,7 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 `background_run` returns immediately, so from the scheduler's perspective ([Tasks and Tool Scheduling](./11_chapter_task.md)) it is a cheap call — but note that as a shell-adjacent tool it takes its permission classification from the [Permission Model](./10_chapter_permission.md) under the name `background_run`, not `bash`.
 
-There is **no completion notification**: the agent (or the model driving it) must poll `check_background`. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
+**The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push: it must poll `check_background` to see the result in context. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
 
 Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — instead it is hard-capped at 50k chars in the record itself, and the full JSON (including output) lands in context when polled.
 
@@ -137,7 +147,7 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | Gap | Detail |
 |-----|--------|
 | Fixed 120s timeout | Not configurable; long builds or test suites always die as `Error: Timeout` |
-| No completion push | Agent must poll; there is no `AgentUpdate` or notification when a task finishes |
+| No model completion push | The TUI card gets `BackgroundTaskFinished`, but the **model** still has no completion push and must poll `check_background` |
 | No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |

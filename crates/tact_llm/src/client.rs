@@ -90,7 +90,9 @@ impl LlmClient for LlmProvider {
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, ui_tx).await,
-            LlmProvider::ChatCompletions(c) => c.stream_message(request, provider_state, ui_tx).await,
+            LlmProvider::ChatCompletions(c) => {
+                c.stream_message(request, provider_state, ui_tx).await
+            }
             LlmProvider::OpenAiResponses(o) => {
                 o.stream_message(request, provider_state, ui_tx).await
             }
@@ -134,9 +136,7 @@ impl LlmProvider {
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {
             LlmProvider::ChatCompletions(c) => c.set_user_id(user_id.to_string()),
-            LlmProvider::Anthropic(_)
-            | LlmProvider::OpenAiResponses(_)
-            | LlmProvider::Mock(_) => {}
+            LlmProvider::Anthropic(_) | LlmProvider::OpenAiResponses(_) | LlmProvider::Mock(_) => {}
         }
     }
 }

@@ -1,7 +1,10 @@
-use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
-    ToolPresentation,
+use crate::{
+    background::BackgroundProgressSink,
+    tool::{
+        ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
+        PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
+        ToolPresentation,
+    },
 };
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -29,7 +32,7 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Command,
         display_name: "⚙️ Background Run",
-        live_output: LiveOutputPolicy::Standard,
+        live_output: LiveOutputPolicy::Background,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
         compact_result_to_meta: false,
@@ -44,7 +47,10 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the background manager fails to run the command
 /// (e.g., invalid command or internal error).
 pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
-    ctx.background_manager.run(input.command, &ctx.work_dir)
+    // Stream live output into the invocation's tool card while the task runs.
+    let progress = BackgroundProgressSink::new(ctx.progress_reporter.tool_id(), ctx.ui_tx.clone());
+    ctx.background_manager
+        .run(input.command, &ctx.work_dir, Some(progress))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

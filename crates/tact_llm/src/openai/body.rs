@@ -6,7 +6,8 @@
 use serde_json::Value;
 
 use crate::{
-    CreateMessageParams, LlmError, ProviderProfile, convert::build_openai_request,
+    CreateMessageParams, LlmError, ProviderProfile,
+    convert::build_openai_request,
     inject::{inject_reasoning_content, inject_user_id, thinking_budget_enabled},
 };
 

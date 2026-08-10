@@ -207,6 +207,7 @@ pub struct Messages {
     pub cmd_skill_reload: &'static str,
     pub cmd_plugin: &'static str,
     pub cmd_tasks_dag: &'static str,
+    pub cmd_background: &'static str,
 
     // ---- /model-subagent ----
     pub model_subagent_select_prompt_tmpl: &'static str,
@@ -477,6 +478,7 @@ impl Messages {
             cmd_skill_reload: "Reload skills from disk",
             cmd_plugin: "Manage plugins and marketplaces",
             cmd_tasks_dag: "Show task dependency DAG",
+            cmd_background: "Check background task status",
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
             permission_option_plan: "Plan — read only",
@@ -731,6 +733,7 @@ impl Messages {
             cmd_skill_reload: "从磁盘重新加载技能",
             cmd_plugin: "管理插件和市场",
             cmd_tasks_dag: "显示任务依赖 DAG",
+            cmd_background: "查看后台任务状态",
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
             permission_option_plan: "只读 — 阻止所有写操作",

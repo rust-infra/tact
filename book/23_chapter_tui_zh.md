@@ -70,6 +70,7 @@ pub enum UserCommand {
     Cancel,
     Compact,
     QueryBalance,
+    QueryBackground(Option<String>),
 }
 ```
 
@@ -79,6 +80,7 @@ pub enum UserCommand {
 | **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
+| **`QueryBackground`** | `/background` 或 `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` 输出任务列表 / 单个任务 JSON（[Ch 13](./13_chapter_background_zh.md)） |
 
 ### `/compact` 状态消息
 

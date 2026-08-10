@@ -238,6 +238,10 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
             meta.presentation.live_output,
             crate::tool::LiveOutputPolicy::FullTranscript
         ),
+        keep_live: matches!(
+            meta.presentation.live_output,
+            crate::tool::LiveOutputPolicy::Background
+        ),
         detail: match meta.presentation.detail {
             DetailPolicy::None => tact_protocol::ToolDetailKind::None,
             DetailPolicy::Result => tact_protocol::ToolDetailKind::Result,

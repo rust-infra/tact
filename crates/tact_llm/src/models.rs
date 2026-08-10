@@ -392,6 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn explicit_credentials_resolve_per_request_and_hit_cache() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
@@ -416,6 +417,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn models_cache_distinguishes_credentials() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
@@ -445,6 +447,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn models_query_soft_fails_when_credential_resolve_fails() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
@@ -458,6 +461,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
     async fn models_query_skips_unsupported_provider_without_resolving() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();

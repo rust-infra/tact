@@ -29,7 +29,25 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-10 — `background_run` streams live output to the tool card (bash-like)
 
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | `background_run` buffered the whole command output with `Command::output()` and its tool card finalized instantly ("started"), so users saw nothing until they polled `check_background` — unlike `bash`, whose card streams output live. |
+| Decision | Add a keep-live card contract: `ToolPresentationInfo.keep_live` (mapped from new `LiveOutputPolicy::Background`) makes the TUI leave the card active after `StepFinished`; the manager now reads stdout/stderr incrementally (`read_pipe` + `Utf8Decoder` + ~50ms throttled `ToolProgress`, live preview keeps last ~4 KB) and closes the card with a new `AgentUpdate::BackgroundTaskFinished { tool_id, success, message, output }` carrying ✓/✗, elapsed time and the capped final output. `background_run` passes a `BackgroundProgressSink` (tool_id + `ui_tx`) into `SharedBackgroundManager::run`; record persistence and the 120s timeout are unchanged. |
+| Behavior after | `background_run cargo build` shows a spinner + live build output in the TUI card, then finalizes with ✓/✗ and duration when the process exits — even if the agent turn already ended. The model still has no completion push and must poll `check_background`. |
+| Pointers | `crates/tact/src/background.rs` (`BackgroundProgressSink`, `run_background_process`); `crates/tact/src/tool/background_run.rs`; `LiveOutputPolicy::Background` in `crates/tact/src/tool/metadata.rs`; `AgentUpdate::BackgroundTaskFinished` in `crates/protocol/src/agent.rs`; TUI `on_step_finished` / `on_background_task_finished` in `crates/tui/src/widgets/state/app/agent.rs`; [Ch 13](./13_chapter_background.md), [Ch 25](./25_chapter_protocol.md). |
+
+## 1. 2026-08-10 — `/background` slash command for background job status
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Background jobs started with `background_run` could only be inspected by asking the model to call the `check_background` tool; there was no direct TUI affordance, so users had to type a prompt just to poll a task. |
+| Decision | Add a TUI slash command `/background` (`/background <id>` for one task) backed by a new `UserCommand::QueryBackground(Option<String>)`. The command driver (`crates/tact-ui/src/driver.rs`) calls the shared `ToolContext.background_manager.check(id)` — the same code path as the `check_background` tool — and emits `AgentUpdate::MdInfo` with a `## ⚙️ Background Tasks` fenced code block (or `AgentUpdate::Error` for an unknown id). The command is listed in `PALETTE_COMMANDS`, localized in `i18n.rs` (EN/ZH), and rendered with the `🖥` palette emoji. |
+| Behavior after | `/background` prints one line per task (id, status, command); `/background <id>` prints the task's pretty JSON; an unknown id shows an error. No new state, no completion push — the command only reads the persisted/in-memory records. |
+| Pointers | `UserCommand::QueryBackground` in `crates/protocol/src/agent.rs`; driver match arm in `crates/tact-ui/src/driver.rs`; `PALETTE_COMMANDS` in `crates/tui/src/widgets/state/mod.rs`; `execute_palette_command` in `crates/tui/src/handlers/mod.rs`; [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) §3. |
 
 ## 1. 2026-08-09 — Hosted web search for OpenAI Responses (`protocol = "responses"`)
 

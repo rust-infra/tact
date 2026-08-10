@@ -56,6 +56,8 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>, // 不含已删除
         reason: TasksChangeReason, // Created | Updated
     },
+    /// 后台任务（`background_run`）完成时终结 keep-live 卡片
+    BackgroundTaskFinished { tool_id, success, message, output },
 }
 
 pub enum ThinkingChunk {
@@ -148,6 +150,8 @@ stateDiagram-v2
 | Progress | `ToolProgress { tool_id, chunks }` | in-flight tool | 仅更新匹配 active block；保留 thinking/loading gate 与 scroll 意图 |
 | Succeeded | `StepFinished { result }` | post-flight | `finalize_tool_block`；设置 `plan.steps[idx].output` |
 | Failed | `StepFailed { error }` | permission / hooks / execution | 失败 tool card 或系统消息；`Status → Idle` |
+
+**Keep-live 卡片（`ToolPresentationInfo.keep_live`）：** `background_run` 这类即发即忘工具在其底层工作完成前就已返回。它们的 `StepFinished` 只记录 plan step，**不会**终结卡片 —— `ToolProgress` 继续把实时输出流入仍活动的卡片，稍后的 `BackgroundTaskFinished { tool_id, success, message, output }` 以真实结果（✓/✗、耗时、最终输出）关闭它。若活动卡片已不存在（如重启后），TUI 退回显示一条系统消息。
 
 **`arg_summary` vs `arg_full`：** `arg_summary` 截断（≤120 字符）供 log 标题行。`arg_full` 为完整参数字符串（路径、命令或原始 JSON），popup 与 diff 视图不依赖 TUI 内工具名启发式。
 

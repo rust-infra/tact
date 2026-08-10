@@ -69,6 +69,7 @@ pub enum UserCommand {
     Cancel,
     Compact,
     QueryBalance,
+    QueryBackground(Option<String>),
 }
 ```
 
@@ -78,6 +79,7 @@ pub enum UserCommand {
 | **`Cancel`** | `/cancel`, or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
 | **`Compact`** | `/compact` (idle only) | `agent.compact_history(None)` → native `/responses/compact` for Responses providers, local summarizer otherwise ([Ch 5](./05_chapter_compact.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
+| **`QueryBackground`** | `/background` or `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` with the task listing / single-task JSON ([Ch 13](./13_chapter_background.md)) |
 
 ### `/compact` status messages
 
