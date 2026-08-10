@@ -108,6 +108,25 @@ impl fmt::Display for OpenAiReasoningEffort {
     }
 }
 
+/// Convert Tact's provider-agnostic effort into the SDK's typed
+/// `ReasoningEffort` (vendored `async-openai-local`), so the Responses
+/// adapter can build the request with the typed builder instead of injecting
+/// `reasoning.effort` through JSON. The vendor adds `Max` so every variant
+/// maps one-to-one; the wire strings match `as_str()`.
+impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::ReasoningEffort {
+    fn from(effort: OpenAiReasoningEffort) -> Self {
+        match effort {
+            OpenAiReasoningEffort::None => Self::None,
+            OpenAiReasoningEffort::Minimal => Self::Minimal,
+            OpenAiReasoningEffort::Low => Self::Low,
+            OpenAiReasoningEffort::Medium => Self::Medium,
+            OpenAiReasoningEffort::High => Self::High,
+            OpenAiReasoningEffort::Xhigh => Self::Xhigh,
+            OpenAiReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
 impl OpenAiProtocol {
     pub fn as_str(self) -> &'static str {
         match self {

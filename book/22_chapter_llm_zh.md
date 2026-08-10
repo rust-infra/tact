@@ -336,14 +336,17 @@ Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 
 
 Responses 使用独立的 `responses_system_prompt_template.md`，不改变其他 provider 模板。其 skill 加载策略禁止对问候、闲聊和普通问题调用 `load_skill`；必须由用户显式 slash 调用或明确要求使用某个 skill，且 skill 描述不得自行要求必须调用该 skill。
 
-流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
+流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。若兼容端点在没有任何终态事件（无 `response.completed` / `response.incomplete` / `response.failed`）的情况下关闭流，则当输出序列完整（所有已 announce 的 `output_item.done` 均已收到）或已流式输出可见文本时，干净 EOF 会被视为终态：adapter 合成一个最小 completed 响应，并从 done 序列/流式文本重建输出；缺失 compaction 边界或空流仍然是硬协议错误。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
 用量计数器是**受检转换**：必填 token 字段缺失、不是无符号整数、或大于
 `u32` 都是硬性协议错误 — 数值绝不会被截断、回绕或钳制。
 
 此 adapter 不支持：background responses、Conversations 与
 `previous_response_id`。原生压缩是受支持的：解析出压缩阈值后，普通请求会携带
 `context_management`；`compact()` 会发送显式 `POST /responses/compact` 请求
-（见 [Ch 5](./05_chapter_compact_zh.md)）。
+（见 [Ch 5](./05_chapter_compact_zh.md)）。未实现 `/responses/compact`
+（HTTP 404/405）的端点会得到明确的
+`unsupported response state: endpoint does not support POST /responses/compact …`
+错误并点名 base URL，而不是倾倒 HTML 错误页。
 
 #### 6.2.1 转换流水线：`Message` → `/responses` input
 

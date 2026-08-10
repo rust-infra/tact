@@ -315,9 +315,6 @@ impl ResponsesStreamState {
             raw_terminal_output,
             ..
         } = self;
-        let response = terminal.ok_or_else(|| {
-            LlmError::Unsupported("OpenAI Responses stream ended without a terminal event".into())
-        })?;
         // Exactly one output sequence is normalized: the terminal `output`
         // array when present, otherwise the complete `output_item.done`
         // sequence, otherwise the visible-text recovery below. The done
@@ -331,6 +328,42 @@ impl ResponsesStreamState {
                 Some(done_items.values().cloned().collect::<Vec<_>>())
             } else {
                 None
+            }
+        };
+        let response = match terminal {
+            Some(response) => response,
+            None => {
+                // Compatible endpoints may close the SSE stream without a
+                // terminal event (no `response.completed` / `response.incomplete`
+                // / `response.failed`). When the stream itself is complete — a
+                // full `output_item.done` sequence or streamed visible text —
+                // synthesize a minimal completed response so the recovery
+                // branches below rebuild the output. A missing compaction
+                // boundary and an empty stream remain hard protocol errors.
+                if !pending_compactions.is_empty() {
+                    return Err(LlmError::Unsupported(
+                        "OpenAI Responses stream ended with an incomplete compaction item sequence"
+                            .to_string(),
+                    ));
+                }
+                if done_sequence.is_none() && output_text.is_empty() {
+                    return Err(LlmError::Unsupported(
+                        "OpenAI Responses stream ended without a terminal event".into(),
+                    ));
+                }
+                serde_json::from_value(serde_json::json!({
+                    "id": "compat-response",
+                    "object": "response",
+                    "created_at": 0,
+                    "model": "compat-model",
+                    "status": "completed",
+                    "output": [],
+                }))
+                .map_err(|error| {
+                    LlmError::StreamParse(format!(
+                        "synthesize fallback Responses response: {error}"
+                    ))
+                })?
             }
         };
         let mut normalized = if !response.output.is_empty() {
@@ -1059,6 +1092,112 @@ mod tests {
             )
             .unwrap();
         assert_eq!(streamed_update, direct_update);
+    }
+
+    // ── Stream end without a terminal event (compatible endpoints) ────
+
+    #[test]
+    fn no_terminal_event_recovers_from_complete_done_sequence() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(output_item_added(0, message_item("first")))
+            .unwrap();
+        state
+            .apply(output_item_done(0, message_item("first")))
+            .unwrap();
+        state
+            .apply(output_item_added(1, function_call_item()))
+            .unwrap();
+        state
+            .apply(output_item_done(1, function_call_item()))
+            .unwrap();
+        // The stream ends cleanly (EOF / `[DONE]`) without a terminal event;
+        // the complete done sequence must reconstruct the response.
+        let normalized = state.finish().unwrap();
+        assert!(
+            normalized
+                .blocks
+                .iter()
+                .any(|block| { matches!(block, ContentBlock::Text { text } if text == "first") })
+        );
+        assert!(normalized.blocks.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { name, .. } if name == "bash"
+            )
+        }));
+        assert!(matches!(
+            normalized.stop_reason,
+            Some(crate::StopReason::ToolUse)
+        ));
+        assert_eq!(normalized.output_items.len(), 2);
+    }
+
+    #[test]
+    fn no_terminal_event_recovers_visible_text() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "streamed answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        // No terminal event, no done sequence: the streamed text is the only
+        // source and must be recovered instead of hard-failing.
+        let normalized = state.finish().unwrap();
+        assert!(matches!(
+            normalized.blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == "streamed answer"
+        ));
+    }
+
+    #[test]
+    fn no_terminal_event_empty_stream_is_error() {
+        let state = ResponsesStreamState::default();
+        let error = state.finish().unwrap_err().to_string();
+        assert!(
+            error.contains("without a terminal event"),
+            "empty stream must keep the terminal-event error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn no_terminal_event_with_pending_compaction_is_error() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque"
+                }),
+            ))
+            .unwrap();
+        // Visible text exists but the compaction boundary was never completed:
+        // recovery must not silently drop the compacted baseline.
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 2,
+                "item_id": "msg_1",
+                "output_index": 1,
+                "content_index": 0,
+                "delta": "visible fallback",
+                "logprobs": []
+            })))
+            .unwrap();
+
+        let error = state.finish().unwrap_err().to_string();
+        assert!(
+            error.contains("compaction"),
+            "missing compaction boundary must hard-fail, got: {error}"
+        );
     }
 
     // ── Hosted web search tool-card events ────────────────────────────

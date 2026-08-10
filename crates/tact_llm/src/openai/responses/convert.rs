@@ -1,9 +1,9 @@
 use async_openai_responses::types::responses::{
-    CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput,
-    FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum, InputContent,
-    InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType, OutputStatus,
-    Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction,
-    ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
+    ContextManagementParam, CreateResponseArgs, EasyInputContent, EasyInputMessage,
+    FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum,
+    InputContent, InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType,
+    OutputStatus, Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool,
+    ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
 };
 
 use super::history;
@@ -254,6 +254,14 @@ pub(crate) fn create_response(
         .max_output_tokens(request.max_tokens)
         .include(vec![IncludeEnum::ReasoningEncryptedContent])
         .store(false);
+    // Server-side compaction: `context_management` is a typed builder field
+    // on the local async-openai fork (`ContextManagementParam`).
+    if let Some(threshold) = compact_threshold {
+        builder.context_management(vec![ContextManagementParam {
+            type_: "compaction".to_string(),
+            compact_threshold: Some(threshold),
+        }]);
+    }
 
     if let Some(system) = &request.system {
         builder.instructions(system.clone());
@@ -305,7 +313,7 @@ pub(crate) fn create_response(
     }
     if request.thinking.is_some() || request.reasoning_effort.is_some() {
         builder.reasoning(Reasoning {
-            effort: None,
+            effort: request.reasoning_effort.map(Into::into),
             summary: Some(ReasoningSummary::Detailed),
         });
     }
@@ -331,19 +339,6 @@ pub(crate) fn create_response(
     input_items.extend(new_items);
     body["input"] = serde_json::Value::Array(input_items.clone());
 
-    if let Some(threshold) = compact_threshold {
-        body["context_management"] = serde_json::json!([
-            {
-                "type": "compaction",
-                "compact_threshold": threshold,
-            }
-        ]);
-    }
-
-    // Explicit per-request effort; None = omit (provider default, e.g. medium).
-    if let Some(effort) = request.reasoning_effort {
-        body["reasoning"]["effort"] = serde_json::Value::String(effort.as_str().to_owned());
-    }
     Ok((body, input_items))
 }
 

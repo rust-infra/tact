@@ -29,6 +29,46 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-10 — Vendor async-openai locally as `async-openai-local` for typed `context_management`
+
+| Field | Value |
+|-------|-------|
+| Type | `docs` (dependency management) |
+| Symptom / motivation | OpenAI's Responses API officially supports `context_management` / `compact_threshold` (server-side compaction), and the official Python/Node SDKs expose it typed, but the Rust `async-openai` crate (latest 0.41.3, as of 2026-08-10) only defines `ContextManagementParam` without wiring it into `CreateResponseArgs` — so Tact had to inject it through the byot JSON path (`body["context_management"] = serde_json::json!(...)`). |
+| Decision | Vendor the async-openai 0.41.3 source under `vendor/async-openai` and rename the package to `async-openai-local` so the path dependency only satisfies the Responses-protocol 0.41.x dependency and cannot collide with the legacy `async-openai 0.20` used by the Chat Completions path (`async-openai-responses = { package = "async-openai-local", path = "vendor/async-openai", ... }` in the workspace manifest; code keeps `use async_openai_responses::…`, no reference changes). Two source divergences from upstream: a typed `context_management: Option<Vec<ContextManagementParam>>` field on `CreateResponse`, and a `Max` variant on `ReasoningEffort` (upstream stops at `Xhigh`; DeepSeek / Kimi K3 accept `max`). `convert.rs` now builds both through the typed builder — `context_management(...)` setter and `Reasoning { effort: request.reasoning_effort.map(Into::into), summary }` via `impl From<OpenAiReasoningEffort> for ReasoningEffort` in `crates/tact_llm/src/types.rs` — instead of `serde_json::json!` / `Value::String` injection. `vendor/async-openai/README.fork.md` documents how to sync with upstream. |
+| Behavior after | No user-visible change: the wire body still carries `context_management` when a threshold is configured. Maintenance is now local: new Responses fields can be added to the vendor without waiting for the upstream Rust crate. |
+| Pointers | `vendor/async-openai/` (`README.fork.md`, `src/types/responses/response.rs`); `Cargo.toml` `async-openai-responses` dependency; `crates/tact_llm/src/openai/responses/convert.rs` (`create_response` builder injection); [Ch 22](./22_chapter_llm.md) §6.2. |
+
+## 1. 2026-08-10 — Clear error when a Responses endpoint does not implement `/responses/compact`
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Compatible `/responses` endpoints (e.g. `opencode.ai/zen/go/v1`) often do not implement `POST /responses/compact` and answer 404 with an HTML page. The SDK's `compact_byot` then surfaced a JSON-deserialization error that dumped the entire HTML body, and the message could even match the transient-error retry list ("unavailable"), causing pointless backoff retries before failing. |
+| Decision | `compact()` in the Responses adapter now sends the compact request through the raw shared HTTP client (same transport the SDK uses) so the status code is inspectable. HTTP 404/405 maps to `LlmError::Unsupported("endpoint does not support POST /responses/compact (HTTP {status}): native Responses compaction is not implemented by base URL {base_url}")` — deliberately worded to avoid the transient-error keywords so no retry loop is entered. Other non-2xx statuses use the existing `LlmError::HttpError { status, body }`. |
+| Behavior after | On an endpoint without `/responses/compact`, triggering compaction immediately shows the clear message naming the missing endpoint and base URL (no HTML dump, no retries); the session state is left untouched. |
+| Pointers | `compact()` in `crates/tact_llm/src/openai/responses/mod.rs`; test `compact_reports_missing_endpoint_clearly`; [Ch 22](./22_chapter_llm.md) §6.2, [Ch 5](./05_chapter_compact.md). |
+
+## 1. 2026-08-10 — Responses adapter recovers when a compatible stream ends without a terminal event
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | A compatible `/responses` endpoint (e.g. `opencode.ai/zen/go/v1`) occasionally closes the SSE stream without any terminal event (`response.completed` / `response.incomplete` / `response.failed`). `ResponsesStreamState::finish()` hard-failed with `unsupported response state: OpenAI Responses stream ended without a terminal event`, aborting the whole agent turn even though the stream had delivered a complete `output_item.done` sequence or visible text. |
+| Decision | A clean EOF without a terminal event is now treated as terminal when the stream itself is complete: if every announced item finished (`output_item.done` sequence contiguous and no pending `added`), the output is reconstructed from the done sequence; otherwise streamed visible text is recovered (same branch as the existing compatible-endpoint recovery). A minimal completed `Response` is synthesized and flows through the existing normalization/recovery paths, so stop reason inference (including `ToolUse` for tool calls) and provider-state baseline construction are unchanged. A missing compaction boundary (`pending_compactions` non-empty) and an empty stream remain hard protocol errors — recovery must never silently drop a compacted baseline. |
+| Behavior after | Turns that previously died with "stream ended without a terminal event" now complete from the done sequence / streamed text when the response was fully delivered; genuinely empty or compaction-incomplete streams still fail loudly. |
+| Pointers | `finish()` in `crates/tact_llm/src/openai/responses/stream.rs`; tests `no_terminal_event_recovers_from_complete_done_sequence`, `no_terminal_event_recovers_visible_text`, `no_terminal_event_empty_stream_is_error`, `no_terminal_event_with_pending_compaction_is_error`; [Ch 22](./22_chapter_llm.md) §6.2. |
+
+## 1. 2026-08-10 — Local compaction reserves output for reasoning / thinking tokens
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | `compact_history_local_with_mode` (the summarizer behind every non-OpenAI-Responses compaction) sized the summarizer's `max_tokens` as `min(20% × window, 2,000)` and treated it as the **text** budget, but reasoning-effort providers (OpenAI o-series / DeepSeek / Kimi K3) count reasoning tokens inside that same `max_tokens` envelope. With an explicit `high`/`max` effort — or on DeepSeek, which defaults thinking ON + effort high server-side — reasoning burned most of the 2,000-token budget, leaving too little for the summary text, so every call hit `StopReason::MaxTokens` and the continuation loop (≤3, each with the same shared cap) ended up accepting a best-effort partial summary. The compact request also never forwarded the configured Claude-style thinking budget (unlike the main loop), and the input reservation ignored it. |
+| Decision | Split the summarizer output budget: the summary **text** keeps the classic `min(20% × window, 2,000)`; when a reasoning effort is configured (or the provider is DeepSeek with no explicit effort) a tiered reserve is added **on top** (25/50/75/100% of the text budget for minimal|low / medium / high / xhigh|max, DeepSeek default ≈ high = 75%), so `max_tokens` on the wire = text + reserve and reasoning never starves the text. The summarizer now forwards the configured thinking budget (`with_thinking(self.thinking_config())`, matching the main loop) and subtracts it from the input-side reservation. No effort semantics are changed — this is budget accounting only. |
+| Behavior after | Compaction summaries with reasoning effort configured (or on DeepSeek) get a larger wire `max_tokens` (e.g. high effort on a 128k window → 2,000 + 1,500 = 3,500) while the text portion still receives its full classic budget; the summarizer request carries the same thinking config as main-loop turns; the input reservation accounts for both reasoning and thinking headroom, and bails with the existing "too small" error when the window cannot fit the prompt after those reservations. |
+| Pointers | `compact_summary_reasoning_reserve_percent` + budget math in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_reasoning_reserve_percent_tiers`, `local_compact_reserves_reasoning_budget_and_forwards_thinking`, `local_compact_input_reservation_subtracts_thinking_budget`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
+
 ## 1. 2026-08-10 — `background_run` streams live output to the tool card (bash-like)
 
 | Field | Value |

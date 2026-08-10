@@ -389,7 +389,14 @@ output/refusal deltas map to `StreamChunk`, and the terminal
 blocks, tool calls, usage, and stop reason when it includes the completed
 output. Some compatible endpoints omit the final message from that object; in
 that case, already received output text deltas are restored as the final text
-block. This avoids duplicating content found in both delta and terminal events.
+block. If a compatible endpoint closes the stream without any terminal event
+(no `response.completed` / `response.incomplete` / `response.failed`), a clean
+EOF is treated as terminal when the output sequence is complete (all announced
+`output_item.done` events received) or visible text was streamed: the adapter
+synthesizes a minimal completed response and reconstructs output from the done
+sequence / streamed text; a missing compaction boundary or an empty stream
+remains a hard protocol error. This avoids duplicating content found in both
+delta and terminal events.
 The stream adapter deserializes only the event types it consumes; unrelated or
 newer provider events are ignored. For terminal events from compatible
 endpoints, missing response/output-item IDs receive internal placeholder values
@@ -412,7 +419,10 @@ Unsupported in this adapter: background responses, Conversations, and
 `previous_response_id`. Native compaction is supported: ordinary requests
 carry `context_management` when a compact threshold is
 resolved, and `compact()` sends an explicit `POST /responses/compact` request
-([Ch 5](./05_chapter_compact.md)).
+([Ch 5](./05_chapter_compact.md)). Endpoints that do not implement
+`/responses/compact` (HTTP 404/405) produce a clear
+`unsupported response state: endpoint does not support POST /responses/compact …`
+error naming the base URL, instead of dumping the HTML error page.
 
 #### 6.2.1 Conversion pipeline: `Message` → `/responses` input
 

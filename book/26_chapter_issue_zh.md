@@ -29,6 +29,46 @@
 
 ---
 
+## 1. 2026-08-10 — 本地 vendor async-openai 为 `async-openai-local`，获得类型化 `context_management`
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `docs`（依赖管理） |
+| 症状 / 动机 | OpenAI Responses API 官方支持 `context_management` / `compact_threshold`（服务端压缩），官方 Python/Node SDK 也有类型化支持；但 Rust 的 `async-openai` crate（截至 2026-08-10 最新 0.41.3）只定义了 `ContextManagementParam` 类型，从未把它接进 `CreateResponseArgs` builder——Tact 只能通过 byot JSON 路径注入（`body["context_management"] = serde_json::json!(...)`）。 |
+| 决策 | 将 async-openai 0.41.3 源码 vendor 到 `vendor/async-openai`，并把 package 名改为 `async-openai-local`，使 path 依赖只命中 Responses 协议的 0.41.x、不会与 Chat Completions 路径使用的旧版 `async-openai 0.20` 冲突（workspace 清单：`async-openai-responses = { package = "async-openai-local", path = "vendor/async-openai", ... }`；代码仍 `use async_openai_responses::…`，无需改引用）。与上游源码有两处差异：给 `CreateResponse` 加类型化字段 `context_management: Option<Vec<ContextManagementParam>>`；给 `ReasoningEffort` 加 `Max` 变体（上游只到 `Xhigh`；DeepSeek / Kimi K3 接受 `max`）。`convert.rs` 现在全部通过类型化 builder 构造——`context_management(...)` setter，以及 `Reasoning { effort: request.reasoning_effort.map(Into::into), summary }`（经 `crates/tact_llm/src/types.rs` 中的 `impl From<OpenAiReasoningEffort> for ReasoningEffort`）——不再使用 `serde_json::json!` / `Value::String` 注入。`vendor/async-openai/README.fork.md` 记录与上游同步的方法。 |
+| 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护改为本地化：新的 Responses 字段可以直接加到 vendor，不必等待上游 Rust crate。 |
+| 指针 | `vendor/async-openai/`（`README.fork.md`、`src/types/responses/response.rs`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+
+## 1. 2026-08-10 — Responses 端点未实现 `/responses/compact` 时给出明确报错
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 兼容 `/responses` 端点（如 `opencode.ai/zen/go/v1`）往往不实现 `POST /responses/compact`，返回 404 HTML 页面。SDK 的 `compact_byot` 随后会抛出把整个 HTML body 塞进错误的 JSON 反序列化错误；且该消息可能命中瞬时错误重试列表（"unavailable"），导致无意义的退避重试后才失败。 |
+| 决策 | Responses 适配器的 `compact()` 改为通过共享原始 HTTP client 发送 compact 请求（与 SDK 同一传输层），从而可以检查状态码。HTTP 404/405 映射为 `LlmError::Unsupported("endpoint does not support POST /responses/compact (HTTP {status}): native Responses compaction is not implemented by base URL {base_url}")` —— 措辞刻意避开瞬时错误关键词，避免进入重试循环。其它非 2xx 状态沿用既有 `LlmError::HttpError { status, body }`。 |
+| 改后行为 | 在未实现 `/responses/compact` 的端点上触发压缩时，会立即显示点名缺失端点和 base URL 的明确错误（无 HTML 倾倒、无重试）；会话状态保持不变。 |
+| 指针 | `crates/tact_llm/src/openai/responses/mod.rs` 的 `compact()`；测试 `compact_reports_missing_endpoint_clearly`；[Ch 22](./22_chapter_llm_zh.md) §6.2、[Ch 5](./05_chapter_compact_zh.md)。 |
+
+## 1. 2026-08-10 — Responses 适配器在兼容端点无终态事件关闭流时恢复
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 兼容 `/responses` 端点（如 `opencode.ai/zen/go/v1`）偶尔会在没有任何终态事件（`response.completed` / `response.incomplete` / `response.failed`）的情况下关闭 SSE 流。`ResponsesStreamState::finish()` 会以 `unsupported response state: OpenAI Responses stream ended without a terminal event` 硬失败，即使流已经交付了完整的 `output_item.done` 序列或可见文本，也会中止整个 agent 回合。 |
+| 决策 | 当流本身完整时，无终态事件的干净 EOF 现在被视为终态：若所有已 announce 的 item 均完成（`output_item.done` 序列连续且无 pending `added`），则从 done 序列重建输出；否则恢复已流式输出的可见文本（与既有兼容端点恢复同一分支）。合成一个最小 completed `Response` 后走既有的 normalize/恢复路径，因此 stop reason 推断（含工具调用时的 `ToolUse`）与 provider-state baseline 构建保持不变。缺失 compaction 边界（`pending_compactions` 非空）与空流仍然是硬协议错误——恢复绝不能静默丢弃已压缩的 baseline。 |
+| 改后行为 | 之前因 "stream ended without a terminal event" 直接失败的回合，现在在响应已完整交付时从 done 序列/流式文本正常完成；真正空流或 compaction 不完整的流仍会大声失败。 |
+| 指针 | `crates/tact_llm/src/openai/responses/stream.rs` 的 `finish()`；测试 `no_terminal_event_recovers_from_complete_done_sequence`、`no_terminal_event_recovers_visible_text`、`no_terminal_event_empty_stream_is_error`、`no_terminal_event_with_pending_compaction_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+
+## 1. 2026-08-10 — 本地压缩为 reasoning / thinking token 预留输出预算
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | `compact_history_local_with_mode`（所有非 OpenAI-Responses 压缩的摘要器）把摘要请求的 `max_tokens` 定为 `min(窗口 × 20%, 2,000)` 并当作**文本**预算，但 reasoning-effort 类 provider（OpenAI o 系 / DeepSeek / Kimi K3）把 reasoning token 计入同一个 `max_tokens` 信封。配置 `high`/`max` effort（或 DeepSeek 服务端默认 thinking 开启 + effort high）时，reasoning 会烧掉 2,000 预算的大半，留给摘要文本的额度不足，每次调用都撞 `StopReason::MaxTokens`，续写循环（≤3 次，且每次都共享同一上限）最终只能接受 best-effort 的部分摘要。摘要请求也从未转发配置的 Claude 式 thinking budget（主循环会），输入侧预留同样忽略了它。 |
+| 决策 | 拆分摘要输出预算：摘要**文本**沿用经典 `min(窗口 × 20%, 2,000)`；当配置了 reasoning effort（或 provider 为 DeepSeek 且未显式配置 effort）时，在文本预算**之上**追加分档预留（minimal\|low / medium / high / xhigh\|max 分别为文本预算的 25/50/75/100%；DeepSeek 默认 ≈ high = 75%），使 wire 上的 `max_tokens` = 文本 + 预留，reasoning 不再挤占文本额度。摘要请求现在会转发配置的 thinking budget（`with_thinking(self.thinking_config())`，与主循环一致），并从输入侧预留中扣除。不改变任何 effort 语义 —— 只做预算核算。 |
+| 改后行为 | 配置了 reasoning effort（或在 DeepSeek 上）的压缩摘要会获得更大的 wire `max_tokens`（例如 128k 窗口 + high effort → 2,000 + 1,500 = 3,500），而文本部分仍拿到完整经典预算；摘要请求携带与主循环相同的 thinking 配置；输入预留同时计入 reasoning 与 thinking 余量，当窗口在扣除这些预留后放不下提示词时，仍以原有的 "too small" 错误提前失败。 |
+| 指针 | `compact_summary_reasoning_reserve_percent` 与 `crates/tact/src/agent/mod.rs` 中 `compact_history_local_with_mode` 的预算计算；测试 `compact_summary_reasoning_reserve_percent_tiers`、`local_compact_reserves_reasoning_budget_and_forwards_thinking`、`local_compact_input_reservation_subtracts_thinking_budget`；[Ch 5](./05_chapter_compact_zh.md) §5 步骤 3。 |
+
 ## 1. 2026-08-10 — `background_run` 实时输出到工具卡片（类 bash）
 
 | 字段 | 值 |

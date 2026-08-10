@@ -475,12 +475,43 @@ impl LlmClient for OpenAiResponsesAdapter {
             "input": body["input"],
         });
         let request_body = serde_json::to_vec(&compact_request)?;
-        let client = self.sdk_client().await?;
-        let resource = client
-            .responses()
-            .compact_byot::<_, Value>(compact_request)
+        let secret = self.credentials.resolve().await?;
+        let key = LegacyExposeSecret::expose_secret(&secret).clone();
+        let url = format!("{}/responses/compact", self.base_url);
+        let response = self
+            .http
+            .inner()
+            .post(&url)
+            .header(AUTHORIZATION, format!("Bearer {key}"))
+            .json(&compact_request)
+            .send()
             .await
-            .map_err(LlmError::from)?;
+            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        let status = response.status();
+        // Compatible endpoints (e.g. custom OpenAI-compatible proxies) often
+        // do not implement POST /responses/compact at all and answer 404
+        // (sometimes 405) with an HTML page. Report that clearly instead of
+        // surfacing the SDK's JSON-deserialization error over the HTML body.
+        if status == reqwest13::StatusCode::NOT_FOUND
+            || status == reqwest13::StatusCode::METHOD_NOT_ALLOWED
+        {
+            return Err(LlmError::Unsupported(format!(
+                "endpoint does not support POST /responses/compact (HTTP {status}): \
+                 native Responses compaction is not implemented by base URL {}",
+                self.base_url
+            )));
+        }
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        if !status.is_success() {
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&body_bytes).into_owned(),
+            });
+        }
+        let resource: Value = serde_json::from_slice(&body_bytes).map_err(LlmError::from)?;
         let parsed = parse_compact_resource(resource)?;
         let state = ResponsesConversationState {
             version: 1,
@@ -1396,6 +1427,52 @@ mod tests {
         assert_eq!(usage.total, 1540);
         assert_eq!(usage.prompt, 1200);
         assert_eq!(usage.completion, 340);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn compact_reports_missing_endpoint_clearly() {
+        let server = MockServer::start().await;
+        // A compatible proxy that does not implement /responses/compact
+        // returns 404 with an HTML page. The adapter must surface a clear
+        // message instead of dumping the HTML body through the SDK's
+        // JSON-deserialization error.
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_string(
+                    "<!DOCTYPE html><html><title>Not Found | proxy</title></html>",
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let crate::LlmProvider::OpenAiResponses(adapter) = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5.4-mini".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        }
+        .build_client()
+        .unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        let error = adapter
+            .compact(&simple_request(), None)
+            .await
+            .expect_err("missing /responses/compact must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("does not support POST /responses/compact"),
+            "expected a clear unsupported-endpoint message, got: {message}"
+        );
+        assert!(
+            !message.contains("<!DOCTYPE html>"),
+            "the HTML body must not leak into the error, got: {message}"
+        );
         server.verify().await;
     }
 }
