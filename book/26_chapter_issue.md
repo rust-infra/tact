@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-11 — Summarizer thinking budget clamped below `max_tokens`; Kimi K3 default reasoning reserve
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The 2026-08-10 summarizer budget change forwarded the configured Claude-style thinking budget to the compact summary request with the same `with_thinking(self.thinking_config())` call as the main loop, but the summarizer's `max_tokens` is independently capped at `min(20% × window, 2,000)`. Anthropic requires `budget_tokens < max_tokens` on the wire, so a default 8k/32k thinking budget produced an invalid request (`thinking.budget_tokens = 8,000` with `max_tokens = 2,000`) and local compaction failed with a 400 for every Anthropic user with thinking enabled. Separately, the reasoning reserve only treated DeepSeek as default-reasoning, but Kimi K3 also defaults thinking ON + effort high server-side, so Kimi summaries could still be starved by reasoning without an explicit effort. |
+| Decision | New `compact_summary_thinking(configured_budget, summary_max_tokens)` clamps the forwarded budget to `summary_max_tokens - 1` (and disables thinking entirely for a degenerate ≤ 1-token output budget), applied to both the initial and continuation summarizer requests via a small builder closure. The input-side reservation still subtracts the configured budget (conservative). `compact_summary_reasoning_reserve_percent` now reserves the default high tier (75%) for `ProviderKind::Kimi` as well as DeepSeek. |
+| Behavior after | Anthropic compaction with a large thinking budget sends `budget_tokens = max_tokens - 1` instead of failing with a 400; a budget that already fits passes through unchanged. Kimi K3 with no explicit effort gets the same 75% reasoning reserve as DeepSeek. |
+| Pointers | `compact_summary_thinking` + `compact_summary_reasoning_reserve_percent` in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_thinking_clamps_below_max_tokens`, `local_compact_clamps_thinking_budget_below_summary_max_tokens`, `compact_summary_reasoning_reserve_percent_tiers`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
+
 ## 1. 2026-08-10 — Vendor async-openai locally as `async-openai-local` for typed `context_management`
 
 | Field | Value |

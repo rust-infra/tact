@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-11 — 摘要器 thinking budget 限制在 `max_tokens` 之下；Kimi K3 默认 reasoning 预留
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `bugfix` |
+| 症状 / 动机 | 2026-08-10 的摘要预算改动与主循环一样用 `with_thinking(self.thinking_config())` 把配置的 Claude 式 thinking budget 转发给压缩摘要请求，但摘要器的 `max_tokens` 独立封顶为 `min(窗口 × 20%, 2,000)`。Anthropic 在 wire 上要求 `budget_tokens < max_tokens`，于是默认 8k/32k 的 thinking budget 会生成非法请求（`thinking.budget_tokens = 8,000` 而 `max_tokens = 2,000`），导致所有开启 thinking 的 Anthropic 用户本地压缩以 400 失败。另外，reasoning 预留只把 DeepSeek 视为默认开启 reasoning，但 Kimi K3 服务端同样默认 thinking 开启 + effort high，未显式配置 effort 时 Kimi 摘要仍可能被 reasoning 挤占。 |
+| 决策 | 新增 `compact_summary_thinking(configured_budget, summary_max_tokens)`，把转发的 budget 限制为 `summary_max_tokens - 1`（输出预算退化到 ≤ 1 token 时完全禁用 thinking），并通过一个小的 builder 闭包同时应用于首次与续写的摘要请求。输入侧预留仍按配置的 budget 扣除（偏保守）。`compact_summary_reasoning_reserve_percent` 现在对 `ProviderKind::Kimi` 与 DeepSeek 一样预留默认 high 档（75%）。 |
+| 改后行为 | 使用大 thinking budget 的 Anthropic 压缩会发送 `budget_tokens = max_tokens - 1` 而非以 400 失败；本来就放得下的 budget 原样透传。未显式配置 effort 的 Kimi K3 获得与 DeepSeek 相同的 75% reasoning 预留。 |
+| 指针 | `crates/tact/src/agent/mod.rs` 中 `compact_summary_thinking` 与 `compact_summary_reasoning_reserve_percent`（`compact_history_local_with_mode`）；测试 `compact_summary_thinking_clamps_below_max_tokens`、`local_compact_clamps_thinking_budget_below_summary_max_tokens`、`compact_summary_reasoning_reserve_percent_tiers`；[Ch 5](./05_chapter_compact_zh.md) §5 步骤 3。 |
+
 ## 1. 2026-08-10 — 本地 vendor async-openai 为 `async-openai-local`，获得类型化 `context_management`
 
 | 字段 | 值 |
