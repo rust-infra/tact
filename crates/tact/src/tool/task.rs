@@ -55,6 +55,7 @@ pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<Str
             .description
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        ctx.session_id.clone().unwrap_or_default(),
     )?;
     let listed = ctx.task_manager.list().unwrap_or_default();
     emit_tasks_changed(

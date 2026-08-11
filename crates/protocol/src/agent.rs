@@ -172,6 +172,7 @@ pub struct TaskSnapshot {
     pub id: u64,
     pub subject: String,
     pub status: TaskStatusSnapshot,
+    pub session_id: String,
     pub owner: String,
     /// Task ids that this task blocks (outgoing edges for DAG).
     pub blocks: Vec<u64>,

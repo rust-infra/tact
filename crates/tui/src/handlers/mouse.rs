@@ -465,6 +465,7 @@ mod tests {
             id: 1,
             subject: "Fix auth".into(),
             status: TaskStatusSnapshot::InProgress,
+            session_id: String::new(),
             owner: String::new(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),

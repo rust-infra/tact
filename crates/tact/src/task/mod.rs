@@ -69,6 +69,8 @@ pub struct TaskRecord {
     pub subject: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Owning agent session id; empty when created outside a session.
+    pub session_id: String,
     pub status: TaskStatus,
     #[serde(rename = "blockedBy", default)]
     pub blocked_by: Vec<u64>,
@@ -86,11 +88,12 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     /// Creates a new task record.
-    pub fn new(id: u64, subject: String, description: Option<String>) -> Self {
+    pub fn new(id: u64, subject: String, description: Option<String>, session_id: String) -> Self {
         Self {
             id,
             subject,
             description,
+            session_id,
             status: TaskStatus::Pending,
             blocked_by: Vec::new(),
             blocks: Vec::new(),
@@ -149,9 +152,14 @@ impl TaskManager {
     }
 
     /// Creates a new task with the given subject and description.
-    pub fn create(&mut self, subject: String, description: Option<String>) -> Result<TaskRecord> {
+    pub fn create(
+        &mut self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+    ) -> Result<TaskRecord> {
         let mut index = self.index.read().unwrap_or_default();
-        let task = TaskRecord::new(index.next_id, subject, description);
+        let task = TaskRecord::new(index.next_id, subject, description, session_id);
         self.tasks.write(&task_key(task.id), &task)?;
         index.next_id += 1;
         self.index.write(&index)?;
@@ -277,8 +285,13 @@ impl SharedTaskManager {
     }
 
     /// Creates a new task in the manager.
-    pub fn create(&self, subject: String, description: Option<String>) -> Result<TaskRecord> {
-        self.with_manager(|manager| manager.create(subject, description))
+    pub fn create(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+    ) -> Result<TaskRecord> {
+        self.with_manager(|manager| manager.create(subject, description, session_id))
     }
 
     /// Gets a task from the manager.
@@ -374,6 +387,7 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
         .map(|t| tact_protocol::TaskSnapshot {
             id: t.id,
             subject: t.subject,
+            session_id: t.session_id,
             status: match t.status {
                 TaskStatus::Pending => tact_protocol::TaskStatusSnapshot::Pending,
                 TaskStatus::InProgress => tact_protocol::TaskStatusSnapshot::InProgress,
@@ -421,9 +435,15 @@ mod tests {
     fn create_assigns_incrementing_ids() {
         let (mut manager, _dir) = test_manager("create_assigns_incrementing_ids");
 
-        let first = manager.create("First".to_string(), None).unwrap();
+        let first = manager
+            .create("First".to_string(), None, String::new())
+            .unwrap();
         let second = manager
-            .create("Second".to_string(), Some("details".to_string()))
+            .create(
+                "Second".to_string(),
+                Some("details".to_string()),
+                String::new(),
+            )
             .unwrap();
 
         assert_eq!(first.id, 1);
@@ -436,7 +456,9 @@ mod tests {
     #[test]
     fn update_changes_status_and_owner() {
         let (mut manager, _dir) = test_manager("update_changes_status_and_owner");
-        let task = manager.create("Work".to_string(), None).unwrap();
+        let task = manager
+            .create("Work".to_string(), None, String::new())
+            .unwrap();
 
         let updated = manager
             .update(
@@ -456,8 +478,12 @@ mod tests {
     #[test]
     fn update_add_blocks_creates_reverse_dependency() {
         let (mut manager, _dir) = test_manager("update_add_blocks_creates_reverse_dependency");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .unwrap();
 
         let updated = manager
             .update(
@@ -479,8 +505,12 @@ mod tests {
     fn update_add_blocked_by_creates_reverse_outgoing_edge() {
         let (mut manager, _dir) =
             test_manager("update_add_blocked_by_creates_reverse_outgoing_edge");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .unwrap();
 
         let updated = manager
             .update(
@@ -503,8 +533,12 @@ mod tests {
     #[test]
     fn completing_task_clears_blocked_by() {
         let (mut manager, _dir) = test_manager("completing_task_clears_blocked_by");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .unwrap();
         manager
             .update(
                 blocker.id,
@@ -540,6 +574,7 @@ mod tests {
             id: 1,
             subject: "Ship".to_string(),
             description: None,
+            session_id: "sess-1".to_string(),
             status: TaskStatus::InProgress,
             blocked_by: vec![2],
             blocks: vec![],
@@ -556,7 +591,12 @@ mod tests {
 
     #[test]
     fn render_task_json_round_trip() {
-        let task = TaskRecord::new(1, "Test".to_string(), Some("desc".to_string()));
+        let task = TaskRecord::new(
+            1,
+            "Test".to_string(),
+            Some("desc".to_string()),
+            String::new(),
+        );
         let json = render_task_json(&task).unwrap();
         assert!(json.contains("\"subject\": \"Test\""));
         assert!(json.contains("\"description\": \"desc\""));
@@ -565,10 +605,10 @@ mod tests {
 
     #[test]
     fn to_ui_snapshots_filters_deleted_and_maps_status() {
-        let pending = TaskRecord::new(1, "a".into(), None);
-        let mut active = TaskRecord::new(2, "b".into(), None);
+        let pending = TaskRecord::new(1, "a".into(), None, String::new());
+        let mut active = TaskRecord::new(2, "b".into(), None, String::new());
         active.status = TaskStatus::InProgress;
-        let mut gone = TaskRecord::new(3, "c".into(), None);
+        let mut gone = TaskRecord::new(3, "c".into(), None, String::new());
         gone.status = TaskStatus::Deleted;
         let snaps = to_ui_snapshots(vec![pending, active, gone]);
         assert_eq!(snaps.len(), 2);

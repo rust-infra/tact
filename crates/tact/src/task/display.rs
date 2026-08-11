@@ -241,6 +241,7 @@ mod tests {
             id: 24,
             subject: "后端接口".into(),
             description: None,
+            session_id: String::new(),
             status: TaskStatus::InProgress,
             blocked_by: vec![12],
             blocks: vec![20],
@@ -266,7 +267,7 @@ mod tests {
 
     #[test]
     fn empty_update_action() {
-        let before = TaskRecord::new(1, "x".into(), None);
+        let before = TaskRecord::new(1, "x".into(), None, String::new());
         let input = serde_json::json!({"task_id": 1});
         let title =
             format_task_tool_title(TaskOperation::Update, &input, Some(&before), Some(&before));
