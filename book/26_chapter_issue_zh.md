@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-11 — 任务存储从 JSON 文件迁移到 SQLite（`TaskStore`）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 症状 / 动机 | 任务以每条记录一个 JSON 文件（`tasks/task_{id}.json`）加 `tasks/index.json` 的 next-id 计数器持久化。ID 分配与依赖边（`blockedBy` / `blocks` 在两条记录上互相镜像）都是无事务的读-改-写，且没有跨进程锁；完成任务需要 O(n) 全表扫描来清理边。 |
+| 决策 | 任务移入现有 `<workdir>/.tact/tact.db`，建 `tasks` + `task_dependencies` 表，通过新的 `TaskStore` trait（`crates/tact/src/store/task_store/`，sqlx 实现的 `SqliteTaskStore`）访问。边为行（复合主键，`INSERT OR IGNORE`），无镜像字段、无外键；每次变更都在 `BEGIN IMMEDIATE` 事务内，完成时用一条 `DELETE` 清边。ID 由 `INTEGER PRIMARY KEY AUTOINCREMENT` 分配（删除 `TaskIndex`）。`TaskManager` 变为 `Box<dyn TaskStore>` 之上的 async 门面；`SharedTaskManager` 去掉 mutex（`Arc<TaskManager>`，连接池已串行化写入）。新增 `session_id` 列与索引，`task_create` 时从工具上下文填充。旧 JSON 文件不再读取、留在磁盘。`crates/tact/Cargo.toml` 的 tokio features 增加 `macros` + `rt-multi-thread`，使 `-p tact` 单独构建时 `#[tokio::test]` 可用。 |
+| 改后行为 | 新任务 ID 从 1 开始（旧的 1–233 条记录若不从 `.tact/tasks/` 手动导出则丢失）；依赖更新原子化；`task_*` 工具表面不变（`session_id` 出现在任务 JSON / 快照中）。 |
+| 指针 | `crates/tact/src/store/task_store/{mod,sqlite}.rs`、`crates/tact/src/task/mod.rs`、`crates/tact/src/tool/task.rs`；[Ch 1](./01_chapter_store_zh.md) §6、[Ch 19](./19_chapter_persistent_tasks_zh.md) §2–3。 |
+
 ## 1. 2026-08-11 — 摘要器 thinking budget 限制在 `max_tokens` 之下；Kimi K3 默认 reasoning 预留
 
 | 字段 | 值 |

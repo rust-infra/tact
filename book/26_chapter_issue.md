@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Tasks persisted as one JSON file per record (`tasks/task_{id}.json`) plus a `tasks/index.json` next-id counter. ID allocation and dependency edges (`blockedBy` / `blocks` mirrored on both records) were read-modify-write with no transaction and no cross-process lock; completing a task required an O(n) scan to clear edges. |
+| Decision | Tasks moved into the existing `<workdir>/.tact/tact.db` as `tasks` + `task_dependencies` tables via a new `TaskStore` trait (`crates/tact/src/store/task_store/`, `SqliteTaskStore` with sqlx). Edges are rows (composite PK, `INSERT OR IGNORE`), no mirrored fields, no foreign keys; every mutation runs in a `BEGIN IMMEDIATE` transaction, completion clears edges with one `DELETE`. IDs come from `INTEGER PRIMARY KEY AUTOINCREMENT` (`TaskIndex` removed). `TaskManager` became an async facade over `Box<dyn TaskStore>`; `SharedTaskManager` dropped its mutex (`Arc<TaskManager>`, the pool serializes writes). Added `session_id` column + index, filled from the tool context at `task_create`. Legacy JSON files are not read anymore and are left on disk. `tokio` features `macros` + `rt-multi-thread` added to `crates/tact/Cargo.toml` so `#[tokio::test]` works when building `-p tact` alone. |
+| Behavior after | New task IDs start at 1 (old 1–233 records are gone unless exported manually from `.tact/tasks/`); dependency updates are atomic; `task_*` tools unchanged on the surface (`session_id` appears in task JSON/snapshots). |
+| Pointers | `crates/tact/src/store/task_store/{mod,sqlite}.rs`, `crates/tact/src/task/mod.rs`, `crates/tact/src/tool/task.rs`; [Ch 1](./01_chapter_store.md) §6, [Ch 19](./19_chapter_persistent_tasks.md) §2–3. |
+
 ## 1. 2026-08-11 — Summarizer thinking budget clamped below `max_tokens`; Kimi K3 default reasoning reserve
 
 | Field | Value |

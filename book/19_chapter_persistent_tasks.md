@@ -1,7 +1,7 @@
 # Persistent Task Manager
 > Language: [English](./19_chapter_persistent_tasks.md) · [中文](./19_chapter_persistent_tasks_zh.md)
 
-This chapter covers Tact's **durable work-item tracker**: the `task/` module, JSON file storage under `.tact/tasks/`, and the four agent tools `task_create`, `task_get`, `task_list`, and `task_update`.
+This chapter covers Tact's **durable work-item tracker**: the `task/` module, SQLite storage in `.tact/tact.db`, and the four agent tools `task_create`, `task_get`, `task_list`, and `task_update`.
 
 This is **not** the same as:
 
@@ -21,7 +21,7 @@ The TaskManager gives the LLM a **persistent checklist** across turns and sessio
 - Assign an `owner` string (convention for teammates — not enforced)
 - Model **dependencies** via `blockedBy` / `blocks` edges
 
-Storage uses the same [CollectionStore](./01_chapter_store.md) primitives as cron and background tasks.
+Storage uses the SQLite [TaskStore](./01_chapter_store.md#6-session-store-sqlite) in the same `tact.db` as the session store (tables `tasks` + `task_dependencies`). Cron and background tasks still use the JSON [CollectionStore](./01_chapter_store.md).
 
 ---
 
@@ -39,33 +39,46 @@ pub struct TaskRecord {
     pub id: u64,
     pub subject: String,
     pub description: Option<String>,
+    pub session_id: String,   // owning agent session; '' outside a session
     pub status: TaskStatus,
-    pub blocked_by: Vec<u64>,   // JSON: blockedBy
+    pub blocked_by: Vec<u64>, // serialized as blockedBy
     pub blocks: Vec<u64>,
     pub owner: String,
 }
-
-pub struct TaskIndex {
-    pub next_id: u64,
-}
 ```
 
-IDs monotonically increase from `next_id` in `tasks/index.json` (starts at 1).
+IDs are assigned by SQLite `INTEGER PRIMARY KEY AUTOINCREMENT` (no reuse, starts at 1). `task_create` fills `session_id` from the tool context session. The legacy JSON layout (`.tact/tasks/*.json` + `index.json`) is no longer read.
 
 ---
 
 ## 3. Storage Layout
 
-```text
-.tact/
-└── tasks/
-    ├── index.json          # { "next_id": N }
-    ├── task_1.json
-    ├── task_2.json
-    └── …
+SQLite tables in `<workdir>/.tact/tact.db` (schema created by `SqliteTaskStore::new`):
+
+```sql
+CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject      TEXT    NOT NULL,
+    description  TEXT,
+    session_id   TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','in_progress','completed','deleted')),
+    owner        TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    started_at   INTEGER,
+    completed_at INTEGER
+);
+CREATE INDEX idx_tasks_session_id ON tasks(session_id);
+
+CREATE TABLE task_dependencies (
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    PRIMARY KEY (blocker_id, blocked_id)
+);
+CREATE INDEX idx_task_deps_blocked ON task_dependencies(blocked_id);
 ```
 
-Each task is one JSON file keyed `task_{id}`. `TaskManager::new` initializes `index.json` if missing.
+No foreign keys — dependency edges are cleaned up by the application (same convention as the session store). Connection PRAGMAs: `busy_timeout = 5000` for cross-process writers.
 
 ---
 
@@ -73,7 +86,7 @@ Each task is one JSON file keyed `task_{id}`. `TaskManager::new` initializes `in
 
 | API | Behavior |
 |-----|----------|
-| `create(subject, description)` | Allocates id, writes record as `Pending` |
+| `create(subject, description, session_id)` | Inserts record as `Pending`, id auto-assigned |
 | `get(id)` | Loads single record |
 | `list()` | Loads all records, sorted by id |
 | `update(id, TaskUpdate)` | Patches status, owner, dependency edges |
@@ -81,12 +94,7 @@ Each task is one JSON file keyed `task_{id}`. `TaskManager::new` initializes `in
 
 ### Dependency updates
 
-When `add_blocks: [B]` is applied on task A:
-
-1. A's `blocks` list gains B
-2. B's `blocked_by` list gains A (reverse edge written automatically)
-
-When a task is marked **`Completed`**, `clear_dependency` removes its id from every other task's `blocked_by` list.
+Edges live only in `task_dependencies` (no mirrored fields). `add_blocks: [B]` on task A inserts one row `(A, B)` inside a `BEGIN IMMEDIATE` transaction; the reverse edge is derived when reading. When a task is marked **`Completed`**, the same transaction deletes all its edges (`DELETE ... WHERE blocker_id = ? OR blocked_id = ?`) — no full scan, no ghost edges.
 
 ---
 
@@ -114,14 +122,14 @@ Empty list returns `"No tasks."`.
 ## 6. Wiring
 
 ```rust
-// tui.rs startup
-let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
+// tui.rs startup (async)
+let task_manager = SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
 
 // ToolContext
 pub task_manager: SharedTaskManager,
 ```
 
-`SharedTaskManager` wraps `Arc<Mutex<TaskManager>>` — all four tools lock the same manager through `ToolContext`.
+`SharedTaskManager` wraps `Arc<TaskManager>` — the SQLite pool already serializes writes, so no mutex is needed. All four tools share the same manager through `ToolContext`.
 
 Registered in main `toolset()` only — **not** in `subagent_toolset()`.
 
@@ -146,7 +154,9 @@ Successful `task_create` / `task_update` also emit [`AgentUpdate::TasksChanged`]
 
 | File | Role |
 |------|------|
-| `crates/tact/src/task/mod.rs` | `TaskManager`, `TaskRecord`, dependency logic, render helpers |
+| `crates/tact/src/task/mod.rs` | `TaskManager` facade over `Box<dyn TaskStore>`, `TaskRecord`, render helpers |
+| `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait |
+| `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — schema, transactions, edge queries |
 | `crates/tact/src/tool/task.rs` | Four `#[tool]` handlers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
 | `crates/tact/src/tool/registry.rs` | Task tools in `toolset()` |
@@ -160,7 +170,7 @@ Successful `task_create` / `task_update` also emit [`AgentUpdate::TasksChanged`]
 |-----|--------|
 | **No `task_delete` tool** | Soft delete exists on manager API but no exposed tool (use `status: deleted` via update) |
 | **Owner is opaque string** | Not linked to [Team](./14_chapter_team.md) roster validation |
-| **No automatic unblocking rules** | Only completion clears `blocked_by`; deleted blockers leave stale edges |
+| **No automatic unblocking rules** | Only completion clears edges; deleted blockers leave stale edges |
 | **List order fixed by id** | No priority or due date fields |
 | **Ch 1 cross-link was misleading** | Previously pointed at Ch 11 scheduling — now corrected in store chapter |
 

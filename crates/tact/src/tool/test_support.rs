@@ -40,6 +40,29 @@ pub async fn run_tool_result<T: Tool + 'static>(
         .await
 }
 
+/// Runs a future to completion on a fresh thread with its own runtime.
+///
+/// `test_context` is synchronous (called from 80+ sync test helpers), but
+/// `TaskManager::new` is async. A scoped thread with a fresh runtime avoids
+/// "cannot start a runtime from within a runtime" when the caller is already
+/// inside a `#[tokio::test]` body.
+fn block_on<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Runtime::new()
+                    .expect("failed to create tokio runtime")
+                    .block_on(future)
+            })
+            .join()
+            .expect("block_on thread panicked")
+    })
+}
+
 pub fn test_context(name: &str) -> ToolContext {
     let root_dir = std::env::temp_dir().join(format!("tact-tool-test-{name}"));
     let _ = std::fs::remove_dir_all(&root_dir);
@@ -54,7 +77,9 @@ pub fn test_context(name: &str) -> ToolContext {
             root_dir.join(".tact/memory"),
         ))),
         work_dir: root_dir.clone(),
-        task_manager: SharedTaskManager::new(TaskManager::new(&store_root).unwrap()),
+        task_manager: SharedTaskManager::new(
+            block_on(TaskManager::new(&root_dir.join(".tact").join("tact.db"))).unwrap(),
+        ),
         background_manager: SharedBackgroundManager::new(&store_root).unwrap(),
         cron_scheduler: SharedCronScheduler::new(CronScheduler::new(&store_root).unwrap()),
         teammate_manager: SharedTeammateManager::new(TeammateManager::new(&store_root).unwrap()),

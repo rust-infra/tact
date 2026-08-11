@@ -3,7 +3,7 @@
 use crate::tool::TaskOperation;
 use serde_json::Value;
 
-use super::{SharedTaskManager, TaskRecord, TaskStatus};
+use super::{TaskRecord, TaskStatus};
 
 /// Build the TUI/tool title for a task tool call.
 pub fn format_task_tool_title(
@@ -80,43 +80,6 @@ pub fn format_task_tool_title(
     }
 
     parts.join(" * ")
-}
-
-/// Resolve title using the live task manager (lookup before/after by id).
-pub fn format_task_tool_title_with_manager(
-    manager: &SharedTaskManager,
-    op: TaskOperation,
-    input: &Value,
-    prefer_after: bool,
-) -> String {
-    let id = input.get("task_id").and_then(|v| v.as_u64());
-    let before = id.and_then(|id| manager.get(id).ok());
-    let after = if prefer_after {
-        id.and_then(|id| manager.get(id).ok()).or_else(|| {
-            // create: try newest matching subject
-            if op == TaskOperation::Create {
-                let subject = input.get("subject").and_then(|v| v.as_str())?;
-                let list = manager.list().ok()?;
-                list.into_iter()
-                    .filter(|t| t.subject == subject)
-                    .max_by_key(|t| t.id)
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-    format_task_tool_title(
-        op,
-        input,
-        before.as_ref(),
-        if prefer_after {
-            after.as_ref().or(before.as_ref())
-        } else {
-            None
-        },
-    )
 }
 
 fn primary_action(

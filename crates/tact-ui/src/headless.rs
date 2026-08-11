@@ -82,7 +82,8 @@ async fn run_headless_locked(
     let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let work_dir = tact_path.workdir().to_path_buf();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
-    let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
+    let task_manager =
+        SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
     let background_manager = SharedBackgroundManager::new(&store_root)?;
     let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
