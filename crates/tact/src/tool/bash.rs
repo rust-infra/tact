@@ -19,7 +19,7 @@ use tool_refactor_macros::tool;
 
 use crate::{
     pipe_stream::{
-        PIPE_CHANNEL_CAPACITY, PendingProgress, PipeEvent, PROGRESS_INTERVAL, Utf8Decoder,
+        PIPE_CHANNEL_CAPACITY, PROGRESS_INTERVAL, PendingProgress, PipeEvent, Utf8Decoder,
         read_pipe, stream_index,
     },
     shell::validate_shell_command,

@@ -71,8 +71,11 @@ pub(crate) enum PipeEvent {
     Failed(ToolOutputStream, std::io::Error),
 }
 
-pub(crate) async fn read_pipe<R>(mut reader: R, stream: ToolOutputStream, tx: mpsc::Sender<PipeEvent>)
-where
+pub(crate) async fn read_pipe<R>(
+    mut reader: R,
+    stream: ToolOutputStream,
+    tx: mpsc::Sender<PipeEvent>,
+) where
     R: AsyncRead + Unpin,
 {
     let mut buffer = [0_u8; READ_BUFFER_BYTES];
