@@ -3,8 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
+use crate::store::sqlite::{PoolRef, open_pool};
 use crate::team::{InboxMessage, TeammateRecord};
 
 use super::TeamStore;
@@ -20,36 +21,12 @@ use super::TeamStore;
 ///   created_at)` — one row per inbox entry, autoincrement `id` preserves
 ///   insertion order (the legacy JSONL append semantics).
 pub struct SqliteTeamStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteTeamStore {
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
-
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
-            .await
-            .context("failed to set busy_timeout")?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -60,7 +37,7 @@ impl SqliteTeamStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create teammates table")?;
 
@@ -77,14 +54,14 @@ impl SqliteTeamStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create inbox_messages table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_inbox_messages_owner ON inbox_messages(owner);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create inbox_messages owner index")?;
 
@@ -115,7 +92,7 @@ impl TeamStore for SqliteTeamStore {
         let affected = sqlx::query("INSERT OR IGNORE INTO teammates (name, role) VALUES (?, ?)")
             .bind(&name)
             .bind(&role)
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await?
             .rows_affected();
         if affected == 0 {
@@ -126,7 +103,7 @@ impl TeamStore for SqliteTeamStore {
 
     async fn list_teammates(&self) -> Result<Vec<TeammateRecord>> {
         let rows = sqlx::query("SELECT name, role, status FROM teammates")
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await?;
         rows.iter()
             .map(|row| {
@@ -150,7 +127,7 @@ impl TeamStore for SqliteTeamStore {
         .bind(&message.body)
         .bind(&message.kind)
         .bind(message.created_at.timestamp_millis())
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to append inbox message")?;
         Ok(())
@@ -162,7 +139,7 @@ impl TeamStore for SqliteTeamStore {
              FROM inbox_messages WHERE owner = ? ORDER BY id",
         )
         .bind(owner)
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await?;
         rows.iter().map(row_to_message).collect()
     }

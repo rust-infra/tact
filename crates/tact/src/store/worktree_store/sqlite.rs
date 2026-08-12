@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
+use crate::store::sqlite::{PoolRef, open_pool};
 use crate::worktree::WorktreeRecord;
 
 use super::WorktreeStore;
@@ -19,36 +20,12 @@ use super::WorktreeStore;
 /// - `worktree_events(id, event, created_at)` — the audit log; `id` is the
 ///   ordering key.
 pub struct SqliteWorktreeStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteWorktreeStore {
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
-
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
-            .await
-            .context("failed to set busy_timeout")?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -64,14 +41,14 @@ impl SqliteWorktreeStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create worktrees table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_worktrees_session_id ON worktrees(session_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create worktrees session_id index")?;
 
@@ -84,7 +61,7 @@ impl SqliteWorktreeStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create worktree_events table")?;
 
@@ -116,7 +93,7 @@ impl WorktreeStore for SqliteWorktreeStore {
         .bind(&record.status)
         .bind(session_id)
         .bind(now_millis())
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await?
         .rows_affected();
         Ok(affected > 0)
@@ -126,7 +103,7 @@ impl WorktreeStore for SqliteWorktreeStore {
         let row =
             sqlx::query("SELECT name, path, branch, task_id, status FROM worktrees WHERE name = ?")
                 .bind(name)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&*self.pool)
                 .await?;
         row.map(|row| row_to_record(&row)).transpose()
     }
@@ -134,7 +111,7 @@ impl WorktreeStore for SqliteWorktreeStore {
     async fn list_worktrees(&self) -> Result<Vec<WorktreeRecord>> {
         let rows =
             sqlx::query("SELECT name, path, branch, task_id, status FROM worktrees ORDER BY id")
-                .fetch_all(&self.pool)
+                .fetch_all(&*self.pool)
                 .await?;
         rows.iter().map(row_to_record).collect()
     }
@@ -143,7 +120,7 @@ impl WorktreeStore for SqliteWorktreeStore {
         sqlx::query("INSERT INTO worktree_events (event, created_at) VALUES (?, ?)")
             .bind(event)
             .bind(now_millis())
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await
             .context("failed to append worktree event")?;
         Ok(())
@@ -152,7 +129,7 @@ impl WorktreeStore for SqliteWorktreeStore {
     async fn recent_events(&self, limit: usize) -> Result<Vec<String>> {
         let rows = sqlx::query("SELECT event FROM worktree_events ORDER BY id DESC LIMIT ?")
             .bind(limit as i64)
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await?;
         let mut events = rows
             .iter()

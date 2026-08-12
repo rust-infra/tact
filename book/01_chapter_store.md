@@ -120,6 +120,8 @@ Tasks, cron, background, team, and worktree state no longer use the JSON store �
 
 Each domain module wraps the raw store (e.g. `SharedCronScheduler` over `Arc<CronScheduler>`; `SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` over `Arc<…>` — the SQLite pool already serializes writes) and exposes tool-facing APIs — callers should not manipulate `CollectionStore` directly.
 
+All SQLite stores share a single connection pool per database file: `store::sqlite::open_pool` opens (and caches) the pool on first use and hands each store a reference-counted handle (`PoolRef`), so one process uses exactly one pool for `<workdir>/.tact/tact.db`; the pool is closed when the last store holding it is dropped.
+
 ---
 
 ## 6. Session Store (SQLite)

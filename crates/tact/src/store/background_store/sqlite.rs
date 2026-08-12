@@ -3,9 +3,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
 use crate::background::{BackgroundTaskRecord, BackgroundTaskStatus};
+use crate::store::sqlite::{PoolRef, open_pool};
 
 use super::BackgroundStore;
 
@@ -18,36 +19,12 @@ use super::BackgroundStore;
 ///   the manager, `status` is CHECK-constrained to
 ///   `running` / `completed` / `error`, timestamps are epoch millis.
 pub struct SqliteBackgroundStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteBackgroundStore {
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
-
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
-            .await
-            .context("failed to set busy_timeout")?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -63,21 +40,21 @@ impl SqliteBackgroundStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create background_tasks table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_background_tasks_session_id ON background_tasks(session_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create background_tasks session_id index")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_background_tasks_started_at ON background_tasks(started_at);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create background_tasks started_at index")?;
 
@@ -144,7 +121,7 @@ impl BackgroundStore for SqliteBackgroundStore {
         .bind(record.started_at.timestamp_millis())
         .bind(record.finished_at.map(|dt| dt.timestamp_millis()))
         .bind(&record.output)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to upsert background task")?;
         Ok(())
@@ -156,7 +133,7 @@ impl BackgroundStore for SqliteBackgroundStore {
              FROM background_tasks WHERE id = ?",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&*self.pool)
         .await?;
         row.map(|row| row_to_record(&row)).transpose()
     }
@@ -166,7 +143,7 @@ impl BackgroundStore for SqliteBackgroundStore {
             "SELECT id, status, command, session_id, started_at, finished_at, output
              FROM background_tasks ORDER BY started_at",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await?;
         rows.iter().map(row_to_record).collect()
     }

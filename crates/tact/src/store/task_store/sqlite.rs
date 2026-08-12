@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
+use crate::store::sqlite::{PoolRef, open_pool};
 use crate::task::{TaskRecord, TaskStatus, TaskUpdate};
 
 use super::TaskStore;
@@ -17,36 +18,12 @@ use super::TaskStore;
 /// - `task_dependencies(blocker_id, blocked_id)` — one row per edge,
 ///   composite PRIMARY KEY keeps edges unique.
 pub struct SqliteTaskStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteTaskStore {
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
-
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
-            .await
-            .context("failed to set busy_timeout")?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -64,12 +41,12 @@ impl SqliteTaskStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create tasks table")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);")
-            .execute(&pool)
+            .execute(&*pool)
             .await
             .context("failed to create tasks session_id index")?;
 
@@ -82,14 +59,14 @@ impl SqliteTaskStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create task_dependencies table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_task_deps_blocked ON task_dependencies(blocked_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create task_dependencies blocked index")?;
 
@@ -103,7 +80,7 @@ impl SqliteTaskStore {
              FROM tasks WHERE id = ?",
         )
         .bind(task_id as i64)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&*self.pool)
         .await?
         .with_context(|| format!("Task {task_id} not found"))?;
         let mut task = row_to_task(&row)?;
@@ -125,7 +102,7 @@ impl SqliteTaskStore {
         };
         let rows = sqlx::query(sql)
             .bind(task_id as i64)
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await?;
         let mut ids = rows
             .iter()
@@ -258,13 +235,13 @@ impl TaskStore for SqliteTaskStore {
             "SELECT id, subject, description, session_id, status, owner, created_at, started_at, completed_at
              FROM tasks ORDER BY id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await?;
         let mut tasks = rows.iter().map(row_to_task).collect::<Result<Vec<_>>>()?;
 
         // Assemble dependency edges in one pass.
         let edge_rows = sqlx::query("SELECT blocker_id, blocked_id FROM task_dependencies")
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await?;
         for task in &mut tasks {
             task.blocked_by.clear();
@@ -397,7 +374,7 @@ mod tests {
         let store = SqliteTaskStore::new(&db).await.unwrap();
         let err =
             sqlx::query("INSERT INTO tasks (subject, status, created_at) VALUES ('x', 'bogus', 0)")
-                .execute(&store.pool)
+                .execute(&*store.pool)
                 .await
                 .unwrap_err();
         assert!(

@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
+
+use crate::store::sqlite::{PoolRef, open_pool};
 
 use super::{CronStore, CronTaskRecord};
 
@@ -14,36 +16,12 @@ use super::{CronStore, CronTaskRecord};
 ///   created_at)` — one row per scheduled prompt, `INTEGER PRIMARY KEY
 ///   AUTOINCREMENT` ids surfaced as 8-hex-digit strings.
 pub struct SqliteCronStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteCronStore {
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
-
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
-            .await
-            .context("failed to set busy_timeout")?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -58,14 +36,14 @@ impl SqliteCronStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create cron_tasks table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_cron_tasks_session_id ON cron_tasks(session_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create cron_tasks session_id index")?;
 
@@ -120,7 +98,7 @@ impl CronStore for SqliteCronStore {
         };
         let affected = sqlx::query("DELETE FROM cron_tasks WHERE id = ?")
             .bind(rowid)
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await?
             .rows_affected();
         Ok(affected > 0)
@@ -131,7 +109,7 @@ impl CronStore for SqliteCronStore {
             "SELECT id, cron, prompt, recurring, durable, session_id, created_at
              FROM cron_tasks ORDER BY id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await?;
         rows.iter()
             .map(|row| {

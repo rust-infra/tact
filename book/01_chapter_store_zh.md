@@ -121,6 +121,8 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 
 各领域模块包装原始 store（如 `SharedCronScheduler` 包 `Arc<CronScheduler>`；`SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` 包 `Arc<…>`——SQLite 连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作 `CollectionStore`。
 
+所有 SQLite store 按数据库文件共享同一个连接池：`store::sqlite::open_pool` 首次使用时打开并缓存连接池，向每个 store 分发一个引用计数句柄（`PoolRef`），因此单个进程对 `<workdir>/.tact/tact.db` 只使用一个连接池；最后一个持有它的 store 被释放时连接池随之关闭。
+
 ---
 
 ## 6. Session Store（SQLite）
