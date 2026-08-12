@@ -5,7 +5,7 @@ use std::{
 
 use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
-    background::SharedBackgroundManager,
+    background::{BackgroundManager, SharedBackgroundManager},
     cron::{CronScheduler, SharedCronScheduler},
     memory::MemoryManager,
     skill::{SharedSkillRegistry, SkillRegistry},
@@ -68,6 +68,7 @@ pub fn test_context(name: &str) -> ToolContext {
     let _ = std::fs::remove_dir_all(&root_dir);
     std::fs::create_dir_all(&root_dir).unwrap();
     let store_root = StoreRoot::new(root_dir.join(".tact")).unwrap();
+    let db_path = root_dir.join(".tact").join("tact.db");
 
     ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
@@ -77,11 +78,11 @@ pub fn test_context(name: &str) -> ToolContext {
             root_dir.join(".tact/memory"),
         ))),
         work_dir: root_dir.clone(),
-        task_manager: SharedTaskManager::new(
-            block_on(TaskManager::new(&root_dir.join(".tact").join("tact.db"))).unwrap(),
+        task_manager: SharedTaskManager::new(block_on(TaskManager::new(&db_path)).unwrap()),
+        background_manager: SharedBackgroundManager::new(
+            block_on(BackgroundManager::new(&db_path)).unwrap(),
         ),
-        background_manager: SharedBackgroundManager::new(&store_root).unwrap(),
-        cron_scheduler: SharedCronScheduler::new(CronScheduler::new(&store_root).unwrap()),
+        cron_scheduler: SharedCronScheduler::new(block_on(CronScheduler::new(&db_path)).unwrap()),
         teammate_manager: SharedTeammateManager::new(TeammateManager::new(&store_root).unwrap()),
         worktree_manager: SharedWorktreeManager::new(
             WorktreeManager::new(&store_root, root_dir).unwrap(),

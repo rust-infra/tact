@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tact::{
     Agent, AgentSystemPrompt,
-    background::SharedBackgroundManager,
+    background::{BackgroundManager, SharedBackgroundManager},
     config::CliArgs,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
@@ -89,8 +89,10 @@ async fn run_interactive_locked(
     let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let task_manager =
         SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
-    let background_manager = SharedBackgroundManager::new(&store_root)?;
-    let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
+    let background_manager =
+        SharedBackgroundManager::new(BackgroundManager::new(&tact_path.session_db_path()).await?);
+    let cron_scheduler =
+        SharedCronScheduler::new(CronScheduler::new(&tact_path.session_db_path()).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);

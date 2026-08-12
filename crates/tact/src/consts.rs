@@ -61,7 +61,6 @@ const SKILL_DIR: &str = "skills";
 /// Sub-directory names used under `.tact/`.  Available through [`TactPath`] methods.
 const TRANSCRIPT_SUBDIR: &str = "transcripts";
 const TOOL_RESULTS_SUBDIR: &str = "tool-results";
-const CRON_SUBDIR: &str = "cron";
 
 /// Centralised path abstraction for all tact directories.
 ///
@@ -156,11 +155,6 @@ impl TactPath {
     /// `<workdir>/.tact/tool-results`
     pub fn tool_results_dir(&self) -> PathBuf {
         self.tact_dir().join(TOOL_RESULTS_SUBDIR)
-    }
-
-    /// `<workdir>/.tact/cron`
-    pub fn cron_dir(&self) -> PathBuf {
-        self.tact_dir().join(CRON_SUBDIR)
     }
 
     // ----------------------------------------------------------------

@@ -185,6 +185,7 @@ async fn handle_user_command_with_account(
                 .tool_context
                 .background_manager
                 .check(task_id.as_deref())
+                .await
             {
                 Ok(output) => {
                     // Fenced code block keeps the one-line-per-task listing (and

@@ -1,7 +1,8 @@
 //! Persistent JSON-backed key-value and collection store.
 //!
 //! The store lives under `.tact/` and is the persistence layer for
-//! tasks, background work, cron, teammates, worktrees, and memory.
+//! teammates, worktrees, and memory (tasks, cron, and background work have
+//! moved to SQLite — see `cron_store` / `background_store` / `task_store`).
 //!
 //! - [`StoreRoot`] resolves relative paths safely within the store root.
 //! - [`Store<T>`] is a single-file JSON store with read/write/update/append
@@ -18,6 +19,8 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
+pub mod background_store;
+pub mod cron_store;
 pub mod session_store;
 pub mod task_store;
 pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store};

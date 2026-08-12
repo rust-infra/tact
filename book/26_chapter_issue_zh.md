@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-12 — Cron 与后台任务从 JSON 文件迁移到 SQLite（`CronStore` / `BackgroundStore`）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 症状 / 动机 | cron 以单一 JSON 索引持久化（`cron/scheduled_tasks.json` 含 `next_id` 计数器），后台以每条记录一个 JSON 文件持久化（`background/tasks/{id}.json` 加内存 `Mutex<HashMap>` 镜像）。两者都是无事务的读-改-写、无跨进程锁；后台 manager 持有磁盘 + 内存双份状态，可能漂移。 |
+| 决策 | cron 与后台移入现有 `<workdir>/.tact/tact.db`，建 `cron_tasks` + `background_tasks` 表，通过新的异步 trait `CronStore`（`crates/tact/src/store/cron_store/`）与 `BackgroundStore`（`crates/tact/src/store/background_store/`）访问，仿照 `TaskStore` 模式。`cron_tasks` 的 id 由 `INTEGER PRIMARY KEY AUTOINCREMENT` 分配、对外以 8 位十六进制字符串暴露（`format!("{rowid:08x}")`）——与遗留索引的线上契约一致；`background_tasks` 保留时间戳毫秒 hex `id`，`status` 带 `CHECK` 约束。两张表都新增 `session_id` 列与索引，`cron_create` / `background_run` 时从工具上下文填充。`CronScheduler` / `BackgroundManager` 变为 async 门面；`SharedCronScheduler` 去掉 mutex（`Arc<CronScheduler>`），`BackgroundManager` 去掉内存镜像（DB 为唯一数据源；spawn 的 tokio 任务通过克隆的 store 句柄写回）。旧 JSON 文件不再读取、留在磁盘；`TactPath::cron_dir()` / `CRON_SUBDIR` 作为死代码删除。 |
+| 改后行为 | cron id 从 `00000001` 重新开始（旧条目若不从 `.tact/cron/` 手动导出则丢失）；`cron_*` / `background_*` / `/background` 表面不变；启动孤儿修复（`running` → `error`）改为扫表；`session_id` 出现在 cron JSON 与后台记录中。 |
+| 指针 | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`、`crates/tact/src/store/background_store/{mod,sqlite}.rs`、`crates/tact/src/cron/mod.rs`、`crates/tact/src/background.rs`、`crates/tact/src/tool/{cron,background_run}.rs`、`crates/tact-ui/src/{headless,interactive,driver}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 13](./13_chapter_background_zh.md) §2–5、[Ch 16](./16_chapter_cron_zh.md) §3–5。 |
+
 ## 1. 2026-08-11 — 任务存储从 JSON 文件迁移到 SQLite（`TaskStore`）
 
 | 字段 | 值 |

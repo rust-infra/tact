@@ -32,21 +32,21 @@ pub struct BackgroundTaskRecord {
     pub id: String,                        // 8 位十六进制计数器，由 epoch millis 播种
     pub status: BackgroundTaskStatus,
     pub command: String,
+    pub session_id: String,                // 所属 agent 会话；会话外为 ""
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub output: String,                    // stdout + stderr 合并，有上限
 }
 ```
 
-`BackgroundManager` 双重持有记录：
+`BackgroundManager` 持有 store 与 id 源：
 
 ```rust
-records: CollectionStore<BackgroundTaskRecord>,   // .tact/background/tasks/{id}.json
-tasks:   Mutex<HashMap<String, BackgroundTaskRecord>>,  // 内存镜像
-next_id: AtomicU64,                                // 单调递增 id 源
+records: Arc<dyn BackgroundStore>,   // .tact/tact.db → background_tasks 表
+next_id: AtomicU64,                  // 单调递增 id 源
 ```
 
-与 team/worktree manager 不同，`SharedBackgroundManager` 用 `Arc<BackgroundManager>` 包装，**内部** mutex 仅围绕 map —— spawn 的 tokio 任务需写回结果而无需持有整个 manager 锁。
+**没有内存镜像**：SQLite 连接池串行化写入，数据库是唯一数据源，因此 `SharedBackgroundManager` 用 `Arc<BackgroundManager>` 包装且无内部 mutex —— spawn 的 tokio 任务通过克隆的 store 句柄写回结果。
 
 ---
 
@@ -58,11 +58,11 @@ sequenceDiagram
     participant BM as BackgroundManager
     participant Task as tokio::spawn
     participant TUI as TUI card
-    participant FS as .tact/background/tasks/
+    participant DB as .tact/tact.db (background_tasks)
 
     Agent->>BM: background_run("cargo build")
     BM->>BM: validate_shell_command (blocks sudo, rm -rf /, …)
-    BM->>FS: write record (status: running)
+    BM->>DB: upsert record (status: running)
     BM->>Task: spawn sh -c "cargo build" (cwd = work_dir)
     BM-->>Agent: "Background task 018f3a2c started"
 
@@ -73,10 +73,10 @@ sequenceDiagram
     end
     Task->>Task: await exit (timeout 120s, kill_on_drop)
     Task->>TUI: BackgroundTaskFinished (✓/✗ + 最终输出)
-    Task->>FS: write record (completed/error + output)
+    Task->>DB: upsert record (completed/error + output)
 
     Agent->>BM: check_background("018f3a2c")
-    BM->>BM: in-memory map, fallback to disk read
+    BM->>DB: read record by id
     BM-->>Agent: record as pretty JSON
 ```
 
@@ -108,7 +108,7 @@ ID 为原子计数器低 32 位，格式化为 8 位十六进制（`{:08x}`）�
 
 ## 5. 启动时崩溃恢复
 
-`SharedBackgroundManager::new`（在 `tui.rs` 会话启动时调用）扫描 collection store 并修复孤儿：仍标记 `running` 的记录属于已不存在的进程，重写为：
+`BackgroundManager::new`（在 `headless.rs` / `interactive.rs` 会话启动时调用）扫描 `background_tasks` 表并修复孤儿：仍标记 `running` 的记录属于已不存在的进程，重写为：
 
 ```text
 status: error
@@ -133,12 +133,14 @@ output: "Process interrupted (agent restarted)"
 
 | 文件 | 角色 |
 |------|------|
+| `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
+| `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表 |
 | `crates/tact/src/background.rs` | `BackgroundManager`、`SharedBackgroundManager`、记录类型、spawn 逻辑、启动修复 |
 | `crates/tact/src/tool/background_run.rs` | `background_run` / `check_background` 工具 |
 | `crates/tact/src/shell.rs` | 与 `bash` 共享的 `validate_shell_command` blocklist |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.background_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的后台工具 |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 启动时从 `StoreRoot` 构造 manager |
+| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 启动时从 `tact.db` 构造 manager |
 | `docs/state_machines.md` | 后台 job 状态图 |
 
 ---
@@ -152,7 +154,7 @@ output: "Process interrupted (agent restarted)"
 | 无取消工具 | 运行中任务无法被模型 kill；仅超时或进程退出结束 |
 | 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |
-| 记录累积 | `.tact/background/tasks/` 从不修剪 |
+| 记录累积 | `background_tasks` 表从不修剪 |
 | 50k 输出 cap 静默截断 | 无同步 `bash` 的 `<persisted-output>` 溢出 |
 | ID 可能碰撞 | 32 位 hex 计数器由 wall clock 播种；无对磁盘的唯一性检查 |
 
@@ -163,6 +165,6 @@ output: "Process interrupted (agent restarted)"
 - [工具系统](./07_chapter_tool_zh.md) — `ToolContext`、`toolset()` 与同步 `bash` 对应物
 - [权限模型](./10_chapter_permission_zh.md) — `background_run` 如何被 gate
 - [上下文压缩](./05_chapter_compact_zh.md) — 后台任务绕过的输出溢出机制
-- [Store 与持久化](./01_chapter_store_zh.md) — `background/` collection store
+- [Store 与持久化](./01_chapter_store_zh.md) — `background_tasks` SQLite 表
 - [docs/state_machines.md](../docs/state_machines.md) — 后台 job 状态
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 后台任务行

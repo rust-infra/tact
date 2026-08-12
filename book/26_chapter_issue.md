@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-12 — Cron & background tasks migrated from JSON files to SQLite (`CronStore` / `BackgroundStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Cron persisted as a single JSON index (`cron/scheduled_tasks.json` with a `next_id` counter) and background as one JSON file per record (`background/tasks/{id}.json` plus an in-memory `Mutex<HashMap>` mirror). Both used read-modify-write with no transaction and no cross-process lock; the background manager held duplicate state (disk + memory) that could drift. |
+| Decision | Cron and background moved into the existing `<workdir>/.tact/tact.db` as `cron_tasks` + `background_tasks` tables via new async traits `CronStore` (`crates/tact/src/store/cron_store/`) and `BackgroundStore` (`crates/tact/src/store/background_store/`), mirroring the `TaskStore` pattern. `cron_tasks` ids come from `INTEGER PRIMARY KEY AUTOINCREMENT` surfaced as 8-hex strings (`format!("{rowid:08x}")`) — same wire contract as the legacy index; `background_tasks` keeps the timestamp-millis hex `id` with a `CHECK`-constrained status. Both tables gained a `session_id` column + index, filled from the tool context at `cron_create` / `background_run`. `CronScheduler` / `BackgroundManager` became async facades; `SharedCronScheduler` dropped its mutex (`Arc<CronScheduler>`) and `BackgroundManager` dropped its in-memory mirror (the DB is the single source of truth; the spawned tokio task writes back through a cloned store handle). Legacy JSON files are not read anymore and are left on disk; `TactPath::cron_dir()` / `CRON_SUBDIR` removed as dead code. |
+| Behavior after | Cron ids restart at `00000001` (legacy entries are gone unless exported manually from `.tact/cron/`); `cron_*` / `background_*` / `/background` surface unchanged; startup orphan repair (`running` → `error`) now sweeps the table; `session_id` appears in cron JSON and background records. |
+| Pointers | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`, `crates/tact/src/store/background_store/{mod,sqlite}.rs`, `crates/tact/src/cron/mod.rs`, `crates/tact/src/background.rs`, `crates/tact/src/tool/{cron,background_run}.rs`, `crates/tact-ui/src/{headless,interactive,driver}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 13](./13_chapter_background.md) §2–5, [Ch 16](./16_chapter_cron.md) §3–5. |
+
 ## 1. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
 
 | Field | Value |

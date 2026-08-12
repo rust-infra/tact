@@ -49,7 +49,14 @@ pub const CRON_CREATE_METADATA: ToolMetadata = ToolMetadata {
 /// encounters an internal error.
 pub async fn cron_create(ctx: ToolContext, input: CronCreateInput) -> Result<String> {
     ctx.cron_scheduler
-        .create(input.cron, input.prompt, input.recurring, input.durable)
+        .create(
+            input.cron,
+            input.prompt,
+            input.recurring,
+            input.durable,
+            ctx.session_id.clone().unwrap_or_default(),
+        )
+        .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,7 +90,7 @@ pub const CRON_DELETE_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the task ID does not exist or the scheduler
 /// encounters an internal error.
 pub async fn cron_delete(ctx: ToolContext, input: CronDeleteInput) -> Result<String> {
-    ctx.cron_scheduler.delete(&input.id)
+    ctx.cron_scheduler.delete(&input.id).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -113,7 +120,7 @@ pub const CRON_LIST_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the scheduler encounters an internal error.
 pub async fn cron_list(ctx: ToolContext, _input: CronListInput) -> Result<String> {
-    ctx.cron_scheduler.list()
+    ctx.cron_scheduler.list().await
 }
 
 #[cfg(test)]

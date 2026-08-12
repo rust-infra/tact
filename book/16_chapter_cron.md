@@ -1,7 +1,7 @@
 # Cron Scheduling
 > Language: [English](./16_chapter_cron.md) · [中文](./16_chapter_cron_zh.md)
 
-This chapter explains how Tact lets the agent **register scheduled prompts**: cron expressions, prompt text, and metadata persisted under `.tact/cron/`. The model can create, list, and delete these records through native tools; the storage layer is wired into every main-agent session via `ToolContext`.
+This chapter explains how Tact lets the agent **register scheduled prompts**: cron expressions, prompt text, and metadata persisted in `<workdir>/.tact/tact.db` (the `cron_tasks` table). The model can create, list, and delete these records through native tools; the storage layer is wired into every main-agent session via `ToolContext`.
 
 **Important scope note:** as of this writing, Tact persists scheduled tasks but does **not** yet run a background tick loop that evaluates cron expressions and injects prompts into `agent_loop`. The `recurring` and `durable` flags are stored and shown in listings; they are reserved for future runtime behaviour. See [§8 Current Gaps](#8-current-gaps).
 
@@ -27,10 +27,10 @@ The agent uses `cron_create` during a turn when the user asks for reminders, dai
 ```mermaid
 graph TB
     subgraph Entry["Session startup (tui.rs)"]
-        SR[StoreRoot .tact/]
+        DB[(tact.db)]
         CS[CronScheduler]
         SCS[SharedCronScheduler]
-        SR --> CS
+        DB --> CS
         CS --> SCS
     end
 
@@ -51,10 +51,10 @@ graph TB
     end
 
     subgraph Store["On disk"]
-        JSON["cron/scheduled_tasks.json"]
-        CC --> JSON
-        CL --> JSON
-        CD --> JSON
+        TBL[cron_tasks table]
+        CC --> TBL
+        CL --> TBL
+        CD --> TBL
     end
 
     subgraph Missing["Not implemented yet"]
@@ -62,7 +62,7 @@ graph TB
         LOOP[Inject prompt into agent_loop]
     end
 
-    JSON -.-> TICK
+    TBL -.-> TICK
     TICK -.-> LOOP
 ```
 
@@ -81,16 +81,12 @@ pub struct ScheduledTaskRecord {
     pub prompt: String,
     pub recurring: bool,
     pub durable: bool,
-    pub created_at: i64,  // Unix timestamp (UTC)
-}
-
-pub struct ScheduledTaskIndex {
-    pub tasks: Vec<ScheduledTaskRecord>,
-    pub next_id: u64,
+    pub session_id: String,  // owning agent session; "" outside a session
+    pub created_at: i64,     // Unix timestamp (UTC, millis)
 }
 ```
 
-All tasks live in a single JSON index file. IDs are monotonic hex strings (`format!("{id_num:08x}")`) assigned from `next_id` on each create.
+Each task is one row in the `cron_tasks` table (`crates/tact/src/store/cron_store/sqlite.rs`). IDs come from `INTEGER PRIMARY KEY AUTOINCREMENT` and are surfaced as 8-hex-digit strings (`format!("{rowid:08x}")`) — the same wire contract as the legacy JSON index.
 
 ---
 
@@ -98,30 +94,13 @@ All tasks live in a single JSON index file. IDs are monotonic hex strings (`form
 
 | Item | Value |
 |------|-------|
-| Store root | `.claude/` (`StoreRoot::new(tact_path.claude_dir())`) |
-| Index file | `cron/scheduled_tasks.json` |
-| Backend | `Store<ScheduledTaskIndex>` — read/modify/write whole file |
-| Init | If the file is missing on first open, an empty index is written |
+| Database | `<workdir>/.tact/tact.db` (shared with sessions, tasks, background) |
+| Table | `cron_tasks(id INTEGER PRIMARY KEY AUTOINCREMENT, cron TEXT, prompt TEXT, recurring INTEGER, durable INTEGER, session_id TEXT, created_at INTEGER)` |
+| Backend | `SqliteCronStore` (sqlx pool, `busy_timeout` 5 s) |
+| Index | `idx_cron_tasks_session_id` on `session_id` |
+| Init | `CREATE TABLE IF NOT EXISTS` on first open |
 
-The path helper `TactPath::cron_dir()` resolves `<workdir>/.tact/cron` in `crates/tact/src/consts.rs`; the scheduler uses the store layer's relative path `cron/scheduled_tasks.json` under the same root.
-
-Example on-disk shape:
-
-```json
-{
-  "tasks": [
-    {
-      "id": "00000000",
-      "cron": "0 9 * * *",
-      "prompt": "Daily standup summary",
-      "recurring": true,
-      "durable": false,
-      "created_at": 1717654321
-    }
-  ],
-  "next_id": 1
-}
-```
+`CronScheduler::new` is called with `tact_path.session_db_path()` in `headless.rs` / `interactive.rs`. The legacy `cron/scheduled_tasks.json` file is **no longer read**; old entries are left on disk and ids restart at `00000001`.
 
 ---
 
@@ -132,22 +111,20 @@ Example on-disk shape:
 Both `crates/tact-ui/src/headless.rs` and `interactive.rs` build the scheduler once per process:
 
 ```text
-store_root = StoreRoot::new(.tact/)
-cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?)
+db_path = tact_path.session_db_path()              // <workdir>/.tact/tact.db
+cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&db_path).await?)
 tool_context = ToolContext { cron_scheduler, work_dir, … }
 agent = Agent::new(client, tool_context, toolset(), …)
 ```
 
-There is no separate cron daemon or tokio task spawned today. The scheduler exists for the lifetime of the agent process and is shared across all tool calls through `ToolContext` (cloneable via `Arc<Mutex<…>>` inside `SharedCronScheduler`).
+There is no separate cron daemon or tokio task spawned today. The scheduler exists for the lifetime of the agent process and is shared across all tool calls through `ToolContext` (cloneable via `Arc<CronScheduler>` — the SQLite pool serializes writes, so no mutex is needed).
 
 ### `CronScheduler` vs `SharedCronScheduler`
 
 | Type | Role |
 |------|------|
-| `CronScheduler` | Single-threaded CRUD against `Store<ScheduledTaskIndex>` |
-| `SharedCronScheduler` | `Arc<Mutex<CronScheduler>>`; tools and tests call through `with_scheduler` |
-
-Lock poisoning surfaces as `"cron scheduler lock poisoned"`.
+| `CronScheduler` | Async CRUD facade over `Box<dyn CronStore>` |
+| `SharedCronScheduler` | `Arc<CronScheduler>`; tools and tests call the same async methods |
 
 ---
 
@@ -186,7 +163,7 @@ Tags in brackets: `recurring` or `one-shot`, plus `/durable` or `/session`.
 
 **Output:** `"Deleted scheduled task {id}"`, or error if id not found.
 
-These tools are **independent** barriers in the tool scheduler (no file-path conflicts). They do not touch `work_dir` directly — only the JSON store under `.tact/cron/`.
+These tools are **independent** barriers in the tool scheduler (no row conflicts on distinct ids). They do not touch `work_dir` directly — only the `cron_tasks` table in `tact.db`.
 
 ---
 
@@ -228,7 +205,7 @@ The following are **not** in the codebase yet; documenting them avoids confusion
 4. **No integration with session store** — firing a prompt would need new wiring (TUI event, headless trigger, or sidecar process).
 5. **No automatic cleanup** — one-shot tasks are not removed after a hypothetical fire.
 
-When a runtime is added, likely touch points are: a tokio interval in `tui.rs` or a dedicated module reading `ScheduledTaskIndex`, plus a path to enqueue user messages into the active agent (similar to user input in interactive mode).
+When a runtime is added, likely touch points are: a tokio interval in `tui.rs` or a dedicated module reading `cron_tasks`, plus a path to enqueue user messages into the active agent (similar to user input in interactive mode).
 
 ---
 
@@ -237,13 +214,14 @@ When a runtime is added, likely touch points are: a tokio interval in `tui.rs` o
 | File | Role |
 |------|------|
 | `crates/tact/src/cron/mod.rs` | `ScheduledTaskRecord`, `CronScheduler`, `SharedCronScheduler` |
+| `crates/tact/src/store/cron_store/mod.rs` | `CronStore` trait (async: create/delete/list) |
+| `crates/tact/src/store/cron_store/sqlite.rs` | `SqliteCronStore` — `cron_tasks` table, 8-hex public ids |
 | `crates/tact/src/tool/cron.rs` | `cron_create`, `cron_list`, `cron_delete` tool handlers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.cron_scheduler` |
 | `crates/tact/src/tool/registry.rs` | Cron tools in `toolset()` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | Construct scheduler and pass it into `Agent` |
-| `crates/tact/src/store/mod.rs` | `Store<T>` persistence layer |
-| `crates/tact/src/consts.rs` | `TactPath::cron_dir()` |
-| `crates/tact/src/tool/test_support.rs` | Test `ToolContext` with in-memory store root |
+| `crates/tact/src/store/mod.rs` | `StoreRoot` / JSON store (teammates, worktrees) |
+| `crates/tact/src/tool/test_support.rs` | Test `ToolContext` with temp `tact.db` |
 
 ---
 

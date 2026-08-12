@@ -1,20 +1,21 @@
 //! Background (asynchronous) task execution.
 //!
 //! Background tasks run shell commands asynchronously via `tokio::spawn`.
-//! Results are persisted to disk and can be polled at any time.
+//! Results are persisted to `<workdir>/.tact/tact.db` (the
+//! `background_tasks` table) and can be polled at any time.
 //!
-//! - [`BackgroundManager`] owns the in-memory task map and the on-disk
-//!   collection store.
+//! - [`BackgroundManager`] owns the in-memory id source and the SQLite
+//!   store.
 //! - [`SharedBackgroundManager`] is the thread-safe wrapper used by tool
 //!   implementations.
 //! - [`BackgroundTaskRecord`] captures the command, status, start/finish
 //!   timestamps, and combined stdout+stderr output.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -31,7 +32,7 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
-use crate::store::{CollectionStore, StoreRoot};
+use crate::store::background_store::{BackgroundStore, SqliteBackgroundStore};
 
 const READ_BUFFER_BYTES: usize = 4096;
 const PIPE_CHANNEL_CAPACITY: usize = 32;
@@ -54,6 +55,8 @@ pub struct BackgroundTaskRecord {
     pub id: String,
     pub status: BackgroundTaskStatus,
     pub command: String,
+    #[serde(default)]
+    pub session_id: String,
     pub started_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
@@ -61,11 +64,17 @@ pub struct BackgroundTaskRecord {
     pub output: String,
 }
 
-#[derive(Debug)]
 pub struct BackgroundManager {
-    records: CollectionStore<BackgroundTaskRecord>,
-    tasks: Mutex<HashMap<String, BackgroundTaskRecord>>,
+    records: Arc<dyn BackgroundStore>,
     next_id: AtomicU64,
+}
+
+impl std::fmt::Debug for BackgroundManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundManager")
+            .field("next_id", &self.next_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -73,49 +82,52 @@ pub struct SharedBackgroundManager {
     inner: Arc<BackgroundManager>,
 }
 
-impl SharedBackgroundManager {
-    pub fn new(root: &StoreRoot) -> Result<Self> {
-        let records = root.collection::<BackgroundTaskRecord>("background/tasks")?;
-        let mut tasks = HashMap::new();
-        for mut record in records.list()? {
+impl BackgroundManager {
+    /// Creates a manager backed by the given SQLite database file.
+    ///
+    /// Repairs orphans on startup: any record still marked `running`
+    /// belongs to a process that no longer exists, so it is rewritten as an
+    /// error (`"Process interrupted (agent restarted)"`).
+    pub async fn new(db_path: &Path) -> Result<Self> {
+        let records: Arc<dyn BackgroundStore> =
+            Arc::new(SqliteBackgroundStore::new(db_path).await?);
+        for mut record in records.list().await? {
             if record.status == BackgroundTaskStatus::Running {
                 record.status = BackgroundTaskStatus::Error;
                 record.finished_at = Some(Utc::now());
                 record.output = "Process interrupted (agent restarted)".to_string();
-                records.write(&record.id, &record)?;
+                records.upsert(&record).await?;
             }
-            tasks.insert(record.id.clone(), record);
         }
 
         Ok(Self {
-            inner: Arc::new(BackgroundManager {
-                records,
-                tasks: Mutex::new(tasks),
-                next_id: AtomicU64::new(Utc::now().timestamp_millis().max(0) as u64),
-            }),
+            records,
+            next_id: AtomicU64::new(Utc::now().timestamp_millis().max(0) as u64),
         })
     }
 
-    pub fn run(
+    pub async fn run(
         &self,
         command: String,
         work_dir: &Path,
+        session_id: String,
         progress: Option<BackgroundProgressSink>,
     ) -> Result<String> {
         crate::shell::validate_shell_command(&command)?;
 
-        let id = format!("{:08x}", self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = format!("{:08x}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let record = BackgroundTaskRecord {
             id: id.clone(),
             status: BackgroundTaskStatus::Running,
             command: command.clone(),
+            session_id,
             started_at: Utc::now(),
             finished_at: None,
             output: String::new(),
         };
-        self.save_record(record.clone())?;
+        self.save_record(record.clone()).await?;
 
-        let manager = self.clone();
+        let manager = self.records.clone();
         let command_for_task = command.clone();
         let work_dir = work_dir.to_path_buf();
         let task_id = id.clone();
@@ -134,38 +146,26 @@ impl SharedBackgroundManager {
             if let Some(progress) = &progress {
                 progress.send_finished(success, &message, &record.output);
             }
-            let _ = manager.save_record(record);
+            let _ = manager.upsert(&record).await;
         });
 
         Ok(format!("Background task {id} started: {command}"))
     }
 
-    pub fn check(&self, task_id: Option<&str>) -> Result<String> {
-        let mut tasks = self
-            .inner
-            .tasks
-            .lock()
-            .map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
-
+    pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
         if let Some(task_id) = task_id {
-            let record = tasks
+            let record = self
+                .records
                 .get(task_id)
-                .cloned()
-                .or_else(|| self.inner.records.read(task_id).ok())
+                .await?
                 .with_context(|| format!("Unknown background task {task_id}"))?;
             return serde_json::to_string_pretty(&record).context("failed to serialize task");
         }
 
-        if tasks.is_empty() {
-            for record in self.inner.records.list()? {
-                tasks.insert(record.id.clone(), record);
-            }
-        }
-
-        if tasks.is_empty() {
+        let mut records = self.records.list().await?;
+        if records.is_empty() {
             return Ok("No background tasks.".to_string());
         }
-        let mut records = tasks.values().cloned().collect::<Vec<_>>();
         records.sort_by_key(|record| record.started_at);
         Ok(records
             .into_iter()
@@ -174,15 +174,32 @@ impl SharedBackgroundManager {
             .join("\n"))
     }
 
-    fn save_record(&self, record: BackgroundTaskRecord) -> Result<()> {
-        self.inner.records.write(&record.id, &record)?;
-        let mut tasks = self
-            .inner
-            .tasks
-            .lock()
-            .map_err(|_| anyhow::anyhow!("background manager lock poisoned"))?;
-        tasks.insert(record.id.clone(), record);
-        Ok(())
+    async fn save_record(&self, record: BackgroundTaskRecord) -> Result<()> {
+        self.records.upsert(&record).await
+    }
+}
+
+impl SharedBackgroundManager {
+    pub fn new(manager: BackgroundManager) -> Self {
+        Self {
+            inner: Arc::new(manager),
+        }
+    }
+
+    pub async fn run(
+        &self,
+        command: String,
+        work_dir: &Path,
+        session_id: String,
+        progress: Option<BackgroundProgressSink>,
+    ) -> Result<String> {
+        self.inner
+            .run(command, work_dir, session_id, progress)
+            .await
+    }
+
+    pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
+        self.inner.check(task_id).await
     }
 }
 
@@ -557,31 +574,52 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::store::StoreRoot;
+    use crate::store::background_store::SqliteBackgroundStore;
 
-    #[test]
-    fn marks_stale_running_tasks_on_startup() {
+    fn temp_manager(_name: &str) -> (SharedBackgroundManager, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let root = StoreRoot::new(tmp.path()).unwrap();
-        let records = root
-            .collection::<BackgroundTaskRecord>("background/tasks")
-            .unwrap();
-        records
-            .write(
-                "deadbeef",
-                &BackgroundTaskRecord {
-                    id: "deadbeef".to_string(),
-                    status: BackgroundTaskStatus::Running,
-                    command: "sleep 999".to_string(),
-                    started_at: Utc::now(),
-                    finished_at: None,
-                    output: String::new(),
-                },
-            )
+        let db = tmp.path().join("tact.db");
+        let manager = SharedBackgroundManager::new(block_on(BackgroundManager::new(&db)).unwrap());
+        (manager, tmp)
+    }
+
+    fn block_on<F>(future: F) -> F::Output
+    where
+        F: std::future::Future + Send,
+        F::Output: Send,
+    {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Runtime::new()
+                        .expect("failed to create tokio runtime")
+                        .block_on(future)
+                })
+                .join()
+                .expect("block_on thread panicked")
+        })
+    }
+
+    #[tokio::test]
+    async fn marks_stale_running_tasks_on_startup() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("tact.db");
+        let store = SqliteBackgroundStore::new(&db).await.unwrap();
+        store
+            .upsert(&BackgroundTaskRecord {
+                id: "deadbeef".to_string(),
+                status: BackgroundTaskStatus::Running,
+                command: "sleep 999".to_string(),
+                session_id: String::new(),
+                started_at: Utc::now(),
+                finished_at: None,
+                output: String::new(),
+            })
+            .await
             .unwrap();
 
-        let manager = SharedBackgroundManager::new(&root).unwrap();
-        let output = manager.check(Some("deadbeef")).unwrap();
+        let manager = SharedBackgroundManager::new(BackgroundManager::new(&db).await.unwrap());
+        let output = manager.check(Some("deadbeef")).await.unwrap();
 
         assert!(output.contains("error"));
         assert!(output.contains("Process interrupted (agent restarted)"));
@@ -589,14 +627,18 @@ mod tests {
 
     #[tokio::test]
     async fn run_streams_progress_and_emits_finished_event() {
-        let tmp = TempDir::new().unwrap();
-        let root = StoreRoot::new(tmp.path()).unwrap();
-        let manager = SharedBackgroundManager::new(&root).unwrap();
+        let (manager, tmp) = temp_manager("run_streams_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = BackgroundProgressSink::new("bg-test", Some(tx));
 
         let started = manager
-            .run("echo hello-world".to_string(), tmp.path(), Some(progress))
+            .run(
+                "echo hello-world".to_string(),
+                tmp.path(),
+                "sess-1".to_string(),
+                Some(progress),
+            )
+            .await
             .unwrap();
         assert!(started.contains("Background task"));
 
@@ -629,16 +671,23 @@ mod tests {
         }
         assert!(saw_progress, "expected live ToolProgress before finish");
 
-        // The persisted record reflects the completion.
-        let listing = manager.check(None).unwrap();
+        // The persisted record reflects the completion (the DB write happens
+        // after the finished event, so poll briefly).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut listing = String::new();
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            listing = manager.check(None).await.unwrap();
+            if listing.contains("Completed") {
+                break;
+            }
+        }
         assert!(listing.contains("Completed"), "listing: {listing}");
     }
 
     #[tokio::test]
     async fn run_failed_command_emits_error_finished_event() {
-        let tmp = TempDir::new().unwrap();
-        let root = StoreRoot::new(tmp.path()).unwrap();
-        let manager = SharedBackgroundManager::new(&root).unwrap();
+        let (manager, tmp) = temp_manager("run_failed_command");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = BackgroundProgressSink::new("bg-fail", Some(tx));
 
@@ -646,8 +695,10 @@ mod tests {
             .run(
                 "echo before-fail && false".to_string(),
                 tmp.path(),
+                String::new(),
                 Some(progress),
             )
+            .await
             .unwrap();
 
         // Live progress may arrive before the completion event; consume it.
@@ -680,12 +731,16 @@ mod tests {
 
     #[tokio::test]
     async fn run_without_sink_persists_record() {
-        let tmp = TempDir::new().unwrap();
-        let root = StoreRoot::new(tmp.path()).unwrap();
-        let manager = SharedBackgroundManager::new(&root).unwrap();
+        let (manager, tmp) = temp_manager("run_without_sink");
 
         manager
-            .run("echo persisted-output".to_string(), tmp.path(), None)
+            .run(
+                "echo persisted-output".to_string(),
+                tmp.path(),
+                String::new(),
+                None,
+            )
+            .await
             .unwrap();
 
         // Poll until the spawned task writes the completed record back.
@@ -693,11 +748,44 @@ mod tests {
         let mut listing = String::new();
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            listing = manager.check(None).unwrap();
+            listing = manager.check(None).await.unwrap();
             if listing.contains("Completed") {
                 break;
             }
         }
         assert!(listing.contains("Completed"), "listing: {listing}");
+    }
+
+    #[tokio::test]
+    async fn run_persists_session_id() {
+        let (manager, tmp) = temp_manager("run_persists_session_id");
+
+        manager
+            .run(
+                "echo persisted-session".to_string(),
+                tmp.path(),
+                "sess-42".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut output = String::new();
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            output = manager.check(None).await.unwrap();
+            if output.contains("Completed") {
+                break;
+            }
+        }
+        assert!(output.contains("Completed"), "listing: {output}");
+        // The persisted record carries the session id.
+        let raw = manager.inner.records.list().await.unwrap();
+        let record = raw
+            .iter()
+            .find(|r| r.command.contains("persisted-session"))
+            .unwrap();
+        assert_eq!(record.session_id, "sess-42");
     }
 }

@@ -50,7 +50,13 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // Stream live output into the invocation's tool card while the task runs.
     let progress = BackgroundProgressSink::new(ctx.progress_reporter.tool_id(), ctx.ui_tx.clone());
     ctx.background_manager
-        .run(input.command, &ctx.work_dir, Some(progress))
+        .run(
+            input.command,
+            &ctx.work_dir,
+            ctx.session_id.clone().unwrap_or_default(),
+            Some(progress),
+        )
+        .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,7 +90,7 @@ pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the provided task ID does not exist or the background
 /// manager encounters an internal error.
 pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> Result<String> {
-    ctx.background_manager.check(input.task_id.as_deref())
+    ctx.background_manager.check(input.task_id.as_deref()).await
 }
 
 #[cfg(test)]

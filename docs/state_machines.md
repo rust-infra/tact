@@ -179,7 +179,7 @@ stateDiagram-v2
     Error --> [*]
 ```
 
-Each transition is persisted to disk under `.claude/background/tasks/<id>.json` so the task can be polled later with `check_background` even if the agent restarts.
+Each transition is persisted to the `background_tasks` table in `<workdir>/.tact/tact.db` so the task can be polled later with `check_background` even if the agent restarts.
 
 ---
 

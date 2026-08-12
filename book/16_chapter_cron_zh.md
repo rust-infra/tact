@@ -2,7 +2,7 @@
 
 > 语言：[中文](./16_chapter_cron_zh.md) · [English](./16_chapter_cron.md)
 
-本章说明 Tact 如何让 agent **注册定时 prompt**：cron 表达式、prompt 文本和元数据持久化在 `.tact/cron/` 下。模型可通过原生工具创建、列出和删除这些记录；存储层通过 `ToolContext` 接入每个主 agent 会话。
+本章说明 Tact 如何让 agent **注册定时 prompt**：cron 表达式、prompt 文本和元数据持久化在 `<workdir>/.tact/tact.db`（`cron_tasks` 表）。模型可通过原生工具创建、列出和删除这些记录；存储层通过 `ToolContext` 接入每个主 agent 会话。
 
 **重要范围说明：** 截至本文撰写时，Tact 会持久化定时任务，但 **尚未** 运行后台 tick 循环来求值 cron 表达式并将 prompt 注入 `agent_loop`。`recurring` 和 `durable` 标志会存储并在列表中展示；它们为未来的运行时行为预留。见 [§8 当前缺口](#8-当前缺口)。
 
@@ -28,10 +28,10 @@ Tact 中的 Cron **不是** shell 作业运行器（那是 [后台任务](../cra
 ```mermaid
 graph TB
     subgraph Entry["会话启动（tui.rs）"]
-        SR[StoreRoot .tact/]
+        DB[(tact.db)]
         CS[CronScheduler]
         SCS[SharedCronScheduler]
-        SR --> CS
+        DB --> CS
         CS --> SCS
     end
 
@@ -52,10 +52,10 @@ graph TB
     end
 
     subgraph Store["磁盘上"]
-        JSON["cron/scheduled_tasks.json"]
-        CC --> JSON
-        CL --> JSON
-        CD --> JSON
+        TBL[cron_tasks 表]
+        CC --> TBL
+        CL --> TBL
+        CD --> TBL
     end
 
     subgraph Missing["尚未实现"]
@@ -63,7 +63,7 @@ graph TB
         LOOP[将 prompt 注入 agent_loop]
     end
 
-    JSON -.-> TICK
+    TBL -.-> TICK
     TICK -.-> LOOP
 ```
 
@@ -82,16 +82,12 @@ pub struct ScheduledTaskRecord {
     pub prompt: String,
     pub recurring: bool,
     pub durable: bool,
-    pub created_at: i64,  // Unix 时间戳（UTC）
-}
-
-pub struct ScheduledTaskIndex {
-    pub tasks: Vec<ScheduledTaskRecord>,
-    pub next_id: u64,
+    pub session_id: String,  // 所属 agent 会话；会话外为 ""
+    pub created_at: i64,     // Unix 时间戳（UTC，毫秒）
 }
 ```
 
-所有任务在一个 JSON 索引文件中。ID 是从 `next_id` 在每次 create 时分配的单调递增十六进制字符串（`format!("{id_num:08x}")`）。
+每个任务对应 `cron_tasks` 表中的一行（`crates/tact/src/store/cron_store/sqlite.rs`）。ID 来自 `INTEGER PRIMARY KEY AUTOINCREMENT`，对外以 8 位十六进制字符串暴露（`format!("{rowid:08x}")`）——与遗留 JSON 索引的线上契约一致。
 
 ---
 
@@ -99,30 +95,13 @@ pub struct ScheduledTaskIndex {
 
 | 项 | 值 |
 |----|-----|
-| Store 根 | `.claude/`（`StoreRoot::new(tact_path.claude_dir())`） |
-| 索引文件 | `cron/scheduled_tasks.json` |
-| 后端 | `Store<ScheduledTaskIndex>` — 读/改/写整个文件 |
-| 初始化 | 首次打开时若文件缺失，写入空索引 |
+| 数据库 | `<workdir>/.tact/tact.db`（与 sessions、tasks、background 共享） |
+| 表 | `cron_tasks(id INTEGER PRIMARY KEY AUTOINCREMENT, cron TEXT, prompt TEXT, recurring INTEGER, durable INTEGER, session_id TEXT, created_at INTEGER)` |
+| 后端 | `SqliteCronStore`（sqlx 连接池，`busy_timeout` 5 秒） |
+| 索引 | `session_id` 上的 `idx_cron_tasks_session_id` |
+| 初始化 | 首次打开时 `CREATE TABLE IF NOT EXISTS` |
 
-路径辅助 `TactPath::cron_dir()` 在 `crates/tact/src/consts.rs` 中解析 `<workdir>/.tact/cron`；调度器在同一根下使用 store 层的相对路径 `cron/scheduled_tasks.json`。
-
-磁盘上示例形状：
-
-```json
-{
-  "tasks": [
-    {
-      "id": "00000000",
-      "cron": "0 9 * * *",
-      "prompt": "Daily standup summary",
-      "recurring": true,
-      "durable": false,
-      "created_at": 1717654321
-    }
-  ],
-  "next_id": 1
-}
-```
+`CronScheduler::new` 在 `headless.rs` / `interactive.rs` 中以 `tact_path.session_db_path()` 调用。遗留 `cron/scheduled_tasks.json` 文件 **不再读取**；旧条目留在磁盘上，id 从 `00000001` 重新开始。
 
 ---
 
@@ -133,22 +112,20 @@ pub struct ScheduledTaskIndex {
 `crates/tact-ui/src/headless.rs` 和 `interactive.rs` 每个进程构建一次调度器：
 
 ```text
-store_root = StoreRoot::new(.tact/)
-cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?)
+db_path = tact_path.session_db_path()              // <workdir>/.tact/tact.db
+cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&db_path).await?)
 tool_context = ToolContext { cron_scheduler, work_dir, … }
 agent = Agent::new(client, tool_context, toolset(), …)
 ```
 
-目前没有单独的 cron daemon 或 tokio 任务。调度器在 agent 进程生命周期内存在，通过 `ToolContext` 在所有工具调用间共享（`SharedCronScheduler` 内 `Arc<Mutex<…>>` 可克隆）。
+目前没有单独的 cron daemon 或 tokio 任务。调度器在 agent 进程生命周期内存在，通过 `ToolContext` 在所有工具调用间共享（`Arc<CronScheduler>` 可克隆——SQLite 连接池串行化写入，无需 mutex）。
 
 ### `CronScheduler` 与 `SharedCronScheduler`
 
 | 类型 | 角色 |
 |------|------|
-| `CronScheduler` | 对 `Store<ScheduledTaskIndex>` 的单线程 CRUD |
-| `SharedCronScheduler` | `Arc<Mutex<CronScheduler>>`；工具和测试通过 `with_scheduler` 调用 |
-
-锁中毒表现为 `"cron scheduler lock poisoned"`。
+| `CronScheduler` | 对 `Box<dyn CronStore>` 的异步 CRUD 门面 |
+| `SharedCronScheduler` | `Arc<CronScheduler>`；工具和测试调用相同的 async 方法 |
 
 ---
 
@@ -187,7 +164,7 @@ agent = Agent::new(client, tool_context, toolset(), …)
 
 **输出：** `"Deleted scheduled task {id}"`，或 id 未找到时错误。
 
-这些工具在工具调度器中是 **独立** barrier（无文件路径冲突）。它们不直接触碰 `work_dir`——只触碰 `.tact/cron/` 下的 JSON store。
+这些工具在工具调度器中是 **独立** barrier（不同 id 的行无冲突）。它们不直接触碰 `work_dir`——只触碰 `tact.db` 中的 `cron_tasks` 表。
 
 ---
 
@@ -229,7 +206,7 @@ flowchart LR
 4. **与会话 store 无集成** — 触发 prompt 需要新接线（TUI 事件、headless 触发或 sidecar 进程）。
 5. **无自动清理** — 一次性任务在假设的触发后不会移除。
 
-添加运行时时，可能的触点：`tui.rs` 中的 tokio interval 或读取 `ScheduledTaskIndex` 的专用模块，以及将用户消息入队到活跃 agent 的路径（类似交互模式下的用户输入）。
+添加运行时时，可能的触点：`tui.rs` 中的 tokio interval 或读取 `cron_tasks` 的专用模块，以及将用户消息入队到活跃 agent 的路径（类似交互模式下的用户输入）。
 
 ---
 
@@ -238,13 +215,14 @@ flowchart LR
 | 文件 | 角色 |
 |------|------|
 | `crates/tact/src/cron/mod.rs` | `ScheduledTaskRecord`、`CronScheduler`、`SharedCronScheduler` |
+| `crates/tact/src/store/cron_store/mod.rs` | `CronStore` trait（async：create/delete/list） |
+| `crates/tact/src/store/cron_store/sqlite.rs` | `SqliteCronStore` — `cron_tasks` 表、8 位十六进制对外 id |
 | `crates/tact/src/tool/cron.rs` | `cron_create`、`cron_list`、`cron_delete` 工具处理器 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.cron_scheduler` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 cron 工具 |
 | `crates/tact-ui/src/headless.rs`、`interactive.rs` | 构造调度器并传入 `Agent` |
-| `crates/tact/src/store/mod.rs` | `Store<T>` 持久化层 |
-| `crates/tact/src/consts.rs` | `TactPath::cron_dir()` |
-| `crates/tact/src/tool/test_support.rs` | 带内存 store root 的测试 `ToolContext` |
+| `crates/tact/src/store/mod.rs` | `StoreRoot` / JSON store（teammates、worktrees） |
+| `crates/tact/src/tool/test_support.rs` | 带临时 `tact.db` 的测试 `ToolContext` |
 
 ---
 
