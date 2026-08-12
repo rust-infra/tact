@@ -10,6 +10,8 @@
 .superpowers/
 .tact/
 skills
+!vendor/async-openai/src/skills/
+!vendor/async-openai/src/types/skills/
 .qoder/
 .worktrees/
 .tmp/
