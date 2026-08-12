@@ -64,7 +64,7 @@
 //! This feature is available on methods whose return type is not `Bytes`
 //!
 //!```
-//!# #[cfg(feature = "byot")]
+//!# #[cfg(all(feature = "byot", feature = "chat-completion"))]
 //!# tokio_test::block_on(async {
 //! use async_openai::Client;
 //! use serde_json::{Value, json};
@@ -122,6 +122,7 @@
 //!
 //! For demonstration:
 //! ```
+//! # #[cfg(feature = "chat-completion")]
 //! # tokio_test::block_on(async {
 //! # use async_openai::Client;
 //! # use async_openai::traits::RequestOptionsBuilder;

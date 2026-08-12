@@ -15,7 +15,7 @@ changes below.
 
 ## Local patch (only divergence from upstream)
 
-Two source changes in `src/`:
+Three source changes in `src/`:
 
 1. `src/types/responses/response.rs` — `CreateResponse` gained a typed
    `context_management` field:
@@ -40,13 +40,25 @@ Two source changes in `src/`:
    `Reasoning { effort, summary }` with the typed enum instead of injecting
    `reasoning.effort` through JSON.
 
+3. `src/lib.rs` — doctest feature gates. Tact consumes this crate with
+   `features = ["responses", "byot"]` (no `chat-completion`), so the two
+   crate-level doctests that call `client.chat()` (the "Bring Your Own
+   Types" example and the "Configurable Requests" example) fail to compile
+   under `cargo test -p async-openai-local --doc`. They are now gated:
+   `#[cfg(all(feature = "byot", feature = "chat-completion"))]` for the BYOT
+   example and `#[cfg(feature = "chat-completion")]` for the Request Options
+   example. The examples still render on docs.rs (which builds with all
+   features) but are skipped in Tact's minimal-feature doctest run.
+
 ## How to sync with upstream
 
 1. Diff this tree against the new crates.io source:
    `diff -rq vendor/async-openai/src <registry>/async-openai-<ver>/src`
-   (the only expected differences are `response.rs` and
+   (the only expected differences are `lib.rs`, `response.rs` and
    `types/shared/reasoning_effort.rs`).
 2. Copy the new `src/`, `tests/`, `Cargo.toml`, `README.md` over, then
-   re-apply the two changes above and keep the package rename
+   re-apply the three changes above and keep the package rename
    `async-openai-local`.
-3. Run `cargo test -p tact_llm` and `cargo test -p tact-ui --test recovery_compaction`.
+3. Run `cargo test -p async-openai-local --doc` (doctests must pass with only
+   `responses` + `byot` enabled), `cargo test -p tact_llm` and
+   `cargo test -p tact-ui --test recovery_compaction`.
