@@ -199,6 +199,7 @@ dependencies = [
 [[package]]
 name = "async-openai-local"
 version = "0.41.3"
+source = "git+https://github.com/rust-infra/async-openai.git?branch=feat%2Ftact#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
 dependencies = [
  "async-openai-macros",
  "base64",
@@ -225,6 +226,7 @@ dependencies = [
 [[package]]
 name = "async-openai-macros"
 version = "0.3.0"
+source = "git+https://github.com/rust-infra/async-openai.git?branch=feat%2Ftact#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
 dependencies = [
  "proc-macro2",
  "quote",
