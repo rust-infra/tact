@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-12 — async-openai 从 `vendor/async-openai` 切换到本地维护的 fork `../async-openai`
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `docs`（依赖管理） |
+| 症状 / 动机 | `vendor/async-openai` 下的 vendored 拷贝（2026-08-10 条目）能用，但把整个 crate 复制进了仓库：每次同步上游都要 diff、重新打补丁，还要在 Tact 的最小 feature 集下保持 crate 级 doctest 可编译。 |
+| 决策 | fork 改为独立仓库，位于 `../async-openai`（克隆自 `https://github.com/rust-infra/async-openai`，分支 `feat/tact`，commit `ca74607` = 上游 main 0.41.3），直接维护并包含四个本地提交：(1) `CreateResponse` 增加类型化字段 `context_management: Option<Vec<ContextManagementParam>>`；(2) `ReasoningEffort` 增加 `Max` 变体；(3) 两个调用 `client.chat()` 的 doctest 增加 feature gate；(4) package 改名为 `async-openai-local` 并显式 `[lib] name = "async_openai"`（fork workspace 移除 examples，因为它们仍引用上游包名）。Tact workspace 依赖变为 `async-openai-responses = { package = "async-openai-local", path = "../async-openai/async-openai", version = "0.41.3", features = ["responses", "byot"] }`；删除 `vendor/async-openai/`。代码仍 `use async_openai_responses::…`，无需改引用。 |
+| 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护移到仓库外：直接改本地 fork（`/Users/rg/Projects/async-openai`，分支 `feat/tact`），不再 re-vendor。 |
+| 指针 | `/Users/rg/Projects/async-openai`（fork，`feat/tact` 上提交 `7de8bb4` / `5e22785` / `12488eb`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+
 ## 1. 2026-08-12 — Worktree 存储从 JSON 文件迁移到 SQLite（`WorktreeStore`）
 
 | 字段 | 值 |
