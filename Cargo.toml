@@ -19,7 +19,7 @@ license = "MIT"
 anyhow = "1.0"
 arboard = "3"
 async-openai = "0.20"
-async-openai-responses = { git = "https://github.com/rust-infra/async-openai.git", branch= "feat/tact", features = ["responses", "byot"] }
+async-openai-responses = { package = "async-openai-local", git = "https://github.com/rust-infra/async-openai.git", branch = "feat/tact", version = "0.41.3", features = ["responses", "byot"] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
