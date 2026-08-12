@@ -113,9 +113,9 @@ impl ProviderInfo {
     fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
         let profile = self.profile_for_base_url(config.api_base())?;
-        let adapter = openai::OpenAiAdapter::new(config);
+        let adapter = openai::compatible::OpenAiAdapter::new(config);
         Ok(LlmProvider::ChatCompletions(
-            openai::ChatCompletionsAdapter::new(profile, adapter),
+            openai::compatible::ChatCompletionsAdapter::new(profile, adapter),
         ))
     }
 
@@ -158,7 +158,7 @@ impl ProviderInfo {
         ))
     }
 
-    fn openai_compatible_config(&self) -> anyhow::Result<openai::CompatibleConfig> {
+    fn openai_compatible_config(&self) -> anyhow::Result<openai::compatible::CompatibleConfig> {
         if self.api_key.is_empty() {
             anyhow::bail!("api_key not configured for provider '{}'", self.provider);
         }
@@ -172,7 +172,7 @@ impl ProviderInfo {
         } else {
             self.base_url.clone()
         };
-        Ok(openai::CompatibleConfig::new(
+        Ok(openai::compatible::CompatibleConfig::new(
             self.api_key.clone(),
             base_url,
         ))
@@ -365,13 +365,13 @@ impl Client {
             | ProviderKind::Kimi
             | ProviderKind::OpenAi
             | ProviderKind::Custom(_) => {
-                let adapter = openai::OpenAiAdapter::with_auth(
+                let adapter = openai::compatible::OpenAiAdapter::with_auth(
                     base_url,
                     SharedHttpClient::default(),
                     credentials,
                 );
                 Ok(LlmProvider::ChatCompletions(
-                    openai::ChatCompletionsAdapter::new(profile, adapter),
+                    openai::compatible::ChatCompletionsAdapter::new(profile, adapter),
                 ))
             }
         }

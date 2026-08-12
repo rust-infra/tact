@@ -49,7 +49,7 @@ pub use models::{
     ensure_api_model_ids_for_provider, is_models_query_supported, merge_model_candidates,
     seed_models_cache_for_tests,
 };
-pub use openai::OpenAiBodyHook;
+pub use openai::compatible::body::OpenAiBodyHook;
 pub use profile::ProviderProfile;
 pub use provider::{
     Client, ProviderInfo, get_llm_client, get_provider, init_provider,

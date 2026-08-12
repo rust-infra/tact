@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use crate::{
     ChatCompletionsDialect, LlmError, ProviderInfo, ProviderKind,
-    openai::body::{DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook},
+    openai::compatible::body::{
+        DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook,
+    },
 };
 
 /// Pick the body hook for a resolved Chat Completions dialect.
@@ -64,7 +66,7 @@ mod tests {
     use super::*;
     use crate::{
         OpenAiProtocol, ProviderInfo, ProviderKind, ProviderProfile,
-        openai::body::test_util::{ctx, empty_body, sample_request_with_thinking},
+        openai::compatible::body::test_util::{ctx, empty_body, sample_request_with_thinking},
     };
 
     fn provider(kind: ProviderKind, model: &str, base_url: &str) -> ProviderInfo {
