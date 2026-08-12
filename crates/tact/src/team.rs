@@ -4,30 +4,24 @@
 //! via an inbox that supports point-to-point messages, broadcasts, and
 //! structured protocol requests (plan approval, shutdown).
 //!
-//! - [`TeammateManager`] is the single-threaded store.
-//! - [`SharedTeammateManager`] is the `Arc<Mutex<…>>` wrapper.
+//! - [`TeammateManager`] is the async facade over [`TeamStore`].
+//! - [`SharedTeammateManager`] wraps it with `Arc<…>` for concurrent access.
 //! - [`InboxMessage`] includes sender, recipient, body, kind, and timestamp.
-//! - [`TeamConfig`] is the persistent roster under `.tact/team/`.
+//! - [`TeammateRecord`] is the roster entry, persisted in `tact.db`.
 
-use std::sync::{Arc, Mutex};
+use std::{path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{CollectionStore, Store, StoreRoot};
+use crate::store::team_store::{SqliteTeamStore, TeamStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeammateRecord {
     pub name: String,
     pub role: String,
     pub status: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TeamConfig {
-    #[serde(default)]
-    pub teammates: Vec<TeammateRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,62 +33,55 @@ pub struct InboxMessage {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug)]
 pub struct TeammateManager {
-    config: Store<TeamConfig>,
-    inboxes: CollectionStore<InboxMessage>,
+    store: Box<dyn TeamStore>,
+}
+
+impl std::fmt::Debug for TeammateManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TeammateManager").finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct SharedTeammateManager {
-    inner: Arc<Mutex<TeammateManager>>,
+    inner: Arc<TeammateManager>,
 }
 
 impl TeammateManager {
-    pub fn new(root: &StoreRoot) -> Result<Self> {
-        let manager = Self {
-            config: root.file("team/config.json")?,
-            inboxes: root.collection("team/inbox")?,
-        };
-        if !manager.config.exists() {
-            manager.config.write(&TeamConfig::default())?;
-        }
-        Ok(manager)
+    /// Creates a manager backed by the given SQLite database file.
+    pub async fn new(db_path: &Path) -> Result<Self> {
+        Ok(Self {
+            store: Box::new(SqliteTeamStore::new(db_path).await?),
+        })
     }
 
-    pub fn spawn_teammate(&mut self, name: String, role: String) -> Result<String> {
-        let mut config = self.config.read().unwrap_or_default();
-        if config
-            .teammates
-            .iter()
-            .any(|teammate| teammate.name == name)
-        {
-            anyhow::bail!("teammate {name} already exists");
-        }
+    pub async fn spawn_teammate(&self, name: String, role: String) -> Result<String> {
+        self.store
+            .create_teammate(name.clone(), role.clone())
+            .await?;
         let record = TeammateRecord {
             name,
             role,
             status: "idle".to_string(),
         };
-        config.teammates.push(record.clone());
-        self.config.write(&config)?;
         serde_json::to_string_pretty(&record).context("failed to serialize teammate")
     }
 
-    pub fn list_teammates(&self) -> Result<String> {
-        let config = self.config.read().unwrap_or_default();
-        if config.teammates.is_empty() {
+    pub async fn list_teammates(&self) -> Result<String> {
+        let mut teammates = self.store.list_teammates().await?;
+        if teammates.is_empty() {
             return Ok("No teammates.".to_string());
         }
-        Ok(config
-            .teammates
+        teammates.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(teammates
             .into_iter()
             .map(|teammate| format!("{} [{}] {}", teammate.name, teammate.role, teammate.status))
             .collect::<Vec<_>>()
             .join("\n"))
     }
 
-    pub fn send_message(&mut self, from: String, to: String, body: String) -> Result<String> {
+    pub async fn send_message(&self, from: String, to: String, body: String) -> Result<String> {
         let message = InboxMessage {
             from,
             to: to.clone(),
@@ -102,28 +89,35 @@ impl TeammateManager {
             kind: "message".to_string(),
             created_at: Utc::now(),
         };
-        self.inboxes.append(&to, &message)?;
+        self.store.append_message(&to, &message).await?;
         Ok(format!("sent message to {to}"))
     }
 
-    pub fn broadcast(&mut self, from: String, body: String) -> Result<String> {
-        let config = self.config.read().unwrap_or_default();
-        for teammate in &config.teammates {
-            self.send_message(from.clone(), teammate.name.clone(), body.clone())?;
+    pub async fn broadcast(&self, from: String, body: String) -> Result<String> {
+        let teammates = self.store.list_teammates().await?;
+        for teammate in &teammates {
+            let message = InboxMessage {
+                from: from.clone(),
+                to: teammate.name.clone(),
+                body: body.clone(),
+                kind: "message".to_string(),
+                created_at: Utc::now(),
+            };
+            self.store.append_message(&teammate.name, &message).await?;
         }
-        Ok(format!("broadcast to {} teammates", config.teammates.len()))
+        Ok(format!("broadcast to {} teammates", teammates.len()))
     }
 
-    pub fn read_inbox(&self, owner: &str) -> Result<String> {
-        let messages = self.inboxes.read_all_from(owner)?;
+    pub async fn read_inbox(&self, owner: &str) -> Result<String> {
+        let messages = self.store.read_inbox(owner).await?;
         if messages.is_empty() {
             return Ok("Inbox is empty.".to_string());
         }
         serde_json::to_string_pretty(&messages).context("failed to serialize inbox")
     }
 
-    pub fn protocol_request(
-        &mut self,
+    pub async fn protocol_request(
+        &self,
         from: String,
         to: String,
         kind: String,
@@ -136,7 +130,7 @@ impl TeammateManager {
             kind,
             created_at: Utc::now(),
         };
-        self.inboxes.append(&to, &message)?;
+        self.store.append_message(&to, &message).await?;
         Ok(format!("sent protocol request to {to}"))
     }
 }
@@ -144,51 +138,43 @@ impl TeammateManager {
 impl SharedTeammateManager {
     pub fn new(manager: TeammateManager) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(manager)),
+            inner: Arc::new(manager),
         }
     }
 
-    pub fn with_manager<T>(&self, f: impl FnOnce(&mut TeammateManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("teammate manager lock poisoned"))?;
-        f(&mut manager)
+    pub async fn spawn_teammate(&self, name: String, role: String) -> Result<String> {
+        self.inner.spawn_teammate(name, role).await
     }
 
-    pub fn spawn_teammate(&self, name: String, role: String) -> Result<String> {
-        self.with_manager(|manager| manager.spawn_teammate(name, role))
+    pub async fn list_teammates(&self) -> Result<String> {
+        self.inner.list_teammates().await
     }
 
-    pub fn list_teammates(&self) -> Result<String> {
-        self.with_manager(|manager| manager.list_teammates())
+    pub async fn send_message(&self, from: String, to: String, body: String) -> Result<String> {
+        self.inner.send_message(from, to, body).await
     }
 
-    pub fn send_message(&self, from: String, to: String, body: String) -> Result<String> {
-        self.with_manager(|manager| manager.send_message(from, to, body))
+    pub async fn broadcast(&self, from: String, body: String) -> Result<String> {
+        self.inner.broadcast(from, body).await
     }
 
-    pub fn broadcast(&self, from: String, body: String) -> Result<String> {
-        self.with_manager(|manager| manager.broadcast(from, body))
+    pub async fn read_inbox(&self, owner: &str) -> Result<String> {
+        self.inner.read_inbox(owner).await
     }
 
-    pub fn read_inbox(&self, owner: &str) -> Result<String> {
-        self.with_manager(|manager| manager.read_inbox(owner))
-    }
-
-    pub fn protocol_request(
+    pub async fn protocol_request(
         &self,
         from: String,
         to: String,
         kind: String,
         body: String,
     ) -> Result<String> {
-        self.with_manager(|manager| manager.protocol_request(from, to, kind, body))
+        self.inner.protocol_request(from, to, kind, body).await
     }
 }
 
 impl std::ops::Deref for SharedTeammateManager {
-    type Target = Arc<Mutex<TeammateManager>>;
+    type Target = Arc<TeammateManager>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner

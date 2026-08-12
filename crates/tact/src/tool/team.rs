@@ -41,7 +41,9 @@ pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if a teammate with the same name already exists.
 pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Result<String> {
-    ctx.teammate_manager.spawn_teammate(input.name, input.role)
+    ctx.teammate_manager
+        .spawn_teammate(input.name, input.role)
+        .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -71,7 +73,7 @@ pub const LIST_TEAMMATES_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the teammate manager fails to retrieve the list.
 pub async fn list_teammates(ctx: ToolContext, _input: ListTeammatesInput) -> Result<String> {
-    ctx.teammate_manager.list_teammates()
+    ctx.teammate_manager.list_teammates().await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -108,6 +110,7 @@ pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata {
 pub async fn send_message(ctx: ToolContext, input: SendMessageInput) -> Result<String> {
     ctx.teammate_manager
         .send_message(input.from, input.to, input.body)
+        .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -140,7 +143,7 @@ pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the teammate manager fails to deliver the broadcast.
 pub async fn broadcast(ctx: ToolContext, input: BroadcastInput) -> Result<String> {
-    ctx.teammate_manager.broadcast(input.from, input.body)
+    ctx.teammate_manager.broadcast(input.from, input.body).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -173,7 +176,7 @@ pub const READ_INBOX_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the owner does not exist or the teammate
 /// manager fails to read the inbox.
 pub async fn read_inbox(ctx: ToolContext, input: ReadInboxInput) -> Result<String> {
-    ctx.teammate_manager.read_inbox(&input.owner)
+    ctx.teammate_manager.read_inbox(&input.owner).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -208,12 +211,14 @@ pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
 pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(
-        input.from,
-        input.to,
-        "plan_approval".to_string(),
-        input.body,
-    )
+    ctx.teammate_manager
+        .protocol_request(
+            input.from,
+            input.to,
+            "plan_approval".to_string(),
+            input.body,
+        )
+        .await
 }
 
 pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata {
@@ -241,12 +246,14 @@ pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
 pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(
-        input.from,
-        input.to,
-        "shutdown_request".to_string(),
-        input.body,
-    )
+    ctx.teammate_manager
+        .protocol_request(
+            input.from,
+            input.to,
+            "shutdown_request".to_string(),
+            input.body,
+        )
+        .await
 }
 
 pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata {
@@ -274,12 +281,14 @@ pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
 pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager.protocol_request(
-        input.from,
-        input.to,
-        "shutdown_response".to_string(),
-        input.body,
-    )
+    ctx.teammate_manager
+        .protocol_request(
+            input.from,
+            input.to,
+            "shutdown_response".to_string(),
+            input.body,
+        )
+        .await
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # Store and Persistence
 > Language: [English](./01_chapter_store.md) · [中文](./01_chapter_store_zh.md)
 
-This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.tact/` and the SQLite database. Together they hold conversation history, domain state (cron, teammates, …), and observability data.
+This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.tact/` and the SQLite database. Together they hold conversation history, domain state (worktrees, …), and observability data.
 
 Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in `.tact/memory/` and is **not** part of the JSON store API.
 
@@ -13,8 +13,8 @@ Tact deliberately splits concerns:
 
 | Layer | Location | API | Primary use |
 |-------|----------|-----|-------------|
-| **JSON store** | `<workdir>/.tact/` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` | Domain records (team, worktrees, …) |
-| **SQLite store** | `<workdir>/.tact/tact.db` | `SessionStore` + `TaskStore` + `CronStore` + `BackgroundStore` traits | Messages, token usage, tasks, cron, background, input history |
+| **JSON store** | `<workdir>/.tact/` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` | Generic JSON persistence (no active domain consumers) |
+| **SQLite store** | `<workdir>/.tact/tact.db` | `SessionStore` + `TaskStore` + `CronStore` + `BackgroundStore` + `TeamStore` + `WorktreeStore` traits | Messages, token usage, tasks, cron, background, team, worktrees, input history |
 
 ```mermaid
 graph TB
@@ -25,19 +25,16 @@ graph TB
     end
 
     subgraph Tact
-        DB["tact.db — SQLite (messages, token usage, tasks, cron, background, …)"]
+        DB["tact.db — SQLite (messages, token usage, tasks, cron, background, team, worktrees, …)"]
     end
 
     subgraph Claude
-        Team["team/config.json, team/inbox/*.json"]
-        WT["worktrees/…"]
         Mem["memory/*.md — separate module"]
     end
 
-    SR[StoreRoot] --> Team
-    SR --> WT
+    SR[StoreRoot] --> Mem
 
-    SS[SessionStore + TaskStore + CronStore + BackgroundStore] --> DB
+    SS[SessionStore + TaskStore + CronStore + BackgroundStore + TeamStore + WorktreeStore] --> DB
 ```
 
 Both are initialized at session startup in `main.rs`: `StoreRoot::new(tact_path.tact_dir())` and `open_sqlite_session_store(&tact_path.session_db_path())`.
@@ -82,7 +79,7 @@ Typed wrapper around one JSON document (pretty-printed with trailing newline).
 | `delete()` | Remove file; report whether it existed |
 | `exists()` | Path check |
 
-Used for **index files** and **single-document registries** — e.g. `team/config.json`.
+Used for **index files** and **single-document registries** — a generic persistence primitive (no domain module uses it today; all domain state lives in SQLite).
 
 ---
 
@@ -107,7 +104,7 @@ Invalid keys (`/`, `\`, `.`, `..`) are rejected.
 root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{id}.json (legacy)
 ```
 
-Tasks, cron, and background no longer use the JSON store — they live in SQLite (see §6).
+Tasks, cron, background, team, and worktree state no longer use the JSON store — they live in SQLite (see §6).
 
 ---
 
@@ -118,10 +115,10 @@ Tasks, cron, and background no longer use the JSON store — they live in SQLite
 | `task/` | `tact.db` → `tasks`, `task_dependencies` tables | `TaskStore` (SQLite) |
 | `cron/` | `tact.db` → `cron_tasks` table | `CronStore` (SQLite) |
 | `background.rs` ([Background Tasks](./13_chapter_background.md)) | `tact.db` → `background_tasks` table | `BackgroundStore` (SQLite) |
-| `team.rs` ([Team Coordination](./14_chapter_team.md)) | `team/config.json`, `team/inbox/` | Store + collection |
-| `worktree/` ([Worktree Lanes](./15_chapter_worktree.md)) | `worktrees/index.json` | Single `Store<WorktreeIndex>` |
+| `team.rs` ([Team Coordination](./14_chapter_team.md)) | `tact.db` → `teammates`, `inbox_messages` tables | `TeamStore` (SQLite) |
+| `worktree/` ([Worktree Lanes](./15_chapter_worktree.md)) | `tact.db` → `worktrees`, `worktree_events` tables | `WorktreeStore` (SQLite) |
 
-Each domain module wraps the raw store (e.g. `SharedCronScheduler` over `Arc<CronScheduler>`; `SharedTaskManager` / `SharedBackgroundManager` over `Arc<…>` — the SQLite pool already serializes writes) and exposes tool-facing APIs — callers should not manipulate `CollectionStore` directly.
+Each domain module wraps the raw store (e.g. `SharedCronScheduler` over `Arc<CronScheduler>`; `SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` over `Arc<…>` — the SQLite pool already serializes writes) and exposes tool-facing APIs — callers should not manipulate `CollectionStore` directly.
 
 ---
 
@@ -149,6 +146,10 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 | `task_dependencies` | One row per edge (`blocker_id`, `blocked_id`), composite PK, no foreign keys — application-managed cleanup |
 | `cron_tasks` | Scheduled prompts: `cron`, `prompt`, `recurring`/`durable` flags, `session_id`, `created_at`; public ids are 8-hex `INTEGER AUTOINCREMENT` rowids |
 | `background_tasks` | Background jobs: `status` (CHECK-constrained), `command`, `session_id`, `started_at`/`finished_at`, `output` |
+| `teammates` | Roster: `name` (PK), `role`, `status` |
+| `inbox_messages` | Inbox entries: `owner`, `from_name`, `to_name`, `body`, `kind`, `created_at`; autoincrement `id` preserves insertion order |
+| `worktrees` | Worktree lanes: `name` (UNIQUE), `path`, `branch`, `task_id`, `status`, `session_id`, `created_at` |
+| `worktree_events` | Lane audit log: `event`, `created_at`; `id` is the ordering key |
 
 ### Agent integration
 
@@ -179,16 +180,14 @@ sequenceDiagram
     participant SQL as SqliteSessionStore
 
     TUI->>JSON: StoreRoot::new(.tact/)
-    TUI->>JSON: TeammateManager, WorktreeManager
     TUI->>SQL: open_sqlite_session_store(tact.db)
-    TUI->>SQL: TaskManager / BackgroundManager / CronScheduler (same tact.db)
+    TUI->>SQL: TaskManager / BackgroundManager / CronScheduler / TeammateManager / WorktreeManager (same tact.db)
     TUI->>Agent: with_session(id, store)
 
     loop agent_loop
         Agent->>SQL: append_message (user/assistant/tool)
         Agent->>SQL: record_token_usage (last_message_id = pre-assistant window)
-        Agent->>SQL: task_* / cron_* / background_* tools read/write (SQLite stores)
-        Agent->>JSON: domain tools read/write (team, worktree)
+        Agent->>SQL: task_* / cron_* / background_* / team_* / worktree_* tools read/write (SQLite stores)
         Agent->>SQL: record_tool_schedule (same last_message_id anchor)
         Agent->>SQL: replace_session_messages (on compact_history)
     end
@@ -209,6 +208,10 @@ sequenceDiagram
 | `crates/tact/src/store/cron_store/sqlite.rs` | `SqliteCronStore` — `cron_tasks` table, 8-hex public ids |
 | `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait (async: upsert/get/list) |
 | `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` table, upsert + `CHECK`-constrained status |
+| `crates/tact/src/store/team_store/mod.rs` | `TeamStore` trait (async: create_teammate/list_teammates/append_message/read_inbox) |
+| `crates/tact/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` tables |
+| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait (async: create_worktree/find_worktree/list_worktrees/append_event/recent_events) |
+| `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` tables |
 | `crates/tact/src/agent/mod.rs` | `ensure_session`, `persist_message`, `persist_llm_call`, `replace_persisted_context` |
 | `crates/tact-ui/src/session_lock.rs` | `SessionLockGuard`, SIGINT/SIGTERM release + process exit |
 | `crates/tact/src/consts.rs` | `TactPath::session_db_path()` → `<workdir>/.tact/tact.db`; `TactPath::workdir()` stored as `sessions.root_dir` |
@@ -216,6 +219,8 @@ sequenceDiagram
 | `crates/tact/src/task/mod.rs` | `TaskManager` facade over `Box<dyn TaskStore>` + `SharedTaskManager` |
 | `crates/tact/src/cron/mod.rs` | `CronScheduler` facade over `Box<dyn CronStore>` + `SharedCronScheduler` |
 | `crates/tact/src/background.rs` | `BackgroundManager` facade over `Arc<dyn BackgroundStore>` + `SharedBackgroundManager` |
+| `crates/tact/src/team.rs` | `TeammateManager` facade over `Box<dyn TeamStore>` + `SharedTeammateManager` |
+| `crates/tact/src/worktree/mod.rs` | `WorktreeManager` facade over `Box<dyn WorktreeStore>` + `SharedWorktreeManager` |
 
 ---
 
@@ -228,7 +233,7 @@ sequenceDiagram
 | Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id` is added via `PRAGMA` + `ALTER TABLE` for older DBs |
 | Session store optional | Tests and some callers may run without SQLite attached |
 | Session DB per workdir | SQLite lives at `<workdir>/.tact/tact.db` today; `sessions.root_dir` records the project path for a future shared `$HOME/.tact/tact.db` |
-| Legacy JSON files | `tasks/*.json`, `cron/scheduled_tasks.json`, `background/tasks/*.json` are no longer read after the SQLite migrations; left on disk, removed manually |
+| Legacy JSON files | `tasks/*.json`, `cron/scheduled_tasks.json`, `background/tasks/*.json`, `team/config.json`, `team/inbox/*.json`, `worktrees/index.json` are no longer read after the SQLite migrations; left on disk, removed manually |
 
 ---
 

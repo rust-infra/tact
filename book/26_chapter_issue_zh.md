@@ -29,6 +29,26 @@
 
 ---
 
+## 1. 2026-08-12 — Worktree 存储从 JSON 文件迁移到 SQLite（`WorktreeStore`）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 症状 / 动机 | worktree 元数据 + 审计日志以单一 JSON 索引持久化（`worktrees/index.json`，`Store<WorktreeIndex>`），读-改-写无事务；重名检查与索引写入存在竞态。 |
+| 决策 | worktree 状态移入现有 `<workdir>/.tact/tact.db`，建 `worktrees` + `worktree_events` 表，通过新的异步 `WorktreeStore` trait（`crates/tact/src/store/worktree_store/`，sqlx 实现的 `SqliteWorktreeStore`）访问。`worktrees.name` UNIQUE（并发兜底）；自增 `id` 保持插入顺序；`worktree_events` 按自身 `id` 排序。新增 `session_id` 列与索引，`worktree_create` 时从工具上下文填充。`WorktreeManager` 变为 `Box<dyn WorktreeStore>` 之上的 async 门面；`SharedWorktreeManager` 去掉 mutex（`Arc<WorktreeManager>`，连接池已串行化写入——`worktree_run` 不再阻塞其他 worktree 工具）。遗留 `worktrees/index.json` 不再读取、留在磁盘。至此无领域模块使用 JSON store（`StoreRoot`/`Store`/`CollectionStore` 作为通用原语保留，自带单元测试）。 |
+| 改后行为 | 泳道与事件持久化在 `tact.db`（旧 `worktrees/index.json` 条目若不手动导出则丢失）；`worktree_*` 表面不变；`session_id` 出现在 worktree 记录中。 |
+| 指针 | `crates/tact/src/store/worktree_store/{mod,sqlite}.rs`、`crates/tact/src/worktree/mod.rs`、`crates/tact/src/tool/worktree.rs`、`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 15](./15_chapter_worktree_zh.md) §2–5。 |
+
+## 1. 2026-08-12 — Team 存储从 JSON 文件迁移到 SQLite（`TeamStore`）
+
+| 字段 | 值 |
+|------|-----|
+| 类型 | `optimization` |
+| 症状 / 动机 | roster 以单一 JSON 索引持久化（`team/config.json`，`TeamConfig` 包装），inbox 为每个 owner 一个 JSONL 文件（`team/inbox/{owner}.json`）。两者都是无事务的读-改-写、无跨进程锁；重名检查与 roster 写入存在竞态。 |
+| 决策 | team 状态移入现有 `<workdir>/.tact/tact.db`，建 `teammates` + `inbox_messages` 表，通过新的异步 `TeamStore` trait（`crates/tact/src/store/team_store/`，sqlx 实现的 `SqliteTeamStore`）访问。`teammates.name` 为 PRIMARY KEY；重复 spawn 用 `INSERT OR IGNORE` + `rows_affected == 0` 拒绝（保留 `teammate {name} already exists` 错误且无竞态）。`inbox_messages` 增加自增 `id` 以保持读取的插入顺序（遗留 JSONL 追加语义）+ `owner` 索引。`TeammateManager` 变为 `Box<dyn TeamStore>` 之上的 async 门面；`SharedTeammateManager` 去掉 mutex（`Arc<TeammateManager>`，连接池已串行化写入）。旧 JSON 文件不再读取、留在磁盘。 |
+| 改后行为 | roster 与 inbox 持久化在 `tact.db`（旧 `team/` JSON 条目若不手动导出则丢失）；`spawn_teammate` / `broadcast` / `read_inbox` / `plan_approval` / `shutdown_*` 表面不变；跨进程 inbox 写入不再在文件追加上竞态。 |
+| 指针 | `crates/tact/src/store/team_store/{mod,sqlite}.rs`、`crates/tact/src/team.rs`、`crates/tact/src/tool/team.rs`、`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 14](./14_chapter_team_zh.md) §3–5。 |
+
 ## 1. 2026-08-12 — Cron 与后台任务从 JSON 文件迁移到 SQLite（`CronStore` / `BackgroundStore`）
 
 | 字段 | 值 |

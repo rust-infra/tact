@@ -29,6 +29,26 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-12 — Worktree storage migrated from JSON files to SQLite (`WorktreeStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Worktree metadata + audit log lived in a single JSON index (`worktrees/index.json`, `Store<WorktreeIndex>`) with read-modify-write and no transaction; duplicate-name checks raced with index writes. |
+| Decision | Worktree state moved into the existing `<workdir>/.tact/tact.db` as `worktrees` + `worktree_events` tables via a new async `WorktreeStore` trait (`crates/tact/src/store/worktree_store/`, `SqliteWorktreeStore` with sqlx). `worktrees.name` is UNIQUE (concurrency backstop); the autoincrement `id` preserves insertion order; `worktree_events` orders by its own `id`. Added `session_id` column + index, filled from the tool context at `worktree_create`. `WorktreeManager` became an async facade over `Box<dyn WorktreeStore>`; `SharedWorktreeManager` dropped its mutex (`Arc<WorktreeManager>`, the pool serializes writes — `worktree_run` no longer blocks other worktree tools). Legacy `worktrees/index.json` is not read anymore and is left on disk. With this change, no domain module uses the JSON store (`StoreRoot`/`Store`/`CollectionStore` remain as a generic primitive with their own unit tests). |
+| Behavior after | Lanes and events persist in `tact.db` (old `worktrees/index.json` entries are gone unless exported manually); `worktree_*` surfaces unchanged; `session_id` appears in worktree records. |
+| Pointers | `crates/tact/src/store/worktree_store/{mod,sqlite}.rs`, `crates/tact/src/worktree/mod.rs`, `crates/tact/src/tool/worktree.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 15](./15_chapter_worktree.md) §2–5. |
+
+## 1. 2026-08-12 — Team storage migrated from JSON files to SQLite (`TeamStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The roster lived in a single JSON index (`team/config.json` with a `TeamConfig` wrapper) and inboxes as one JSONL file per owner (`team/inbox/{owner}.json`). Both used read-modify-write with no transaction and no cross-process lock; duplicate-name checks raced with roster writes. |
+| Decision | Team state moved into the existing `<workdir>/.tact/tact.db` as `teammates` + `inbox_messages` tables via a new async `TeamStore` trait (`crates/tact/src/store/team_store/`, `SqliteTeamStore` with sqlx). `teammates.name` is the PRIMARY KEY; duplicate spawn is rejected with `INSERT OR IGNORE` + `rows_affected == 0` (keeps the `teammate {name} already exists` error and stays race-free). `inbox_messages` gains an autoincrement `id` so reads preserve insertion order (the legacy JSONL append semantics) plus an `owner` index. `TeammateManager` became an async facade over `Box<dyn TeamStore>`; `SharedTeammateManager` dropped its mutex (`Arc<TeammateManager>`, the pool serializes writes). Legacy JSON files are not read anymore and are left on disk. |
+| Behavior after | Roster and inboxes persist in `tact.db` (old `team/` JSON entries are gone unless exported manually); `spawn_teammate` / `broadcast` / `read_inbox` / `plan_approval` / `shutdown_*` surfaces unchanged; cross-process inbox writes no longer race on file appends. |
+| Pointers | `crates/tact/src/store/team_store/{mod,sqlite}.rs`, `crates/tact/src/team.rs`, `crates/tact/src/tool/team.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 14](./14_chapter_team.md) §3–5. |
+
 ## 1. 2026-08-12 — Cron & background tasks migrated from JSON files to SQLite (`CronStore` / `BackgroundStore`)
 
 | Field | Value |

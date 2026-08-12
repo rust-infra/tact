@@ -14,8 +14,8 @@ Tact 刻意拆分职责：
 
 | 层级 | 位置 | API | 主要用途 |
 |------|------|-----|----------|
-| **JSON store** | `<workdir>/.tact/` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` | 领域记录（team、worktrees 等） |
-| **SQLite store** | `<workdir>/.tact/tact.db` | `SessionStore` + `TaskStore` + `CronStore` + `BackgroundStore` trait | 消息、token 用量、任务、cron、background、输入历史 |
+| **JSON store** | `<workdir>/.tact/` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` | 通用 JSON 持久化（当前无领域消费者） |
+| **SQLite store** | `<workdir>/.tact/tact.db` | `SessionStore` + `TaskStore` + `CronStore` + `BackgroundStore` + `TeamStore` + `WorktreeStore` trait | 消息、token 用量、任务、cron、background、team、worktrees、输入历史 |
 
 ```mermaid
 graph TB
@@ -26,19 +26,16 @@ graph TB
     end
 
     subgraph Tact
-        DB["tact.db — SQLite（消息、token 用量、任务、cron、background 等）"]
+        DB["tact.db — SQLite（消息、token 用量、任务、cron、background、team、worktrees 等）"]
     end
 
     subgraph Claude
-        Team["team/config.json, team/inbox/*.json"]
-        WT["worktrees/…"]
         Mem["memory/*.md — 独立模块"]
     end
 
-    SR[StoreRoot] --> Team
-    SR --> WT
+    SR[StoreRoot] --> Mem
 
-    SS[SessionStore + TaskStore + CronStore + BackgroundStore] --> DB
+    SS[SessionStore + TaskStore + CronStore + BackgroundStore + TeamStore + WorktreeStore] --> DB
 ```
 
 二者均在会话启动时在 `main.rs` 中初始化：`StoreRoot::new(tact_path.tact_dir())` 与 `open_sqlite_session_store(&tact_path.session_db_path())`。
@@ -83,7 +80,7 @@ root.collection::<T>("tasks")?                   // CollectionStore<T>  （遗�
 | `delete()` | 删除文件；返回是否曾存在 |
 | `exists()` | 路径检查 |
 
-用于**索引文件**与**单文档注册表**——例如 `team/config.json`。
+用于**索引文件**与**单文档注册表**——通用持久化原语（当前无领域模块使用；所有领域状态都在 SQLite）。
 
 ---
 
@@ -108,7 +105,7 @@ root.collection::<T>("tasks")?                   // CollectionStore<T>  （遗�
 root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{id}.json（遗留）
 ```
 
-任务、cron、background 已不再使用 JSON store——它们存放在 SQLite 中（见 §6）。
+任务、cron、background、team、worktree 已不再使用 JSON store——它们存放在 SQLite 中（见 §6）。
 
 ---
 
@@ -119,10 +116,10 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 | `task/` | `tact.db` → `tasks`、`task_dependencies` 表 | `TaskStore`（SQLite） |
 | `cron/` | `tact.db` → `cron_tasks` 表 | `CronStore`（SQLite） |
 | `background.rs`（[后台任务](./13_chapter_background_zh.md)） | `tact.db` → `background_tasks` 表 | `BackgroundStore`（SQLite） |
-| `team.rs`（[团队协调](./14_chapter_team_zh.md)） | `team/config.json`、`team/inbox/` | Store + collection |
-| `worktree/`（[Worktree 泳道](./15_chapter_worktree_zh.md)） | `worktrees/index.json` | 单文件 `Store<WorktreeIndex>` |
+| `team.rs`（[团队协调](./14_chapter_team_zh.md)） | `tact.db` → `teammates`、`inbox_messages` 表 | `TeamStore`（SQLite） |
+| `worktree/`（[Worktree 泳道](./15_chapter_worktree_zh.md)） | `tact.db` → `worktrees`、`worktree_events` 表 | `WorktreeStore`（SQLite） |
 
-各领域模块包装原始 store（如 `SharedCronScheduler` 包 `Arc<CronScheduler>`；`SharedTaskManager` / `SharedBackgroundManager` 包 `Arc<…>`——SQLite 连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作 `CollectionStore`。
+各领域模块包装原始 store（如 `SharedCronScheduler` 包 `Arc<CronScheduler>`；`SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` 包 `Arc<…>`——SQLite 连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作 `CollectionStore`。
 
 ---
 
@@ -150,6 +147,10 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 | `task_dependencies` | 每条依赖边一行（`blocker_id`、`blocked_id`），复合主键，无外键——由应用层清理 |
 | `cron_tasks` | 定时提示：`cron`、`prompt`、`recurring`/`durable` 标志、`session_id`、`created_at`；对外 id 为 8 位十六进制 `INTEGER AUTOINCREMENT` 行号 |
 | `background_tasks` | 后台任务：`status`（CHECK 约束）、`command`、`session_id`、`started_at`/`finished_at`、`output` |
+| `teammates` | roster：`name`（PK）、`role`、`status` |
+| `inbox_messages` | inbox 条目：`owner`、`from_name`、`to_name`、`body`、`kind`、`created_at`；自增 `id` 保持插入顺序 |
+| `worktrees` | worktree 泳道：`name`（UNIQUE）、`path`、`branch`、`task_id`、`status`、`session_id`、`created_at` |
+| `worktree_events` | 泳道审计日志：`event`、`created_at`；`id` 为排序键 |
 
 ### Agent 集成
 
@@ -180,16 +181,14 @@ sequenceDiagram
     participant SQL as SqliteSessionStore
 
     TUI->>JSON: StoreRoot::new(.tact/)
-    TUI->>JSON: TeammateManager, WorktreeManager
     TUI->>SQL: open_sqlite_session_store(tact.db)
-    TUI->>SQL: TaskManager / BackgroundManager / CronScheduler（同一 tact.db）
+    TUI->>SQL: TaskManager / BackgroundManager / CronScheduler / TeammateManager / WorktreeManager（同一 tact.db）
     TUI->>Agent: with_session(id, store)
 
     loop agent_loop
         Agent->>SQL: append_message (user/assistant/tool)
         Agent->>SQL: record_token_usage (last_message_id = assistant 前窗口)
-        Agent->>SQL: task_* / cron_* / background_* 工具读写（SQLite stores）
-        Agent->>JSON: 领域工具读写 (team, worktree)
+        Agent->>SQL: task_* / cron_* / background_* / team_* / worktree_* 工具读写（SQLite stores）
         Agent->>SQL: record_tool_schedule (同一 last_message_id 锚点)
         Agent->>SQL: replace_session_messages (compact_history 时)
     end
@@ -210,6 +209,10 @@ sequenceDiagram
 | `crates/tact/src/store/cron_store/sqlite.rs` | `SqliteCronStore` — `cron_tasks` 表、8 位十六进制对外 id |
 | `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
 | `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表、upsert + `CHECK` 约束 status |
+| `crates/tact/src/store/team_store/mod.rs` | `TeamStore` trait（async：create_teammate/list_teammates/append_message/read_inbox） |
+| `crates/tact/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` 表 |
+| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events） |
+| `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` 表 |
 | `crates/tact/src/agent/mod.rs` | `ensure_session`、`persist_message`、`persist_llm_call`、`replace_persisted_context` |
 | `crates/tact-ui/src/session_lock.rs` | `SessionLockGuard`、SIGINT/SIGTERM 释放 + 进程退出 |
 | `crates/tact/src/consts.rs` | `TactPath::session_db_path()` → `<workdir>/.tact/tact.db`；`TactPath::workdir()` 存为 `sessions.root_dir` |
@@ -217,6 +220,8 @@ sequenceDiagram
 | `crates/tact/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）+ `SharedTaskManager` |
 | `crates/tact/src/cron/mod.rs` | `CronScheduler` 门面（`Box<dyn CronStore>`）+ `SharedCronScheduler` |
 | `crates/tact/src/background.rs` | `BackgroundManager` 门面（`Arc<dyn BackgroundStore>`）+ `SharedBackgroundManager` |
+| `crates/tact/src/team.rs` | `TeammateManager` 门面（`Box<dyn TeamStore>`）+ `SharedTeammateManager` |
+| `crates/tact/src/worktree/mod.rs` | `WorktreeManager` 门面（`Box<dyn WorktreeStore>`）+ `SharedWorktreeManager` |
 
 ---
 
@@ -229,7 +234,7 @@ sequenceDiagram
 | 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id` |
 | Session store 可选 | 测试与部分调用方可不附加 SQLite |
 | 每 workdir 一个 Session DB | SQLite 当前位于 `<workdir>/.tact/tact.db`；`sessions.root_dir` 记录项目路径，供未来共享 `$HOME/.tact/tact.db` |
-| 遗留 JSON 文件 | `tasks/*.json`、`cron/scheduled_tasks.json`、`background/tasks/*.json` 在 SQLite 迁移后不再读取；留在磁盘上，手动清理 |
+| 遗留 JSON 文件 | `tasks/*.json`、`cron/scheduled_tasks.json`、`background/tasks/*.json`、`team/config.json`、`team/inbox/*.json`、`worktrees/index.json` 在 SQLite 迁移后不再读取；留在磁盘上，手动清理 |
 
 ---
 

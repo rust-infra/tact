@@ -1,7 +1,7 @@
 # Team Coordination
 > Language: [English](./14_chapter_team.md) · [中文](./14_chapter_team_zh.md)
 
-This chapter explains Tact's **multi-agent team primitives**: a persistent roster of named teammates and a file-backed inbox system supporting point-to-point messages, broadcasts, and structured protocol requests (plan approval, shutdown). The implementation lives in `crates/tact/src/team.rs` with tool wrappers in `crates/tact/src/tool/team.rs`.
+This chapter explains Tact's **multi-agent team primitives**: a persistent roster of named teammates and a SQLite-backed inbox system supporting point-to-point messages, broadcasts, and structured protocol requests (plan approval, shutdown). The implementation lives in `crates/tact/src/team.rs` with tool wrappers in `crates/tact/src/tool/team.rs`.
 
 Important framing up front: today this is a **coordination data layer**, not an orchestration engine. "Spawning" a teammate creates a roster record — it does not start a second agent process. See [Current Gaps](#8-current-gaps).
 
@@ -33,10 +33,6 @@ pub struct TeammateRecord {
     pub role: String,
     pub status: String,   // always "idle" today
 }
-
-pub struct TeamConfig {
-    pub teammates: Vec<TeammateRecord>,
-}
 ```
 
 ### Inbox messages
@@ -57,25 +53,23 @@ pub struct InboxMessage {
 
 ## 3. Storage Layout
 
-`TeammateManager` combines the two JSON store primitives from [Store and Persistence](./01_chapter_store.md):
+`TeammateManager` is backed by the SQLite `TeamStore` from [Store and Persistence](./01_chapter_store.md):
 
 ```rust
-config:  root.file("team/config.json")?,     // Store<TeamConfig> — the roster
-inboxes: root.collection("team/inbox")?,     // CollectionStore<InboxMessage> — one JSONL file per owner
+store: Box<dyn TeamStore>,   // tact.db → teammates + inbox_messages tables
 ```
 
-On disk:
+Schema (`crates/tact/src/store/team_store/sqlite.rs`):
 
 ```text
-.tact/
-└── team/
-    ├── config.json          # roster: [{name, role, status}, …]
-    └── inbox/
-        ├── alice.json       # one InboxMessage JSON line per delivery
-        └── bob.json
+teammates(name TEXT PRIMARY KEY, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle')
+inbox_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,
+               owner TEXT NOT NULL, from_name TEXT NOT NULL, to_name TEXT NOT NULL,
+               body TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL)
+-- index: idx_inbox_messages_owner ON inbox_messages(owner)
 ```
 
-Messages are **appended** (JSONL) — inboxes only grow; there is no read-cursor, ack, or delete.
+Messages are **appended** (insertion order preserved by the autoincrement `id`) — inboxes only grow; there is no read-cursor, ack, or delete. The legacy `team/config.json` + `team/inbox/*.json` files are no longer read and are left on disk.
 
 ---
 
@@ -85,27 +79,27 @@ Messages are **appended** (JSONL) — inboxes only grow; there is no read-cursor
 sequenceDiagram
     participant Lead as Agent (lead)
     participant TM as TeammateManager
-    participant FS as .tact/team/
+    participant DB as .tact/tact.db (teammates, inbox_messages)
 
     Lead->>TM: spawn_teammate("alice", "reviewer")
-    TM->>FS: config.json ← roster + alice (status: idle)
+    TM->>DB: INSERT INTO teammates (alice, reviewer, idle)
 
     Lead->>TM: broadcast(from: "lead", body: "Standup in 5")
     loop each teammate in roster
-        TM->>FS: inbox/{name}.json ← append InboxMessage
+        TM->>DB: INSERT INTO inbox_messages (owner=name, …)
     end
 
     Lead->>TM: plan_approval(from: "lead", to: "alice", body: "Approve plan v2")
-    TM->>FS: inbox/alice.json ← append (kind: plan_approval)
+    TM->>DB: INSERT INTO inbox_messages (owner=alice, kind: plan_approval)
 
     Lead->>TM: read_inbox("alice")
-    TM->>FS: read_all_from("alice")
+    TM->>DB: SELECT … WHERE owner='alice' ORDER BY id
     TM-->>Lead: pretty-printed JSON array
 ```
 
 Notes on the semantics:
 
-- `spawn_teammate` rejects duplicate names (`teammate {name} already exists`).
+- `spawn_teammate` rejects duplicate names (`teammate {name} already exists`; the UNIQUE `name` key is the backstop).
 - `broadcast` iterates the roster and calls `send_message` per teammate — a sender who is also on the roster receives their own broadcast.
 - `read_inbox` returns the **entire** inbox as pretty-printed JSON, or `"Inbox is empty."`.
 - `protocol_request` is `send_message` with a caller-chosen `kind` — no state machine validates that a `shutdown_response` follows a `shutdown_request`.
@@ -114,21 +108,21 @@ Notes on the semantics:
 
 ## 5. Concurrency Wrapper
 
-`SharedTeammateManager` follows the same pattern as the task, worktree, and background managers:
+`SharedTeammateManager` follows the same pattern as the task, cron, and background managers:
 
 ```rust
 pub struct SharedTeammateManager {
-    inner: Arc<Mutex<TeammateManager>>,
+    inner: Arc<TeammateManager>,
 }
 ```
 
-Every public method delegates through `with_manager`, which locks the mutex and surfaces poisoning as an error. The shared handle sits on `ToolContext.teammate_manager` and is constructed once at startup in `tui.rs`:
+Every public method delegates to the async facade. The shared handle sits on `ToolContext.teammate_manager` and is constructed once at startup in `tui.rs`:
 
 ```rust
-let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
+let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
 ```
 
-Since all tools in one process share the same manager, in-process access is serialized; cross-process access is not (the JSON store has no file locking).
+No mutex is needed: the SQLite pool serializes writes, and the connection pool (with `busy_timeout`) also serializes cross-process access to the same workdir.
 
 ---
 
@@ -148,12 +142,13 @@ The intended pattern is that a coordinating agent uses the roster as shared stat
 
 | File | Role |
 |------|------|
-| `crates/tact/src/team.rs` | `TeammateManager`, `SharedTeammateManager`, `TeamConfig`, `InboxMessage` |
+| `crates/tact/src/team.rs` | `TeammateManager`, `SharedTeammateManager`, `InboxMessage` |
+| `crates/tact/src/store/team_store/mod.rs` | `TeamStore` trait (async: create_teammate/list_teammates/append_message/read_inbox) |
+| `crates/tact/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` tables |
 | `crates/tact/src/tool/team.rs` | The eight `#[tool]` wrappers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager` |
 | `crates/tact/src/tool/registry.rs` | Team tools in `toolset()` |
-| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `StoreRoot` at startup |
-| `crates/tact/src/store/mod.rs` | `Store` / `CollectionStore` primitives used underneath |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `tact.db` at startup |
 
 ---
 
@@ -163,17 +158,17 @@ The intended pattern is that a coordinating agent uses the roster as shared stat
 |-----|--------|
 | No actual agent processes | `spawn_teammate` records a name; no runtime, LLM loop, or inbox polling is started |
 | Status never changes | Every teammate is `"idle"` forever; no API mutates `status` |
-| No sender/recipient validation | Messages to unknown names create orphan inbox files silently |
-| Inboxes grow unboundedly | Append-only JSONL with no read-cursor, ack, or pruning |
+| No sender/recipient validation | Messages to unknown names create orphan inbox rows silently |
+| Inboxes grow unboundedly | Append-only rows with no read-cursor, ack, or pruning |
 | Protocol kinds are convention only | `plan_approval` / `shutdown_*` have no enforced request-response pairing |
 | No teammate removal | There is no `remove_teammate`; the roster can only grow |
-| No cross-process locking | Concurrent tact processes can interleave roster read-modify-write |
+| No cross-process locking | Concurrent tact processes can interleave roster writes |
 
 ---
 
 ## Related Docs
 
-- [Store and Persistence](./01_chapter_store.md) — `Store` / `CollectionStore` primitives and `team/` paths
+- [Store and Persistence](./01_chapter_store.md) — the `teammates` / `inbox_messages` SQLite tables
 - [Tool System](./07_chapter_tool.md) — `ToolContext` plumbing and sub-agent toolsets
 - [Subagents](./12_chapter_subagent.md) — `spawn_subagent` runs a real nested agent; teammates do not
 - [Worktree Lanes](./15_chapter_worktree.md) — the isolation primitive a real multi-agent team would pair with

@@ -10,7 +10,7 @@ use tact::{
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
-    store::{DynSessionStore, StoreRoot},
+    store::DynSessionStore,
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
@@ -86,16 +86,17 @@ async fn run_interactive_locked(
     let tui_work_dir = work_dir.clone();
     let image_work_dir = work_dir.clone();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
-    let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let task_manager =
         SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
     let background_manager =
         SharedBackgroundManager::new(BackgroundManager::new(&tact_path.session_db_path()).await?);
     let cron_scheduler =
         SharedCronScheduler::new(CronScheduler::new(&tact_path.session_db_path()).await?);
-    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
-    let worktree_manager =
-        SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
+    let teammate_manager =
+        SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
+    let worktree_manager = SharedWorktreeManager::new(
+        WorktreeManager::new(&tact_path.session_db_path(), work_dir.clone()).await?,
+    );
     let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
         tact_path.memory_dir(),
     )?));

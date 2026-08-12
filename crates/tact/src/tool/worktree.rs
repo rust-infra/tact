@@ -43,11 +43,14 @@ pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the git worktree cannot be created (e.g., invalid
 /// branch reference, name conflict, or git error).
 pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Result<String> {
-    ctx.worktree_manager.create(
-        input.name,
-        input.task_id,
-        input.base_ref.unwrap_or_else(|| "HEAD".to_string()),
-    )
+    ctx.worktree_manager
+        .create(
+            input.name,
+            input.task_id,
+            input.base_ref.unwrap_or_else(|| "HEAD".to_string()),
+            ctx.session_id.clone().unwrap_or_default(),
+        )
+        .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -77,7 +80,7 @@ pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the worktree manager fails to retrieve the list.
 pub async fn worktree_list(ctx: ToolContext, _input: WorktreeListInput) -> Result<String> {
-    ctx.worktree_manager.list()
+    ctx.worktree_manager.list().await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -110,7 +113,7 @@ pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the worktree name does not exist or the git
 /// status command fails.
 pub async fn worktree_status(ctx: ToolContext, input: WorktreeNameInput) -> Result<String> {
-    ctx.worktree_manager.status(&input.name)
+    ctx.worktree_manager.status(&input.name).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -146,7 +149,7 @@ pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the worktree name does not exist or the
 /// command execution fails.
 pub async fn worktree_run(ctx: ToolContext, input: WorktreeRunInput) -> Result<String> {
-    ctx.worktree_manager.run(&input.name, &input.command)
+    ctx.worktree_manager.run(&input.name, &input.command).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -178,7 +181,7 @@ pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the worktree manager fails to retrieve events.
 pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Result<String> {
-    ctx.worktree_manager.events(input.limit.unwrap_or(20))
+    ctx.worktree_manager.events(input.limit.unwrap_or(20)).await
 }
 
 #[cfg(test)]
