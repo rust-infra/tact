@@ -33,6 +33,7 @@ pub mod permission;
 pub mod plugin;
 pub mod prompt;
 pub mod recovery;
+pub(crate) mod pipe_stream;
 pub(crate) mod shell;
 pub mod skill;
 pub mod stats;
