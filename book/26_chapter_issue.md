@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-12 — async-openai switched from `vendor/async-openai` to a locally maintained fork at `../async-openai`
+
+| Field | Value |
+|-------|-------|
+| Type | `docs` (dependency management) |
+| Symptom / motivation | The vendored copy under `vendor/async-openai` (2026-08-10 entry) worked, but it duplicated the whole crate in-tree: every upstream sync meant diffing, re-applying patches and keeping the crate-level doctests green under Tact's minimal feature set. |
+| Decision | The fork now lives as its own repository at `../async-openai` (clone of `https://github.com/rust-infra/async-openai`, branch `feat/tact`, commit `ca74607` = upstream main at 0.41.3), maintained directly with four local commits: (1) typed `context_management: Option<Vec<ContextManagementParam>>` field on `CreateResponse`; (2) `ReasoningEffort::Max` variant; (3) doctest feature gates for the two `client.chat()` examples; (4) package renamed `async-openai-local` with `[lib] name = "async_openai"` (examples dropped from the fork workspace since they still reference the upstream package name). Tact's workspace dependency becomes `async-openai-responses = { package = "async-openai-local", path = "../async-openai/async-openai", version = "0.41.3", features = ["responses", "byot"] }`; `vendor/async-openai/` is deleted. Code keeps `use async_openai_responses::…` unchanged. |
+| Behavior after | No user-visible change: the wire body still carries `context_management` when a threshold is configured. Maintenance moved out-of-tree: patch the local fork (`/Users/rg/Projects/async-openai`, branch `feat/tact`) instead of re-vendoring. |
+| Pointers | `/Users/rg/Projects/async-openai` (fork, commits `7de8bb4` / `5e22785` / `12488eb` on `feat/tact`); `Cargo.toml` `async-openai-responses` dependency; `crates/tact_llm/src/openai/responses/convert.rs` (`create_response` builder injection); [Ch 22](./22_chapter_llm.md) §6.2. |
+
 ## 1. 2026-08-12 — Worktree storage migrated from JSON files to SQLite (`WorktreeStore`)
 
 | Field | Value |
