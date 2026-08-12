@@ -1,10 +1,112 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
-use async_openai_responses::types::responses::{OutputItem, Response, ResponseStreamEvent};
-use tact_protocol::{AgentUpdate, ThinkingChunk};
+use async_openai_responses::types::responses::{
+    OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
+};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::normalize::{NormalizedResponse, normalize_response};
 use crate::LlmError;
+
+/// Extracts the search query from a `WebSearchToolCall` (empty when the
+/// provider has not populated the action yet — `output_item.added` events
+/// can precede the action).
+fn web_search_query(call: &WebSearchToolCall) -> String {
+    match &call.action {
+        Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
+            search.query.clone()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Builds the diagnostic detail for a failed or non-terminal web search
+/// call: the reported status, the query, and the provider's raw action JSON
+/// (truncated) so a failure shows what the provider actually returned instead
+/// of a bare "web search failed".
+fn web_search_failure_detail(call: &WebSearchToolCall, query: &str) -> String {
+    const MAX_ACTION_CHARS: usize = 300;
+    let mut action = call
+        .action
+        .as_ref()
+        .map(|action| {
+            serde_json::to_string(action).unwrap_or_else(|_| "<unserializable>".to_string())
+        })
+        .unwrap_or_else(|| "none".to_string());
+    if action.len() > MAX_ACTION_CHARS {
+        action.truncate(MAX_ACTION_CHARS);
+        action.push('…');
+    }
+    format!(
+        "status: {:?}, query: {query:?}, action: {action}",
+        call.status
+    )
+}
+
+/// Builds the `StepStarted` update for an in-progress web search call.
+fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
+    AgentUpdate::StepStarted {
+        idx: index as usize,
+        tool_id: call.id.clone(),
+        tool_name: "web_search".to_string(),
+        arg_summary: web_search_query(call),
+        arg_full: web_search_query(call),
+        presentation: ToolPresentationInfo::generic("web_search"),
+    }
+}
+
+/// Builds the terminal update for a completed or failed web search call.
+fn web_search_finished(
+    index: u32,
+    call: &WebSearchToolCall,
+    duration_us: Option<u64>,
+) -> AgentUpdate {
+    let query = web_search_query(call);
+    let presentation = ToolPresentationInfo::generic("web_search");
+    let (idx, tool_id) = (index as usize, call.id.clone());
+    match call.status {
+        WebSearchToolCallStatus::Failed => AgentUpdate::StepFailed {
+            idx,
+            tool_id,
+            arg_summary: web_search_query(call),
+            error: format!(
+                "web search failed ({})",
+                web_search_failure_detail(call, &query)
+            ),
+        },
+        // `output_item.done` normally carries a terminal status. If a
+        // compatible endpoint reports `in_progress` / `searching` here, the
+        // item ended without a terminal status: surface it as a failure
+        // rather than silently claiming success.
+        WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
+            AgentUpdate::StepFailed {
+                idx,
+                tool_id,
+                arg_summary: web_search_query(call),
+                error: format!(
+                    "web search ended without terminal status ({})",
+                    web_search_failure_detail(call, &query)
+                ),
+            }
+        }
+        WebSearchToolCallStatus::Completed => AgentUpdate::StepFinished {
+            idx,
+            tool_id,
+            result: StepResult {
+                tool: "web_search".to_string(),
+                arg_summary: query,
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "web search completed".to_string(),
+                detail: None,
+                duration_us,
+                permission_label: None,
+                presentation,
+            },
+        },
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ResponsesStreamState {
@@ -25,6 +127,11 @@ pub(crate) struct ResponsesStreamState {
     /// which would silently drop the compacted baseline.
     pending_compactions: BTreeSet<u32>,
     raw_terminal_output: Option<Vec<serde_json::Value>>,
+    /// Maps Responses output indices to the zero-based ordinal of hosted tool
+    /// calls in this response. `output_index` also counts messages/reasoning,
+    /// so it must not be rendered as the tool step number.
+    web_search_step_indices: BTreeMap<u32, usize>,
+    web_search_started_at: BTreeMap<u32, Instant>,
 }
 
 impl ResponsesStreamState {
@@ -124,15 +231,52 @@ impl ResponsesStreamState {
                     if matches!(&event.item, OutputItem::Compaction(_)) {
                         self.pending_compactions.insert(event.output_index);
                     }
+                    // Surface in-progress web search as a running tool card
+                    // (the provider may populate `action` only later, at
+                    // `output_item.done`).
+                    if let OutputItem::WebSearchCall(call) = &event.item {
+                        self.web_search_started_at
+                            .entry(event.output_index)
+                            .or_insert_with(Instant::now);
+                        let next_idx = self.web_search_step_indices.len();
+                        let step_idx = *self
+                            .web_search_step_indices
+                            .entry(event.output_index)
+                            .or_insert(next_idx);
+                        return Ok(vec![web_search_started(step_idx as u32, call)]);
+                    }
                 }
                 Vec::new()
             }
             ResponseStreamEvent::ResponseOutputItemDone(event) => {
                 // Idempotent by `output_index`: a repeated `done` event
-                // overwrites the same slot and never duplicates output.
+                // overwrites the same slot (last one wins) without
+                // re-emitting — `insert` returns `None` only on first insert.
                 self.pending_added.remove(&event.output_index);
                 self.pending_compactions.remove(&event.output_index);
-                self.done_items.insert(event.output_index, event.item);
+                if self
+                    .done_items
+                    .insert(event.output_index, event.item)
+                    .is_none()
+                    && let Some(OutputItem::WebSearchCall(call)) =
+                        self.done_items.get(&event.output_index)
+                {
+                    let next_idx = self.web_search_step_indices.len();
+                    let step_idx = *self
+                        .web_search_step_indices
+                        .entry(event.output_index)
+                        .or_insert(next_idx);
+                    let duration_us = self
+                        .web_search_started_at
+                        .remove(&event.output_index)
+                        .map(|started| started.elapsed().as_micros() as u64);
+                    // Terminal status for the web search tool card.
+                    return Ok(vec![web_search_finished(
+                        step_idx as u32,
+                        call,
+                        duration_us,
+                    )]);
+                }
                 Vec::new()
             }
             ResponseStreamEvent::ResponseCompleted(event) => {
@@ -144,6 +288,19 @@ impl ResponsesStreamState {
             ResponseStreamEvent::ResponseFailed(event) => {
                 return self.set_terminal(event.response);
             }
+            ResponseStreamEvent::ResponseCreated(_)
+            | ResponseStreamEvent::ResponseQueued(_)
+            | ResponseStreamEvent::ResponseInProgress(_)
+            | ResponseStreamEvent::ResponseContentPartAdded(_)
+            | ResponseStreamEvent::ResponseContentPartDone(_)
+            | ResponseStreamEvent::ResponseOutputTextDone(_)
+            | ResponseStreamEvent::ResponseRefusalDone(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryPartAdded(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryPartDone(_)
+            | ResponseStreamEvent::ResponseReasoningSummaryTextDone(_)
+            | ResponseStreamEvent::ResponseReasoningTextDone(_)
+            | ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(_)
+            | ResponseStreamEvent::ResponseFunctionCallArgumentsDone(_) => Vec::new(),
             _ => Vec::new(),
         })
     }
@@ -158,9 +315,6 @@ impl ResponsesStreamState {
             raw_terminal_output,
             ..
         } = self;
-        let response = terminal.ok_or_else(|| {
-            LlmError::Unsupported("OpenAI Responses stream ended without a terminal event".into())
-        })?;
         // Exactly one output sequence is normalized: the terminal `output`
         // array when present, otherwise the complete `output_item.done`
         // sequence, otherwise the visible-text recovery below. The done
@@ -174,6 +328,42 @@ impl ResponsesStreamState {
                 Some(done_items.values().cloned().collect::<Vec<_>>())
             } else {
                 None
+            }
+        };
+        let response = match terminal {
+            Some(response) => response,
+            None => {
+                // Compatible endpoints may close the SSE stream without a
+                // terminal event (no `response.completed` / `response.incomplete`
+                // / `response.failed`). When the stream itself is complete — a
+                // full `output_item.done` sequence or streamed visible text —
+                // synthesize a minimal completed response so the recovery
+                // branches below rebuild the output. A missing compaction
+                // boundary and an empty stream remain hard protocol errors.
+                if !pending_compactions.is_empty() {
+                    return Err(LlmError::Unsupported(
+                        "OpenAI Responses stream ended with an incomplete compaction item sequence"
+                            .to_string(),
+                    ));
+                }
+                if done_sequence.is_none() && output_text.is_empty() {
+                    return Err(LlmError::Unsupported(
+                        "OpenAI Responses stream ended without a terminal event".into(),
+                    ));
+                }
+                serde_json::from_value(serde_json::json!({
+                    "id": "compat-response",
+                    "object": "response",
+                    "created_at": 0,
+                    "model": "compat-model",
+                    "status": "completed",
+                    "output": [],
+                }))
+                .map_err(|error| {
+                    LlmError::StreamParse(format!(
+                        "synthesize fallback Responses response: {error}"
+                    ))
+                })?
             }
         };
         let mut normalized = if !response.output.is_empty() {
@@ -229,7 +419,7 @@ impl ResponsesStreamState {
 #[cfg(test)]
 mod tests {
     use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, ThinkingChunk};
+    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
 
     use super::ResponsesStreamState;
     use crate::ContentBlock;
@@ -303,6 +493,97 @@ mod tests {
             normalized.blocks.last(),
             Some(ContentBlock::ToolUse { id, .. }) if id == "call_1"
         ));
+    }
+
+    #[test]
+    fn ignores_non_rendering_response_events_without_changing_stream_state() {
+        let mut state = ResponsesStreamState::default();
+        let events = [
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 1,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.queued",
+                "sequence_number": 2,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.in_progress",
+                "sequence_number": 3,
+                "response": super::super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 4,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "answer",
+                "logprobs": []
+            }),
+            serde_json::json!({
+                "type": "response.refusal.done",
+                "sequence_number": 5,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "refusal": "no"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "sequence_number": 6,
+                "item_id": "fc",
+                "output_index": 1,
+                "delta": "{}"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "sequence_number": 7,
+                "item_id": "fc",
+                "output_index": 1,
+                "name": null,
+                "arguments": "{}"
+            }),
+        ];
+
+        for value in events {
+            assert!(state.apply(event(value)).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn output_text_done_does_not_duplicate_streamed_text() {
+        let mut state = ResponsesStreamState::default();
+        let delta = state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        assert!(delta.iter().any(|update| matches!(
+            update,
+            AgentUpdate::StreamChunk(text) if text == "answer"
+        )));
+
+        let done = state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 2,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        assert!(done.is_empty());
     }
 
     #[test]
@@ -811,5 +1092,417 @@ mod tests {
             )
             .unwrap();
         assert_eq!(streamed_update, direct_update);
+    }
+
+    // ── Stream end without a terminal event (compatible endpoints) ────
+
+    #[test]
+    fn no_terminal_event_recovers_from_complete_done_sequence() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(output_item_added(0, message_item("first")))
+            .unwrap();
+        state
+            .apply(output_item_done(0, message_item("first")))
+            .unwrap();
+        state
+            .apply(output_item_added(1, function_call_item()))
+            .unwrap();
+        state
+            .apply(output_item_done(1, function_call_item()))
+            .unwrap();
+        // The stream ends cleanly (EOF / `[DONE]`) without a terminal event;
+        // the complete done sequence must reconstruct the response.
+        let normalized = state.finish().unwrap();
+        assert!(
+            normalized
+                .blocks
+                .iter()
+                .any(|block| { matches!(block, ContentBlock::Text { text } if text == "first") })
+        );
+        assert!(normalized.blocks.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { name, .. } if name == "bash"
+            )
+        }));
+        assert!(matches!(
+            normalized.stop_reason,
+            Some(crate::StopReason::ToolUse)
+        ));
+        assert_eq!(normalized.output_items.len(), 2);
+    }
+
+    #[test]
+    fn no_terminal_event_recovers_visible_text() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "streamed answer",
+                "logprobs": []
+            })))
+            .unwrap();
+        // No terminal event, no done sequence: the streamed text is the only
+        // source and must be recovered instead of hard-failing.
+        let normalized = state.finish().unwrap();
+        assert!(matches!(
+            normalized.blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == "streamed answer"
+        ));
+    }
+
+    #[test]
+    fn no_terminal_event_empty_stream_is_error() {
+        let state = ResponsesStreamState::default();
+        let error = state.finish().unwrap_err().to_string();
+        assert!(
+            error.contains("without a terminal event"),
+            "empty stream must keep the terminal-event error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn no_terminal_event_with_pending_compaction_is_error() {
+        let mut state = ResponsesStreamState::default();
+        state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque"
+                }),
+            ))
+            .unwrap();
+        // Visible text exists but the compaction boundary was never completed:
+        // recovery must not silently drop the compacted baseline.
+        state
+            .apply(event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 2,
+                "item_id": "msg_1",
+                "output_index": 1,
+                "content_index": 0,
+                "delta": "visible fallback",
+                "logprobs": []
+            })))
+            .unwrap();
+
+        let error = state.finish().unwrap_err().to_string();
+        assert!(
+            error.contains("compaction"),
+            "missing compaction boundary must hard-fail, got: {error}"
+        );
+    }
+
+    // ── Hosted web search tool-card events ────────────────────────────
+
+    fn web_search_call_json(status: &str, query: Option<&str>) -> serde_json::Value {
+        let action = query.map(|q| {
+            serde_json::json!({
+                "type": "search",
+                "query": q,
+                "sources": [
+                    {"type": "url", "url": "https://example.com/a"},
+                    {"type": "url", "url": "https://example.com/b"}
+                ]
+            })
+        });
+        serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": status,
+            "action": action
+        })
+    }
+
+    #[test]
+    fn web_search_added_uses_tool_ordinal_not_output_index() {
+        let mut state = super::ResponsesStreamState::default();
+        let updates = state
+            .apply(output_item_added(
+                1,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match &updates[0] {
+            AgentUpdate::StepStarted { idx, .. } => {
+                assert_eq!(*idx, 0, "the first hosted tool must render as step 1")
+            }
+            other => panic!("expected StepStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_searches_are_numbered_by_tool_order_within_a_response() {
+        let mut state = super::ResponsesStreamState::default();
+        let first = state
+            .apply(output_item_added(
+                1,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let second = state
+            .apply(output_item_added(
+                3,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match (&first[0], &second[0]) {
+            (
+                AgentUpdate::StepStarted { idx: first_idx, .. },
+                AgentUpdate::StepStarted {
+                    idx: second_idx, ..
+                },
+            ) => {
+                assert_eq!(*first_idx, 0);
+                assert_eq!(*second_idx, 1);
+            }
+            other => panic!("expected two StepStarted updates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_step_numbering_is_scoped_to_each_response_stream() {
+        let mut first_turn = super::ResponsesStreamState::default();
+        let first = first_turn
+            .apply(output_item_added(
+                2,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let mut second_turn = super::ResponsesStreamState::default();
+        let second = second_turn
+            .apply(output_item_added(
+                4,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        match (&first[0], &second[0]) {
+            (
+                AgentUpdate::StepStarted { idx: first_idx, .. },
+                AgentUpdate::StepStarted {
+                    idx: second_idx, ..
+                },
+            ) => {
+                assert_eq!(*first_idx, 0);
+                assert_eq!(*second_idx, 0);
+            }
+            other => panic!("expected two StepStarted updates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_added_emits_running_tool_card() {
+        let mut state = super::ResponsesStreamState::default();
+        // added without action → query empty, running card
+        let updates = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            AgentUpdate::StepStarted {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                ..
+            } => {
+                assert_eq!(*idx, 0);
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(tool_name, "web_search");
+                assert!(arg_summary.is_empty(), "no action yet → empty query");
+            }
+            other => panic!("expected StepStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_added_then_done_emits_started_then_finished() {
+        let mut state = super::ResponsesStreamState::default();
+        let started = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("searching", None),
+            ))
+            .unwrap();
+        let finished = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+
+        assert!(matches!(&started[0], AgentUpdate::StepStarted { .. }));
+        assert_eq!(finished.len(), 1);
+        match &finished[0] {
+            AgentUpdate::StepFinished {
+                tool_id, result, ..
+            } => {
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(result.tool, "web_search");
+                assert_eq!(result.arg_summary, "Rust async");
+                assert_eq!(result.status, StepStatus::Success);
+                assert!(result.duration_us.is_some());
+                assert!(result.detail.is_none(), "web search output is hidden");
+            }
+            other => panic!("expected StepFinished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_finished_hides_output_detail() {
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let updates = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("S&P 500")),
+            ))
+            .unwrap();
+
+        match &updates[0] {
+            AgentUpdate::StepFinished { result, .. } => {
+                assert!(result.detail.is_none(), "web search output is hidden");
+            }
+            other => panic!("expected StepFinished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_failed_emits_step_failed() {
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let failed = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("failed", Some("Rust async")),
+            ))
+            .unwrap();
+
+        assert_eq!(failed.len(), 1);
+        match &failed[0] {
+            AgentUpdate::StepFailed {
+                tool_id,
+                arg_summary,
+                error,
+                ..
+            } => {
+                assert_eq!(tool_id, "ws_1");
+                assert_eq!(
+                    arg_summary, "Rust async",
+                    "failed card keeps the query in its title"
+                );
+                assert!(error.contains("web search failed"));
+                assert!(
+                    error.contains("status: Failed"),
+                    "failure must report the provider status, got: {error}"
+                );
+                assert!(
+                    error.contains("query: \"Rust async\""),
+                    "failure must report the query, got: {error}"
+                );
+                assert!(
+                    error.contains("action:"),
+                    "failure must include the provider's action detail, got: {error}"
+                );
+            }
+            other => panic!("expected StepFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_done_with_non_terminal_status_is_a_failure() {
+        // `output_item.done` must carry a terminal status. Compatible
+        // endpoints reporting `searching` / `in_progress` at done are
+        // surfaced as failures, never as silent success.
+        for status in ["in_progress", "searching"] {
+            let mut state = super::ResponsesStreamState::default();
+            let _ = state
+                .apply(output_item_added(0, web_search_call_json(status, None)))
+                .unwrap();
+            let updates = state
+                .apply(output_item_done(0, web_search_call_json(status, Some("q"))))
+                .unwrap();
+
+            assert_eq!(updates.len(), 1);
+            match &updates[0] {
+                AgentUpdate::StepFailed { tool_id, error, .. } => {
+                    assert_eq!(tool_id, "ws_1");
+                    assert!(
+                        error.contains("without terminal status"),
+                        "expected non-terminal-status failure, got: {error}"
+                    );
+                }
+                other => panic!("expected StepFailed for {status}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_web_search_items_emit_no_tool_events() {
+        let mut state = super::ResponsesStreamState::default();
+        let updates = state
+            .apply(output_item_added(
+                0,
+                serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "in_progress", "content": []}),
+            ))
+            .unwrap();
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn duplicate_web_search_done_emits_finished_only_once() {
+        // A repeated `output_item.done` for the same index overwrites the
+        // slot (last one wins) but must not re-emit `StepFinished`: the
+        // running card was already finalized on the first `done`.
+        let mut state = super::ResponsesStreamState::default();
+        let _ = state
+            .apply(output_item_added(
+                0,
+                web_search_call_json("in_progress", None),
+            ))
+            .unwrap();
+        let first = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(matches!(&first[0], AgentUpdate::StepFinished { .. }));
+
+        let duplicate = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+        assert!(
+            duplicate.is_empty(),
+            "duplicate done must not re-emit StepFinished, got: {duplicate:?}"
+        );
     }
 }

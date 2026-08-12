@@ -317,6 +317,7 @@ mod tests {
             .send(AgentUpdate::StepFailed {
                 idx: 0,
                 tool_id: "b1".into(),
+                arg_summary: String::new(),
                 error: "not found".into(),
             })
             .unwrap();

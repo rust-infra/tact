@@ -29,8 +29,126 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-12 — Worktree storage migrated from JSON files to SQLite (`WorktreeStore`)
 
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Worktree metadata + audit log lived in a single JSON index (`worktrees/index.json`, `Store<WorktreeIndex>`) with read-modify-write and no transaction; duplicate-name checks raced with index writes. |
+| Decision | Worktree state moved into the existing `<workdir>/.tact/tact.db` as `worktrees` + `worktree_events` tables via a new async `WorktreeStore` trait (`crates/tact/src/store/worktree_store/`, `SqliteWorktreeStore` with sqlx). `worktrees.name` is UNIQUE (concurrency backstop); the autoincrement `id` preserves insertion order; `worktree_events` orders by its own `id`. Added `session_id` column + index, filled from the tool context at `worktree_create`. `WorktreeManager` became an async facade over `Box<dyn WorktreeStore>`; `SharedWorktreeManager` dropped its mutex (`Arc<WorktreeManager>`, the pool serializes writes — `worktree_run` no longer blocks other worktree tools). Legacy `worktrees/index.json` is not read anymore and is left on disk. With this change, no domain module uses the JSON store (`StoreRoot`/`Store`/`CollectionStore` remain as a generic primitive with their own unit tests). |
+| Behavior after | Lanes and events persist in `tact.db` (old `worktrees/index.json` entries are gone unless exported manually); `worktree_*` surfaces unchanged; `session_id` appears in worktree records. |
+| Pointers | `crates/tact/src/store/worktree_store/{mod,sqlite}.rs`, `crates/tact/src/worktree/mod.rs`, `crates/tact/src/tool/worktree.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 15](./15_chapter_worktree.md) §2–5. |
 
+## 1. 2026-08-12 — Team storage migrated from JSON files to SQLite (`TeamStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The roster lived in a single JSON index (`team/config.json` with a `TeamConfig` wrapper) and inboxes as one JSONL file per owner (`team/inbox/{owner}.json`). Both used read-modify-write with no transaction and no cross-process lock; duplicate-name checks raced with roster writes. |
+| Decision | Team state moved into the existing `<workdir>/.tact/tact.db` as `teammates` + `inbox_messages` tables via a new async `TeamStore` trait (`crates/tact/src/store/team_store/`, `SqliteTeamStore` with sqlx). `teammates.name` is the PRIMARY KEY; duplicate spawn is rejected with `INSERT OR IGNORE` + `rows_affected == 0` (keeps the `teammate {name} already exists` error and stays race-free). `inbox_messages` gains an autoincrement `id` so reads preserve insertion order (the legacy JSONL append semantics) plus an `owner` index. `TeammateManager` became an async facade over `Box<dyn TeamStore>`; `SharedTeammateManager` dropped its mutex (`Arc<TeammateManager>`, the pool serializes writes). Legacy JSON files are not read anymore and are left on disk. |
+| Behavior after | Roster and inboxes persist in `tact.db` (old `team/` JSON entries are gone unless exported manually); `spawn_teammate` / `broadcast` / `read_inbox` / `plan_approval` / `shutdown_*` surfaces unchanged; cross-process inbox writes no longer race on file appends. |
+| Pointers | `crates/tact/src/store/team_store/{mod,sqlite}.rs`, `crates/tact/src/team.rs`, `crates/tact/src/tool/team.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 14](./14_chapter_team.md) §3–5. |
+
+## 1. 2026-08-12 — Cron & background tasks migrated from JSON files to SQLite (`CronStore` / `BackgroundStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Cron persisted as a single JSON index (`cron/scheduled_tasks.json` with a `next_id` counter) and background as one JSON file per record (`background/tasks/{id}.json` plus an in-memory `Mutex<HashMap>` mirror). Both used read-modify-write with no transaction and no cross-process lock; the background manager held duplicate state (disk + memory) that could drift. |
+| Decision | Cron and background moved into the existing `<workdir>/.tact/tact.db` as `cron_tasks` + `background_tasks` tables via new async traits `CronStore` (`crates/tact/src/store/cron_store/`) and `BackgroundStore` (`crates/tact/src/store/background_store/`), mirroring the `TaskStore` pattern. `cron_tasks` ids come from `INTEGER PRIMARY KEY AUTOINCREMENT` surfaced as 8-hex strings (`format!("{rowid:08x}")`) — same wire contract as the legacy index; `background_tasks` keeps the timestamp-millis hex `id` with a `CHECK`-constrained status. Both tables gained a `session_id` column + index, filled from the tool context at `cron_create` / `background_run`. `CronScheduler` / `BackgroundManager` became async facades; `SharedCronScheduler` dropped its mutex (`Arc<CronScheduler>`) and `BackgroundManager` dropped its in-memory mirror (the DB is the single source of truth; the spawned tokio task writes back through a cloned store handle). Legacy JSON files are not read anymore and are left on disk; `TactPath::cron_dir()` / `CRON_SUBDIR` removed as dead code. |
+| Behavior after | Cron ids restart at `00000001` (legacy entries are gone unless exported manually from `.tact/cron/`); `cron_*` / `background_*` / `/background` surface unchanged; startup orphan repair (`running` → `error`) now sweeps the table; `session_id` appears in cron JSON and background records. |
+| Pointers | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`, `crates/tact/src/store/background_store/{mod,sqlite}.rs`, `crates/tact/src/cron/mod.rs`, `crates/tact/src/background.rs`, `crates/tact/src/tool/{cron,background_run}.rs`, `crates/tact-ui/src/{headless,interactive,driver}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 13](./13_chapter_background.md) §2–5, [Ch 16](./16_chapter_cron.md) §3–5. |
+
+## 1. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Tasks persisted as one JSON file per record (`tasks/task_{id}.json`) plus a `tasks/index.json` next-id counter. ID allocation and dependency edges (`blockedBy` / `blocks` mirrored on both records) were read-modify-write with no transaction and no cross-process lock; completing a task required an O(n) scan to clear edges. |
+| Decision | Tasks moved into the existing `<workdir>/.tact/tact.db` as `tasks` + `task_dependencies` tables via a new `TaskStore` trait (`crates/tact/src/store/task_store/`, `SqliteTaskStore` with sqlx). Edges are rows (composite PK, `INSERT OR IGNORE`), no mirrored fields, no foreign keys; every mutation runs in a `BEGIN IMMEDIATE` transaction, completion clears edges with one `DELETE`. IDs come from `INTEGER PRIMARY KEY AUTOINCREMENT` (`TaskIndex` removed). `TaskManager` became an async facade over `Box<dyn TaskStore>`; `SharedTaskManager` dropped its mutex (`Arc<TaskManager>`, the pool serializes writes). Added `session_id` column + index, filled from the tool context at `task_create`. Legacy JSON files are not read anymore and are left on disk. `tokio` features `macros` + `rt-multi-thread` added to `crates/tact/Cargo.toml` so `#[tokio::test]` works when building `-p tact` alone. |
+| Behavior after | New task IDs start at 1 (old 1–233 records are gone unless exported manually from `.tact/tasks/`); dependency updates are atomic; `task_*` tools unchanged on the surface (`session_id` appears in task JSON/snapshots). |
+| Pointers | `crates/tact/src/store/task_store/{mod,sqlite}.rs`, `crates/tact/src/task/mod.rs`, `crates/tact/src/tool/task.rs`; [Ch 1](./01_chapter_store.md) §6, [Ch 19](./19_chapter_persistent_tasks.md) §2–3. |
+
+## 1. 2026-08-11 — Summarizer thinking budget clamped below `max_tokens`; Kimi K3 default reasoning reserve
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The 2026-08-10 summarizer budget change forwarded the configured Claude-style thinking budget to the compact summary request with the same `with_thinking(self.thinking_config())` call as the main loop, but the summarizer's `max_tokens` is independently capped at `min(20% × window, 2,000)`. Anthropic requires `budget_tokens < max_tokens` on the wire, so a default 8k/32k thinking budget produced an invalid request (`thinking.budget_tokens = 8,000` with `max_tokens = 2,000`) and local compaction failed with a 400 for every Anthropic user with thinking enabled. Separately, the reasoning reserve only treated DeepSeek as default-reasoning, but Kimi K3 also defaults thinking ON + effort high server-side, so Kimi summaries could still be starved by reasoning without an explicit effort. |
+| Decision | New `compact_summary_thinking(configured_budget, summary_max_tokens)` clamps the forwarded budget to `summary_max_tokens - 1` (and disables thinking entirely for a degenerate ≤ 1-token output budget), applied to both the initial and continuation summarizer requests via a small builder closure. The input-side reservation still subtracts the configured budget (conservative). `compact_summary_reasoning_reserve_percent` now reserves the default high tier (75%) for `ProviderKind::Kimi` as well as DeepSeek. |
+| Behavior after | Anthropic compaction with a large thinking budget sends `budget_tokens = max_tokens - 1` instead of failing with a 400; a budget that already fits passes through unchanged. Kimi K3 with no explicit effort gets the same 75% reasoning reserve as DeepSeek. |
+| Pointers | `compact_summary_thinking` + `compact_summary_reasoning_reserve_percent` in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_thinking_clamps_below_max_tokens`, `local_compact_clamps_thinking_budget_below_summary_max_tokens`, `compact_summary_reasoning_reserve_percent_tiers`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
+
+## 1. 2026-08-10 — Vendor async-openai locally as `async-openai-local` for typed `context_management`
+
+| Field | Value |
+|-------|-------|
+| Type | `docs` (dependency management) |
+| Symptom / motivation | OpenAI's Responses API officially supports `context_management` / `compact_threshold` (server-side compaction), and the official Python/Node SDKs expose it typed, but the Rust `async-openai` crate (latest 0.41.3, as of 2026-08-10) only defines `ContextManagementParam` without wiring it into `CreateResponseArgs` — so Tact had to inject it through the byot JSON path (`body["context_management"] = serde_json::json!(...)`). |
+| Decision | Vendor the async-openai 0.41.3 source under `vendor/async-openai` and rename the package to `async-openai-local` so the path dependency only satisfies the Responses-protocol 0.41.x dependency and cannot collide with the legacy `async-openai 0.20` used by the Chat Completions path (`async-openai-responses = { package = "async-openai-local", path = "vendor/async-openai", ... }` in the workspace manifest; code keeps `use async_openai_responses::…`, no reference changes). Two source divergences from upstream: a typed `context_management: Option<Vec<ContextManagementParam>>` field on `CreateResponse`, and a `Max` variant on `ReasoningEffort` (upstream stops at `Xhigh`; DeepSeek / Kimi K3 accept `max`). `convert.rs` now builds both through the typed builder — `context_management(...)` setter and `Reasoning { effort: request.reasoning_effort.map(Into::into), summary }` via `impl From<OpenAiReasoningEffort> for ReasoningEffort` in `crates/tact_llm/src/types.rs` — instead of `serde_json::json!` / `Value::String` injection. `vendor/async-openai/README.fork.md` documents how to sync with upstream. |
+| Behavior after | No user-visible change: the wire body still carries `context_management` when a threshold is configured. Maintenance is now local: new Responses fields can be added to the vendor without waiting for the upstream Rust crate. |
+| Pointers | `vendor/async-openai/` (`README.fork.md`, `src/types/responses/response.rs`); `Cargo.toml` `async-openai-responses` dependency; `crates/tact_llm/src/openai/responses/convert.rs` (`create_response` builder injection); [Ch 22](./22_chapter_llm.md) §6.2. |
+
+## 1. 2026-08-10 — Clear error when a Responses endpoint does not implement `/responses/compact`
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Compatible `/responses` endpoints (e.g. `opencode.ai/zen/go/v1`) often do not implement `POST /responses/compact` and answer 404 with an HTML page. The SDK's `compact_byot` then surfaced a JSON-deserialization error that dumped the entire HTML body, and the message could even match the transient-error retry list ("unavailable"), causing pointless backoff retries before failing. |
+| Decision | `compact()` in the Responses adapter now sends the compact request through the raw shared HTTP client (same transport the SDK uses) so the status code is inspectable. HTTP 404/405 maps to `LlmError::Unsupported("endpoint does not support POST /responses/compact (HTTP {status}): native Responses compaction is not implemented by base URL {base_url}")` — deliberately worded to avoid the transient-error keywords so no retry loop is entered. Other non-2xx statuses use the existing `LlmError::HttpError { status, body }`. |
+| Behavior after | On an endpoint without `/responses/compact`, triggering compaction immediately shows the clear message naming the missing endpoint and base URL (no HTML dump, no retries); the session state is left untouched. |
+| Pointers | `compact()` in `crates/tact_llm/src/openai/responses/mod.rs`; test `compact_reports_missing_endpoint_clearly`; [Ch 22](./22_chapter_llm.md) §6.2, [Ch 5](./05_chapter_compact.md). |
+
+## 1. 2026-08-10 — Responses adapter recovers when a compatible stream ends without a terminal event
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | A compatible `/responses` endpoint (e.g. `opencode.ai/zen/go/v1`) occasionally closes the SSE stream without any terminal event (`response.completed` / `response.incomplete` / `response.failed`). `ResponsesStreamState::finish()` hard-failed with `unsupported response state: OpenAI Responses stream ended without a terminal event`, aborting the whole agent turn even though the stream had delivered a complete `output_item.done` sequence or visible text. |
+| Decision | A clean EOF without a terminal event is now treated as terminal when the stream itself is complete: if every announced item finished (`output_item.done` sequence contiguous and no pending `added`), the output is reconstructed from the done sequence; otherwise streamed visible text is recovered (same branch as the existing compatible-endpoint recovery). A minimal completed `Response` is synthesized and flows through the existing normalization/recovery paths, so stop reason inference (including `ToolUse` for tool calls) and provider-state baseline construction are unchanged. A missing compaction boundary (`pending_compactions` non-empty) and an empty stream remain hard protocol errors — recovery must never silently drop a compacted baseline. |
+| Behavior after | Turns that previously died with "stream ended without a terminal event" now complete from the done sequence / streamed text when the response was fully delivered; genuinely empty or compaction-incomplete streams still fail loudly. |
+| Pointers | `finish()` in `crates/tact_llm/src/openai/responses/stream.rs`; tests `no_terminal_event_recovers_from_complete_done_sequence`, `no_terminal_event_recovers_visible_text`, `no_terminal_event_empty_stream_is_error`, `no_terminal_event_with_pending_compaction_is_error`; [Ch 22](./22_chapter_llm.md) §6.2. |
+
+## 1. 2026-08-10 — Local compaction reserves output for reasoning / thinking tokens
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | `compact_history_local_with_mode` (the summarizer behind every non-OpenAI-Responses compaction) sized the summarizer's `max_tokens` as `min(20% × window, 2,000)` and treated it as the **text** budget, but reasoning-effort providers (OpenAI o-series / DeepSeek / Kimi K3) count reasoning tokens inside that same `max_tokens` envelope. With an explicit `high`/`max` effort — or on DeepSeek, which defaults thinking ON + effort high server-side — reasoning burned most of the 2,000-token budget, leaving too little for the summary text, so every call hit `StopReason::MaxTokens` and the continuation loop (≤3, each with the same shared cap) ended up accepting a best-effort partial summary. The compact request also never forwarded the configured Claude-style thinking budget (unlike the main loop), and the input reservation ignored it. |
+| Decision | Split the summarizer output budget: the summary **text** keeps the classic `min(20% × window, 2,000)`; when a reasoning effort is configured (or the provider is DeepSeek with no explicit effort) a tiered reserve is added **on top** (25/50/75/100% of the text budget for minimal|low / medium / high / xhigh|max, DeepSeek default ≈ high = 75%), so `max_tokens` on the wire = text + reserve and reasoning never starves the text. The summarizer now forwards the configured thinking budget (`with_thinking(self.thinking_config())`, matching the main loop) and subtracts it from the input-side reservation. No effort semantics are changed — this is budget accounting only. |
+| Behavior after | Compaction summaries with reasoning effort configured (or on DeepSeek) get a larger wire `max_tokens` (e.g. high effort on a 128k window → 2,000 + 1,500 = 3,500) while the text portion still receives its full classic budget; the summarizer request carries the same thinking config as main-loop turns; the input reservation accounts for both reasoning and thinking headroom, and bails with the existing "too small" error when the window cannot fit the prompt after those reservations. |
+| Pointers | `compact_summary_reasoning_reserve_percent` + budget math in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_reasoning_reserve_percent_tiers`, `local_compact_reserves_reasoning_budget_and_forwards_thinking`, `local_compact_input_reservation_subtracts_thinking_budget`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
+
+## 1. 2026-08-10 — `background_run` streams live output to the tool card (bash-like)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | `background_run` buffered the whole command output with `Command::output()` and its tool card finalized instantly ("started"), so users saw nothing until they polled `check_background` — unlike `bash`, whose card streams output live. |
+| Decision | Add a keep-live card contract: `ToolPresentationInfo.keep_live` (mapped from new `LiveOutputPolicy::Background`) makes the TUI leave the card active after `StepFinished`; the manager now reads stdout/stderr incrementally (`read_pipe` + `Utf8Decoder` + ~50ms throttled `ToolProgress`, live preview keeps last ~4 KB) and closes the card with a new `AgentUpdate::BackgroundTaskFinished { tool_id, success, message, output }` carrying ✓/✗, elapsed time and the capped final output. `background_run` passes a `BackgroundProgressSink` (tool_id + `ui_tx`) into `SharedBackgroundManager::run`; record persistence and the 120s timeout are unchanged. |
+| Behavior after | `background_run cargo build` shows a spinner + live build output in the TUI card, then finalizes with ✓/✗ and duration when the process exits — even if the agent turn already ended. The model still has no completion push and must poll `check_background`. |
+| Pointers | `crates/tact/src/background.rs` (`BackgroundProgressSink`, `run_background_process`); `crates/tact/src/tool/background_run.rs`; `LiveOutputPolicy::Background` in `crates/tact/src/tool/metadata.rs`; `AgentUpdate::BackgroundTaskFinished` in `crates/protocol/src/agent.rs`; TUI `on_step_finished` / `on_background_task_finished` in `crates/tui/src/widgets/state/app/agent.rs`; [Ch 13](./13_chapter_background.md), [Ch 25](./25_chapter_protocol.md). |
+
+## 1. 2026-08-10 — `/background` slash command for background job status
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Background jobs started with `background_run` could only be inspected by asking the model to call the `check_background` tool; there was no direct TUI affordance, so users had to type a prompt just to poll a task. |
+| Decision | Add a TUI slash command `/background` (`/background <id>` for one task) backed by a new `UserCommand::QueryBackground(Option<String>)`. The command driver (`crates/tact-ui/src/driver.rs`) calls the shared `ToolContext.background_manager.check(id)` — the same code path as the `check_background` tool — and emits `AgentUpdate::MdInfo` with a `## ⚙️ Background Tasks` fenced code block (or `AgentUpdate::Error` for an unknown id). The command is listed in `PALETTE_COMMANDS`, localized in `i18n.rs` (EN/ZH), and rendered with the `🖥` palette emoji. |
+| Behavior after | `/background` prints one line per task (id, status, command); `/background <id>` prints the task's pretty JSON; an unknown id shows an error. No new state, no completion push — the command only reads the persisted/in-memory records. |
+| Pointers | `UserCommand::QueryBackground` in `crates/protocol/src/agent.rs`; driver match arm in `crates/tact-ui/src/driver.rs`; `PALETTE_COMMANDS` in `crates/tui/src/widgets/state/mod.rs`; `execute_palette_command` in `crates/tui/src/handlers/mod.rs`; [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) §3. |
+
+## 1. 2026-08-09 — Hosted web search for OpenAI Responses (`protocol = "responses"`)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| PR | https://github.com/laohanlinux/tact/pull/62 (branch `feat/responses-web-search`) |
+| Symptom / motivation | The Responses adapter only sent function tools, so OpenAI `protocol = "responses"` sessions had no hosted (provider-executed) web search; users had to wire an MCP `web_search` function tool or drop to Chat Completions. |
+| Decision | Hosted web search is a **Responses-protocol capability**, independent of the endpoint/provider: the adapter injects `Tool::WebSearch` on every ordinary `/responses` request whenever `protocol = "responses"` is chosen (`create_response(..., native_web_search = true)`; `false` only for `/responses/compact`, which accepts no tools) — for OpenAI, DeepSeek, and custom OpenAI-compatible endpoints alike, with no per-provider switch (`OpenAiResponsesAdapter` has no `native_web_search` flag; `ResponsesCapabilities::hosted_tools` includes `WebSearch` for every Responses endpoint). The provider executes the search server-side; Tact only renders a tool card from real Step events (`StepStarted` on `output_item.added`, `StepFinished`/`StepFailed` on the first `output_item.done` per index; `in_progress`/`searching` at `done` is a defensive failure). `web_search_call` never becomes `ContentBlock::ToolUse`, and stop reason stays `completed`. Compatible endpoints that emit the search action as a `queries` array instead of the singular `query` are handled by `wire::normalize_web_search_call_query` (fills `query` for typed parsing only; raw items are replayed verbatim). `AgentUpdate::StepFailed` gained `arg_summary` so failed cards keep the query in the title. DeepSeek keeps the code path but remains rejected at config resolution (#57) until its Responses support is re-enabled. |
+| Behavior after | Any `protocol = "responses"` session — OpenAI, DeepSeek, or custom OpenAI-compatible — automatically gets hosted web search; the TUI shows a `🔍 Web Search` card with the query as title and sources as expandable detail; failures carry status/query/action diagnostics. |
+| Pointers | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`, `crates/tact_llm/src/provider.rs` (`build_openai_responses`), `crates/tui/src/widgets/tool_widget.rs`, AGENTS.md "Hosted tools (Provider-executed) — design invariants", [Ch 22 §6.2.1.1](./22_chapter_llm.md). |
 
 ## 1. 2026-08-09 — Task-stats `[copy]` copies the last turn
 

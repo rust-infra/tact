@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.14"
+version = "1.1.15"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -19,7 +19,7 @@ license = "MIT"
 anyhow = "1.0"
 arboard = "3"
 async-openai = "0.20"
-async-openai-responses = { package = "async-openai", version = "0.41.1", features = ["responses", "byot"] }
+async-openai-responses = { package = "async-openai-local", path = "vendor/async-openai", version = "0.41.3", features = ["responses", "byot"] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
@@ -41,10 +41,12 @@ quote = "1.0"
 ratatui = "0.30"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls"] }
 reqwest-eventsource = "0.6"
 rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
 schemars = "1.0"
 secrecy = "0.8"
+secrecy10 = { package = "secrecy", version = "0.10.3" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"

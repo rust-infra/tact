@@ -49,14 +49,18 @@ pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the task manager fails to create the task
 /// (e.g., storage error).
 pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<String> {
-    let task = ctx.task_manager.create(
-        input.subject,
-        input
-            .description
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-    )?;
-    let listed = ctx.task_manager.list().unwrap_or_default();
+    let task = ctx
+        .task_manager
+        .create(
+            input.subject,
+            input
+                .description
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            ctx.session_id.clone().unwrap_or_default(),
+        )
+        .await?;
+    let listed = ctx.task_manager.list().await.unwrap_or_default();
     emit_tasks_changed(
         &ctx.ui_tx,
         listed,
@@ -95,7 +99,7 @@ pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the task ID does not exist.
 pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
-    let task = ctx.task_manager.get(input.task_id)?;
+    let task = ctx.task_manager.get(input.task_id).await?;
     render_task_json(&task)
 }
 
@@ -126,7 +130,7 @@ pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the task manager fails to retrieve the task list.
 pub async fn task_list(ctx: ToolContext, _input: TaskListInput) -> Result<String> {
-    Ok(render_task_list(ctx.task_manager.list()?))
+    Ok(render_task_list(ctx.task_manager.list().await?))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -181,16 +185,19 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
             anyhow::anyhow!("Invalid status. Use pending, in_progress, completed, or deleted")
         })?;
 
-    let task = ctx.task_manager.update(
-        input.task_id,
-        TaskUpdate {
-            status,
-            owner: input.owner,
-            add_blocked_by: input.add_blocked_by,
-            add_blocks: input.add_blocks,
-        },
-    )?;
-    let listed = ctx.task_manager.list().unwrap_or_default();
+    let task = ctx
+        .task_manager
+        .update(
+            input.task_id,
+            TaskUpdate {
+                status,
+                owner: input.owner,
+                add_blocked_by: input.add_blocked_by,
+                add_blocks: input.add_blocks,
+            },
+        )
+        .await?;
+    let listed = ctx.task_manager.list().await.unwrap_or_default();
     emit_tasks_changed(
         &ctx.ui_tx,
         listed,

@@ -238,6 +238,10 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
             meta.presentation.live_output,
             crate::tool::LiveOutputPolicy::FullTranscript
         ),
+        keep_live: matches!(
+            meta.presentation.live_output,
+            crate::tool::LiveOutputPolicy::Background
+        ),
         detail: match meta.presentation.detail {
             DetailPolicy::None => tact_protocol::ToolDetailKind::None,
             DetailPolicy::Result => tact_protocol::ToolDetailKind::Result,
@@ -316,6 +320,7 @@ impl Agent {
                         self.emit_update(AgentUpdate::StepFailed {
                             idx: step_idx,
                             tool_id: id.clone(),
+                            arg_summary: String::new(),
                             error: msg.clone(),
                         });
                         prepared.push(PreparedTool {
@@ -422,6 +427,7 @@ impl Agent {
                             self.emit_update(AgentUpdate::StepFailed {
                                 idx: step_idx,
                                 tool_id: id.clone(),
+                                arg_summary: String::new(),
                                 error: msg.clone(),
                             });
                             PreparedState::Resolved(msg)
@@ -485,6 +491,7 @@ impl Agent {
                                     self.emit_update(AgentUpdate::StepFailed {
                                         idx: step_idx,
                                         tool_id: id.clone(),
+                                        arg_summary: String::new(),
                                         error: msg.clone(),
                                     });
                                     PreparedState::Resolved(msg)
@@ -498,6 +505,7 @@ impl Agent {
                     self.emit_update(AgentUpdate::StepFailed {
                         idx: step_idx,
                         tool_id: id.clone(),
+                        arg_summary: String::new(),
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
@@ -507,6 +515,7 @@ impl Agent {
                     self.emit_update(AgentUpdate::StepFailed {
                         idx: step_idx,
                         tool_id: id.clone(),
+                        arg_summary: String::new(),
                         error: msg.clone(),
                     });
                     PreparedState::Resolved(msg)
@@ -515,10 +524,12 @@ impl Agent {
 
             let task_before = match &resolved {
                 ResolvedTool::Native { metadata } => match metadata.domain {
-                    ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => input
-                        .get("task_id")
-                        .and_then(|v| v.as_u64())
-                        .and_then(|id| self.tool_context.task_manager.get(id).ok()),
+                    ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => {
+                        match input.get("task_id").and_then(|v| v.as_u64()) {
+                            Some(id) => self.tool_context.task_manager.get(id).await.ok(),
+                            None => None,
+                        }
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -671,16 +682,23 @@ impl Agent {
                                     .get("subject")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                self.tool_context.task_manager.list().ok().and_then(|list| {
-                                    list.into_iter()
-                                        .filter(|t| t.subject == subject)
-                                        .max_by_key(|t| t.id)
-                                })
+                                self.tool_context
+                                    .task_manager
+                                    .list()
+                                    .await
+                                    .ok()
+                                    .and_then(|list| {
+                                        list.into_iter()
+                                            .filter(|t| t.subject == subject)
+                                            .max_by_key(|t| t.id)
+                                    })
                             }
-                            TaskOperation::Update | TaskOperation::Get => prep_input
-                                .get("task_id")
-                                .and_then(|v| v.as_u64())
-                                .and_then(|id| self.tool_context.task_manager.get(id).ok()),
+                            TaskOperation::Update | TaskOperation::Get => {
+                                match prep_input.get("task_id").and_then(|v| v.as_u64()) {
+                                    Some(id) => self.tool_context.task_manager.get(id).await.ok(),
+                                    None => None,
+                                }
+                            }
                             _ => None,
                         };
                         let full = crate::task::format_task_tool_title(
@@ -819,6 +837,7 @@ impl Agent {
             self.emit_update(AgentUpdate::StepFailed {
                 idx: step_idx,
                 tool_id: id.clone(),
+                arg_summary: String::new(),
                 error: TOOL_CANCELLED_MSG.to_string(),
             });
             prepared.push(PreparedTool {

@@ -55,6 +55,8 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>, // non-deleted
         reason: TasksChangeReason, // Created | Updated
     },
+    /// Finalize a keep-live card (`background_run`) when the task finishes
+    BackgroundTaskFinished { tool_id, success, message, output },
 }
 
 pub enum ThinkingChunk {
@@ -149,6 +151,8 @@ stateDiagram-v2
 | Progress | `ToolProgress { tool_id, chunks }` | in-flight tool | Update only the matching active block; preserve thinking/loading gates and scroll intent |
 | Succeeded | `StepFinished { result }` | post-flight | `finalize_tool_block`; set `plan.steps[idx].output` |
 | Failed | `StepFailed { error }` | permission / hooks / execution | Failed tool card or system message; `Status → Idle` |
+
+**Keep-live cards (`ToolPresentationInfo.keep_live`):** fire-and-forget tools such as `background_run` return before their underlying work completes. Their `StepFinished` records the plan step but does **not** finalize the card — `ToolProgress` keeps streaming live output into the still-active card, and a later `BackgroundTaskFinished { tool_id, success, message, output }` closes it with the real outcome (✓/✗, duration, final output). If the live card is gone (e.g. after a restart) the TUI falls back to a system message.
 
 **`arg_summary` vs `arg_full`:** `arg_summary` is truncated (≤120 chars) for the log title row. `arg_full` is the complete argument string (path, command, or raw JSON) so popups and diff views do not depend on tool-name heuristics in the TUI.
 

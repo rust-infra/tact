@@ -178,8 +178,9 @@ impl App {
             AgentUpdate::StepFailed {
                 idx,
                 tool_id,
+                arg_summary,
                 error,
-            } => self.on_step_failed(idx, tool_id, error),
+            } => self.on_step_failed(idx, tool_id, arg_summary, error),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -301,6 +302,12 @@ impl App {
                 model,
                 token_usage,
             } => self.on_tool_meta(&tool_id, model, token_usage),
+            AgentUpdate::BackgroundTaskFinished {
+                tool_id,
+                success,
+                message,
+                output,
+            } => self.on_background_task_finished(&tool_id, success, &message, &output),
             AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed(tasks, reason);
@@ -477,6 +484,19 @@ impl App {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
+
+        // Keep-live tools (e.g. `background_run`) return immediately but their
+        // card keeps streaming: skip finalization here; a later
+        // `AgentUpdate::BackgroundTaskFinished` closes the card with the real
+        // outcome. The plan step is still recorded as done (the invocation did
+        // succeed at "started").
+        if result.presentation.keep_live {
+            if let Some(step) = self.plan.steps.get_mut(idx) {
+                step.output = Some(result.message);
+            }
+            return;
+        }
+
         let is_subagent = matches!(
             result.presentation.popup,
             tact_protocol::ToolPopupKind::SubagentTranscript
@@ -509,13 +529,71 @@ impl App {
         }
     }
 
-    fn on_step_failed(&mut self, idx: usize, tool_id: String, error: String) {
+    /// Finalize a tool card that stayed live after its invocation returned
+    /// (see [`ToolPresentationInfo::keep_live`]): the background task just
+    /// finished, so render the real ✓/✗ outcome, duration, and final output.
+    fn on_background_task_finished(
+        &mut self,
+        tool_id: &str,
+        success: bool,
+        message: &str,
+        output: &str,
+    ) {
+        let Some(pos) = self
+            .tools
+            .active
+            .iter()
+            .position(|active| active.tool_id == tool_id)
+        else {
+            // The live card is gone (e.g. a fresh process after restart);
+            // surface the outcome as a system message instead.
+            let prefix = if success { "✓" } else { "✗" };
+            self.add_system_message(format!("{prefix} {message}"));
+            return;
+        };
+        let active = &self.tools.active[pos];
+        let elapsed_us = active.started_at.elapsed().as_micros() as u64;
+        let tool_name = active.output.tool_name.clone();
+        let arg_summary = active.output.arg_summary.clone();
+        let arg_full = active.output.arg_full.clone();
+        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let msgs = self.msgs();
+        let mut widget = ToolWidget::new(&self.theme, &msgs)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(step_idx)
+            .with_phase(if success {
+                ToolPhase::Success
+            } else {
+                ToolPhase::Failed
+            })
+            .with_duration_us(elapsed_us)
+            .with_detail(output.to_string());
+        if !success {
+            widget = widget.with_message(message.to_string());
+        }
+        self.finalize_tool_block(tool_id, widget.build());
+
+        if let Some(step) = self.plan.steps.get_mut(step_idx) {
+            step.output = Some(message.to_string());
+        }
+    }
+
+    fn on_step_failed(&mut self, idx: usize, tool_id: String, arg_summary: String, error: String) {
         let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
         self.flush_stream_pending();
         if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
             let elapsed_us = active.started_at.elapsed().as_micros() as u64;
             let tool_name = active.output.tool_name.clone();
-            let arg_summary = active.output.arg_summary.clone();
+            // Prefer the summary carried by the failure (e.g. a web-search
+            // query that was only populated at `done`), falling back to the
+            // `StepStarted` value so regular tool failures keep their title.
+            let arg_summary = if arg_summary.is_empty() {
+                active.output.arg_summary.clone()
+            } else {
+                arg_summary
+            };
             let msgs = self.msgs();
             let output = ToolWidget::new(&self.theme, &msgs)
                 .with_tool(tool_name)
@@ -1554,6 +1632,152 @@ mod lifecycle_tests {
         assert_eq!(app.tools.active[0].output.visual_rows(false), 2);
     }
 
+    // ---- background_run keep-live card lifecycle ----
+
+    fn background_presentation() -> ToolPresentationInfo {
+        let mut presentation = ToolPresentationInfo::generic("background_run");
+        presentation.keep_live = true;
+        presentation
+    }
+
+    fn seed_running_background(app: &mut App, tool_id: &str) {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run build in background",
+            "background_run",
+            tool_id,
+            HashMap::from([("command".to_string(), "cargo build".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: tool_id.to_string(),
+            tool_name: "background_run".into(),
+            arg_summary: "cargo build".into(),
+            arg_full: "cargo build".into(),
+            presentation: background_presentation(),
+        });
+    }
+
+    #[test]
+    fn background_step_finished_keeps_card_live() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "bg1");
+
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "bg1".into(),
+            result: StepResult {
+                tool: "background_run".into(),
+                arg_summary: "cargo build".into(),
+                arg_full: Some("cargo build".into()),
+                status: StepStatus::Success,
+                message: "Background task 018f3a2c started: cargo build".into(),
+                detail: None,
+                duration_us: Some(1200),
+                permission_label: None,
+                presentation: background_presentation(),
+            },
+        });
+
+        assert_eq!(
+            app.tools.active.len(),
+            1,
+            "background card must stay active after StepFinished"
+        );
+        assert!(app.tools.blocks.is_empty());
+        // The plan step records the started message, not a final result.
+        assert_eq!(
+            app.plan.steps[0].output.as_deref(),
+            Some("Background task 018f3a2c started: cargo build")
+        );
+    }
+
+    #[test]
+    fn background_task_finished_finalizes_success_card() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "bg1");
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            tool_id: "bg1".into(),
+            chunks: vec![ToolOutputChunk::stdout("Compiling ...\n")],
+        });
+        assert!(
+            app.tools.active[0].output.visual_rows(false) > 2,
+            "live progress should grow the active card"
+        );
+
+        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+            tool_id: "bg1".into(),
+            success: true,
+            message: "Background task 018f3a2c completed".into(),
+            output: "Compiling ...\ndone".into(),
+        });
+
+        assert!(app.tools.active.is_empty(), "card must be finalized");
+        assert_eq!(app.tools.blocks.len(), 1);
+        let block = &app.tools.blocks[0];
+        assert_eq!(block.tool_id, "bg1");
+        assert!(matches!(
+            block.output.phase,
+            crate::widgets::tool_widget::ToolPhase::Success
+        ));
+        assert!(
+            block.output.duration_us.is_some(),
+            "completed card should carry a duration"
+        );
+        let detail = block.output.detail_full.clone().unwrap_or_default();
+        assert!(detail.contains("done"), "detail: {detail}");
+    }
+
+    #[test]
+    fn background_task_finished_finalizes_failed_card() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "bg1");
+
+        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+            tool_id: "bg1".into(),
+            success: false,
+            message: "Background task 018f3a2c failed".into(),
+            output: "error: build failed".into(),
+        });
+
+        assert!(app.tools.active.is_empty(), "card must be finalized");
+        let block = &app.tools.blocks[0];
+        assert!(matches!(
+            block.output.phase,
+            crate::widgets::tool_widget::ToolPhase::Failed
+        ));
+        assert!(
+            block
+                .output
+                .detail_full
+                .as_deref()
+                .unwrap_or_default()
+                .contains("build failed"),
+            "failed card should expose the output"
+        );
+    }
+
+    #[test]
+    fn background_task_finished_without_live_card_adds_system_message() {
+        let mut app = make_app();
+
+        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+            tool_id: "gone".into(),
+            success: true,
+            message: "Background task 018f3a2c completed".into(),
+            output: String::new(),
+        });
+
+        assert!(app.tools.active.is_empty());
+        assert!(app.tools.blocks.is_empty());
+        assert!(
+            app.raw_messages
+                .iter()
+                .any(|m| m.contains("Background task 018f3a2c completed")),
+            "missing fallback message: {:?}",
+            app.raw_messages
+        );
+    }
+
     #[test]
     fn active_bash_popup_uses_buffered_output() {
         let mut app = make_app();
@@ -1807,6 +2031,9 @@ mod lifecycle_tests {
             .rposition(|l| l.contains("📊 任务统计："))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
+        let copy_notice = app.raw_messages.last().expect("copy notice");
+        assert!(copy_notice.contains("已复制") || copy_notice.contains("Copied"));
+        assert!(!copy_notice.contains("second question"));
 
         // Prefer clipboard_buffer when system clipboard is unavailable; otherwise
         // just verify the extracted range would exclude the first turn.
@@ -1889,9 +2116,38 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
             tool_id: "tool_read_1".into(),
+            arg_summary: String::new(),
             error: "file not found".into(),
         });
         assert!(matches!(app.status, Status::Idle));
+    }
+
+    #[test]
+    fn step_failed_keeps_arg_summary_in_failed_card_title() {
+        let mut app = make_app();
+        // Started without a query (action not yet populated), then failed with
+        // the query carried on the failure: the failed card title must show it.
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "ws_1".into(),
+            tool_name: "web_search".into(),
+            arg_summary: String::new(),
+            arg_full: String::new(),
+            presentation: tact_protocol::ToolPresentationInfo::generic("web_search"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            tool_id: "ws_1".into(),
+            arg_summary: "Rust async".into(),
+            error: "web search failed (status: Failed, query: \"Rust async\")".into(),
+        });
+
+        let block = app.tools.blocks.last().expect("failed tool block");
+        let title = &block.output.title_raw;
+        assert!(
+            title.contains("Rust async"),
+            "failed card title must keep the query, got: {title}"
+        );
     }
 
     #[test]

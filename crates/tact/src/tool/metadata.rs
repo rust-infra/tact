@@ -202,6 +202,10 @@ pub enum TaskOperation {
 pub enum LiveOutputPolicy {
     Standard,
     FullTranscript,
+    /// The tool returns immediately but its card stays live: streamed
+    /// `ToolProgress` updates keep rendering until a
+    /// `BackgroundTaskFinished`-style completion event finalizes the card.
+    Background,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +236,7 @@ impl ToolPresentation {
             visual_kind: self.visual_kind,
             display_name: self.display_name.to_string(),
             keep_full_live_output: matches!(self.live_output, LiveOutputPolicy::FullTranscript),
+            keep_live: matches!(self.live_output, LiveOutputPolicy::Background),
             detail: match self.detail {
                 DetailPolicy::None => ToolDetailKind::None,
                 DetailPolicy::Result => ToolDetailKind::Result,
@@ -372,7 +377,23 @@ mod tests {
         };
         let info = presentation.to_protocol();
         assert!(info.keep_full_live_output);
+        assert!(!info.keep_live);
         assert_eq!(info.popup, ToolPopupKind::SubagentTranscript);
+    }
+
+    #[test]
+    fn background_live_output_policy_keeps_card_live() {
+        let presentation = ToolPresentation {
+            visual_kind: ToolVisualKind::Command,
+            display_name: "⚙️ Background Run",
+            live_output: LiveOutputPolicy::Background,
+            detail: DetailPolicy::Result,
+            popup: PopupPolicy::None,
+            compact_result_to_meta: false,
+        };
+        let info = presentation.to_protocol();
+        assert!(info.keep_live);
+        assert!(!info.keep_full_live_output);
     }
 
     #[test]

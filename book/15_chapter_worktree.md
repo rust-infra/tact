@@ -31,17 +31,12 @@ pub struct WorktreeRecord {
     pub task_id: Option<u64>,
     pub status: String,        // always "active" today
 }
-
-pub struct WorktreeIndex {
-    pub worktrees: Vec<WorktreeRecord>,
-    pub events: Vec<String>,   // "2026-07-06T… worktree.create <name>"
-}
 ```
 
-The whole index — records **and** audit log — is one JSON document:
+Records **and** the audit log live in SQLite (`tact.db`), not a single JSON document:
 
 ```rust
-index: root.file("worktrees/index.json")?,   // Store<WorktreeIndex>
+store: Box<dyn WorktreeStore>,   // tact.db → worktrees + worktree_events tables
 ```
 
 On disk there are two separate locations to keep straight:
@@ -50,8 +45,20 @@ On disk there are two separate locations to keep straight:
 <repo_root>/
 ├── .worktrees/<name>/          # the actual git worktree (checkout)
 └── .tact/
-    └── worktrees/index.json    # Tact's metadata + events
+    └── tact.db                 # worktrees + worktree_events tables
 ```
+
+Schema (`crates/tact/src/store/worktree_store/sqlite.rs`):
+
+```text
+worktrees(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, path TEXT,
+          branch TEXT, task_id INTEGER, status TEXT DEFAULT 'active',
+          session_id TEXT DEFAULT '', created_at INTEGER)
+worktree_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, created_at INTEGER)
+-- index: idx_worktrees_session_id ON worktrees(session_id)
+```
+
+The autoincrement `id` preserves insertion order (the legacy `index.json` vector semantics); `worktrees.name` is UNIQUE as a concurrency backstop.
 
 ---
 
@@ -62,13 +69,13 @@ sequenceDiagram
     participant Agent
     participant WM as WorktreeManager
     participant Git as git CLI
-    participant FS as .tact/worktrees/index.json
+    participant DB as .tact/tact.db (worktrees, worktree_events)
 
     Agent->>WM: worktree_create("fix-auth", base_ref: "main")
-    WM->>WM: reject if name already in index
+    WM->>WM: reject if name already in DB
     WM->>Git: git worktree add -b wt/fix-auth .worktrees/fix-auth main
     Git-->>WM: exit status (+ stderr on failure)
-    WM->>FS: push WorktreeRecord + "worktree.create" event
+    WM->>DB: INSERT worktrees record + worktree_events row
     WM-->>Agent: pretty-printed record JSON
 
     Agent->>WM: worktree_run("fix-auth", "cargo test")
@@ -80,7 +87,7 @@ sequenceDiagram
     Git-->>Agent: stdout
 ```
 
-Failure handling in `create`: if `git worktree add` exits non-zero, the trimmed stderr is surfaced (`git worktree add failed: <stderr>`), and **nothing is written to the index** — a failed create leaves no record.
+Failure handling in `create`: if `git worktree add` exits non-zero, the trimmed stderr is surfaced (`git worktree add failed: <stderr>`), and **nothing is written to the DB** — a failed create leaves no record.
 
 Branch naming is fixed: every lane gets `wt/<name>`. Creating a lane whose branch already exists (e.g. re-creating after a manual `git worktree remove` that left the branch behind) fails at the git level.
 
@@ -88,7 +95,7 @@ Branch naming is fixed: every lane gets `wt/<name>`. Creating a lane whose branc
 
 ## 4. The Events Audit Log
 
-Every successful `create` appends a line to `index.events`:
+Every successful `create` appends a row to `worktree_events`:
 
 ```text
 2026-07-06 21:14:03.512 UTC worktree.create fix-auth
@@ -100,18 +107,18 @@ Every successful `create` appends a line to `index.events`:
 
 ## 5. Concurrency and Wiring
 
-`SharedWorktreeManager` is the usual `Arc<Mutex<WorktreeManager>>` wrapper with a `with_manager` accessor, mirroring the [team](./14_chapter_team.md) and task managers. Constructed at startup in `tui.rs`:
+`SharedWorktreeManager` wraps `Arc<WorktreeManager>` — no mutex, the SQLite pool serializes writes (mirroring the task/cron/background/team managers). Constructed at startup in `tui.rs`:
 
 ```rust
 let worktree_manager =
-    SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
+    SharedWorktreeManager::new(WorktreeManager::new(&tact_path.session_db_path(), work_dir.clone()).await?);
 ```
 
 Note that `repo_root` is simply the session's working directory — Tact does not verify it is actually a git repository until the first `git worktree add` fails.
 
 All five tools are registered in the main `toolset()` only; sub-agents cannot manage lanes.
 
-One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands **synchronously** (`std::process::Command`) while holding the manager lock, inside an async tool. A long `worktree_run` blocks both the tokio worker thread and every other worktree tool call until it finishes.
+One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands **synchronously** (`std::process::Command`), inside an async tool. A long `worktree_run` blocks the tokio worker thread until it finishes (it no longer holds a manager lock, so other worktree tools stay responsive).
 
 ---
 
@@ -125,12 +132,13 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 | File | Role |
 |------|------|
-| `crates/tact/src/worktree/mod.rs` | `WorktreeManager`, `SharedWorktreeManager`, index + events |
+| `crates/tact/src/worktree/mod.rs` | `WorktreeManager`, `SharedWorktreeManager`, create/list/status/run/events |
+| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait (async: create_worktree/find_worktree/list_worktrees/append_event/recent_events) |
+| `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` tables |
 | `crates/tact/src/tool/worktree.rs` | The five `#[tool]` wrappers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.worktree_manager` |
 | `crates/tact/src/tool/registry.rs` | Worktree tools in `toolset()` |
-| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed with `StoreRoot` + workdir |
-| `crates/tact/src/store/mod.rs` | `Store<WorktreeIndex>` primitive |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `tact.db` + workdir |
 
 ---
 
@@ -141,9 +149,9 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 | No remove/cleanup | There is no `worktree_remove`; lanes and `wt/*` branches accumulate until removed manually |
 | Status never changes | Every lane is `"active"` forever; no done/merged/abandoned transitions |
 | No merge-back story | Nothing helps integrate a lane's branch (diff, merge, PR) into the base branch |
-| Index can drift from git | Manual `git worktree remove/prune` leaves stale records; the index is never reconciled |
+| Index can drift from git | Manual `git worktree remove/prune` leaves stale records; the tables are never reconciled |
 | `worktree_run` bypasses shell validation | High-risk command substrings blocked in `bash` are allowed here |
-| Blocking execution under lock | Long-running `run`/`status` serializes all worktree operations and blocks an async thread |
+| Blocking execution | Long-running `run`/`status` blocks an async thread (no manager lock held anymore) |
 | Sparse audit log | Only `create` writes events; `run` invocations are not recorded |
 | `task_id` is unenforced | The optional link is never validated against the task manager |
 
@@ -154,5 +162,5 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 - [Tasks and Tool Scheduling](./11_chapter_task.md) — the task records `task_id` refers to
 - [Team Coordination](./14_chapter_team.md) — the coordination layer worktrees are designed to pair with
 - [Permission Model](./10_chapter_permission.md) — how `worktree_run` is (and isn't) gated
-- [Store and Persistence](./01_chapter_store.md) — `Store<WorktreeIndex>` under `.tact/worktrees/`
+- [Store and Persistence](./01_chapter_store.md) — the `worktrees` / `worktree_events` SQLite tables
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 sub-agents, team, tasks, worktrees

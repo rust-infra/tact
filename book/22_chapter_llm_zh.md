@@ -6,7 +6,7 @@
 
 本层配置在 [Ch 21 配置](./21_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 18 Agent Main Loop](./18_chapter_agent_loop.md)）。
 
-实现：`crates/tact_llm/src/`（`lib.rs`、`client.rs`、`provider.rs`、`types.rs`、`content.rs`、`anthropic/`、`openai/`、`deepseek/`、`kimi/`、`convert.rs`）。
+实现：`crates/tact_llm/src/`（`lib.rs`、`client.rs`、`provider.rs`、`profile.rs`、`auth.rs`、`transport.rs`、`types.rs`、`content.rs`、`anthropic/`、`openai/`、`convert.rs`）。
 
 ---
 
@@ -15,13 +15,16 @@
 ```mermaid
 flowchart TB
     Config[config::install → init_provider] --> PI[ProviderInfo RwLock]
-    PI --> Build[get_llm_client → build_client]
+    Config --> Cred[Credentials RwLock]
+    PI --> Get[get_llm_client]
+    Cred --> Get
+    Get --> Build[Client::new]
     Build --> LP{LlmProvider enum}
     LP --> Anthropic[AnthropicAdapter]
-    LP --> OpenAi[OpenAiAdapter]
+    LP --> ChatCompletions[ChatCompletionsAdapter]
     LP --> Responses[OpenAiResponsesAdapter]
     Anthropic --> API1[Messages API SSE]
-    OpenAi --> API2[Chat Completions SSE]
+    ChatCompletions --> API2[Chat Completions SSE]
     Responses --> API3[Responses API SSE]
     Agent[Agent::stream_message] --> LlmClient[LlmClient trait]
     LlmClient --> LP
@@ -33,14 +36,15 @@ flowchart TB
 | Adapter | Providers | HTTP API |
 |---------|-----------|----------|
 | `AnthropicAdapter` | `anthropic` | Anthropic Messages（`/messages`） |
-| `OpenAiAdapter` | `openai`、`deepseek`、`kimi` | OpenAI 兼容 Chat Completions |
-| `OpenAiResponsesAdapter` | 配置 `protocol = "responses"` 的 `openai` | OpenAI Responses（`/responses`） |
+| `ChatCompletionsAdapter` | `openai`、`deepseek`、`kimi`、`custom` | OpenAI 兼容 Chat Completions |
+| `OpenAiResponsesAdapter` | 任意 OpenAI 兼容条目且 `protocol = "responses"` | OpenAI Responses（`/responses`） |
 
-DeepSeek 与 Kimi 复用 `OpenAiAdapter`，默认 base URL 来自 config resolve。
+DeepSeek 与 Kimi 不是独立 adapter：`ProviderProfile::dialect_for(model)` 按请求选择
+`ChatCompletionsDialect`（`Standard` / `DeepSeek` / `Kimi`），再由对应 body hook 决定 wire JSON。
 
 ---
 
-## 2. ProviderInfo 与初始化
+## 2. 配置、Profile 与凭据
 
 ```rust
 pub enum ProviderKind {
@@ -48,6 +52,7 @@ pub enum ProviderKind {
     OpenAi,
     DeepSeek,
     Kimi,
+    Custom(String),
 }
 
 pub enum OpenAiProtocol {
@@ -56,15 +61,30 @@ pub enum OpenAiProtocol {
 }
 
 pub struct ProviderInfo {
-    pub api_key: String,
+    pub api_key: String, // 兼容快照；adapter 不再读取该字段
     pub base_url: String,
     pub model: String,
     pub provider: ProviderKind,
     pub protocol: OpenAiProtocol,
+    pub responses_compact_threshold: Option<u32>,
+}
+
+pub struct ProviderProfile {
+    pub provider: ProviderKind,
+    pub base_url: String,
+    pub model: String,
+    pub protocol: OpenAiProtocol,
+    pub responses_compact_threshold: Option<u32>,
+}
+
+pub trait CredentialProvider: Send + Sync {
+    async fn resolve(&self) -> Result<SecretString, LlmError>;
 }
 ```
 
-`ProviderKind` 是 config、CLI（`FromStr`）与 `build_client`（穷尽 match）的单一身份类型。TOML 名称为小写：`anthropic` | `openai` | `deepseek` | `kimi`。
+`ProviderKind` 是 config、CLI（`FromStr`）与 `Client::new`（穷尽 match）的单一身份类型。TOML 名称为小写：`anthropic` | `openai` | `deepseek` | `kimi`；其他名称成为 `Custom(String)`，复用 OpenAI 协议并要求显式 `base_url`。
+
+配置与认证正交。`ProviderProfile` 是不含凭据的快照，传给 adapter、余额查询与模型查询。`CredentialProvider` 在请求时解析凭据，是未来浏览器 OAuth 流程的扩展点；`ApiKeyProvider` 是当前的静态 API-key 实现。
 
 启动时安装（测试 override 下可 re-init）。provider 是**静态快照**：`/model` 不再修改它。per-agent model 存于 `AgentSettings.model`（经 `UserCommand::SetModel` 更新）、per-request 存于 `CreateMessageParams.model`——wire 形状启发式（`is_kimi_k2x`、body hook 选择）读取 *request* model，因此 `/model` 切换无需重建 client 即可改变 wire。`RwLock<Option<ProviderInfo>>` 保留用于 test-support override；生产 install 只执行一次。
 
@@ -79,11 +99,19 @@ pub fn install(config: ResolvedConfig) {
 运行时访问：
 
 ```rust
-let mut client = tact_llm::get_llm_client()?;
+let mut client = tact_llm::get_llm_client().await?;
 client.set_user_id(&session_id);   // DeepSeek per-session KV cache 隔离
 ```
 
-`build_client()` 校验非空 `api_key` 并按 `ProviderKind` match。Anthropic、DeepSeek 与 Kimi 选择各自专用 variant。OpenAI 再按 `protocol` match：`chat_completions` 选择 `LlmProvider::OpenAi`，`responses` 选择 `LlmProvider::OpenAiResponses`。协议默认 `chat_completions`；非 OpenAI provider 配置 `responses` 会被拒绝。
+运行时入口是 `get_llm_client()`（async）：克隆活跃 `ProviderProfile`，读取
+`init_provider` / `init_provider_with_credentials` 安装的进程级
+`CredentialProvider`，并委托给 `Client::new(profile, credentials)`。
+`ProviderInfo::build_client()` 仍是同步兼容/测试层，内部包装
+`Client::new(profile, Arc::new(ApiKeyProvider::new(api_key)))`。扁平化的
+`LlmProvider` 只有四个 variant：`Anthropic`、`ChatCompletions`、
+`OpenAiResponses` 与 `Mock`。`anthropic` 构建 `AnthropicAdapter`；任意 OpenAI
+兼容条目且 `protocol = "responses"` 构建 `OpenAiResponsesAdapter`；其余一律构建
+`ChatCompletionsAdapter`。协议默认 `chat_completions`。
 
 ```mermaid
 sequenceDiagram
@@ -93,8 +121,9 @@ sequenceDiagram
     participant Install as config::install
     participant State as SETTINGS / PROVIDER RwLock
     participant LlmInit as tact_llm::init_provider
+    participant Cred as Credentials RwLock
     participant Get as get_llm_client
-    participant Build as build_client
+    participant Build as Client::new(profile, credentials)
     participant Provider as LlmProvider
 
     Init->>Resolve: 合并 TOML 与 CLI（无 env 层）
@@ -102,11 +131,13 @@ sequenceDiagram
     Init->>Install: install(config)
     Install->>LlmInit: provider_info()
     LlmInit->>State: set ProviderInfo（静态）
+    LlmInit->>Cred: set CredentialProvider
     Install->>State: set ResolvedConfig
     Note over State: `/model` 更新 AgentSettings.model（per-agent），不触碰 PROVIDER
     Get->>State: clone ProviderInfo snapshot
-    Get->>Build: build_client(info)
-    Build-->>Provider: 专用 provider adapter
+    Get->>Cred: active CredentialProvider
+    Get->>Build: Client::new(profile, credentials)
+    Build-->>Provider: 扁平化 provider adapter
 ```
 
 Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 是**静态快照**；mid-session 的 `/model` 切换更新 `AgentSettings.model`（per-agent），请求模型随 `CreateMessageParams.model` 传递。
@@ -115,7 +146,7 @@ Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `Provi
 
 ## 3. Kimi / DeepSeek 检测辅助函数
 
-`ProviderInfo` 上的启发式辅助函数（也在 crate 根 re-export）：
+`ProviderProfile` 上的启发式辅助函数（也在 crate 根 re-export）：
 
 | 函数 | 用途 |
 |------|------|
@@ -259,7 +290,11 @@ Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
 
 ### 6.1 Chat Completions 与兼容 provider
 
-`openai/mod.rs` 提供共享 Chat Completions HTTP/SSE transport。专用的 `deepseek/mod.rs`、`kimi/mod.rs` 与 `openai/multi_model.rs` adapter 在公共请求转换后选择 provider 特定 body hook。
+`openai/mod.rs` 提供共享 Chat Completions HTTP/SSE transport，
+`openai/multi_model.rs` 暴露 `ChatCompletionsAdapter`。DeepSeek 与 Kimi 不再是独立
+adapter：`ProviderProfile::dialect_for(model)` 按请求选择
+`ChatCompletionsDialect`（`Standard` / `DeepSeek` / `Kimi`），公共请求转换后由
+`openai/body.rs` 中对应的 body hook 决定 JSON 形状。
 
 值得注意的行为：
 
@@ -301,14 +336,17 @@ Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 
 
 Responses 使用独立的 `responses_system_prompt_template.md`，不改变其他 provider 模板。其 skill 加载策略禁止对问候、闲聊和普通问题调用 `load_skill`；必须由用户显式 slash 调用或明确要求使用某个 skill，且 skill 描述不得自行要求必须调用该 skill。
 
-流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
+流式 delta 用于实时 UI，并保留可见输出文本作为回退。Reasoning summary/text delta 映射为 `ThinkingChunk`，可见 output/refusal delta 映射为 `StreamChunk`；当终态包含完整输出时，terminal `response.completed` / `response.incomplete` 对象是最终 blocks、tool calls、usage 与 stop reason 的权威来源。部分兼容端点不会在终态对象中返回最终 message，此时已收到的输出文本 delta 会恢复为最终文本 block。若兼容端点在没有任何终态事件（无 `response.completed` / `response.incomplete` / `response.failed`）的情况下关闭流，则当输出序列完整（所有已 announce 的 `output_item.done` 均已收到）或已流式输出可见文本时，干净 EOF 会被视为终态：adapter 合成一个最小 completed 响应，并从 done 序列/流式文本重建输出；缺失 compaction 边界或空流仍然是硬协议错误。这样在正常情况下仍避免 delta 与 terminal event 中同一内容重复。流 adapter 仅反序列化实际消费的 event type，其他或更新的 provider event 会忽略。兼容端点的终态 event 若缺少 response/output-item ID，则仅为满足 SDK schema 写入内部占位值；Tact 不会将其当作 provider 身份。若缺少 terminal response、output message 或 function call 的 status，则从 terminal event type 推断。请求包含工具且调用方未选择其他策略时，会显式发送 `tool_choice: "auto"`，避免兼容端点以禁用工具作为默认行为。回放 assistant 历史时，Tact 将文本序列化为已完成的 Responses output message（带 `output_text` 和稳定的本地 item ID），而不是 assistant `input_text` message；严格兼容端点的多轮请求需要这一形式。Input/cache/output/reasoning token 数映射到现有 `TokenUsageInfo` 字段。
 用量计数器是**受检转换**：必填 token 字段缺失、不是无符号整数、或大于
 `u32` 都是硬性协议错误 — 数值绝不会被截断、回绕或钳制。
 
-此 adapter 不支持：server-hosted tools、background responses、Conversations 与
+此 adapter 不支持：background responses、Conversations 与
 `previous_response_id`。原生压缩是受支持的：解析出压缩阈值后，普通请求会携带
 `context_management`；`compact()` 会发送显式 `POST /responses/compact` 请求
-（见 [Ch 5](./05_chapter_compact_zh.md)）。
+（见 [Ch 5](./05_chapter_compact_zh.md)）。未实现 `/responses/compact`
+（HTTP 404/405）的端点会得到明确的
+`unsupported response state: endpoint does not support POST /responses/compact …`
+错误并点名 base URL，而不是倾倒 HTML 错误页。
 
 #### 6.2.1 转换流水线：`Message` → `/responses` input
 
@@ -344,6 +382,43 @@ Responses adapter 接收的仍是与其他 provider 相同的共享 `CreateMessa
 
 - `flush_message_content` 会先把已累积的 text/image part 作为一条消息发出，**然后**再发出独立的 reasoning 或 tool item，保证顺序符合 Responses API 预期。
 - `normalize_assistant_history_items` 会把 assistant 历史重写成 completed output message，因为有些兼容端点会拒绝把旧 assistant turn 当作普通 assistant input text 回放。
+
+#### 6.2.1.1 Hosted tools：原生 web search
+
+Hosted web search 是 **Responses 协议级能力**，与协议背后的端点/provider 无关。
+只要选择 `protocol = "responses"`，Tact 就会在每次普通 `/responses` 请求中
+自动于 function tools 之外注入一个 `Tool::WebSearch`
+（`create_response(..., native_web_search = true)`）——OpenAI、DeepSeek 与
+custom OpenAI-compatible 端点一视同仁。没有按 provider 的开关，也不做
+能力协商：协议即契约。Provider 在服务端执行搜索，返回一个很薄的
+`web_search_call` 标记 item，随后是一条 assistant message——其文本已把结果
+内联为 markdown 链接，并带 `url_citation` annotations。
+
+设计规则：
+
+- **注入而非替换。** `native_web_search` 只是*追加*一个 hosted tool。
+  MCP 提供的 `web_search` function tool（如有）保持 `Tool::Function` 不动，
+  两种机制可以共存。
+- **仅 Provider 执行。** `web_search_call` 输出项通过现有的
+  `StepStarted` / `StepFinished` / `StepFailed` 事件渲染为**工具卡片**
+  （映射 `WebSearchToolCallStatus`），而不是 `ContentBlock::ToolUse`。
+  流 adapter 在 `output_item.added` 时发出 running 卡片（状态
+  `in_progress` / `searching`，query 可能为空——provider 稍后才填充
+  `action`），在 `output_item.done` 时发出终态卡片（completed →
+  成功并带 sources 详情，failed → `StepFailed`）。终态 stop reason 仍是
+  `completed`（不是 `tool_use`），agent 循环正常结束，绝不会通过
+  `execute_tool_call` 分发该调用。
+- **线格式兼容。** 部分兼容端点会在 search action 中返回 `queries` 数组
+  而不是单数 `query`（async-openai 0.41.x 只建模了 `query`）。
+  `wire::normalize_web_search_call_query` 仅在做 typed 解析时从 `queries`
+  回填 `query`；原始 item JSON 原样保留，后续轮次仍按 provider 自己的
+  形状回放。
+- **协议而非端点。** adapter 在每次普通 Responses 请求中都注入 hosted
+  tool，不看 provider 种类。Kimi 不经过此 adapter（它有自己的 Chat
+  Completions adapter）；任何讲 Responses 协议的 custom OpenAI-compatible
+  网关同样获得该 hosted tool。
+- **压缩路径。** `/responses/compact` 请求传 `native_web_search = false`：
+  压缩端点不接受 tools。
 
 #### 6.2.2 与压缩的交互：Responses 的特殊点
 
@@ -514,8 +589,8 @@ self.runtime.client.set_user_id(&session_id);
 
 | Adapter | 注入位置 |
 |---------|----------|
-| DeepSeek（包括 OpenAI adapter 的启发式选择） | 请求 JSON 顶层 `"user_id"` |
-| Anthropic / Kimi / 原生 OpenAI | 不注入 |
+| `ChatCompletionsAdapter` 且 dialect 为 DeepSeek | 请求 JSON 顶层 `"user_id"` |
+| Anthropic / Responses / 其他 Chat Completions dialect / Mock | 不注入 |
 
 意图：DeepSeek（及兼容代理）上 per-session KV cache 隔离，减少跨 session cache 污染。
 
@@ -530,6 +605,13 @@ self.runtime.client.set_user_id(&session_id);
 | `query_kimi_code_usage()` | `GET https://api.kimi.com/coding/v1/usages` | Kimi Code 订阅配额 |
 
 `query_*_balance()` 返回 `tact_protocol::BalanceInfo`，并通过独立 account channel 路由为 `AccountUpdate::Balance`。Kimi Code 用量返回 `UsageQuotaInfo` 为 `AccountUpdate::UsageQuota`。
+
+每个查询也有显式入口（`query_deepseek_balance_for`、`query_kimi_balance_for`、
+`query_kimi_code_usage_for`），签名是
+`(&ProviderProfile, &dyn CredentialProvider, &SharedHttpClient)`。表中零参名称
+保留为兼容包装，内部读取全局 provider 快照与进程级 credential provider。
+端点在 resolve 凭据之前校验，因此不支持的代理不会触发授权流程或发送 key；
+请求通过共享 transport 在请求时解析凭据。
 
 **Kimi Code 端点：** `api.kimi.com/coding` 无余额 REST API。改用 `query_kimi_code_usage()`；在底栏显示为 `AccountUpdate::UsageQuota`（`week` + `5h` 窗口）。用量 API 仅限官方端点（HTTPS、主机精确为 `api.kimi.com`、含 `/coding` 路径）：提供 `kimi-for-coding` 的自定义代理视为不支持，其 API key 绝不会发送到 `api.kimi.com`。
 
@@ -581,12 +663,16 @@ sequenceDiagram
 |------|------|
 | `tact_llm/src/types.rs` | `ProviderKind`、`OpenAiProtocol`、请求类型及 provider 无关的 `StopReason` |
 | `tact_llm/src/content.rs` | 自有 `ContentBlock`、`Message`、`ContentBlockDelta`、`StreamUsage` 等 |
-| `tact_llm/src/client.rs` | `LlmClient`、专用 `LlmProvider` variant、session user-id 路由 |
-| `tact_llm/src/provider.rs` | `ProviderInfo`、provider 初始化、client 构建、检测辅助 |
+| `tact_llm/src/profile.rs` | 无凭据 `ProviderProfile` 以及 endpoint/model 启发式 |
+| `tact_llm/src/auth.rs` | `Credential`、`CredentialProvider`、`ApiKeyProvider` |
+| `tact_llm/src/transport.rs` | 进程级共享 reqwest client（`SharedHttpClient`） |
+| `tact_llm/src/client.rs` | `LlmClient`、扁平化 `LlmProvider` variant、session user-id 路由 |
+| `tact_llm/src/provider.rs` | `ProviderInfo` 兼容快照、全局初始化 + credentials、`Client::new` |
 | `tact_llm/src/account.rs` | DeepSeek 余额与 Kimi 余额/额度查询 |
+| `tact_llm/src/models.rs` | `/models` picker 缓存，显式 credential/transport 入口 |
 | `tact_llm/src/anthropic/mod.rs` | Messages API 流式 + 非流式 |
-| `tact_llm/src/openai/` | Chat Completions transport/hooks，以及隔离的 Responses converter、normalizer 与 stream state |
-| `tact_llm/src/deepseek/mod.rs` / `kimi/mod.rs` | Provider 特定 thinking 与历史 hook |
+| `tact_llm/src/openai/` | Chat Completions transport，以及隔离的 Responses converter、normalizer 与 stream state |
+| `tact_llm/src/openai/body.rs` | `ChatCompletionsDialect` body hooks（`Standard` / `DeepSeek` / `Kimi`） |
 | `tact_llm/src/convert.rs` | 请求翻译、Image → `image_url`、Kimi thinking blocks |
 | `crates/tact/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
 | `crates/tact/src/compact/mod.rs` | 摘要用 `create_message` |
@@ -597,12 +683,13 @@ sequenceDiagram
 
 | 缺口 | 详情 |
 |------|------|
-| **仅四个命名 provider** | `ProviderKind` / `FromStr` 拒绝未知名；通用 OpenAI 代理须用 `provider = "openai"` |
+| **内置名 + `Custom(String)`** | `ProviderKind` 识别 `anthropic` / `openai` / `deepseek` / `kimi`；其他名称成为带显式 `base_url` 的 OpenAI 兼容自定义 provider |
 | **Adapter 内无重试** | 传输重试/退避在 agent 恢复中，不在 `tact_llm` |
 | **无 Anthropic SDK 依赖** | 对话、请求、stop、stream-delta、错误类型均由 `tact_llm` 拥有；Anthropic 仅通过自定义 HTTP + SSE |
 | **每次 `get_llm_client()` 重建 adapter** | 每次调用新 adapter 实例；DeepSeek 下 `set_user_id` 变更 `Agent` 持有的副本 |
+| **目前只有 API key** | `CredentialProvider` 是未来浏览器 OAuth 的扩展点，但目前只有 `ApiKeyProvider` 一个实现 |
 | **无 vision 能力门控** | 附加图片始终作为 multimodal part 发送；纯文本模型/代理可能对 `image_url` 返回 400 |
-| **Responses 仅核心子集** | 无 Conversations、`previous_response_id`、hosted tools 或 background mode（原生压缩受支持） |
+| **Responses 仅核心子集** | 无 Conversations、`previous_response_id` 或 background mode；任意 `protocol = "responses"` 端点注入 hosted web search（原生压缩受支持） |
 
 ### 协议兼容缺口（内部 Anthropic 形 → wire）
 

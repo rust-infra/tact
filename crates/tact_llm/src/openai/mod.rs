@@ -14,7 +14,7 @@ pub(crate) mod compat;
 pub mod multi_model;
 pub mod responses;
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use async_openai::{
     config::Config,
@@ -23,11 +23,13 @@ use async_openai::{
         ChatCompletionToolChoiceOption, Stop,
     },
 };
-pub use body::{BodyHookCtx, OpenAiBodyHook, StandardOpenAiBodyHook};
+pub use body::{
+    BodyHookCtx, DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook,
+};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-pub use multi_model::OpenAiMultiModelAdapter;
-use reqwest::header::{AUTHORIZATION, HeaderMap};
+pub use multi_model::ChatCompletionsAdapter;
+use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
@@ -35,7 +37,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::LlmError;
 use crate::{
-    ContentBlock, LlmResponse, ProviderConversationState, ProviderStateUpdate, StopReason,
+    ApiKeyProvider, ContentBlock, CredentialProvider, LlmResponse, ProviderConversationState,
+    ProviderStateUpdate, SharedHttpClient, StopReason,
 };
 
 /// Build UI events for one OpenAI-compatible stream delta.
@@ -289,20 +292,32 @@ impl CompatibleConfig {
             api_key: Secret::new(api_key.into()),
         }
     }
+
+    pub(crate) fn without_api_key(api_base: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into(),
+            api_key: Secret::new(String::new()),
+        }
+    }
 }
 
 impl Config for CompatibleConfig {
     fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            format!("Bearer {}", self.api_key.expose_secret())
-                .parse()
-                .unwrap(),
-        );
+        if !self.api_key.expose_secret().is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {}", self.api_key.expose_secret())
+                    .parse()
+                    .unwrap(),
+            );
+        }
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
-        headers.insert(reqwest::header::USER_AGENT, "Claude Code".parse().unwrap());
+        headers.insert(
+            reqwest13::header::USER_AGENT,
+            "Claude Code".parse().unwrap(),
+        );
         headers
     }
 
@@ -326,11 +341,12 @@ impl Config for CompatibleConfig {
 /// HTTP transport for OpenAI-compatible Chat Completions.
 ///
 /// Request shaping (provider-specific body fields) lives in
-/// [`OpenAiMultiModelAdapter`] / [`OpenAiBodyHook`].
+/// [`ChatCompletionsAdapter`] / [`OpenAiBodyHook`].
 #[derive(Clone, Debug)]
 pub struct OpenAiAdapter {
     config: CompatibleConfig,
-    client: reqwest::Client,
+    http: SharedHttpClient,
+    credentials: Arc<dyn CredentialProvider>,
 }
 
 /// Accumulates a streaming tool-call delta across SSE chunks.
@@ -342,16 +358,44 @@ struct PendingToolCall {
 
 impl OpenAiAdapter {
     pub fn new(config: CompatibleConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .expect("failed to build reqwest client");
-        Self { config, client }
+        let api_key = config.api_key.expose_secret().clone();
+        Self {
+            config,
+            http: SharedHttpClient::default(),
+            credentials: Arc::new(ApiKeyProvider::new(api_key)),
+        }
+    }
+
+    /// Build the transport with request-time credential resolution.
+    pub fn with_auth(
+        base_url: impl Into<String>,
+        http: SharedHttpClient,
+        credentials: Arc<dyn CredentialProvider>,
+    ) -> Self {
+        Self {
+            config: CompatibleConfig::without_api_key(base_url),
+            http,
+            credentials,
+        }
     }
 
     /// Expose the configured API base URL for diagnostics/tests.
     pub fn base_url(&self) -> &str {
         self.config.api_base()
+    }
+
+    async fn request_headers(&self) -> Result<HeaderMap, LlmError> {
+        let secret = self.credentials.resolve().await?;
+        let mut headers = self.config.headers();
+        if !secret.expose_secret().is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {}", secret.expose_secret())
+                    .parse()
+                    .map_err(|_| LlmError::Auth("invalid api key header value".to_string()))?,
+            );
+        }
+        Ok(headers)
     }
 
     /// Stream a chat completion via SSE, capturing `reasoning_content`
@@ -369,10 +413,11 @@ impl OpenAiAdapter {
         let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
-        let headers = self.config.headers();
+        let headers = self.request_headers().await?;
 
         let response = self
-            .client
+            .http
+            .inner()
             .post(&url)
             .headers(headers)
             .json(body)
@@ -561,10 +606,11 @@ impl OpenAiAdapter {
         let json_body = serde_json::to_vec(body)?;
 
         let url = self.config.url("/chat/completions");
-        let headers = self.config.headers();
+        let headers = self.request_headers().await?;
 
         let response = self
-            .client
+            .http
+            .inner()
             .post(&url)
             .headers(headers)
             .json(body)

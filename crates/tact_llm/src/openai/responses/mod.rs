@@ -9,8 +9,13 @@ mod wire;
 pub use capabilities::{ResponsesCapabilities, ResponsesToolKind};
 pub use request_options::ResponsesRequestOptions;
 
-use async_openai_responses::{Client, config::OpenAIConfig, types::responses::ResponseStreamEvent};
+use std::sync::Arc;
+
+use async_openai_responses::{Client, config::Config, types::responses::ResponseStreamEvent};
 use futures_util::StreamExt;
+use reqwest13::header::{AUTHORIZATION, HeaderMap};
+use secrecy::ExposeSecret as LegacyExposeSecret;
+use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
@@ -22,9 +27,63 @@ use self::{
     wire::parse_response_envelope,
 };
 use crate::{
-    CreateMessageParams, LlmClient, LlmError, LlmRequestBody, LlmResponse,
-    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
+    ApiKeyProvider, CreateMessageParams, CredentialProvider, LlmClient, LlmError, LlmRequestBody,
+    LlmResponse, ProviderConversationState, ProviderStateUpdate, ResponsesConversationState,
+    SharedHttpClient, context_hash,
 };
+
+/// Custom async-openai config for the Responses protocol.
+///
+/// Unlike the SDK's `OpenAIConfig`, this never injects an `OpenAI-Beta`
+/// header and leaves authorization to the credential provider so expiring
+/// tokens can be refreshed per request.
+#[derive(Clone, Debug)]
+struct ResponsesCompatConfig {
+    api_base: String,
+    api_key: Option<SecretString>,
+    empty_api_key: SecretString,
+}
+
+impl ResponsesCompatConfig {
+    fn new(api_base: String, api_key: Option<SecretString>) -> Self {
+        Self {
+            api_base,
+            api_key,
+            empty_api_key: SecretString::from(String::new()),
+        }
+    }
+}
+
+impl Config for ResponsesCompatConfig {
+    fn headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(api_key) = &self.api_key {
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {}", api_key.expose_secret())
+                    .parse()
+                    .expect("bearer header value is valid"),
+            );
+        }
+        headers
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.api_base, path)
+    }
+
+    fn query(&self) -> Vec<(&str, &str)> {
+        vec![]
+    }
+
+    fn api_base(&self) -> &str {
+        &self.api_base
+    }
+
+    fn api_key(&self) -> &SecretString {
+        self.api_key.as_ref().unwrap_or(&self.empty_api_key)
+    }
+}
 
 fn set_default_id(value: &mut Value, default_id: String) {
     let Some(object) = value.as_object_mut() else {
@@ -36,8 +95,18 @@ fn set_default_id(value: &mut Value, default_id: String) {
 }
 
 fn normalize_stream_event_json(mut event: Value) -> Value {
-    let event_type = event.get("type").and_then(Value::as_str);
-    let terminal_status = match event_type {
+    let event_type = event.get("type").and_then(Value::as_str).map(str::to_owned);
+    // Compatible endpoints may emit a `web_search_call` search action with a
+    // `queries` array instead of the singular `query`; normalize the item
+    // before the typed stream parser deserializes it.
+    if matches!(
+        event_type.as_deref(),
+        Some("response.output_item.added" | "response.output_item.done")
+    ) && let Some(item) = event.get_mut("item")
+    {
+        wire::normalize_web_search_call_query(item);
+    }
+    let terminal_status = match event_type.as_deref() {
         Some("response.completed") => Some("completed"),
         Some("response.incomplete") => Some("incomplete"),
         Some("response.failed") => Some("failed"),
@@ -98,6 +167,19 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
     let consumed = matches!(
         event_type.as_str(),
         "error"
+            | "response.created"
+            | "response.queued"
+            | "response.in_progress"
+            | "response.content_part.added"
+            | "response.content_part.done"
+            | "response.output_text.done"
+            | "response.refusal.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done"
+            | "response.function_call_arguments.delta"
+            | "response.function_call_arguments.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
             | "response.output_text.delta"
@@ -149,9 +231,16 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
 }
 
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
+///
+/// Hosted web search is a **Responses-protocol capability**, independent of
+/// the endpoint/provider behind it: every ordinary `/responses` request
+/// injects the hosted `Tool::WebSearch` alongside function tools, the provider
+/// executes it server-side, and Tact only renders it. The
+/// `/responses/compact` path never sends tools.
 #[derive(Clone)]
 pub struct OpenAiResponsesAdapter {
-    client: Client<OpenAIConfig>,
+    credentials: Arc<dyn CredentialProvider>,
+    http: SharedHttpClient,
     base_url: String,
     /// Optional `context_management.compact_threshold` (tokens) sent on
     /// every ordinary `/responses` request. `None` omits `context_management`
@@ -166,15 +255,26 @@ impl OpenAiResponsesAdapter {
         base_url: impl Into<String>,
         compact_threshold: Option<u32>,
     ) -> Self {
-        let base_url = base_url.into().trim_end_matches('/').to_string();
-        let config = OpenAIConfig::new()
-            .with_api_key(api_key)
-            .with_api_base(base_url.clone())
-            .with_org_id("")
-            .with_project_id("");
-        Self {
-            client: Client::with_config(config),
+        Self::new_with_auth(
+            Arc::new(ApiKeyProvider::new(api_key)),
             base_url,
+            compact_threshold,
+            SharedHttpClient::default(),
+        )
+    }
+
+    /// Build the adapter with request-time credential resolution and a shared
+    /// HTTP transport.
+    pub fn new_with_auth(
+        credentials: Arc<dyn CredentialProvider>,
+        base_url: impl Into<String>,
+        compact_threshold: Option<u32>,
+        http: SharedHttpClient,
+    ) -> Self {
+        Self {
+            credentials,
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
             compact_threshold,
         }
     }
@@ -183,16 +283,27 @@ impl OpenAiResponsesAdapter {
         &self.base_url
     }
 
+    /// Builds the SDK client for the current request after resolving
+    /// credentials, so OAuth-style flows can refresh tokens between calls.
+    async fn sdk_client(&self) -> Result<Client<ResponsesCompatConfig>, LlmError> {
+        let secret = self.credentials.resolve().await?;
+        let key = SecretString::from(LegacyExposeSecret::expose_secret(&secret).clone());
+        let config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        Ok(Client::build(self.http.inner().clone(), config))
+    }
+
     /// Builds the ordinary `/responses` wire request for this adapter,
     /// including `context_management` when a compact threshold is
     /// configured. Shared by the streaming and non-streaming paths so the
-    /// configured threshold can never be dropped by one of them.
+    /// configured threshold can never be dropped by one of them. Hosted web
+    /// search is always injected (`native_web_search = true`) because it is a
+    /// Responses-protocol capability — this path is never `/responses/compact`.
     fn build_wire_request(
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
-        create_response(request, provider_state, self.compact_threshold)
+        create_response(request, provider_state, self.compact_threshold, true)
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
@@ -258,8 +369,8 @@ impl LlmClient for OpenAiResponsesAdapter {
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(true);
         let request_body = serde_json::to_vec(&wire_request)?;
-        let mut response_stream = self
-            .client
+        let client = self.sdk_client().await?;
+        let mut response_stream = client
             .responses()
             .create_stream_byot::<_, Value>(wire_request)
             .await
@@ -325,8 +436,8 @@ impl LlmClient for OpenAiResponsesAdapter {
         let (mut wire_request, input_items) = self.build_wire_request(request, provider_state)?;
         wire_request["stream"] = serde_json::Value::Bool(false);
         let request_body = serde_json::to_vec(&wire_request)?;
-        let response = self
-            .client
+        let client = self.sdk_client().await?;
+        let response = client
             .responses()
             .create_byot::<_, Value>(wire_request)
             .await
@@ -358,18 +469,49 @@ impl LlmClient for OpenAiResponsesAdapter {
         // items (including unknown/future item types) are preserved by
         // sending the request through the byot JSON path; no local summary
         // prompt or `create_message()` call is used.
-        let (body, _) = create_response(request, provider_state, None)?;
+        let (body, _) = create_response(request, provider_state, None, false)?;
         let compact_request = serde_json::json!({
             "model": request.model,
             "input": body["input"],
         });
         let request_body = serde_json::to_vec(&compact_request)?;
-        let resource = self
-            .client
-            .responses()
-            .compact_byot::<_, Value>(compact_request)
+        let secret = self.credentials.resolve().await?;
+        let key = LegacyExposeSecret::expose_secret(&secret).clone();
+        let url = format!("{}/responses/compact", self.base_url);
+        let response = self
+            .http
+            .inner()
+            .post(&url)
+            .header(AUTHORIZATION, format!("Bearer {key}"))
+            .json(&compact_request)
+            .send()
             .await
-            .map_err(LlmError::from)?;
+            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        let status = response.status();
+        // Compatible endpoints (e.g. custom OpenAI-compatible proxies) often
+        // do not implement POST /responses/compact at all and answer 404
+        // (sometimes 405) with an HTML page. Report that clearly instead of
+        // surfacing the SDK's JSON-deserialization error over the HTML body.
+        if status == reqwest13::StatusCode::NOT_FOUND
+            || status == reqwest13::StatusCode::METHOD_NOT_ALLOWED
+        {
+            return Err(LlmError::Unsupported(format!(
+                "endpoint does not support POST /responses/compact (HTTP {status}): \
+                 native Responses compaction is not implemented by base URL {}",
+                self.base_url
+            )));
+        }
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        if !status.is_success() {
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&body_bytes).into_owned(),
+            });
+        }
+        let resource: Value = serde_json::from_slice(&body_bytes).map_err(LlmError::from)?;
         let parsed = parse_compact_resource(resource)?;
         let state = ResponsesConversationState {
             version: 1,
@@ -406,6 +548,7 @@ mod tests {
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Tool,
     };
+    use async_openai_responses::types::responses::OutputItem;
 
     #[test]
     fn fills_missing_output_text_annotations_for_terminal_events() {
@@ -426,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_unconsumed_events_without_deserializing_provider_specific_items() {
+    fn parses_content_part_events_without_deserializing_provider_specific_items() {
         let event = parse_stream_event(serde_json::json!({
             "type": "response.content_part.added",
             "sequence_number": 1,
@@ -437,7 +580,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(event.is_none());
+        assert!(event.is_some());
     }
 
     #[test]
@@ -510,6 +653,68 @@ mod tests {
             .unwrap();
 
             assert!(event.is_some());
+        }
+    }
+
+    #[test]
+    fn parses_web_search_call_item_with_queries_array() {
+        // Compatible endpoints emit the search action with a `queries` array
+        // instead of the singular `query`; the stream parser must normalize
+        // the item before typed deserialization.
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            let event = parse_stream_event(serde_json::json!({
+                "type": event_type,
+                "sequence_number": 1,
+                "output_index": 0,
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws-1",
+                    "status": "completed",
+                    "action": {"type": "search", "queries": ["Tokyo weather", "ws_call_id=ws-1"]}
+                }
+            }))
+            .unwrap()
+            .expect("event must parse");
+
+            match event {
+                async_openai_responses::types::responses::ResponseStreamEvent::ResponseOutputItemAdded(
+                    ev,
+                ) => {
+                    let OutputItem::WebSearchCall(call) = &ev.item else {
+                        panic!("expected WebSearchCall item");
+                    };
+                    assert_eq!(
+                        call.action
+                            .as_ref()
+                            .and_then(|action| match action {
+                                async_openai_responses::types::responses::WebSearchToolCallAction::Search(
+                                    search,
+                                ) => Some(search.query.as_str()),
+                                _ => None,
+                            }),
+                        Some("Tokyo weather")
+                    );
+                }
+                async_openai_responses::types::responses::ResponseStreamEvent::ResponseOutputItemDone(
+                    ev,
+                ) => {
+                    let OutputItem::WebSearchCall(call) = &ev.item else {
+                        panic!("expected WebSearchCall item");
+                    };
+                    assert_eq!(
+                        call.action
+                            .as_ref()
+                            .and_then(|action| match action {
+                                async_openai_responses::types::responses::WebSearchToolCallAction::Search(
+                                    search,
+                                ) => Some(search.query.as_str()),
+                                _ => None,
+                            }),
+                        Some("Tokyo weather")
+                    );
+                }
+                other => panic!("expected output item event, got {other:?}"),
+            }
         }
     }
 
@@ -605,6 +810,112 @@ mod tests {
         .unwrap();
 
         assert!(event.is_some());
+    }
+
+    #[test]
+    fn accepts_supported_lifecycle_and_completion_events() {
+        let response = super::normalize::tests::completed_response_json();
+        let events = [
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 1,
+                "response": response
+            }),
+            serde_json::json!({
+                "type": "response.queued",
+                "sequence_number": 2,
+                "response": super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.in_progress",
+                "sequence_number": 3,
+                "response": super::normalize::tests::completed_response_json()
+            }),
+            serde_json::json!({
+                "type": "response.content_part.added",
+                "sequence_number": 4,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": null}
+            }),
+            serde_json::json!({
+                "type": "response.content_part.done",
+                "sequence_number": 5,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "done", "annotations": [], "logprobs": null}
+            }),
+            serde_json::json!({
+                "type": "response.output_text.done",
+                "sequence_number": 6,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "done",
+                "logprobs": []
+            }),
+            serde_json::json!({
+                "type": "response.refusal.done",
+                "sequence_number": 7,
+                "item_id": "msg",
+                "output_index": 0,
+                "content_index": 0,
+                "refusal": "no"
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_part.added",
+                "sequence_number": 8,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""}
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_part.done",
+                "sequence_number": 9,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": "done"}
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_summary_text.done",
+                "sequence_number": 10,
+                "item_id": "rs",
+                "output_index": 0,
+                "summary_index": 0,
+                "text": "done"
+            }),
+            serde_json::json!({
+                "type": "response.reasoning_text.done",
+                "sequence_number": 11,
+                "item_id": "rs",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "done"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "sequence_number": 12,
+                "item_id": "fc",
+                "output_index": 1,
+                "delta": "{\"x\":"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "sequence_number": 13,
+                "item_id": "fc",
+                "output_index": 1,
+                "name": null,
+                "arguments": "{\"x\":1}"
+            }),
+        ];
+
+        for value in events {
+            assert!(parse_stream_event(value).unwrap().is_some());
+        }
     }
 
     fn adapter_with_state(
@@ -1116,6 +1427,52 @@ mod tests {
         assert_eq!(usage.total, 1540);
         assert_eq!(usage.prompt, 1200);
         assert_eq!(usage.completion, 340);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn compact_reports_missing_endpoint_clearly() {
+        let server = MockServer::start().await;
+        // A compatible proxy that does not implement /responses/compact
+        // returns 404 with an HTML page. The adapter must surface a clear
+        // message instead of dumping the HTML body through the SDK's
+        // JSON-deserialization error.
+        Mock::given(method("POST"))
+            .and(path("/responses/compact"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_string(
+                    "<!DOCTYPE html><html><title>Not Found | proxy</title></html>",
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let crate::LlmProvider::OpenAiResponses(adapter) = crate::ProviderInfo {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: "gpt-5.4-mini".to_string(),
+            provider: crate::ProviderKind::OpenAi,
+            protocol: crate::OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        }
+        .build_client()
+        .unwrap() else {
+            panic!("expected OpenAiResponses adapter");
+        };
+        let error = adapter
+            .compact(&simple_request(), None)
+            .await
+            .expect_err("missing /responses/compact must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("does not support POST /responses/compact"),
+            "expected a clear unsupported-endpoint message, got: {message}"
+        );
+        assert!(
+            !message.contains("<!DOCTYPE html>"),
+            "the HTML body must not leak into the error, got: {message}"
+        );
         server.verify().await;
     }
 }

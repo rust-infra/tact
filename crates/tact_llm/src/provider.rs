@@ -1,11 +1,14 @@
 //! Active provider configuration and client construction.
 
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+
+use async_openai::config::Config;
+use secrecy::ExposeSecret;
 
 use crate::{
-    anthropic,
+    ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient, anthropic,
     client::LlmProvider,
-    deepseek, kimi, openai,
+    openai,
     types::{OpenAiProtocol, ProviderKind},
 };
 
@@ -44,6 +47,17 @@ impl Default for ProviderInfo {
 }
 
 impl ProviderInfo {
+    /// Convert this compatibility snapshot to the credential-free profile.
+    pub fn to_profile(&self) -> ProviderProfile {
+        ProviderProfile {
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            protocol: self.protocol,
+            responses_compact_threshold: self.responses_compact_threshold,
+        }
+    }
+
     /// Returns the conservative capabilities for the configured Responses endpoint.
     pub fn responses_capabilities(&self) -> Option<openai::responses::ResponsesCapabilities> {
         if self.protocol != OpenAiProtocol::Responses {
@@ -62,11 +76,10 @@ impl ProviderInfo {
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
         match self.provider {
             ProviderKind::Anthropic => self.build_anthropic(),
-            ProviderKind::DeepSeek => match self.protocol {
-                OpenAiProtocol::ChatCompletions => self.build_deepseek(),
+            ProviderKind::DeepSeek | ProviderKind::Kimi => match self.protocol {
+                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
                 OpenAiProtocol::Responses => self.build_openai_responses(),
             },
-            ProviderKind::Kimi => self.build_kimi(),
             ProviderKind::OpenAi => match self.protocol {
                 OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
                 OpenAiProtocol::Responses => self.build_openai_responses(),
@@ -93,30 +106,27 @@ impl ProviderInfo {
         )))
     }
 
-    /// Build a dedicated DeepSeek Chat Completions client.
-    fn build_deepseek(&self) -> anyhow::Result<LlmProvider> {
-        let config = self.openai_compatible_config()?;
-        Ok(LlmProvider::DeepSeek(deepseek::DeepSeekAdapter::new(
-            config,
-        )))
-    }
-
-    /// Build a dedicated Kimi / Moonshot Chat Completions client.
-    fn build_kimi(&self) -> anyhow::Result<LlmProvider> {
-        let config = self.openai_compatible_config()?;
-        Ok(LlmProvider::Kimi(kimi::KimiAdapter::new(
-            config,
-            self.model.clone(),
-        )))
-    }
-
-    /// Build an OpenAI-compatible (Chat Completions API) client.
+    /// Build a unified Chat Completions client for OpenAI-compatible endpoints.
+    ///
+    /// DeepSeek and Kimi are wire dialects selected per request, so all three
+    /// share one adapter and transport.
     fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
         let config = self.openai_compatible_config()?;
+        let profile = self.profile_for_base_url(config.api_base())?;
         let adapter = openai::OpenAiAdapter::new(config);
-        Ok(LlmProvider::OpenAi(openai::OpenAiMultiModelAdapter::new(
-            adapter,
-        )))
+        Ok(LlmProvider::ChatCompletions(
+            openai::ChatCompletionsAdapter::new(profile, adapter),
+        ))
+    }
+
+    fn profile_for_base_url(&self, base_url: &str) -> anyhow::Result<ProviderProfile> {
+        Ok(ProviderProfile {
+            provider: self.provider.clone(),
+            base_url: base_url.to_string(),
+            model: self.model.clone(),
+            protocol: self.protocol,
+            responses_compact_threshold: self.responses_compact_threshold,
+        })
     }
 
     /// Build the official OpenAI Responses API client.
@@ -134,6 +144,11 @@ impl ProviderInfo {
         } else {
             self.base_url.clone()
         };
+        // Hosted web search is a Responses-protocol capability, independent of
+        // the endpoint/provider: the adapter injects `Tool::WebSearch` on
+        // every ordinary request for OpenAI, DeepSeek, and custom
+        // OpenAI-compatible endpoints alike (the `/responses/compact` path
+        // never sends tools).
         Ok(LlmProvider::OpenAiResponses(
             openai::responses::OpenAiResponsesAdapter::new(
                 self.api_key.clone(),
@@ -287,6 +302,82 @@ impl ProviderInfo {
     }
 }
 
+/// Credential-free entry point for building an [`LlmProvider`].
+///
+/// Configuration and authentication are orthogonal: the profile describes the
+/// endpoint/wire dialect, while the credential provider may be a static API
+/// key today or a browser-OAuth flow later.
+#[derive(Debug)]
+pub struct Client;
+
+impl Client {
+    /// Build a provider client from an explicit profile and credentials.
+    ///
+    /// Resolves the credential once at construction so misconfiguration fails
+    /// fast; adapters still resolve again per request so expiring credentials
+    /// can be refreshed without rebuilding the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the credential is empty, the base URL is not
+    /// configured, or the configured provider has no default base URL.
+    #[allow(clippy::new_ret_no_self)] // deliberate factory: `Client` is a marker namespace
+    pub async fn new(
+        profile: ProviderProfile,
+        credentials: Arc<dyn CredentialProvider>,
+    ) -> anyhow::Result<LlmProvider> {
+        let credentials_for_responses = credentials.clone();
+        let secret = credentials.resolve().await.map_err(anyhow::Error::from)?;
+        if secret.expose_secret().is_empty() {
+            anyhow::bail!("api_key not configured for provider '{}'", profile.provider);
+        }
+        let base_url = if profile.base_url.is_empty() {
+            profile
+                .default_base_url()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", profile.provider)
+                })?
+        } else {
+            profile.base_url.clone()
+        };
+
+        match profile.provider {
+            ProviderKind::Anthropic => Ok(LlmProvider::Anthropic(
+                anthropic::AnthropicAdapter::new(secret.expose_secret().clone(), base_url),
+            )),
+            ProviderKind::DeepSeek
+            | ProviderKind::Kimi
+            | ProviderKind::OpenAi
+            | ProviderKind::Custom(_)
+                if profile.protocol == OpenAiProtocol::Responses =>
+            {
+                Ok(LlmProvider::OpenAiResponses(
+                    openai::responses::OpenAiResponsesAdapter::new_with_auth(
+                        credentials_for_responses,
+                        base_url,
+                        profile.responses_compact_threshold,
+                        SharedHttpClient::default(),
+                    ),
+                ))
+            }
+            ProviderKind::DeepSeek
+            | ProviderKind::Kimi
+            | ProviderKind::OpenAi
+            | ProviderKind::Custom(_) => {
+                let adapter = openai::OpenAiAdapter::with_auth(
+                    base_url,
+                    SharedHttpClient::default(),
+                    credentials,
+                );
+                Ok(LlmProvider::ChatCompletions(
+                    openai::ChatCompletionsAdapter::new(profile, adapter),
+                ))
+            }
+        }
+    }
+}
+
 /// The active LLM provider configuration — **static in production**.
 ///
 /// `/model` picks no longer mutate this: per-agent model lives in
@@ -295,6 +386,11 @@ impl ProviderInfo {
 /// overrides and unit tests can reinstall; production `install` runs once.
 static PROVIDER: RwLock<Option<ProviderInfo>> = RwLock::new(None);
 
+/// The process-global credential provider installed alongside
+/// [`PROVIDER`]. Kept separate so a future browser-OAuth flow can be injected
+/// without changing the provider snapshot.
+static CREDENTIALS: RwLock<Option<Arc<dyn CredentialProvider>>> = RwLock::new(None);
+
 /// Serialize tests that mutate/read the process-global provider snapshot.
 #[cfg(test)]
 pub(crate) fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
@@ -302,13 +398,41 @@ pub(crate) fn lock_provider_for_tests() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().expect("provider test lock poisoned")
 }
 
-/// Install the active LLM provider configuration.
+/// Install the active LLM provider configuration with its static API key.
 ///
 /// Safe to call again under `test-support` overrides; production `install` still
 /// runs once per process.
 pub fn init_provider(info: ProviderInfo) {
+    let credentials = Arc::new(ApiKeyProvider::new(info.api_key.clone()));
+    init_provider_with_credentials(info, credentials);
+}
+
+/// Install the active LLM provider configuration with an explicit credential
+/// provider (e.g. a future browser-OAuth flow).
+///
+/// Safe to call again under `test-support` overrides; production `install` still
+/// runs once per process.
+pub fn init_provider_with_credentials(
+    info: ProviderInfo,
+    credentials: Arc<dyn CredentialProvider>,
+) {
     let mut guard = PROVIDER.write().expect("LLM provider lock poisoned");
     *guard = Some(info);
+    drop(guard);
+    let mut guard = CREDENTIALS.write().expect("LLM credential lock poisoned");
+    *guard = Some(credentials);
+}
+
+pub(crate) fn active_credential_provider() -> Arc<dyn CredentialProvider> {
+    try_active_credential_provider()
+        .expect("LLM credentials not initialized; call tact_llm::init_provider first")
+}
+
+pub(crate) fn try_active_credential_provider() -> Option<Arc<dyn CredentialProvider>> {
+    CREDENTIALS
+        .read()
+        .expect("LLM credential lock poisoned")
+        .clone()
 }
 
 /// Returns a snapshot of the active LLM provider configuration.
@@ -335,8 +459,13 @@ where
 }
 
 /// Returns the active LLM client from the installed provider configuration.
-pub fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    get_provider().build_client()
+///
+/// The credential is resolved once here so misconfiguration fails fast;
+/// adapters still resolve again per request so expiring credentials can be
+/// refreshed without rebuilding the client.
+pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
+    let profile = get_provider().to_profile();
+    Client::new(profile, active_credential_provider()).await
 }
 
 /// Returns `true` if the configured provider is DeepSeek.
@@ -431,14 +560,55 @@ pub fn is_kimi_k3(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::future::BoxFuture;
+    use secrecy::SecretString;
     use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
     use super::*;
     use crate::{
+        ApiKeyProvider, LlmError,
         client::{LlmClient, LlmProvider},
         mock::MockClient,
         types::{CreateMessageParams, RequiredMessageParams, StopReason},
     };
+
+    #[derive(Debug, Clone)]
+    struct CountingCredential {
+        key: Arc<SecretString>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingCredential {
+        fn new(key: &str) -> Self {
+            Self {
+                key: Arc::new(SecretString::from(key.to_string())),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl CredentialProvider for CountingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let key = self.key.clone();
+            Box::pin(async move { Ok((*key).clone()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingCredential;
+
+    impl CredentialProvider for FailingCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
+            Box::pin(async { Err(LlmError::Auth("test credential unavailable".to_string())) })
+        }
+    }
 
     fn provider_info(
         provider: ProviderKind,
@@ -463,12 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn openai_builds_openai_adapter_with_default_base_url() {
+    fn openai_builds_chat_completions_adapter_with_default_base_url() {
         let p = provider_info(ProviderKind::OpenAi, "sk-test", "", "gpt-4o");
         let result = p.build_client();
         assert!(result.is_ok());
-        let LlmProvider::OpenAi(adapter) = result.unwrap() else {
-            panic!("expected OpenAi adapter for openai");
+        let LlmProvider::ChatCompletions(adapter) = result.unwrap() else {
+            panic!("expected Chat Completions adapter for openai");
         };
         assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
     }
@@ -487,7 +657,14 @@ mod tests {
         assert!(capabilities.responses);
         assert!(capabilities.streaming);
         assert!(capabilities.compact);
-        assert!(capabilities.hosted_tools.is_empty());
+        // Hosted web search is a Responses-protocol capability — present for
+        // official OpenAI, DeepSeek, and custom endpoints alike.
+        assert_eq!(
+            capabilities.hosted_tools,
+            std::collections::BTreeSet::from([
+                super::super::openai::responses::ResponsesToolKind::WebSearch
+            ])
+        );
     }
 
     #[test]
@@ -503,12 +680,12 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_builds_deepseek_adapter_with_default_base_url() {
+    fn deepseek_builds_chat_completions_adapter_with_default_base_url() {
         let p = provider_info(ProviderKind::DeepSeek, "sk-test", "", "deepseek-chat");
         let result = p.build_client();
         assert!(result.is_ok());
-        let LlmProvider::DeepSeek(adapter) = result.unwrap() else {
-            panic!("expected DeepSeek adapter for deepseek");
+        let LlmProvider::ChatCompletions(adapter) = result.unwrap() else {
+            panic!("expected Chat Completions adapter for deepseek");
         };
         assert_eq!(adapter.base_url(), "https://api.deepseek.com");
     }
@@ -526,12 +703,33 @@ mod tests {
     }
 
     #[test]
-    fn kimi_builds_kimi_adapter_with_default_base_url() {
+    fn custom_responses_protocol_builds_responses_adapter() {
+        // Hosted web search is a Responses-protocol capability, independent
+        // of the endpoint: custom OpenAI-compatible gateways get it too.
+        // (Request-level injection is covered by
+        // `convert::tests::native_web_search_*`.)
+        let mut p = provider_info(
+            ProviderKind::Custom("my-gateway".into()),
+            "sk-test",
+            "https://gateway.example.com/v1",
+            "gpt-5",
+        );
+        p.protocol = OpenAiProtocol::Responses;
+        let result = p.build_client();
+        assert!(result.is_ok());
+        let LlmProvider::OpenAiResponses(adapter) = result.unwrap() else {
+            panic!("expected OpenAI Responses adapter for custom responses");
+        };
+        assert_eq!(adapter.base_url(), "https://gateway.example.com/v1");
+    }
+
+    #[test]
+    fn kimi_builds_chat_completions_adapter_with_default_base_url() {
         let p = provider_info(ProviderKind::Kimi, "sk-test", "", "kimi-k2.5");
         let result = p.build_client();
         assert!(result.is_ok());
-        let LlmProvider::Kimi(adapter) = result.unwrap() else {
-            panic!("expected Kimi adapter for kimi");
+        let LlmProvider::ChatCompletions(adapter) = result.unwrap() else {
+            panic!("expected Chat Completions adapter for kimi");
         };
         assert_eq!(adapter.base_url(), "https://api.moonshot.cn/v1");
     }
@@ -545,8 +743,8 @@ mod tests {
             "kimi-for-coding",
         );
         let result = p.build_client().unwrap();
-        let LlmProvider::Kimi(adapter) = result else {
-            panic!("expected Kimi adapter");
+        let LlmProvider::ChatCompletions(adapter) = result else {
+            panic!("expected Chat Completions adapter");
         };
         assert_eq!(adapter.base_url(), "https://api.kimi.com/coding/v1");
     }
@@ -831,5 +1029,82 @@ mod tests {
         // The global provider is a static snapshot; per-agent model changes
         // live in AgentSettings / CreateMessageParams, never here.
         assert_eq!(get_provider().model, "kimi-k2.5");
+    }
+
+    #[tokio::test]
+    async fn client_new_builds_unified_chat_completions_adapter() {
+        let profile = ProviderProfile {
+            provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+        };
+        let provider = Client::new(profile, Arc::new(ApiKeyProvider::new("sk-test")))
+            .await
+            .expect("client construction must succeed");
+        let LlmProvider::ChatCompletions(adapter) = provider else {
+            panic!("expected unified Chat Completions adapter");
+        };
+        assert_eq!(adapter.base_url(), "https://api.openai.com/v1");
+    }
+
+    #[tokio::test]
+    async fn client_new_rejects_empty_api_key() {
+        let profile = ProviderProfile {
+            provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+        };
+        let error = match Client::new(profile, Arc::new(ApiKeyProvider::new(""))).await {
+            Err(error) => error,
+            Ok(_) => panic!("empty api key must fail fast"),
+        };
+        assert!(error.to_string().contains("api_key not configured"));
+    }
+
+    #[tokio::test]
+    async fn client_new_preserves_credential_error_source() {
+        let profile = ProviderProfile {
+            provider: ProviderKind::OpenAi,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5".to_string(),
+        };
+        let error = match Client::new(profile, Arc::new(FailingCredential)).await {
+            Ok(_) => panic!("client construction must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("test credential unavailable"));
+        assert!(
+            error.downcast_ref::<LlmError>().is_some(),
+            "credential error must be preserved in the chain"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test mutex serializes global provider only
+    async fn get_llm_client_uses_installed_credential_provider() {
+        let _guard = lock_provider_for_tests();
+        let credentials = CountingCredential::new("sk-oauth");
+        init_provider_with_credentials(
+            provider_info(
+                ProviderKind::OpenAi,
+                "",
+                "https://api.openai.com/v1",
+                "gpt-5",
+            ),
+            Arc::new(credentials.clone()),
+        );
+
+        let client = get_llm_client()
+            .await
+            .expect("client construction must succeed");
+        assert!(matches!(client, LlmProvider::ChatCompletions(_)));
+        assert_eq!(credentials.calls(), 1);
     }
 }

@@ -521,6 +521,26 @@ mod integration_tests {
     };
 
     #[test]
+    fn assistant_history_mermaid_uses_width_aware_cell() {
+        let mut app = make_app();
+        let md = "```mermaid\nflowchart TD\n  A[This is a long start node] --> B[This is a long end node]\n```";
+        app.load_history(vec![tact_llm::Message::new_text(
+            tact_llm::Role::Assistant,
+            md,
+        )]);
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(
+            app.markdown_cells[0].is_some(),
+            "assistant history should use the width-aware MarkdownCell"
+        );
+
+        let text = render_log_panel_text(&mut app, 40, 20);
+        assert!(text.contains('─') || text.contains('│'), "{text}");
+        assert!(!text.contains("flowchart TD"), "raw Mermaid leaked: {text}");
+    }
+
+    #[test]
     fn md_info_renders_as_one_markdown_cell() {
         let mut app = make_app();
         let md = "# Title\n\n- item one\n- item two\n\n```rust\nfn hi() {}\n```\n";

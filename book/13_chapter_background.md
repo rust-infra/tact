@@ -16,6 +16,10 @@ Background tasks are the "fire-and-forget" counterpart to the synchronous `bash`
 
 Both tools are in the main `toolset()` only. `check_background` with no `task_id` lists all known tasks sorted by start time; with an unknown id it returns an error (`Unknown background task <id>`).
 
+TUI users do not need the model to call a tool to see background jobs: the **`/background`** slash command lists all tasks, and **`/background <id>`** shows a single task (pretty JSON). It sends `UserCommand::QueryBackground(Option<String>)` to the command driver, which calls the same `SharedBackgroundManager::check` and renders the result into the log as Markdown (`AgentUpdate::MdInfo`) — see [Ch 23](./23_chapter_tui.md) §3.
+
+**Live output (bash-like).** While a task runs, its stdout/stderr stream into the `background_run` tool card in real time (throttled to ~50 ms batches, last ~4 KB kept for the live preview), exactly like the synchronous `bash` card. The card stays in a running state even though the invocation already returned, and closes with ✓/✗, elapsed time, and the final output when the process exits (see §3 and §6).
+
 ---
 
 ## 2. Data Model
@@ -27,21 +31,21 @@ pub struct BackgroundTaskRecord {
     pub id: String,                        // 8-hex-digit counter, seeded from epoch millis
     pub status: BackgroundTaskStatus,
     pub command: String,
+    pub session_id: String,                // owning agent session; "" outside a session
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub output: String,                    // combined stdout + stderr, capped
 }
 ```
 
-`BackgroundManager` holds the records twice:
+`BackgroundManager` holds the store and the id source:
 
 ```rust
-records: CollectionStore<BackgroundTaskRecord>,   // .tact/background/tasks/{id}.json
-tasks:   Mutex<HashMap<String, BackgroundTaskRecord>>,  // in-memory mirror
-next_id: AtomicU64,                                // monotonically increasing id source
+records: Arc<dyn BackgroundStore>,   // .tact/tact.db → background_tasks table
+next_id: AtomicU64,                  // monotonically increasing id source
 ```
 
-Unlike the team/worktree managers, `SharedBackgroundManager` wraps `Arc<BackgroundManager>` with an **interior** mutex around just the map — the spawned tokio task needs to write results back without holding a whole-manager lock.
+There is **no in-memory mirror**: the SQLite pool serializes writes and the database is the single source of truth, so `SharedBackgroundManager` wraps `Arc<BackgroundManager>` with no interior mutex — the spawned tokio task writes results back through a cloned store handle.
 
 ---
 
@@ -52,21 +56,26 @@ sequenceDiagram
     participant Agent
     participant BM as BackgroundManager
     participant Task as tokio::spawn
-    participant FS as .tact/background/tasks/
+    participant TUI as TUI card
+    participant DB as .tact/tact.db (background_tasks)
 
     Agent->>BM: background_run("cargo build")
     BM->>BM: validate_shell_command (blocks sudo, rm -rf /, …)
-    BM->>FS: write record (status: running)
+    BM->>DB: upsert record (status: running)
     BM->>Task: spawn sh -c "cargo build" (cwd = work_dir)
     BM-->>Agent: "Background task 018f3a2c started"
 
     Note over Task: runs concurrently with the agent loop
 
-    Task->>Task: await output (timeout 120s, kill_on_drop)
-    Task->>FS: write record (completed/error + output)
+    loop stdout/stderr streaming
+        Task->>TUI: ToolProgress (throttled ~50ms)
+    end
+    Task->>Task: await exit (timeout 120s, kill_on_drop)
+    Task->>TUI: BackgroundTaskFinished (✓/✗ + final output)
+    Task->>DB: upsert record (completed/error + output)
 
     Agent->>BM: check_background("018f3a2c")
-    BM->>BM: in-memory map, fallback to disk read
+    BM->>DB: read record by id
     BM-->>Agent: record as pretty JSON
 ```
 
@@ -77,7 +86,8 @@ Details worth knowing:
 | Shell | `sh -c <command>`, cwd = `ToolContext.work_dir` |
 | Validation | `crate::shell::validate_shell_command` — same hard blocklist as `bash` (`sudo`, `rm -rf /`, …) |
 | Timeout | Fixed 120 seconds; on expiry status becomes `Error` with `"Error: Timeout (120s)"` |
-| Output cap | First 50,000 chars of stdout+stderr; the rest is dropped |
+| Live streaming | stdout/stderr are read incrementally and pushed as `AgentUpdate::ToolProgress` (≈50 ms batches, last ~4 KB kept in the live preview); no output is buffered until completion |
+| Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the rest is dropped |
 | Exit code | Non-zero exit → `Error`; the code itself is not recorded |
 | Process cleanup | `kill_on_drop(true)` — the child is killed if the future is dropped |
 
@@ -97,7 +107,7 @@ IDs are the lower 32 bits of an atomic counter formatted as 8 hex digits (`{:08x
 
 ## 5. Crash Recovery on Startup
 
-`SharedBackgroundManager::new` (called at session startup in `tui.rs`) scans the collection store and repairs orphans: any record still marked `running` belongs to a process that no longer exists, so it is rewritten as:
+`BackgroundManager::new` (called at session startup in `headless.rs` / `interactive.rs`) scans the `background_tasks` table and repairs orphans: any record still marked `running` belongs to a process that no longer exists, so it is rewritten as:
 
 ```text
 status: error
@@ -112,7 +122,7 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 `background_run` returns immediately, so from the scheduler's perspective ([Tasks and Tool Scheduling](./11_chapter_task.md)) it is a cheap call — but note that as a shell-adjacent tool it takes its permission classification from the [Permission Model](./10_chapter_permission.md) under the name `background_run`, not `bash`.
 
-There is **no completion notification**: the agent (or the model driving it) must poll `check_background`. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
+**The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push: it must poll `check_background` to see the result in context. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
 
 Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — instead it is hard-capped at 50k chars in the record itself, and the full JSON (including output) lands in context when polled.
 
@@ -122,12 +132,14 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 
 | File | Role |
 |------|------|
+| `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait (async: upsert/get/list) |
+| `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` table |
 | `crates/tact/src/background.rs` | `BackgroundManager`, `SharedBackgroundManager`, record types, spawn logic, startup repair |
 | `crates/tact/src/tool/background_run.rs` | `background_run` / `check_background` tools |
 | `crates/tact/src/shell.rs` | `validate_shell_command` blocklist shared with `bash` |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.background_manager` |
 | `crates/tact/src/tool/registry.rs` | Background tools in `toolset()` |
-| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `StoreRoot` at startup |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `tact.db` at startup |
 | `docs/state_machines.md` | Background job state diagram |
 
 ---
@@ -137,11 +149,11 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | Gap | Detail |
 |-----|--------|
 | Fixed 120s timeout | Not configurable; long builds or test suites always die as `Error: Timeout` |
-| No completion push | Agent must poll; there is no `AgentUpdate` or notification when a task finishes |
+| No model completion push | The TUI card gets `BackgroundTaskFinished`, but the **model** still has no completion push and must poll `check_background` |
 | No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |
-| Records accumulate | `.tact/background/tasks/` is never pruned |
+| Records accumulate | `background_tasks` table is never pruned |
 | 50k output cap silently truncates | No `<persisted-output>` spill like synchronous `bash` gets |
 | ID collisions possible | 32-bit hex counter seeded by wall clock; no uniqueness check against disk |
 
@@ -152,6 +164,6 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 - [Tool System](./07_chapter_tool.md) — `ToolContext`, `toolset()`, and the synchronous `bash` counterpart
 - [Permission Model](./10_chapter_permission.md) — how `background_run` is gated
 - [Context Compaction](./05_chapter_compact.md) — the output-spill mechanism background tasks bypass
-- [Store and Persistence](./01_chapter_store.md) — the `background/` collection store
+- [Store and Persistence](./01_chapter_store.md) — the `background_tasks` SQLite table
 - [docs/state_machines.md](../docs/state_machines.md) — background job states
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 background tasks row

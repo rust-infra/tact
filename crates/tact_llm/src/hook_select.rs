@@ -3,11 +3,25 @@
 use std::sync::Arc;
 
 use crate::{
-    LlmError, ProviderInfo, ProviderKind,
-    deepseek::DeepSeekBodyHook,
-    kimi::KimiBodyHook,
-    openai::{OpenAiBodyHook, StandardOpenAiBodyHook},
+    ChatCompletionsDialect, LlmError, ProviderInfo, ProviderKind,
+    openai::body::{DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook},
 };
+
+/// Pick the body hook for a resolved Chat Completions dialect.
+///
+/// `user_id` is only applied when the dialect is DeepSeek.
+pub fn hook_for_dialect(
+    dialect: ChatCompletionsDialect,
+    user_id: Option<&str>,
+) -> Arc<dyn OpenAiBodyHook> {
+    match dialect {
+        ChatCompletionsDialect::Standard => Arc::new(StandardOpenAiBodyHook),
+        ChatCompletionsDialect::DeepSeek => {
+            Arc::new(DeepSeekBodyHook::new(user_id.map(str::to_owned)))
+        }
+        ChatCompletionsDialect::Kimi => Arc::new(KimiBodyHook),
+    }
+}
 
 /// Pick a body hook from the active provider identity / heuristics.
 ///
@@ -48,13 +62,44 @@ pub fn body_hook_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProviderKind, openai::body::test_util::*};
+    use crate::{
+        OpenAiProtocol, ProviderInfo, ProviderKind, ProviderProfile,
+        openai::body::test_util::{ctx, empty_body, sample_request_with_thinking},
+    };
+
+    fn provider(kind: ProviderKind, model: &str, base_url: &str) -> ProviderInfo {
+        ProviderInfo {
+            provider: kind,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            api_key: String::new(),
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    fn profile(kind: ProviderKind, model: &str, base_url: &str) -> ProviderProfile {
+        ProviderProfile {
+            provider: kind,
+            protocol: OpenAiProtocol::default(),
+            responses_compact_threshold: None,
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+        }
+    }
 
     #[test]
     fn body_hook_for_selects_by_kind_and_heuristics() {
         let deepseek = provider(ProviderKind::DeepSeek, "deepseek-chat", "");
+        let deepseek_profile = profile(ProviderKind::DeepSeek, "deepseek-chat", "");
         let kimi = provider(ProviderKind::Kimi, "kimi-k2.5", "");
+        let kimi_profile = profile(ProviderKind::Kimi, "kimi-k2.5", "");
         let openai_kimi_url = provider(
+            ProviderKind::OpenAi,
+            "kimi-k2.5",
+            "https://api.moonshot.cn/v1",
+        );
+        let openai_kimi_url_profile = profile(
             ProviderKind::OpenAi,
             "kimi-k2.5",
             "https://api.moonshot.cn/v1",
@@ -65,7 +110,7 @@ mod tests {
         let mut deepseek_body = empty_body();
         body_hook_for(&deepseek, "deepseek-chat", Some("u1"))
             .unwrap()
-            .inject(&mut deepseek_body, &ctx(&request, &deepseek, &[]));
+            .inject(&mut deepseek_body, &ctx(&request, &deepseek_profile, &[]));
         assert_eq!(deepseek_body["user_id"], "u1");
         assert_eq!(deepseek_body["thinking"]["type"], "enabled");
         assert_eq!(deepseek_body["reasoning_effort"], "high");
@@ -75,7 +120,7 @@ mod tests {
         let mut kimi_body = empty_body();
         body_hook_for(&kimi, "kimi-k2.5", None)
             .unwrap()
-            .inject(&mut kimi_body, &ctx(&request_kimi, &kimi, &[]));
+            .inject(&mut kimi_body, &ctx(&request_kimi, &kimi_profile, &[]));
         assert_eq!(kimi_body["thinking"]["type"], "enabled");
         assert!(kimi_body.get("reasoning_effort").is_none());
 
@@ -84,7 +129,10 @@ mod tests {
         let mut heur_body = empty_body();
         body_hook_for(&openai_kimi_url, "kimi-k2.5", None)
             .unwrap()
-            .inject(&mut heur_body, &ctx(&request_kimi2, &openai_kimi_url, &[]));
+            .inject(
+                &mut heur_body,
+                &ctx(&request_kimi2, &openai_kimi_url_profile, &[]),
+            );
         assert_eq!(heur_body["thinking"]["type"], "enabled");
         assert!(heur_body.get("reasoning_effort").is_none());
     }

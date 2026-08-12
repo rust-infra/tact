@@ -301,26 +301,13 @@ The default state root is `.tact` in the current workspace:
 
 ```text
 .tact/
-  background/
-    tasks/
-      <id>.json
-  cron/
-    scheduled_tasks.json
+  tact.db                # SQLite: sessions, messages, tasks, cron, background, team, worktrees
   memory/
     MEMORY.md
     *.md
-  tasks/
-    index.json
-    <task>.json
-  team/
-    config.json
-    inbox/
-      <owner>.json
-  worktrees/
-    index.json
 ```
 
-These files form the agent harness's durable state. They don't depend on the current model context, enabling cross-session recovery and queries.
+All domain records live in the SQLite `tact.db` (`tasks`, `cron_tasks`, `background_tasks`, `teammates`, `inbox_messages`, `worktrees`, `worktree_events` tables); memory stays in Markdown. These stores form the agent harness's durable state. They don't depend on the current model context, enabling cross-session recovery and queries.
 
 ## Domain Managers
 

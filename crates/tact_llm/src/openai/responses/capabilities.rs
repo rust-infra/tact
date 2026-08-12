@@ -33,7 +33,10 @@ impl ResponsesCapabilities {
             responses: true,
             streaming: true,
             compact: true,
-            hosted_tools: BTreeSet::new(),
+            // Hosted web search is a Responses-protocol capability — it is
+            // injected on every ordinary `/responses` request regardless of
+            // the endpoint/provider behind the protocol.
+            hosted_tools: BTreeSet::from([ResponsesToolKind::WebSearch]),
         }
     }
 
@@ -43,31 +46,41 @@ impl ResponsesCapabilities {
             responses: true,
             streaming: true,
             compact: false,
-            hosted_tools: BTreeSet::new(),
+            // Same protocol capability: any endpoint speaking the Responses
+            // protocol gets hosted web search, so the capability set matches.
+            hosted_tools: BTreeSet::from([ResponsesToolKind::WebSearch]),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{ResponsesCapabilities, ResponsesToolKind};
 
     #[test]
-    fn official_openai_defaults_to_core_responses_only() {
+    fn official_openai_defaults_to_responses_with_hosted_web_search() {
         let capabilities = ResponsesCapabilities::official_openai();
         assert!(capabilities.responses);
         assert!(capabilities.streaming);
         assert!(capabilities.compact);
-        assert!(capabilities.hosted_tools.is_empty());
+        assert_eq!(
+            capabilities.hosted_tools,
+            BTreeSet::from([ResponsesToolKind::WebSearch])
+        );
     }
 
     #[test]
-    fn custom_provider_defaults_to_core_streaming_without_hosted_tools() {
+    fn custom_provider_defaults_to_streaming_without_compact_but_with_web_search() {
         let capabilities = ResponsesCapabilities::custom_provider();
         assert!(capabilities.responses);
         assert!(capabilities.streaming);
         assert!(!capabilities.compact);
-        assert!(capabilities.hosted_tools.is_empty());
+        assert_eq!(
+            capabilities.hosted_tools,
+            BTreeSet::from([ResponsesToolKind::WebSearch])
+        );
     }
 
     #[test]

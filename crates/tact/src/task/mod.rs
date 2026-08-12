@@ -11,19 +11,17 @@
 //! - [`render_task_json`] and [`render_task_list`] produce LLM-friendly
 //!   textual representations.
 
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use strum::EnumProperty;
 use strum_macros::{Display, EnumProperty as EnumPropertyDerive, EnumString};
 
-use crate::store::{CollectionStore, Store, StoreRoot};
+use crate::store::task_store::{SqliteTaskStore, TaskStore};
 
-pub use display::{
-    format_id_list, format_id_transition, format_task_tool_title,
-    format_task_tool_title_with_manager,
-};
+pub use display::{format_id_list, format_id_transition, format_task_tool_title};
 
 mod display;
 
@@ -69,6 +67,8 @@ pub struct TaskRecord {
     pub subject: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Owning agent session id; empty when created outside a session.
+    pub session_id: String,
     pub status: TaskStatus,
     #[serde(rename = "blockedBy", default)]
     pub blocked_by: Vec<u64>,
@@ -86,11 +86,12 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     /// Creates a new task record.
-    pub fn new(id: u64, subject: String, description: Option<String>) -> Self {
+    pub fn new(id: u64, subject: String, description: Option<String>, session_id: String) -> Self {
         Self {
             id,
             subject,
             description,
+            session_id,
             status: TaskStatus::Pending,
             blocked_by: Vec::new(),
             blocks: Vec::new(),
@@ -107,18 +108,6 @@ impl TaskRecord {
     }
 }
 
-/// The index of the next task ID to use.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskIndex {
-    pub next_id: u64,
-}
-
-impl Default for TaskIndex {
-    fn default() -> Self {
-        Self { next_id: 1 }
-    }
-}
-
 /// A mutable update to apply to an existing task.
 #[derive(Debug, Clone, Default)]
 pub struct TaskUpdate {
@@ -128,194 +117,95 @@ pub struct TaskUpdate {
     pub add_blocks: Vec<u64>,
 }
 
-/// Core task manager backed by a file-based collection store.
-#[derive(Debug)]
+/// Core task manager backed by a SQLite task store.
 pub struct TaskManager {
-    tasks: CollectionStore<TaskRecord>,
-    index: Store<TaskIndex>,
+    store: Box<dyn TaskStore>,
 }
 
 impl TaskManager {
-    /// Creates a new task manager from the given store root.
-    pub fn new(root: &StoreRoot) -> Result<Self> {
-        let manager = Self {
-            tasks: root.collection("tasks")?,
-            index: root.file("tasks/index.json")?,
-        };
-        if !manager.index.exists() {
-            manager.index.write(&TaskIndex::default())?;
-        }
-        Ok(manager)
+    /// Creates a new task manager backed by the given SQLite database file.
+    pub async fn new(db_path: &Path) -> Result<Self> {
+        Ok(Self {
+            store: Box::new(SqliteTaskStore::new(db_path).await?),
+        })
     }
 
     /// Creates a new task with the given subject and description.
-    pub fn create(&mut self, subject: String, description: Option<String>) -> Result<TaskRecord> {
-        let mut index = self.index.read().unwrap_or_default();
-        let task = TaskRecord::new(index.next_id, subject, description);
-        self.tasks.write(&task_key(task.id), &task)?;
-        index.next_id += 1;
-        self.index.write(&index)?;
-        Ok(task)
+    pub async fn create(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+    ) -> Result<TaskRecord> {
+        self.store.create(subject, description, session_id).await
     }
 
     /// Gets the task with the given ID.
-    pub fn get(&self, task_id: u64) -> Result<TaskRecord> {
-        self.tasks
-            .read(&task_key(task_id))
-            .with_context(|| format!("Task {} not found", task_id))
+    pub async fn get(&self, task_id: u64) -> Result<TaskRecord> {
+        self.store.get(task_id).await
     }
 
     /// Updates the task with the given ID using the given update.
-    pub fn update(&mut self, task_id: u64, update: TaskUpdate) -> Result<TaskRecord> {
-        let mut task = self.get(task_id)?;
-
-        if let Some(owner) = update.owner {
-            task.owner = owner;
-        }
-
-        if let Some(status) = update.status {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64;
-            task.status = status;
-            if status == TaskStatus::InProgress {
-                task.started_at = Some(now);
-            } else if status == TaskStatus::Completed {
-                task.completed_at = Some(now);
-            }
-            if status == TaskStatus::Completed {
-                self.clear_dependency(task_id)?;
-                // Keep the local copy in sync with the store: clear_dependency
-                // cleared the stored record, but `task` was fetched before that
-                // and would otherwise be written back with ghost edges below.
-                task.blocks.clear();
-            }
-        }
-
-        if !update.add_blocked_by.is_empty() {
-            merge_unique(&mut task.blocked_by, update.add_blocked_by.clone());
-            // Mirror of the add_blocks branch: keep the blocker's `blocks`
-            // (outgoing DAG edges) in sync so /tasks-dag renders the edge.
-            for blocker_id in update.add_blocked_by {
-                if let Ok(mut blocker) = self.get(blocker_id)
-                    && !blocker.blocks.contains(&task_id)
-                {
-                    blocker.blocks.push(task_id);
-                    blocker.blocks.sort_unstable();
-                    self.tasks.write(&task_key(blocker.id), &blocker)?;
-                }
-            }
-        }
-
-        if !update.add_blocks.is_empty() {
-            merge_unique(&mut task.blocks, update.add_blocks.clone());
-            for blocked_id in update.add_blocks {
-                if let Ok(mut blocked) = self.get(blocked_id)
-                    && !blocked.blocked_by.contains(&task_id)
-                {
-                    blocked.blocked_by.push(task_id);
-                    blocked.blocked_by.sort_unstable();
-                    self.tasks.write(&task_key(blocked.id), &blocked)?;
-                }
-            }
-        }
-
-        task.blocked_by.sort_unstable();
-        task.blocks.sort_unstable();
-        self.tasks.write(&task_key(task.id), &task)?;
-        Ok(task)
+    pub async fn update(&self, task_id: u64, update: TaskUpdate) -> Result<TaskRecord> {
+        self.store.update(task_id, update).await
     }
 
     /// Lists all tasks in the manager.
-    pub fn list(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks = self.tasks.list()?;
-        tasks.sort_by_key(|task| task.id);
-        Ok(tasks)
+    pub async fn list(&self) -> Result<Vec<TaskRecord>> {
+        self.store.list().await
     }
 
     /// Deletes the task with the given ID.
-    pub fn delete(&mut self, task_id: u64) -> Result<TaskRecord> {
-        let mut task = self.get(task_id)?;
-        task.status = TaskStatus::Deleted;
-        self.tasks.write(&task_key(task.id), &task)?;
-        Ok(task)
-    }
-
-    /// Clears the dependency of the task with the given ID.
-    fn clear_dependency(&self, completed_id: u64) -> Result<()> {
-        for mut task in self.list()? {
-            if task.blocked_by.contains(&completed_id) {
-                task.blocked_by.retain(|id| *id != completed_id);
-                self.tasks.write(&task_key(task.id), &task)?;
-            }
-        }
-        // Mirror: a completed task no longer blocks anyone, so drop its
-        // outgoing DAG edges too (otherwise /tasks-dag shows ghost edges).
-        if let Ok(mut completed) = self.get(completed_id)
-            && !completed.blocks.is_empty()
-        {
-            completed.blocks.clear();
-            self.tasks.write(&task_key(completed.id), &completed)?;
-        }
-        Ok(())
+    pub async fn delete(&self, task_id: u64) -> Result<TaskRecord> {
+        self.store.delete(task_id).await
     }
 }
 
 /// Thread-safe wrapper around [`TaskManager`].
-#[derive(Clone, Debug)]
+///
+/// The SQLite pool inside the task store already serializes writes, so no
+/// extra mutex is needed.
+#[derive(Clone)]
 pub struct SharedTaskManager {
-    inner: Arc<Mutex<TaskManager>>,
+    inner: Arc<TaskManager>,
 }
 
 impl SharedTaskManager {
     /// Creates a new shared task manager with the given task manager.
     pub fn new(manager: TaskManager) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(manager)),
+            inner: Arc::new(manager),
         }
     }
 
     /// Creates a new task in the manager.
-    pub fn create(&self, subject: String, description: Option<String>) -> Result<TaskRecord> {
-        self.with_manager(|manager| manager.create(subject, description))
+    pub async fn create(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+    ) -> Result<TaskRecord> {
+        self.inner.create(subject, description, session_id).await
     }
 
     /// Gets a task from the manager.
-    pub fn get(&self, task_id: u64) -> Result<TaskRecord> {
-        self.with_manager(|manager| manager.get(task_id))
+    pub async fn get(&self, task_id: u64) -> Result<TaskRecord> {
+        self.inner.get(task_id).await
     }
 
     /// Updates a task in the manager.
-    pub fn update(&self, task_id: u64, update: TaskUpdate) -> Result<TaskRecord> {
-        self.with_manager(|manager| manager.update(task_id, update))
+    pub async fn update(&self, task_id: u64, update: TaskUpdate) -> Result<TaskRecord> {
+        self.inner.update(task_id, update).await
     }
 
     /// Lists all tasks in the manager.
-    pub fn list(&self) -> Result<Vec<TaskRecord>> {
-        self.with_manager(|manager| manager.list())
+    pub async fn list(&self) -> Result<Vec<TaskRecord>> {
+        self.inner.list().await
     }
 
     /// Deletes a task from the manager.
-    pub fn delete(&self, task_id: u64) -> Result<TaskRecord> {
-        self.with_manager(|manager| manager.delete(task_id))
-    }
-
-    /// Runs a callback with the task manager locked.
-    fn with_manager<T>(&self, callback: impl FnOnce(&mut TaskManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("task manager lock poisoned"))?;
-        callback(&mut manager)
-    }
-}
-
-impl std::ops::Deref for SharedTaskManager {
-    type Target = Arc<Mutex<TaskManager>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    pub async fn delete(&self, task_id: u64) -> Result<TaskRecord> {
+        self.inner.delete(task_id).await
     }
 }
 
@@ -356,16 +246,6 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String {
         .join("\n")
 }
 
-fn task_key(task_id: u64) -> String {
-    format!("task_{task_id}")
-}
-
-fn merge_unique(target: &mut Vec<u64>, mut additions: Vec<u64>) {
-    target.append(&mut additions);
-    target.sort_unstable();
-    target.dedup();
-}
-
 /// Map store records to TUI snapshots, dropping soft-deleted tasks.
 pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapshot> {
     tasks
@@ -374,6 +254,7 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
         .map(|t| tact_protocol::TaskSnapshot {
             id: t.id,
             subject: t.subject,
+            session_id: t.session_id,
             status: match t.status {
                 TaskStatus::Pending => tact_protocol::TaskStatusSnapshot::Pending,
                 TaskStatus::InProgress => tact_protocol::TaskStatusSnapshot::InProgress,
@@ -409,21 +290,29 @@ pub fn emit_tasks_changed(
 mod tests {
     use super::*;
 
-    fn test_manager(name: &str) -> (TaskManager, std::path::PathBuf) {
+    async fn test_manager(name: &str) -> (TaskManager, std::path::PathBuf) {
         let root_dir = std::env::temp_dir().join(format!("tact-task-test-{name}"));
         let _ = std::fs::remove_dir_all(&root_dir);
         std::fs::create_dir_all(&root_dir).unwrap();
-        let store_root = StoreRoot::new(root_dir.join(".tact")).unwrap();
-        (TaskManager::new(&store_root).unwrap(), root_dir)
+        let db = root_dir.join(".tact").join("tact.db");
+        (TaskManager::new(&db).await.unwrap(), root_dir)
     }
 
-    #[test]
-    fn create_assigns_incrementing_ids() {
-        let (mut manager, _dir) = test_manager("create_assigns_incrementing_ids");
+    #[tokio::test]
+    async fn create_assigns_incrementing_ids() {
+        let (manager, _dir) = test_manager("create_assigns_incrementing_ids").await;
 
-        let first = manager.create("First".to_string(), None).unwrap();
+        let first = manager
+            .create("First".to_string(), None, String::new())
+            .await
+            .unwrap();
         let second = manager
-            .create("Second".to_string(), Some("details".to_string()))
+            .create(
+                "Second".to_string(),
+                Some("details".to_string()),
+                String::new(),
+            )
+            .await
             .unwrap();
 
         assert_eq!(first.id, 1);
@@ -433,10 +322,13 @@ mod tests {
         assert_eq!(second.description.as_deref(), Some("details"));
     }
 
-    #[test]
-    fn update_changes_status_and_owner() {
-        let (mut manager, _dir) = test_manager("update_changes_status_and_owner");
-        let task = manager.create("Work".to_string(), None).unwrap();
+    #[tokio::test]
+    async fn update_changes_status_and_owner() {
+        let (manager, _dir) = test_manager("update_changes_status_and_owner").await;
+        let task = manager
+            .create("Work".to_string(), None, String::new())
+            .await
+            .unwrap();
 
         let updated = manager
             .update(
@@ -447,17 +339,24 @@ mod tests {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
         assert_eq!(updated.status, TaskStatus::InProgress);
         assert_eq!(updated.owner, "alice");
     }
 
-    #[test]
-    fn update_add_blocks_creates_reverse_dependency() {
-        let (mut manager, _dir) = test_manager("update_add_blocks_creates_reverse_dependency");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+    #[tokio::test]
+    async fn update_add_blocks_creates_reverse_dependency() {
+        let (manager, _dir) = test_manager("update_add_blocks_creates_reverse_dependency").await;
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .await
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .await
+            .unwrap();
 
         let updated = manager
             .update(
@@ -467,20 +366,27 @@ mod tests {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
         assert_eq!(updated.blocks, vec![blocked.id]);
 
-        let blocked = manager.get(blocked.id).unwrap();
+        let blocked = manager.get(blocked.id).await.unwrap();
         assert_eq!(blocked.blocked_by, vec![blocker.id]);
     }
 
-    #[test]
-    fn update_add_blocked_by_creates_reverse_outgoing_edge() {
-        let (mut manager, _dir) =
-            test_manager("update_add_blocked_by_creates_reverse_outgoing_edge");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+    #[tokio::test]
+    async fn update_add_blocked_by_creates_reverse_outgoing_edge() {
+        let (manager, _dir) =
+            test_manager("update_add_blocked_by_creates_reverse_outgoing_edge").await;
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .await
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .await
+            .unwrap();
 
         let updated = manager
             .update(
@@ -490,21 +396,28 @@ mod tests {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
         assert_eq!(updated.blocked_by, vec![blocker.id]);
 
         // Mirror: the blocker must gain an outgoing edge so /tasks-dag
         // renders `T{blocker} --> T{blocked}`.
-        let blocker = manager.get(blocker.id).unwrap();
+        let blocker = manager.get(blocker.id).await.unwrap();
         assert_eq!(blocker.blocks, vec![blocked.id]);
     }
 
-    #[test]
-    fn completing_task_clears_blocked_by() {
-        let (mut manager, _dir) = test_manager("completing_task_clears_blocked_by");
-        let blocker = manager.create("Blocker".to_string(), None).unwrap();
-        let blocked = manager.create("Blocked".to_string(), None).unwrap();
+    #[tokio::test]
+    async fn completing_task_clears_blocked_by() {
+        let (manager, _dir) = test_manager("completing_task_clears_blocked_by").await;
+        let blocker = manager
+            .create("Blocker".to_string(), None, String::new())
+            .await
+            .unwrap();
+        let blocked = manager
+            .create("Blocked".to_string(), None, String::new())
+            .await
+            .unwrap();
         manager
             .update(
                 blocker.id,
@@ -513,6 +426,7 @@ mod tests {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
         manager
@@ -523,23 +437,25 @@ mod tests {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
-        let blocked = manager.get(blocked.id).unwrap();
+        let blocked = manager.get(blocked.id).await.unwrap();
         assert!(blocked.blocked_by.is_empty());
         // Mirror: the completed task must not keep ghost outgoing edges.
-        let blocker = manager.get(blocker.id).unwrap();
+        let blocker = manager.get(blocker.id).await.unwrap();
         assert!(blocker.blocks.is_empty());
     }
 
-    #[test]
-    fn render_task_list_empty_and_populated() {
+    #[tokio::test]
+    async fn render_task_list_empty_and_populated() {
         assert_eq!(render_task_list(vec![]), "No tasks.");
 
         let task = TaskRecord {
             id: 1,
             subject: "Ship".to_string(),
             description: None,
+            session_id: "sess-1".to_string(),
             status: TaskStatus::InProgress,
             blocked_by: vec![2],
             blocks: vec![],
@@ -554,21 +470,26 @@ mod tests {
         assert!(rendered.contains("blocked by: [2]"));
     }
 
-    #[test]
-    fn render_task_json_round_trip() {
-        let task = TaskRecord::new(1, "Test".to_string(), Some("desc".to_string()));
+    #[tokio::test]
+    async fn render_task_json_round_trip() {
+        let task = TaskRecord::new(
+            1,
+            "Test".to_string(),
+            Some("desc".to_string()),
+            String::new(),
+        );
         let json = render_task_json(&task).unwrap();
         assert!(json.contains("\"subject\": \"Test\""));
         assert!(json.contains("\"description\": \"desc\""));
         assert!(json.contains("\"status\": \"pending\""));
     }
 
-    #[test]
-    fn to_ui_snapshots_filters_deleted_and_maps_status() {
-        let pending = TaskRecord::new(1, "a".into(), None);
-        let mut active = TaskRecord::new(2, "b".into(), None);
+    #[tokio::test]
+    async fn to_ui_snapshots_filters_deleted_and_maps_status() {
+        let pending = TaskRecord::new(1, "a".into(), None, String::new());
+        let mut active = TaskRecord::new(2, "b".into(), None, String::new());
         active.status = TaskStatus::InProgress;
-        let mut gone = TaskRecord::new(3, "c".into(), None);
+        let mut gone = TaskRecord::new(3, "c".into(), None, String::new());
         gone.status = TaskStatus::Deleted;
         let snaps = to_ui_snapshots(vec![pending, active, gone]);
         assert_eq!(snaps.len(), 2);

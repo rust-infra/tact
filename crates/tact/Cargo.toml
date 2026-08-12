@@ -35,7 +35,7 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 tera = { workspace = true }
 tar = { workspace = true }
-tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "tracing"] }
+tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "tracing", "macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 cpal = { workspace = true }
 toml = { workspace = true }

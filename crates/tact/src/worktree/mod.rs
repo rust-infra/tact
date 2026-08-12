@@ -5,22 +5,22 @@
 //! and status.
 //!
 //! - [`WorktreeManager`] wraps `git worktree add` and stores metadata in
-//!   `.tact/worktrees/index.json`.
+//!   `<workdir>/.tact/tact.db` (the `worktrees` / `worktree_events` tables).
 //! - [`SharedWorktreeManager`] is the thread-safe wrapper.
 //! - Supports `create`, `list`, `status`, `run` (execute in-tree), and
 //!   `events` (audit log).
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Store, StoreRoot};
+use crate::store::worktree_store::{SqliteWorktreeStore, WorktreeStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeRecord {
@@ -31,45 +31,41 @@ pub struct WorktreeRecord {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WorktreeIndex {
-    #[serde(default)]
-    pub worktrees: Vec<WorktreeRecord>,
-    #[serde(default)]
-    pub events: Vec<String>,
-}
-
-#[derive(Debug)]
 pub struct WorktreeManager {
     repo_root: PathBuf,
-    index: Store<WorktreeIndex>,
+    store: Box<dyn WorktreeStore>,
+}
+
+impl std::fmt::Debug for WorktreeManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorktreeManager")
+            .field("repo_root", &self.repo_root)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct SharedWorktreeManager {
-    inner: Arc<Mutex<WorktreeManager>>,
+    inner: Arc<WorktreeManager>,
 }
 
 impl WorktreeManager {
-    pub fn new(root: &StoreRoot, repo_root: PathBuf) -> Result<Self> {
-        let manager = Self {
+    /// Creates a manager backed by the given SQLite database file.
+    pub async fn new(db_path: &Path, repo_root: PathBuf) -> Result<Self> {
+        Ok(Self {
             repo_root,
-            index: root.file("worktrees/index.json")?,
-        };
-        if !manager.index.exists() {
-            manager.index.write(&WorktreeIndex::default())?;
-        }
-        Ok(manager)
+            store: Box::new(SqliteWorktreeStore::new(db_path).await?),
+        })
     }
 
-    pub fn create(
-        &mut self,
+    pub async fn create(
+        &self,
         name: String,
         task_id: Option<u64>,
         base_ref: String,
+        session_id: String,
     ) -> Result<String> {
-        let mut index = self.index.read().unwrap_or_default();
-        if index.worktrees.iter().any(|worktree| worktree.name == name) {
+        if self.store.find_worktree(&name).await?.is_some() {
             anyhow::bail!("worktree {name} already exists");
         }
         let dir = self.repo_root.join(".worktrees").join(&name);
@@ -103,29 +99,30 @@ impl WorktreeManager {
             task_id,
             status: "active".to_string(),
         };
-        index.worktrees.push(record.clone());
-        index
-            .events
-            .push(format!("{} worktree.create {}", Utc::now(), name));
-        self.index.write(&index)?;
+        // Concurrent duplicate: the UNIQUE name constraint rejects the row.
+        if !self.store.create_worktree(&record, &session_id).await? {
+            anyhow::bail!("worktree {name} already exists");
+        }
+        self.store
+            .append_event(&format!("{} worktree.create {}", Utc::now(), name))
+            .await?;
         serde_json::to_string_pretty(&record).context("failed to serialize worktree")
     }
 
-    pub fn list(&self) -> Result<String> {
-        let index = self.index.read().unwrap_or_default();
-        if index.worktrees.is_empty() {
+    pub async fn list(&self) -> Result<String> {
+        let worktrees = self.store.list_worktrees().await?;
+        if worktrees.is_empty() {
             return Ok("No worktrees.".to_string());
         }
-        Ok(index
-            .worktrees
+        Ok(worktrees
             .into_iter()
             .map(|worktree| format!("{} {} {}", worktree.name, worktree.branch, worktree.path))
             .collect::<Vec<_>>()
             .join("\n"))
     }
 
-    pub fn status(&self, name: &str) -> Result<String> {
-        let record = self.find(name)?;
+    pub async fn status(&self, name: &str) -> Result<String> {
+        let record = self.find(name).await?;
         let output = Command::new("git")
             .current_dir(&record.path)
             .arg("status")
@@ -134,8 +131,8 @@ impl WorktreeManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    pub fn run(&mut self, name: &str, command: &str) -> Result<String> {
-        let record = self.find(name)?;
+    pub async fn run(&self, name: &str, command: &str) -> Result<String> {
+        let record = self.find(name).await?;
         let output = Command::new("sh")
             .current_dir(&record.path)
             .arg("-c")
@@ -149,27 +146,14 @@ impl WorktreeManager {
         ))
     }
 
-    pub fn events(&self, limit: usize) -> Result<String> {
-        let index = self.index.read().unwrap_or_default();
-        Ok(index
-            .events
-            .into_iter()
-            .rev()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n"))
+    pub async fn events(&self, limit: usize) -> Result<String> {
+        Ok(self.store.recent_events(limit).await?.join("\n"))
     }
 
-    fn find(&self, name: &str) -> Result<WorktreeRecord> {
-        self.index
-            .read()
-            .unwrap_or_default()
-            .worktrees
-            .into_iter()
-            .find(|worktree| worktree.name == name)
+    async fn find(&self, name: &str) -> Result<WorktreeRecord> {
+        self.store
+            .find_worktree(name)
+            .await?
             .with_context(|| format!("worktree {name} not found"))
     }
 }
@@ -177,43 +161,33 @@ impl WorktreeManager {
 impl SharedWorktreeManager {
     pub fn new(manager: WorktreeManager) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(manager)),
+            inner: Arc::new(manager),
         }
     }
 
-    pub fn with_manager<T>(&self, f: impl FnOnce(&mut WorktreeManager) -> Result<T>) -> Result<T> {
-        let mut manager = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("worktree manager lock poisoned"))?;
-        f(&mut manager)
+    pub async fn create(
+        &self,
+        name: String,
+        task_id: Option<u64>,
+        base_ref: String,
+        session_id: String,
+    ) -> Result<String> {
+        self.inner.create(name, task_id, base_ref, session_id).await
     }
 
-    pub fn create(&self, name: String, task_id: Option<u64>, base_ref: String) -> Result<String> {
-        self.with_manager(|manager| manager.create(name, task_id, base_ref))
+    pub async fn list(&self) -> Result<String> {
+        self.inner.list().await
     }
 
-    pub fn list(&self) -> Result<String> {
-        self.with_manager(|manager| manager.list())
+    pub async fn status(&self, name: &str) -> Result<String> {
+        self.inner.status(name).await
     }
 
-    pub fn status(&self, name: &str) -> Result<String> {
-        self.with_manager(|manager| manager.status(name))
+    pub async fn run(&self, name: &str, command: &str) -> Result<String> {
+        self.inner.run(name, command).await
     }
 
-    pub fn run(&self, name: &str, command: &str) -> Result<String> {
-        self.with_manager(|manager| manager.run(name, command))
-    }
-
-    pub fn events(&self, limit: usize) -> Result<String> {
-        self.with_manager(|manager| manager.events(limit))
-    }
-}
-
-impl std::ops::Deref for SharedWorktreeManager {
-    type Target = Arc<Mutex<WorktreeManager>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    pub async fn events(&self, limit: usize) -> Result<String> {
+        self.inner.events(limit).await
     }
 }

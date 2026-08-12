@@ -36,6 +36,26 @@ pub enum OpenAiProtocol {
     Responses,
 }
 
+/// Wire dialect used by a Chat Completions request.
+///
+/// DeepSeek and Kimi are not separate providers: they share the
+/// OpenAI-compatible transport and only differ in the body fields injected by
+/// their [`crate::OpenAiBodyHook`] implementations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatCompletionsDialect {
+    Standard,
+    DeepSeek,
+    Kimi,
+}
+
+impl ChatCompletionsDialect {
+    /// Whether this dialect injects a top-level `user_id` for KV-cache
+    /// isolation. Only DeepSeek currently supports it.
+    pub fn supports_user_id(self) -> bool {
+        matches!(self, Self::DeepSeek)
+    }
+}
+
 /// Reasoning effort forwarded to OpenAI reasoning models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -85,6 +105,25 @@ impl FromStr for OpenAiReasoningEffort {
 impl fmt::Display for OpenAiReasoningEffort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Convert Tact's provider-agnostic effort into the SDK's typed
+/// `ReasoningEffort` (vendored `async-openai-local`), so the Responses
+/// adapter can build the request with the typed builder instead of injecting
+/// `reasoning.effort` through JSON. The vendor adds `Max` so every variant
+/// maps one-to-one; the wire strings match `as_str()`.
+impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::ReasoningEffort {
+    fn from(effort: OpenAiReasoningEffort) -> Self {
+        match effort {
+            OpenAiReasoningEffort::None => Self::None,
+            OpenAiReasoningEffort::Minimal => Self::Minimal,
+            OpenAiReasoningEffort::Low => Self::Low,
+            OpenAiReasoningEffort::Medium => Self::Medium,
+            OpenAiReasoningEffort::High => Self::High,
+            OpenAiReasoningEffort::Xhigh => Self::Xhigh,
+            OpenAiReasoningEffort::Max => Self::Max,
+        }
     }
 }
 

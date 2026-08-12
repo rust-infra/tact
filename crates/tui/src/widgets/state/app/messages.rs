@@ -112,7 +112,7 @@ impl App {
     }
 
     /// Load persisted session messages into the Log area.
-    /// Converts stored `Message` objects into display lines.
+    /// Converts stored `Message` objects into display cells or lines.
     /// Only `Text` blocks are rendered; `Thinking`, `ToolUse`, `ToolResult`,
     /// and `Image` blocks are skipped.
     pub(crate) fn load_history(&mut self, messages: Vec<Message>) {
@@ -125,10 +125,7 @@ impl App {
                     }
                     match msg.role {
                         Role::User => self.add_user_message(content.clone()),
-                        Role::Assistant => {
-                            let (lines, raw_lines) = render_markdown_tui(content, &self.theme);
-                            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
-                        }
+                        Role::Assistant => self.append_markdown(content.clone()),
                     }
                     continue;
                 }
@@ -158,8 +155,7 @@ impl App {
                     self.add_new_line();
                     for block in &blocks {
                         if let ContentBlock::Text { text } = block {
-                            let (lines, raw_lines) = render_markdown_tui(text, &self.theme);
-                            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+                            self.append_markdown(text.clone());
                         }
                     }
                 }
@@ -283,7 +279,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.copy_text(&text);
+        self.copy_text_without_preview(&text);
     }
 
     /// Add a user input message and record it in task history.

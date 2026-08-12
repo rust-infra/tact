@@ -82,6 +82,7 @@ impl App {
             "skill-reload" => msgs.cmd_skill_reload.to_string(),
             "plugin" => msgs.cmd_plugin.to_string(),
             "tasks-dag" => msgs.cmd_tasks_dag.to_string(),
+            "background" => msgs.cmd_background.to_string(),
             _ => cmd.to_string(),
         }
     }

@@ -5,11 +5,10 @@ use std::{
 
 use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
-    background::SharedBackgroundManager,
+    background::{BackgroundManager, SharedBackgroundManager},
     cron::{CronScheduler, SharedCronScheduler},
     memory::MemoryManager,
     skill::{SharedSkillRegistry, SkillRegistry},
-    store::StoreRoot,
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     worktree::{SharedWorktreeManager, WorktreeManager},
@@ -40,11 +39,34 @@ pub async fn run_tool_result<T: Tool + 'static>(
         .await
 }
 
+/// Runs a future to completion on a fresh thread with its own runtime.
+///
+/// `test_context` is synchronous (called from 80+ sync test helpers), but
+/// `TaskManager::new` is async. A scoped thread with a fresh runtime avoids
+/// "cannot start a runtime from within a runtime" when the caller is already
+/// inside a `#[tokio::test]` body.
+fn block_on<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Runtime::new()
+                    .expect("failed to create tokio runtime")
+                    .block_on(future)
+            })
+            .join()
+            .expect("block_on thread panicked")
+    })
+}
+
 pub fn test_context(name: &str) -> ToolContext {
     let root_dir = std::env::temp_dir().join(format!("tact-tool-test-{name}"));
     let _ = std::fs::remove_dir_all(&root_dir);
     std::fs::create_dir_all(&root_dir).unwrap();
-    let store_root = StoreRoot::new(root_dir.join(".tact")).unwrap();
+    let db_path = root_dir.join(".tact").join("tact.db");
 
     ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
@@ -54,12 +76,16 @@ pub fn test_context(name: &str) -> ToolContext {
             root_dir.join(".tact/memory"),
         ))),
         work_dir: root_dir.clone(),
-        task_manager: SharedTaskManager::new(TaskManager::new(&store_root).unwrap()),
-        background_manager: SharedBackgroundManager::new(&store_root).unwrap(),
-        cron_scheduler: SharedCronScheduler::new(CronScheduler::new(&store_root).unwrap()),
-        teammate_manager: SharedTeammateManager::new(TeammateManager::new(&store_root).unwrap()),
+        task_manager: SharedTaskManager::new(block_on(TaskManager::new(&db_path)).unwrap()),
+        background_manager: SharedBackgroundManager::new(
+            block_on(BackgroundManager::new(&db_path)).unwrap(),
+        ),
+        cron_scheduler: SharedCronScheduler::new(block_on(CronScheduler::new(&db_path)).unwrap()),
+        teammate_manager: SharedTeammateManager::new(
+            block_on(TeammateManager::new(&db_path)).unwrap(),
+        ),
         worktree_manager: SharedWorktreeManager::new(
-            WorktreeManager::new(&store_root, root_dir).unwrap(),
+            block_on(WorktreeManager::new(&db_path, root_dir)).unwrap(),
         ),
         ui_tx: None,
         progress_reporter: super::ToolProgressReporter::default(),

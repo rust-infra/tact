@@ -9,9 +9,10 @@ use tact_protocol::TokenUsageInfo;
 use super::{
     MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary, process_identity::process_identity,
 };
+use crate::store::sqlite::{PoolRef, open_pool};
 
 pub struct SqliteSessionStore {
-    pool: SqlitePool,
+    pool: PoolRef,
 }
 
 impl SqliteSessionStore {
@@ -40,24 +41,7 @@ impl SqliteSessionStore {
     }
 
     pub async fn new(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("failed to create database directory")?;
-        }
-        // sqlx may fail to open a non-existent database file in some environments;
-        // create an empty file first to ensure it's present.
-        if let Err(e) = tokio::fs::metadata(path).await
-            && e.kind() == std::io::ErrorKind::NotFound
-        {
-            tokio::fs::File::create(path)
-                .await
-                .context("failed to create database file")?;
-        }
-        let url = format!("sqlite:{}", path.display());
-        let pool = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
+        let pool = open_pool(path).await?;
 
         sqlx::query(
             r#"
@@ -72,7 +56,7 @@ impl SqliteSessionStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create sessions table")?;
 
@@ -92,17 +76,17 @@ impl SqliteSessionStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create messages table")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
-            .execute(&pool)
+            .execute(&*pool)
             .await
             .context("failed to create messages index")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);")
-            .execute(&pool)
+            .execute(&*pool)
             .await
             .context("failed to create messages created_at index")?;
 
@@ -126,14 +110,14 @@ impl SqliteSessionStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create token_usages table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create token_usages index")?;
 
@@ -147,14 +131,14 @@ impl SqliteSessionStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create input_history table")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_input_history_session_id ON input_history(session_id);",
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create input_history index")?;
 
@@ -172,7 +156,7 @@ impl SqliteSessionStore {
             );
             "#,
         )
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .context("failed to create responses_states table")?;
 
@@ -184,10 +168,10 @@ impl SqliteSessionStore {
     }
 
     async fn trim_input_history(&self, session_id: &str, keep: usize) -> Result<()> {
-        let pool = self.pool.clone();
+        let pool: &SqlitePool = &self.pool;
         let row = sqlx::query("SELECT COUNT(*) as cnt FROM input_history WHERE session_id = ?")
             .bind(session_id)
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .context("failed to count input history entries")?;
         let count: i64 = row.try_get("cnt")?;
@@ -211,7 +195,7 @@ impl SqliteSessionStore {
         .bind(session_id)
         .bind(session_id)
         .bind(excess)
-        .execute(&pool)
+        .execute(pool)
         .await
         .context("failed to trim input history")?;
         Ok(())
@@ -273,7 +257,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(now)
         .bind(root_dir)
         .bind(ref_id)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to create session")?;
         Ok(())
@@ -293,7 +277,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(now)
         .bind(root_dir)
         .bind(ref_id)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to ensure session row")?;
         Ok(())
@@ -305,7 +289,7 @@ impl super::SessionStore for SqliteSessionStore {
             .bind(now)
             .bind(root_dir)
             .bind(id)
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await
             .context("failed to touch session")?;
         Ok(())
@@ -329,7 +313,7 @@ impl super::SessionStore for SqliteSessionStore {
                 .bind(content_json)
                 .bind(ordinal)
                 .bind(now)
-                .execute(&self.pool)
+                .execute(&*self.pool)
                 .await
                 .context("failed to insert message")?
                 .last_insert_rowid();
@@ -337,7 +321,7 @@ impl super::SessionStore for SqliteSessionStore {
         sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
             .bind(now)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await
             .context("failed to update session timestamp")?;
 
@@ -408,7 +392,7 @@ impl super::SessionStore for SqliteSessionStore {
     ) -> Result<Option<ProviderConversationState>> {
         let row = sqlx::query("SELECT state_json FROM responses_states WHERE session_id = ?")
             .bind(session_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&*self.pool)
             .await
             .context("failed to load provider state")?;
 
@@ -528,7 +512,7 @@ impl super::SessionStore for SqliteSessionStore {
             "SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
         )
         .bind(session_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await
         .context("failed to load session messages")?;
 
@@ -570,7 +554,7 @@ impl super::SessionStore for SqliteSessionStore {
                 "#,
             )
             .bind(root)
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await
             .context("failed to list sessions")?
         } else {
@@ -589,7 +573,7 @@ impl super::SessionStore for SqliteSessionStore {
                 ORDER BY s.updated_at DESC
                 "#,
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&*self.pool)
             .await
             .context("failed to list sessions")?
         };
@@ -672,7 +656,7 @@ impl super::SessionStore for SqliteSessionStore {
     async fn count_messages_by_session(&self, session_id: &str) -> Result<i64> {
         let row = sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = ?")
             .bind(session_id)
-            .fetch_one(&self.pool)
+            .fetch_one(&*self.pool)
             .await
             .context("failed to count messages by session")?;
         Ok(row.try_get("cnt")?)
@@ -689,7 +673,7 @@ impl super::SessionStore for SqliteSessionStore {
             ORDER BY label DESC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await
         .context("failed to count messages daily")?;
 
@@ -714,7 +698,7 @@ impl super::SessionStore for SqliteSessionStore {
             ORDER BY label DESC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await
         .context("failed to count messages weekly")?;
 
@@ -739,7 +723,7 @@ impl super::SessionStore for SqliteSessionStore {
             ORDER BY label DESC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await
         .context("failed to count messages monthly")?;
 
@@ -755,7 +739,7 @@ impl super::SessionStore for SqliteSessionStore {
 
     async fn count_messages_total(&self) -> Result<i64> {
         let row = sqlx::query("SELECT COUNT(*) as cnt FROM messages")
-            .fetch_one(&self.pool)
+            .fetch_one(&*self.pool)
             .await
             .context("failed to count total messages")?;
         Ok(row.try_get("cnt")?)
@@ -763,7 +747,7 @@ impl super::SessionStore for SqliteSessionStore {
 
     async fn count_sessions_total(&self) -> Result<i64> {
         let row = sqlx::query("SELECT COUNT(*) as cnt FROM sessions")
-            .fetch_one(&self.pool)
+            .fetch_one(&*self.pool)
             .await
             .context("failed to count total sessions")?;
         Ok(row.try_get("cnt")?)
@@ -805,7 +789,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(first_message_id)
         .bind(last_message_id)
         .bind(request_body)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to record token usage")?;
         Ok(())
@@ -816,7 +800,7 @@ impl super::SessionStore for SqliteSessionStore {
             "SELECT request_body FROM token_usages WHERE session_id = ? AND request_body IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .bind(session_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&*self.pool)
         .await
         .context("failed to load latest request body")?;
         row.map(|row| row.try_get("request_body"))
@@ -847,7 +831,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(schedule_json)
         .bind(session_id)
         .bind(last_message_id)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to record tool schedule")?;
         Ok(())
@@ -857,7 +841,7 @@ impl super::SessionStore for SqliteSessionStore {
         let rows =
             sqlx::query("SELECT content FROM input_history WHERE session_id = ? ORDER BY id ASC")
                 .bind(session_id)
-                .fetch_all(&self.pool)
+                .fetch_all(&*self.pool)
                 .await
                 .context("failed to load input history")?;
 
@@ -879,7 +863,7 @@ impl super::SessionStore for SqliteSessionStore {
         sqlx::query("INSERT INTO input_history (session_id, content) VALUES (?, ?)")
             .bind(session_id)
             .bind(content)
-            .execute(&self.pool)
+            .execute(&*self.pool)
             .await
             .context("failed to append input history entry")?;
         Ok(())
@@ -906,7 +890,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(session_id)
         .bind(pid_i64)
         .bind(&lock_epoch)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to acquire session lock")?;
 
@@ -916,7 +900,7 @@ impl super::SessionStore for SqliteSessionStore {
 
         let row = sqlx::query("SELECT locked_by, lock_epoch FROM sessions WHERE id = ?")
             .bind(session_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&*self.pool)
             .await
             .context("failed to read session lock")?;
 
@@ -946,7 +930,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(session_id)
         .bind(holder)
         .bind(&holder_epoch)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to steal stale session lock")?;
 
@@ -970,7 +954,7 @@ impl super::SessionStore for SqliteSessionStore {
         .bind(session_id)
         .bind(pid_i64)
         .bind(lock_epoch)
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to release session lock")?;
         if result.rows_affected() == 0 {
@@ -998,7 +982,7 @@ impl SqliteSessionStore {
             END;
             "#,
         )
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to install test failure trigger")?;
         Ok(())
@@ -1021,7 +1005,7 @@ impl SqliteSessionStore {
             END;
             "#,
         )
-        .execute(&self.pool)
+        .execute(&*self.pool)
         .await
         .context("failed to install token usage failure trigger")?;
         Ok(())
@@ -1192,7 +1176,7 @@ mod tests {
             .unwrap();
 
         let row = sqlx::query("SELECT tool_schedule FROM token_usages WHERE last_message_id = 7")
-            .fetch_one(&store.pool)
+            .fetch_one(&*store.pool)
             .await
             .unwrap();
         let stored: Option<String> = row.try_get("tool_schedule").unwrap();
@@ -1253,7 +1237,7 @@ mod tests {
              first_message_id, last_message_id, tool_schedule \
              FROM token_usages WHERE session_id = 'session-1'",
         )
-        .fetch_all(&store.pool)
+        .fetch_all(&*store.pool)
         .await
         .unwrap();
         assert_eq!(
@@ -1348,7 +1332,7 @@ mod tests {
         let rows = sqlx::query(
             "SELECT call_type FROM token_usages WHERE session_id = 'session-1' ORDER BY id",
         )
-        .fetch_all(&store.pool)
+        .fetch_all(&*store.pool)
         .await
         .unwrap();
         let call_types: Vec<String> = rows
@@ -1499,7 +1483,7 @@ mod tests {
 
         let row =
             sqlx::query("SELECT COUNT(*) as cnt FROM messages WHERE session_id = 'session-1'")
-                .fetch_one(&store.pool)
+                .fetch_one(&*store.pool)
                 .await
                 .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 1);
@@ -1556,7 +1540,7 @@ mod tests {
         let row = sqlx::query(
             "SELECT schema_version, provider, base_url, model, compaction_id, state_json FROM responses_states WHERE session_id = 'session-1'",
         )
-        .fetch_one(&store.pool)
+        .fetch_one(&*store.pool)
         .await
         .unwrap();
         assert_eq!(row.try_get::<i64, _>("schema_version").unwrap(), 1);
@@ -1720,7 +1704,7 @@ mod tests {
         let row = sqlx::query(
             "SELECT COUNT(*) as cnt FROM responses_states WHERE session_id = 'session-1'",
         )
-        .fetch_one(&store.pool)
+        .fetch_one(&*store.pool)
         .await
         .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 0);
@@ -1774,7 +1758,7 @@ mod tests {
             END;
             "#,
         )
-        .execute(&store.pool)
+        .execute(&*store.pool)
         .await
         .unwrap();
 
@@ -1867,7 +1851,7 @@ mod tests {
         let row = sqlx::query(
             "SELECT COUNT(*) as cnt FROM responses_states WHERE session_id = 'session-1'",
         )
-        .fetch_one(&store.pool)
+        .fetch_one(&*store.pool)
         .await
         .unwrap();
         assert_eq!(row.try_get::<i64, _>("cnt").unwrap(), 0);
@@ -1909,7 +1893,7 @@ mod tests {
         // contextual error, never be silently discarded.
         sqlx::query("UPDATE responses_states SET state_json = ? WHERE session_id = 'session-1'")
             .bind("{not valid json")
-            .execute(&store.pool)
+            .execute(&*store.pool)
             .await
             .unwrap();
 
@@ -1966,7 +1950,7 @@ mod tests {
             .bind(format!(
                 r#"{{"version": 1, "provider": "openai_responses", "base_url": "https://api.openai.com/v1", "model": "gpt-5.4-mini", "input_items": [{{"type": "message", "encrypted_content": "{LEAK_MARKER}"}}], "compaction_id": null, "is_compacted": false, "logical_message_count": "not-a-number", "logical_context_hash": "hash"}}"#
             ))
-            .execute(&store.pool)
+            .execute(&*store.pool)
             .await
             .unwrap();
 
@@ -2004,7 +1988,7 @@ mod tests {
         let lock_epoch = store.try_lock_session("session-1", pid).await.unwrap();
 
         let row = sqlx::query("SELECT locked_by, lock_epoch FROM sessions WHERE id = 'session-1'")
-            .fetch_one(&store.pool)
+            .fetch_one(&*store.pool)
             .await
             .unwrap();
         let locked_by: i64 = row.try_get("locked_by").unwrap();
@@ -2018,7 +2002,7 @@ mod tests {
             .unwrap();
 
         let row = sqlx::query("SELECT locked_by, lock_epoch FROM sessions WHERE id = 'session-1'")
-            .fetch_one(&store.pool)
+            .fetch_one(&*store.pool)
             .await
             .unwrap();
         let locked_by: i64 = row.try_get("locked_by").unwrap();
@@ -2068,7 +2052,7 @@ mod tests {
         sqlx::query("UPDATE sessions SET locked_by = ?, lock_epoch = ? WHERE id = 'session-1'")
             .bind(999_999_i64)
             .bind("stale-epoch")
-            .execute(&store.pool)
+            .execute(&*store.pool)
             .await
             .unwrap();
 
@@ -2076,7 +2060,7 @@ mod tests {
         store.try_lock_session("session-1", pid).await.unwrap();
 
         let row = sqlx::query("SELECT locked_by FROM sessions WHERE id = 'session-1'")
-            .fetch_one(&store.pool)
+            .fetch_one(&*store.pool)
             .await
             .unwrap();
         assert_eq!(row.try_get::<i64, _>("locked_by").unwrap(), i64::from(pid));
@@ -2113,7 +2097,7 @@ mod tests {
         assert_eq!(listed[0].id, "parent");
 
         let child_ref: String = sqlx::query("SELECT ref_id FROM sessions WHERE id = 'child'")
-            .fetch_one(&store.pool)
+            .fetch_one(&*store.pool)
             .await
             .unwrap()
             .try_get("ref_id")
@@ -2122,7 +2106,7 @@ mod tests {
 
         store.delete_session("parent").await.unwrap();
         let remaining = sqlx::query("SELECT id FROM sessions")
-            .fetch_all(&store.pool)
+            .fetch_all(&*store.pool)
             .await
             .unwrap();
         assert!(remaining.is_empty());

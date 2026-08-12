@@ -56,6 +56,11 @@ pub struct ToolPresentationInfo {
     pub detail: ToolDetailKind,
     pub popup: ToolPopupKind,
     pub compact_result_to_meta: bool,
+    /// Keep the tool card live after `StepFinished` so later `ToolProgress`
+    /// updates keep streaming and a follow-up event finalizes it. Used by
+    /// fire-and-forget tools such as `background_run`, whose invocation
+    /// returns immediately but whose underlying work continues.
+    pub keep_live: bool,
 }
 
 impl ToolPresentationInfo {
@@ -67,6 +72,7 @@ impl ToolPresentationInfo {
             detail: ToolDetailKind::Result,
             popup: ToolPopupKind::None,
             compact_result_to_meta: false,
+            keep_live: false,
         }
     }
 }
@@ -166,6 +172,7 @@ pub struct TaskSnapshot {
     pub id: u64,
     pub subject: String,
     pub status: TaskStatusSnapshot,
+    pub session_id: String,
     pub owner: String,
     /// Task ids that this task blocks (outgoing edges for DAG).
     pub blocks: Vec<u64>,
@@ -202,6 +209,11 @@ pub enum AgentUpdate {
     StepFailed {
         idx: usize,
         tool_id: String,
+        /// Tool argument summary (e.g. the web-search query) so a failed
+        /// card keeps a distinguishable title even when the failure arrives
+        /// without one. The TUI falls back to the `StepStarted` summary when
+        /// this is empty.
+        arg_summary: String,
         error: String,
     },
     /// Incremental text produced while a tool invocation is still running.
@@ -268,6 +280,18 @@ pub enum AgentUpdate {
         model: Option<String>,
         token_usage: Option<TokenUsageInfo>,
     },
+    /// Finalize a tool card that stayed live after its invocation returned
+    /// (see [`ToolPresentationInfo::keep_live`]). Emitted by background tasks
+    /// when the underlying process finishes.
+    BackgroundTaskFinished {
+        tool_id: String,
+        /// `true` when the command exited successfully.
+        success: bool,
+        /// One-line summary (e.g. `Background task 018f3a2c completed`).
+        message: String,
+        /// Final combined stdout+stderr output (already capped).
+        output: String,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -303,6 +327,10 @@ pub enum UserCommand {
     QueryBalance,
     /// Query session statistics (triggered by the /stats command)
     QueryStats,
+    /// Query background task status (triggered by the `/background` slash
+    /// command). `None` lists all tasks one line per task; `Some(id)` shows a
+    /// single task as pretty JSON.
+    QueryBackground(Option<String>),
     /// Set the active permission mode.
     /// The TUI sends this after the user picks through the `/permission` popup.
     /// Only affects the in-memory session; config is never written.
@@ -381,6 +409,7 @@ mod tests {
         assert_eq!(presentation.detail, ToolDetailKind::Result);
         assert_eq!(presentation.popup, ToolPopupKind::None);
         assert!(!presentation.keep_full_live_output);
+        assert!(!presentation.keep_live);
         assert!(!presentation.compact_result_to_meta);
     }
 

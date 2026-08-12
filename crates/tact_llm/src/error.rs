@@ -42,6 +42,9 @@ pub enum LlmError {
     /// Unsupported hook for provider.
     #[error("unsupported hook for provider: {0}")]
     UnsupportedHook(String),
+    /// Credential resolution / authentication failure.
+    #[error("authentication failed: {0}")]
+    Auth(String),
     /// Placeholder for test mocks.
     #[error("{0}")]
     Mock(String),

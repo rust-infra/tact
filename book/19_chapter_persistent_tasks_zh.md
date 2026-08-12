@@ -2,7 +2,7 @@
 
 > 语言：[中文](./19_chapter_persistent_tasks_zh.md) · [English](./19_chapter_persistent_tasks.md)
 
-本章涵盖 Tact 的 **durable 工作项跟踪器**：`task/` 模块、`.tact/tasks/` 下的 JSON 文件存储，以及四个 agent 工具 `task_create`、`task_get`、`task_list`、`task_update`。
+本章涵盖 Tact 的 **durable 工作项跟踪器**：`task/` 模块、`.tact/tact.db` 中的 SQLite 存储，以及四个 agent 工具 `task_create`、`task_get`、`task_list`、`task_update`。
 
 这与以下 **不是** 同一概念：
 
@@ -22,7 +22,7 @@ TaskManager 给 LLM 一个跨 turn 和会话的 **持久化 checklist**：
 - 分配 `owner` 字符串（队友约定——未强制）
 - 通过 `blockedBy` / `blocks` 边建模 **依赖**
 
-存储使用与 cron、后台任务相同的 [CollectionStore](./01_chapter_store_zh.md) 原语。
+存储使用与会话存储同一个 `tact.db` 中的 SQLite [TaskStore](./01_chapter_store_zh.md#6-session-store-sqlite)（`tasks` + `task_dependencies` 表）。cron 与后台任务仍使用 JSON [CollectionStore](./01_chapter_store_zh.md)。
 
 ---
 
@@ -40,33 +40,46 @@ pub struct TaskRecord {
     pub id: u64,
     pub subject: String,
     pub description: Option<String>,
+    pub session_id: String,   // 所属 agent 会话；会话外为空串
     pub status: TaskStatus,
-    pub blocked_by: Vec<u64>,   // JSON: blockedBy
+    pub blocked_by: Vec<u64>, // 序列化为 blockedBy
     pub blocks: Vec<u64>,
     pub owner: String,
 }
-
-pub struct TaskIndex {
-    pub next_id: u64,
-}
 ```
 
-ID 从 `tasks/index.json` 中的 `next_id` 单调递增（从 1 开始）。
+ID 由 SQLite `INTEGER PRIMARY KEY AUTOINCREMENT` 分配（不复用，从 1 开始）。`task_create` 从工具上下文填充 `session_id`。旧 JSON 布局（`.tact/tasks/*.json` + `index.json`）不再读取。
 
 ---
 
 ## 3. 存储布局
 
-```text
-.tact/
-└── tasks/
-    ├── index.json          # { "next_id": N }
-    ├── task_1.json
-    ├── task_2.json
-    └── …
+`<workdir>/.tact/tact.db` 中的 SQLite 表（由 `SqliteTaskStore::new` 建表）：
+
+```sql
+CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject      TEXT    NOT NULL,
+    description  TEXT,
+    session_id   TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','in_progress','completed','deleted')),
+    owner        TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    started_at   INTEGER,
+    completed_at INTEGER
+);
+CREATE INDEX idx_tasks_session_id ON tasks(session_id);
+
+CREATE TABLE task_dependencies (
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    PRIMARY KEY (blocker_id, blocked_id)
+);
+CREATE INDEX idx_task_deps_blocked ON task_dependencies(blocked_id);
 ```
 
-每个 task 是一个 JSON 文件，键为 `task_{id}`。`TaskManager::new` 在缺失时初始化 `index.json`。
+无外键——依赖边由应用层清理（与会话存储同一约定）。连接 PRAGMA：`busy_timeout = 5000`（跨进程写等待）。
 
 ---
 
@@ -74,7 +87,7 @@ ID 从 `tasks/index.json` 中的 `next_id` 单调递增（从 1 开始）。
 
 | API | 行为 |
 |-----|------|
-| `create(subject, description)` | 分配 id，以 `Pending` 写入记录 |
+| `create(subject, description, session_id)` | 以 `Pending` 插入记录，id 自动分配 |
 | `get(id)` | 加载单条记录 |
 | `list()` | 加载所有记录，按 id 排序 |
 | `update(id, TaskUpdate)` | 补丁 status、owner、依赖边 |
@@ -82,12 +95,7 @@ ID 从 `tasks/index.json` 中的 `next_id` 单调递增（从 1 开始）。
 
 ### 依赖更新
 
-在 task A 上应用 `add_blocks: [B]` 时：
-
-1. A 的 `blocks` 列表增加 B
-2. B 的 `blocked_by` 列表增加 A（自动写入反向边）
-
-当 task 标记为 **`Completed`** 时，`clear_dependency` 从其 id 从每个其他 task 的 `blocked_by` 列表中移除。
+边只存在 `task_dependencies` 表中（无镜像字段）。在 task A 上应用 `add_blocks: [B]` 时，在 `BEGIN IMMEDIATE` 事务内插入一行 `(A, B)`；反向边在读取时推导。task 标记为 **`Completed`** 时，同一事务删除其全部边（`DELETE ... WHERE blocker_id = ? OR blocked_id = ?`）——无需全表扫描，无 ghost 边。
 
 ---
 
@@ -115,14 +123,14 @@ ID 从 `tasks/index.json` 中的 `next_id` 单调递增（从 1 开始）。
 ## 6. 接线
 
 ```rust
-// tui.rs 启动
-let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
+// tui.rs 启动（async）
+let task_manager = SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
 
 // ToolContext
 pub task_manager: SharedTaskManager,
 ```
 
-`SharedTaskManager` 包装 `Arc<Mutex<TaskManager>>` — 四个工具通过 `ToolContext` 锁定同一 manager。
+`SharedTaskManager` 包装 `Arc<TaskManager>` — SQLite 连接池已串行化写入，无需额外 mutex。四个工具通过 `ToolContext` 共享同一 manager。
 
 只在主 `toolset()` 注册——**不在** `subagent_toolset()` 中。
 
@@ -147,11 +155,13 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/task/mod.rs` | `TaskManager`、`TaskRecord`、依赖逻辑、渲染辅助 |
+| `crates/tact/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）、`TaskRecord`、渲染辅助 |
+| `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait |
+| `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — schema、事务、边查询 |
 | `crates/tact/src/tool/task.rs` | 四个 `#[tool]` 处理器 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `task_*` 工具 |
-| `crates/tact/src/store/` | `CollectionStore`、`Store` 原语 |
+
 
 ---
 
@@ -161,7 +171,7 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 |------|------|
 | **无 `task_delete` 工具** | Manager API 有软删除但无暴露工具（通过 update 用 `status: deleted`） |
 | **Owner 是不透明字符串** | 未链接 [Team](./14_chapter_team.md) roster 校验 |
-| **无自动 unblock 规则** | 只有完成会清 `blocked_by`；已删 blocker 留下陈旧边 |
+| **无自动 unblock 规则** | 只有完成会清边；已删 blocker 留下陈旧边 |
 | **列表顺序固定为 id** | 无 priority 或 due date 字段 |
 | **第 1 章交叉链接曾误导** | 曾指向第 11 章调度 — 已在 store 章更正 |
 

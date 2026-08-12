@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tact::{
     Agent, AgentSystemPrompt,
-    background::SharedBackgroundManager,
+    background::{BackgroundManager, SharedBackgroundManager},
     config::CliArgs,
     consts::TactPath,
     cron::{CronScheduler, SharedCronScheduler},
@@ -10,7 +10,7 @@ use tact::{
     mcp::load_mcp_router,
     memory::get_memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
-    store::{DynSessionStore, StoreRoot},
+    store::DynSessionStore,
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
@@ -73,21 +73,21 @@ async fn run_headless_locked(
     session_store: DynSessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let client = get_llm_client()?;
+    let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(&tact_path);
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     eprintln!("[permission: {mode}]");
 
-    let store_root = StoreRoot::new(tact_path.tact_dir())?;
     let work_dir = tact_path.workdir().to_path_buf();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
-    let task_manager = SharedTaskManager::new(TaskManager::new(&store_root)?);
-    let background_manager = SharedBackgroundManager::new(&store_root)?;
-    let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&store_root)?);
-    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&store_root)?);
+    let db_path = tact_path.session_db_path();
+    let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
+    let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
+    let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&db_path).await?);
+    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
-        SharedWorktreeManager::new(WorktreeManager::new(&store_root, work_dir.clone())?);
+        SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
     let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
         tact_path.memory_dir(),
     )?));

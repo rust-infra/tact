@@ -680,7 +680,7 @@ pub(crate) mod tests {
             max_tokens: 4096,
         });
 
-        let (body, _) = super::super::convert::create_response(&request, None, None)
+        let (body, _) = super::super::convert::create_response(&request, None, None, false)
             .expect("round-trip request");
         let input = body["input"].as_array().unwrap();
         let reasoning = input
