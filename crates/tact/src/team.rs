@@ -82,28 +82,15 @@ impl TeammateManager {
     }
 
     pub async fn send_message(&self, from: String, to: String, body: String) -> Result<String> {
-        let message = InboxMessage {
-            from,
-            to: to.clone(),
-            body,
-            kind: "message".to_string(),
-            created_at: Utc::now(),
-        };
-        self.store.append_message(&to, &message).await?;
+        self.deliver(from, &to, "message", body).await?;
         Ok(format!("sent message to {to}"))
     }
 
     pub async fn broadcast(&self, from: String, body: String) -> Result<String> {
         let teammates = self.store.list_teammates().await?;
         for teammate in &teammates {
-            let message = InboxMessage {
-                from: from.clone(),
-                to: teammate.name.clone(),
-                body: body.clone(),
-                kind: "message".to_string(),
-                created_at: Utc::now(),
-            };
-            self.store.append_message(&teammate.name, &message).await?;
+            self.deliver(from.clone(), &teammate.name, "message", body.clone())
+                .await?;
         }
         Ok(format!("broadcast to {} teammates", teammates.len()))
     }
@@ -123,15 +110,20 @@ impl TeammateManager {
         kind: String,
         body: String,
     ) -> Result<String> {
+        self.deliver(from, &to, &kind, body).await?;
+        Ok(format!("sent protocol request to {to}"))
+    }
+
+    /// Builds an inbox message and appends it to the recipient's inbox.
+    async fn deliver(&self, from: String, to: &str, kind: &str, body: String) -> Result<()> {
         let message = InboxMessage {
             from,
-            to: to.clone(),
+            to: to.to_string(),
             body,
-            kind,
+            kind: kind.to_string(),
             created_at: Utc::now(),
         };
-        self.store.append_message(&to, &message).await?;
-        Ok(format!("sent protocol request to {to}"))
+        self.store.append_message(to, &message).await
     }
 }
 
@@ -170,13 +162,5 @@ impl SharedTeammateManager {
         body: String,
     ) -> Result<String> {
         self.inner.protocol_request(from, to, kind, body).await
-    }
-}
-
-impl std::ops::Deref for SharedTeammateManager {
-    type Target = Arc<TeammateManager>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }

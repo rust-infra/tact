@@ -191,11 +191,3 @@ impl SharedWorktreeManager {
         self.inner.events(limit).await
     }
 }
-
-impl std::ops::Deref for SharedWorktreeManager {
-    type Target = Arc<WorktreeManager>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}

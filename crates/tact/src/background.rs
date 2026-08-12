@@ -203,14 +203,6 @@ impl SharedBackgroundManager {
     }
 }
 
-impl std::ops::Deref for SharedBackgroundManager {
-    type Target = Arc<BackgroundManager>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 /// Handle for a `background_run` invocation to stream live output into the
 /// TUI tool card while the task runs, then finalize it on completion.
 #[derive(Clone, Debug)]
