@@ -57,6 +57,11 @@ impl PermissionPolicy {
                     .unwrap_or("");
                 if cmd.starts_with("sudo ") || cmd.starts_with("su ") {
                     CapabilityRisk::High
+                } else if super::readonly_shell::is_read_only_shell_command(cmd) {
+                    // Provably read-only commands (ls, grep, cat, git status,
+                    // …) are auto-allowed — this is what lets plan mode run
+                    // inspection commands. Anything ambiguous stays Write.
+                    CapabilityRisk::Read
                 } else {
                     CapabilityRisk::Write
                 }
@@ -340,18 +345,36 @@ mod tests {
     }
 
     #[test]
-    fn shell_permission_policy_classifies_common_cmd_as_write_and_sudo_as_high() {
+    fn shell_permission_policy_classifies_readonly_as_read_and_others_as_write_or_high() {
         let policy = PermissionPolicy::ShellCommand {
             command_field: "command",
         };
-        // Non-sudo commands are classified as Write because we cannot
-        // distinguish read-only from destructive shell commands.
+        // Provably read-only commands (no shell metacharacters, safelisted
+        // program) are classified as Read so plan mode can run inspection.
+        assert_eq!(
+            policy.resolve(&json!({"command": "ls -la"})),
+            CapabilityRisk::Read
+        );
+        assert_eq!(
+            policy.resolve(&json!({"command": "grep -rn needle ."})),
+            CapabilityRisk::Read
+        );
         assert_eq!(
             policy.resolve(&json!({"command": "git status"})),
+            CapabilityRisk::Read
+        );
+        // Unknown programs, shell metacharacters, and unsafe options stay
+        // Write because we cannot distinguish them from destructive commands.
+        assert_eq!(
+            policy.resolve(&json!({"command": "cargo test"})),
             CapabilityRisk::Write
         );
         assert_eq!(
-            policy.resolve(&json!({"command": "cargo test"})),
+            policy.resolve(&json!({"command": "ls | wc -l"})),
+            CapabilityRisk::Write
+        );
+        assert_eq!(
+            policy.resolve(&json!({"command": "find . -delete"})),
             CapabilityRisk::Write
         );
         // sudo / su commands are classified as High.

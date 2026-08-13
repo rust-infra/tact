@@ -29,6 +29,46 @@
 
 ---
 
+## 1. 2026-08-13 — Plan mode 只读 shell 分类加固：拒绝换行符命令分隔
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | `split_plain_command` 把 `\n` / `\r` 当作普通空白跳过，但对 `sh -c` 而言裸换行（以及 CRLF 输入中的 `\r`）是命令分隔符而非词分隔符。于是 `ls\nrm file` 能通过纯命令切分，白名单首词 `ls` 被归为 Read，在 plan mode 下自动放行——第二条变更命令被静默携带执行。 |
+| 决策 | 切分器在扫描分隔符时一旦遇到裸 `\n` / `\r` 立即返回 `None`，任何含换行的多命令字符串保持未分类（回退到 `Write` / 提示）。单/双引号内的字面换行仍是词字符，继续放行。同一次改动把 git 全局选项处理统一进单张 `GIT_GLOBAL_OPTIONS` 表（每条记录是否消费下一个 token），同时驱动 `find_git_subcommand` 的跳过逻辑与 `git_has_unsafe_global_option`，避免两处检查再次漂移。 |
+| 改后行为 | `ls\nrm file`、`echo hi\nrm -f x`、CRLF 变体及行首/行尾裸换行一律归为 **Write**（plan mode 下提示/拒绝）；`echo "line1\nline2"`、`cat "file\nname"`（引号内字面换行）仍为 Read。 |
+| 指针 | `crates/tact/src/tool/readonly_shell.rs`（`split_plain_command`、`GIT_GLOBAL_OPTIONS`、`find_git_global_option`、`git_has_unsafe_global_option`）；同文件回归测试；[Ch 10](./10_chapter_permission_zh.md) §7。 |
+
+## 1. 2026-08-13 — OpenAI 兼容 Chat Completions 将传输失败以 `LlmError::Request` 呈现
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | OpenAI 兼容适配器把发送/连接/读响应失败报成 `LlmError::Unsupported("HTTP request failed: …")`，混淆了"端点不支持"与"请求根本没发出去"；token 数用 `u64 as u32` 强转（超限时截断误导）；工具调用 `arguments` 载荷非法 JSON 时被静默替换为 `{}`，无任何痕迹。 |
+| 决策 | 新增 `LlmError::Request(String)` 变体承载请求传输/反序列化错误（API HTTP 错误仍走 `HttpError`）。流式与非流式路径都改发已序列化的 JSON 字节（`body` + 显式 `Content-Type`），不再用 `.json()` 二次序列化。token 数 `u64 → u32` 饱和转换（`u32_token_count`）。非法工具参数在 `debug` 级记录（error、工具名、原始 args）后回退为空对象。 |
+| 改后行为 | 端点不可达/连接断开时显示 `request error: …` 而非 `unsupported: …`；超限 token 数饱和而非回绕；非法工具参数可在 debug 日志中看到。 |
+| 指针 | `crates/tact_llm/src/error.rs`（`LlmError::Request`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter` chat/流式路径、`u32_token_count`、`tool_use_block_from_parts`）；[Ch 22](./22_chapter_llm_zh.md)。 |
+
+## 1. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | 输入框高度与行数统计只数显式 `\n`，单条超长行会溢出 3 行上限；光标/滚动按逻辑行计算，与实际渲染不一致（长输入时光标画错行列）。 |
+| 决策 | `render/input.rs` 新增 `wrap_line`（按字符边界软换行、CJK 双宽感知；`Paragraph` 保持不换行、逐行绘制这些切分）与 `caret_in_wrapped`（逻辑光标列 → 显示行列）。框高、行数统计、滚动钳制与光标定位全部改用显示行。 |
+| 改后行为 | 长行在框内折行而非溢出；高度随折行自动扩展（1–3 显示行 + border）；光标与滚动跟随折行行。提交文本不变。 |
+| 指针 | `crates/tui/src/render/input.rs`（`wrap_line`、`caret_in_wrapped`）；`crates/tui/src/lib.rs`（输入框高度）；测试见 `input.rs`（`wrap_line_splits_at_column_width`、`caret_in_wrapped_maps_logical_column_to_display_row`、`input_box_soft_wraps_overlong_line`、`input_box_scrolls_to_caret_on_wrapped_line`）；[第 23 章](./23_chapter_tui_zh.md) §6.2、§6.6。 |
+
+## 1. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `optimization` |
+| 现象 / 动机 | Plan mode 拒绝一切归类为 `Write` 的工具，而 shell 命令此前一律归为 `Write`（仅 `sudo ` / `su ` 开头为 `High`），导致 `ls` / `grep` 这类规划 agent 最需要的探查命令在 plan mode 下也被硬拒绝。 |
+| 决策 | `PermissionPolicy::ShellCommand::resolve` 现在在命令**可证明只读**时将其归为 `Read`，依托新的保守分类器 `crates/tact/src/tool/readonly_shell.rs`：(1) 纯命令切分，拒绝任何 shell 元字符（管道、重定向、`$`、反引号、glob、转义等），保证分类不会与 `sh -c` 实际执行内容产生分歧；(2) 白名单程序（仅凭选项无法写入），如 `ls`、`grep`、`cat`、`head`、`tail`、`wc`、`git status/log/diff/show/branch`，以及排除危险旗标的 `find`/`rg`/`base64`/`sed` 等，镜像 OpenAI Codex 的 `is_known_safe_command`（`codex-rs/shell-command/src/command_safety/is_safe_command.rs`）。任何含糊输入一律保持 `Write` ——分类器刻意偏向漏判，确保变更类命令不可能在 plan mode 下被静默执行。 |
+| 改后行为 | Plan mode 下 `ls -la`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向、未知程序与不安全选项（`find -delete`、`git push` 等）仍被拒绝。`bash` 与 `background_run` 共用同一分类，因此只读命令在 Default 模式下也会自动放行。 |
+| 指针 | `crates/tact/src/tool/readonly_shell.rs`；`crates/tact/src/tool/metadata.rs`（`ShellCommand::resolve`）；测试见 `crates/tact/src/tool/readonly_shell.rs` 与 `crates/tact/src/permission/mod.rs`（`plan_mode_allows_readonly_shell_commands_and_denies_others`）；[Ch 10](./10_chapter_permission_zh.md) §2、§4、§7。 |
+
 ## 1. 2026-08-12 — async-openai 从 `vendor/async-openai` 切换到本地维护的 fork `../async-openai`
 
 | 字段 | 值 |

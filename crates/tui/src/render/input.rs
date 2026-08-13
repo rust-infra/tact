@@ -5,10 +5,59 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::slash_style::{skill_name_set, style_input_skill_line};
 use crate::widgets::state::{App, InputMode, VoicePhase};
+
+/// Soft-wrap a logical line into display-line slices no wider than
+/// `max_width` columns, splitting at character boundaries.
+///
+/// The renderer draws exactly these rows (Paragraph stays unwrapped), so the
+/// caret computed from the same function lands where the text is visible.
+pub(crate) fn wrap_line(line: &str, max_width: usize) -> Vec<&str> {
+    let mut rows = Vec::new();
+    if max_width == 0 {
+        rows.push(line);
+        return rows;
+    }
+    let mut start = 0;
+    let mut width = 0;
+    for (byte_idx, ch) in line.char_indices() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max_width && width > 0 {
+            rows.push(&line[start..byte_idx]);
+            start = byte_idx;
+            width = 0;
+        }
+        width += w;
+    }
+    rows.push(&line[start..]);
+    rows
+}
+
+/// Display (row, column) of a caret sitting at logical `cursor_col` within
+/// `line`, after soft-wrapping at `max_width`. The caret is placed at the end
+/// of the prefix's last display row.
+fn caret_in_wrapped(line: &str, max_width: usize, cursor_col: usize) -> (usize, usize) {
+    let mut acc = 0;
+    let mut prefix_len = 0;
+    for (byte_idx, ch) in line.char_indices() {
+        if acc >= cursor_col {
+            break;
+        }
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if acc + w > cursor_col {
+            break;
+        }
+        acc += w;
+        prefix_len = byte_idx + ch.len_utf8();
+    }
+    let wrapped = wrap_line(&line[..prefix_len], max_width);
+    let row = wrapped.len().saturating_sub(1);
+    let col = UnicodeWidthStr::width(wrapped.last().copied().unwrap_or(""));
+    (row, col)
+}
 
 /// Render command-line input (Palette mode).
 pub(crate) fn render_command_line(frame: &mut Frame, area: Rect, app: &App) {
@@ -37,6 +86,8 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Logical rows are separated by explicit `\n`; the caret line/column is
+    // computed on the raw input, then mapped through soft-wrapping below.
     let mut cursor_line = 0;
     let mut cursor_col = 0;
     for (i, c) in app.input.char_indices() {
@@ -47,27 +98,46 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
             cursor_line += 1;
             cursor_col = 0;
         } else {
-            cursor_col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            cursor_col += UnicodeWidthChar::width(c).unwrap_or(0);
         }
     }
 
+    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+    let lines: Vec<&str> = app.input.split('\n').collect();
+
+    // Caret position after soft-wrapping: rows before the caret's logical
+    // line plus the caret's row within that line.
+    let cursor_logical = lines.get(cursor_line).copied().unwrap_or("");
+    let (caret_row_in_line, caret_col_in_line) =
+        caret_in_wrapped(cursor_logical, inner_width, cursor_col);
+    let prior_display_rows: usize = lines[..cursor_line]
+        .iter()
+        .map(|line| wrap_line(line, inner_width).len())
+        .sum();
+    let cursor_display_line = prior_display_rows + caret_row_in_line;
+
+    // Every display row the input occupies after soft-wrapping.
+    let display_lines: Vec<&str> = lines
+        .iter()
+        .flat_map(|line| wrap_line(line, inner_width))
+        .collect();
+
     let visible_lines = area.height.saturating_sub(2) as usize;
 
-    if cursor_line < app.input_scroll as usize {
-        app.input_scroll = cursor_line as u16;
-    } else if cursor_line >= app.input_scroll as usize + visible_lines {
-        app.input_scroll = (cursor_line - visible_lines + 1) as u16;
+    if cursor_display_line < app.input_scroll as usize {
+        app.input_scroll = cursor_display_line as u16;
+    } else if cursor_display_line >= app.input_scroll as usize + visible_lines {
+        app.input_scroll = (cursor_display_line - visible_lines + 1) as u16;
     }
 
     let line_stats = if app.input.is_empty() {
         None
     } else {
-        Some((app.input.lines().count(), app.input.chars().count()))
+        Some((display_lines.len(), app.input.chars().count()))
     };
 
-    let lines: Vec<&str> = app.input.split('\n').collect();
     let start = app.input_scroll as usize;
-    let end = (start + visible_lines).min(lines.len());
+    let end = (start + visible_lines).min(display_lines.len());
     let placeholder_mode = app.input.is_empty();
 
     let display: Text<'static> = if placeholder_mode {
@@ -79,7 +149,7 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         ))
     } else {
         let skill_names = skill_name_set(&app.skills_data);
-        let styled_lines: Vec<Line<'static>> = lines[start..end]
+        let styled_lines: Vec<Line<'static>> = display_lines[start..end]
             .iter()
             .map(|line| {
                 style_input_skill_line(line, &skill_names, &app.theme).unwrap_or_else(|| {
@@ -126,8 +196,9 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(input_para, area);
     update_voice_button_area(app, area);
 
-    let cursor_x = area.x + 1 + cursor_col as u16;
-    let cursor_y = area.y + 1 + (cursor_line - app.input_scroll as usize) as u16;
+    let cursor_x =
+        (area.x + 1 + caret_col_in_line as u16).min(area.x + area.width.saturating_sub(2));
+    let cursor_y = area.y + 1 + (cursor_display_line - app.input_scroll as usize) as u16;
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
@@ -190,7 +261,7 @@ mod render_tests {
 
     use super::{
         super::test_harness::{buffer_text, make_app},
-        render_input_box,
+        caret_in_wrapped, render_input_box, wrap_line,
     };
     use crate::widgets::state::{SkillEntry, VoicePhase, VoiceState};
 
@@ -208,6 +279,73 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("line one"), "multiline input visible: {text}");
+    }
+
+    #[test]
+    fn wrap_line_splits_at_column_width() {
+        assert_eq!(wrap_line("", 4), vec![""]);
+        assert_eq!(wrap_line("abcd", 2), vec!["ab", "cd"]);
+        assert_eq!(wrap_line("abcdef", 2), vec!["ab", "cd", "ef"]);
+        // CJK wide characters count as two columns.
+        assert_eq!(wrap_line("中文abc", 4), vec!["中文", "abc"]);
+        assert_eq!(wrap_line("中文", 3), vec!["中", "文"]);
+        // Oversized single character stays on its own row.
+        assert_eq!(wrap_line("ab中", 3), vec!["ab", "中"]);
+    }
+
+    #[test]
+    fn caret_in_wrapped_maps_logical_column_to_display_row() {
+        assert_eq!(caret_in_wrapped("abcdef", 2, 0), (0, 0));
+        assert_eq!(caret_in_wrapped("abcdef", 2, 2), (0, 2));
+        assert_eq!(caret_in_wrapped("abcdef", 2, 4), (1, 2));
+        assert_eq!(caret_in_wrapped("abcdef", 2, 6), (2, 2));
+        // CJK caret: "中文ab" wraps as ["中文", "ab"]; caret after "中文" (col 4).
+        assert_eq!(caret_in_wrapped("中文ab", 4, 4), (0, 4));
+        assert_eq!(caret_in_wrapped("中文ab", 4, 6), (1, 2));
+    }
+
+    #[test]
+    fn input_box_soft_wraps_overlong_line() {
+        let mut app = make_app();
+        app.input = "x".repeat(100);
+        app.input_cursor = app.input.len();
+
+        // Inner width = 38; 100 chars wrap into 38+38+24 = 3 display rows.
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 40, 5), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Content rows sit between the left/right border cells (row 0/39),
+        // so count the 'x' glyphs rather than trimming.
+        let row1: String = (0..40).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let row2: String = (0..40).map(|x| buf[(x, 2)].symbol().to_string()).collect();
+        let row3: String = (0..40).map(|x| buf[(x, 3)].symbol().to_string()).collect();
+        assert_eq!(row1.matches('x').count(), 38, "first wrap row full");
+        assert_eq!(row2.matches('x').count(), 38, "second wrap row full");
+        assert_eq!(row3.matches('x').count(), 24, "tail wrap row");
+    }
+
+    #[test]
+    fn input_box_scrolls_to_caret_on_wrapped_line() {
+        let mut app = make_app();
+        app.input = "y".repeat(200); // inner width 38 → 6 display rows
+        app.input_cursor = app.input.len();
+
+        // Height 3 → only 1 visible content row; caret on the last row forces
+        // scroll to the bottom.
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 40, 3), &mut app))
+            .expect("draw");
+
+        assert_eq!(app.input_scroll, 5, "scrolled so caret row is visible");
+        let buf = terminal.backend().buffer();
+        let row: String = (0..40).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        assert_eq!(row.matches('y').count(), 10, "tail row 200-5*38=10");
     }
 
     #[test]

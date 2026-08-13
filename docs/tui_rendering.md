@@ -165,10 +165,10 @@ Used for `Palette` mode:
 
 ### Main Input Box (`render_input_box`)
 
-- Supports multi-line input up to 3 lines.
+- Supports multi-line input up to 3 display rows; long lines soft-wrap at character boundaries (CJK double-width aware), and box height / line stats count wrapped rows, not just explicit `\n` splits.
 - Renders a rounded-border input box in `Insert` mode.
 - Renders an approval banner in `WaitingForUser` state.
-- Cursor is computed by character width (supports CJK full-width characters).
+- Cursor is computed by character width (supports CJK full-width characters) and mapped through the soft-wrapped rows (`caret_in_wrapped`) so it lands on the visible text.
 
 ---
 

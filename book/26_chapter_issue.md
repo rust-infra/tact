@@ -29,6 +29,46 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — Plan-mode read-only shell classification hardened against newline command separators
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | `split_plain_command` skipped `\n` / `\r` as plain whitespace, but to `sh -c` a bare newline (and `\r` in CRLF input) is a command separator, not a word separator. A command like `ls\nrm file` therefore passed the plain-command split, classified the safelisted first word `ls` as Read, and was auto-allowed in plan mode — letting a second, mutating command ride along silently. |
+| Decision | The splitter now returns `None` as soon as it meets a bare `\n` / `\r` while scanning separators, so any newline-separated multi-command string stays unclassified (falls back to `Write` / prompt). A literal newline inside single or double quotes is still a word character and remains accepted. In the same pass, git global-option handling was unified into a single `GIT_GLOBAL_OPTIONS` table (each entry carrying whether it consumes the next token) that drives both `find_git_subcommand`'s skip logic and `git_has_unsafe_global_option`, so the two checks cannot drift apart again. |
+| Behavior after | `ls\nrm file`, `echo hi\nrm -f x`, CRLF variants and leading/trailing bare newlines are all classified **Write** (prompted / denied in plan mode); `echo "line1\nline2"` and `cat "file\nname"` (quoted literal newlines) remain Read. |
+| Pointers | `crates/tact/src/tool/readonly_shell.rs` (`split_plain_command`, `GIT_GLOBAL_OPTIONS`, `find_git_global_option`, `git_has_unsafe_global_option`); regression tests in the same file; [Ch 10](./10_chapter_permission.md) §7. |
+
+## 1. 2026-08-13 — OpenAI-compatible Chat Completions surfaces transport failures as `LlmError::Request`
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The OpenAI-compatible adapter reported send/connection/response-read failures as `LlmError::Unsupported("HTTP request failed: …")`, conflating "this endpoint can't do something" with "the request never went through"; token counts were cast `u64 as u32` (truncating, misleading on oversized values); a malformed tool-call `arguments` payload was silently replaced by `{}` with no trace. |
+| Decision | New `LlmError::Request(String)` variant for request transport / deserialization errors (API HTTP errors keep `HttpError`). Both streaming and non-streaming paths now send the already-serialized JSON bytes (`body` + explicit `Content-Type`) instead of re-serializing via `.json()`. Token counts convert `u64 → u32` saturating (`u32_token_count`). Malformed tool-call arguments log at `debug` (error, tool name, raw args) and fall back to an empty object. |
+| Behavior after | A dead endpoint / dropped connection surfaces `request error: …` instead of `unsupported: …`; oversized token counts saturate instead of wrapping; malformed tool args are visible in debug logs. |
+| Pointers | `crates/tact_llm/src/error.rs` (`LlmError::Request`), `crates/tact_llm/src/openai/compatible/mod.rs` (`OpenAiAdapter` chat/stream paths, `u32_token_count`, `tool_use_block_from_parts`); [Ch 22](./22_chapter_llm.md). |
+
+## 1. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Input-box height and line stats counted only explicit `\n` splits, so a single overlong line overflowed past the box's 3-row cap, and the caret/scroll math (logical rows) disagreed with the rendered text (caret drawn on the wrong row/column for long input). |
+| Decision | `render/input.rs` gained `wrap_line` (character-boundary soft-wrap, CJK double-width aware; `Paragraph` stays unwrapped and draws exactly those rows) and `caret_in_wrapped` (logical cursor column → display row/column). Box height, line stats, scroll clamping, and cursor placement all now operate on display rows. |
+| Behavior after | Long input lines wrap inside the box instead of overflowing; height auto-expands with wrapped rows (1–3 display rows + border); caret and scroll follow the wrapped row. Submitted text is unchanged. |
+| Pointers | `crates/tui/src/render/input.rs` (`wrap_line`, `caret_in_wrapped`); `crates/tui/src/lib.rs` (input height); tests in `input.rs` (`wrap_line_splits_at_column_width`, `caret_in_wrapped_maps_logical_column_to_display_row`, `input_box_soft_wraps_overlong_line`, `input_box_scrolls_to_caret_on_wrapped_line`); [Ch 23](./23_chapter_tui.md) §6.2, §6.6. |
+
+## 1. 2026-08-13 — Plan mode runs provably read-only shell commands (`ls`, `grep`, …)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Plan mode denies every `Write`-classified tool, and shell commands were always classified `Write` (except `sudo ` / `su ` → `High`), so even `ls` / `grep` — the inspection commands a planning agent needs most — were hard-denied in plan mode. |
+| Decision | `PermissionPolicy::ShellCommand::resolve` now classifies a command string as `Read` when it is provably read-only, via a new conservative classifier `crates/tact/src/tool/readonly_shell.rs`: (1) a plain-command split that rejects any shell metacharacter (pipes, redirections, `$`, backticks, globs, escapes, …) so the classification cannot disagree with what `sh -c` runs; (2) a safelist of programs whose options alone cannot write (`ls`, `grep`, `cat`, `head`, `tail`, `wc`, `git status/log/diff/show/branch`, `find`/`rg`/`base64`/`sed` with dangerous flags excluded, …), mirroring OpenAI Codex's `is_known_safe_command` (`codex-rs/shell-command/src/command_safety/is_safe_command.rs`). Anything ambiguous stays `Write` — the classifier is deliberately false-negative-biased so a mutation can never run silently under plan mode. |
+| Behavior after | In plan mode `ls -la`, `grep -rn x .`, `git status` run without prompting; `cargo test`, pipes, redirections, unknown programs and unsafe options (`find -delete`, `git push`, …) are still denied. `bash` and `background_run` share the same classification, so read-only commands are also auto-allowed in Default mode. |
+| Pointers | `crates/tact/src/tool/readonly_shell.rs`; `crates/tact/src/tool/metadata.rs` (`ShellCommand::resolve`); tests in `crates/tact/src/tool/readonly_shell.rs` and `crates/tact/src/permission/mod.rs` (`plan_mode_allows_readonly_shell_commands_and_denies_others`); [Ch 10](./10_chapter_permission.md) §2, §4, §7. |
+
 ## 1. 2026-08-12 — async-openai switched from `vendor/async-openai` to a locally maintained fork at `../async-openai`
 
 | Field | Value |

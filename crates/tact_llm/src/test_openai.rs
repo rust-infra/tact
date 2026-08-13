@@ -17,7 +17,7 @@ use async_openai::{
     },
 };
 
-use super::openai::{
+use super::openai::compatible::{
     CompatibleConfig, CreateChatCompletionRequest as LocalCreateChatCompletionRequest,
 };
 

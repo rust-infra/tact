@@ -60,8 +60,8 @@ Classification is heuristic — based on tool name prefixes and, for `bash`, the
 
 | Risk | Rule |
 |------|------|
-| **Read** | Tools with `PermissionPolicy::Read` (e.g. `read_file`) |
-| **Write** | Tools with `PermissionPolicy::Write`; shell tools (`bash` / `background_run` / `worktree_run`) for non-elevated commands — shell is never treated as Read because the policy cannot prove a command is read-only |
+| **Read** | Tools with `PermissionPolicy::Read` (e.g. `read_file`); shell commands that are provably read-only (see [§7](#7-shell-high-risk-detection)) |
+| **Write** | Tools with `PermissionPolicy::Write`; shell tools (`bash` / `background_run` / `worktree_run`) for commands that cannot be proven read-only |
 | **High** | Tools with `PermissionPolicy::High` (e.g. `spawn_subagent`); shell commands starting with `sudo ` or `su ` |
 
 A separate hard-block list in `shell.rs` still rejects a subset of dangerous commands at execution time (see [§7](#7-shell-high-risk-detection)), even after permission approval.
@@ -108,7 +108,7 @@ Display labels (from `PermissionMode`'s `Display` impl):
 | Mode | Label | Behavior |
 |------|-------|----------|
 | `Default` | `default - ask for writes` | Read allowed; Write asks unless settings/allowlist match; High asks unless a settings **allow** rule matches |
-| `Plan` | `plan - read only` | Read allowed; Write and High **denied** without prompting |
+| `Plan` | `plan - read only` | Read allowed (including provably read-only shell commands — `ls`, `grep`, `git status`, …); Write and High **denied** without prompting |
 | `Auto` | `auto - allow non-high operations` | All risks auto-approved (including High) |
 
 ### Decision order in `PermissionManager::check()`
@@ -231,6 +231,19 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
 | `rm -rf /`, `rm -fr /`, `rm -rf /*`, … | High risk |
 | `rm -rf ~`, `rm -fr $home`, … | High risk |
 
+### Read-only shell command classification
+
+Since 2026-08-13, `PermissionPolicy::ShellCommand` classifies a shell command string as **Read** when — and only when — it is provably read-only. The logic lives in `crates/tact/src/tool/readonly_shell.rs` and runs in two stages:
+
+1. **Plain-command split** — the string must be whitespace-separated words (bare words or single/double-quoted segments) with no shell metacharacters: `; & | > < $ backtick \`, globs, braces, parentheses, `!`. Redirections, pipes, command substitution and escapes are rejected outright, so the classification cannot disagree with what `sh -c` actually runs. Bare `\n` / `\r` are **command separators** to `sh -c`, not whitespace — a newline-separated multi-command string (e.g. `ls\nrm file`, CRLF included) is rejected as a whole; a literal newline inside quotes is a word character and stays accepted. A leading `~` and embedded single-quoted segments are accepted (both are literal).
+2. **Safelist match** — the first word must be a program whose options alone cannot write:
+   - Always safe: `cat cd cut echo expr false grep head id ls nl paste pwd rev seq stat tail tr true uname uniq wc which whoami`
+   - `base64` — except `-o` / `--output`; `find` — except `-exec -execdir -ok -okdir -delete -fls -fprint -fprint0 -fprintf`; `rg` — except `--pre --hostname-bin --search-zip -z`
+   - `git` — only `status / log / diff / show / branch`, with unsafe global options (`-C -c --git-dir --paginate` and friends) and output/exec options (`--output --ext-diff --textconv --exec`) rejected; `git branch` additionally rejects any argument that could create, rename, or delete a branch
+   - `sed` — only `sed -n {N|M,N}p` print-line-range forms
+
+The safelist and option rules mirror OpenAI Codex's `is_known_safe_command` (`codex-rs/shell-command/src/command_safety/is_safe_command.rs`). The classifier is deliberately conservative: a false negative only costs an approval prompt, while a false positive would run a mutation silently under plan mode — so anything ambiguous stays **Write**. Net effect: in plan mode `ls`, `grep -rn x .`, `git status` run without prompting; `cargo test`, pipes, redirections, and unknown programs are still denied.
+
 ### Two layers
 
 ```mermaid
@@ -262,7 +275,7 @@ sequenceDiagram
 
 Benign destructive paths are allowed at execution but may still prompt: e.g. `rm -rf ./build` passes `validate_shell_command` but is classified as **Write**, so Default mode asks first.
 
-Read-only bash detection rejects commands with shell metacharacters — `ls; rm -rf /` is **Write**, not Read.
+Read-only bash detection rejects commands with shell metacharacters — `ls; rm -rf /` is **Write**, not Read. A bare newline is likewise a command separator, so `ls\nrm file` is **Write**, not Read.
 
 ---
 

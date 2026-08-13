@@ -75,7 +75,7 @@ pub trait LlmClient: Send + Sync {
 #[derive(Clone)]
 pub enum LlmProvider {
     Anthropic(anthropic::AnthropicAdapter),
-    ChatCompletions(openai::ChatCompletionsAdapter),
+    ChatCompletions(openai::compatible::ChatCompletionsAdapter),
     OpenAiResponses(openai::responses::OpenAiResponsesAdapter),
     /// Mock provider for integration tests. Returns predetermined responses.
     Mock(MockClient),

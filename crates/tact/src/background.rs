@@ -12,7 +12,6 @@
 //!   timestamps, and combined stdout+stderr output.
 
 use std::{
-    collections::VecDeque,
     path::Path,
     sync::{
         Arc,
@@ -26,19 +25,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::mpsc,
     time::{MissedTickBehavior, interval},
 };
 
-use crate::store::background_store::{BackgroundStore, SqliteBackgroundStore};
+use crate::{
+    pipe_stream::{
+        PIPE_CHANNEL_CAPACITY, PROGRESS_INTERVAL, PendingProgress, PipeEvent, Utf8Decoder,
+        read_pipe, stream_index,
+    },
+    store::background_store::{BackgroundStore, SqliteBackgroundStore},
+};
 
-const READ_BUFFER_BYTES: usize = 4096;
-const PIPE_CHANNEL_CAPACITY: usize = 32;
-const MAX_PROGRESS_BYTES: usize = 4096;
-const OMITTED_MARKER: &str = "[intermediate output omitted]\n";
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_OUTPUT_CHARS: usize = 50_000;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -246,102 +245,6 @@ impl BackgroundProgressSink {
     }
 }
 
-/// Incremental UTF-8 decoder that survives bytes split across pipe reads.
-#[derive(Default)]
-struct Utf8Decoder {
-    pending: Vec<u8>,
-}
-
-impl Utf8Decoder {
-    fn push(&mut self, bytes: &[u8]) -> String {
-        self.pending.extend_from_slice(bytes);
-        let mut output = String::new();
-        loop {
-            match std::str::from_utf8(&self.pending) {
-                Ok(valid) => {
-                    output.push_str(valid);
-                    self.pending.clear();
-                    break;
-                }
-                Err(error) => {
-                    let valid_up_to = error.valid_up_to();
-                    if valid_up_to > 0 {
-                        let valid = std::str::from_utf8(&self.pending[..valid_up_to])
-                            .expect("valid_up_to identifies valid UTF-8");
-                        output.push_str(valid);
-                        self.pending.drain(..valid_up_to);
-                    }
-                    let Some(error_len) = error.error_len() else {
-                        break;
-                    };
-                    output.push('\u{fffd}');
-                    self.pending.drain(..error_len);
-                }
-            }
-        }
-        output
-    }
-
-    fn finish(&mut self) -> String {
-        let output = String::from_utf8_lossy(&self.pending).into_owned();
-        self.pending.clear();
-        output
-    }
-}
-
-enum PipeEvent {
-    Bytes(ToolOutputStream, Vec<u8>),
-    Closed(ToolOutputStream),
-    Failed(ToolOutputStream, std::io::Error),
-}
-
-async fn read_pipe<R>(mut reader: R, stream: ToolOutputStream, tx: mpsc::Sender<PipeEvent>)
-where
-    R: AsyncRead + Unpin,
-{
-    let mut buffer = [0_u8; READ_BUFFER_BYTES];
-    loop {
-        match reader.read(&mut buffer).await {
-            Ok(0) => {
-                let _ = tx.send(PipeEvent::Closed(stream)).await;
-                return;
-            }
-            Ok(read) => {
-                if tx
-                    .send(PipeEvent::Bytes(stream, buffer[..read].to_vec()))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            Err(error) => {
-                let _ = tx.send(PipeEvent::Failed(stream, error)).await;
-                return;
-            }
-        }
-    }
-}
-
-fn stream_index(stream: ToolOutputStream) -> usize {
-    match stream {
-        ToolOutputStream::Stdout => 0,
-        ToolOutputStream::Stderr => 1,
-        ToolOutputStream::Other => 2,
-    }
-}
-
-fn utf8_tail(text: &str, max_bytes: usize) -> &str {
-    if text.len() <= max_bytes {
-        return text;
-    }
-    let mut start = text.len() - max_bytes;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    &text[start..]
-}
-
 /// Capped buffer of decoded output text (keeps the *first* characters, matching
 /// the pre-streaming record semantics).
 #[derive(Default)]
@@ -370,57 +273,6 @@ impl OutputAccumulator {
 
     fn into_string(self) -> String {
         self.text
-    }
-}
-
-/// Coalesced progress batch awaiting the next flush tick.
-#[derive(Default)]
-struct PendingProgress {
-    chunks: VecDeque<ToolOutputChunk>,
-    bytes: usize,
-    omitted: bool,
-}
-
-impl PendingProgress {
-    fn push(&mut self, chunk: ToolOutputChunk) {
-        if chunk.text.is_empty() {
-            return;
-        }
-        let data_limit = MAX_PROGRESS_BYTES.saturating_sub(OMITTED_MARKER.len());
-        if chunk.text.len() > data_limit {
-            let mut chunk = chunk;
-            chunk.text = utf8_tail(&chunk.text, data_limit).to_string();
-            self.chunks.clear();
-            self.bytes = 0;
-            self.omitted = true;
-            self.bytes += chunk.text.len();
-            self.chunks.push_back(chunk);
-            return;
-        }
-        self.bytes += chunk.text.len();
-        self.chunks.push_back(chunk);
-        while self.bytes > data_limit {
-            let Some(removed) = self.chunks.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(removed.text.len());
-            self.omitted = true;
-        }
-    }
-
-    fn take(&mut self) -> Vec<ToolOutputChunk> {
-        let mut chunks = Vec::with_capacity(self.chunks.len() + usize::from(self.omitted));
-        if self.omitted {
-            chunks.push(ToolOutputChunk::other(OMITTED_MARKER));
-        }
-        chunks.extend(self.chunks.drain(..));
-        self.bytes = 0;
-        self.omitted = false;
-        chunks
-    }
-
-    fn is_empty(&self) -> bool {
-        self.chunks.is_empty() && !self.omitted
     }
 }
 

@@ -30,6 +30,7 @@ pub mod mcp;
 pub mod memory;
 pub mod notifications;
 pub mod permission;
+pub(crate) mod pipe_stream;
 pub mod plugin;
 pub mod prompt;
 pub mod recovery;

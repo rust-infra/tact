@@ -433,6 +433,47 @@ mod tests {
     }
 
     #[test]
+    fn plan_mode_allows_readonly_shell_commands_and_denies_others() {
+        // End-to-end through `PermissionPolicy::ShellCommand::resolve`:
+        // provably read-only commands become Read and are allowed even in
+        // plan mode; everything else is still denied without prompting.
+        use crate::tool::PermissionPolicy;
+
+        let policy = PermissionPolicy::ShellCommand {
+            command_field: "command",
+        };
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+
+        for cmd in ["ls", "ls -la", "grep -rn needle .", "git status"] {
+            let risk = policy.resolve(&serde_json::json!({ "command": cmd }));
+            assert_eq!(risk, CapabilityRisk::Read, "{cmd} should resolve to Read");
+            let decision = mgr.check("bash", risk, &serde_json::json!({ "command": cmd }));
+            assert_eq!(
+                decision.behavior,
+                PermissionBehavior::Allow,
+                "{cmd} should be allowed in plan mode"
+            );
+        }
+
+        for cmd in [
+            "rm -rf /",
+            "cargo test",
+            "ls | wc -l",
+            "git push",
+            "find . -delete",
+        ] {
+            let risk = policy.resolve(&serde_json::json!({ "command": cmd }));
+            assert_eq!(risk, CapabilityRisk::Write, "{cmd} should resolve to Write");
+            let decision = mgr.check("bash", risk, &serde_json::json!({ "command": cmd }));
+            assert_eq!(
+                decision.behavior,
+                PermissionBehavior::Deny,
+                "{cmd} should be denied in plan mode"
+            );
+        }
+    }
+
+    #[test]
     fn auto_mode_allows_non_high_capabilities() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Auto).unwrap();
         let decision = mgr.check("bash", CapabilityRisk::Write, &Value::Null);

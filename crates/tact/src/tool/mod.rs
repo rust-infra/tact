@@ -57,6 +57,7 @@ mod metadata;
 mod path;
 mod progress;
 mod read_file;
+mod readonly_shell;
 mod registry;
 mod sleep;
 mod subagent;

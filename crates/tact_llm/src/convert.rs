@@ -16,7 +16,7 @@ use async_openai::types::{
 
 use crate::{
     ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, Role, StopReason,
-    Tool, ToolChoice, openai::CreateChatCompletionRequest,
+    Tool, ToolChoice, openai::compatible::CreateChatCompletionRequest,
 };
 
 impl From<&Tool> for ChatCompletionTool {
@@ -330,7 +330,7 @@ fn stub_empty_assistant_if_needed(message: &mut ChatCompletionRequestMessage) {
 /// assistant messages (especially assistant messages containing `tool_calls`).
 ///
 /// Provider-specific fields (`thinking`, `reasoning_effort`, `user_id`) are injected
-/// later by [`crate::openai::body::OpenAiBodyHook`], not via this typed request.
+/// later by [`crate::openai::compatible::body::OpenAiBodyHook`], not via this typed request.
 pub fn build_openai_request(
     request: &CreateMessageParams,
 ) -> (CreateChatCompletionRequest, Vec<Option<String>>) {

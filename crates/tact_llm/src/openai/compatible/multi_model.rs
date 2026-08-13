@@ -8,12 +8,12 @@
 use super::OpenAiAdapter;
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    ProviderProfile,
-    hook_select::hook_for_dialect,
-    openai::{
-        body::assemble_chat_completion_body,
-        compat::{create_assembled, stream_assembled},
-    },
+    ProviderProfile, hook_select::hook_for_dialect,
+};
+
+use super::{
+    body::assemble_chat_completion_body,
+    compat::{create_assembled, stream_assembled},
 };
 
 /// Unified Chat Completions client that re-selects body hooks per request.
@@ -86,10 +86,10 @@ impl LlmClient for ChatCompletionsAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        OpenAiProtocol, ProviderKind, ProviderProfile,
-        openai::{CompatibleConfig, body::test_util::sample_request_with_thinking},
+    use crate::openai::compatible::{
+        CompatibleConfig, body::test_util::sample_request_with_thinking,
     };
+    use crate::{OpenAiProtocol, ProviderKind, ProviderProfile};
 
     #[test]
     fn assemble_body_reselects_hook_after_model_switch() {
