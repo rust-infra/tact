@@ -10,6 +10,7 @@
 
 use std::{collections::VecDeque, time::Duration};
 
+use bytes::{Bytes, BytesMut};
 use tact_protocol::{ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -66,7 +67,7 @@ impl Utf8Decoder {
 }
 
 pub(crate) enum PipeEvent {
-    Bytes(ToolOutputStream, Vec<u8>),
+    Bytes(ToolOutputStream, Bytes),
     Closed(ToolOutputStream),
     Failed(ToolOutputStream, std::io::Error),
 }
@@ -78,19 +79,19 @@ pub(crate) async fn read_pipe<R>(
 ) where
     R: AsyncRead + Unpin,
 {
-    let mut buffer = [0_u8; READ_BUFFER_BYTES];
+    // Reuse one allocation across reads; `read_buf` appends into the spare
+    // capacity and `freeze()` hands ownership of exactly the read bytes to
+    // the event with zero copies.
+    let mut buffer = BytesMut::with_capacity(READ_BUFFER_BYTES);
     loop {
-        match reader.read(&mut buffer).await {
+        match reader.read_buf(&mut buffer).await {
             Ok(0) => {
                 let _ = tx.send(PipeEvent::Closed(stream)).await;
                 return;
             }
             Ok(read) => {
-                if tx
-                    .send(PipeEvent::Bytes(stream, buffer[..read].to_vec()))
-                    .await
-                    .is_err()
-                {
+                let chunk = buffer.split_to(read).freeze();
+                if tx.send(PipeEvent::Bytes(stream, chunk)).await.is_err() {
                     return;
                 }
             }
