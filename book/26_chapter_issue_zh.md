@@ -29,6 +29,17 @@
 
 ---
 
+## 1. 2026-08-13 — 主区域 Markdown 列表续行保持悬挂缩进
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | 主日志区域中的长 Markdown 列表项换行后，续行会回到该行左边界；嵌套列表和宽字符列表因此容易与标记脱离，在窄终端中也不易阅读。现有流式状态机和 `tui-markdown` 解析路径本身可用，不需要重写。 |
+| 决策 | 保留现有按行缓冲的流式 Markdown 路径，在主日志换行层增加按终端显示宽度计算的悬挂缩进。首行保留列表标记与正文的完整宽度；续行预留包含 CJK 显示宽度在内的标记前缀宽度，并保证不超过面板内容区宽度。非列表、表格、代码、Mermaid、弹窗和工具路径继续使用原有换行器。 |
+| 改后行为 | 有序、无序、嵌套及宽字符列表的续行正文会对齐到 item 正文下方，不再从面板左边界重新开始；流式列表尾部在 flush 前仍可见，内容不会超出面板宽度。 |
+| 指针 | `crates/tui/src/render/util.rs`（`list_hanging_indent`、`wrap_line_with_hanging_indent`）；`crates/tui/src/render/log.rs`；`crates/tui/src/render/log_render_tests.rs` 与 `crates/tui/src/render/render_gap_tests.rs` 中的回归测试；`docs/superpowers/specs/2026-08-13-markdown-main-render-design.md`；`docs/superpowers/plans/2026-08-13-markdown-main-render.md`。 |
+
+
 ## 1. 2026-08-13 — Thinking / subagent 弹窗的长列表项续行保持悬挂缩进
 
 | 字段 | 内容 |
