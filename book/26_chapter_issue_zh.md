@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `optimization` |
+| 现象 / 动机 | Plan mode 拒绝一切归类为 `Write` 的工具，而 shell 命令此前一律归为 `Write`（仅 `sudo ` / `su ` 开头为 `High`），导致 `ls` / `grep` 这类规划 agent 最需要的探查命令在 plan mode 下也被硬拒绝。 |
+| 决策 | `PermissionPolicy::ShellCommand::resolve` 现在在命令**可证明只读**时将其归为 `Read`，依托新的保守分类器 `crates/tact/src/tool/readonly_shell.rs`：(1) 纯命令切分，拒绝任何 shell 元字符（管道、重定向、`$`、反引号、glob、转义等），保证分类不会与 `sh -c` 实际执行内容产生分歧；(2) 白名单程序（仅凭选项无法写入），如 `ls`、`grep`、`cat`、`head`、`tail`、`wc`、`git status/log/diff/show/branch`，以及排除危险旗标的 `find`/`rg`/`base64`/`sed` 等，镜像 OpenAI Codex 的 `is_known_safe_command`（`codex-rs/shell-command/src/command_safety/is_safe_command.rs`）。任何含糊输入一律保持 `Write` ——分类器刻意偏向漏判，确保变更类命令不可能在 plan mode 下被静默执行。 |
+| 改后行为 | Plan mode 下 `ls -la`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向、未知程序与不安全选项（`find -delete`、`git push` 等）仍被拒绝。`bash` 与 `background_run` 共用同一分类，因此只读命令在 Default 模式下也会自动放行。 |
+| 指针 | `crates/tact/src/tool/readonly_shell.rs`；`crates/tact/src/tool/metadata.rs`（`ShellCommand::resolve`）；测试见 `crates/tact/src/tool/readonly_shell.rs` 与 `crates/tact/src/permission/mod.rs`（`plan_mode_allows_readonly_shell_commands_and_denies_others`）；[Ch 10](./10_chapter_permission_zh.md) §2、§4、§7。 |
+
 ## 1. 2026-08-12 — async-openai 从 `vendor/async-openai` 切换到本地维护的 fork `../async-openai`
 
 | 字段 | 值 |

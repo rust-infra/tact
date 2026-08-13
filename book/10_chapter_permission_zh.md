@@ -59,8 +59,8 @@ MCP 名使用前缀 `mcp__`，随后 `server__tool`，以 **最右侧** 的 `__`
 
 | 风险 | 规则 |
 |------|------|
-| **Read** | 使用 `PermissionPolicy::Read` 的工具（如 `read_file`） |
-| **Write** | 使用 `PermissionPolicy::Write` 的工具；shell 工具（`bash` / `background_run` / `worktree_run`）在非提权命令上归为 Write——策略无法证明命令只读，因此 shell **不会** 被标为 Read |
+| **Read** | 使用 `PermissionPolicy::Read` 的工具（如 `read_file`）；可证明只读的 shell 命令（见 [§7](#7-shell-高风险检测)） |
+| **Write** | 使用 `PermissionPolicy::Write` 的工具；无法证明只读的 shell 工具命令（`bash` / `background_run` / `worktree_run`） |
 | **High** | 使用 `PermissionPolicy::High` 的工具（如 `spawn_subagent`）；以 `sudo ` 或 `su ` 开头的 shell 命令 |
 
 `shell.rs` 另有执行期硬拦截列表，即使权限已批准也会拒绝部分危险命令（见 [§7](#7-shell-高风险检测)）。
@@ -107,7 +107,7 @@ pub enum PermissionMode {
 | 模式 | 标签 | 行为 |
 |------|------|------|
 | `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则 |
-| `Plan` | `plan - read only` | Read 允许；Write 与 High **拒绝**且不提示 |
+| `Plan` | `plan - read only` | Read 允许（含可证明只读的 shell 命令——`ls`、`grep`、`git status` 等）；Write 与 High **拒绝**且不提示 |
 | `Auto` | `auto - allow non-high operations` | 所有风险自动批准（含 High） |
 
 ### `PermissionManager::check()` 中的决策顺序
@@ -229,6 +229,19 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
 | `> /dev/`、`>> /dev/` | High risk |
 | `rm -rf /`、`rm -fr /`、`rm -rf /*`、… | High risk |
 | `rm -rf ~`、`rm -fr $home`、… | High risk |
+
+### 只读 shell 命令分类
+
+自 2026-08-13 起，`PermissionPolicy::ShellCommand` 仅在命令**可证明只读**时将其归为 **Read**。逻辑位于 `crates/tact/src/tool/readonly_shell.rs`，分两阶段：
+
+1. **纯命令切分** — 命令字符串必须是由空白分隔的词（裸词或单/双引号段）组成，且不含任何 shell 元字符：`; & | > < $ backtick \`、glob、花括号、圆括号、`!`。重定向、管道、命令替换与转义一律拒绝，因此分类结果不会与 `sh -c` 实际执行的内容产生分歧。允许词首 `~` 与词内单引号段（两者都是字面量）。
+2. **白名单匹配** — 首词必须是"仅凭选项无法写入"的程序：
+   - 始终安全：`cat cd cut echo expr false grep head id ls nl paste pwd rev seq stat tail tr true uname uniq wc which whoami`
+   - `base64` — 排除 `-o` / `--output`；`find` — 排除 `-exec -execdir -ok -okdir -delete -fls -fprint -fprint0 -fprintf`；`rg` — 排除 `--pre --hostname-bin --search-zip -z`
+   - `git` — 仅 `status / log / diff / show / branch`，拒绝不安全全局选项（`-C -c --git-dir --paginate` 等）与输出/执行选项（`--output --ext-diff --textconv --exec`）；`git branch` 另拒绝一切可能创建、重命名或删除分支的参数
+   - `sed` — 仅 `sed -n {N|M,N}p` 打印行区间形式
+
+白名单与选项规则镜像 OpenAI Codex 的 `is_known_safe_command`（`codex-rs/shell-command/src/command_safety/is_safe_command.rs`）。分类器刻意保守：漏判只多一次审批提示，误判则会在 plan mode 下静默执行变更——因此任何含糊输入一律归为 **Write**。最终效果：plan mode 下 `ls`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向与未知程序仍被拒绝。
 
 ### 两层
 

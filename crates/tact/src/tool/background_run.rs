@@ -20,6 +20,7 @@ pub struct BackgroundRunInput {
     pub command: String,
 }
 
+/// Metadata for the `background_run` tool.
 pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     name: "background_run",
     description: "Run a shell command in the background.",
@@ -65,6 +66,7 @@ pub struct CheckBackgroundInput {
     pub task_id: Option<String>,
 }
 
+/// Metadata for the `check_background` tool.
 pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
     name: "check_background",
     description: "Check background task status.",

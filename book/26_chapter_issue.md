@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — Plan mode runs provably read-only shell commands (`ls`, `grep`, …)
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | Plan mode denies every `Write`-classified tool, and shell commands were always classified `Write` (except `sudo ` / `su ` → `High`), so even `ls` / `grep` — the inspection commands a planning agent needs most — were hard-denied in plan mode. |
+| Decision | `PermissionPolicy::ShellCommand::resolve` now classifies a command string as `Read` when it is provably read-only, via a new conservative classifier `crates/tact/src/tool/readonly_shell.rs`: (1) a plain-command split that rejects any shell metacharacter (pipes, redirections, `$`, backticks, globs, escapes, …) so the classification cannot disagree with what `sh -c` runs; (2) a safelist of programs whose options alone cannot write (`ls`, `grep`, `cat`, `head`, `tail`, `wc`, `git status/log/diff/show/branch`, `find`/`rg`/`base64`/`sed` with dangerous flags excluded, …), mirroring OpenAI Codex's `is_known_safe_command` (`codex-rs/shell-command/src/command_safety/is_safe_command.rs`). Anything ambiguous stays `Write` — the classifier is deliberately false-negative-biased so a mutation can never run silently under plan mode. |
+| Behavior after | In plan mode `ls -la`, `grep -rn x .`, `git status` run without prompting; `cargo test`, pipes, redirections, unknown programs and unsafe options (`find -delete`, `git push`, …) are still denied. `bash` and `background_run` share the same classification, so read-only commands are also auto-allowed in Default mode. |
+| Pointers | `crates/tact/src/tool/readonly_shell.rs`; `crates/tact/src/tool/metadata.rs` (`ShellCommand::resolve`); tests in `crates/tact/src/tool/readonly_shell.rs` and `crates/tact/src/permission/mod.rs` (`plan_mode_allows_readonly_shell_commands_and_denies_others`); [Ch 10](./10_chapter_permission.md) §2, §4, §7. |
+
 ## 1. 2026-08-12 — async-openai switched from `vendor/async-openai` to a locally maintained fork at `../async-openai`
 
 | Field | Value |
