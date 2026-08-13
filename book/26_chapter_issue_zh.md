@@ -29,6 +29,26 @@
 
 ---
 
+## 1. 2026-08-13 — Plan mode 只读 shell 分类加固：拒绝换行符命令分隔
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | `split_plain_command` 把 `\n` / `\r` 当作普通空白跳过，但对 `sh -c` 而言裸换行（以及 CRLF 输入中的 `\r`）是命令分隔符而非词分隔符。于是 `ls\nrm file` 能通过纯命令切分，白名单首词 `ls` 被归为 Read，在 plan mode 下自动放行——第二条变更命令被静默携带执行。 |
+| 决策 | 切分器在扫描分隔符时一旦遇到裸 `\n` / `\r` 立即返回 `None`，任何含换行的多命令字符串保持未分类（回退到 `Write` / 提示）。单/双引号内的字面换行仍是词字符，继续放行。同一次改动把 git 全局选项处理统一进单张 `GIT_GLOBAL_OPTIONS` 表（每条记录是否消费下一个 token），同时驱动 `find_git_subcommand` 的跳过逻辑与 `git_has_unsafe_global_option`，避免两处检查再次漂移。 |
+| 改后行为 | `ls\nrm file`、`echo hi\nrm -f x`、CRLF 变体及行首/行尾裸换行一律归为 **Write**（plan mode 下提示/拒绝）；`echo "line1\nline2"`、`cat "file\nname"`（引号内字面换行）仍为 Read。 |
+| 指针 | `crates/tact/src/tool/readonly_shell.rs`（`split_plain_command`、`GIT_GLOBAL_OPTIONS`、`find_git_global_option`、`git_has_unsafe_global_option`）；同文件回归测试；[Ch 10](./10_chapter_permission_zh.md) §7。 |
+
+## 1. 2026-08-13 — OpenAI 兼容 Chat Completions 将传输失败以 `LlmError::Request` 呈现
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | OpenAI 兼容适配器把发送/连接/读响应失败报成 `LlmError::Unsupported("HTTP request failed: …")`，混淆了"端点不支持"与"请求根本没发出去"；token 数用 `u64 as u32` 强转（超限时截断误导）；工具调用 `arguments` 载荷非法 JSON 时被静默替换为 `{}`，无任何痕迹。 |
+| 决策 | 新增 `LlmError::Request(String)` 变体承载请求传输/反序列化错误（API HTTP 错误仍走 `HttpError`）。流式与非流式路径都改发已序列化的 JSON 字节（`body` + 显式 `Content-Type`），不再用 `.json()` 二次序列化。token 数 `u64 → u32` 饱和转换（`u32_token_count`）。非法工具参数在 `debug` 级记录（error、工具名、原始 args）后回退为空对象。 |
+| 改后行为 | 端点不可达/连接断开时显示 `request error: …` 而非 `unsupported: …`；超限 token 数饱和而非回绕；非法工具参数可在 debug 日志中看到。 |
+| 指针 | `crates/tact_llm/src/error.rs`（`LlmError::Request`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter` chat/流式路径、`u32_token_count`、`tool_use_block_from_parts`）；[Ch 22](./22_chapter_llm_zh.md)。 |
+
 ## 1. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
 
 | 字段 | 内容 |

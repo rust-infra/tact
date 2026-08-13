@@ -29,6 +29,26 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — Plan-mode read-only shell classification hardened against newline command separators
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | `split_plain_command` skipped `\n` / `\r` as plain whitespace, but to `sh -c` a bare newline (and `\r` in CRLF input) is a command separator, not a word separator. A command like `ls\nrm file` therefore passed the plain-command split, classified the safelisted first word `ls` as Read, and was auto-allowed in plan mode — letting a second, mutating command ride along silently. |
+| Decision | The splitter now returns `None` as soon as it meets a bare `\n` / `\r` while scanning separators, so any newline-separated multi-command string stays unclassified (falls back to `Write` / prompt). A literal newline inside single or double quotes is still a word character and remains accepted. In the same pass, git global-option handling was unified into a single `GIT_GLOBAL_OPTIONS` table (each entry carrying whether it consumes the next token) that drives both `find_git_subcommand`'s skip logic and `git_has_unsafe_global_option`, so the two checks cannot drift apart again. |
+| Behavior after | `ls\nrm file`, `echo hi\nrm -f x`, CRLF variants and leading/trailing bare newlines are all classified **Write** (prompted / denied in plan mode); `echo "line1\nline2"` and `cat "file\nname"` (quoted literal newlines) remain Read. |
+| Pointers | `crates/tact/src/tool/readonly_shell.rs` (`split_plain_command`, `GIT_GLOBAL_OPTIONS`, `find_git_global_option`, `git_has_unsafe_global_option`); regression tests in the same file; [Ch 10](./10_chapter_permission.md) §7. |
+
+## 1. 2026-08-13 — OpenAI-compatible Chat Completions surfaces transport failures as `LlmError::Request`
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The OpenAI-compatible adapter reported send/connection/response-read failures as `LlmError::Unsupported("HTTP request failed: …")`, conflating "this endpoint can't do something" with "the request never went through"; token counts were cast `u64 as u32` (truncating, misleading on oversized values); a malformed tool-call `arguments` payload was silently replaced by `{}` with no trace. |
+| Decision | New `LlmError::Request(String)` variant for request transport / deserialization errors (API HTTP errors keep `HttpError`). Both streaming and non-streaming paths now send the already-serialized JSON bytes (`body` + explicit `Content-Type`) instead of re-serializing via `.json()`. Token counts convert `u64 → u32` saturating (`u32_token_count`). Malformed tool-call arguments log at `debug` (error, tool name, raw args) and fall back to an empty object. |
+| Behavior after | A dead endpoint / dropped connection surfaces `request error: …` instead of `unsupported: …`; oversized token counts saturate instead of wrapping; malformed tool args are visible in debug logs. |
+| Pointers | `crates/tact_llm/src/error.rs` (`LlmError::Request`), `crates/tact_llm/src/openai/compatible/mod.rs` (`OpenAiAdapter` chat/stream paths, `u32_token_count`, `tool_use_block_from_parts`); [Ch 22](./22_chapter_llm.md). |
+
 ## 1. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
 
 | Field | Value |

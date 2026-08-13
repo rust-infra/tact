@@ -235,7 +235,7 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
 
 Since 2026-08-13, `PermissionPolicy::ShellCommand` classifies a shell command string as **Read** when — and only when — it is provably read-only. The logic lives in `crates/tact/src/tool/readonly_shell.rs` and runs in two stages:
 
-1. **Plain-command split** — the string must be whitespace-separated words (bare words or single/double-quoted segments) with no shell metacharacters: `; & | > < $ backtick \`, globs, braces, parentheses, `!`. Redirections, pipes, command substitution and escapes are rejected outright, so the classification cannot disagree with what `sh -c` actually runs. A leading `~` and embedded single-quoted segments are accepted (both are literal).
+1. **Plain-command split** — the string must be whitespace-separated words (bare words or single/double-quoted segments) with no shell metacharacters: `; & | > < $ backtick \`, globs, braces, parentheses, `!`. Redirections, pipes, command substitution and escapes are rejected outright, so the classification cannot disagree with what `sh -c` actually runs. Bare `\n` / `\r` are **command separators** to `sh -c`, not whitespace — a newline-separated multi-command string (e.g. `ls\nrm file`, CRLF included) is rejected as a whole; a literal newline inside quotes is a word character and stays accepted. A leading `~` and embedded single-quoted segments are accepted (both are literal).
 2. **Safelist match** — the first word must be a program whose options alone cannot write:
    - Always safe: `cat cd cut echo expr false grep head id ls nl paste pwd rev seq stat tail tr true uname uniq wc which whoami`
    - `base64` — except `-o` / `--output`; `find` — except `-exec -execdir -ok -okdir -delete -fls -fprint -fprint0 -fprintf`; `rg` — except `--pre --hostname-bin --search-zip -z`
@@ -275,7 +275,7 @@ sequenceDiagram
 
 Benign destructive paths are allowed at execution but may still prompt: e.g. `rm -rf ./build` passes `validate_shell_command` but is classified as **Write**, so Default mode asks first.
 
-Read-only bash detection rejects commands with shell metacharacters — `ls; rm -rf /` is **Write**, not Read.
+Read-only bash detection rejects commands with shell metacharacters — `ls; rm -rf /` is **Write**, not Read. A bare newline is likewise a command separator, so `ls\nrm file` is **Write**, not Read.
 
 ---
 
