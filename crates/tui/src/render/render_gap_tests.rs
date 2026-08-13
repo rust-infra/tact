@@ -183,6 +183,31 @@ fn log_markdown_list_then_empty_fence_stays_in_markdown_flow() {
 }
 
 #[test]
+fn streamed_markdown_list_keeps_tail_and_renders_after_flush() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "- first item\n- second item with a long tail".into(),
+    ));
+
+    let before_flush = render_main_area_text(&mut app, 44, 18);
+    assert!(
+        before_flush.contains("second item"),
+        "live tail missing:\n{before_flush}"
+    );
+
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    let after_flush = render_main_area_text(&mut app, 44, 18);
+    assert!(
+        after_flush.contains("first item"),
+        "first list item missing:\n{after_flush}"
+    );
+    assert!(
+        after_flush.contains("long tail"),
+        "flushed list tail missing:\n{after_flush}"
+    );
+}
+
+#[test]
 fn log_renders_streamed_code_block_card() {
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::StreamChunk(

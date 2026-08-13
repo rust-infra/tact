@@ -11,7 +11,7 @@ use crate::{
     render::{
         cells::{thinking::ThinkingCell, tool::ToolCell},
         renderable::Renderable,
-        util::wrap_line,
+        util::{list_hanging_indent, wrap_line, wrap_line_with_hanging_indent},
     },
     theme::Theme,
     widgets::state::App,
@@ -189,7 +189,9 @@ pub(crate) fn render_log_panel_with_borders(
                     vec![Line::default()]
                 } else {
                     let indent = app.nested_log_indent(phys_idx) as usize;
-                    wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
+                    let content_width = wrap_width.saturating_sub(indent).max(1);
+                    let hanging_indent = list_hanging_indent(&app.raw_messages[phys_idx]);
+                    wrap_line_with_hanging_indent(&line, content_width, hanging_indent)
                 }
             } else {
                 // The stream row uses the same reply indent as its TextCell.

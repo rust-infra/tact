@@ -290,6 +290,55 @@ fn log_full_width_nested_line_wraps_before_indentation_clip() {
     assert_eq!(app.log_scroll.visual_cache.len(), 2);
 }
 #[test]
+fn log_wrapped_ordered_list_continuation_hangs_under_item_text() {
+    let mut app = make_app();
+    app.add_system_message(
+        "4. The stashes listed here belong to older branches and are not part of this change, so I left them untouched."
+            .into(),
+    );
+
+    let terminal = render_log_panel_terminal(&mut app, 44, 12);
+    let buffer = terminal.backend().buffer();
+    let first_x = buffer_column_of(buffer, "4. The stashes").expect("ordered marker row");
+    let continuation_x =
+        buffer_column_of(buffer, "der branches").expect("wrapped continuation row");
+
+    assert_eq!(
+        continuation_x,
+        first_x + 3,
+        "continuation text should start below item text, not at the panel edge; rendered buffer:\n{}",
+        crate::render::test_harness::buffer_text(buffer)
+    );
+}
+
+#[test]
+fn log_nested_cjk_list_wraps_without_losing_text_or_width() {
+    let mut app = make_app();
+    app.add_system_message(
+        "- 通用提醒\n  1. 香港散户在持牌平台上只能交易 BTC、ETH 等主要代币，长文本需要继续换行而不能丢失。\n  2. 大额交易建议咨询专业人士。"
+            .into(),
+    );
+
+    let text = render_log_panel_text(&mut app, 36, 18);
+    assert!(text.contains("通 用 提 醒"), "parent item missing:\n{text}");
+    assert!(
+        text.contains("香 港 散 户"),
+        "nested CJK item missing:\n{text}"
+    );
+    assert!(
+        text.contains("专 业 人 士"),
+        "second nested item missing:\n{text}"
+    );
+
+    for line in &app.log_scroll.visual_cache {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= 34,
+            "cached content row exceeds panel content width: {line:?}"
+        );
+    }
+}
+
+#[test]
 fn log_narrow_width_wraps_long_paragraph() {
     let mut app = make_app();
     app.add_system_message("word ".repeat(40));

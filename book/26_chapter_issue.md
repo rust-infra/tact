@@ -29,6 +29,17 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — Main-area Markdown list wrapping preserves hanging indents
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Long Markdown list items in the main log wrapped continuation text back at the row's left edge. Nested and wide-character lists could therefore look detached from their marker or become difficult to read in narrow terminals. The existing stream state machine and `tui-markdown` parser were otherwise working and did not need a rewrite. |
+| Decision | Keep the existing line-buffered streaming Markdown path and add a display-width-aware hanging-indent wrapper in the main log. The first row keeps the full width for the marker and item body; continuation rows reserve the marker prefix width, including CJK display width, and remain clipped to the panel content width. Non-list, table, code, Mermaid, popup, and tool paths retain their existing wrappers. |
+| Behavior after | Ordered, unordered, nested, and wide-character list continuation rows align below item text instead of restarting at the panel edge; streaming list tails remain visible before flush and content remains within the panel width. |
+| Pointers | `crates/tui/src/render/util.rs` (`list_hanging_indent`, `wrap_line_with_hanging_indent`); `crates/tui/src/render/log.rs`; regression tests in `crates/tui/src/render/log_render_tests.rs` and `crates/tui/src/render/render_gap_tests.rs`; `docs/superpowers/specs/2026-08-13-markdown-main-render-design.md`; `docs/superpowers/plans/2026-08-13-markdown-main-render.md`. |
+
+
 ## 1. 2026-08-13 — Thinking / subagent popups preserve hanging indents for wrapped list items
 
 | Field | Value |

@@ -48,8 +48,60 @@ pub(crate) fn split_at_display_width(text: &str, max_width: usize) -> (&str, &st
     (text, "")
 }
 
-/// Split a styled Line by display width into multiple Lines not exceeding max_width.
+/// Width of the visible prefix before the content of a Markdown list item.
+///
+/// The returned value includes leading indentation, the marker (`-`, `*`, `+`,
+/// `•`, or an ordered marker such as `12.`), and the whitespace after it.
+/// Continuation rows can use this as a hanging indent so their text starts
+/// below the item text rather than at the panel edge.
+pub(crate) fn list_hanging_indent(text: &str) -> usize {
+    let leading = text.len() - text.trim_start().len();
+    let trimmed = &text[leading..];
+
+    let marker_end = {
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && trimmed.as_bytes().get(digits) == Some(&b'.') {
+            digits + 1
+        } else {
+            let Some(marker) = trimmed.chars().next() else {
+                return 0;
+            };
+            if !matches!(marker, '-' | '*' | '+' | '•') {
+                return 0;
+            }
+            marker.len_utf8()
+        }
+    };
+
+    let whitespace_len = trimmed[marker_end..]
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_whitespace())
+        .last()
+        .map_or(0, |(offset, ch)| offset + ch.len_utf8());
+    if whitespace_len == 0 {
+        return 0;
+    }
+
+    UnicodeWidthStr::width(&text[..leading + marker_end + whitespace_len])
+}
+
+/// Split a styled Line by display width into multiple Lines not exceeding
+/// `max_width`.
 pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
+    wrap_line_with_hanging_indent(line, max_width, 0)
+}
+
+/// Split a styled line while reserving a hanging indent for continuation rows.
+///
+/// The first visual row keeps the full width for the list marker and item text.
+/// Later rows start with `hanging_indent` spaces and use the remaining width for
+/// content. The indent is clamped so even a very narrow terminal cannot emit a
+/// row wider than the requested width.
+pub(crate) fn wrap_line_with_hanging_indent(
+    line: &Line<'_>,
+    max_width: usize,
+    hanging_indent: usize,
+) -> Vec<Line<'static>> {
     let line_style = line.style;
     let text: String = line
         .spans
@@ -58,6 +110,8 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
         .collect::<Vec<_>>()
         .concat();
     let base_style = line_style.patch(line.spans.first().map(|s| s.style).unwrap_or_default());
+    let hanging_indent = hanging_indent.min(max_width.saturating_sub(1));
+    let continuation_width = max_width.saturating_sub(hanging_indent).max(1);
 
     if !text.contains('\n') && UnicodeWidthStr::width(text.as_str()) <= max_width {
         let spans: Vec<Span<'static>> = line
@@ -85,27 +139,35 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
             result.push(Line::from(Span::styled("", base_style)));
             continue;
         }
-        let w = UnicodeWidthStr::width(text_line);
-        if w <= max_width {
-            result.push(Line::from(Span::styled(text_line.to_string(), base_style)));
-            continue;
-        }
+
         let mut remaining = text_line;
+        let mut first_row = true;
         while !remaining.is_empty() {
-            let (seg, rest) = split_at_display_width(remaining, max_width);
-            if seg.is_empty() {
+            let width = if first_row {
+                max_width
+            } else {
+                continuation_width
+            };
+            let (seg, rest) = split_at_display_width(remaining, width);
+            let segment = if seg.is_empty() {
                 if let Some(c) = rest.chars().next() {
-                    let mut s = String::new();
-                    s.push(c);
-                    result.push(Line::from(Span::styled(s, base_style)));
-                    remaining = &rest[c.len_utf8()..];
+                    &rest[..c.len_utf8()]
                 } else {
                     break;
                 }
             } else {
-                result.push(Line::from(Span::styled(seg.to_string(), base_style)));
-                remaining = rest;
+                seg
+            };
+
+            let mut spans = Vec::new();
+            if !first_row && hanging_indent > 0 {
+                spans.push(Span::styled(" ".repeat(hanging_indent), base_style));
             }
+            spans.push(Span::styled(segment.to_string(), base_style));
+            result.push(Line::from(spans));
+
+            remaining = &remaining[segment.len()..];
+            first_row = false;
         }
     }
     if result.is_empty() {
