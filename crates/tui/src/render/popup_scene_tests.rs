@@ -406,6 +406,49 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
 }
 
 #[test]
+fn completed_thinking_popup_hangs_wrapped_ordered_item() {
+    let mut app = make_app();
+    let fourth = "4. The stashes listed (stash@{0..4}) belong to other branches/older work and are not part of this branch's commit surface, so I left them untouched.";
+    app.thinking.blocks.push(ThinkingBlock {
+        phys_idx: 0,
+        content: format!("1. first item\n2. second item\n3. third item\n{fourth}"),
+        summary: "done".into(),
+        cached_markdown: vec![
+            Line::from("1. first item"),
+            Line::from("2. second item"),
+            Line::from("3. third item"),
+            Line::from(fourth),
+        ],
+        elapsed: Duration::ZERO,
+    });
+    app.thinking.popup = Some(ThinkingPopup {
+        phys_idx: 0,
+        title: "Thinking".into(),
+        scroll: 0,
+        selection: None,
+        selection_text: String::new(),
+    });
+
+    let text = render_thinking_popup_text(&mut app, 80, 30);
+    let lines: Vec<&str> = text.lines().collect();
+    let item_line = lines
+        .iter()
+        .position(|line| line.contains("4. The stashes listed"))
+        .expect("long ordered item should render");
+    let marker_x = lines[item_line].find("4. ").expect("ordered marker");
+    let continuation = lines[item_line + 1];
+    let continuation_x = continuation
+        .find("branches")
+        .expect("wrapped continuation should contain text");
+
+    assert_eq!(
+        continuation_x,
+        marker_x + 3,
+        "wrapped list text should align below item text, got:\n{text}"
+    );
+}
+
+#[test]
 fn thinking_popup_selection_reverses_selected_body_text_only() {
     let mut app = make_app();
     seed_thinking_popup(&mut app);

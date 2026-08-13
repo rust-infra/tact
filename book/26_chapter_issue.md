@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — Thinking / subagent popups preserve hanging indents for wrapped list items
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Selectable text popups wrapped each logical line at the body width but restarted every continuation row at the left edge. Short ordered-list items looked correct, while a long item such as `4. ...` broke with its continuation text aligned under the list marker instead of the item body. |
+| Decision | `selectable_text` now supports a visual-only continuation prefix on wrapped rows. Markdown-style ordered and unordered list markers contribute their display width (`4. ` → 3 cells, `10. ` → 4 cells); the prefix is rendered and hit-tested as non-source padding, so selection offsets and copy text remain unchanged. Thinking and completed subagent popups use the hanging-indent path; other layout callers keep the existing zero-indent behavior. |
+| Behavior after | Long list items wrap with continuation text aligned below the item body rather than below `1.` / `-`; popup mouse selection still maps only to source graphemes. |
+| Pointers | `crates/tui/src/render/popups/selectable_text.rs` (`list_hanging_indent`, `layout_display_rows_with_hanging_indent`, visual prefix hit mapping); `crates/tui/src/render/popups/thinking_popup.rs`; regression tests in `selectable_text.rs` and `popup_scene_tests.rs` (`completed_thinking_popup_hangs_wrapped_ordered_item`). |
+
 ## 1. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
 
 | Field | Value |

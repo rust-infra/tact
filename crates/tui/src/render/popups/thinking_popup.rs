@@ -6,7 +6,10 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
-use super::selectable_text::{DisplayRow, layout_display_rows, scalar_styles, source_lines};
+use super::selectable_text::{
+    DisplayRow, layout_display_rows_with_hanging_indent, list_hanging_indent, scalar_styles,
+    source_lines,
+};
 use crate::widgets::state::App;
 
 fn is_ordered_list_item(line: &Line<'_>) -> bool {
@@ -107,12 +110,13 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
             source_line.text.chars().count(),
         );
         display_rows.extend(
-            layout_display_rows(
+            layout_display_rows_with_hanging_indent(
                 source_line.text,
                 source_line.start,
                 &styles,
                 body_area.width as usize,
                 true,
+                list_hanging_indent(source_line.text),
             )
             .into_iter()
             .map(ThinkingDisplayRow::Content),

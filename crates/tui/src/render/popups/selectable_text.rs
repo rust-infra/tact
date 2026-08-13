@@ -27,6 +27,10 @@ pub(crate) struct DisplayRow {
     pub(crate) line_end: usize,
     graphemes: Vec<DisplayGrapheme>,
     pub(crate) cells: Vec<PopupTextHit>,
+    /// Visual cells reserved before the first source grapheme (for example,
+    /// the continuation indent of a wrapped list item). These cells are not
+    /// part of the selectable source text.
+    prefix_cells: usize,
 }
 
 /// Wrapped-layout snapshot reused across frames while the popup content and
@@ -56,17 +60,22 @@ fn hit_intersects(hit: PopupTextHit, selection: &std::ops::Range<usize>) -> bool
 
 impl DisplayRow {
     pub(crate) fn hit_row(&self, screen_y: u16, text_x: u16) -> PopupHitRow {
+        let mut cells = vec![PopupTextHit::empty(self.line_start); self.prefix_cells];
+        cells.extend(self.cells.iter().copied());
         PopupHitRow {
             screen_y,
             text_x,
             line_start: self.line_start,
             line_end: self.line_end,
-            cells: self.cells.clone(),
+            cells,
         }
     }
 
     pub(crate) fn spans(&self, selection: Option<&std::ops::Range<usize>>) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
+        if self.prefix_cells > 0 {
+            spans.push(Span::raw(" ".repeat(self.prefix_cells)));
+        }
         let mut content = String::new();
         let mut style = None;
 
@@ -154,6 +163,41 @@ pub(crate) fn scalar_styles(
     styles
 }
 
+/// Width of the prefix before the content of a Markdown list item.
+///
+/// Wrapped list rows use this as a hanging indent so continuation text lines
+/// up with the item content instead of the list marker.
+pub(crate) fn list_hanging_indent(text: &str) -> usize {
+    let leading = text.len() - text.trim_start().len();
+    let trimmed = &text[leading..];
+
+    let marker_end = {
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && trimmed.as_bytes().get(digits) == Some(&b'.') {
+            digits + 1
+        } else {
+            let Some(marker) = trimmed.chars().next() else {
+                return 0;
+            };
+            if !matches!(marker, '-' | '*' | '+' | '•') {
+                return 0;
+            }
+            marker.len_utf8()
+        }
+    };
+
+    let whitespace_len = trimmed[marker_end..]
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_whitespace())
+        .last()
+        .map_or(0, |(offset, ch)| offset + ch.len_utf8());
+    if whitespace_len == 0 {
+        return 0;
+    }
+
+    unicode_width::UnicodeWidthStr::width(&text[..leading + marker_end + whitespace_len])
+}
+
 /// Wrap every source line of `raw_text` into display rows, applying the styles
 /// from `styled_lines` (falling back to `fallback` where a line is missing).
 pub(crate) fn layout_all_display_rows(
@@ -169,12 +213,13 @@ pub(crate) fn layout_all_display_rows(
             fallback,
             source_line.text.chars().count(),
         );
-        display_rows.extend(layout_display_rows(
+        display_rows.extend(layout_display_rows_with_hanging_indent(
             source_line.text,
             source_line.start,
             &styles,
             max_width,
             true,
+            list_hanging_indent(source_line.text),
         ));
     }
     display_rows
@@ -187,23 +232,40 @@ pub(crate) fn layout_display_rows(
     max_width: usize,
     wrap: bool,
 ) -> Vec<DisplayRow> {
+    layout_display_rows_with_hanging_indent(text, line_start, styles, max_width, wrap, 0)
+}
+
+pub(crate) fn layout_display_rows_with_hanging_indent(
+    text: &str,
+    line_start: usize,
+    styles: &[Style],
+    max_width: usize,
+    wrap: bool,
+    hanging_indent: usize,
+) -> Vec<DisplayRow> {
     let mut rows = Vec::new();
     let mut graphemes: Vec<DisplayGrapheme> = Vec::new();
     let mut cells: Vec<PopupTextHit> = Vec::new();
     let mut row_start = line_start;
     let mut row_end = line_start;
     let mut row_width = 0;
+    let mut row_prefix = 0;
+    // Leave at least one cell for content when the caller supplies a narrow
+    // width. Normal popup widths are much larger than any list marker.
+    let hanging_indent = hanging_indent.min(max_width.saturating_sub(1));
 
     let push_row = |rows: &mut Vec<DisplayRow>,
                     graphemes: &mut Vec<DisplayGrapheme>,
                     cells: &mut Vec<PopupTextHit>,
                     line_start,
-                    line_end| {
+                    line_end,
+                    prefix_cells| {
         rows.push(DisplayRow {
             line_start,
             line_end,
             graphemes: std::mem::take(graphemes),
             cells: std::mem::take(cells),
+            prefix_cells,
         });
     };
 
@@ -247,16 +309,39 @@ pub(crate) fn layout_display_rows(
                         rest_cells.drain(..space_width);
                     }
                     let kept_end = graphemes.last().map(|g| g.hit.end).unwrap_or(row_start);
-                    push_row(&mut rows, &mut graphemes, &mut cells, row_start, kept_end);
+                    push_row(
+                        &mut rows,
+                        &mut graphemes,
+                        &mut cells,
+                        row_start,
+                        kept_end,
+                        row_prefix,
+                    );
                     graphemes = rest;
                     cells = rest_cells;
-                    row_width = graphemes.iter().map(grapheme_cells).sum();
+                    row_prefix = hanging_indent;
+                    row_width = row_prefix + graphemes.iter().map(grapheme_cells).sum::<usize>();
                     row_start = graphemes.first().map(|g| g.hit.start).unwrap_or(start);
                 } else {
-                    push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
+                    let current_end = graphemes.last().map(|g| g.hit.end).unwrap_or(row_start);
+                    push_row(
+                        &mut rows,
+                        &mut graphemes,
+                        &mut cells,
+                        row_start,
+                        current_end,
+                        row_prefix,
+                    );
+                    row_prefix = hanging_indent;
                     row_start = start;
-                    row_width = 0;
+                    row_width = row_prefix;
                 }
+            } else if wrap && row_prefix > 0 {
+                // A wide grapheme may not fit in the remaining space after the
+                // continuation indent; fall back to the left edge rather than
+                // emitting a row wider than the viewport.
+                row_prefix = 0;
+                row_width = 0;
             } else if !wrap {
                 break;
             }
@@ -308,7 +393,14 @@ pub(crate) fn layout_display_rows(
     }
 
     if !graphemes.is_empty() || rows.is_empty() {
-        push_row(&mut rows, &mut graphemes, &mut cells, row_start, row_end);
+        push_row(
+            &mut rows,
+            &mut graphemes,
+            &mut cells,
+            row_start,
+            row_end,
+            row_prefix,
+        );
     }
     rows
 }
@@ -336,6 +428,38 @@ mod tests {
         let rows = layout_display_rows("abcdef", 0, &[], 3, true);
         let texts: Vec<String> = rows.iter().map(row_text).collect();
         assert_eq!(texts, vec!["abc", "def"]);
+    }
+
+    #[test]
+    fn list_hanging_indent_matches_marker_width() {
+        assert_eq!(list_hanging_indent("4. item"), 3);
+        assert_eq!(list_hanging_indent("10. item"), 4);
+        assert_eq!(list_hanging_indent("- item"), 2);
+        assert_eq!(list_hanging_indent("plain text"), 0);
+    }
+
+    #[test]
+    fn wrapped_list_continuation_starts_under_item_text() {
+        let text = "4. one two three";
+        let rows = layout_display_rows_with_hanging_indent(
+            text,
+            0,
+            &[],
+            12,
+            true,
+            list_hanging_indent(text),
+        );
+        let texts: Vec<String> = rows.iter().map(row_text).collect();
+        assert_eq!(texts, vec!["4. one two", "   three"]);
+        let hit_row = rows[1].hit_row(0, 0);
+        assert_eq!(hit_row.cells.len(), 8, "indent cells must be hit-testable");
+        assert!(
+            hit_row
+                .cells
+                .iter()
+                .take(3)
+                .all(|hit| *hit == PopupTextHit::empty(rows[1].line_start))
+        );
     }
 
     #[test]

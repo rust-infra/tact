@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-13 — Thinking / subagent 弹窗的长列表项续行保持悬挂缩进
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | 可选择文本弹窗按内容宽度换行每个逻辑行，但续行总是从正文左边界重新开始。短的有序列表项看不出问题；长列表项（如 `4. ...`）换行后，续行会对齐到列表标记，而不是对齐到正文。 |
+| 决策 | `selectable_text` 为折行行增加仅用于视觉显示的续行前缀。Markdown 风格的有序/无序列表标记贡献其显示宽度（`4. ` → 3 格，`10. ` → 4 格）；前缀会渲染并参与命中测试，但不属于源文本，因此选择偏移与复制内容不变。Thinking 与已完成的 subagent 弹窗使用悬挂缩进路径；其他布局调用保持原有的零缩进行为。 |
+| 改后行为 | 长列表项换行后，续行正文会对齐到 item 正文，而不是对齐到 `1.` / `-`；弹窗鼠标选择仍只映射到源文本 grapheme。 |
+| 指针 | `crates/tui/src/render/popups/selectable_text.rs`（`list_hanging_indent`、`layout_display_rows_with_hanging_indent`、视觉前缀命中映射）；`crates/tui/src/render/popups/thinking_popup.rs`；`selectable_text.rs` 与 `popup_scene_tests.rs` 中的回归测试（`completed_thinking_popup_hangs_wrapped_ordered_item`）。 |
+
 ## 1. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
 
 | 字段 | 内容 |
