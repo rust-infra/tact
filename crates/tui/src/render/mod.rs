@@ -16,7 +16,7 @@ pub(crate) mod task_panel;
 pub(crate) mod util;
 
 pub(super) use bar::{render_bottom_bar, render_status_bar};
-pub(super) use input::render_input_box;
+pub(super) use input::{render_input_box, wrap_line};
 pub(super) use layout::render_main_area;
 pub(crate) use log::effective_max_logical_scroll;
 pub(crate) use log_style::is_user_message_line;

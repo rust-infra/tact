@@ -51,6 +51,7 @@ use crate::{
     render::{
         render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
         render_main_area, render_select_popup, render_slash_command_popup, render_status_bar,
+        wrap_line,
     },
     widgets::state::{App, InputMode, Status},
 };
@@ -278,8 +279,16 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             }
             terminal.draw(|f| {
                 let size = f.area();
-                // Input box height auto-expands with content (1–3 lines of content + 2 for border)
-                let input_lines = app.input.lines().count().clamp(1, 3) as u16;
+                // Input box height auto-expands with content (1–3 display lines
+                // + 2 for border); display lines count soft-wrapped rows, not
+                // just explicit `\n` splits.
+                let inner_width = size.width.saturating_sub(2).max(1) as usize;
+                let input_lines = app
+                    .input
+                    .split('\n')
+                    .map(|line| wrap_line(line, inner_width).len())
+                    .sum::<usize>()
+                    .clamp(1, 3) as u16;
                 let input_height = input_lines + 2;
                 let bottom_height = 2u16;
                 let log_area = Layout::default()
