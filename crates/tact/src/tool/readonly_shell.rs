@@ -71,6 +71,13 @@ fn split_plain_command(command: &str) -> Option<Vec<String>> {
 
     loop {
         while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            // A bare newline (or CR in CRLF input) is a command separator
+            // to `sh -c`, not a word separator. Skipping it here would let
+            // a second, mutating command after a safelisted first word be
+            // classified as Read and auto-allowed in plan mode.
+            if matches!(chars.peek(), Some('\n') | Some('\r')) {
+                return None;
+            }
             chars.next();
         }
         let Some(&first) = chars.peek() else {
@@ -242,11 +249,10 @@ fn find_git_subcommand<'a>(words: &'a [String], subcommands: &[&str]) -> Option<
         }
         let arg = arg.as_str();
 
-        if is_git_global_option_with_inline_value(arg) {
-            continue;
-        }
-        if is_git_global_option_with_value(arg) {
-            skip_next = true;
+        if let Some(global) = find_git_global_option(arg) {
+            if global.takes_value {
+                skip_next = true;
+            }
             continue;
         }
         // Any other flag: skip it here; if it sits in the global section it
@@ -262,29 +268,6 @@ fn find_git_subcommand<'a>(words: &'a [String], subcommands: &[&str]) -> Option<
     None
 }
 
-fn is_git_global_option_with_value(arg: &str) -> bool {
-    matches!(
-        arg,
-        "-C" | "-c"
-            | "--config-env"
-            | "--exec-path"
-            | "--git-dir"
-            | "--namespace"
-            | "--super-prefix"
-            | "--work-tree"
-    )
-}
-
-fn is_git_global_option_with_inline_value(arg: &str) -> bool {
-    arg.starts_with("--config-env=")
-        || arg.starts_with("--exec-path=")
-        || arg.starts_with("--git-dir=")
-        || arg.starts_with("--namespace=")
-        || arg.starts_with("--super-prefix=")
-        || arg.starts_with("--work-tree=")
-        || ((arg.starts_with("-C") || arg.starts_with("-c")) && arg.len() > 2)
-}
-
 #[derive(Clone, Copy)]
 enum GitOptionPattern {
     Exact(&'static str),
@@ -292,28 +275,92 @@ enum GitOptionPattern {
     Prefix(&'static str),
 }
 
+/// A git global option and whether it consumes the following token as its
+/// value (e.g. `-C <dir>` vs the inline `-C<dir>` form, which does not).
+#[derive(Clone, Copy)]
+struct GitGlobalOption {
+    pattern: GitOptionPattern,
+    takes_value: bool,
+}
+
 /// Global options that can change which repository is operated on or how
-/// output is produced; any of them before the subcommand disqualifies the
-/// command.
-const UNSAFE_GIT_GLOBAL_OPTIONS: &[GitOptionPattern] = &[
-    GitOptionPattern::Exact("-C"),
-    GitOptionPattern::ShortWithInlineValue("-C"),
-    GitOptionPattern::Exact("-c"),
-    GitOptionPattern::ShortWithInlineValue("-c"),
-    GitOptionPattern::Exact("-p"),
-    GitOptionPattern::Exact("--config-env"),
-    GitOptionPattern::Prefix("--config-env="),
-    GitOptionPattern::Exact("--exec-path"),
-    GitOptionPattern::Prefix("--exec-path="),
-    GitOptionPattern::Exact("--git-dir"),
-    GitOptionPattern::Prefix("--git-dir="),
-    GitOptionPattern::Exact("--namespace"),
-    GitOptionPattern::Prefix("--namespace="),
-    GitOptionPattern::Exact("--paginate"),
-    GitOptionPattern::Exact("--super-prefix"),
-    GitOptionPattern::Prefix("--super-prefix="),
-    GitOptionPattern::Exact("--work-tree"),
-    GitOptionPattern::Prefix("--work-tree="),
+/// output is produced. This single table drives both the subcommand search
+/// (`find_git_subcommand` skips these) and the safety check
+/// (`git_has_unsafe_global_option` disqualifies any command carrying one), so
+/// the two checks cannot drift apart.
+const GIT_GLOBAL_OPTIONS: &[GitGlobalOption] = &[
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("-C"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::ShortWithInlineValue("-C"),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("-c"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::ShortWithInlineValue("-c"),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("-p"),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--config-env"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--config-env="),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--exec-path"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--exec-path="),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--git-dir"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--git-dir="),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--namespace"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--namespace="),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--paginate"),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--super-prefix"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--super-prefix="),
+        takes_value: false,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Exact("--work-tree"),
+        takes_value: true,
+    },
+    GitGlobalOption {
+        pattern: GitOptionPattern::Prefix("--work-tree="),
+        takes_value: false,
+    },
 ];
 
 /// Subcommand options that write to files or execute external programs.
@@ -338,6 +385,12 @@ impl GitOptionPattern {
     }
 }
 
+fn find_git_global_option(arg: &str) -> Option<&'static GitGlobalOption> {
+    GIT_GLOBAL_OPTIONS
+        .iter()
+        .find(|global| global.pattern.matches(arg))
+}
+
 fn git_matches_option_pattern(arg: &str, patterns: &[GitOptionPattern]) -> bool {
     patterns.iter().any(|pattern| pattern.matches(arg))
 }
@@ -346,7 +399,7 @@ fn git_has_unsafe_global_option(global_args: &[String]) -> bool {
     global_args
         .iter()
         .map(String::as_str)
-        .any(|arg| git_matches_option_pattern(arg, UNSAFE_GIT_GLOBAL_OPTIONS))
+        .any(|arg| find_git_global_option(arg).is_some())
 }
 
 fn git_subcommand_args_are_read_only(args: &[String]) -> bool {
@@ -427,6 +480,10 @@ mod tests {
             "grep -rn needle .",
             "grep -rn 'needle hay' .",
             "grep -rn \"needle hay\" .",
+            // A literal newline inside double quotes is part of the word in
+            // sh -c, not a command separator — still read-only.
+            "echo \"line1\nline2\"",
+            "cat \"file\nname\"",
             "cat Cargo.toml",
             "head -20 f",
             "tail -n 5 f",
@@ -470,6 +527,15 @@ mod tests {
             "ls 'unterminated",
             "ls \"unterminated",
             "echo \"$HOME\"",
+            // Bare newlines / CRLF separate commands in sh -c, so a second
+            // mutating command must never ride along after a safelisted word.
+            "ls\nrm file",
+            "ls\nmv a b",
+            "echo hi\nrm -f x",
+            "ls\r\nrm file",
+            "ls\rrm file",
+            "ls\n",
+            "\nls",
         ] {
             assert!(!is_ro(cmd), "expected NOT read-only: {cmd}");
         }
