@@ -244,7 +244,7 @@ Vertical constraints in `lib.rs`:
 
 - Top bar: fixed 1 row.
 - Main area: `Constraint::Min(3)`.
-- Input height: `min(lines, 3) + 2` for border.
+- Input height: `min(display rows, 3) + 2` for border — display rows count soft-wrapped rows, not just explicit `\n` splits (long lines wrap inside the box).
 - Bottom height: always 2 rows (account balance/quota appends to row 1, not a third row).
 
 Popups are drawn **after** the base layout so they paint on top. Most use `Clear` first (no drop shadow — avoids dark bands on some terminals).
@@ -333,7 +333,7 @@ pub(crate) trait Renderable {
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
 - Row 2: model name, `out`/`输出`, `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
-**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content lines; CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
+**Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content rows; long lines soft-wrap at character boundaries (`wrap_line`, CJK double-width aware — `Paragraph` stays unwrapped and draws exactly those rows) and the caret/scroll follow the wrapped rows (`caret_in_wrapped`); CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
 ### 6.7 Markdown
 

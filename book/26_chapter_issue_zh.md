@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `bugfix` |
+| 现象 / 动机 | 输入框高度与行数统计只数显式 `\n`，单条超长行会溢出 3 行上限；光标/滚动按逻辑行计算，与实际渲染不一致（长输入时光标画错行列）。 |
+| 决策 | `render/input.rs` 新增 `wrap_line`（按字符边界软换行、CJK 双宽感知；`Paragraph` 保持不换行、逐行绘制这些切分）与 `caret_in_wrapped`（逻辑光标列 → 显示行列）。框高、行数统计、滚动钳制与光标定位全部改用显示行。 |
+| 改后行为 | 长行在框内折行而非溢出；高度随折行自动扩展（1–3 显示行 + border）；光标与滚动跟随折行行。提交文本不变。 |
+| 指针 | `crates/tui/src/render/input.rs`（`wrap_line`、`caret_in_wrapped`）；`crates/tui/src/lib.rs`（输入框高度）；测试见 `input.rs`（`wrap_line_splits_at_column_width`、`caret_in_wrapped_maps_logical_column_to_display_row`、`input_box_soft_wraps_overlong_line`、`input_box_scrolls_to_caret_on_wrapped_line`）；[第 23 章](./23_chapter_tui_zh.md) §6.2、§6.6。 |
+
 ## 1. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
 
 | 字段 | 内容 |

@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Input-box height and line stats counted only explicit `\n` splits, so a single overlong line overflowed past the box's 3-row cap, and the caret/scroll math (logical rows) disagreed with the rendered text (caret drawn on the wrong row/column for long input). |
+| Decision | `render/input.rs` gained `wrap_line` (character-boundary soft-wrap, CJK double-width aware; `Paragraph` stays unwrapped and draws exactly those rows) and `caret_in_wrapped` (logical cursor column → display row/column). Box height, line stats, scroll clamping, and cursor placement all now operate on display rows. |
+| Behavior after | Long input lines wrap inside the box instead of overflowing; height auto-expands with wrapped rows (1–3 display rows + border); caret and scroll follow the wrapped row. Submitted text is unchanged. |
+| Pointers | `crates/tui/src/render/input.rs` (`wrap_line`, `caret_in_wrapped`); `crates/tui/src/lib.rs` (input height); tests in `input.rs` (`wrap_line_splits_at_column_width`, `caret_in_wrapped_maps_logical_column_to_display_row`, `input_box_soft_wraps_overlong_line`, `input_box_scrolls_to_caret_on_wrapped_line`); [Ch 23](./23_chapter_tui.md) §6.2, §6.6. |
+
 ## 1. 2026-08-13 — Plan mode runs provably read-only shell commands (`ls`, `grep`, …)
 
 | Field | Value |
