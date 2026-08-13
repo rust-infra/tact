@@ -33,6 +33,9 @@ pub enum LlmError {
     /// The API responded with an error (HTTP-level).
     #[error("api error ({status}): {body}")]
     HttpError { status: u16, body: String },
+    /// Request transport failure (send, connection, or response read).
+    #[error("request error: {0}")]
+    Request(String),
     /// Stream parsing error.
     #[error("stream error: {0}")]
     StreamParse(String),

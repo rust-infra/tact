@@ -30,7 +30,7 @@ pub use body::{
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 pub use multi_model::ChatCompletionsAdapter;
-use reqwest13::header::{AUTHORIZATION, HeaderMap};
+use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
@@ -77,6 +77,13 @@ fn finish_thinking_event(thinking_open: &mut bool) -> Option<AgentUpdate> {
     }
     *thinking_open = false;
     Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+}
+
+/// Convert a `u64` token count to `u32`, saturating rather than truncating.
+/// Token counts are small in practice, but a saturating conversion keeps an
+/// unexpectedly large provider value from wrapping into a misleading number.
+fn u32_token_count(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 // ── Streaming response types ──────────────────────────────────────────
@@ -260,8 +267,20 @@ fn tool_use_block_from_parts(
 ) -> Option<ContentBlock> {
     let id = id.filter(|id| !id.is_empty())?;
     let name = name.filter(|name| !name.is_empty())?;
-    let input = serde_json::from_str(&args)
-        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+    let input = match serde_json::from_str(&args) {
+        Ok(input) => input,
+        Err(error) => {
+            // A malformed arguments payload should not kill the whole
+            // stream, but silently swallowing it hides provider bugs.
+            tracing::debug!(
+                error = %error,
+                tool = %name,
+                args = %args,
+                "tool call arguments are not valid JSON; using empty object"
+            );
+            serde_json::Value::Object(Default::default())
+        }
+    };
     Some(ContentBlock::ToolUse { id, name, input })
 }
 
@@ -416,15 +435,17 @@ impl OpenAiAdapter {
         let url = self.config.url("/chat/completions");
         let headers = self.request_headers().await?;
 
+        // Send the already-serialized bytes; `json()` would re-serialize.
         let response = self
             .http
             .inner()
             .post(&url)
             .headers(headers)
-            .json(body)
+            .header(CONTENT_TYPE, "application/json")
+            .body(json_body.clone())
             .send()
             .await
-            .map_err(|e| LlmError::Unsupported(format!("HTTP request failed: {e}")))?;
+            .map_err(|e| LlmError::Request(format!("HTTP request failed: {e}")))?;
 
         // Read the full response body on non-2xx so the actual API error
         // message is surfaced, not just the HTTP status code.
@@ -609,15 +630,17 @@ impl OpenAiAdapter {
         let url = self.config.url("/chat/completions");
         let headers = self.request_headers().await?;
 
+        // Send the already-serialized bytes; `json()` would re-serialize.
         let response = self
             .http
             .inner()
             .post(&url)
             .headers(headers)
-            .json(body)
+            .header(CONTENT_TYPE, "application/json")
+            .body(json_body.clone())
             .send()
             .await
-            .map_err(|e| LlmError::Unsupported(format!("HTTP request failed: {e}")))?;
+            .map_err(|e| LlmError::Request(format!("HTTP request failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -631,7 +654,7 @@ impl OpenAiAdapter {
         let json: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| LlmError::Unsupported(format!("response deserialization failed: {e}")))?;
+            .map_err(|e| LlmError::Request(format!("response deserialization failed: {e}")))?;
 
         let choice = json
             .get("choices")
@@ -685,34 +708,39 @@ impl OpenAiAdapter {
             StopReason::from_openai(choice.get("finish_reason").and_then(|v| v.as_str()));
 
         let token_usage = json.get("usage").and_then(|v| v.as_object()).map(|u| {
-            let prompt = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let prompt = u
+                .get("prompt_tokens")
+                .and_then(|v| v.as_u64())
+                .map(u32_token_count)
+                .unwrap_or(0);
             let completion = u
                 .get("completion_tokens")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
+                .map(u32_token_count)
+                .unwrap_or(0);
             TokenUsageInfo {
                 prompt,
                 completion,
                 total: u
                     .get("total_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
+                    .map(u32_token_count)
                     .unwrap_or(prompt + completion),
                 prompt_cache_hit_tokens: u
                     .get("prompt_cache_hit_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
+                    .map(u32_token_count)
                     .unwrap_or(0),
                 prompt_cache_miss_tokens: u
                     .get("prompt_cache_miss_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
+                    .map(u32_token_count)
                     .unwrap_or(0),
                 reasoning_tokens: u
                     .get("completion_tokens_details")
                     .and_then(|d| d.get("reasoning_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
+                    .map(u32_token_count)
                     .unwrap_or(0),
             }
         });
