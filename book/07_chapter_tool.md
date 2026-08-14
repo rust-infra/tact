@@ -82,7 +82,6 @@ pub struct ToolContext {
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
     pub background_manager: SharedBackgroundManager,
-    pub cron_scheduler: SharedCronScheduler,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
@@ -124,7 +123,7 @@ Specs are computed once via `OnceLock` — registering tools after first `tool_s
 
 ### Main agent (`toolset()`)
 
-Registers 40+ tools including filesystem, shell, web, tasks, cron, team, worktrees, memory, skills, compaction, and sub-agent spawn. Full list in `crates/tact/src/tool/mod.rs` lines 116–157.
+Registers 40+ tools including filesystem, shell, web, tasks, team, worktrees, memory, skills, compaction, and sub-agent spawn. Full list in `crates/tact/src/tool/mod.rs` lines 116–157.
 
 ### Sub-agent (`subagent_toolset()`)
 
@@ -138,7 +137,7 @@ Restricted set for isolated workers spawned by the `spawn_subagent` tool:
 | `edit_file` | Exact string replace (first or all) |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get cron, team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes five — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
+Sub-agents do **not** get team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes five — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 
@@ -239,7 +238,6 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | `memory.rs` | `save_memory` | See [Persistent Memory](./03_chapter_memory.md) |
 | `load_skill.rs` | `load_skill` | See [Skill Registry](./02_chapter_skill.md) |
 | `task.rs`, `subagent.rs` | `spawn_subagent` | Spawns sub-agent with `subagent_toolset()` |
-| `cron.rs` | `cron_*` | See [Cron Scheduling](./16_chapter_cron.md) |
 | `compact/mod.rs` | `compact` | Context compaction trigger |
 
 ---

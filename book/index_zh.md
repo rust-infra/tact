@@ -42,7 +42,6 @@
 | 13 | [后台任务](./13_chapter_background_zh.md) | `background_run` / `check_background`、tokio spawn、超时、启动修复 |
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
 | 15 | [Worktree 泳道](./15_chapter_worktree_zh.md) | 隔离 `git worktree`：`create` / `list` / `status` / `run` / `events`、索引与审计日志 |
-| 16 | [Cron 调度](./16_chapter_cron_zh.md) | 定时 prompt 注册表、`.tact/cron/` 持久化、`cron_create` / `list` / `delete`、运行时缺口 |
 | 17 | [桌面通知](./17_chapter_notify_zh.md) | macOS 原生通知（任务完成 / 步骤失败）、配置开关、平台缺口 |
 | 18 | [Agent 主循环](./18_chapter_agent_loop_zh.md) | 收束章：`agent_loop` 回合、流式、`cancel_flag`、`AgentUpdate`、TUI `TaskComplete` |
 | 19 | [持久任务管理器](./19_chapter_persistent_tasks_zh.md) | `TaskManager`、`task_create` / `get` / `list` / `update`、`.tact/tasks/` 依赖 |

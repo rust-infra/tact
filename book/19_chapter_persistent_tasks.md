@@ -21,7 +21,7 @@ The TaskManager gives the LLM a **persistent checklist** across turns and sessio
 - Assign an `owner` string (convention for teammates — not enforced)
 - Model **dependencies** via `blockedBy` / `blocks` edges
 
-Storage uses the SQLite [TaskStore](./01_chapter_store.md#6-session-store-sqlite) in the same `tact.db` as the session store (tables `tasks` + `task_dependencies`). Cron and background tasks still use the JSON [CollectionStore](./01_chapter_store.md).
+Storage uses the SQLite [TaskStore](./01_chapter_store.md#6-session-store-sqlite) in the same `tact.db` as the session store (tables `tasks` + `task_dependencies`). Background tasks use the SQLite `background_tasks` table as well (see [Ch 13](./13_chapter_background.md)).
 
 ---
 

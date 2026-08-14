@@ -1,7 +1,7 @@
 //! SQLite-backed team store.
 //!
 //! Teammates and inbox messages live in the same `tact.db` as sessions,
-//! tasks, cron, and background work, under the `teammates` /
+//! tasks and background work, under the `teammates` /
 //! `inbox_messages` tables. `name` is the natural primary key of a
 //! teammate; messages are ordered by their autoincrement id (insertion
 //! order, matching the legacy JSONL append semantics).

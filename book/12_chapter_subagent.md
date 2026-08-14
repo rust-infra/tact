@@ -25,7 +25,7 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 | Cancel flag | Shared on main runtime | **Separate** — user Cancel on parent does not stop an in-flight subagent |
 | Return to parent | N/A | Last assistant text block as tool result string |
 
-The subagent shares `ToolContext` (cloned): same `work_dir`, managers for background/cron/team/worktree/memory/skills, etc. Those services exist in memory, but most are unreachable because the tools that expose them are not registered on the subagent router.
+The subagent shares `ToolContext` (cloned): same `work_dir`, managers for background/team/worktree/memory/skills, etc. Those services exist in memory, but most are unreachable because the tools that expose them are not registered on the subagent router.
 
 ---
 
@@ -107,7 +107,7 @@ sequenceDiagram
 Notable **omissions** compared to the main agent:
 
 - No `spawn_subagent`, `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
-- No cron, team, worktree, or persistent-task management tools
+- No team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
 The module comment above `subagent_toolset()` still says "four tools" — the `route()` list above is authoritative (also enforced by unit test `subagent_toolset_includes_core_file_tools`).

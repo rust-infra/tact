@@ -12,7 +12,7 @@ use super::TeamStore;
 
 /// SQLite-backed [`TeamStore`] implementation.
 ///
-/// Shares `tact.db` with the session / task / cron / background stores.
+/// Shares `tact.db` with the session / task / background stores.
 /// Schema:
 ///
 /// - `teammates(name, role, status)` — `name` is the PRIMARY KEY; spawning

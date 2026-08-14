@@ -4,10 +4,10 @@ mod harness;
 
 use harness::{
     ask_user_tool_use, ask_user_tool_use_ex, background_run_tool_use, check_background_tool_use,
-    cron_create_tool_use, cron_list_tool_use, load_skill_tool_use, read_inbox_tool_use,
-    run_single_task_with_permission_choice, run_single_task_with_setup, save_memory_tool_use,
-    send_message_tool_use, spawn_teammate_tool_use, task_completed_with, text_block,
-    worktree_create_tool_use, worktree_list_tool_use, worktree_status_tool_use,
+    load_skill_tool_use, read_inbox_tool_use, run_single_task_with_permission_choice,
+    run_single_task_with_setup, save_memory_tool_use, send_message_tool_use,
+    spawn_teammate_tool_use, task_completed_with, text_block, worktree_create_tool_use,
+    worktree_list_tool_use, worktree_status_tool_use,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
@@ -216,33 +216,6 @@ async fn teammate_spawn_send_read_inbox() {
             "step {id} should succeed: {updates:?}"
         );
     }
-}
-
-#[tokio::test]
-async fn cron_create_list_delete() {
-    let mock = MockClient::new(vec![
-        (
-            vec![cron_create_tool_use("cron1", "0 0 * * *", "Daily summary.")],
-            Some(StopReason::ToolUse),
-        ),
-        (vec![cron_list_tool_use("cron2")], Some(StopReason::ToolUse)),
-        (
-            vec![text_block("Cron flow done.")],
-            Some(StopReason::EndTurn),
-        ),
-    ]);
-
-    let (updates, _work_dir) =
-        run_single_task_with_setup(mock, "cron flow", PermissionMode::Auto, |_| {}).await;
-
-    assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "cron1" && result.tool == "cron_create" && matches!(result.status, StepStatus::Success))),
-        "cron_create should succeed: {updates:?}"
-    );
-    assert!(
-        updates.iter().any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, result, .. } if id == "cron2" && result.tool == "cron_list")),
-        "cron_list should run: {updates:?}"
-    );
 }
 
 #[tokio::test]

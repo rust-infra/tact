@@ -5,7 +5,6 @@ use tact::{
     background::{BackgroundManager, SharedBackgroundManager},
     config::CliArgs,
     consts::TactPath,
-    cron::{CronScheduler, SharedCronScheduler},
     extract_text,
     mcp::load_mcp_router,
     memory::get_memory_manager,
@@ -84,7 +83,6 @@ async fn run_headless_locked(
     let db_path = tact_path.session_db_path();
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
-    let cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
@@ -100,7 +98,6 @@ async fn run_headless_locked(
         work_dir: work_dir.clone(),
         task_manager,
         background_manager,
-        cron_scheduler,
         teammate_manager,
         worktree_manager,
         ui_tx: None,

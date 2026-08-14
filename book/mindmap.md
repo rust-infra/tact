@@ -34,7 +34,7 @@ flowchart LR
 
     B2["② Tool families<br/>Ch 12–15"] --> D2["Subagents · Background · Team · Worktree"]
 
-    B3["③ Off-path<br/>Ch 16–17"] --> D3["Cron · Notify"]
+    B3["③ Off-path<br/>Ch 17"] --> D3["Notify"]
 
     B4["④ Capstone<br/>Ch 18"] --> D4["agent_loop · streaming · TaskComplete"]
 
@@ -80,7 +80,7 @@ flowchart LR
 |---|----------|-------|
 | 1–11 | [Store](./01_chapter_store.md) … [Scheduling](./11_chapter_task.md) | ① Runtime order |
 | 12–15 | [Subagent](./12_chapter_subagent.md) … [Worktree](./15_chapter_worktree.md) | ② Tool families |
-| 16–17 | [Cron](./16_chapter_cron.md) · [Notify](./17_chapter_notify.md) | ③ Off-path |
+| 17 | [Notify](./17_chapter_notify.md) | ③ Off-path |
 | 18 | [Agent Loop](./18_chapter_agent_loop.md) | ④ Capstone |
 | 19–20 | [Tasks](./19_chapter_persistent_tasks.md) · [Hallucination](./20_chapter_hallucination.md) | ⑤ Deep topics |
 | 21–23, 25 | [Config](./21_chapter_config.md) … [Protocol](./25_chapter_protocol.md) | ⑥ Bootstrap & UI |

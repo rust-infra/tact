@@ -1,7 +1,7 @@
 //! SQLite-backed worktree store.
 //!
 //! Worktree metadata and the lifecycle audit log live in the same
-//! `tact.db` as sessions, tasks, cron, background, and team state, under
+//! `tact.db` as sessions, tasks, background, and team state, under
 //! the `worktrees` / `worktree_events` tables. The autoincrement `id` on
 //! `worktrees` preserves insertion order (the legacy `index.json` vector
 //! semantics); `worktree_events` rows are ordered by their own `id`.

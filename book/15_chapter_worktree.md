@@ -107,7 +107,7 @@ Every successful `create` appends a row to `worktree_events`:
 
 ## 5. Concurrency and Wiring
 
-`SharedWorktreeManager` wraps `Arc<WorktreeManager>` — no mutex, the SQLite pool serializes writes (mirroring the task/cron/background/team managers). Constructed at startup in `tui.rs`:
+`SharedWorktreeManager` wraps `Arc<WorktreeManager>` — no mutex, the SQLite pool serializes writes (mirroring the task/background/team managers). Constructed at startup in `tui.rs`:
 
 ```rust
 let worktree_manager =
