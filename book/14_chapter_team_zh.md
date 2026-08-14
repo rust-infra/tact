@@ -109,7 +109,7 @@ sequenceDiagram
 
 ## 5. 并发包装
 
-`SharedTeammateManager` 与 task、cron、background manager 同模式：
+`SharedTeammateManager` 与 task、background manager 同模式：
 
 ```rust
 pub struct SharedTeammateManager {

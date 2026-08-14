@@ -108,7 +108,7 @@ Notes on the semantics:
 
 ## 5. Concurrency Wrapper
 
-`SharedTeammateManager` follows the same pattern as the task, cron, and background managers:
+`SharedTeammateManager` follows the same pattern as the task and background managers:
 
 ```rust
 pub struct SharedTeammateManager {

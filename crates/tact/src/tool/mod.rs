@@ -10,7 +10,7 @@
 //!
 //! Shared state available to every tool invocation: the skill registry,
 //! persistent memory, the current work directory, and handles for tasks,
-//! background work, cron, teammates, and worktrees.
+//! background work, teammates, and worktrees.
 //!
 //! ## [`ToolRouter`]
 //!
@@ -40,16 +40,14 @@ use tact_protocol::AgentUpdate;
 use tact_protocol::ToolVisualKind;
 
 use crate::{
-    ToolSpec, background::SharedBackgroundManager, cron::SharedCronScheduler,
-    memory::MemoryManager, task::SharedTaskManager, team::SharedTeammateManager,
-    worktree::SharedWorktreeManager,
+    ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
+    team::SharedTeammateManager, worktree::SharedWorktreeManager,
 };
 
 mod ask_user;
 mod background_run;
 mod bash;
 mod compact;
-mod cron;
 mod edit_file;
 mod load_skill;
 mod memory;
@@ -77,8 +75,6 @@ use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
 use bash::BashTool;
 #[cfg(test)]
-use cron::{CronCreateTool, CronDeleteTool, CronListTool};
-#[cfg(test)]
 use edit_file::EditFileTool;
 #[cfg(test)]
 use load_skill::LoadSkillTool;
@@ -100,7 +96,7 @@ use write_file::WriteFileTool;
 ///
 /// Contains the skill registry, persistent memory manager, current work
 /// directory, and typed handles for task management, background tasks,
-/// cron scheduling, teammates, and worktrees.
+/// teammates, and worktrees.
 #[derive(Clone)]
 pub struct ToolContext {
     /// Shared with the TUI in interactive mode so `/skill-reload` updates
@@ -110,7 +106,6 @@ pub struct ToolContext {
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
     pub background_manager: SharedBackgroundManager,
-    pub cron_scheduler: SharedCronScheduler,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
@@ -660,58 +655,6 @@ mod tests {
 
         assert!(output.contains("<skill name=\"demo\">"));
         assert!(output.contains("Skill body content."));
-    }
-
-    #[tokio::test]
-    async fn cron_tools_manage_scheduled_tasks() {
-        let router = ToolRouter::new()
-            .route(CronCreateTool)
-            .unwrap()
-            .route(CronListTool)
-            .unwrap()
-            .route(CronDeleteTool)
-            .unwrap();
-        let context = test_context("cron_tools_manage_scheduled_tasks");
-
-        let created = router
-            .call(
-                &context,
-                "cron_create",
-                serde_json::json!({
-                    "cron": "0 9 * * *",
-                    "prompt": "Daily standup",
-                    "recurring": true,
-                    "durable": false
-                }),
-            )
-            .await
-            .unwrap();
-        let id = serde_json::from_str::<serde_json::Value>(&created)
-            .unwrap()
-            .get("id")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let listed = router
-            .call(&context, "cron_list", serde_json::json!({}))
-            .await
-            .unwrap();
-        assert!(listed.contains(&id));
-        assert!(listed.contains("Daily standup"));
-
-        let deleted = router
-            .call(&context, "cron_delete", serde_json::json!({ "id": id }))
-            .await
-            .unwrap();
-        assert!(deleted.contains("Deleted scheduled task"));
-
-        let listed = router
-            .call(&context, "cron_list", serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(listed, "No scheduled tasks.");
     }
 
     #[tokio::test]

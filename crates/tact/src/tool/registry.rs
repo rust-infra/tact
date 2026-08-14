@@ -6,7 +6,6 @@ use super::{
     background_run::{BackgroundRunTool, CheckBackgroundTool},
     bash::BashTool,
     compact::CompactTool,
-    cron::{CronCreateTool, CronDeleteTool, CronListTool},
     edit_file::EditFileTool,
     load_skill::LoadSkillTool,
     memory::SaveMemoryTool,
@@ -32,9 +31,6 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(BashTool)?
         .route(BackgroundRunTool)?
         .route(CheckBackgroundTool)?
-        .route(CronCreateTool)?
-        .route(CronDeleteTool)?
-        .route(CronListTool)?
         .route(ReadFileTool)?
         .route(SleepTool)?
         .route(WriteFileTool)?

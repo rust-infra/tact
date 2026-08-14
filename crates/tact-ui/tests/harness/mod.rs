@@ -392,30 +392,6 @@ pub fn worktree_status_tool_use(id: &str, name: &str) -> ContentBlock {
     }
 }
 
-pub fn cron_create_tool_use(id: &str, cron: &str, prompt: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "cron_create".to_string(),
-        input: serde_json::json!({ "cron": cron, "prompt": prompt }),
-    }
-}
-
-pub fn cron_list_tool_use(id: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "cron_list".to_string(),
-        input: serde_json::json!({}),
-    }
-}
-
-pub fn cron_delete_tool_use(id: &str, cron_id: &str) -> ContentBlock {
-    ContentBlock::ToolUse {
-        id: id.to_string(),
-        name: "cron_delete".to_string(),
-        input: serde_json::json!({ "id": cron_id }),
-    }
-}
-
 pub fn ask_user_tool_use(id: &str, question: &str, options: Option<&[&str]>) -> ContentBlock {
     ask_user_tool_use_ex(id, question, options, false)
 }

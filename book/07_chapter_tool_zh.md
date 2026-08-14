@@ -83,7 +83,6 @@ pub struct ToolContext {
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
     pub background_manager: SharedBackgroundManager,
-    pub cron_scheduler: SharedCronScheduler,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
@@ -124,7 +123,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 
 ### 主 agent（`toolset()`）
 
-注册 40+ 工具，含文件系统、shell、web、任务、cron、团队、worktree、memory、skills、压缩与子 agent  spawn。完整列表见 `crates/tact/src/tool/mod.rs` 第 116–157 行。
+注册 40+ 工具，含文件系统、shell、web、任务、团队、worktree、memory、skills、压缩与子 agent  spawn。完整列表见 `crates/tact/src/tool/mod.rs` 第 116–157 行。
 
 ### 子 agent（`subagent_toolset()`）
 
@@ -138,7 +137,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 | `edit_file` | 精确字符串替换（首次或全部） |
 | `sleep` | 定时 / 轮询 |
 
-子 agent **不**获得 cron、团队、任务管理、仅 MCP 名称或其他特权工具。模块注释写四个工具，实现里是五个——以上方 `route()` 列表为准。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
+子 agent **不**获得团队、任务管理、仅 MCP 名称或其他特权工具。模块注释写四个工具，实现里是五个——以上方 `route()` 列表为准。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
 
 ---
 
@@ -234,7 +233,6 @@ pipeline 来绕过应用缓冲。
 | `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory.md)（英文） |
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |
 | `task.rs`, `subagent.rs` | `spawn_subagent` | 用 `subagent_toolset()` spawn 子 agent |
-| `cron.rs` | `cron_*` | 见 [Cron 调度](./16_chapter_cron.md)（英文） |
 | `compact/mod.rs` | `compact` | 上下文压缩触发 |
 
 ---

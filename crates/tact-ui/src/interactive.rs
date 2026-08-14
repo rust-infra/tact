@@ -5,7 +5,6 @@ use tact::{
     background::{BackgroundManager, SharedBackgroundManager},
     config::CliArgs,
     consts::TactPath,
-    cron::{CronScheduler, SharedCronScheduler},
     hook::HookControl,
     mcp::load_mcp_router,
     memory::get_memory_manager,
@@ -90,8 +89,6 @@ async fn run_interactive_locked(
         SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
     let background_manager =
         SharedBackgroundManager::new(BackgroundManager::new(&tact_path.session_db_path()).await?);
-    let cron_scheduler =
-        SharedCronScheduler::new(CronScheduler::new(&tact_path.session_db_path()).await?);
     let teammate_manager =
         SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
     let worktree_manager = SharedWorktreeManager::new(
@@ -121,7 +118,6 @@ async fn run_interactive_locked(
         work_dir,
         task_manager,
         background_manager,
-        cron_scheduler,
         teammate_manager,
         worktree_manager,
         ui_tx: Some(agent_tx.clone()),

@@ -12,7 +12,7 @@ use super::BackgroundStore;
 
 /// SQLite-backed [`BackgroundStore`] implementation.
 ///
-/// Shares `tact.db` with the session / task / cron stores. Schema:
+/// Shares `tact.db` with the session / task stores. Schema:
 ///
 /// - `background_tasks(id, status, command, session_id, started_at,
 ///   finished_at, output, output_path)` — `id` is the timestamp-millis hex

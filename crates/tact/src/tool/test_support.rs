@@ -6,7 +6,6 @@ use std::{
 use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
     background::{BackgroundManager, SharedBackgroundManager},
-    cron::{CronScheduler, SharedCronScheduler},
     memory::MemoryManager,
     skill::{SharedSkillRegistry, SkillRegistry},
     task::{SharedTaskManager, TaskManager},
@@ -80,7 +79,6 @@ pub fn test_context(name: &str) -> ToolContext {
         background_manager: SharedBackgroundManager::new(
             block_on(BackgroundManager::new(&db_path)).unwrap(),
         ),
-        cron_scheduler: SharedCronScheduler::new(block_on(CronScheduler::new(&db_path)).unwrap()),
         teammate_manager: SharedTeammateManager::new(
             block_on(TeammateManager::new(&db_path)).unwrap(),
         ),

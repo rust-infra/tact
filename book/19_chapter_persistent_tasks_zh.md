@@ -22,7 +22,7 @@ TaskManager 给 LLM 一个跨 turn 和会话的 **持久化 checklist**：
 - 分配 `owner` 字符串（队友约定——未强制）
 - 通过 `blockedBy` / `blocks` 边建模 **依赖**
 
-存储使用与会话存储同一个 `tact.db` 中的 SQLite [TaskStore](./01_chapter_store_zh.md#6-session-store-sqlite)（`tasks` + `task_dependencies` 表）。cron 与后台任务仍使用 JSON [CollectionStore](./01_chapter_store_zh.md)。
+存储使用与会话存储同一个 `tact.db` 中的 SQLite [TaskStore](./01_chapter_store_zh.md#6-session-store-sqlite)（`tasks` + `task_dependencies` 表）。后台任务同样使用 SQLite `background_tasks` 表（见 [Ch 13](./13_chapter_background_zh.md)）。
 
 ---
 

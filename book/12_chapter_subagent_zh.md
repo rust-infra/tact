@@ -26,7 +26,7 @@
 | Cancel 标志 | 主 runtime 共享 | **独立** — 用户对父级 Cancel 不会停止进行中的子 agent |
 | 返回父级 | N/A | 最后一条 assistant 文本块作为 tool result 字符串 |
 
-子 agent 共享 `ToolContext`（克隆）：相同 `work_dir`，以及 background/cron/team/worktree/memory/skills 等 manager。这些服务在内存中存在，但多数不可达，因为暴露它们的工具未在子 agent router 上注册。
+子 agent 共享 `ToolContext`（克隆）：相同 `work_dir`，以及 background/team/worktree/memory/skills 等 manager。这些服务在内存中存在，但多数不可达，因为暴露它们的工具未在子 agent router 上注册。
 
 ---
 
@@ -108,7 +108,7 @@ sequenceDiagram
 与主 agent 相比 notable **省略**：
 
 - 无 `spawn_subagent`、`load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
-- 无 cron、team、worktree 或持久任务管理工具
+- 无 team、worktree 或持久任务管理工具
 - 无 MCP 前缀工具
 
 `subagent_toolset()` 上方模块注释仍写「四个工具」——上文 `route()` 列表为准（单元测试 `subagent_toolset_includes_core_file_tools` 亦强制）。

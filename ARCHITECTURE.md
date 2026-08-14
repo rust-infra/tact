@@ -83,7 +83,6 @@ flowchart TB
         TASK["task/<br/>persistent task manager"]
         TEAM["team.rs<br/>teammate roster + inbox"]
         BG["background.rs<br/>async shell tasks"]
-        CRON["cron/<br/>scheduled prompts"]
         MEM["memory/<br/>persistent user/project memory"]
         SKILL["skill/<br/>SKILL.md registry"]
         WT["worktree/<br/>git worktree lanes"]
@@ -373,7 +372,6 @@ Recovery mechanisms inside `agent_loop()`:
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.tact/worktrees/`. |
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
-| Cron | `cron/` | Recurring or one-shot scheduled prompts persisted under `.tact/cron/`. |
 | Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
 | Skills | `skill/` | `SKILL.md` under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, plus optional `[agent].skill_dirs`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 
@@ -656,7 +654,7 @@ If you are reading older branches or notes, the following major evolutions have 
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
 - Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
-- The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, cron, memory, and skills.
+- The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, and a fixed five-row live tail for active `bash` calls. Progress is keyed by `tool_id`; stderr uses warning styling, active output opens in the detail popup, and updates preserve bottom pinning or an explicit numeric scroll offset.

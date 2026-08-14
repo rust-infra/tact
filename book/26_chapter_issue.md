@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-14 — Cron scheduling feature removed
+
+| Field | Value |
+|-------|-------|
+| Type | `removal` |
+| Symptom / motivation | The cron feature (`cron_create` / `cron_list` / `cron_delete`) only persisted schedule records; nothing ever evaluated the expressions or injected the stored prompts into `agent_loop`. Users who asked for a reminder got a false sense of security — the record existed but would never fire. Building an in-process tick loop was deemed wrong-headed: it would require the interactive TUI process to stay resident and would duplicate the system cron that already runs reliably. |
+| Decision | Remove the entire feature: `crates/tact/src/cron/` (scheduler + simulation), `crates/tact/src/store/cron_store/` (trait + SQLite impl), `crates/tact/src/tool/cron.rs` (tools), `ToolContext.cron_scheduler` field, registry routes, startup wiring in `headless.rs` / `interactive.rs`, the `cron_tasks` table row in docs, the TUI tool-name map, and tests. Book chapter 16 (EN/ZH) deleted; chapter 1 / 4 / 7 / 12 / 14 / 15 / 19 / 23, `index.md`, `mindmap.md`, and `ARCHITECTURE.md` cron references cleaned up. |
+| Behavior after | No `cron_*` tools; the model can no longer create scheduled prompts. Existing `cron_tasks` rows and the legacy `.tact/cron/` files are left untouched on disk (dead data, removable manually). |
+| Pointers | Removed files: `crates/tact/src/cron/*`, `crates/tact/src/store/cron_store/*`, `crates/tact/src/tool/cron.rs`, `book/16_chapter_cron*.md`; edited: `crates/tact/src/lib.rs`, `crates/tact/src/tool/{mod,registry}.rs`, `crates/tact/src/tool/test_support.rs`, `crates/tact/src/store/mod.rs`, `crates/tact-ui/src/{headless,interactive}.rs`, `crates/tact-ui/tests/{subsystem_tools.rs,harness/mod.rs}`, `crates/tui/src/widgets/tool_widget.rs`, `book/01_chapter_store*`; [Ch 1](./01_chapter_store.md), [Ch 7](./07_chapter_tool.md). |
+
 ## 1. 2026-08-14 — Background output stored hybrid: full log file + `output_path` on the record
 
 | Field | Value |
@@ -117,7 +127,7 @@ Newest entries first. Each entry should include:
 | Symptom / motivation | Cron persisted as a single JSON index (`cron/scheduled_tasks.json` with a `next_id` counter) and background as one JSON file per record (`background/tasks/{id}.json` plus an in-memory `Mutex<HashMap>` mirror). Both used read-modify-write with no transaction and no cross-process lock; the background manager held duplicate state (disk + memory) that could drift. |
 | Decision | Cron and background moved into the existing `<workdir>/.tact/tact.db` as `cron_tasks` + `background_tasks` tables via new async traits `CronStore` (`crates/tact/src/store/cron_store/`) and `BackgroundStore` (`crates/tact/src/store/background_store/`), mirroring the `TaskStore` pattern. `cron_tasks` ids come from `INTEGER PRIMARY KEY AUTOINCREMENT` surfaced as 8-hex strings (`format!("{rowid:08x}")`) — same wire contract as the legacy index; `background_tasks` keeps the timestamp-millis hex `id` with a `CHECK`-constrained status. Both tables gained a `session_id` column + index, filled from the tool context at `cron_create` / `background_run`. `CronScheduler` / `BackgroundManager` became async facades; `SharedCronScheduler` dropped its mutex (`Arc<CronScheduler>`) and `BackgroundManager` dropped its in-memory mirror (the DB is the single source of truth; the spawned tokio task writes back through a cloned store handle). Legacy JSON files are not read anymore and are left on disk; `TactPath::cron_dir()` / `CRON_SUBDIR` removed as dead code. |
 | Behavior after | Cron ids restart at `00000001` (legacy entries are gone unless exported manually from `.tact/cron/`); `cron_*` / `background_*` / `/background` surface unchanged; startup orphan repair (`running` → `error`) now sweeps the table; `session_id` appears in cron JSON and background records. |
-| Pointers | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`, `crates/tact/src/store/background_store/{mod,sqlite}.rs`, `crates/tact/src/cron/mod.rs`, `crates/tact/src/background.rs`, `crates/tact/src/tool/{cron,background_run}.rs`, `crates/tact-ui/src/{headless,interactive,driver}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 13](./13_chapter_background.md) §2–5, [Ch 16](./16_chapter_cron.md) §3–5. |
+| Pointers | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`, `crates/tact/src/store/background_store/{mod,sqlite}.rs`, `crates/tact/src/cron/mod.rs`, `crates/tact/src/background.rs`, `crates/tact/src/tool/{cron,background_run}.rs`, `crates/tact-ui/src/{headless,interactive,driver}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 13](./13_chapter_background.md) §2–5. (Ch 16 was removed with the cron feature on 2026-08-14.) |
 
 ## 1. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
 

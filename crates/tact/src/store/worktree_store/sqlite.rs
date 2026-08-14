@@ -11,7 +11,7 @@ use super::WorktreeStore;
 
 /// SQLite-backed [`WorktreeStore`] implementation.
 ///
-/// Shares `tact.db` with the session / task / cron / background / team
+/// Shares `tact.db` with the session / task / background / team
 /// stores. Schema:
 ///
 /// - `worktrees(id, name, path, branch, task_id, status, session_id,

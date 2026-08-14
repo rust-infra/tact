@@ -162,7 +162,6 @@ Chapters follow **`Agent::agent_loop` execution order**: session → prompt inpu
 | 13 | [Background Tasks](./13_chapter_background.md) ([中文](./13_chapter_background_zh.md)) | Async shell commands via `background_run` / `check_background`, tokio spawn lifecycle, timeouts, and startup repair |
 | 14 | [Team Coordination](./14_chapter_team.md) ([中文](./14_chapter_team_zh.md)) | Teammate roster under `.tact/team/`, JSONL inboxes, broadcasts, and plan-approval / shutdown protocol messages |
 | 15 | [Worktree Lanes](./15_chapter_worktree.md) ([中文](./15_chapter_worktree_zh.md)) | Isolated `git worktree` lanes: `worktree_create` / `list` / `status` / `run` / `events`, index file, and audit log |
-| 16 | [Cron Scheduling](./16_chapter_cron.md) ([中文](./16_chapter_cron_zh.md)) | Scheduled prompt registry: data model, `.tact/cron/` persistence, `cron_create` / `cron_list` / `cron_delete`, and current runtime gaps |
 | 17 | [Desktop Notifications](./17_chapter_notify.md) ([中文](./17_chapter_notify_zh.md)) | macOS native notifications for task completion and step failures, config flags, and platform gaps |
 | 18 | [Agent Main Loop](./18_chapter_agent_loop.md) ([中文](./18_chapter_agent_loop_zh.md)) | Capstone: `agent_loop` turn cycle, streaming, `cancel_flag`, `AgentUpdate`, TUI `TaskComplete` wiring |
 | 19 | [Persistent Task Manager](./19_chapter_persistent_tasks.md) ([中文](./19_chapter_persistent_tasks_zh.md)) | `TaskManager`, `task_create` / `get` / `list` / `update`, dependencies under `.tact/tasks/` |
@@ -195,7 +194,6 @@ Future additions may cover deployment or plugin APIs. Behavioral optimizations a
 - MCP official docs: <https://modelcontextprotocol.io/docs/learn/architecture>
 - Tact MCP source: [crates/tact/src/mcp/mod.rs](../crates/tact/src/mcp/mod.rs)
 - Tact hook source: [crates/tact/src/hook/mod.rs](../crates/tact/src/hook/mod.rs)
-- Tact cron source: [crates/tact/src/cron/mod.rs](../crates/tact/src/cron/mod.rs)
 - Tact permission source: [crates/tact/src/permission/mod.rs](../crates/tact/src/permission/mod.rs)
 - Tact memory source: [crates/tact/src/memory/mod.rs](../crates/tact/src/memory/mod.rs)
 - Tact notifications source: [crates/tact/src/notifications/mod.rs](../crates/tact/src/notifications/mod.rs)

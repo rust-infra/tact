@@ -366,7 +366,6 @@ crates/tact-ui/tests
 crates/tact/src
   agent/
   config/
-  cron/
   hook/
   lsp/
   mcp/

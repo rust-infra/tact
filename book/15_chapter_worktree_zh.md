@@ -108,7 +108,7 @@ sequenceDiagram
 
 ## 5. 并发与接线
 
-`SharedWorktreeManager` 包装 `Arc<WorktreeManager>`——无 mutex，SQLite 连接池串行化写入（与 task/cron/background/team manager 一致）。在 `tui.rs` 启动时构造：
+`SharedWorktreeManager` 包装 `Arc<WorktreeManager>`——无 mutex，SQLite 连接池串行化写入（与 task/background/team manager 一致）。在 `tui.rs` 启动时构造：
 
 ```rust
 let worktree_manager =

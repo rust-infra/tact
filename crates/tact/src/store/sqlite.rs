@@ -1,6 +1,6 @@
 //! Shared SQLite pool for the domain stores.
 //!
-//! All domain stores (sessions, tasks, cron, background, team, worktrees)
+//! All domain stores (sessions, tasks, background, team, worktrees)
 //! live in the same `<workdir>/.tact/tact.db`. This module owns the
 //! open-or-create + busy-timeout boilerplate and caches **one**
 //! `SqlitePool` per database file, shared by every store in the program.

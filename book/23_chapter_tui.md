@@ -656,7 +656,7 @@ Twelve built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `
 | Dependency | Purpose |
 |------------|---------|
 | `get_skill_registry` | Skills ([Ch 2](./02_chapter_skill.md)) |
-| `StoreRoot` + managers | Tasks, background, cron, team, worktree |
+| `StoreRoot` + managers | Tasks, background, team, worktree |
 | `get_memory_manager` | Memory ([Ch 3](./03_chapter_memory.md)) |
 | `load_mcp_router` | MCP tools ([Ch 8](./08_chapter_mcp.md)) |
 | `PermissionManager::try_new(PermissionMode::Default)` | **Hardcoded** — see gaps |
