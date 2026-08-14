@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-14 — Background output stored hybrid: full log file + `output_path` on the record
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | `background_run` output lived only in the `background_tasks` DB record, capped at the first 50,000 chars — and the cap kept the *beginning* of long logs (usually the least useful part) while dropping the ending where errors live. The model had no way to deep-inspect a big output: polling `check_background` pulled the whole ≤50k JSON into context, and `grep`/`tail` were useless because there was no file. |
+| Decision | Hybrid storage: the DB record keeps metadata + the first 50k chars (unchanged, cheap to poll), while the **full** stdout+stderr stream is appended as it arrives to `<workdir>/.tact/background/<id>.log`. `BackgroundTaskRecord` gains `output_path` (SQLite column `output_path TEXT NOT NULL DEFAULT ''`, added via `PRAGMA table_info` + `ALTER TABLE` migration for existing DBs). Log-file creation is best-effort — failure degrades to the capped record only. The `check_background` listing appends `(log: <path>)` per line. |
+| Behavior after | Polled JSON includes `output_path`; the agent can `bash tail <path>` / `grep error <path>` on the full log instead of ingesting a 50k blob. The log file exists from the moment the task starts (record is written with the path before spawn), so a long-running task can be inspected live. |
+| Pointers | `crates/tact/src/background.rs` (`BackgroundTaskRecord.output_path`, `open_log_file`, `log_write`, `run_background_process`), `crates/tact/src/store/background_store/sqlite.rs` (schema + migration + upsert/read), `crates/tact/src/tool/background_run.rs` (listing); tests `run_writes_full_output_to_log_file_and_truncates_db_record`, `migrates_legacy_table_without_output_path`; [Ch 13](./13_chapter_background.md) §2, §3, §6, §8; [Ch 1](./01_chapter_store.md). |
+
 ## 1. 2026-08-13 — Plan-mode read-only shell classification hardened against newline command separators
 
 | Field | Value |

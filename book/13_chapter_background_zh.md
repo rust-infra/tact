@@ -36,8 +36,11 @@ pub struct BackgroundTaskRecord {
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub output: String,                    // stdout + stderr 合并，有上限
+    pub output_path: Option<String>,       // <workdir>/.tact/background/<id>.log，全量输出
 }
 ```
+
+**混合存储（hybrid）。** DB 记录保留元数据与输出前 50,000 字符（有界、轮询便宜），而 **完整** stdout+stderr 流随到达即追加写入 `<workdir>/.tact/background/<id>.log`。`output_path` 字段指向该文件，agent（或人）可用 `bash` 工具 `tail` / `grep` 全量日志，而无需把 50k JSON 塞进 context。文件创建是 best-effort：失败时任务照常运行，DB 记录仍持有截断输出。
 
 `BackgroundManager` 持有 store 与 id 源：
 
@@ -88,7 +91,7 @@ sequenceDiagram
 | 校验 | `crate::shell::validate_shell_command` — 与 `bash` 相同硬 blocklist（`sudo`、`rm -rf /`、…） |
 | 超时 | 固定 120 秒；到期 status 变为 `Error`，附带 `"Error: Timeout (120s)"` |
 | 实时推送 | stdout/stderr 增量读取并以 `AgentUpdate::ToolProgress` 推送（约 50ms 一批，实时预览保留最近 ~4 KB）；不再等完成后一次性缓冲 |
-| 输出上限 | stdout+stderr 前 50,000 字符持久化到记录；其余丢弃 |
+| 输出上限 | stdout+stderr 前 50,000 字符持久化到记录；**全量**输出追加到 `<workdir>/.tact/background/<id>.log`（见 `output_path`） |
 | 退出码 | 非零退出 → `Error`；退出码本身不记录 |
 | 进程清理 | `kill_on_drop(true)` — future 被 drop 时子进程被 kill |
 
@@ -125,7 +128,7 @@ output: "Process interrupted (agent restarted)"
 
 **TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**：它必须轮询 `check_background` 才能在 context 中看到结果。模型常自行发现 `background_run` → 继续其他工作 → 结束前 `check_background` 的模式。[sleep 工具](./07_chapter_tool_zh.md) 部分存在是为使该轮询循环可行。
 
-与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 而是在记录本身硬 cap 50k 字符，轮询时完整 JSON（含 output）进入 context。
+与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 记录硬 cap 50k 字符，轮询时完整 JSON 进入 context。**全量**流改为落盘：轮询到的 JSON 带 `output_path`，agent 可用 `bash tail <path>` / `grep error <path>` 深挖。`check_background` 的列表形式（无 `task_id`）每行追加 `(log: <path>)`，无需逐个调用即可发现路径。
 
 ---
 
@@ -154,8 +157,10 @@ output: "Process interrupted (agent restarted)"
 | 无取消工具 | 运行中任务无法被模型 kill；仅超时或进程退出结束 |
 | 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |
+| 日志文件 best-effort | `<workdir>/.tact/background/<id>.log` 创建失败时，仅剩 DB 截断记录 |
+| 日志文件累积 | `.tact/background/*.log` 从不清理（生命周期与 `background_tasks` 表一致） |
 | 记录累积 | `background_tasks` 表从不修剪 |
-| 50k 输出 cap 静默截断 | 无同步 `bash` 的 `<persisted-output>` 溢出 |
+| DB 记录仍 cap 50k | 轮询 JSON 的 `output` 是截断的；完整文本只在日志文件中 |
 | ID 可能碰撞 | 32 位 hex 计数器由 wall clock 播种；无对磁盘的唯一性检查 |
 
 ---

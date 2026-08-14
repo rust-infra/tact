@@ -35,8 +35,11 @@ pub struct BackgroundTaskRecord {
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub output: String,                    // combined stdout + stderr, capped
+    pub output_path: Option<String>,       // <workdir>/.tact/background/<id>.log, full output
 }
 ```
+
+**Hybrid output storage.** The DB record keeps the metadata plus the first 50,000 chars of output (bounded, cheap to poll), while the **full** stdout+stderr stream is appended as it arrives to `<workdir>/.tact/background/<id>.log`. The `output_path` field points at that file, so the agent — or a human — can `tail` / `grep` the full log with the `bash` tool instead of pulling a 50k JSON blob into context. File creation is best-effort: if it fails the task still runs and the DB record still holds the capped output.
 
 `BackgroundManager` holds the store and the id source:
 
@@ -87,7 +90,7 @@ Details worth knowing:
 | Validation | `crate::shell::validate_shell_command` — same hard blocklist as `bash` (`sudo`, `rm -rf /`, …) |
 | Timeout | Fixed 120 seconds; on expiry status becomes `Error` with `"Error: Timeout (120s)"` |
 | Live streaming | stdout/stderr are read incrementally and pushed as `AgentUpdate::ToolProgress` (≈50 ms batches, last ~4 KB kept in the live preview); no output is buffered until completion |
-| Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the rest is dropped |
+| Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the **full** output is appended to `<workdir>/.tact/background/<id>.log` (see `output_path`) |
 | Exit code | Non-zero exit → `Error`; the code itself is not recorded |
 | Process cleanup | `kill_on_drop(true)` — the child is killed if the future is dropped |
 
@@ -124,7 +127,7 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 **The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push: it must poll `check_background` to see the result in context. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
 
-Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — instead it is hard-capped at 50k chars in the record itself, and the full JSON (including output) lands in context when polled.
+Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — the record is hard-capped at 50k chars, and the full JSON lands in context when polled. The **full** stream is written to disk instead: polled JSON carries `output_path`, and the agent can `bash tail <path>` / `grep error <path>` for deep inspection. The listing form of `check_background` (no `task_id`) appends `(log: <path>)` to each line so the path is discoverable without a per-task call.
 
 ---
 
@@ -153,8 +156,10 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |
+| Log file is best-effort | If `<workdir>/.tact/background/<id>.log` cannot be created, only the capped DB record remains |
+| Log files accumulate | `.tact/background/*.log` is never pruned (same lifecycle as the `background_tasks` table) |
 | Records accumulate | `background_tasks` table is never pruned |
-| 50k output cap silently truncates | No `<persisted-output>` spill like synchronous `bash` gets |
+| DB record still caps at 50k | Polled JSON `output` is truncated; the full text lives only in the log file |
 | ID collisions possible | 32-bit hex counter seeded by wall clock; no uniqueness check against disk |
 
 ---

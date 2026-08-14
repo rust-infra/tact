@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-14 — 后台输出改为混合存储：全量日志文件 + 记录上的 `output_path`
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `optimization` |
+| 现象 / 动机 | `background_run` 的输出只存在 `background_tasks` DB 记录里，且上限为前 50,000 字符——cap 保留的是长日志的*开头*（通常最没用），丢弃的结尾恰恰是报错所在。模型无法深挖大输出：轮询 `check_background` 会把整个 ≤50k JSON 拉进 context，而 `grep`/`tail` 因为没有文件而无从谈起。 |
+| 决策 | 混合存储：DB 记录保留元数据 + 前 50k 字符（不变，轮询便宜），**全量** stdout+stderr 流随到达即追加写入 `<workdir>/.tact/background/<id>.log`。`BackgroundTaskRecord` 新增 `output_path`（SQLite 列 `output_path TEXT NOT NULL DEFAULT ''`，对存量库用 `PRAGMA table_info` + `ALTER TABLE` 迁移）。日志文件创建为 best-effort——失败时退化为仅截断记录。`check_background` 列表每行追加 `(log: <path>)`。 |
+| 改后行为 | 轮询 JSON 带 `output_path`；agent 可用 `bash tail <path>` / `grep error <path>` 深挖全量日志，而非吞下 50k blob。日志文件从任务启动即存在（spawn 前记录已写入路径），长任务可实时查看。 |
+| 指针 | `crates/tact/src/background.rs`（`BackgroundTaskRecord.output_path`、`open_log_file`、`log_write`、`run_background_process`）、`crates/tact/src/store/background_store/sqlite.rs`（schema + 迁移 + upsert/读取）、`crates/tact/src/tool/background_run.rs`（列表）；测试 `run_writes_full_output_to_log_file_and_truncates_db_record`、`migrates_legacy_table_without_output_path`；[Ch 13](./13_chapter_background_zh.md) §2、§3、§6、§8；[Ch 1](./01_chapter_store_zh.md)。 |
+
 ## 1. 2026-08-13 — Plan mode 只读 shell 分类加固：拒绝换行符命令分隔
 
 | 字段 | 内容 |

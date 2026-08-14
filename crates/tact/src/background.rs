@@ -9,7 +9,15 @@
 //! - [`SharedBackgroundManager`] is the thread-safe wrapper used by tool
 //!   implementations.
 //! - [`BackgroundTaskRecord`] captures the command, status, start/finish
-//!   timestamps, and combined stdout+stderr output.
+//!   timestamps, combined stdout+stderr output, and the full-output log
+//!   file path.
+//!
+//! Output is stored hybrid: the DB record keeps the metadata plus the
+//! first [`MAX_OUTPUT_CHARS`] chars (bounded, cheap to poll), while the
+//! **full** stdout+stderr stream is appended to
+//! `<workdir>/.tact/background/<id>.log` as it arrives. The `output_path`
+//! field lets the agent (or a human) `tail` / `grep` the full log with the
+//! `bash` tool instead of pulling a 50k JSON blob into context.
 
 use std::{
     path::Path,
@@ -25,6 +33,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
 use tokio::{
+    io::AsyncWriteExt,
     process::Command,
     sync::mpsc,
     time::{MissedTickBehavior, interval},
@@ -61,6 +70,10 @@ pub struct BackgroundTaskRecord {
     pub finished_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub output: String,
+    /// Full-output log file (`<workdir>/.tact/background/<id>.log`).
+    /// `None` only if the log file could not be created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
 }
 
 pub struct BackgroundManager {
@@ -115,6 +128,10 @@ impl BackgroundManager {
         crate::shell::validate_shell_command(&command)?;
 
         let id = format!("{:08x}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let log_path = work_dir
+            .join(".tact")
+            .join("background")
+            .join(format!("{id}.log"));
         let record = BackgroundTaskRecord {
             id: id.clone(),
             status: BackgroundTaskStatus::Running,
@@ -123,6 +140,7 @@ impl BackgroundManager {
             started_at: Utc::now(),
             finished_at: None,
             output: String::new(),
+            output_path: Some(log_path.to_string_lossy().into_owned()),
         };
         self.save_record(record.clone()).await?;
 
@@ -132,7 +150,8 @@ impl BackgroundManager {
         let task_id = id.clone();
         tokio::spawn(async move {
             let (status, output) =
-                run_background_process(&command_for_task, &work_dir, &progress).await;
+                run_background_process(&command_for_task, &work_dir, &progress, Some(&log_path))
+                    .await;
             let mut record = record;
             record.finished_at = Some(Utc::now());
             record.status = status;
@@ -168,7 +187,13 @@ impl BackgroundManager {
         records.sort_by_key(|record| record.started_at);
         Ok(records
             .into_iter()
-            .map(|record| format!("{}: {:?} {}", record.id, record.status, record.command))
+            .map(|record| {
+                let mut line = format!("{}: {:?} {}", record.id, record.status, record.command);
+                if let Some(path) = &record.output_path {
+                    line.push_str(&format!(" (log: {path})"));
+                }
+                line
+            })
             .collect::<Vec<_>>()
             .join("\n"))
     }
@@ -276,14 +301,58 @@ impl OutputAccumulator {
     }
 }
 
+/// Best-effort creation of the full-output log file. Failures are logged and
+/// degrade to "no log file" — the DB record and live TUI stream still work.
+async fn open_log_file(log_path: &Path) -> Option<tokio::fs::File> {
+    if let Some(dir) = log_path.parent()
+        && let Err(error) = tokio::fs::create_dir_all(dir).await
+    {
+        tracing::warn!(
+            "background: failed to create log dir {}: {error}",
+            dir.display()
+        );
+        return None;
+    }
+    match tokio::fs::File::create(log_path).await {
+        Ok(file) => Some(file),
+        Err(error) => {
+            tracing::warn!(
+                "background: failed to create log file {}: {error}",
+                log_path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Appends decoded text to the log file. Drops the file handle on the first
+/// write error so a broken file is not retried for the whole task lifetime.
+async fn log_write(file: &mut Option<tokio::fs::File>, text: &str) {
+    let Some(f) = file.as_mut() else {
+        return;
+    };
+    if f.write_all(text.as_bytes()).await.is_ok() {
+        return;
+    }
+    tracing::warn!("background: log file write failed; disabling log file");
+    *file = None;
+}
+
 /// Run `sh -c command` in the background, streaming stdout/stderr as live
-/// `ToolProgress` updates when a sink is present, and returning the final
-/// `(status, output)` for the persisted record.
+/// `ToolProgress` updates when a sink is present, appending the **full**
+/// output to `log_path` when given, and returning the final
+/// `(status, output)` for the persisted record (`output` is capped at
+/// [`MAX_OUTPUT_CHARS`]; the log file holds everything).
 async fn run_background_process(
     command: &str,
     work_dir: &Path,
     progress: &Option<BackgroundProgressSink>,
+    log_path: Option<&Path>,
 ) -> (BackgroundTaskStatus, String) {
+    let mut log_file = match log_path {
+        Some(path) => open_log_file(path).await,
+        None => None,
+    };
     let mut child = match Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -336,17 +405,20 @@ async fn run_background_process(
                     Some(PipeEvent::Bytes(stream, bytes)) => {
                         let text = decoders[stream_index(stream)].push(&bytes);
                         record.push(&text);
+                        log_write(&mut log_file, &text).await;
                         pending.push(ToolOutputChunk { stream, text });
                     }
                     Some(PipeEvent::Closed(stream)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
+                        log_write(&mut log_file, &text).await;
                         pending.push(ToolOutputChunk { stream, text });
                         closed_pipes += 1;
                     }
                     Some(PipeEvent::Failed(stream, error)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
+                        log_write(&mut log_file, &text).await;
                         pending.push(ToolOutputChunk { stream, text });
                         closed_pipes += 1;
                         if failure_reason.is_none() {
@@ -383,6 +455,7 @@ async fn run_background_process(
 
     if let Some(reason) = failure_reason {
         let partial = record.into_string();
+        log_write(&mut log_file, &format!("\n[{reason}]\n")).await;
         let output = if partial.trim().is_empty() {
             reason
         } else {
@@ -392,6 +465,9 @@ async fn run_background_process(
     }
 
     let output = record.into_string();
+    if let Some(f) = log_file.as_mut() {
+        let _ = f.flush().await;
+    }
     match exit_status {
         Some(status) if status.success() => (BackgroundTaskStatus::Completed, output),
         Some(_) => (BackgroundTaskStatus::Error, output),
@@ -458,6 +534,7 @@ mod tests {
                 started_at: Utc::now(),
                 finished_at: None,
                 output: String::new(),
+                output_path: None,
             })
             .await
             .unwrap();
@@ -598,6 +675,44 @@ mod tests {
             }
         }
         assert!(listing.contains("Completed"), "listing: {listing}");
+    }
+
+    #[tokio::test]
+    async fn run_writes_full_output_to_log_file_and_truncates_db_record() {
+        let (manager, tmp) = temp_manager("run_writes_log_file");
+        // ~66k chars: more than MAX_OUTPUT_CHARS, so the DB record keeps the
+        // first 50k while the log file must hold everything.
+        manager
+            .run(
+                "awk 'BEGIN { for (i = 0; i < 6000; i++) print \"0123456789\" }'".to_string(),
+                tmp.path(),
+                String::new(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Poll until the spawned task writes the completed record back.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut record = None;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut records = manager.inner.records.list().await.unwrap();
+            if let Some(r) = records.pop()
+                && r.status == BackgroundTaskStatus::Completed
+            {
+                record = Some(r);
+                break;
+            }
+        }
+        let record = record.expect("background task never completed");
+
+        assert_eq!(record.output.chars().count(), MAX_OUTPUT_CHARS);
+        let log_path = record.output_path.expect("output_path must be set");
+        assert!(log_path.ends_with(".log"), "log path: {log_path}");
+        let full = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert_eq!(full.chars().count(), 6000 * 11); // "0123456789\n" per line
+        assert!(full.starts_with(&record.output));
     }
 
     #[tokio::test]
