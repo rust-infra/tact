@@ -29,6 +29,18 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Model→context-window mapping overrides manual `model_context_window` config
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | `agent.model_context_window` was purely manual (CLI/TOML, default `200_000`) with no model inference. With `deepseek-v4-pro` (real window 1M) the bottom-bar `ctx` meter showed `…/256K` from a stale 256k config and auto-compaction fired at ~80% of that (~205k) instead of ~800k, causing premature compaction. `max_tokens` already had a model-based default (`kimi_k2x → 32_000`) to copy; the window had no equivalent. |
+| Decision | Add `model_context_window_for_model(model)` in `resolve.rs` and resolve the window as: **model→window mapping (highest) → CLI/TOML → default `200_000`**. Values follow official model docs (2026-08): OpenAI `gpt-5.6` family + `gpt-5.5` → `1_050_000`, `gpt-5.4` → `1_000_000`, `gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`, `gpt-4o` family → `128_000`; Anthropic (API + Claude Code) `claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`, `claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`; DeepSeek V4 → `1_000_000`, `k3-256k` → `256_000`. A mapping match deliberately overrides user file config so a stale manual window can never under-report a well-known model. |
+| Behavior after | The `ctx` bottom-bar meter and the derived auto-compact threshold (80% of window) use the mapped window for the mapped models. GPT-5.6/5.5 models show `…/1.05M`, Claude 1M models (incl. Claude Code ids) `…/1M`, DeepSeek V4 `…/1M`, GPT-5.x `…/400K`, GPT-4o `…/128K`, `k3-256k` `…/256K`. Manual `model_context_window` only takes effect for models without a built-in mapping. The nonzero `model_context_window > max_tokens` validation still applies to the resolved value. |
+| Pointers | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, resolution at ~`:587`); `config.example.toml` `[agent]`; book [Ch 21](./21_chapter_config.md) §5, [Ch 5](./05_chapter_compact.md) §settings tables. |
+
+---
+
 ## 1. 2026-08-15 — Markdown body moves to pulldown-cmark; ratatui-markdown kept for Mermaid only
 
 | Field | Value |

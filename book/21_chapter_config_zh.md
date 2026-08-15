@@ -210,7 +210,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 |------|------|----------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `model_context_window` | 200_000 | —（tokens；全局，非 per-model） |
+| `model_context_window` | 200_000 | —（tokens；全局；模型→窗口映射会覆盖文件配置，见下文） |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
@@ -243,6 +243,25 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
+
+`model_context_window` 按三级优先级解析（从高到低）：
+
+1. **模型→窗口映射** — 以解析后的模型 id 为键的内置查找表，数值依据官方模型文档（2026-08）：
+   - OpenAI：`gpt-5.6` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
+     `gpt-5.5` → `1_050_000`；`gpt-5.4` → `1_000_000`；`gpt-5` / `gpt-5.1` /
+     `gpt-5.2` / `gpt-5.3` / `gpt-5.3-codex` / `gpt-5.4-mini` → `400_000`；
+     `gpt-4o` / `gpt-4o-mini` → `128_000`。
+   - Anthropic（API 与 Claude Code 同 ID）：`claude-sonnet-5` / `claude-fable-5` /
+     `claude-opus-5` / `claude-opus-4-8` / `claude-opus-4-7` / `claude-opus-4-6` /
+     `claude-sonnet-4-6` → `1_000_000`；`claude-opus-4-20250514` /
+     `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
+     → `200_000`。
+   - DeepSeek：`deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
+     `1_000_000`；Kimi：`k3-256k` → `256_000`。
+   命中时同时覆盖 CLI 标志与 TOML 文件，因此过时的
+   手工窗口不会低估已知模型（否则会触发过早自动压缩）。
+2. **CLI `--model-context-window` / TOML `[agent].model_context_window`**。
+3. **默认 `200_000`**。
 
 合并 CLI 与 TOML 值后，若非零 `model_context_window` 小于或等于
 `max_tokens`，配置会立即报错：输出预留必须给输入留下空间。窗口为零时保留现有的

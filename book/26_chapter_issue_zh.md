@@ -29,6 +29,18 @@
 
 ---
 
+## 1. 2026-08-15 — 模型→上下文窗口映射覆盖手工 `model_context_window` 配置
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | `agent.model_context_window` 此前完全手工指定（CLI/TOML，默认 `200_000`），没有任何模型推断。使用 `deepseek-v4-pro`（真实窗口 1M）时，底栏 `ctx` 计量因残留的 256k 配置显示 `…/256K`，自动压缩也在 ~80%（约 205k）处触发而非 ~800k，导致过早压缩。`max_tokens` 已有按模型的默认值可参照（`kimi_k2x → 32_000`），而窗口没有等价机制。 |
+| 决策 | 在 `resolve.rs` 新增 `model_context_window_for_model(model)`，并按 **模型→窗口映射（最高）→ CLI/TOML → 默认 `200_000`** 解析窗口。数值依据官方模型文档（2026-08）：OpenAI `gpt-5.6` 系列 + `gpt-5.5` → `1_050_000`、`gpt-5.4` → `1_000_000`、`gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`、`gpt-4o` 系列 → `128_000`；Anthropic（API 与 Claude Code 同 ID）`claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`、`claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`；DeepSeek V4 → `1_000_000`、`k3-256k` → `256_000`。命中映射时**刻意**覆盖用户文件配置，避免过时的手工窗口低估已知模型。 |
+| 改后行为 | `ctx` 底栏计量与派生的自动压缩阈值（窗口的 80%）对已映射模型使用映射后的窗口。GPT-5.6/5.5 系列显示 `…/1.05M`、Claude 1M 模型（含 Claude Code ID）`…/1M`、DeepSeek V4 `…/1M`、GPT-5.x `…/400K`、GPT-4o `…/128K`、`k3-256k` `…/256K`。手工 `model_context_window` 仅对无内置映射的模型生效。非零 `model_context_window > max_tokens` 的校验仍作用于解析后的最终值。 |
+| 指针 | `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`，解析位于 ~`:587`）；`config.example.toml` `[agent]`；book [Ch 21](./21_chapter_config_zh.md) §5、[Ch 5](./05_chapter_compact_zh.md) 设置表。 |
+
+---
+
 ## 1. 2026-08-15 — Markdown 正文迁移到 pulldown-cmark；ratatui-markdown 仅保留 Mermaid
 
 | Field | Value |

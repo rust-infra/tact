@@ -242,7 +242,7 @@ flowchart TD
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。 |
+| `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。解析顺序：内置模型→窗口映射（如 `deepseek-v4-pro`、`claude-opus-4-7`、`gpt-5.6-sol` → 1M）覆盖 CLI/TOML，最后默认 200,000。 |
 
 压缩完成后会把 `last_token_total` **清零**（摘要调用本身的 usage 是大 prompt，不能代表新 context 体积）；下一轮主循环 LLM 再写入新的用量。见 §11。
 
@@ -692,7 +692,7 @@ flowchart TB
 
 | 设置 | 默认 | 作用 |
 |------|------|------|
-| `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：80% 时自动压缩 + TUI 用量条；非零时必须大于 `max_tokens` |
+| `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：80% 时自动压缩 + TUI 用量条；非零时必须大于 `max_tokens`。模型→窗口映射（如 `deepseek-v4-pro` → 1M）覆盖 CLI/TOML |
 | `agent.micro_compact_enabled`（`--no-micro-compact`） | `true` | 启用每轮 stub |
 
 经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。

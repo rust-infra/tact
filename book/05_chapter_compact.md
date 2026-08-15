@@ -242,7 +242,7 @@ flowchart TD
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `agent.model_context_window` | **200,000** | Tokens; CLI `--model-context-window` / TOML. Breaking rename from `context_limit_chars` — **no silent alias**. |
+| `agent.model_context_window` | **200,000** | Tokens; CLI `--model-context-window` / TOML. Breaking rename from `context_limit_chars` — **no silent alias**. Resolution: built-in model→window mapping (e.g. `deepseek-v4-pro`, `claude-opus-4-7`, `gpt-5.6-sol` → 1M) overrides CLI/TOML, then default 200,000. |
 
 After compaction, `last_token_total` is **reset to 0** (the summarizer call's usage reflects a large history prompt, not the replacement context size); the next main-loop LLM call writes a fresh value. See §11.
 
@@ -710,7 +710,7 @@ After each write, each spill directory keeps at most the 100 newest files; older
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.model_context_window` (`--model-context-window`) | 200,000 | Token window: auto-compact at 80% + TUI usage meter; when nonzero it must exceed `max_tokens` |
+| `agent.model_context_window` (`--model-context-window`) | 200,000 | Token window: auto-compact at 80% + TUI usage meter; when nonzero it must exceed `max_tokens`. Model→window mapping (e.g. `deepseek-v4-pro` → 1M) overrides CLI/TOML |
 | `agent.micro_compact_enabled` (`--no-micro-compact`) | `true` | Enables the per-turn stub pass |
 
 Resolved through layered config in `crates/tact/src/config/` (CLI > TOML > default). Compile-time constants (`KEEP_RECENT_TOOL_RESULTS`, `PERSIST_THRESHOLD`, …) are **not** configurable yet.
