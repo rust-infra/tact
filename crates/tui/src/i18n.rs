@@ -39,8 +39,7 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
-    pub thinking_card_title: &'static str, // "🧠 Thinking ({} line{})"
-    pub thinking_card_title_pl: &'static str, // "s" / "" for plural
+    pub thinking_card_title: &'static str, // "🧠 Thinking" (no line count — it lives in the bottom bar)
     pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
     pub diff_card_title: &'static str,      // "+{} {}"
     pub diff_card_bottom: &'static str,     // "Double-click for full code"
@@ -51,7 +50,7 @@ pub struct Messages {
     pub tool_phase_success: &'static str,
     pub tool_phase_failed: &'static str,
     pub tool_meta_sep: &'static str,
-    pub tool_live_output_title_tmpl: &'static str,
+    pub tool_live_output_title: &'static str, // "Live output" (no line count — it lives in the bottom bar)
     pub tool_live_output_bottom: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
@@ -308,8 +307,7 @@ impl Messages {
     fn english() -> Self {
         Self {
             log_title: " [Log] ",
-            thinking_card_title: " 🧠 Thinking ({} line{}) ",
-            thinking_card_title_pl: "s",
+            thinking_card_title: " 🧠 Thinking ",
             thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
             diff_card_title: "+{} {}",
             diff_card_bottom: " Double-click for full code ",
@@ -320,7 +318,7 @@ impl Messages {
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
             tool_meta_sep: " · ",
-            tool_live_output_title_tmpl: "Live output ({} lines)",
+            tool_live_output_title: "Live output",
             tool_live_output_bottom: " Double-click for buffered output ",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
@@ -563,8 +561,7 @@ impl Messages {
     fn chinese() -> Self {
         Self {
             log_title: " [日志] ",
-            thinking_card_title: " 🧠 思考中 ({} 行) ",
-            thinking_card_title_pl: "", // Chinese has no plural form
+            thinking_card_title: " 🧠 思考中 ",
             thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
             diff_card_title: "+{} {}",
             diff_card_bottom: " 双击查看完整代码 ",
@@ -575,7 +572,7 @@ impl Messages {
             tool_phase_success: "成功",
             tool_phase_failed: "失败",
             tool_meta_sep: " · ",
-            tool_live_output_title_tmpl: "实时输出（{} 行）",
+            tool_live_output_title: "实时输出",
             tool_live_output_bottom: " 双击查看已缓冲输出 ",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",

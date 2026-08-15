@@ -453,14 +453,14 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     app.log_scroll.visual_top = app.log_scroll.visual_start_cache[placeholder_logical];
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("bash") && mid.contains("Command output (27 lines)"),
+        mid.contains("bash") && mid.contains("Command output"),
         "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
     app.log_scroll.visual_top = usize::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("Command output (27 lines)") && bottom.contains("1/27"),
+        bottom.contains("Command output") && bottom.contains("1/27"),
         "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
 }

@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Thinking, command-output, and read cards drop the redundant line count from their top titles
+
+| Field | Value |
+|-------|-------|
+| Type | `removal` |
+| Symptom / motivation | The Thinking card showed the total line count twice — once in the top title (`🧠 Thinking (N lines)`) and again in the bottom bar (`↕ visible/N lines …`) — and the `bash` command-output card repeated it too (top `Live output (N lines)` / `Command output (N lines)` vs. the bottom `preview/total lines` hint), as did the `read_file` card (top `Read <path> (N lines)`). Whenever both were visible, the top count duplicated the bottom bar's number. |
+| Decision | Card top titles no longer carry counts: `🧠 Thinking` (active and completed), `Live output` (running bash), `Command output` (completed bash), `Read <path>` (read_file). The bottom bars remain the single count source (`↕ visible/total lines` on Thinking; `preview/total lines` when the command output overflows the preview). Removed the now-unused `thinking_card_title_pl` field, and `tool_live_output_title_tmpl` lost its `{}` placeholder and was renamed `tool_live_output_title`. |
+| Behavior after | Thinking cards read `🧠 Thinking` / `🧠 思考中`; live bash cards read `Live output` / `实时输出`; completed command cards read `Command output`; read cards read `Read <path>`. All line counts live in the card bottom bars. Popup titles unchanged (they already used the command text or bare `Command output`). |
+| Pointers | `crates/tui/src/i18n.rs`, `crates/tui/src/render/cells/thinking.rs`, `crates/tui/src/widgets/tool_widget.rs` (`detail_card_title`), `crates/tui/src/render/cells/tool.rs` (`card_bottom_text`); tests `live_output_total_excludes_command_prefix_but_popup_keeps_it`, `log_tool_card_renders_when_scrolled_into_placeholder_rows`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
 ## 1. 2026-08-15 — Log word-wrap at word boundaries; selection UX made symmetric
 
 | Field | Value |
