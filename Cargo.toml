@@ -37,6 +37,7 @@ globset = "0.4"
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 libc = "0.2"
 proc-macro2 = "1.0"
+pulldown-cmark = "0.13"
 quote = "1.0"
 ratatui = "0.30"
 regex = "1"
@@ -72,4 +73,4 @@ unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
-ratatui-markdown = { path = "../ratatui-markdown", default-features = false, features = ["markdown", "mermaid"] }
+ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }

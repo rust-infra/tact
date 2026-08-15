@@ -215,7 +215,8 @@ flowchart TB
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
 | `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `render/log_style.rs` | Shared log text styles |
-| `render/render_md.rs` | Markdown → ratatui `Line`s (`ratatui-markdown` fork + Mermaid routing + width-aware tables) |
+| `render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
+| `render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s (prose/headings/lists/tables/blockquotes) |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`, tool indent constants |
 | `render/welcome.rs` | Startup logo |
@@ -339,7 +340,7 @@ pub(crate) trait Renderable {
 
 ### 6.7 Markdown
 
-`render_md.rs` converts assistant markdown via the local `ratatui-markdown` fork (`feat/tact`) with the shared `TuiRichTextTheme` and a `TuiRenderHooks` adapter (headings, code, links, blockquotes). Code blocks get the themed code background with fence markers hidden; all tables are column-aligned by Tact's width-aware `format_table` (pipe style) via a `table` RenderHooks adapter. Bullets render as `•` and task items as `☐`/`☑`. The diff popup syntax-highlights via `syntect` (Base16 Ocean Dark). Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
+`render/pulldown.rs` converts assistant markdown via a `pulldown-cmark` 0.13 event loop (a `TextWriter`-style state machine), reusing the shared `TuiRichTextTheme` for Mermaid. Code blocks get the themed code background with fence markers hidden; all tables are column-aligned by Tact's width-aware `format_table` (pipe style). Bullets render as `•` and task items as `☐`/`☑`; GFM task lists apply to ordered lists too (`1. [X]` → `1. ☑`). The diff popup syntax-highlights via `syntect` (Base16 Ocean Dark). Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
 **Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Streamed code blocks with an explicit language tag still use the code-card path, with one exception since 2026-08-08: a complete `mermaid` fence is rendered as a terminal diagram instead (see below).
 

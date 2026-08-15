@@ -29,6 +29,19 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Markdown body moves to pulldown-cmark; ratatui-markdown kept for Mermaid only
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Plan | `docs/superpowers/plans/2026-08-15-pulldown-cmark-migration.md` |
+| Symptom / motivation | The consolidation below landed on a local `ratatui-markdown` fork carrying ~350 lines of patches across 8 files (H4–H6, ordered-list numbers, hard breaks, nested emphasis, CJK flanking, themed code slots) purely so Tact's prose renderer could match `tui-markdown`'s output. The fork is a rebase burden and a path dependency that only resolves on this machine; `steer` and xAI's `grok-build` both parse CommonMark with `pulldown-cmark` and render in their own code instead of forking a Markdown crate. |
+| Decision | Replace the fork's block renderer with a `pulldown-cmark` 0.13 event loop (`crates/tui/src/render/pulldown.rs`) that reuses Tact's width-aware pipe-table `format_table`, the `▎` blockquote gutter, fenced-code styling, and Mermaid routing. `ratatui-markdown` becomes an upstream git dependency (`celestia-island/ratatui-markdown` @ `3a8bcbe`, `mermaid` feature) used only for non-sequence Mermaid diagrams; `sequenceDiagram` stays in Tact's own `mermaid_sequence.rs`. The `feat/tact` fork and the `TuiRenderHooks`/`RenderHooks` adapter are removed. |
+| Behavior after | Prose/heading/list/task/table/blockquote rendering is owned by Tact from `pulldown-cmark` events. `ENABLE_SMART_PUNCTUATION` is left off so `...` is never turned into `…` (system messages and user text stay byte-stable). GFM task lists now apply to ordered lists too (`1. [X]` → `1. ☑`). Mermaid output is unchanged. |
+| Pointers | `crates/tui/src/render/pulldown.rs`, `render_md.rs`; `Cargo.toml` (`ratatui-markdown` git dep + `pulldown-cmark`); book [Ch 23](./23_chapter_tui.md) §6.7; the entry below records the intermediate fork approach. |
+
+---
+
 ## 1. 2026-08-15 — Main-area Markdown consolidated onto ratatui-markdown
 
 | Field | Value |

@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-15 — Markdown 正文迁移到 pulldown-cmark；ratatui-markdown 仅保留 Mermaid
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Plan | `docs/superpowers/plans/2026-08-15-pulldown-cmark-migration.md` |
+| Symptom / motivation | 下方条目所述的整合方案最终落在本地 `ratatui-markdown` fork 上，仅为了让 Tact 的正文渲染对齐 `tui-markdown` 的输出，就携带了约 350 行、跨 8 个文件的补丁（H4–H6、有序编号、硬换行、嵌套强调、CJK 左翼、主题代码色槽）。fork 是 rebase 负担，且是只在本机可解析的 path 依赖；`steer` 与 xAI 的 `grok-build` 都用 `pulldown-cmark` 解析 CommonMark、在自己代码里渲染，而非 fork 一个 Markdown 库。 |
+| Decision | 用 `pulldown-cmark` 0.13 的事件循环（`crates/tui/src/render/pulldown.rs`）替代 fork 的块渲染器，复用 Tact 的宽度感知管道表 `format_table`、`▎` 引用块 gutter、fenced-code 无框主题样式与 Mermaid 路由。`ratatui-markdown` 改为上游 git 依赖（`celestia-island/ratatui-markdown` @ `3a8bcbe`，仅 `mermaid` feature），只用于非 sequence 的 Mermaid 图；`sequenceDiagram` 仍是 Tact 自研的 `mermaid_sequence.rs`。删除 `feat/tact` fork 与 `TuiRenderHooks`/`RenderHooks` 适配器。 |
+| Behavior after | 正文/标题/列表/任务/表格/引用块渲染由 Tact 依据 `pulldown-cmark` 事件自持。刻意关闭 `ENABLE_SMART_PUNCTUATION`，使 `...` 不被转成 `…`（系统消息与用户文本保持字节稳定）。GFM 任务列表现在同样作用于有序列表（`1. [X]` → `1. ☑`）。Mermaid 输出不变。 |
+| Pointers | `crates/tui/src/render/pulldown.rs`、`render_md.rs`；`Cargo.toml`（`ratatui-markdown` git 依赖 + `pulldown-cmark`）；book [Ch 23](./23_chapter_tui_zh.md) §6.7；下方条目记录了中间的 fork 方案。 |
+
+---
+
 ## 1. 2026-08-15 — 主区域 Markdown 渲染统一到 ratatui-markdown
 
 | 字段 | 内容 |

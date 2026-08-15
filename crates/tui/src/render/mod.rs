@@ -9,6 +9,7 @@ mod log_column;
 mod log_style;
 mod mermaid_sequence;
 pub(crate) mod popups;
+mod pulldown;
 pub(crate) mod render_md;
 pub(crate) mod renderable;
 pub(crate) mod slash_style;

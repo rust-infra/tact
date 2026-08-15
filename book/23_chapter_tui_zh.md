@@ -212,7 +212,8 @@ flowchart TB
 | `render/log.rs` | Log 面板：wrap cache、scroll、overlays、scrollbar |
 | `render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
 | `render/log_style.rs` | 共享 log 文本样式 |
-| `render/render_md.rs` | Markdown → ratatui `Line`s（`ratatui-markdown` fork + Mermaid 路由 + 宽度感知表格） |
+| `render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
+| `render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s（正文/标题/列表/表格/引用块） |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `render/welcome.rs` | 启动 logo |
@@ -336,7 +337,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 ### 6.7 Markdown
 
-`render_md.rs` 经本地 `ratatui-markdown` fork（`feat/tact`）转换 assistant markdown，使用共享的 `TuiRichTextTheme` 与 `TuiRenderHooks` 适配器（标题、代码、链接、引用）。Code block 使用主题代码背景并隐藏围栏标记；所有表格都经 `table` RenderHooks 适配器走 Tact 的宽度感知 `format_table`（管道风格）列对齐。无序列表渲染为 `•`，任务项渲染为 `☐`/`☑`。diff 弹窗经 `syntect`（Base16 Ocean Dark）语法高亮。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
+`render/pulldown.rs` 经 `pulldown-cmark` 0.13 事件循环（`TextWriter` 式状态机）转换 assistant markdown，Mermaid 复用共享的 `TuiRichTextTheme`。Code block 使用主题代码背景并隐藏围栏标记；所有表格都走 Tact 的宽度感知 `format_table`（管道风格）列对齐。无序列表渲染为 `•`，任务项渲染为 `☐`/`☑`；GFM 任务列表同样作用于有序列表（`1. [X]` → `1. ☑`）。diff 弹窗经 `syntect`（Base16 Ocean Dark）语法高亮。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
 **流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。带显式语言标签的流式代码块仍走 code-card 路径，唯一的例外自 2026-08-08 起：完整的 `mermaid` fence 会渲染为终端图（见下）。
 

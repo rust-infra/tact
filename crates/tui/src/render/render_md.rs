@@ -3,7 +3,6 @@ use ratatui::{
     text::{Line, Span},
 };
 use ratatui_markdown::{
-    markdown::{MarkdownRenderer, RenderHooks},
     mermaid::{render_mermaid, theme::MermaidTheme},
     theme::{CodeColors, Generation, RichTextTheme},
 };
@@ -11,50 +10,11 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{render::util::split_at_display_width, theme::Theme};
 
-/// Render hooks that adapt ratatui-markdown's block rendering to Tact's log
-/// look: fenced code renders as themed background lines with the fence and
-/// box chrome hidden (the same shape the tui-markdown pipeline produced).
+/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme` for the
+/// Mermaid renderer.
 #[derive(Clone, Copy)]
-struct TuiRenderHooks {
-    theme: Theme,
-}
-
-impl RenderHooks for TuiRenderHooks {
-    fn render_code_block(&self, _lang: &str, content: &str) -> Option<Vec<Line<'static>>> {
-        let code_style = Style::default()
-            .fg(self.theme.code_block_fg())
-            .bg(self.theme.code_block_bg());
-        let mut lines: Vec<Line<'static>> = vec![Line::default()];
-        lines.extend(
-            content
-                .split('\n')
-                .map(|l| Line::from(Span::styled(l.to_string(), code_style))),
-        );
-        lines.push(Line::default());
-        Some(lines)
-    }
-
-    /// Tables render through Tact's width-aware pipe-table layout so the log
-    /// keeps a single table implementation (the fork's own renderer is not
-    /// used for the main area).
-    fn table(&self, headers: &[String], rows: &[Vec<String>]) -> Option<Vec<Line<'static>>> {
-        let mut md_lines: Vec<String> = vec![format!("| {} |", headers.join(" | "))];
-        md_lines.push(format!("| {} |", vec!["---"; headers.len()].join(" | ")));
-        for row in rows {
-            md_lines.push(format!("| {} |", row.join(" | ")));
-        }
-        let (styled, _raw) = format_table(&md_lines, &self.theme, None);
-        Some(styled)
-    }
-}
-
-/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
-///
-/// Shared by the Mermaid renderer and the `/tasks-dag` popup so both use the
-/// exact same color mapping.
-#[derive(Clone, Copy)]
-pub(crate) struct TuiRichTextTheme<'a> {
-    pub theme: &'a Theme,
+struct TuiRichTextTheme<'a> {
+    theme: &'a Theme,
 }
 
 impl RichTextTheme for TuiRichTextTheme<'_> {
@@ -120,20 +80,6 @@ impl RichTextTheme for TuiRichTextTheme<'_> {
 
     fn get_code_colors(&self) -> CodeColors {
         CodeColors::default()
-    }
-
-    /// Plain (unhighlighted) fenced-code content uses the themed code fg.
-    fn get_code_fg_color(&self) -> Color {
-        self.theme.code_block_fg()
-    }
-
-    /// Inline `` `code` `` spans mirror the fenced-code foreground/background.
-    fn get_inline_code_fg_color(&self) -> Color {
-        self.theme.code_block_fg()
-    }
-
-    fn get_inline_code_bg_color(&self) -> Option<Color> {
-        Some(self.theme.code_block_bg())
     }
 
     fn get_mermaid_theme(&self) -> MermaidTheme {
@@ -402,21 +348,12 @@ pub(crate) fn render_plain_markdown(
     theme: &Theme,
     _width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    let renderer = MarkdownRenderer::new(UNLIMITED_RENDER_WIDTH)
-        .with_render_hooks(Box::new(TuiRenderHooks { theme: *theme }));
-    let blocks = renderer.parse(text);
-    let mut styled_lines = renderer.render(&blocks, &TuiRichTextTheme { theme });
-    // Raw lines mirror the styled rows 1:1 (mouse hit-testing, copy, and the
-    // log's line model rely on the pairing). Heading/fence markers are not
-    // kept anymore — the renderer consumes them at parse time.
-    let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
+    // The log panel renders tables at unlimited width (its own `wrap_line`
+    // handles wrapping), so `available_width` is `None`.
+    let (mut styled_lines, raw_lines) = super::pulldown::render_markdown(text, theme, None);
     apply_blockquote_indicator(&mut styled_lines, theme);
     (styled_lines, raw_lines)
 }
-
-/// Render width that keeps the fork's own word wrapping out of the picture;
-/// the log panel wraps with `wrap_line` at the real panel width.
-const UNLIMITED_RENDER_WIDTH: usize = 1_000_000;
 
 /// Render markdown with width-aware pipe tables.
 ///
@@ -442,56 +379,9 @@ fn render_prose_and_tables(
     theme: &Theme,
     available_width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    let mut styled_lines = Vec::new();
-    let mut raw_lines = Vec::new();
-    let mut table_rows: Vec<String> = Vec::new();
-    let mut paragraph = String::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('|') {
-            // Start/continue a table: flush any pending prose first.
-            if !paragraph.trim().is_empty() {
-                let (s, r) = render_markdown_tui(&paragraph, theme);
-                styled_lines.extend(s);
-                raw_lines.extend(r);
-                paragraph.clear();
-            }
-            table_rows.push(line.to_string());
-        } else {
-            // Non-table line: flush a pending table before handling prose.
-            if !table_rows.is_empty() {
-                let (s, r) = format_table(&table_rows, theme, available_width);
-                styled_lines.extend(s);
-                raw_lines.extend(r);
-                table_rows.clear();
-            }
-            if trimmed.is_empty() {
-                // Blank line ends the current paragraph.
-                if !paragraph.trim().is_empty() {
-                    let (s, r) = render_markdown_tui(&paragraph, theme);
-                    styled_lines.extend(s);
-                    raw_lines.extend(r);
-                    paragraph.clear();
-                }
-            } else {
-                paragraph.push_str(line);
-                paragraph.push('\n');
-            }
-        }
-    }
-    // Flush trailing content.
-    if !table_rows.is_empty() {
-        let (s, r) = format_table(&table_rows, theme, available_width);
-        styled_lines.extend(s);
-        raw_lines.extend(r);
-    }
-    if !paragraph.trim().is_empty() {
-        let (s, r) = render_markdown_tui(&paragraph, theme);
-        styled_lines.extend(s);
-        raw_lines.extend(r);
-    }
-
+    let (mut styled_lines, raw_lines) =
+        super::pulldown::render_markdown(text, theme, available_width);
+    apply_blockquote_indicator(&mut styled_lines, theme);
     (styled_lines, raw_lines)
 }
 
@@ -1074,7 +964,9 @@ Trailing prose.
 
         assert!(joined.contains("☐ pending"), "{joined}");
         assert!(joined.contains("☑ complete"), "{joined}");
-        assert!(joined.contains("[X] ordered"), "{joined}");
+        // GFM task lists apply to ordered lists too: `1. [X]` becomes the
+        // numbered checkbox `1. ☑` (pulldown-cmark behaviour).
+        assert!(joined.contains("1. ☑ ordered"), "{joined}");
     }
 
     #[test]
@@ -1500,112 +1392,15 @@ Plain trailing paragraph.
         );
     }
 
-    /// Phase 0 of the ratatui-markdown consolidation plan
-    /// (`docs/superpowers/plans/2026-08-15-ratatui-markdown-migration.md`):
-    /// corpus baseline for the current pipeline + a test-only spike rendering
-    /// the same corpus through the fork's `MarkdownRenderer` so the two can
-    /// be diffed (`fork_spike_diff_report`, run with `--nocapture`).
-    mod fork_spike {
-        use std::panic::catch_unwind;
-
-        use ratatui::style::{Modifier, Style};
-        use ratatui_markdown::markdown::MarkdownRenderer;
+    /// Regression baseline for the pulldown-cmark renderer: locks the
+    /// observable behaviour of the constructs the consolidation preserves
+    /// (heading levels, emphasis nesting, lists, task lists, blockquotes).
+    mod baseline {
+        use ratatui::style::Modifier;
 
         use super::*;
 
-        /// Named fragments, one per construct under evaluation.
-        const CORPUS: &[(&str, &str)] = &[
-            ("h1", "# Title one\n\nplain"),
-            ("h4", "#### Small heading\n\nplain"),
-            (
-                "bold_italic",
-                "Some **bold** and *italic* and **bold _nested_ italic** text",
-            ),
-            ("inline_code", "Run `cargo test` now."),
-            ("link", "See [docs](https://example.com) here."),
-            ("ulist", "- item one\n- item two"),
-            (
-                "nested_list",
-                "- item one\n  - sub a\n  - sub b\n- item two\n  1. ordered sub",
-            ),
-            ("olist", "1. first\n2. second\n3. third"),
-            ("code_fence", "```rust\nfn main() {}\n```"),
-            ("blockquote", "> quoted wisdom\n> second line"),
-            (
-                "table_cjk",
-                "| 列名 | 描述 |\n| --- | --- |\n| x | 一段中文描述 |\n| y | short |",
-            ),
-            ("task_list", "- [ ] pending\n- [x] done"),
-            ("hr", "before\n\n---\n\nafter"),
-            ("mermaid", "```mermaid\nflowchart TD\n  A --> B\n```"),
-            (
-                "mixed",
-                "# Title\n\nSome **bold** text.\n\n- item one\n  - sub a\n- item two\n\n```rust\nfn hi() {}\n```\n\n> quote\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
-            ),
-        ];
-
-        /// Render `md` through the fork's Markdown renderer.
-        ///
-        /// Width 200 keeps the fork's own text wrapping out of the picture so
-        /// line shapes are comparable with the current pipeline (Tact wraps
-        /// separately via `wrap_line`).
-        fn fork_render(md: &str, theme: &Theme) -> Vec<Line<'static>> {
-            let renderer = MarkdownRenderer::new(200);
-            let blocks = renderer.parse(md);
-            renderer.render(&blocks, &TuiRichTextTheme { theme })
-        }
-
-        /// Compact per-span style flags for the diff report.
-        fn flags(style: &Style, theme: &Theme) -> String {
-            let mut s = String::new();
-            let m = style.add_modifier;
-            if m.contains(Modifier::BOLD) {
-                s.push('B');
-            }
-            if m.contains(Modifier::ITALIC) {
-                s.push('I');
-            }
-            if m.contains(Modifier::UNDERLINED) {
-                s.push('U');
-            }
-            if m.contains(Modifier::CROSSED_OUT) {
-                s.push('S');
-            }
-            if m.contains(Modifier::REVERSED) {
-                s.push('R');
-            }
-            if let Some(fg) = style.fg
-                && fg != theme.fg
-            {
-                s.push_str(&format!("·fg={fg:?}"));
-            }
-            if let Some(bg) = style.bg {
-                s.push_str(&format!("·bg={bg:?}"));
-            }
-            if s.is_empty() {
-                String::new()
-            } else {
-                format!("({s})")
-            }
-        }
-
-        fn dump_line(l: &Line<'static>, theme: &Theme) -> String {
-            let line_flags = flags(&l.style, theme);
-            let spans = if l.spans.is_empty() {
-                "∅".to_string()
-            } else if l.spans.len() == 1 {
-                let sp = &l.spans[0];
-                format!("{}{}", flags(&sp.style, theme), sp.content)
-            } else {
-                l.spans
-                    .iter()
-                    .map(|sp| format!("<{}>{}", flags(&sp.style, theme), sp.content))
-                    .collect()
-            };
-            format!("{line_flags}{spans}")
-        }
-
-        /// T0.1 — lock the current pipeline's observable behavior for the
+        /// Locks the current pipeline's observable behaviour for the
         /// constructs the consolidation must preserve.
         #[test]
         fn corpus_baseline_current_pipeline() {
@@ -1685,30 +1480,6 @@ Plain trailing paragraph.
             let (lines, _) = render_markdown_tui("> quoted", &theme);
             let text = lines[0].to_string();
             assert!(text.contains('▎') && !text.contains('>'), "{text}");
-        }
-
-        /// T0.2 + T0.3 — side-by-side corpus render for the human diff:
-        /// `cargo test -p tui --lib render::render_md::tests::fork_spike -- --nocapture`
-        #[test]
-        fn fork_spike_diff_report() {
-            let theme = Theme::from(ThemeName::Dark);
-            for (name, md) in CORPUS {
-                let (cur, _) = render_markdown_tui(md, &theme);
-                println!("\n===== {name} =====");
-                println!("--- current (tui-markdown) ---");
-                for l in &cur {
-                    println!("  |{}|", dump_line(l, &theme));
-                }
-                println!("--- fork (ratatui-markdown @200) ---");
-                match catch_unwind(|| fork_render(md, &theme)) {
-                    Ok(lines) => {
-                        for l in &lines {
-                            println!("  |{}|", dump_line(l, &theme));
-                        }
-                    }
-                    Err(_) => println!("  PANIC"),
-                }
-            }
         }
     }
 }

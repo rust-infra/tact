@@ -1,10 +1,9 @@
 //! Task dependency DAG → Mermaid → ratatui-markdown rendering.
 
 use ratatui::text::Line;
-use ratatui_markdown::markdown::MarkdownRenderer;
 use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
-use crate::{render::render_md::TuiRichTextTheme, theme::Theme};
+use crate::{render::render_md::render_markdown_with_tables, theme::Theme};
 
 /// Width used to pre-render the DAG before the popup's actual width is known
 /// (the popup re-renders at its real width on the first frame).
@@ -93,9 +92,7 @@ pub(crate) fn render_task_dag_lines(
         );
     }
     let md = tasks_to_markdown(tasks, &source);
-    let renderer = MarkdownRenderer::new(width);
-    let blocks = renderer.parse(&md);
-    let lines = renderer.render(&blocks, &TuiRichTextTheme { theme });
+    let (lines, _raw) = render_markdown_with_tables(&md, theme, Some(width));
     (source, lines)
 }
 
