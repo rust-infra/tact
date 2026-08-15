@@ -249,8 +249,8 @@ Cached data is evicted after hours to days of inactivity.
 
 At the end of every session (both CLI and TUI), a summary is emitted as **GFM
 pipe markdown** with space-padded cells so columns line up in plain text.
-The TUI runs it through `tui-markdown`, which draws Unicode box borders and
-honors column alignment. CLI / headless print the same markdown source to
+The TUI runs it through `ratatui-markdown` (the `/stats` popup renders via
+`render_markdown_ratatui`). CLI / headless print the same markdown source to
 stderr:
 
 ```

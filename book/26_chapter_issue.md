@@ -29,6 +29,18 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — `/stats` popup renders through ratatui-markdown directly
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The system-prompt popup (shared by `/stats` session stats and the assembled-system-prompt view) went through the pulldown-cmark pipeline with Tact's width-aware pipe-table pass, laid out at the popup's content width. For a quick statistics popup that extra layout machinery was not worth it. |
+| Decision | `render_system_prompt_popup` now renders via `render_markdown_ratatui` (`crates/tui/src/render/render_md.rs`): a plain `ratatui_markdown::markdown::MarkdownRenderer` at the popup's content width, using the same `TuiRichTextTheme` as the Mermaid renderer. The width-aware table pass and Mermaid routing stay for the main-area Markdown cells. |
+| Behavior after | The `/stats` and system-prompt popups are laid out by ratatui-markdown's default renderer (tables included); popup tests (`session_stats_popup_renders_gfm_table`) pass unchanged. |
+| Pointers | `crates/tui/src/render/popups/system_prompt_popup.rs`, `crates/tui/src/render/render_md.rs` (`render_markdown_ratatui`); `docs/token_usage_schema.md` Session Stats Display. |
+
+---
+
 ## 1. 2026-08-15 — Auto-compaction no longer enables thinking on the summary call
 
 | Field | Value |

@@ -3,6 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use ratatui_markdown::{
+    markdown::MarkdownRenderer,
     mermaid::{render_mermaid, theme::MermaidTheme},
     theme::{CodeColors, Generation, RichTextTheme},
 };
@@ -375,6 +376,21 @@ fn render_prose_and_tables(
         super::pulldown::render_markdown(text, theme, available_width);
     apply_blockquote_indicator(&mut styled_lines, theme);
     (styled_lines, raw_lines)
+}
+
+/// Render Markdown through ratatui-markdown's own renderer.
+///
+/// Used by popups (e.g. the `/stats` session-stats popup) where a quick
+/// default layout is enough — no width-aware pipe-table pass, no Mermaid
+/// routing. `width` bounds the renderer's max line width.
+pub(crate) fn render_markdown_ratatui(
+    text: &str,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let renderer = MarkdownRenderer::new(width.max(1));
+    let blocks = renderer.parse(text);
+    renderer.render(&blocks, &TuiRichTextTheme { theme })
 }
 
 /// Adapt the pulldown renderer's blockquotes to the log's `▎` gutter look.

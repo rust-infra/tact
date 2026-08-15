@@ -29,6 +29,18 @@
 
 ---
 
+## 1. 2026-08-15 — `/stats` 弹窗直接用 ratatui-markdown 渲染
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | system-prompt 弹窗（`/stats` 会话统计与组装后的 system prompt 视图共用）此前走 pulldown-cmark 管线 + Tact 自研 width-aware pipe 表格，并按弹窗内容宽度布局。对一个快速统计弹窗而言，这套额外布局机制不值得。 |
+| 决策 | `render_system_prompt_popup` 改为通过 `render_markdown_ratatui`（`crates/tui/src/render/render_md.rs`）渲染：按弹窗内容宽度使用普通 `ratatui_markdown::markdown::MarkdownRenderer`，复用与 Mermaid 渲染器相同的 `TuiRichTextTheme`。width-aware 表格与 Mermaid 路由保留给主区域 Markdown cell。 |
+| 改后行为 | `/stats` 与 system-prompt 弹窗由 ratatui-markdown 默认渲染器布局（含表格）；弹窗测试（`session_stats_popup_renders_gfm_table`）原样通过。 |
+| 指针 | `crates/tui/src/render/popups/system_prompt_popup.rs`、`crates/tui/src/render/render_md.rs`（`render_markdown_ratatui`）；`docs/token_usage_schema.md` Session Stats Display。 |
+
+---
+
 ## 1. 2026-08-15 — 自动压缩的摘要调用不再开启 thinking
 
 | 字段 | 内容 |
