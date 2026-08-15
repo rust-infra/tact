@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Log word-wrap at word boundaries; selection UX made symmetric
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | (1) `wrap_line` hard-cut every visual line at the exact display width (`split_at_display_width`), so long URLs, paths and words split mid-word with no continuation hint; (2) wrapped partial selections lost the REVERSED overlay on continuation lines because the wrapped path flattened every span to one base style; (3) double-click word selection only understood ASCII, so double-clicking 中文 selected nothing; (4) selection UX was asymmetric: clicking a whole-Markdown row (or dragging into one) created an invisible selection (the MarkdownCell renderer draws no overlay), and clicking empty space / outside the panel kept a stale selection; (5) mouse hit-testing simulated hard wraps at panel width while rendering wrapped at width − indent, drifting up to the indent width on indented rows. |
+| Decision | A shared `wrap_break_offsets` computes visual-line start offsets once and both `wrap_line` and `visual_pos_to_byte_offset` consume it, so render and hit-test cannot disagree. Wrap is greedy word wrap: break at the last whitespace run that fits; hard-cut only when an unbroken word exceeds the line; trailing whitespace rides on the previous line (invisible) so segments stay contiguous. `wrap_line` now re-slices the original styled spans per segment, so per-span styles (REVERSED included) survive onto continuation lines. `find_word_bounds` classifies the char under the cursor into ASCII-word or CJK-run (Han/kana/Hangul) and expands within that class. `handle_log_click`/`handle_mouse_drag`/`handle_log_triple_click` refuse to start or extend a selection on Markdown rows, and clicks on empty space below the log or anywhere outside the panel clear the selection. Hit-testing subtracts the row indent from the wrap width. |
+| Behavior after | Words no longer break mid-word (URLs/paths/CJK stay intact until they genuinely exceed the line); selection highlight stays visible across every wrapped line; double-click selects whole 中文 runs; Markdown cards are never silently "selected"; stray clicks clear stale selections instead of keeping them; clicks on indented rows map to the right byte. |
+| Pointers | `crates/tui/src/render/util.rs` (`wrap_break_offsets`, `wrap_line`, `visual_pos_to_byte_offset`, `col_to_byte_offset`), `crates/tui/src/widgets/state/app/visibility.rs` (`find_word_bounds`, `is_markdown_row`, `byte_offset_from_log_position`), `crates/tui/src/handlers/mouse.rs` (click/drag/triple-click guards + outside-click clear), `crates/tui/src/render/cells/text.rs`; tests `wrap_break_offsets_prefers_word_boundaries`, `wrap_line_keeps_word_intact_and_preserves_span_styles`, `wrap_break_offsets_agree_with_byte_offset_hit_testing`, `partial_selection_reverses_target_span_across_wrapped_lines`, `double_click_selects_cjk_run`, `click_below_last_message_clears_selection`, `click_on_markdown_row_does_not_create_invisible_selection`, `drag_into_markdown_row_does_not_extend_selection`, `click_outside_log_clears_selection`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
 ## 1. 2026-08-15 — Log scroll becomes visual; `/skills` paginated
 
 | Field | Value |

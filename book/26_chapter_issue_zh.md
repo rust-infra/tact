@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | （1）`wrap_line` 在显示宽度处硬切每行（`split_at_display_width`），长 URL、路径与单词从中间断开且无续行提示；（2）跨折行的部分选择在续行上丢失 REVERSED 高亮——旧折行路径把所有 span 摊平为一个基础样式；（3）双击选词只认 ASCII，双击中文选不中任何内容；（4）选择交互不对称：点击/拖入整段 Markdown 行会产生看不见的选择（MarkdownCell 渲染器不画叠加层），点空白区或面板外则保留过期选择；（5）鼠标 hit-test 按面板宽度模拟硬折行，而渲染按宽度 − 缩进折行，缩进行上最多偏移一个缩进宽。 |
+| Decision | 新增共享的 `wrap_break_offsets` 一次性计算视觉行起始偏移，`wrap_line` 与 `visual_pos_to_byte_offset` 共用，渲染与 hit-test 不可能再分歧。折行改为贪心词边界折行：在最后一个放得下的空白处断开；仅当连续词超过行宽才硬切；尾随空白留在上一行（不可见），保证分段字节连续。`wrap_line` 按分段重新切片原始样式 span，使逐段样式（含 REVERSED）延续到续行。`find_word_bounds` 按光标下字符分类为 ASCII 词或 CJK 连续段（汉字/假名/谚文）并在同类内扩展。`handle_log_click`/`handle_mouse_drag`/`handle_log_triple_click` 拒绝在 Markdown 行上开始或扩展选择；点击日志下方空白或面板外的任意位置清除选择。hit-test 的折行宽度减去行缩进。 |
+| Behavior after | 单词不再从中间断开（URL/路径/CJK 保持完整直到确实超宽）；选择高亮在每条续行都可见；双击可选中整段中文；Markdown 卡片不再被"静默选中"；误点击清除过期选择而非保留；缩进行上的点击映射到正确字节。 |
+| Pointers | `crates/tui/src/render/util.rs`（`wrap_break_offsets`、`wrap_line`、`visual_pos_to_byte_offset`、`col_to_byte_offset`）、`crates/tui/src/widgets/state/app/visibility.rs`（`find_word_bounds`、`is_markdown_row`、`byte_offset_from_log_position`）、`crates/tui/src/handlers/mouse.rs`（点击/拖拽/三击守卫与面板外点击清除）、`crates/tui/src/render/cells/text.rs`；测试 `wrap_break_offsets_prefers_word_boundaries`、`wrap_line_keeps_word_intact_and_preserves_span_styles`、`wrap_break_offsets_agree_with_byte_offset_hit_testing`、`partial_selection_reverses_target_span_across_wrapped_lines`、`double_click_selects_cjk_run`、`click_below_last_message_clears_selection`、`click_on_markdown_row_does_not_create_invisible_selection`、`drag_into_markdown_row_does_not_extend_selection`、`click_outside_log_clears_selection`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+
 ## 1. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
 
 | Field | Value |

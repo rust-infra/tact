@@ -80,8 +80,9 @@ impl App {
 
     /// Find the word boundary at the given byte offset in the raw text of a
     /// specific logical line. Returns (word_start_byte, word_end_byte).
-    /// Words consist of letters, digits, underscores, and hyphens; other
-    /// characters are separators.
+    /// Words consist of ASCII letters, digits, underscores, and hyphens;
+    /// CJK ideographs/kana/Hangul form runs of their own (so double-clicking
+    /// 中文 selects the whole contiguous run). Other characters are separators.
     pub(crate) fn find_word_bounds(
         &self,
         logical_idx: usize,
@@ -94,31 +95,61 @@ impl App {
             return None;
         }
         let byte_pos = text.floor_char_boundary(byte_offset.min(bytes.len()));
-        // Expand from click position to find word boundaries
-        let classify = |b: u8| -> bool { b.is_ascii_alphanumeric() || b == b'_' || b == b'-' };
+
+        // Class of the char under the cursor decides the run kind; a click on
+        // punctuation or whitespace selects nothing (same as before).
+        #[derive(Clone, Copy, PartialEq)]
+        enum WordClass {
+            Ascii,
+            Cjk,
+        }
+        let classify = |c: char| -> Option<WordClass> {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                Some(WordClass::Ascii)
+            } else if matches!(
+                c,
+                '\u{4E00}'..='\u{9FFF}' // CJK Unified Ideographs
+                    | '\u{3400}'..='\u{4DBF}' // Extension A
+                    | '\u{F900}'..='\u{FAFF}' // Compatibility Ideographs
+                    | '\u{3040}'..='\u{309F}' // Hiragana
+                    | '\u{30A0}'..='\u{30FF}' // Katakana
+                    | '\u{AC00}'..='\u{D7AF}' // Hangul syllables
+            ) {
+                Some(WordClass::Cjk)
+            } else {
+                None
+            }
+        };
+        let cls = classify(text[byte_pos..].chars().next()?)?;
+
+        // Expand left across same-class chars.
         let mut start = byte_pos;
-        let mut end = byte_pos;
-        // Expand left
         while start > 0 {
-            if classify(bytes[start - 1]) {
-                start -= 1;
-            } else {
+            let (i, ch) = text[..start].char_indices().next_back()?;
+            if classify(ch) != Some(cls) {
                 break;
             }
+            start = i;
         }
-        // Expand right
-        while end < bytes.len() {
-            if classify(bytes[end]) {
-                end += 1;
-            } else {
+        // Expand right across same-class chars.
+        let mut end = byte_pos;
+        for (i, ch) in text[byte_pos..].char_indices() {
+            if classify(ch) != Some(cls) {
                 break;
             }
+            end = byte_pos + i + ch.len_utf8();
         }
-        if start < end {
-            Some((start, end))
-        } else {
-            None
-        }
+        (start < end).then_some((start, end))
+    }
+
+    /// True when this physical row renders as a whole-Markdown card.
+    ///
+    /// Markdown rows never draw a text-selection overlay (their renderer
+    /// skips it), so selection creation/extension must skip them too.
+    pub(crate) fn is_markdown_row(&self, phys: usize) -> bool {
+        self.markdown_cells
+            .get(phys)
+            .is_some_and(|cell| cell.is_some())
     }
 
     /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
@@ -137,6 +168,9 @@ impl App {
         let is_user = crate::render::is_user_message_line(&self.raw_messages, phys_idx);
         let indent = self.nested_log_indent(phys_idx, is_user) as usize;
         let text_col = col.saturating_sub(indent);
+        // Render wraps at (panel width - indent); the hit-test must use the
+        // same width or clicks near the right edge of indented rows drift.
+        let wrap_width = wrap_width.saturating_sub(indent).max(1);
         let byte_offset =
             visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
         Some((phys_idx, byte_offset))

@@ -278,4 +278,37 @@ mod render_tests {
         assert_eq!(buf[(0, 0)].bg, surface_bg);
         assert_ne!(buf[(0, 0)].bg, old_card_bg);
     }
+
+    #[test]
+    fn partial_selection_reverses_target_span_across_wrapped_lines() {
+        // A selection that spans a line break must keep REVERSED on the
+        // continuation line, not just on the first visual line.
+        let text = "the quick brown fox jumps";
+        let cell = TextCell::new(
+            vec![Line::from(text)],
+            text.into(),
+            Some((10, 15)), // "brown": starts mid-wrap at width 10
+            None,
+            0,
+            Color::White,
+            Color::Black,
+        );
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        let mut reversed_rows: Vec<usize> = Vec::new();
+        for y in 0..area.height {
+            if (0..area.width).any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED)) {
+                reversed_rows.push(y as usize);
+            }
+        }
+        assert!(
+            !reversed_rows.is_empty(),
+            "selection must stay visible after wrapping"
+        );
+        assert!(
+            reversed_rows.contains(&1),
+            "continuation line must carry REVERSED too: {reversed_rows:?}"
+        );
+    }
 }

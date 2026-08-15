@@ -103,6 +103,12 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
+    // Any click outside the Log panel (task strip, input bar, chrome) ends a
+    // Log text selection — it is no longer what the user is looking at.
+    if !hit.in_log {
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+    }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
         app.task_panel.expanded = !app.task_panel.expanded;
         app.mouse.in_task_panel = app.task_panel.expanded;
@@ -207,8 +213,21 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.mouse.last_click_pos = Some(pos);
 
     let Some(phys_idx) = app.visible_message_index(line_idx) else {
+        // Clicked in empty space below the last message: nothing here can
+        // extend a selection, so clear it instead of keeping a stale one.
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
         return;
     };
+
+    // Whole-Markdown rows are cards: the MarkdownCell renderer draws no
+    // selection overlay, so refuse to create an invisible selection here
+    // (symmetric with rendering).
+    if app.is_markdown_row(phys_idx) {
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
 
     // Task-stats `[copy]` button: copy this turn's log text.
     if let Some(raw) = app.raw_messages.get(phys_idx)
@@ -317,9 +336,15 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
-            && let Some(ref mut sel) = app.mouse.log_selection
         {
-            sel.end = TextPosition::new(phys, byte);
+            // Markdown cards carry no selection overlay: stop the selection at
+            // the last text row instead of extending invisibly into one.
+            if app.is_markdown_row(phys) {
+                return;
+            }
+            if let Some(ref mut sel) = app.mouse.log_selection {
+                sel.end = TextPosition::new(phys, byte);
+            }
         }
     }
 }
@@ -362,6 +387,13 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
         return;
     }
     if let Some(phys) = app.visible_message_index(line_idx) {
+        // Markdown cards never show a selection overlay; triple-click cannot
+        // select them either.
+        if app.is_markdown_row(phys) {
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+            return;
+        }
         let len = app.raw_messages[phys].len();
         app.mouse.log_selection = Some(LogSelection::full_message(phys, len));
     }
@@ -417,7 +449,10 @@ mod tests {
     use crate::{
         render::test_harness::make_app,
         widgets::{
-            state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
+            state::{
+                DiffPopup, LogSelection, PopupHitRow, PopupTextHit, PopupTextSelection,
+                ThinkingPopup,
+            },
             tool_widget::TOOL_HEADER_ROWS,
         },
     };
@@ -932,5 +967,77 @@ mod tests {
             "expected multi-line block selection"
         );
         assert!(app.mouse.dragging_log);
+    }
+
+    /// Set up a one-row log panel at (0,0) with a 40x10 click surface so
+    /// `handle_mouse_event` clicks can resolve positions.
+    fn app_with_clickable_log() -> App {
+        let mut app = make_app();
+        app.mouse.log_area = Rect::new(0, 0, 40, 10);
+        app
+    }
+
+    #[test]
+    fn double_click_selects_cjk_run() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("你好世界 hello".into());
+        app.log_scroll.visual_start = vec![0, 1];
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+
+        let expected = Some(LogSelection::span(0, 0, "你好世界".len()));
+        assert_eq!(app.mouse.log_selection, expected);
+    }
+
+    #[test]
+    fn click_below_last_message_clears_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("only row".into());
+        app.log_scroll.visual_start = vec![0, 1];
+        app.mouse.log_selection = Some(LogSelection::full_message(0, "only row".len()));
+
+        // Row 5 is below the only message row.
+        handle_mouse_event(&mut app, mouse_down(1, 5));
+
+        assert!(app.mouse.log_selection.is_none());
+        assert!(!app.mouse.dragging_log);
+    }
+
+    #[test]
+    fn click_on_markdown_row_does_not_create_invisible_selection() {
+        let mut app = app_with_clickable_log();
+        app.append_markdown("# Title\n");
+        app.log_scroll.visual_start = vec![0, 1];
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+
+        assert!(app.mouse.log_selection.is_none());
+        assert!(!app.mouse.dragging_log);
+    }
+
+    #[test]
+    fn drag_into_markdown_row_does_not_extend_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("select me".into());
+        app.append_markdown("# Card\n");
+        app.log_scroll.visual_start = vec![0, 1, 2];
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        handle_mouse_event(&mut app, mouse_drag(1, 2));
+
+        let sel = app.mouse.log_selection.expect("selection started");
+        assert_eq!(sel.end.phys_idx, 0, "selection must stop at the text row");
+    }
+
+    #[test]
+    fn click_outside_log_clears_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("row".into());
+        app.mouse.log_selection = Some(LogSelection::full_message(0, 3));
+
+        handle_mouse_event(&mut app, mouse_down(1, 20));
+
+        assert!(app.mouse.log_selection.is_none());
     }
 }
