@@ -29,6 +29,18 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Auto-compaction no longer enables thinking on the summary call
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The local compaction summary call forwarded the agent's Claude-style `thinking_budget` (`with_thinking`, clamped below the wire `max_tokens`) and its explicit `reasoning_effort`, and reserved an effort-tiered reasoning share on top of the text budget. Thinking on a handoff summary adds little value and consumes output tokens from the same `max_tokens` envelope (effort models) — the user asked to stop enabling it during auto-compaction. |
+| Decision | The summarizer request no longer carries any thinking: no `thinking` block and no `reasoning_effort` are forwarded (main-loop thinking config is untouched), and the input reservation no longer subtracts a thinking budget. The **server-default** reasoning reserve stays for DeepSeek / Kimi K3 only (fixed 75% of the text budget on top): they default thinking ON + effort high server-side even when the request omits effort, so without the reserve their forced reasoning would starve the summary text and force truncation continuations. The native `/responses/compact` request was already `{model, input}`-only; its dead `.with_reasoning_effort` was removed. |
+| Behavior after | The compact summary call is a plain non-streaming `create_message` with `max_tokens` = classic text budget (OpenAI / Anthropic) or text + 75% reserve (DeepSeek / Kimi K3); `AgentUpdate::ModelInfo` emitted during compaction reports no thinking/effort. |
+| Pointers | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `compact_summary_reasoning_reserve_percent`, `compact_responses_native`), book [Ch 5](./05_chapter_compact.md) §summarization call. |
+
+---
+
 ## 1. 2026-08-15 — Bottom-bar `out` renamed to `max_out_token` with the real output budget
 
 | Field | Value |

@@ -29,6 +29,18 @@
 
 ---
 
+## 1. 2026-08-15 — 自动压缩的摘要调用不再开启 thinking
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | 本地压缩摘要调用此前会转发 agent 的 Claude 式 `thinking_budget`（`with_thinking`，并限制在线上 `max_tokens` 之下）与显式 `reasoning_effort`，并在文本预算之上按 effort 分档预留 reasoning 份额。对手交摘要而言思考价值不大，且会从同一个 `max_tokens` 信封（effort 模型）中占用输出 token——用户要求自动压缩时不再开启 think。 |
+| 决策 | 摘要请求不再携带任何 thinking：不转发 `thinking` 块、不转发 `reasoning_effort`（主循环的 thinking 配置不受影响），输入预留也不再扣除 thinking budget。**服务端默认** reasoning 预留仅保留给 DeepSeek / Kimi K3（固定为文本预算的 75% 追加在文本之上）：即使请求省略 effort，它们服务端默认 thinking 开启 + effort high，没有该预留其强制 reasoning 会挤占摘要文本、触发截断续写。原生 `/responses/compact` 请求本就只带 `{model, input}`，其无效的 `.with_reasoning_effort` 一并移除。 |
+| 改后行为 | 摘要调用为普通非流式 `create_message`，`max_tokens` = 经典文本预算（OpenAI / Anthropic）或文本 + 75% 预留（DeepSeek / Kimi K3）；压缩期间发出的 `AgentUpdate::ModelInfo` 不报告 thinking/effort。 |
+| 指针 | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`compact_summary_reasoning_reserve_percent`、`compact_responses_native`）、book [Ch 5](./05_chapter_compact_zh.md) §摘要调用。 |
+
+---
+
 ## 1. 2026-08-15 — 底栏 `out` 更名为 `max_out_token`，显示真实输出额度
 
 | 字段 | 内容 |
