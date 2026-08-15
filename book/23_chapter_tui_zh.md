@@ -281,14 +281,14 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 | 空间 | 含义 | Scrollbar 跟踪 |
 |------|------|----------------|
 | **Physical** | `app.messages[]` 中的索引 | — |
-| **Logical** | 可见消息 + 可选流式 buffer 行 | `log_scroll.offset` |
-| **Visual** | 当前面板宽度下的换行 | 总 visual 行数 |
+| **Logical** | 可见消息 + 可选流式 buffer 行 | —（`log_scroll.offset` 仅为派生镜像） |
+| **Visual** | 当前面板宽度下的换行 | `log_scroll.visual_top`（viewport 起点）/ 总 visual 行数 |
 
 `render_log_panel` 管线阶段：
 
 1. **Phase 0** — `messages.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
 2. **Phase 1** — 宽度或消息数变化时 `wrap_line` → `visual_cache` + `visual_start_cache`。
-3. **Phase 2** — 将 `log_scroll.offset` 映射到 visual viewport（`visual_scroll`、clip height）。
+3. **Phase 2** — 将权威滚动位置 `log_scroll.visual_top`（首条可见 visual 行；`usize::MAX` = 钉住底部哨兵）钳制到 `total - height`，并派生 `log_scroll.offset` 逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由 `widgets/state/app/scroll.rs` 的 `visual_step_up/down` 按视觉行步进（cell 内 `j`/`k` 半屏、滚轮 3 行；否则按行边界跳转）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
 
 **Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 在保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）的同时，也会为每个字形显式写入同一背景。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。

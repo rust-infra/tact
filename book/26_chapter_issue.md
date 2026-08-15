@@ -29,6 +29,16 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Log scroll becomes visual; `/skills` paginated
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The log panel scrolled in logical-message-row units (`log_scroll.offset ± 1` per `j`/`k`/wheel tick). A whole-Markdown message taller than the viewport — e.g. the `/skills` pipe table with ~60 skills ≈ 400+ rendered lines — therefore exposed only its first and last screenful: `resolve_visual_scroll` bottom-pinned at the max logical offset, so the middle rows (where `lark-*` sorts alphabetically) were unreachable in both directions. |
+| Decision | The viewport's first visible **visual** line is now authoritative (`LogScroll.visual_top`, `usize::MAX` = pin-to-bottom sentinel); `offset` becomes a derived logical mirror for read-only consumers (mouse hit-testing, code popup). Pure step functions `visual_step_up/down` move half a viewport per `j`/`k` (3 lines per wheel tick) *inside* a cell taller than the viewport and jump across row boundaries otherwise; entering a tall row from below lands on its bottom so upward traversal stays continuous. `resolve_visual_scroll` / `effective_max_logical_scroll` deleted. `/skills` output is additionally paginated into 15-skill chunks, each a separate Markdown message with a `(n/k)` heading. |
+| Behavior after | Any cell taller than the viewport (long tables, expanded tool cards) is fully traversable in both directions with `j`/`k`/wheel; `g`/`G` still jump to top/bottom, and auto-follow-the-stream keeps working (`is_log_pinned_to_bottom` compares visual positions). `/skills` renders 15 skills per page with numbered headings. |
+| Pointers | `crates/tui/src/widgets/state/app/scroll.rs` (step functions + scroll API), `crates/tui/src/widgets/state/log_scroll.rs` (`visual_top`), `crates/tui/src/render/log.rs` (visual clamp + mirror derivation), `crates/tui/src/handlers/{normal,mouse,mod}.rs` (keys, wheel, `/skills` pagination), `crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs` (pin helpers); regression tests `tall_markdown_cell_is_fully_traversable`, `skills_command_paginates_long_lists`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
 ## 1. 2026-08-14 — Cron scheduling feature removed
 
 | Field | Value |

@@ -284,14 +284,14 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 | Space | Meaning | Scrollbar tracks |
 |-------|---------|------------------|
 | **Physical** | Index in `app.messages[]` | — |
-| **Logical** | Visible messages + optional streaming buffer row | `log_scroll.offset` |
-| **Visual** | Wrapped lines at current panel width | Total visual line count |
+| **Logical** | Visible messages + optional streaming buffer row | — (`log_scroll.offset` is a derived mirror) |
+| **Visual** | Wrapped lines at current panel width | `log_scroll.visual_top` (viewport start) / total visual lines |
 
 Pipeline phases in `render_log_panel`:
 
 1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `messages.len()` changes; direct-card placeholder rows remain addressable for scroll and hit testing.
 2. **Phase 1** — `wrap_line` → `visual_cache` + `visual_start_cache` when width or message count changes.
-3. **Phase 2** — Map `log_scroll.offset` to a visual viewport (`visual_scroll`, clip height).
+3. **Phase 2** — Clamp `log_scroll.visual_top` (authoritative first visible visual line; `usize::MAX` = pin-to-bottom sentinel) to `total - height`, and derive `log_scroll.offset` as a logical mirror for hit-testing/popups. Cells taller than the viewport are stepped through visually by `visual_step_up/down` in `widgets/state/app/scroll.rs` (half a viewport per `j`/`k`, 3 lines per wheel tick inside such a cell; row-boundary jumps otherwise).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
 **Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` also writes that same background explicitly on every glyph while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.

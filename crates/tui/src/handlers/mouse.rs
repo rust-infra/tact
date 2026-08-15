@@ -72,9 +72,9 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         if app.task_panel.scroll > 0 {
             app.task_panel.scroll -= 1;
         }
-    } else if hit.in_log && app.log_scroll.offset > 0 {
+    } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.log_scroll.offset -= 1;
+        app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
     }
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
+        app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
     }
 }
 
@@ -186,12 +186,7 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
 
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
-    let visual_base = app
-        .log_scroll
-        .visual_start
-        .get(app.log_scroll.offset as usize)
-        .copied()
-        .unwrap_or(0);
+    let visual_base = app.log_viewport_top();
     let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
     let line_idx = app.logical_from_visual(visual_row);
     let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
@@ -316,12 +311,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
-        let visual_base = app
-            .log_scroll
-            .visual_start
-            .get(app.log_scroll.offset as usize)
-            .copied()
-            .unwrap_or(0);
+        let visual_base = app.log_viewport_top();
         let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
         let line_idx = app.logical_from_visual(visual_row);
         let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
@@ -756,7 +746,11 @@ mod tests {
     #[test]
     fn scroll_up_in_log_decrements_offset() {
         let mut app = make_app();
-        app.log_scroll.offset = 3;
+        for i in 0..10 {
+            app.add_system_message(format!("row-{i}"));
+        }
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 4);
+        app.log_scroll.visual_top = 2;
 
         handle_mouse_scroll_up(
             &mut app,
@@ -766,13 +760,17 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 2);
+        assert_eq!(app.log_scroll.offset, 1);
     }
 
     #[test]
     fn scroll_down_in_log_increments_offset() {
         let mut app = make_app();
-        app.log_scroll.offset = 1;
+        for i in 0..10 {
+            app.add_system_message(format!("row-{i}"));
+        }
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 4);
+        app.scroll_log_to_top();
 
         handle_mouse_scroll_down(
             &mut app,
@@ -782,7 +780,7 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 2);
+        assert_eq!(app.log_scroll.offset, 1);
     }
 
     #[test]

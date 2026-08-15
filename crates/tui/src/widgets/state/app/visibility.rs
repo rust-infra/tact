@@ -11,24 +11,22 @@ use crate::{
 impl App {
     /// Whether the rendered log viewport currently sits at its visual bottom.
     ///
-    /// `u16::MAX` is only a pre-render bottom sentinel: `render_log_panel`
-    /// clamps it to a real logical offset. Tool progress therefore needs to
+    /// `usize::MAX` is only a pre-render bottom sentinel: `render_log_panel`
+    /// clamps it to `total - height`. Tool progress therefore needs to
     /// recognize both representations before it grows placeholder rows.
     pub(crate) fn is_log_pinned_to_bottom(&self) -> bool {
-        if self.log_scroll.offset == u16::MAX {
+        if self.log_scroll.visual_top == usize::MAX {
             return true;
         }
         if self.log_scroll.visible_indices_ver != self.messages.len()
             || self.log_scroll.visual_cache_ver != self.messages.len()
-            || self.log_scroll.visual_start_cache.is_empty()
+            || self.log_scroll.visual_start_cache.len() < 2
         {
             return false;
         }
-        let max_offset = crate::render::effective_max_logical_scroll(
-            &self.log_scroll.visual_start_cache,
-            self.log_scroll.height as usize,
-        );
-        self.log_scroll.offset as usize >= max_offset
+        let total = *self.log_scroll.visual_start_cache.last().unwrap_or(&0);
+        let max_visual = total.saturating_sub(self.log_scroll.height as usize);
+        self.log_scroll.visual_top >= max_visual
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
@@ -563,7 +561,7 @@ impl App {
     pub(crate) fn refresh_thinking_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -685,7 +683,7 @@ impl App {
     pub(crate) fn refresh_tool_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 }

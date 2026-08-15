@@ -29,6 +29,16 @@
 
 ---
 
+## 1. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Log 面板按逻辑消息行滚动（`j`/`k`/滚轮每格 `log_scroll.offset ± 1`）。高于 viewport 的整段 Markdown 消息——例如 `/skills` 约 60 个 skill、400+ 渲染行的管道表格——只能看到首尾两屏：`resolve_visual_scroll` 在最大逻辑偏移处钉底，位于中间的行（按字母序排列的 `lark-*`）双向都滚不到。 |
+| Decision | viewport 的首条可见**视觉**行成为权威状态（`LogScroll.visual_top`，`usize::MAX` = 钉底哨兵）；`offset` 变为派生的逻辑镜像，仅供只读消费方（鼠标 hit-test、code 弹窗）使用。纯函数 `visual_step_up/down` 在高于 viewport 的 cell 内部按 `j`/`k` 半屏、滚轮 3 行步进，其余情况按行边界跳转；从下方进入高 cell 时落在其底部，保证向上遍历连续。删除 `resolve_visual_scroll` / `effective_max_logical_scroll`。`/skills` 输出额外按 15 个 skill 一页分块，每块一条带 `(n/k)` 标题的 Markdown 消息。 |
+| Behavior after | 任何高于 viewport 的 cell（长表格、展开的工具卡片）都可用 `j`/`k`/滚轮双向完整遍历；`g`/`G` 仍跳转顶/底，自动跟随流式输出保持可用（`is_log_pinned_to_bottom` 改为比较视觉位置）。`/skills` 每页渲染 15 个 skill 并带页码标题。 |
+| Pointers | `crates/tui/src/widgets/state/app/scroll.rs`（步进函数与滚动 API）、`crates/tui/src/widgets/state/log_scroll.rs`（`visual_top`）、`crates/tui/src/render/log.rs`（视觉钳制与镜像派生）、`crates/tui/src/handlers/{normal,mouse,mod}.rs`（按键、滚轮、`/skills` 分页）、`crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs`（钉底辅助）；回归测试 `tall_markdown_cell_is_fully_traversable`、`skills_command_paginates_long_lists`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+
 ## 1. 2026-08-14 — 移除 cron 调度功能
 
 | 字段 | 内容 |

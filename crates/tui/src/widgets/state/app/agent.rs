@@ -193,7 +193,7 @@ impl App {
                 // cache and marks the end of this response.
                 self.add_task_end_separator();
                 if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-                    self.log_scroll.offset = u16::MAX;
+                    self.scroll_log_to_bottom();
                 }
                 self.status = Status::Done;
                 self.freeze_last_prompt_cost();
@@ -208,7 +208,7 @@ impl App {
                 self.flush_stream_pending();
                 self.add_task_end_separator();
                 if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-                    self.log_scroll.offset = u16::MAX;
+                    self.scroll_log_to_bottom();
                 }
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
@@ -452,7 +452,7 @@ impl App {
         self.tools.active[pos].output = output;
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if was_pinned {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -907,7 +907,7 @@ impl App {
 
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         // Auto-scroll to bottom (u16::MAX clipped by render_log_panel to visual line count)
-        self.log_scroll.offset = u16::MAX;
+        self.scroll_log_to_bottom();
     }
 
     /// Apply an account-service update (balance / usage quota).
@@ -978,7 +978,7 @@ impl App {
         self.add_new_line();
 
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -1034,7 +1034,7 @@ impl App {
         self.add_new_line();
 
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -1580,14 +1580,14 @@ mod lifecycle_tests {
     fn progress_does_not_repin_scrolled_log() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        app.log_scroll.offset = 3;
+        app.log_scroll.visual_top = 3;
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("line\n")],
         });
 
-        assert_eq!(app.log_scroll.offset, 3);
+        assert_eq!(app.log_scroll.visual_top, 3);
     }
 
     #[test]

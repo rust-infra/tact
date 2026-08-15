@@ -190,7 +190,13 @@ The log panel is the most complex rendering component. Its core flow is:
 
 ### 6.3 Viewport Clipping
 
-- Computes the visible logical row range based on `log_scroll.offset`.
+- The viewport's first visible *visual* line is `log_scroll.visual_top`
+  (authoritative; `usize::MAX` = pin-to-bottom sentinel). `log_scroll.offset`
+  is a derived logical mirror for hit-testing and popups.
+- Cells taller than the viewport are stepped through visually
+  (`visual_step_up/down` in `widgets/state/app/scroll.rs`: half a viewport
+  per `j`/`k`, 3 lines per wheel tick inside the cell; row-boundary jumps
+  otherwise).
 - Only renders `TextCell`s that fall inside the current viewport.
 
 ### 6.4 Card Overlays
