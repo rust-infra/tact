@@ -293,7 +293,9 @@ mod wrap_tests {
             Span::styled("hello ", Style::default().fg(Color::Red)),
             Span::styled(
                 "world",
-                Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED),
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::REVERSED),
             ),
         ]);
         let wrapped = wrap_line(&line, 5);
@@ -307,11 +309,8 @@ mod wrap_tests {
         // The REVERSED style follows its span onto the second line.
         let second = &wrapped[1];
         assert!(
-            second
-                .spans
-                .iter()
-                .any(|s| s.content.as_ref() == "world"
-                    && s.style.add_modifier.contains(Modifier::REVERSED)),
+            second.spans.iter().any(|s| s.content.as_ref() == "world"
+                && s.style.add_modifier.contains(Modifier::REVERSED)),
             "selection overlay must survive wrapping: {second:?}"
         );
     }

@@ -907,10 +907,7 @@ mod tests {
             "live card count must match streamed output lines, not $ command prefix"
         );
         assert_eq!(output.detail_preview.len(), 2);
-        assert_eq!(
-            output.detail_title.as_deref(),
-            Some("Live output")
-        );
+        assert_eq!(output.detail_title.as_deref(), Some("Live output"));
         assert_eq!(
             output.detail_full.as_deref(),
             Some(

@@ -282,9 +282,6 @@ mod tests {
             rows.last().is_some_and(|line| line.trim().is_empty()),
             "{text}"
         );
-        assert!(
-            rows.iter().any(|line| line.contains("Thinking")),
-            "{text}"
-        );
+        assert!(rows.iter().any(|line| line.contains("Thinking")), "{text}");
     }
 }
