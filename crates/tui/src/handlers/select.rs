@@ -184,11 +184,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         "Assembled current system prompt",
                         "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
                     ));
-                    let (rendered, _) =
-                        crate::render::render_md::render_markdown_tui(&content, &app.theme);
                     app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
                         title: title.to_string(),
-                        rendered,
+                        source: content,
                         scroll: 0,
                     });
                     app.input_mode = InputMode::Normal;
