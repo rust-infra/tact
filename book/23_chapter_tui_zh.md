@@ -291,7 +291,9 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 3. **Phase 2** — 将权威滚动位置 `log_scroll.visual_top`（首条可见 visual 行；`usize::MAX` = 钉住底部哨兵）钳制到 `total - height`，并派生 `log_scroll.offset` 逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由 `widgets/state/app/scroll.rs` 的 `visual_step_up/down` 按视觉行步进（cell 内 `j`/`k` 半屏、滚轮 3 行；否则按行边界跳转）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
 
-**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 在保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）的同时，也会为每个字形显式写入同一背景。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 为每个字形显式写入背景 —— 自带背景的 span（围栏代码、H1 标题）保留自己的背景，其余使用面板底色 —— 同时保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+
+**Markdown 标记策略：** 原始消息行保留原始 Markdown（围栏/标题/引用标记）供复制、代码块检测与鼠标 hit-test 使用；styled 输出隐藏它们 —— ```` ``` ```` 围栏行渲染为空白（代码背景本身即分界），标题 `#{1,6} ` 前缀与 `▎` 引用 gutter 前的字面 `>` 从 span 中剥除。
 
 流式文本在 token 到达时用 `app.stream.buffer` 作为额外 logical 行。
 

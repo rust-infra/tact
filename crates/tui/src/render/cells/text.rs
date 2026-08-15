@@ -12,7 +12,15 @@ use crate::render::{renderable::Renderable, util::wrap_line};
 fn render_line(line: &Line, x: u16, y: u16, width: u16, bg_color: Color, buf: &mut Buffer) {
     let mut col = x;
     for span in &line.spans {
-        let style = span.style.bg(bg_color);
+        // Spans that bring their own background (fenced code, H1 headings)
+        // keep it; everything else sits on the panel surface color. Either
+        // way every glyph writes an explicit bg so no overlay residue can
+        // leak through when the line scrolls into view.
+        let style = if span.style.bg.is_some() {
+            span.style
+        } else {
+            span.style.bg(bg_color)
+        };
         for ch in span.content.chars() {
             if col < x + width {
                 buf[(col, y)].set_char(ch).set_style(style);
@@ -188,6 +196,34 @@ mod render_tests {
             }
         }
         assert!(reversed, "line selection should reverse styled spans");
+    }
+
+    #[test]
+    fn span_backgrounds_survive_rendering() {
+        // Fenced code / heading spans carry their own bg (code_block_bg /
+        // highlight); TextCell must not flatten them onto the surface color.
+        let code_bg = Color::Rgb(30, 35, 50);
+        let cell = TextCell::new(
+            vec![Line::from(vec![
+                Span::styled("code ", Style::default().bg(code_bg)),
+                Span::styled("plain", Style::default()),
+            ])],
+            "code plain".into(),
+            None,
+            None,
+            0,
+            Color::White,
+            Color::Black,
+        );
+        let area = Rect::new(0, 0, 12, 1);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+        assert_eq!(buf[(0, 0)].bg, code_bg, "span bg must be preserved");
+        assert_eq!(
+            buf[(7, 0)].bg,
+            Color::Black,
+            "span without bg falls back to the surface color"
+        );
     }
 
     #[test]

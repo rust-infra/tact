@@ -420,12 +420,15 @@ pub(crate) fn render_plain_markdown(
             new_line
         })
         .collect();
+    // Raw lines keep the original Markdown (fence/heading markers intact):
+    // mouse hit-testing, code-block detection, and copy rely on them, while
+    // the styled lines hide the markers.
     let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
 
     apply_code_background(&mut styled_lines, &raw_lines, theme);
+    strip_heading_markers(&mut styled_lines, &raw_lines);
     apply_blockquote_indicator(&mut styled_lines, theme);
 
-    let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
     (styled_lines, raw_lines)
 }
 
@@ -548,6 +551,9 @@ fn apply_code_background(lines: &mut [Line<'static>], raw: &[String], theme: &Th
     while i < raw.len() {
         let trimmed = raw[i].trim();
         if trimmed.starts_with("```") {
+            // Hide the opening fence marker: the styled block below already
+            // carries the code background, so the ``` delimiter is noise.
+            lines[i] = Line::default();
             let mut end_marker = None;
             let mut j = i + 1;
             while j < raw.len() {
@@ -559,6 +565,7 @@ fn apply_code_background(lines: &mut [Line<'static>], raw: &[String], theme: &Th
             }
 
             if let Some(end) = end_marker {
+                lines[end] = Line::default();
                 for line in lines.iter_mut().take(end).skip(i + 1) {
                     let mut spans: Vec<Span<'static>> = Vec::new();
                     for span in &line.spans {
@@ -586,8 +593,45 @@ fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>, theme: &Theme) {
     for line in lines.iter_mut() {
         if line.style.fg == quote_style.fg && line.style.bg == quote_style.bg {
             let mut spans = vec![Span::styled("▎ ", line.style)];
-            spans.extend(std::mem::take(&mut line.spans));
+            let mut taken = std::mem::take(&mut line.spans);
+            // Drop the literal "> " marker tui-markdown leaves in the text:
+            // the ▎ gutter already signals a quote, keeping both reads as
+            // "▎ > quote".
+            if let Some(first) = taken.first_mut() {
+                if let Some(stripped) = first.content.strip_prefix("> ") {
+                    first.content = stripped.to_string().into();
+                } else if first.content == ">" {
+                    // The marker and the following space may be split across
+                    // two spans.
+                    first.content = "".into();
+                    if let Some(second) = taken.get_mut(1)
+                        && let Some(stripped) = second.content.strip_prefix(' ')
+                    {
+                        second.content = stripped.to_string().into();
+                    }
+                }
+            }
+            spans.extend(taken);
             line.spans = spans;
+        }
+    }
+}
+
+/// Strip the `#{1,6} ` marker tui-markdown renders as part of the heading
+/// text. Style already distinguishes the heading; the literal `## ` prefix
+/// reads like raw Markdown instead of a rendered title.
+fn strip_heading_markers(lines: &mut [Line<'static>], raw: &[String]) {
+    for (line, raw_line) in lines.iter_mut().zip(raw.iter()) {
+        let trimmed = raw_line.trim_start();
+        let level = trimmed.chars().take_while(|&c| c == '#').count();
+        if !(1..=6).contains(&level) {
+            continue;
+        }
+        let marker = format!("{} ", "#".repeat(level));
+        if let Some(first) = line.spans.first_mut()
+            && let Some(stripped) = first.content.strip_prefix(marker.as_str())
+        {
+            first.content = stripped.to_string().into();
         }
     }
 }
@@ -1154,22 +1198,63 @@ Trailing prose.
     fn render_markdown_fenced_code_block() {
         let md = "```rust\nfn md_test() {}\n```";
         let (lines, raw) = render_markdown_tui(md, &theme());
-        let joined = raw.join("\n");
+        // Raw keeps the markers (code-block detection and copy rely on them)…
+        assert!(raw.join("\n").contains("```rust"), "raw keeps markers");
+        // …while the styled lines hide them: the block background alone
+        // delimits the code.
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            joined.contains("md_test") || joined.contains("fn"),
-            "code block content: {joined}"
+            styled.contains("fn md_test() {}"),
+            "code block content: {styled}"
         );
-        assert!(lines.iter().any(|l| !l.spans.is_empty()));
+        assert!(
+            !styled.contains("```"),
+            "fence markers must be hidden in the styled output: {styled}"
+        );
     }
 
     #[test]
     fn render_markdown_blockquote() {
         let md = "> quoted wisdom";
-        let (_lines, raw) = render_markdown_tui(md, &theme());
-        let joined = raw.join("\n");
+        let (lines, _raw) = render_markdown_tui(md, &theme());
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            joined.contains("quoted wisdom"),
-            "blockquote text: {joined}"
+            styled.contains("quoted wisdom"),
+            "blockquote text: {styled}"
+        );
+        assert!(
+            styled.contains("▎") && !styled.contains('>'),
+            "the literal > marker should be replaced by the ▎ gutter: {styled}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_heading_markers_are_stripped() {
+        let md = "## Sub heading\nplain";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        // Raw keeps the marker for copy/hit-testing…
+        assert!(raw.join("\n").contains("## "), "raw keeps markers");
+        // …while the styled output hides it.
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            styled.contains("Sub heading"),
+            "heading text must stay: {styled}"
+        );
+        assert!(
+            !styled.contains("## "),
+            "the ## marker should be stripped: {styled}"
         );
     }
 

@@ -97,7 +97,14 @@ pub(crate) fn restyle_log_line_with_skills(
         return single_span(raw, theme.accent);
     }
 
-    if stored.spans.iter().any(|s| s.style.bg.is_some()) {
+    // Only fenced-code lines carry the code background; a heading's
+    // highlight background must keep its own style instead of being
+    // restyled as code.
+    if stored
+        .spans
+        .iter()
+        .any(|s| s.style.bg == Some(theme.code_block_bg()))
+    {
         return restyle_code_line(stored, theme);
     }
 
@@ -167,12 +174,12 @@ mod tests {
         Line::from(Span::styled(text.to_string(), Style::default().fg(fg)))
     }
 
-    fn stored_code(text: &str) -> Line<'static> {
+    fn stored_code(text: &str, theme: &Theme) -> Line<'static> {
         Line::from(Span::styled(
             text.to_string(),
             Style::default()
                 .fg(Color::Rgb(200, 200, 210))
-                .bg(Color::Rgb(30, 35, 50)),
+                .bg(theme.code_block_bg()),
         ))
     }
 
@@ -281,7 +288,7 @@ mod tests {
     fn code_block_restyles_for_light_theme() {
         let theme = brutal();
         let line = restyle_log_line(
-            &stored_code("fn main() {}"),
+            &stored_code("fn main() {}", &theme),
             "fn main() {}",
             &theme,
             RawMessageType::LLM,
@@ -295,6 +302,25 @@ mod tests {
             line.spans.first().unwrap().style.fg,
             Some(theme.code_block_fg())
         );
+    }
+
+    #[test]
+    fn heading_highlight_bg_is_not_restyled_as_code() {
+        // A level-1 heading carries the highlight background; the restyle
+        // pass must keep it (and its heading color) instead of swapping it
+        // for the code-block background.
+        let theme = brutal();
+        let stored = Line::from(Span::styled(
+            "# Title".to_string(),
+            Style::default()
+                .fg(theme.heading)
+                .bg(theme.highlight)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ));
+        let line = restyle_log_line(&stored, "# Title", &theme, RawMessageType::LLM, false);
+        let span = line.spans.first().unwrap();
+        assert_eq!(span.style.bg, Some(theme.highlight));
+        assert_eq!(span.style.fg, Some(theme.accent));
     }
 
     #[test]

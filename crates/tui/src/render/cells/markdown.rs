@@ -281,7 +281,9 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(0, 0)].symbol(), " ", "left gutter must stay blank");
         assert_eq!(buf[(2, 0)].symbol(), " ", "col 2 must stay blank");
-        assert_eq!(buf[(3, 0)].symbol(), "#", "content starts at col 3");
+        // The heading marker is stripped at render time; the heading text
+        // itself starts at col 3.
+        assert_eq!(buf[(3, 0)].symbol(), "T", "content starts at col 3");
     }
 
     #[test]

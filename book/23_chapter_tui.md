@@ -294,7 +294,9 @@ Pipeline phases in `render_log_panel`:
 3. **Phase 2** — Clamp `log_scroll.visual_top` (authoritative first visible visual line; `usize::MAX` = pin-to-bottom sentinel) to `total - height`, and derive `log_scroll.offset` as a logical mirror for hit-testing/popups. Cells taller than the viewport are stepped through visually by `visual_step_up/down` in `widgets/state/app/scroll.rs` (half a viewport per `j`/`k`, 3 lines per wheel tick inside such a cell; row-boundary jumps otherwise).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
-**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` also writes that same background explicitly on every glyph while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` writes an explicit background on every glyph — spans that bring their own background (fenced code, H1 headings) keep it, everything else uses the surface color — while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+
+**Markdown marker policy:** raw message lines keep the original Markdown (fence/heading/quote markers) for copy, code-block detection and mouse hit-testing, while the styled output hides them — ```` ``` ```` fence rows render blank (the code background delimits the block), `#{1,6} ` heading prefixes and the literal `>` before a `▎` quote gutter are stripped from spans.
 
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 

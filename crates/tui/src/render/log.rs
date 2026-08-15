@@ -186,8 +186,9 @@ pub(crate) fn render_log_panel_with_borders(
                     )
                 }
             } else {
-                // Last logical row: live stream text, styled with accent color.
-                Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.accent))
+                // Last logical row: live stream text. Uses the same fg as the
+                // final flushed rows so completing a reply does not recolor it.
+                Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.fg))
             };
             let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
