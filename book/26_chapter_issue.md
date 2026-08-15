@@ -29,6 +29,18 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — Bottom-bar `out` renamed to `max_out_token` with the real output budget
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The bottom-bar output segment was labeled `out`/`输出` and showed the raw `max_tokens` envelope. For effort-semantic models (openai / deepseek / kimi k3) reasoning counts inside the same envelope as output text, so `out 128K` next to `think high` overstated the tokens actually left for text — the user asked for the segment to show the **max output token** value, with the reasoning share subtracted. |
+| Decision | Rename the label to `max_out_token` (language-invariant, both locales) and make the value the effective text-output budget: for effort-semantic models subtract the reasoning share using the same tier convention as the compaction reserve (percent of the text budget added on top → text = envelope × `100/(100+pct)`; `high` → 73K on a 128K envelope). Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in a separate envelope, so they show the full `max_tokens`. Computed in the TUI from `status_bar.model_max_tokens` + `model_thinking_budget` + `model_reasoning_effort`; no protocol change. |
+| Behavior after | Bottom-bar row 2 shows `max_out_token {n}` instead of `out {n}`; `n` equals `max_tokens` for budget/no-think states and `max_tokens × 100/(100+pct)` when an effort is displayed (`none`/no effort → unchanged, `low` → 80%, `medium` → ~67%, `high` → ~57%, `xhigh`/`max` → 50%). |
+| Pointers | `crates/tui/src/render/bar.rs` (`format_max_out_tokens`), `crates/tui/src/i18n.rs` (`bottom_out`), book [Ch 23](./23_chapter_tui.md) §6.6, `docs/token_usage_schema.md`. |
+
+---
+
 ## 1. 2026-08-15 — Model→context-window mapping overrides manual `model_context_window` config
 
 | Field | Value |

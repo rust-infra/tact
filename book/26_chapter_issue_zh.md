@@ -29,6 +29,18 @@
 
 ---
 
+## 1. 2026-08-15 — 底栏 `out` 更名为 `max_out_token`，显示真实输出额度
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | 底栏输出段此前标记为 `out`/`输出`，直接显示原始 `max_tokens` 信封。对 effort 语义模型（openai / deepseek / kimi k3），reasoning 与输出文本算在同一个信封内，`think high` 旁边的 `out 128K` 高估了真正留给文本的 token——用户要求该段显示 **max output token** 值，并扣除 reasoning 份额。 |
+| 决策 | 标签改为 `max_out_token`（两种语言统一用该标识符），数值改为真正的文本输出额度：effort 语义模型按压缩预留的同一分档约定扣除 reasoning 份额（预留为文本预算的百分比并追加在文本之上 → 文本 = 信封 × `100/(100+pct)`；128K 信封 + `high` → 73K）。budget 语义模型（Anthropic 式 `thinking_budget`）的 thinking 走独立信封，仍显示完整 `max_tokens`。在 TUI 内由 `status_bar.model_max_tokens` + `model_thinking_budget` + `model_reasoning_effort` 计算，无协议改动。 |
+| 改后行为 | 底栏第 2 行显示 `max_out_token {n}` 取代 `out {n}`；无 think / budget 语义时 `n` = `max_tokens`，显示 effort 时 `n` = `max_tokens × 100/(100+pct)`（`none`/无 effort → 不变，`low` → 80%，`medium` → ~67%，`high` → ~57%，`xhigh`/`max` → 50%）。 |
+| 指针 | `crates/tui/src/render/bar.rs`（`format_max_out_tokens`）、`crates/tui/src/i18n.rs`（`bottom_out`）、book [Ch 23](./23_chapter_tui_zh.md) §6.6、`docs/token_usage_schema.md`。 |
+
+---
+
 ## 1. 2026-08-15 — 模型→上下文窗口映射覆盖手工 `model_context_window` 配置
 
 | 字段 | 内容 |

@@ -124,16 +124,39 @@ fn format_model_name(name: &str) -> String {
     }
 }
 
-/// Labeled max-output segment: `"out 8K"` / `None` when max is 0.
-fn format_out_tokens(label: &str, max_tokens: u32) -> Option<String> {
+/// Labeled max-output segment: `"max_out_token 73K"` / `None` when max is 0.
+///
+/// The value is the effective text-output budget. Effort-semantic models
+/// (openai / deepseek / kimi k3) count reasoning inside the SAME `max_tokens`
+/// envelope as the output text, so the reasoning share is subtracted using the
+/// same tier convention as `compact_summary_reasoning_reserve_percent`
+/// (percent of the text budget, added on top): text = envelope × 100/(100+pct).
+/// Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in
+/// a separate envelope, so no subtraction applies.
+fn format_max_out_tokens(
+    label: &str,
+    max_tokens: u32,
+    thinking_budget: Option<u32>,
+    reasoning_effort: Option<&str>,
+) -> Option<String> {
     if max_tokens == 0 {
-        None
-    } else {
-        Some(format!(
-            "{label} {}",
-            format_tokens_compact(max_tokens as u64)
-        ))
+        return None;
     }
+    let pct = match reasoning_effort {
+        Some("none") => 0,
+        Some("minimal") | Some("low") => 25,
+        Some("medium") => 50,
+        Some("high") => 75,
+        Some("xhigh") | Some("max") => 100,
+        _ => 0,
+    };
+    let max_out = if thinking_budget.is_some() {
+        // Separate thinking envelope: max_tokens already is the output limit.
+        max_tokens
+    } else {
+        max_tokens.saturating_mul(100) / (100 + pct)
+    };
+    Some(format!("{label} {}", format_tokens_compact(max_out as u64)))
 }
 
 /// Thinking segment: `"think high"`, `"think 32K"`, or `None`.
@@ -360,7 +383,12 @@ pub(crate) fn render_bottom_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     // --- Row 2 ---
     let model = format_model_name(&app.status_bar.model_name);
-    let out = format_out_tokens(msgs.bottom_out, app.status_bar.model_max_tokens);
+    let out = format_max_out_tokens(
+        msgs.bottom_out,
+        app.status_bar.model_max_tokens,
+        app.status_bar.model_thinking_budget,
+        app.status_bar.model_reasoning_effort.as_deref(),
+    );
     let think = format_think_segment(
         msgs.bottom_think,
         app.status_bar.model_reasoning_effort.as_deref(),
@@ -665,16 +693,60 @@ mod render_tests {
     }
 
     #[test]
-    fn format_out_tokens_labeled() {
+    fn format_max_out_tokens_labeled() {
         assert_eq!(
-            super::format_out_tokens("输出", 8_000),
-            Some("输出 8K".into())
+            super::format_max_out_tokens("max_out_token", 8_000, None, None),
+            Some("max_out_token 8K".into())
         );
         assert_eq!(
-            super::format_out_tokens("out", 8_000),
-            Some("out 8K".into())
+            super::format_max_out_tokens("max_out_token", 0, None, None),
+            None
         );
-        assert_eq!(super::format_out_tokens("out", 0), None);
+    }
+
+    #[test]
+    fn format_max_out_tokens_subtracts_effort_share() {
+        // Effort-semantic models count reasoning inside max_tokens; the
+        // reserve convention is pct% of the TEXT budget on top, so the
+        // text share is envelope × 100/(100+pct).
+        let cases = [
+            // (effort, expected share of max_tokens)
+            (Some("none"), 1_000_000),
+            (Some("low"), 800_000),
+            (Some("medium"), 666_666),
+            (Some("high"), 571_428),
+            (Some("xhigh"), 500_000),
+            (Some("max"), 500_000),
+        ];
+        for (effort, expected) in cases {
+            assert_eq!(
+                super::format_max_out_tokens("max_out_token", 1_000_000, None, effort),
+                Some(format!(
+                    "max_out_token {}",
+                    super::format_tokens_compact(expected)
+                )),
+                "effort {effort:?}"
+            );
+        }
+        // No effort → no subtraction.
+        assert_eq!(
+            super::format_max_out_tokens("max_out_token", 128_000, None, None),
+            Some("max_out_token 128K".into())
+        );
+    }
+
+    #[test]
+    fn format_max_out_tokens_budget_keeps_full_envelope() {
+        // Budget-semantic models (Anthropic) keep thinking in a separate
+        // envelope, so max_tokens is already the output limit.
+        assert_eq!(
+            super::format_max_out_tokens("max_out_token", 128_000, Some(32_000), None),
+            Some("max_out_token 128K".into())
+        );
+        assert_eq!(
+            super::format_max_out_tokens("max_out_token", 128_000, Some(32_000), Some("high")),
+            Some("max_out_token 128K".into())
+        );
     }
 
     #[test]
@@ -880,8 +952,10 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("mock-model") && text.contains("out 128K") && text.contains("think high"),
-            "bottom bar should show model + out + think effort, got:\n{text}"
+            text.contains("mock-model")
+                && text.contains("max_out_token 128K")
+                && text.contains("think high"),
+            "bottom bar should show model + max_out_token + think effort, got:\n{text}"
         );
     }
 
@@ -900,8 +974,30 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("out 128K") && text.contains("think 32K"),
-            "bottom bar should show out/think without effort label, got:\n{text}"
+            text.contains("max_out_token 128K") && text.contains("think 32K"),
+            "bottom bar should show max_out_token/think without effort label, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn bottom_bar_subtracts_effort_share_from_max_out_tokens() {
+        let mut app = make_app();
+        app.status_bar.model_name = "mock-model".into();
+        app.status_bar.model_max_tokens = 128_000;
+        app.status_bar.model_reasoning_effort = Some("high".into());
+        // 128k × 100/175 ≈ 73.1K — the reasoning share is subtracted from the
+        // shared envelope for effort-semantic models.
+        let backend = TestBackend::new(120, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("max_out_token 73.1K") && text.contains("think high"),
+            "bottom bar should subtract the reasoning share, got:\n{text}"
         );
     }
 
