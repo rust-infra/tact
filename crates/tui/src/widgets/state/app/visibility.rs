@@ -34,13 +34,16 @@ impl App {
     }
 
     /// Left indent columns for nested log content at this physical row.
-    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+    ///
+    /// `is_user` is the precomputed user-line membership (`user_line_mask`),
+    /// so render hot paths avoid the O(block-length) backward walk.
+    pub(crate) fn nested_log_indent(&self, phys: usize, is_user: bool) -> u16 {
         let msg_type = self
             .raw_message_types
             .get(phys)
             .copied()
             .unwrap_or(RawMessageType::LLM);
-        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+        if is_user {
             return 0;
         }
         // LLM assistant replies: align body text with the text inside a Thinking
@@ -131,7 +134,8 @@ impl App {
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
-        let indent = self.nested_log_indent(phys_idx) as usize;
+        let is_user = crate::render::is_user_message_line(&self.raw_messages, phys_idx);
+        let indent = self.nested_log_indent(phys_idx, is_user) as usize;
         let text_col = col.saturating_sub(indent);
         let byte_offset =
             visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);

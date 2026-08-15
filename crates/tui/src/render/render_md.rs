@@ -48,7 +48,7 @@ impl tui_markdown::StyleSheet for TuiStyleSheet {
     }
 
     fn link(&self) -> Style {
-        Style::new().fg(Color::Blue).underlined()
+        Style::new().fg(self.theme.heading).underlined()
     }
 
     fn blockquote(&self) -> Style {

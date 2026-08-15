@@ -117,6 +117,11 @@ pub(crate) fn render_log_panel_with_borders(
         total_logical += 1;
     }
 
+    // User-line membership precomputed in one O(n) pass: the per-row backward
+    // walk in `is_user_message_line` is quadratic for a long pasted user
+    // block. Shared by Phase 1 (restyle) and Phase 3 (indent).
+    let user_lines = super::log_style::user_line_mask(&app.raw_messages);
+
     // Phase 1: logical → visual wrap cache.
     //
     // ```text
@@ -174,7 +179,7 @@ pub(crate) fn render_log_panel_with_borders(
                         &app.raw_messages[phys_idx],
                         &app.theme,
                         app.raw_message_types[phys_idx],
-                        super::log_style::is_user_message_line(&app.raw_messages, phys_idx),
+                        user_lines[phys_idx],
                         &skill_names,
                         user_prefix_tmpl,
                         user_cont_tmpl,
@@ -188,7 +193,7 @@ pub(crate) fn render_log_panel_with_borders(
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
                     vec![Line::default()]
                 } else {
-                    let indent = app.nested_log_indent(phys_idx) as usize;
+                    let indent = app.nested_log_indent(phys_idx, user_lines[phys_idx]) as usize;
                     wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
                 }
             } else {
@@ -476,7 +481,7 @@ pub(crate) fn render_log_panel_with_borders(
             .unwrap_or_default();
 
         let indent_cols = phys_idx
-            .map(|p| app.nested_log_indent(p))
+            .map(|p| app.nested_log_indent(p, user_lines[p]))
             // The last row is an in-progress assistant response, not a stored
             // physical message, so apply the same reply indent directly.
             .unwrap_or(super::util::LOG_THINKING_INDENT + 1);

@@ -37,6 +37,32 @@ pub(crate) fn is_user_message_line(raw_messages: &[String], phys_idx: usize) -> 
     false
 }
 
+/// Precompute user-line membership for every physical row in one O(n) pass.
+///
+/// `is_user_message_line` walks back to the block start per row, which is
+/// quadratic for a long pasted user block. This mask follows the exact same
+/// rules (whitespace-only rows neither are user lines nor break the run) so
+/// hot render paths can index it instead of walking.
+pub(crate) fn user_line_mask(raw_messages: &[String]) -> Vec<bool> {
+    let mut mask = vec![false; raw_messages.len()];
+    let mut in_user_block = false;
+    for (i, raw) in raw_messages.iter().enumerate() {
+        if raw.trim_start().starts_with('💬') {
+            in_user_block = true;
+            mask[i] = true;
+        } else if raw.is_empty() {
+            in_user_block = false;
+        } else if raw.starts_with("  ") {
+            // Continuation line: part of the block only when it has content
+            // (whitespace-only lines pass through without ending the block).
+            mask[i] = in_user_block && !raw.trim().is_empty();
+        } else {
+            in_user_block = false;
+        }
+    }
+    mask
+}
+
 /// Caller should build `skill_names` once per cache rebuild (`perf-` / `mem-reuse`).
 /// `user_prefix_tmpl` / `user_cont_tmpl` are i18n templates like `"💬 {}"`.
 #[allow(clippy::too_many_arguments)]
@@ -89,7 +115,10 @@ pub(crate) fn restyle_log_line_with_skills(
                 Some(theme.accent)
             } else {
                 match style.fg {
-                    Some(Color::Blue) | Some(Color::LightBlue) => style.fg,
+                    // Links / headings: theme-aware color, not the hardcoded
+                    // palette Blue tui-markdown used to emit.
+                    Some(c) if c == theme.heading => Some(theme.heading),
+                    Some(Color::Blue) | Some(Color::LightBlue) => Some(theme.heading),
                     Some(Color::Green) => Some(theme.success),
                     Some(Color::Cyan) => Some(theme.accent),
                     _ => Some(theme.fg),
@@ -295,9 +324,57 @@ mod tests {
     }
 
     #[test]
+    fn hardcoded_blue_links_remap_to_theme_heading() {
+        // tui-markdown used to emit hardcoded palette Blue for links; the
+        // restyle pass must remap it to the theme-aware heading color so
+        // links stay visible on every theme.
+        let theme = Theme::from(ThemeName::Ink);
+        let line = restyle_log_line(
+            &stored_plain("a link", Color::Blue),
+            "a link",
+            &theme,
+            RawMessageType::LLM,
+            false,
+        );
+        assert_eq!(
+            line.spans.first().unwrap().style.fg,
+            Some(theme.heading),
+            "blue must remap to {heading:?}",
+            heading = theme.heading
+        );
+    }
+
+    #[test]
     fn unrelated_continuation_is_not_user_line() {
         let raw_messages = vec!["🤖 assistant".to_string(), "  still assistant".to_string()];
         assert!(!is_user_message_line(&raw_messages, 1));
+    }
+
+    #[test]
+    fn user_line_mask_matches_the_per_row_walk() {
+        let raw_messages = vec![
+            String::new(),
+            "💬 paste start".to_string(),
+            "  line one".to_string(),
+            "  ".to_string(), // whitespace-only: passes through, not a user line
+            "  line two".to_string(),
+            "end of block".to_string(),
+            String::new(),
+            "🤖 assistant reply".to_string(),
+            "  indented continuation".to_string(),
+        ];
+        let mask = user_line_mask(&raw_messages);
+        for (i, expected) in mask.iter().enumerate() {
+            assert_eq!(
+                *expected,
+                is_user_message_line(&raw_messages, i),
+                "mask mismatch at row {i}"
+            );
+        }
+        assert_eq!(
+            mask,
+            vec![false, true, true, false, true, false, false, false, false]
+        );
     }
 
     #[test]

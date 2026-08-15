@@ -270,10 +270,13 @@ impl App {
     /// The raw source is stored verbatim (newlines included); `messages`
     /// keeps an empty placeholder row. The `MarkdownCell` lives in
     /// `markdown_cells` so rendering can cache the parsed layout across
-    /// frames (see `render_log_panel` Phase 1/3).
+    /// frames (see `render_log_panel` Phase 1/3). Rows are indented like
+    /// assistant replies (`LOG_THINKING_INDENT + 1`) so whole-Markdown
+    /// messages align with streamed text instead of hugging the left border.
     pub(crate) fn append_markdown(&mut self, content: impl Into<String>) {
         let content = content.into();
-        let cell = MarkdownCell::new(&content, &self.theme);
+        let cell = MarkdownCell::new(&content, &self.theme)
+            .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
         self.messages.push(Line::from(""));
         self.raw_messages.push(content);
         self.raw_message_types.push(RawMessageType::LLM);
