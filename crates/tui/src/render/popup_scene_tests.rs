@@ -524,7 +524,7 @@ fn main_area_system_message_renders_in_log() {
 }
 
 #[test]
-fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
+fn session_stats_popup_renders_gfm_table() {
     let mut app = make_app();
     let stats = concat!(
         "── Session Stats ──\n",
@@ -546,8 +546,8 @@ fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains('┌') || rendered.contains('│'),
-        "tui-markdown should draw box borders:\n{rendered}"
+        rendered.contains('|'),
+        "GFM table should render as pipe table via format_table:\n{rendered}"
     );
     assert!(
         popup.rendered.len() > 3,

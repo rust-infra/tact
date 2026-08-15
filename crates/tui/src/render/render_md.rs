@@ -33,6 +33,19 @@ impl RenderHooks for TuiRenderHooks {
         lines.push(Line::default());
         Some(lines)
     }
+
+    /// Tables render through Tact's width-aware pipe-table layout so the log
+    /// keeps a single table implementation (the fork's own renderer is not
+    /// used for the main area).
+    fn table(&self, headers: &[String], rows: &[Vec<String>]) -> Option<Vec<Line<'static>>> {
+        let mut md_lines: Vec<String> = vec![format!("| {} |", headers.join(" | "))];
+        md_lines.push(format!("| {} |", vec!["---"; headers.len()].join(" | ")));
+        for row in rows {
+            md_lines.push(format!("| {} |", row.join(" | ")));
+        }
+        let (styled, _raw) = format_table(&md_lines, &self.theme, None);
+        Some(styled)
+    }
 }
 
 /// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
