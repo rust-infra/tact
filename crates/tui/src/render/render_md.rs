@@ -1561,11 +1561,13 @@ Plain trailing paragraph.
             if m.contains(Modifier::REVERSED) {
                 s.push('R');
             }
-            if style.fg.is_some() && style.fg != Some(theme.fg) {
-                s.push_str(&format!("·fg={:?}", style.fg.unwrap()));
+            if let Some(fg) = style.fg
+                && fg != theme.fg
+            {
+                s.push_str(&format!("·fg={fg:?}"));
             }
-            if style.bg.is_some() {
-                s.push_str(&format!("·bg={:?}", style.bg.unwrap()));
+            if let Some(bg) = style.bg {
+                s.push_str(&format!("·bg={bg:?}"));
             }
             if s.is_empty() {
                 String::new()
