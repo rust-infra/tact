@@ -215,7 +215,7 @@ flowchart TB
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
 | `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `render/log_style.rs` | Shared log text styles |
-| `render/render_md.rs` | Markdown → ratatui `Line`s (`tui-markdown`) |
+| `render/render_md.rs` | Markdown → ratatui `Line`s (`ratatui-markdown` fork + Mermaid routing + width-aware tables) |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`, tool indent constants |
 | `render/welcome.rs` | Startup logo |
@@ -296,7 +296,7 @@ Pipeline phases in `render_log_panel`:
 
 **Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` writes an explicit background on every glyph — spans that bring their own background (fenced code, H1 headings) keep it, everything else uses the surface color — while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
 
-**Markdown marker policy:** raw message lines keep the original Markdown (fence/heading/quote markers) for copy, code-block detection and mouse hit-testing, while the styled output hides them — ```` ``` ```` fence rows render blank (the code background delimits the block), `#{1,6} ` heading prefixes and the literal `>` before a `▎` quote gutter are stripped from spans.
+**Markdown marker policy:** the renderer consumes fence / heading / quote markers at parse time, so raw rows mirror the rendered text (copy, code-block detection and mouse hit-testing work off those rows). Fenced code rows carry the themed code background (which delimits the block), heading markers are stripped, and the quote gutter renders as `▎`. Code-block detection for triple-click matches the code background instead of ```` ``` ```` markers.
 
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 
@@ -339,7 +339,7 @@ pub(crate) trait Renderable {
 
 ### 6.7 Markdown
 
-`render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
+`render_md.rs` converts assistant markdown via the local `ratatui-markdown` fork (`feat/tact`) with the shared `TuiRichTextTheme` and a `TuiRenderHooks` adapter (headings, code, links, blockquotes). Code blocks get the themed code background with fence markers hidden; pipe tables are column-aligned by Tact's width-aware `format_table`, other tables by the fork's content-fit renderer. Bullets render as `•` and task items as `☐`/`☑`. The diff popup syntax-highlights via `syntect` (Base16 Ocean Dark). Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
 **Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Streamed code blocks with an explicit language tag still use the code-card path, with one exception since 2026-08-08: a complete `mermaid` fence is rendered as a terminal diagram instead (see below).
 

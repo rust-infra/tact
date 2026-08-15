@@ -114,6 +114,15 @@ pub(crate) fn restyle_log_line_with_skills(
         .iter()
         .map(|span| {
             let mut style = line_style.patch(span.style);
+            // Fork-rendered H1 (BOLD+UNDERLINED in the heading color) gets the
+            // highlight background; tui-markdown used to emit it directly.
+            if style
+                .add_modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+                && style.fg == Some(theme.heading)
+            {
+                style.bg = Some(theme.highlight);
+            }
             if style.bg == Some(Color::Rgb(70, 90, 140)) {
                 style.bg = Some(theme.highlight);
             }

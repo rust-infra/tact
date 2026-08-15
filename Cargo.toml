@@ -37,10 +37,10 @@ globset = "0.4"
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 libc = "0.2"
 proc-macro2 = "1.0"
-pulldown-cmark = "0.13"
 quote = "1.0"
 ratatui = "0.30"
 regex = "1"
+syntect = "5.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls"] }
 reqwest-eventsource = "0.6"
@@ -67,10 +67,9 @@ toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tui-markdown = "0.3.7"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
-ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", branch = "chore/update-ratatui-0.30", default-features = false, features = ["markdown", "mermaid"] }
+ratatui-markdown = { path = "../ratatui-markdown", default-features = false, features = ["markdown", "mermaid"] }

@@ -1,13 +1,26 @@
+use std::sync::LazyLock;
+
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 
 use super::selectable_text::{layout_display_rows, scalar_styles, source_lines};
 use crate::widgets::state::App;
+
+/// Shared syntax definitions, mirroring what tui-markdown used to load.
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+
+/// Theme key matching tui-markdown's default code theme (Base16 Ocean Dark).
+const HIGHLIGHT_THEME: &str = "base16-ocean.dark";
 
 /// Infer a language label from the file extension.
 fn lang_from_path(path: &str) -> String {
@@ -37,55 +50,65 @@ fn lang_from_path(path: &str) -> String {
     }
 }
 
-/// Run tui-markdown (syntect) syntax highlighting on raw code text.
+/// Run syntect syntax highlighting on raw code text (same syntax set and
+/// theme tui-markdown used) and map the styles directly to ratatui spans.
 fn syntax_highlight(
     code: &str,
     lang: &str,
     code_fg: ratatui::style::Color,
     code_bg: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    if lang.is_empty() {
-        return code
-            .lines()
+    let plain = || {
+        code.lines()
             .map(|l| {
                 Line::from(Span::styled(
                     l.to_string(),
                     Style::default().fg(code_fg).bg(code_bg),
                 ))
             })
-            .collect();
+            .collect()
+    };
+    if lang.is_empty() {
+        return plain();
     }
+    let Some(syntax) = SYNTAX_SET.find_syntax_by_token(lang) else {
+        return plain();
+    };
+    let theme = THEME_SET
+        .themes
+        .get(HIGHLIGHT_THEME)
+        .expect("bundled base16-ocean.dark theme");
+    let mut highlighter = HighlightLines::new(syntax, theme);
 
-    let md = format!("```{lang}\n{code}\n```");
-    let styled = tui_markdown::from_str(&md);
-
-    let mut in_code = false;
     let mut result: Vec<Line<'static>> = Vec::new();
-    for line in &styled.lines {
-        let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        let trimmed = raw.trim();
-        if trimmed.starts_with("```") {
-            if in_code {
-                break;
-            }
-            in_code = true;
+    for line in LinesWithEndings::from(code) {
+        let Ok(segments) = highlighter.highlight_line(line, &SYNTAX_SET) else {
             continue;
-        }
-        if in_code {
-            let spans: Vec<Span<'static>> = line
-                .spans
-                .iter()
-                .map(|s| {
-                    let mut style = s.style;
-                    if style.fg.is_none() {
-                        style = style.fg(code_fg);
-                    }
-                    style = style.bg(code_bg);
-                    Span::styled(s.content.clone().into_owned(), style)
-                })
-                .collect();
-            result.push(Line::from(spans));
-        }
+        };
+        let spans: Vec<Span<'static>> = segments
+            .into_iter()
+            .map(|(syn_style, text)| {
+                let mut style = Style::default().bg(code_bg);
+                let fg = syn_style.foreground;
+                if fg.a > 0 {
+                    style = style.fg(Color::Rgb(fg.r, fg.g, fg.b));
+                } else {
+                    style = style.fg(code_fg);
+                }
+                let font = syn_style.font_style;
+                if font.contains(syntect::highlighting::FontStyle::BOLD) {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if font.contains(syntect::highlighting::FontStyle::ITALIC) {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if font.contains(syntect::highlighting::FontStyle::UNDERLINE) {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                Span::styled(text.to_string(), style)
+            })
+            .collect();
+        result.push(Line::from(spans));
     }
     result
 }

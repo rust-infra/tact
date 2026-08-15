@@ -29,6 +29,19 @@
 
 ---
 
+## 1. 2026-08-15 — 主区域 Markdown 渲染统一到 ratatui-markdown
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 计划 | `docs/superpowers/plans/2026-08-15-ratatui-markdown-migration.md` |
+| 症状 / 动机 | TUI 主区域并行维护两套 Markdown 栈：`tui-markdown` 0.3.x（crates.io）渲染日志面板的正文 / 标题 / 列表，`ratatui-markdown`（celestia-island git fork，按分支固定）渲染 Mermaid 与 `/tasks-dag` 弹窗。两套样式适配器、两套调色板，以及各种 fork 规避（任务列表标记转义、`log_style.rs` 中的硬编码色重映射、围栏标记簿记）都必须同步维护。 |
+| 决策 | 统一到 `ratatui-markdown`（本地 fork 位于 `../ratatui-markdown`，分支 `feat/tact`，基于 `chore/update-ratatui-0.30` @ `3a8bcbe`）并补齐能力：H4–H6 标题、有序列表保留编号、每级 4 列嵌套缩进、递归嵌套强调（`**bold _x_ italic**`）、链接保留 URL 后缀、行内代码 / 围栏代码的主题色槽位、按内容紧凑排版且按显示宽度补白的表格、软换行折叠为空格 + 硬换行保留、连续空格保留、CJK 标点友好的强调判定。Tact 侧：`render_plain_markdown` 用 fork 的 parse+render 替换 `tui_markdown::from_str_with_options`，并通过 `TuiRenderHooks`（隐藏围栏 / 边框装饰、直接上代码背景）；引用 `▎` gutter 与 H1 高亮背景移入后处理 / restyle 阶段；三击代码块检测改为匹配代码背景而非 ````` ``` ````` 标记；diff 弹窗直接使用 `syntect` 高亮（同一 Base16 Ocean Dark 主题），从而移除 `tui-markdown` 与直接依赖的 `pulldown-cmark`。 |
+| 行为后 | 日志面板经单一 crate 渲染 Markdown。无序列表渲染为 `•`，任务项渲染为 `☐` / `☑`（原先为字面 `-` / `[ ]` 文本）；围栏代码保持主题背景且无围栏标记；raw 复制行镜像渲染文本（标记在解析阶段被消费）；`/stats` 表格按内容紧凑排版；diff 弹窗保留语法高亮。 |
+| 指针 | `crates/tui/src/render/render_md.rs`（`TuiRenderHooks`、`render_plain_markdown`、`apply_blockquote_indicator`）、`crates/tui/src/render/log_style.rs`（H1 高亮规则）、`crates/tui/src/render/popups/diff_popup.rs`（syntect）、`crates/tui/src/widgets/state/app/popups.rs`（`find_code_block_containing_logical`）、`Cargo.toml`（`ratatui-markdown` path 依赖 + `syntect`）；fork 仓库 `../ratatui-markdown` `feat/tact`；[Ch 23](./23_chapter_tui_zh.md) §6.7。 |
+
+---
+
 ## 1. 2026-08-15 — Thinking、命令输出与 Read 卡片顶部移除重复行数，统一由底部栏承载
 
 | 字段 | 内容 |
