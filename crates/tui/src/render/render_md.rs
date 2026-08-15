@@ -322,11 +322,11 @@ fn is_fence_closer(line: &str, opener: Fence) -> bool {
     run_len >= opener.run_len && trimmed[run_len..].chars().all(char::is_whitespace)
 }
 
-/// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
+/// Renders Markdown text into ratatui `Line`s and raw text via pulldown-cmark.
 ///
 /// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
 /// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
-/// tui-markdown pipeline.
+/// pulldown-cmark pipeline.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
     route_mermaid_fences(
         text,
@@ -336,35 +336,27 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
     )
 }
 
-/// The plain ratatui-markdown chunk renderer (no width-aware tables, no
-/// Mermaid routing). Fallback code-card previews go through this path
-/// directly so a reconstructed fallback fence is never re-routed through the
-/// Mermaid renderer.
+/// Direct chunk renderer (no Mermaid routing, no width-aware tables).
 ///
-/// Width is deliberately unlimited: the log panel wraps lines itself via
-/// `wrap_line`, so the renderer must not pre-wrap at a nominal width.
+/// Fallback code-card previews go through this path directly so a
+/// reconstructed fallback fence is never re-routed through the Mermaid
+/// renderer. Tables render at unlimited width: the log panel wraps lines
+/// itself via `wrap_line`.
 pub(crate) fn render_plain_markdown(
     text: &str,
     theme: &Theme,
     _width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    // The log panel renders tables at unlimited width (its own `wrap_line`
-    // handles wrapping), so `available_width` is `None`.
-    let (mut styled_lines, raw_lines) = super::pulldown::render_markdown(text, theme, None);
-    apply_blockquote_indicator(&mut styled_lines, theme);
-    (styled_lines, raw_lines)
+    render_prose_and_tables(text, theme, None)
 }
 
 /// Render markdown with width-aware pipe tables.
 ///
-/// Pipe-table rows (lines starting with `|`) are extracted and rendered by
-/// `format_table` with `available_width` — long cells wrap inside the table
-/// layout and columns stay aligned. Everything else is delegated to
-/// tui-markdown. Complete top-level ` ```mermaid ` fences are routed to the
-/// Mermaid renderer *before* the table scanner runs, so `|` lines inside a
-/// diagram are never mistaken for table rows. System messages like `/skills`
-/// produce plain markdown and go through this single pipeline instead of
-/// hand-building ratatui lines.
+/// Complete top-level ` ```mermaid ` fences are routed to the Mermaid
+/// renderer before the chunk renderer runs, so `|` lines inside a diagram are
+/// never mistaken for table rows. Everything else (prose, headings, lists,
+/// tables, code fences, blockquotes) goes through [`super::pulldown`] with the
+/// caller's width forwarded to the pipe-table layout.
 pub(crate) fn render_markdown_with_tables(
     text: &str,
     theme: &Theme,
@@ -373,7 +365,7 @@ pub(crate) fn render_markdown_with_tables(
     route_mermaid_fences(text, theme, available_width, render_prose_and_tables)
 }
 
-/// The width-aware chunk renderer (pipe tables + tui-markdown).
+/// The width-aware chunk renderer (pulldown-cmark + the `▎` gutter pass).
 fn render_prose_and_tables(
     text: &str,
     theme: &Theme,
@@ -385,9 +377,9 @@ fn render_prose_and_tables(
     (styled_lines, raw_lines)
 }
 
-/// Adapt ratatui-markdown blockquotes to the log's `▎` gutter look.
+/// Adapt the pulldown renderer's blockquotes to the log's `▎` gutter look.
 ///
-/// The fork renders quotes with a muted `│ ` gutter per level; the log's
+/// The pulldown renderer emits a muted `│ ` gutter per level; the log's
 /// established look is a success-colored `▎ ` gutter with the quote text in
 /// the same color. Gutter-only spans are dropped, nested `│ ` runs collapse
 /// into one `▎ `, and every remaining span is recolored to `theme.success`
@@ -1360,7 +1352,7 @@ Plain trailing paragraph.
             "long description should wrap into extra sub-rows:\n{}",
             raw.join("\n")
         );
-        // Heading is rendered by tui-markdown (not swallowed by table logic).
+        // Heading is rendered by pulldown-cmark (not swallowed by table logic).
         assert!(
             raw.iter().any(|l| l.contains("Available skills")),
             "heading missing:\n{}",

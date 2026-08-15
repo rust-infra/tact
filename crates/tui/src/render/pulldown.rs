@@ -5,7 +5,7 @@
 //! before this renderer runs, so this module only ever sees prose, lists,
 //! tables, code fences and blockquotes.
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -35,9 +35,8 @@ pub(crate) fn render_markdown(
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_FOOTNOTES);
 
-    let parser = Parser::new_ext(text, opts);
     let mut writer = Writer::new(theme, available_width);
-    writer.run(parser);
+    writer.run(Parser::new_ext(text, opts));
     let raw = writer.lines.iter().map(Line::to_string).collect();
     (writer.lines, raw)
 }
@@ -76,10 +75,8 @@ struct Writer {
     /// Blockquote nesting level (drives the `│ ` gutter prefix).
     bq_level: u8,
 
-    heading: Option<HeadingLevel>,
-
-    /// `Some` while inside a fenced/indented code block.
-    code_lang: Option<String>,
+    /// True while inside a fenced/indented code block.
+    in_code_block: bool,
     code_buf: String,
 
     table: Option<TableCtx>,
@@ -102,8 +99,7 @@ impl Writer {
             in_item_start: false,
             task_marker: None,
             bq_level: 0,
-            heading: None,
-            code_lang: None,
+            in_code_block: false,
             code_buf: String::new(),
             table: None,
             link_url: None,
@@ -125,7 +121,7 @@ impl Writer {
             Event::Start(tag) => self.start_tag(tag),
             Event::End(tag_end) => self.end_tag(tag_end),
             Event::Text(text) => {
-                if self.code_lang.is_some() {
+                if self.in_code_block {
                     self.code_buf.push_str(&text);
                 } else if let Some(table) = self.table.as_mut() {
                     table.current_cell.push_str(&text);
@@ -159,37 +155,19 @@ impl Writer {
 
     fn start_tag(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
-            }
-            Tag::Heading { level, .. } => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
-                self.heading = Some(level);
-            }
+            Tag::Paragraph => self.begin_block(),
+            Tag::Heading { .. } => self.begin_block(),
             Tag::BlockQuote(_) => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
+                self.begin_block();
                 self.bq_level += 1;
             }
-            Tag::CodeBlock(kind) => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
-                self.code_lang = Some(match kind {
-                    CodeBlockKind::Fenced(lang) => lang.to_string(),
-                    CodeBlockKind::Indented => String::new(),
-                });
+            Tag::CodeBlock(_) => {
+                self.begin_block();
+                self.in_code_block = true;
                 self.code_buf.clear();
             }
             Tag::List(start) => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
+                self.begin_block();
                 self.list_stack.push(ListCtx {
                     ordered: start.is_some(),
                     number: start.unwrap_or(1),
@@ -200,9 +178,7 @@ impl Writer {
                 self.task_marker = None;
             }
             Tag::Table(_) => {
-                if self.top_level() {
-                    self.ensure_separation();
-                }
+                self.begin_block();
                 self.table = Some(TableCtx {
                     headers: Vec::new(),
                     rows: Vec::new(),
@@ -264,7 +240,7 @@ impl Writer {
             }
             TagEnd::CodeBlock => {
                 self.flush_code_block();
-                self.code_lang = None;
+                self.in_code_block = false;
             }
             TagEnd::List(_) => {
                 self.flush_line();
@@ -327,7 +303,14 @@ impl Writer {
         self.bq_level == 0 && self.list_stack.is_empty()
     }
 
-    /// Push a blank line before a block when the previous line is non-empty.
+    /// Separate a top-level block from the previous line with a blank line.
+    fn begin_block(&mut self) {
+        if self.top_level() {
+            self.ensure_separation();
+        }
+    }
+
+    /// Push a blank line when the previous line is non-empty.
     fn ensure_separation(&mut self) {
         if self.lines.last().is_some_and(|l| !l.spans.is_empty()) {
             self.lines.push(Line::default());
@@ -346,25 +329,19 @@ impl Writer {
     }
 
     fn push_text(&mut self, text: &str) {
-        if self.in_item_start {
-            self.push_list_marker();
-        }
         let mut style = self.current_style();
         if style.fg.is_none() {
             style = style.fg(self.theme.fg);
         }
-        self.pending.push(Span::styled(text.to_string(), style));
+        self.push_span(Span::styled(text.to_string(), style));
     }
 
     fn push_inline_code(&mut self, code: &str) {
-        if self.in_item_start {
-            self.push_list_marker();
-        }
         let style = self
             .current_style()
             .fg(self.theme.code_block_fg())
             .bg(self.theme.code_block_bg());
-        self.pending.push(Span::styled(code.to_string(), style));
+        self.push_span(Span::styled(code.to_string(), style));
     }
 
     fn push_span(&mut self, span: Span<'static>) {
@@ -374,6 +351,17 @@ impl Writer {
         self.pending.push(span);
     }
 
+    /// Consume the next ordered-list ordinal, or `None` for an unordered item.
+    fn next_ordered_number(&mut self) -> Option<u64> {
+        let top = self.list_stack.last_mut()?;
+        if !top.ordered {
+            return None;
+        }
+        let n = top.number;
+        top.number += 1;
+        Some(n)
+    }
+
     /// Emit the list item's leading indent + bullet/number/checkbox marker.
     fn push_list_marker(&mut self) {
         if !self.in_item_start {
@@ -381,30 +369,16 @@ impl Writer {
         }
         self.in_item_start = false;
         let indent = LIST_INDENT.repeat(self.list_stack.len().saturating_sub(1));
-        let marker = match self.task_marker {
-            Some(checked) => {
+        let marker = match (self.task_marker, self.next_ordered_number()) {
+            (Some(checked), number) => {
                 let checkbox = if checked { "☑ " } else { "☐ " };
-                if let Some(top) = self.list_stack.last_mut()
-                    && top.ordered
-                {
-                    let n = top.number;
-                    top.number += 1;
-                    format!("{n}. {checkbox}")
-                } else {
-                    checkbox.to_string()
+                match number {
+                    Some(n) => format!("{n}. {checkbox}"),
+                    None => checkbox.to_string(),
                 }
             }
-            None => {
-                let mut m = BULLET.to_string();
-                if let Some(top) = self.list_stack.last_mut()
-                    && top.ordered
-                {
-                    let n = top.number;
-                    top.number += 1;
-                    m = format!("{n}. ");
-                }
-                m
-            }
+            (None, Some(n)) => format!("{n}. "),
+            (None, None) => BULLET.to_string(),
         };
         self.pending.push(Span::raw(format!("{indent}{marker}")));
     }
@@ -455,7 +429,6 @@ impl Writer {
             })
             .collect();
         self.lines.push(Line::from(styled));
-        self.heading = None;
     }
 
     fn flush_code_block(&mut self) {
