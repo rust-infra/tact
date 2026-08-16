@@ -13,7 +13,7 @@ use tact_protocol::{
 
 use crate::{
     render::render_md::{
-        format_table, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
+        format_table_lines, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
         render_plain_markdown,
     },
     widgets::{
@@ -787,7 +787,7 @@ impl App {
                 // explanatory fence snippets embedded in prose.
                 if lang.is_empty() && !self.stream.paragraph.is_empty() {
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(
+                        let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
                             Some(self.log_scroll.width as usize),
@@ -807,7 +807,7 @@ impl App {
                     completed.extend(styled.into_iter().zip(raw));
                 }
                 if !self.stream.table_buffer.is_empty() {
-                    let (styled, raw) = format_table(
+                    let (styled, raw) = format_table_lines(
                         &self.stream.table_buffer,
                         &self.theme,
                         Some(self.log_scroll.width as usize),
@@ -869,7 +869,7 @@ impl App {
                         completed.extend(styled.into_iter().zip(raw));
                     }
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(
+                        let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
                             Some(self.log_scroll.width as usize),
@@ -884,7 +884,7 @@ impl App {
                     }
                 } else {
                     if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table(
+                        let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
                             Some(self.log_scroll.width as usize),
@@ -969,7 +969,7 @@ impl App {
                 )
             }));
             let (styled, raw) =
-                format_table(&rows, &self.theme, Some(self.log_scroll.width as usize));
+                format_table_lines(&rows, &self.theme, Some(self.log_scroll.width as usize));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }
@@ -1025,7 +1025,7 @@ impl App {
                 )
             }));
             let (styled, raw) =
-                format_table(&rows, &self.theme, Some(self.log_scroll.width as usize));
+                format_table_lines(&rows, &self.theme, Some(self.log_scroll.width as usize));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }

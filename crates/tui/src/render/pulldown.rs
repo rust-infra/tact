@@ -450,15 +450,14 @@ impl Writer {
         if table.headers.is_empty() && table.rows.is_empty() {
             return;
         }
-        let mut md_lines: Vec<String> = vec![format!("| {} |", table.headers.join(" | "))];
-        md_lines.push(format!(
-            "| {} |",
-            vec!["---"; table.headers.len()].join(" | ")
-        ));
-        for row in &table.rows {
-            md_lines.push(format!("| {} |", row.join(" | ")));
-        }
-        let (styled, _raw) = format_table(&md_lines, &self.theme, self.available_width);
+        // Pass cells through structured, never `|`-joined strings: a pipe
+        // inside a cell (inline code, escaped `\|`) is data, not a separator.
+        let (styled, _raw) = format_table(
+            &table.headers,
+            &table.rows,
+            &self.theme,
+            self.available_width,
+        );
         self.lines.extend(styled);
     }
 }

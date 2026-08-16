@@ -29,6 +29,40 @@
 
 ---
 
+## 1. 2026-08-16 — 单元格内包含 `|` 的表格不再裂成幻影列
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`format_table_lines`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（流式刷出点） |
+
+**Symptom / motivation:** `format_table` 接收 `| a | b |` 原始字符串并按 `'|'` 重新切分。`pulldown.rs::flush_table` 把收集到的单元格拼回这种字符串再传进去，所以单元格里含有字面量管道（转义 `\|`、行内代码）时会多出幻影列、整行错位。行式流式渲染器（`agent.rs` / `visibility.rs` 的 table_buffer）也有同样的隐患。
+
+**Decision:** `format_table` 改为接收结构化单元格（`headers: &[String]`、`rows: &[Vec<String>]`）；内部做 trim、合成 GFM 表头分隔线、保留"全破折号"正文行作为 `/skills` 风格的分隔线。`flush_table` 直接把 pulldown 收集的单元格传进去——不再有 `|` 往返。基于原始源码行的调用方（流式缓冲、`/plugins`、`/marketplace` 列表）改走新增的 `format_table_lines`：把缓冲行拼接后交给标准 pulldown 管线渲染，转义规则只应用一次。已知上游限制：pulldown-cmark 在解析表格行时连行内代码里的未转义管道也会切分（`| x | `a|b` |`），所以端到端只支持转义管道形式；`format_table` 本身对收到的任何单元格内容都是正确的。
+
+**Behavior after:** 转义管道和行内代码里的管道是单元格数据，不再是列分隔符；所有行共享统一的显示宽度 padding，结构性管道（列边界、行边缘）保持对齐。测试断言单元格内容完整 + 结构性管道对齐（`format_table_keeps_pipe_inside_cell`、`table_cell_with_pipe_stays_aligned_end_to_end`）。
+
+**Pointers:** `crates/tui/src/render/render_md.rs` 中的 `format_table` / `format_table_lines`；`crates/tui/src/render/pulldown.rs` 的 `flush_table`；`widgets/state/app/agent.rs` 与 `visibility.rs` 的流式刷出点。
+
+---
+
+## 1. 2026-08-16 — 超宽表格拆分为可放下的列块（不再出现被折断的管道行）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`split_into_fitting_chunks`、`render_table_chunk`、`row_width`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/render/cells/markdown.rs`（`wide_table_chunks_into_fitting_blocks` 测试） |
+
+**Symptom / motivation:** 宽度超过面板的 Markdown 管道表格（例如 40 列面板里的 10 列表格）渲染出的行比可用宽度还宽：`fit_columns_to_width` 收缩到 `MIN_COL_WIDTH = 8` 可读性下限就停（10×8 + 3×10 + 1 = 111 列放不进 40 列）。随后 `MarkdownCell::render_if_needed` 里面板级的 `wrap_line` 把每个表格行拦腰折断，丢失行首管道符、后续所有行全部错位——表格看起来像被撕碎了一样。
+
+**Decision:** `format_table` 现在保证每一行都放得下可用宽度。全局收缩碰到列宽下限后如果整表仍然过宽（`row_width > available_width`），就把列拆成若干连续的、各自放得下的块（`split_into_fitting_chunks`）；每个块渲染成独立的小表格，表头与分隔线重复（`render_table_chunk`）。单独一列也放不下时，该列继续收缩到下限以下（最小 1），保证它的块必然放得下。这样 `wrap_line` 永远见不到超宽的表格行，也就不会折断管道对齐。无限宽路径（`available_width = None`，日志/弹窗正文）保持不变——那些行由 widget 裁剪，而不是被折断。
+
+**Behavior after:** 任何表格都能放进面板；真正很宽的表格显示为纵向堆叠的列块，表头重复，块内各行保持对齐（CJK 感知的显示宽度填充、表格内单元格换行）。宽度感知的消息路径中，行宽永远不会超过面板宽度。
+
+**Pointers:** `crates/tui/src/render/render_md.rs` 中的 `format_table` 分块分发与 `split_into_fitting_chunks`/`render_table_chunk`；回归测试 `wide_table_chunks_into_fitting_blocks`（`crates/tui/src/render/cells/markdown.rs`）。
+
+---
+
 ## 1. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
 
 | Field | Value |

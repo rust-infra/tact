@@ -29,6 +29,40 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Table cells containing `|` no longer split into phantom columns
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `format_table_lines`), `crates/tui/src/render/pulldown.rs` (`flush_table`), `crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs` (streaming flush sites) |
+
+**Symptom / motivation:** `format_table` took raw `| a | b |` strings and re-split every row on `'|'`. `pulldown.rs::flush_table` round-tripped collected cells through such strings, so a cell containing a literal pipe (escaped `\|`, inline code) gained phantom columns and the whole row misaligned. The line-oriented streaming renderer (`agent.rs` / `visibility.rs` table buffers) had the same hazard.
+
+**Decision:** `format_table` now takes structured cells (`headers: &[String]`, `rows: &[Vec<String>]`); it trims cells, synthesizes the GFM header separator, and keeps dash-only body rows as `/skills`-style dashed dividers. `flush_table` passes pulldown's collected cells directly — no `|` round-trip. Raw-source-line callers (streaming buffers, `/plugins`, `/marketplace` lists) moved to a new `format_table_lines`, which joins the buffered lines and renders through the standard pulldown pipeline, so escaping rules apply exactly once. Known upstream limit: pulldown-cmark splits table rows at unescaped pipes even inside code spans (`| x | `a|b` |`), so only the escaped-pipe form is supported end-to-end; `format_table` itself is correct for any cell content it receives.
+
+**Behavior after:** Escaped pipes and pipes inside inline code are cell data, never column separators; structural pipes (column boundaries and row edges) stay aligned because all rows share uniform display-width padding. Tests assert intact cell content plus aligned structural pipes (`format_table_keeps_pipe_inside_cell`, `table_cell_with_pipe_stays_aligned_end_to_end`).
+
+**Pointers:** `format_table` / `format_table_lines` in `crates/tui/src/render/render_md.rs`; `flush_table` in `crates/tui/src/render/pulldown.rs`; streaming flush sites in `widgets/state/app/agent.rs` and `visibility.rs`.
+
+---
+
+## 1. 2026-08-16 — Over-wide tables split into fitting column chunks (no more shredded pipe rows)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `split_into_fitting_chunks`, `render_table_chunk`, `row_width`), `crates/tui/src/render/pulldown.rs` (`flush_table`), `crates/tui/src/render/cells/markdown.rs` (`wide_table_chunks_into_fitting_blocks` test) |
+
+**Symptom / motivation:** A Markdown pipe table wider than the panel (e.g. 10 columns at a 40-column width) rendered rows wider than the available width: `fit_columns_to_width` stops shrinking at the `MIN_COL_WIDTH = 8` readability floor, so 10×8 + 3×10 + 1 = 111 columns cannot fit in 40. The panel-level `wrap_line` pass in `MarkdownCell::render_if_needed` then broke each table row at arbitrary points, dropping leading pipes and misaligning every subsequent row — the table looked like shredded garbage.
+
+**Decision:** `format_table` now guarantees every rendered row fits the available width. After the floor-limited global shrink, if the whole table is still too wide (`row_width > available_width`), the columns are split into contiguous chunks that each fit (`split_into_fitting_chunks`); each chunk renders as its own table block with the header and separator repeated (`render_table_chunk`). A single column that alone cannot fit is shrunk below the floor (down to 1) so its chunk always fits. `wrap_line` then never sees an over-wide table row, so it cannot break pipe alignment. The unlimited-width path (`available_width = None`, log/popup prose) is unchanged — those rows are clipped by the widget, not shredded.
+
+**Behavior after:** Any table fits the panel; genuinely wide tables appear as vertically stacked column chunks with repeated headers, each chunk internally aligned (CJK-aware display-width padding, in-table cell wrapping). Rows never exceed the panel width in the width-aware message path.
+
+**Pointers:** `format_table` chunk dispatch + `split_into_fitting_chunks`/`render_table_chunk` in `crates/tui/src/render/render_md.rs`; regression test `wide_table_chunks_into_fitting_blocks` in `crates/tui/src/render/cells/markdown.rs`.
+
+---
+
 ## 1. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
 
 | Field | Value |

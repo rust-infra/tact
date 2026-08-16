@@ -2,7 +2,7 @@ use ratatui::{text::Line, widgets::ScrollbarState};
 
 use crate::{
     render::{
-        render_md::{format_table, render_markdown_tui},
+        render_md::{format_table_lines, render_markdown_tui},
         util::visual_pos_to_byte_offset,
     },
     widgets::{state::*, tool_widget::ToolRenderOutput},
@@ -442,7 +442,7 @@ impl App {
         }
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
-            let (lines, raw_lines) = format_table(
+            let (lines, raw_lines) = format_table_lines(
                 &self.stream.table_buffer,
                 &self.theme,
                 Some(self.log_scroll.width as usize),

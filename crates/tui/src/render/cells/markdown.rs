@@ -484,6 +484,83 @@ fn whole_doc() {}
         );
     }
 
+    #[test]
+    fn table_cell_with_pipe_stays_aligned_end_to_end() {
+        // 回归：转义管道 `\|` 在整条管线（pulldown → format_table）中保持为
+        // 单元格数据，不再被二次拆列。
+        // 注意：行内代码里的管道（| x | `a|b` |）是 pulldown-cmark 的上游
+        // 限制——它在单元格层面就按未转义管道切分表格行，本仓库无法修复；
+        // `format_table_keeps_pipe_inside_cell` 保证的是 format_table 层收到
+        // 结构化单元格后不再拆列。
+        let md = "| A | B |\n| --- | --- |\n| x | `plain` |\n| y | esc\\|pipe |";
+        let cell = MarkdownCell::new(md, &dark());
+        let width = 60u16;
+        let text = render_text(&cell, width);
+
+        let rows: Vec<&str> = text.lines().filter(|l| l.contains('|')).collect();
+        assert!(!rows.is_empty(), "expected table rows:\n{text}");
+        // The header row keeps exactly 3 structural pipes.
+        assert_eq!(rows[0].matches('|').count(), 3, "header pipes: {}", rows[0]);
+        // The escaped pipe survives intact inside column B; inline code in a
+        // cell renders without backticks.
+        assert!(text.contains("esc|pipe"), "{text}");
+        assert!(text.contains("plain"), "{text}");
+        // Uniform display width across rows, with the structural pipes (the
+        // A/B boundary and the trailing edge) aligned. Pipes inside cell
+        // data are allowed between them.
+        let widths: Vec<usize> = rows
+            .iter()
+            .map(|r| unicode_width::UnicodeWidthStr::width(*r))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "row display widths differ: {widths:?}\n{text}"
+        );
+        let pipe_cols = |row: &str| -> Vec<usize> {
+            let mut cols = Vec::new();
+            let mut col = 0;
+            for ch in row.chars() {
+                if ch == '|' {
+                    cols.push(col);
+                }
+                col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            cols
+        };
+        let sep: Vec<Vec<usize>> = rows.iter().map(|r| pipe_cols(r)).collect();
+        assert!(
+            sep.iter()
+                .all(|c| c.first() == sep[0].first() && c.last() == sep[0].last()),
+            "structural pipes must align:\n{text}"
+        );
+    }
+
+    #[test]
+    fn wide_table_chunks_into_fitting_blocks() {
+        // 回归：10 列表格在 40 列面板里，旧实现 shrink 到 MIN_COL_WIDTH=8
+        // 地板后整行仍 111 列宽，外层 wrap_line 把表格行拦腰折断导致管道错乱。
+        // 现在列会被拆成多个能放下的块（每块重复表头），所有行都不超宽。
+        let md = "| c1 | c2 | c3 | c4 | c5 | c6 | c7 | c8 | c9 | c10 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| a1 | b1 | c1 | d1 | e1 | f1 | g1 | h1 | i1 | j1 |";
+        let cell = MarkdownCell::new(md, &dark());
+        let width = 40u16;
+        let text = render_text(&cell, width);
+
+        let rows: Vec<&str> = text.lines().filter(|l| l.contains('|')).collect();
+        assert!(!rows.is_empty(), "expected table rows:\n{text}");
+        for r in &rows {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(*r) <= width as usize,
+                "row must never exceed the panel width (was shredded): {r}\n{text}"
+            );
+        }
+        // The header repeats per chunk: chunk 1 carries c1..c7, chunk 2 c8..c10.
+        assert!(
+            text.contains("| c1 | c2 | c3") && text.contains("| c8 | c9 | c10"),
+            "each chunk must repeat the header:\n{text}"
+        );
+        assert!(text.contains("a1") && text.contains("j1"), "{text}");
+    }
+
     /// 肉眼查看渲染效果的 demo：跑
     /// `cargo test -p tui --lib cells::markdown::tests::demo_render_output -- --nocapture`
     #[test]
