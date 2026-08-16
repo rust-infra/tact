@@ -423,28 +423,33 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | Vector | Type | Purpose |
 |--------|------|---------|
 | `messages[]` | `Vec<Line<'static>>` | Pre-styled ratatui line for rendering (Markdown, colors, modifiers) |
-| `raw_messages[]` | `Vec<String>` | Plain text for copy, category detection, and hit testing |
-| `raw_message_types[]` | `Vec<RawMessageType>` | Gutter indent and styling hints |
+| `raw_messages[]` | `Vec<String>` | Plain text for copy, hit testing, and structural lookup |
+| `log_item_kinds[]` | `Vec<LogItemKind>` | Explicit source, render mode, indent, and category metadata |
 
-`RawMessageType` has three variants (`widgets/state/mod.rs`):
+`LogItemKind` is assigned when a row enters the TUI (`widgets/state/mod.rs`); the renderer does not infer ownership from raw prefixes or indentation:
 
-| Type | Typical content | Indent (`log_indent`) |
-|------|-----------------|----------------------|
-| `LLM` | User messages, assistant markdown, task-end separators | 0 |
-| `LLMThinking` | Blank placeholder rows reserved for one direct thinking card | `LOG_THINKING_INDENT` |
-| `SysTool` | Plan steps, tool placeholders, loading spinner row | `LOG_TOOL_INDENT` |
+| Kind | Typical source | Indent (`log_indent`) |
+|------|----------------|----------------------|
+| `User` | User input rows from `add_user_message` | 0 |
+| `AssistantMarkdown` | Streamed or persisted assistant Markdown | `LOG_THINKING_INDENT + 1` |
+| `SystemPlain(style)` | Explicit system/info rows | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | Whole Markdown system notices such as `/skills` / `MdInfo` | `LOG_THINKING_INDENT + 1` |
+| `SystemTool` | Tool placeholders and explicitly tagged tool rows | `LOG_TOOL_INDENT` |
+| `Thinking` | Blank placeholder rows reserved for one direct Thinking card | `LOG_THINKING_INDENT` |
 
-**Row categories** (by how they are created, not by a dedicated enum):
+`SystemMsgStyle` is separate visual metadata (`Default`, `Success`, `Error`, `Warning`, `Accent`). A visible prefix may choose that color only after the caller has already identified the row as a system message.
+
+**Row categories** are now source metadata, not raw-text guesses:
 
 | Category | How it appears in `messages[]` | Notes |
 |----------|-------------------------------|-------|
-| **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row |
+| **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row; continuation ownership is stored in `LogItemKind::User` |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
-| **System / info** | Colored prefix lines (`✓`, `⚠`, `▶`, plan text, …) via `add_system_message` | `classify_system_message` picks `SysTool` vs `LLM` for indent |
-| **Thinking card** | Placeholder rows (`LLMThinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, and title/footer report the full count |
-| **Tool blocks** | Blank placeholder rows (`SysTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
+| **System / info** | Explicit plain or Markdown insertion APIs | No indentation-based fallback; source decides the render path |
+| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, and title/footer report the full count |
+| **Tool blocks** | Blank placeholder rows (`SystemTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
-| **Loading placeholder** | One blank `SysTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
+| **Loading placeholder** | One blank `SystemTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
 | **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end\x1f{secs}` | Rendered as a full-width accent-colored rule with centered `Elapsed MM:SS` / `耗时 MM:SS` |
 
 Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `messages[]`:
@@ -565,7 +570,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | **Code card** | Overlay | Placeholder row span in `code_blocks[]` | Opens `code_popup` |
 | **Loading spinner** | Overlay | 1 row at `loading_idx` if set | — (usually inactive — see `PlanGenerated` legacy) |
 
-**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from `RawMessageType`.
+**TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from the row's `LogItemKind`; user ownership and category separators never inspect raw text.
 
 **ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>` for consistency with completed cards, where the counter and popup share that combined content. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
 

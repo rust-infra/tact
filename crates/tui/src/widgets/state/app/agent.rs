@@ -246,7 +246,7 @@ impl App {
             }
             // Whole-Markdown notice, rendered as a single MarkdownCell
             AgentUpdate::MdInfo(msg) => {
-                self.append_markdown(msg);
+                self.append_system_markdown(msg);
             }
             AgentUpdate::SessionStats(stats_text) => {
                 self.system_prompt_popup = Some(SystemPromptPopup {
@@ -661,12 +661,17 @@ impl App {
             let row_count = diagram.len();
             let start = match start_idx {
                 Some(start) => {
-                    self.splice_msgs(start..stream_end, diagram, raw, RawMessageType::LLM);
+                    self.splice_msgs(
+                        start..stream_end,
+                        diagram,
+                        raw,
+                        LogItemKind::AssistantMarkdown,
+                    );
                     start
                 }
                 None => {
                     let start = self.messages.len();
-                    self.extend_msgs(diagram, raw, RawMessageType::LLM);
+                    self.extend_msgs(diagram, raw, LogItemKind::AssistantMarkdown);
                     start
                 }
             };
@@ -704,7 +709,7 @@ impl App {
                     start..stream_end,
                     placeholders,
                     raw_placeholders,
-                    RawMessageType::LLM,
+                    LogItemKind::AssistantMarkdown,
                 );
                 self.code_blocks.push(CodeBlock {
                     start_idx: start,
@@ -715,7 +720,7 @@ impl App {
                 });
             }
             None => {
-                self.extend_msgs(styled, raw, RawMessageType::LLM);
+                self.extend_msgs(styled, raw, LogItemKind::AssistantMarkdown);
             }
         }
     }
@@ -774,7 +779,7 @@ impl App {
                         Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
                     ]),
                     line,
-                    RawMessageType::LLM,
+                    LogItemKind::AssistantMarkdown,
                 );
                 self.stream.code_block_line_count += 1;
             } else if is_code_fence {
@@ -818,7 +823,7 @@ impl App {
 
                 // Flush completed lines so start_idx is accurate
                 for (styled_line, raw_line) in completed.drain(..) {
-                    self.append_msg(styled_line, raw_line, RawMessageType::LLM);
+                    self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
                 }
 
                 self.stream.code_block = true;
@@ -847,7 +852,7 @@ impl App {
                         Style::default().fg(Color::DarkGray).bg(CODE_BG),
                     )),
                     format!("```{}", lang),
-                    RawMessageType::LLM,
+                    LogItemKind::AssistantMarkdown,
                 );
             } else {
                 // Regular line handling
@@ -901,7 +906,7 @@ impl App {
         }
 
         for (styled_line, raw_line) in completed {
-            self.append_msg(styled_line, raw_line, RawMessageType::LLM);
+            self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
         }
 
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
@@ -931,22 +936,19 @@ impl App {
 
     /// Renders `/plugin list` as a titled table block (same style as `/skills`).
     fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
-        use crate::widgets::state::log_messages::classify_system_message;
-
         self.add_new_line();
 
         let msgs = self.msgs();
         let title = msgs
             .plugin_list_title_tmpl
             .replace("{}", &plugins.len().to_string());
-        let title_ty = classify_system_message(&title);
         self.append_msg(
             Line::from(Span::styled(
                 title.clone(),
                 Style::default().fg(self.theme.accent),
             )),
             title,
-            title_ty,
+            LogItemKind::SystemPlain(SystemMsgStyle::Accent),
         );
         self.add_new_line();
 
@@ -955,7 +957,7 @@ impl App {
             self.append_msg(
                 Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
                 empty.to_string(),
-                classify_system_message(empty),
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
             );
         } else {
             let mut rows = vec![
@@ -970,8 +972,11 @@ impl App {
             }));
             let (styled, raw) =
                 format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
-            let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
-            self.extend_msgs(styled, raw, ty);
+            self.extend_msgs(
+                styled,
+                raw,
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
+            );
         }
 
         self.add_new_line();
@@ -986,22 +991,19 @@ impl App {
     /// Must not go through [`Self::add_system_message`]: a single-newline list would be
     /// Markdown-soft-broken into one crowded line.
     fn show_marketplace_list(&mut self, marketplaces: &[tact::plugin::MarketplaceRecord]) {
-        use crate::widgets::state::log_messages::classify_system_message;
-
         self.add_new_line();
 
         let msgs = self.msgs();
         let title = msgs
             .marketplace_list_title_tmpl
             .replace("{}", &marketplaces.len().to_string());
-        let title_ty = classify_system_message(&title);
         self.append_msg(
             Line::from(Span::styled(
                 title.clone(),
                 Style::default().fg(self.theme.accent),
             )),
             title,
-            title_ty,
+            LogItemKind::SystemPlain(SystemMsgStyle::Accent),
         );
         self.add_new_line();
 
@@ -1010,7 +1012,7 @@ impl App {
             self.append_msg(
                 Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
                 empty.to_string(),
-                classify_system_message(empty),
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
             );
         } else {
             let mut rows = vec![
@@ -1026,8 +1028,11 @@ impl App {
             }));
             let (styled, raw) =
                 format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
-            let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
-            self.extend_msgs(styled, raw, ty);
+            self.extend_msgs(
+                styled,
+                raw,
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
+            );
         }
 
         self.add_new_line();

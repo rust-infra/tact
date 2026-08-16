@@ -453,13 +453,13 @@ fn show_skills_command(app: &mut App) {
 
     let chunks = skills_list_markdown_pages(&app.skills_data, SKILLS_PER_PAGE);
     if chunks.is_empty() {
-        app.append_markdown("(no skills available)".to_string());
+        app.append_system_markdown("(no skills available)".to_string());
     } else {
         for (i, chunk) in chunks.into_iter().enumerate() {
             if i > 0 {
                 app.add_new_line();
             }
-            app.append_markdown(chunk);
+            app.append_system_markdown(chunk);
         }
     }
 

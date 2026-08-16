@@ -14,7 +14,7 @@ use crate::{
         util::wrap_line,
     },
     theme::Theme,
-    widgets::state::App,
+    widgets::state::{App, LogItemKind},
 };
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
@@ -117,10 +117,8 @@ pub(crate) fn render_log_panel_with_borders(
         total_logical += 1;
     }
 
-    // User-line membership precomputed in one O(n) pass: the per-row backward
-    // walk in `is_user_message_line` is quadratic for a long pasted user
-    // block. Shared by Phase 1 (restyle) and Phase 3 (indent).
-    let user_lines = super::log_style::user_line_mask(&app.raw_messages);
+    // Every stored row carries its source kind, so the render path never has
+    // to infer user/system ownership from raw prefixes or indentation.
 
     // Phase 1: logical → visual wrap cache.
     //
@@ -178,8 +176,7 @@ pub(crate) fn render_log_panel_with_borders(
                         &app.messages[phys_idx],
                         &app.raw_messages[phys_idx],
                         &app.theme,
-                        app.raw_message_types[phys_idx],
-                        user_lines[phys_idx],
+                        app.log_item_kinds[phys_idx],
                         &skill_names,
                         user_prefix_tmpl,
                         user_cont_tmpl,
@@ -194,7 +191,7 @@ pub(crate) fn render_log_panel_with_borders(
                 if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
                     vec![Line::default()]
                 } else {
-                    let indent = app.nested_log_indent(phys_idx, user_lines[phys_idx]) as usize;
+                    let indent = app.nested_log_indent(phys_idx) as usize;
                     wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
                 }
             } else {
@@ -299,26 +296,14 @@ pub(crate) fn render_log_panel_with_borders(
         // Between message groups of different types (user ↔ system ↔ assistant),
         // insert a thin decorative separator line.
         if let Some(phys) = phys_idx {
-            let raw = app.raw_messages[phys].as_str();
-            // Determine category for this line
-            let category = if raw.starts_with("💬") {
-                "user"
-            } else if raw.starts_with("  ") {
-                // Continuation line: same as previous category
-                prev_category.unwrap_or("assistant")
-            } else if raw.starts_with("✓")
-                || raw.starts_with("✗")
-                || raw.starts_with("⚠")
-                || raw.starts_with("📝")
-                || raw.starts_with("❌")
-                || raw.starts_with("✅")
-                || raw.starts_with("▶")
-                || raw.starts_with("🤖")
-                || raw.starts_with("  ██")
-            {
-                "system"
-            } else {
-                "assistant"
+            let kind = app.log_item_kinds[phys];
+            let category = match kind {
+                LogItemKind::User => "user",
+                LogItemKind::AssistantMarkdown => "assistant",
+                LogItemKind::SystemPlain(_)
+                | LogItemKind::SystemMarkdown
+                | LogItemKind::SystemTool
+                | LogItemKind::Thinking => "system",
             };
 
             // Insert separator if category changed (and not first line)
@@ -482,7 +467,7 @@ pub(crate) fn render_log_panel_with_borders(
             .unwrap_or_default();
 
         let indent_cols = phys_idx
-            .map(|p| app.nested_log_indent(p, user_lines[p]))
+            .map(|p| app.nested_log_indent(p))
             // The last row is an in-progress assistant response, not a stored
             // physical message, so apply the same reply indent directly.
             .unwrap_or(super::util::LOG_THINKING_INDENT + 1);

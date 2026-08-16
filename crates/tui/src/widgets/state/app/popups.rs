@@ -249,19 +249,19 @@ impl App {
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.
     pub(crate) fn add_new_line(&mut self) {
-        self.append_blank(RawMessageType::LLM);
+        self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
-    /// Append one log row, keeping `messages`, `raw_messages`, and `raw_message_types` in sync.
+    /// Append one log row, keeping `messages`, `raw_messages`, and `log_item_kinds` in sync.
     pub(crate) fn append_msg(
         &mut self,
         line_msg: Line<'static>,
         raw_msg: String,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         self.messages.push(line_msg);
         self.raw_messages.push(raw_msg);
-        self.raw_message_types.push(msg_type);
+        self.log_item_kinds.push(kind);
         self.markdown_cells.push(None);
     }
 
@@ -274,28 +274,40 @@ impl App {
     /// assistant replies (`LOG_THINKING_INDENT + 1`) so whole-Markdown
     /// messages align with streamed text instead of hugging the left border.
     pub(crate) fn append_markdown(&mut self, content: impl Into<String>) {
+        self.append_markdown_with_kind(content, LogItemKind::AssistantMarkdown);
+    }
+
+    pub(crate) fn append_system_markdown(&mut self, content: impl Into<String>) {
+        self.append_markdown_with_kind(content, LogItemKind::SystemMarkdown);
+    }
+
+    pub(crate) fn append_markdown_with_kind(
+        &mut self,
+        content: impl Into<String>,
+        kind: LogItemKind,
+    ) {
         let content = content.into();
         let cell = MarkdownCell::new(&content, &self.theme)
             .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
         self.messages.push(Line::from(""));
         self.raw_messages.push(content);
-        self.raw_message_types.push(RawMessageType::LLM);
+        self.log_item_kinds.push(kind);
         self.markdown_cells.push(Some(cell));
     }
 
-    pub(crate) fn append_blank(&mut self, msg_type: RawMessageType) {
-        self.append_msg(Line::from(""), String::new(), msg_type);
+    pub(crate) fn append_blank(&mut self, kind: LogItemKind) {
+        self.append_msg(Line::from(""), String::new(), kind);
     }
 
     pub(crate) fn extend_msgs(
         &mut self,
         lines: Vec<Line<'static>>,
         raw_lines: Vec<String>,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         debug_assert_eq!(lines.len(), raw_lines.len());
         for (line, raw) in lines.into_iter().zip(raw_lines) {
-            self.append_msg(line, raw, msg_type);
+            self.append_msg(line, raw, kind);
         }
     }
 
@@ -304,11 +316,11 @@ impl App {
         idx: usize,
         line_msg: Line<'static>,
         raw_msg: String,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         self.messages.insert(idx, line_msg);
         self.raw_messages.insert(idx, raw_msg);
-        self.raw_message_types.insert(idx, msg_type);
+        self.log_item_kinds.insert(idx, kind);
         self.markdown_cells.insert(idx, None);
     }
 
@@ -317,28 +329,28 @@ impl App {
         range: std::ops::Range<usize>,
         lines: Vec<Line<'static>>,
         raw: Vec<String>,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         debug_assert_eq!(lines.len(), raw.len());
         let n = lines.len();
         self.messages.splice(range.clone(), lines);
         self.raw_messages.splice(range.clone(), raw);
-        self.raw_message_types
-            .splice(range.clone(), std::iter::repeat_n(msg_type, n));
+        self.log_item_kinds
+            .splice(range.clone(), std::iter::repeat_n(kind, n));
         self.markdown_cells.splice(range, (0..n).map(|_| None));
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
         self.messages.drain(range.clone());
         self.raw_messages.drain(range.clone());
-        self.raw_message_types.drain(range.clone());
+        self.log_item_kinds.drain(range.clone());
         self.markdown_cells.drain(range);
     }
 
     pub(crate) fn remove_msg(&mut self, idx: usize) {
         self.messages.remove(idx);
         self.raw_messages.remove(idx);
-        self.raw_message_types.remove(idx);
+        self.log_item_kinds.remove(idx);
         self.markdown_cells.remove(idx);
     }
 
@@ -357,7 +369,7 @@ impl App {
         self.append_msg(
             Line::default(),
             crate::render::cells::separator::task_end_separator_raw(secs),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
     }
 

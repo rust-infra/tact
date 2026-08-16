@@ -615,7 +615,7 @@ mod integration_tests {
             render_md::format_table_lines,
             test_harness::{make_app, render_log_panel_text},
         },
-        widgets::state::RawMessageType,
+        widgets::state::LogItemKind,
     };
 
     #[test]
@@ -669,7 +669,7 @@ mod integration_tests {
         app.append_msg(
             ratatui::text::Line::from("after markdown"),
             "after markdown".into(),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
 
         let text = render_log_panel_text(&mut app, 40, 20);
@@ -685,7 +685,7 @@ mod integration_tests {
         app.append_msg(
             ratatui::text::Line::from("tail line"),
             "tail line".into(),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
 
         // Render twice: the prefix-sum cache must stay consistent so the
@@ -729,7 +729,7 @@ mod integration_tests {
         // 可用宽度少 3 —— 长表格行尾 pipe 被裁掉、列看起来错位。
         // `table_layout_width` 在布局时扣掉缩进，表格行永不超渲染宽度。
         use crate::render::test_harness::render_log_panel_terminal;
-        use crate::widgets::state::RawMessageType;
+        use crate::widgets::state::LogItemKind;
 
         let md = "| 编号 | 问题描述 | 影响范围 | 处理建议 |\n|-----:|:---------|:---------|:---------|\n| 1 | 当用户连续快速点击「保存」按钮超过五次时，系统会偶发出现重复提交，导致数据库中产生两条内容完全一致但主键不同的记录 | 涉及所有使用表单保存功能的页面，包括用户管理、订单管理、商品管理、配置管理四个模块 | 在前端增加防抖与提交锁，后端在事务中增加唯一性约束校验，并对历史重复数据执行清理脚本 |";
 
@@ -744,7 +744,7 @@ mod integration_tests {
                 Some(app.table_layout_width()),
             );
             for (s, r) in styled.into_iter().zip(raw) {
-                app.append_msg(s, r, RawMessageType::LLM);
+                app.append_msg(s, r, LogItemKind::AssistantMarkdown);
             }
             let height = app.messages.len() as u16 + 2;
             let terminal = render_log_panel_terminal(&mut app, width, height);

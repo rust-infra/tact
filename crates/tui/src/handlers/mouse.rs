@@ -998,7 +998,13 @@ mod tests {
     #[test]
     fn triple_click_inside_code_fence_selects_whole_block() {
         let mut app = make_app();
-        app.add_system_message("```rust\nfn main() {}\n```".into());
+        let (lines, raw) =
+            crate::render::render_md::render_markdown_tui("```rust\nfn main() {}\n```", &app.theme);
+        app.extend_msgs(
+            lines,
+            raw,
+            crate::widgets::state::LogItemKind::SystemMarkdown,
+        );
 
         let inside_line = (0..20)
             .find(|&logical| app.find_code_block_containing_logical(logical).is_some())

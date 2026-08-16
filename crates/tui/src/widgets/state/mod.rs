@@ -230,12 +230,23 @@ pub(crate) enum Status {
     Done,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::upper_case_acronyms)]
-pub(crate) enum RawMessageType {
-    LLM,
-    LLMThinking,
-    SysTool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SystemMsgStyle {
+    Default,
+    Success,
+    Error,
+    Warning,
+    Accent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogItemKind {
+    User,
+    AssistantMarkdown,
+    SystemPlain(SystemMsgStyle),
+    SystemMarkdown,
+    SystemTool,
+    Thinking,
 }
 
 // ========== Main State ==========
@@ -258,7 +269,9 @@ pub struct App {
     pub(crate) model_context_window: usize,
     pub(crate) messages: Vec<Line<'static>>,
     pub(crate) raw_messages: Vec<String>,
-    pub(crate) raw_message_types: Vec<RawMessageType>,
+    /// Parallel to `messages` / `raw_messages`: source and rendering metadata
+    /// assigned at insertion time; never inferred from raw text during render.
+    pub(crate) log_item_kinds: Vec<LogItemKind>,
     /// Parallel to `raw_messages`: cached `MarkdownCell` when the message is
     /// a whole-markdown notice (`AgentUpdate::MdInfo` / `/skills`), `None`
     /// otherwise. `Some` doubles as the "render as MarkdownCell" marker.

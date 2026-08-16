@@ -68,7 +68,7 @@ impl App {
             model_context_window: 200_000,
             messages: Vec::new(),
             raw_messages: Vec::new(),
-            raw_message_types: Vec::new(),
+            log_item_kinds: Vec::new(),
             markdown_cells: Vec::new(),
             plan: PlanPanel::default(),
             status: Status::Idle,

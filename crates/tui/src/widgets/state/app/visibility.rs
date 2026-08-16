@@ -49,29 +49,16 @@ impl App {
         idx < self.messages.len()
     }
 
-    /// Left indent columns for nested log content at this physical row.
+    /// Left indent columns for a physical log row.
     ///
-    /// `is_user` is the precomputed user-line membership (`user_line_mask`),
-    /// so render hot paths avoid the O(block-length) backward walk.
-    pub(crate) fn nested_log_indent(&self, phys: usize, is_user: bool) -> u16 {
-        let msg_type = self
-            .raw_message_types
+    /// The row kind is recorded when the item enters the TUI, so indentation
+    /// never depends on raw text prefixes or a backward scan of prior rows.
+    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+        self.log_item_kinds
             .get(phys)
             .copied()
-            .unwrap_or(RawMessageType::LLM);
-        if is_user {
-            return 0;
-        }
-        // LLM assistant replies: align body text with the text inside a Thinking
-        // card.  The thinking component renders inside an area indented by
-        // LOG_THINKING_INDENT (2), then draws a left border, so its content
-        // starts at column 3 (indent) + 1 (border) = 4 relative to the log
-        // panel's inner area.  Using LOG_THINKING_INDENT + 1 keeps the
-        // assistant reply at the same visual position.
-        if msg_type == RawMessageType::LLM {
-            return crate::render::util::LOG_THINKING_INDENT + 1;
-        }
-        msg_type.log_indent()
+            .unwrap_or(LogItemKind::AssistantMarkdown)
+            .log_indent()
     }
 
     /// Map a logical line number to the physical index in messages.
@@ -181,8 +168,7 @@ impl App {
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
-        let is_user = crate::render::is_user_message_line(&self.raw_messages, phys_idx);
-        let indent = self.nested_log_indent(phys_idx, is_user) as usize;
+        let indent = self.nested_log_indent(phys_idx) as usize;
         let text_col = col.saturating_sub(indent);
         // Render wraps at (panel width - indent); the hit-test must use the
         // same width or clicks near the right edge of indented rows drift.
@@ -416,7 +402,7 @@ impl App {
         if !self.phys_idx_in_tool_block(phys) {
             return;
         }
-        self.append_blank(RawMessageType::LLM);
+        self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
     /// Blank line before assistant stream content when it follows a user message.
@@ -424,8 +410,12 @@ impl App {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
-        if crate::render::is_user_message_line(&self.raw_messages, phys) {
-            self.append_blank(RawMessageType::LLM);
+        if self
+            .log_item_kinds
+            .get(phys)
+            .is_some_and(|kind| kind.is_user())
+        {
+            self.append_blank(LogItemKind::AssistantMarkdown);
         }
     }
 
@@ -444,7 +434,7 @@ impl App {
         {
             return;
         }
-        self.append_blank(RawMessageType::SysTool);
+        self.append_blank(LogItemKind::SystemTool);
     }
 
     /// Flush residual content from the streaming buffer into the message list.
@@ -463,7 +453,7 @@ impl App {
                 &self.theme,
                 Some(self.table_layout_width()),
             );
-            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+            self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
             self.stream.table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
@@ -495,7 +485,7 @@ impl App {
         if !self.stream.paragraph.is_empty() {
             let paragraph = std::mem::take(&mut self.stream.paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
-            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+            self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         }
         self.close_active_thinking_block();
         if self.stream.buffer.is_empty() {
@@ -503,7 +493,7 @@ impl App {
         }
         let display = self.stream.buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display, &self.theme);
-        self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+        self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         self.stream.buffer.clear();
     }
 
@@ -576,7 +566,7 @@ impl App {
         let phys_idx = self.messages.len();
         let rows = output.visual_rows(false);
         for _ in 0..rows {
-            self.append_blank(RawMessageType::SysTool);
+            self.append_blank(LogItemKind::SystemTool);
         }
         phys_idx
     }
@@ -584,7 +574,7 @@ impl App {
     pub(crate) fn push_thinking_placeholder_rows(&mut self, body_lines: usize) -> usize {
         let phys_idx = self.messages.len();
         for _ in 0..crate::render::cells::thinking::thinking_visual_rows(body_lines) {
-            self.append_blank(RawMessageType::LLMThinking);
+            self.append_blank(LogItemKind::Thinking);
         }
         phys_idx
     }
@@ -602,7 +592,7 @@ impl App {
                     insert_at,
                     Line::from(""),
                     String::new(),
-                    RawMessageType::LLMThinking,
+                    LogItemKind::Thinking,
                 );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
@@ -702,7 +692,7 @@ impl App {
                     insert_at,
                     Line::from(""),
                     String::new(),
-                    RawMessageType::SysTool,
+                    LogItemKind::SystemTool,
                 );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);

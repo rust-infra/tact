@@ -6,7 +6,7 @@ use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection,
     ThinkingBlock, ThinkingPopup,
 };
 
@@ -640,7 +640,7 @@ fn main_area_loading_spinner_when_executing() {
         arg_full: "sleep 1".into(),
         presentation: ToolPresentationInfo::generic("bash"),
     });
-    app.append_blank(RawMessageType::SysTool);
+    app.append_blank(LogItemKind::SystemTool);
     app.loading_idx = Some(app.messages.len().saturating_sub(1));
 
     let text = render_main_area_text(&mut app, 100, 24);

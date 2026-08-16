@@ -29,6 +29,40 @@
 
 ---
 
+## 1. 2026-08-16 — Log 行改用显式来源 metadata，不再从文本推断系统 item
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix / optimization |
+| **相关** | Ch 23（TUI）；`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/render/log.rs` |
+
+**现象 / 动机：** Log 通过原始前缀和缩进推断 user / system 归属。普通 item 只要以两个空格开头就可能进入系统纯文本路径，导致 `  **粗体文本**` 显示字面量 `**`。用户续行识别和行缩进也依赖相邻 raw 字符串，容易被内容格式误导。
+
+**决策：** 为每个 physical log 行增加 `LogItemKind` metadata。插入路径显式标记来源：user、assistant Markdown、system plain / Markdown、system tool 或 Thinking。历史消息使用原始 `Role` / content 路径，实时消息使用对应的 `AgentUpdate` variant。渲染、缩进、类别分隔线和 user gap 都消费该 metadata；显式系统前缀只在来源已经确定为 system 后用于选择颜色。
+
+**改后行为：** 缩进的 assistant / system Markdown 保留 Markdown 样式；user 行和续行使用记录好的来源；tool 与 Thinking placeholder 保留专用缩进；raw 文本不再用于推断行归属或类别。主 Log 路径移除 `RawMessageType`、`is_user_message_line`、`user_line_mask` 和 `classify_system_message`。
+
+**指针：** `crates/tui/src/widgets/state/mod.rs` 的 `LogItemKind` / `SystemMsgStyle`；`app/popups.rs` 的 metadata 同步操作；`app/messages.rs`、`app/agent.rs`、`handlers/mod.rs` 的显式插入路径；`render/log.rs`、`render/log_style.rs`、`app/visibility.rs` 的 metadata 驱动渲染；Ch 23。
+
+---
+
+## 1. 2026-08-16 — 嵌套 Markdown 列表项不再与父项粘在同一行
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23（TUI）；`crates/tui/src/render/pulldown.rs`（`Writer::start_tag`、`Tag::List`） |
+
+**现象 / 动机：** pulldown-cmark 事件流进入嵌套 `Tag::List` 时，父列表项的行内 span 仍保存在 `pending` 中。因此第一个子项的 marker 会被拼到父项行尾（`• parent    • child one`），后续子项才会单独换行。
+
+**决策：** 进入嵌套列表时，如果 writer 仍有未刷出的父列表行，先刷出该行，再压入嵌套列表上下文。现有列表 marker 与逐级缩进逻辑保持不变。
+
+**改后行为：** 父项与每个嵌套项均渲染为独立行；嵌套 bullet 继续按每级四列缩进。已有有序列表与任务列表行为不变。
+
+**指针：** `crates/tui/src/render/pulldown.rs` 的 `Writer::start_tag`；回归测试 `nested_list_items_render_on_separate_lines`；Ch 23。
+
+---
+
 ## 1. 2026-08-16 — 表格数据行之间渲染水平分隔线
 
 | Field | Value |

@@ -29,6 +29,40 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Log rows carry explicit provenance instead of inferring system items from text
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix / optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/widgets/state/mod.rs`, `crates/tui/src/widgets/state/app/popups.rs`, `crates/tui/src/render/log.rs` |
+
+**Symptom / motivation:** Log rendering inferred user/system ownership from raw prefixes and indentation. A normal item beginning with two spaces could enter the system plain-text path, so Markdown such as `  **bold text**` displayed literal `**` markers. The same heuristics also made user continuation detection and row indentation depend on neighboring raw strings.
+
+**Decision:** Add `LogItemKind` metadata to every physical log row. Insertion paths assign the source explicitly: user, assistant Markdown, system plain/Markdown, system tool, or Thinking. History uses the original `Role` / content path; live updates use their `AgentUpdate` variant. Rendering, indentation, category separators, and user-gap handling consume this metadata. Explicit system marker prefixes only choose a system color after the source is already known.
+
+**Behavior after:** Indented assistant/system Markdown keeps Markdown styling; user rows and continuations use their recorded source; tool and Thinking placeholders retain their dedicated indentation; raw text is no longer used to infer row ownership or category. `RawMessageType`, `is_user_message_line`, `user_line_mask`, and `classify_system_message` are removed from the main log path.
+
+**Pointers:** `LogItemKind` / `SystemMsgStyle` in `crates/tui/src/widgets/state/mod.rs`; synchronized metadata operations in `app/popups.rs`; explicit insertion paths in `app/messages.rs`, `app/agent.rs`, and `handlers/mod.rs`; metadata-driven rendering in `render/log.rs`, `render/log_style.rs`, and `app/visibility.rs`; Ch 23.
+
+---
+
+## 1. 2026-08-16 — Nested Markdown list items no longer join the parent row
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/pulldown.rs` (`Writer::start_tag`, `Tag::List`) |
+
+**Symptom / motivation:** With pulldown-cmark events, a nested `Tag::List` arrived while the parent item's inline spans were still in `pending`. The first child marker was therefore appended to the parent row (`• parent    • child one`), while later children rendered on separate rows.
+
+**Decision:** When entering a nested list and the writer has an unfinished parent list row, flush that row before pushing the nested list context. The existing marker and per-level indentation logic remains unchanged.
+
+**Behavior after:** The parent and every nested item render on separate rows; nested bullets retain four-column indentation per list level. Existing ordered-list and task-list behavior is unchanged.
+
+**Pointers:** `Writer::start_tag` in `crates/tui/src/render/pulldown.rs`; regression test `nested_list_items_render_on_separate_lines`; Ch 23.
+
+---
+
 ## 1. 2026-08-16 — Tables render a horizontal separator between body rows
 
 | Field | Value |

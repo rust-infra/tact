@@ -420,28 +420,33 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 | Vector | 类型 | 用途 |
 |--------|------|------|
 | `messages[]` | `Vec<Line<'static>>` | 预 styled ratatui 行（Markdown、颜色、modifier） |
-| `raw_messages[]` | `Vec<String>` | 纯文本：复制、类别检测、hit test |
-| `raw_message_types[]` | `Vec<RawMessageType>` | Gutter 缩进与样式提示 |
+| `raw_messages[]` | `Vec<String>` | 纯文本：复制、hit test 与结构查找 |
+| `log_item_kinds[]` | `Vec<LogItemKind>` | 显式来源、渲染模式、缩进与类别 metadata |
 
-`RawMessageType` 三个 variant（`widgets/state/mod.rs`）：
+`LogItemKind` 在行进入 TUI 时分配（`widgets/state/mod.rs`）；renderer 不再从 raw 前缀或缩进推断归属：
 
-| 类型 | 典型内容 | 缩进（`log_indent`） |
+| Kind | 典型来源 | 缩进（`log_indent`） |
 |------|----------|----------------------|
-| `LLM` | 用户消息、assistant markdown、任务结束分隔符 | 0 |
-| `LLMThinking` | 为一个 direct thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
-| `SysTool` | Plan 步骤、tool placeholder、loading spinner 行 | `LOG_TOOL_INDENT` |
+| `User` | `add_user_message` 产生的用户输入行 | 0 |
+| `AssistantMarkdown` | 流式或持久化的 assistant Markdown | `LOG_THINKING_INDENT + 1` |
+| `SystemPlain(style)` | 显式系统 / info 纯文本行 | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | `/skills` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
+| `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
+| `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
 
-**行类别**（按创建方式，非专用 enum）：
+`SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
+
+**行类别**现在来自来源 metadata，而不是 raw 文本猜测：
 
 | 类别 | 在 `messages[]` 中如何出现 | 说明 |
 |------|---------------------------|------|
-| **User** | 绿色前缀行（`💬 …` / 续行 `  …`）via `add_user_message` | 前有 blank 分隔行 |
+| **User** | `add_user_message` 产生的绿色前缀行（`💬 …` / 续行 `  …`） | 前有 blank 分隔行；续行归属记录为 `LogItemKind::User` |
 | **Assistant text** | `StreamChunk` / `flush_stream_pending` 的 Markdown 行 | 单段可能占多 physical 行 |
-| **System / info** | 彩色前缀行（`✓`、`⚠`、`▶`、plan 文本等）via `add_system_message` | `classify_system_message` 选 `SysTool` vs `LLM` 缩进 |
-| **Thinking card** | Placeholder 行（`LLMThinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
-| **Tool blocks** | Blank placeholder 行（`SysTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
+| **System / info** | 显式 plain 或 Markdown 插入 API | 不再有基于缩进的 fallback，来源决定渲染路径 |
+| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
+| **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
-| **Loading placeholder** | `app.loading_idx` 处一行 blank `SysTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
+| **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
 | **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
 
 若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `messages[]` 重复文本：
@@ -565,7 +570,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | **Code card** | Overlay | `code_blocks[]` 中 placeholder 行 span | 打开 `code_popup` |
 | **Loading spinner** | Overlay | `loading_idx` 处 1 行（若设） | —（通常 inactive — 见 `PlanGenerated` legacy） |
 
-**TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自 `RawMessageType`。
+**TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自行的 `LogItemKind`；user 归属与类别分隔线不再检查 raw 文本。
 
 **ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
 

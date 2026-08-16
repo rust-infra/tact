@@ -66,7 +66,7 @@ TUI note: `StepAdded` only updates the internal `app.plan.steps` store — there
 
 ### Legacy `Info` lines
 
-`Agent::execute()` still emits `AgentUpdate::Info("Executing {}({})")` after a tool returns. These appear as plain system log rows (`RawMessageType::SysTool`). The **canonical** tool UI is the structured tool block from `StepStarted` / `StepFinished`, not these Info lines.
+`Agent::execute()` still emits `AgentUpdate::Info("Executing {}({})")` after a tool returns. These appear as plain system log rows (`LogItemKind::SystemPlain`). The **canonical** tool UI is the structured tool block from `StepStarted` / `StepFinished`, not these Info lines.
 
 ---
 
@@ -154,7 +154,7 @@ Constants (`render/util.rs`):
 
 | Constant | Value | Used for |
 |---|---|---|
-| `LOG_TOOL_INDENT` | 4 | Plain `Executing …` system lines |
+| `LOG_TOOL_INDENT` | 4 | `LogItemKind::SystemTool` rows and tool placeholders |
 | `LOG_TOOL_BLOCK_INDENT` | 8 | Full tool block (`ToolCell`) |
 
 ### Meta row (`build_meta_text`)

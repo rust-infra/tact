@@ -7,11 +7,8 @@ use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use crate::{
     i18n::{Language, Messages},
-    render::{cells::separator::is_task_end_separator, render_md::render_markdown_tui},
-    widgets::state::{
-        log_messages::{SystemMsgStyle, classify_system_message},
-        *,
-    },
+    render::cells::separator::is_task_end_separator,
+    widgets::state::*,
 };
 
 /// Returns true for a per-turn stats row in any supported language, including
@@ -97,7 +94,7 @@ impl App {
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )),
                 (*line).to_string(),
-                RawMessageType::LLM,
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
             );
         }
 
@@ -110,7 +107,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             title,
-            RawMessageType::LLM,
+            LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
 
         // Random startup quote
@@ -129,7 +126,7 @@ impl App {
                     .add_modifier(Modifier::ITALIC),
             )),
             tagline.to_string(),
-            RawMessageType::LLM,
+            LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
         self.add_new_line();
     }
@@ -196,25 +193,28 @@ impl App {
         }
     }
 
-    /// Add a system message, auto-color by prefix, and update scroll position.
-    /// Non-system-marker messages are parsed as Markdown.
+    /// Append a plain system message with explicit provenance.
+    ///
+    /// System-ness comes from this API's caller, never from indentation or
+    /// arbitrary content. Explicit marker prefixes only choose the visual
+    /// system color for each line.
     pub(crate) fn add_system_message(&mut self, content: String) {
-        if let Some(style) = SystemMsgStyle::from_line(&content) {
-            let color = style.color(&self.theme);
-            for line in content.split('\n') {
-                let ty = classify_system_message(line);
-                self.append_msg(
-                    Line::from(Span::styled(line.to_string(), Style::default().fg(color))),
+        let theme = self.theme;
+        for line in content.split('\n') {
+            let style = SystemMsgStyle::from_marker(line).unwrap_or(SystemMsgStyle::Default);
+            self.append_msg(
+                Line::from(Span::styled(
                     line.to_string(),
-                    ty,
-                );
-            }
-        } else {
-            let ty = classify_system_message(&content);
-            let (lines, raw_lines) = render_markdown_tui(&content, &self.theme);
-            self.extend_msgs(lines, raw_lines, ty);
+                    Style::default().fg(style.color(&theme)),
+                )),
+                line.to_string(),
+                LogItemKind::SystemPlain(style),
+            );
         }
+        self.scroll_after_message();
+    }
 
+    fn scroll_after_message(&mut self) {
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             // usize::MAX is correctly clipped by render_log_panel based on visual line count
             self.scroll_log_to_bottom();
@@ -270,7 +270,7 @@ impl App {
             Span::raw("  "),
             Span::styled(body, Style::default().fg(self.theme.accent)),
         ]);
-        self.append_msg(line, raw, RawMessageType::LLM);
+        self.append_msg(line, raw, LogItemKind::SystemPlain(SystemMsgStyle::Default));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             self.scroll_log_to_bottom();
         }
@@ -341,7 +341,7 @@ impl App {
             })
             .collect();
         for (styled, text) in pending {
-            self.append_msg(styled, text, RawMessageType::LLM);
+            self.append_msg(styled, text, LogItemKind::User);
         }
         let timestamp = Local::now().format("%H:%M:%S").to_string();
         self.task_history.push(HistoryEntry {
@@ -391,16 +391,40 @@ mod tests {
     }
 
     #[test]
-    fn indent_prefix_uses_plain_path_not_markdown() {
+    fn system_markdown_keeps_explicit_kind_and_source() {
         let mut app = make_app();
-        app.add_system_message("  **not bold**".into());
+        app.append_system_markdown("  **not bold**");
+
+        assert!(app.markdown_cells.last().is_some_and(Option::is_some));
+        assert_eq!(
+            app.log_item_kinds.last(),
+            Some(&LogItemKind::SystemMarkdown)
+        );
         assert_eq!(
             app.raw_messages.last().map(String::as_str),
             Some("  **not bold**")
         );
-        let spans = &app.messages.last().unwrap().spans;
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].style.fg, Some(app.theme.accent));
-        assert!(!spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn system_tool_rows_use_explicit_provenance() {
+        let mut app = make_app();
+        app.append_msg(
+            Line::from(Span::styled(
+                "  1. inspect files",
+                Style::default().fg(app.theme.accent),
+            )),
+            "  1. inspect files".into(),
+            LogItemKind::SystemTool,
+        );
+
+        let line = app.messages.last().expect("rendered system tool row");
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].style.fg, Some(app.theme.accent));
+        assert_eq!(app.log_item_kinds.last(), Some(&LogItemKind::SystemTool));
+        assert_eq!(
+            app.raw_messages.last().map(String::as_str),
+            Some("  1. inspect files")
+        );
     }
 }
