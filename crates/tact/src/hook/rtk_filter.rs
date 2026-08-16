@@ -122,6 +122,8 @@ pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
             agent
                 .runtime
                 .stats
+                .write()
+                .unwrap()
                 .record_rtk(succeeded, raw_chars, saved, elapsed_ms);
             tool_result.content = filtered;
             Ok(HookControl::Continue)

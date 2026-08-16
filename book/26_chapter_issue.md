@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 25; `crates/tact/src/stats.rs`, `crates/tact/src/agent/mod.rs`, `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact/src/hook/rtk_filter.rs`, `crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** `UserCommand::QueryStats` fell into the command driver's `other =>` branch, which awaits the in-flight `SubmitTask` handle before touching the `Agent` (the Agent is exclusively owned by the running task). During a long task, `/stats` appeared to do nothing until the task finished — sometimes minutes.
+
+**Decision:** Make the stats shared instead of Agent-exclusive: `AgentRuntime.stats` is now `Arc<RwLock<SessionStats>>` (std lock; all update sites use `write().unwrap()`, rtk atomic counters unchanged). The command loop clones the Arc before entering the receive loop, `QueryStats` became its own match arm that reads `stats.read().unwrap().summary()` and emits `SessionStats` via the pre-cloned `ui_tx` — no `Agent` access, no await. `headless.rs` / `interactive.rs` end-of-run summaries read through the same lock.
+
+**Behavior after:** `/stats` answers instantly even mid-run, showing a snapshot of all stats recorded so far (in-flight LLM call is not counted yet — same as before, stats are only written after each call). The Agent itself is untouched; other commands (`/compact`, `/model`, `/background`, …) still serialize behind the running task.
+
+**Pointers:** `crates/tact-ui/src/driver.rs` (`run_command_loop_with_account` QueryStats arm + `stats` clone), `crates/tact/src/stats.rs`, stats update sites in `agent/mod.rs` (main loop + compaction), `agent/tool_dispatch.rs` (tool counters), `hook/rtk_filter.rs` (`record_rtk`); test `query_stats_responds_immediately_while_task_runs` (blocked responder + AssertionStats arrives before release).
+
+---
+
 ## 1. 2026-08-16 — Codex-style queued messages while the agent is busy (submit after the current task)
 
 | Field | Value |

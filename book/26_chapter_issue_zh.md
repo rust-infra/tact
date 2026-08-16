@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 25; `crates/tact/src/stats.rs`、`crates/tact/src/agent/mod.rs`、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact/src/hook/rtk_filter.rs`、`crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** `UserCommand::QueryStats` 落在命令驱动的 `other =>` 分支，该分支会先 await 在途的 `SubmitTask` handle 才能访问 `Agent`（运行中的任务独占 Agent 所有权）。长任务期间 `/stats` 看起来毫无响应，直到任务结束——有时要等好几分钟。
+
+**Decision:** 让 stats 不再归 Agent 独占：`AgentRuntime.stats` 改为 `Arc<RwLock<SessionStats>>`（std 锁；所有更新点用 `write().unwrap()`，rtk 原子计数器保持不变）。命令循环进入 receive 循环前 clone Arc，`QueryStats` 提升为独立 match 分支：直接 `stats.read().unwrap().summary()` 并通过预 clone 的 `ui_tx` 发出 `SessionStats`——不访问 `Agent`、不 await。`headless.rs` / `interactive.rs` 的结束摘要也通过同一把锁读取。
+
+**Behavior after:** `/stats` 在任务运行中也立即响应，显示截至当前已记录的全部统计快照（进行中的 LLM 调用尚未计入——与之前一致，stats 只在每次调用后写入）。Agent 本身不受影响；其他命令（`/compact`、`/model`、`/background` 等）仍与运行中的任务串行。
+
+**Pointers:** `crates/tact-ui/src/driver.rs`（`run_command_loop_with_account` 的 QueryStats 分支 + `stats` clone）、`crates/tact/src/stats.rs`、`agent/mod.rs` 的 stats 更新点（主循环 + 压缩）、`agent/tool_dispatch.rs`（工具计数）、`hook/rtk_filter.rs`（`record_rtk`）；测试 `query_stats_responds_immediately_while_task_runs`（阻塞 responder，释放前断言收到 SessionStats）。
+
+---
+
 ## 1. 2026-08-16 — Codex 风格排队消息：agent 忙时提交"当前任务结束后自动提交"
 
 | Field | Value |
