@@ -295,7 +295,7 @@ pub struct Messages {
     pub scroll_indicator_tmpl: &'static str,
 
     // ---- 任务统计行 ----
-    pub task_stats_prefix: &'static str,   // "Task stats:" / "任务统计：" (no emoji — it rendered too wide)
+    pub task_stats_prefix: &'static str, // "Task stats:" / "任务统计：" (no emoji — it rendered too wide)
     pub task_stats_copy_btn: &'static str, // "[copy]" / "[复制]"
 }
 

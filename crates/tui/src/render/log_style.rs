@@ -97,13 +97,16 @@ pub(crate) fn restyle_log_line_with_skills(
         return single_span(raw, theme.accent);
     }
 
-    // Only fenced-code lines carry the code background; a heading's
-    // highlight background must keep its own style instead of being
-    // restyled as code.
+    // Only whole fenced-code lines — every span already carries the code
+    // background — are restyled as a code block. A prose line that merely
+    // contains inline code (e.g. a `- run `cargo build`` list item) must keep
+    // its prose styling: restyling it here paints the whole line with the code
+    // background, a full-width highlight block that `wrap_line` re-slices onto
+    // every wrapped continuation row and reads as a shadow band.
     if stored
         .spans
         .iter()
-        .any(|s| s.style.bg == Some(theme.code_block_bg()))
+        .all(|s| s.style.bg == Some(theme.code_block_bg()))
     {
         return restyle_code_line(stored, theme);
     }
@@ -306,6 +309,42 @@ mod tests {
             line.spans.first().unwrap().style.fg,
             Some(theme.code_block_fg())
         );
+    }
+
+    #[test]
+    fn inline_code_line_keeps_narrow_patch_not_full_block_bg() {
+        // A list item with inline code (`- run `cargo build``) is prose, not a
+        // code block: only the inline-code span may carry the code background.
+        // Restyling the whole line as code painted a full-width highlight block
+        // that wrapped into a shadow band on continuation rows.
+        let theme = brutal();
+        let stored = Line::from(vec![
+            Span::styled("• ".to_string(), Style::default().fg(theme.fg)),
+            Span::styled("run ".to_string(), Style::default().fg(theme.fg)),
+            Span::styled(
+                "cargo build".to_string(),
+                Style::default()
+                    .fg(theme.code_block_fg())
+                    .bg(theme.code_block_bg()),
+            ),
+            Span::styled(" now".to_string(), Style::default().fg(theme.fg)),
+        ]);
+        let line = restyle_log_line(
+            &stored,
+            "- run `cargo build` now",
+            &theme,
+            RawMessageType::LLM,
+            false,
+        );
+        let bgs: Vec<Option<Color>> = line.spans.iter().map(|s| s.style.bg).collect();
+        assert_eq!(
+            bgs,
+            vec![None, None, Some(theme.code_block_bg()), None],
+            "only the inline code span may carry the code background"
+        );
+        // The prose spans keep their own fg (not the code fg).
+        assert_eq!(line.spans[0].style.fg, Some(theme.fg));
+        assert_eq!(line.spans[3].style.fg, Some(theme.fg));
     }
 
     #[test]

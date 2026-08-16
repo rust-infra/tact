@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-08-16 — 含行内代码的正文/列表行不再整行绘制代码背景块
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/render/log_style.rs` |
+
+**现象 / 动机：** `restyle_log_line_with_skills` 只要某行的 span 里出现 `theme.code_block_bg()` 就把整行当作围栏代码行，重绘成整行代码背景。像 `- run `cargo build`` 这种常见列表项因此渲染成一整块高亮背景；当条目换行时，`wrap_line` 会把背景重新切片到每一续行，帧间残留成阴影状色带（反复出现的 "shadow" 类问题）。
+
+**决策：** 只有**每个** span 都带代码背景的行（即 `flush_code_block` 产生的真正围栏代码行）才按代码块重绘。混合正文/列表行保留原样式；行内代码 span 保留其窄背景补丁（文字/前景特殊渲染仍在）。
+
+**变更后行为：** 含行内代码的列表项与段落不再渲染成整行代码块，换行续行不再出现阴影色带。围栏代码块仍带主题代码背景（浅色主题下仍通过 `restyle_code_line` 修正前景色）。
+
+**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`restyle_code_line`）；测试 `inline_code_line_keeps_narrow_patch_not_full_block_bg`；Ch 23 渲染管线。
+
+---
+
 ## 1. 2026-08-16 — 任务统计行支持多语言，并去掉过宽的 📊 图标
 
 | 字段 | 内容 |

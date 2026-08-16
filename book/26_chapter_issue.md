@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Prose/list lines with inline code no longer paint a full code-block background
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/render/log_style.rs` |
+
+**Symptom / motivation:** `restyle_log_line_with_skills` treated ANY line whose spans contained `theme.code_block_bg()` as a fenced-code line and repainted the WHOLE line with the code background. A common Markdown list item like `- run `cargo build`` therefore rendered as a full-width highlight block; when the item wrapped, `wrap_line` re-sliced the background onto every continuation row, leaving shadow-like bands that lingered between frames (the recurring "shadow" class of bugs).
+
+**Decision:** Only lines where EVERY span carries the code background (i.e. genuine fenced-code lines emitted by `flush_code_block`) are restyled as code. Mixed prose/list lines keep their styling; the inline-code span retains its narrow background patch (the text/fg special rendering stays).
+
+**Behavior after:** List items and paragraphs containing inline code no longer render as full-width code blocks, so wrapped rows no longer show a shadow band. Fenced code blocks still get the theme code background (and the light-theme fg fix via `restyle_code_line`).
+
+**Pointers:** `crates/tui/src/render/log_style.rs` (`restyle_log_line_with_skills`, `restyle_code_line`); test `inline_code_line_keeps_narrow_patch_not_full_block_bg`; Ch 23 render pipeline.
+
+---
+
 ## 1. 2026-08-16 — Task-stats line is localized and drops the wide 📊 icon
 
 | Field | Value |
