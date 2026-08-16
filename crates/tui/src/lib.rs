@@ -320,16 +320,16 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 render_input_box(f, chunks[2], &mut app);
                 render_bottom_bar(f, chunks[3], &app);
                 if app.input_mode == InputMode::Palette {
-                    render_command_palette(f, size, &app);
+                    render_command_palette(f, chunks[1], &app);
                 }
                 if app.input_mode == InputMode::Select {
-                    render_select_popup(f, size, &app);
+                    render_select_popup(f, chunks[1], &app);
                 }
                 if app.input_mode == InputMode::FilePicker {
-                    render_file_picker(f, size, &app);
+                    render_file_picker(f, chunks[1], &app);
                 }
                 if app.slash_command.active {
-                    render_slash_command_popup(f, size, &app);
+                    render_slash_command_popup(f, chunks[1], &app);
                 }
             })?;
             // Clear dirty flag after painting; next frame only repaints when state changes.

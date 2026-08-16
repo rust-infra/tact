@@ -114,18 +114,13 @@ pub(crate) fn restyle_log_line_with_skills(
         .iter()
         .map(|span| {
             let mut style = line_style.patch(span.style);
-            // Fork-rendered H1 (BOLD+UNDERLINED in the heading color) gets the
-            // highlight background; tui-markdown used to emit it directly.
-            if style
-                .add_modifier
-                .contains(Modifier::BOLD | Modifier::UNDERLINED)
-                && style.fg == Some(theme.heading)
-            {
-                style.bg = Some(theme.highlight);
-            }
-            if style.bg == Some(Color::Rgb(70, 90, 140)) {
-                style.bg = Some(theme.highlight);
-            }
+            // H1 headings used to carry the theme.highlight background here
+            // (a leftover from tui-markdown). The pulldown pipeline emits
+            // headings without a background and the MarkdownCell path never
+            // paints one either; keeping the band only in this path made
+            // wrapped headings render as a shadow-like highlight block, so
+            // headings are left backgroundless (bold/underlined heading
+            // color only).
             style.fg = if style.add_modifier.contains(Modifier::BOLD) {
                 // Table headers / emphasis: keep accent so bold stays visible.
                 Some(theme.accent)
@@ -314,22 +309,28 @@ mod tests {
     }
 
     #[test]
-    fn heading_highlight_bg_is_not_restyled_as_code() {
-        // A level-1 heading carries the highlight background; the restyle
-        // pass must keep it (and its heading color) instead of swapping it
-        // for the code-block background.
+    fn heading_keeps_no_background() {
+        // The pulldown renderer emits H1 headings without a background; the
+        // restyle pass must not paint one (the tui-markdown-era highlight
+        // band rendered wrapped headings as a shadow-like block) and must
+        // never swap the line for the code-block background either.
         let theme = brutal();
         let stored = Line::from(Span::styled(
             "# Title".to_string(),
             Style::default()
                 .fg(theme.heading)
-                .bg(theme.highlight)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ));
         let line = restyle_log_line(&stored, "# Title", &theme, RawMessageType::LLM, false);
         let span = line.spans.first().unwrap();
-        assert_eq!(span.style.bg, Some(theme.highlight));
+        assert_eq!(span.style.bg, None, "heading must not gain a background");
         assert_eq!(span.style.fg, Some(theme.accent));
+        assert!(
+            span.style
+                .add_modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED),
+            "heading modifiers must survive restyle"
+        );
     }
 
     #[test]

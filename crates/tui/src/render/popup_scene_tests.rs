@@ -100,6 +100,53 @@ fn full_frame_command_palette_filters_commands() {
 }
 
 #[test]
+fn full_frame_palette_popup_stays_inside_main_area() {
+    // Regression: the palette popup was centered on the full frame and its
+    // height cap was `frame.height - 4`, so with the full command list on a
+    // short terminal it overlapped the command-line input box and the bottom
+    // bar — palette rows interleaved with the input border glyphs and read
+    // as a shadow/mess. The popup must stay within the main area (below the
+    // status bar, above the input box).
+    let mut app = make_app();
+    app.input_mode = InputMode::Palette; // unfiltered: full command list
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    // Input box top border (row 25 on this layout) must be intact and the
+    // rows below it must carry no palette list rows.
+    let input_row: String = (0..buf.area.width)
+        .map(|x| buf[(x, 25)].symbol().to_string())
+        .collect();
+    assert!(
+        input_row.starts_with("┌ ⌘ Command"),
+        "input box top border must be visible, got: {input_row}"
+    );
+    for y in 24..30 {
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            !row.contains("background") && !row.contains("Tools") && !row.contains("theme"),
+            "palette rows leaked onto y={y}: {row}"
+        );
+    }
+    // The palette itself is still rendered (bottom border visible above the
+    // log panel bottom border at y=22).
+    let popup_bottom: String = (0..buf.area.width)
+        .map(|x| buf[(x, 22)].symbol().to_string())
+        .collect();
+    assert!(
+        popup_bottom.contains('└'),
+        "palette popup bottom border missing at y=22: {popup_bottom}"
+    );
+}
+
+#[test]
 fn full_frame_slash_command_popup_lists_help() {
     let mut app = make_app();
     app.input_mode = InputMode::Insert;

@@ -29,6 +29,40 @@
 
 ---
 
+## 1. 2026-08-16 — 覆盖式列表弹窗限定在主区域内
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/lib.rs`、`crates/tui/src/render/test_harness.rs` |
+
+**现象 / 动机：** 主帧循环里渲染的四个覆盖式弹窗（`command_palette`、`select`、`file_picker`、`slash_command`）以**整屏**为基准居中，高度上限是 `frame.height - 4`。终端较矮、命令/文件/选项较多时，弹窗高过日志面板，盖住命令行输入框和底栏；弹窗列表行与输入框边框字形（弹窗 `Clear` 矩形之外的部分）交错，看起来像一团阴影/错乱，用户也看不到正在输入的过滤词。
+
+**决策：** 弹窗调用点传入**主区域**（`chunks[1]`：下方是状态栏、上方是输入框）而不是整帧。弹窗只在主区域内居中并限制高度。
+
+**变更后行为：** palette / select / 文件选择 / 斜杠命令弹窗无论列表多长、终端多矮，都保持在输入框和底栏之上；过滤输入时输入框始终完整可见。
+
+**指针：** `crates/tui/src/lib.rs`（帧循环弹窗调用）、`crates/tui/src/render/test_harness.rs`（`draw_full_ui`，同步保持）、`crates/tui/src/render/popup_scene_tests.rs`（`full_frame_palette_popup_stays_inside_main_area`）；Ch 23。
+
+---
+
+## 1. 2026-08-16 — 主区域标题不再绘制高亮色块
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/render/log_style.rs` |
+
+**现象 / 动机：** restyle 通道（pulldown-cmark 迁移 #69 时加入）会给 H1 标题涂上 `theme.highlight` 背景——这是 tui-markdown 直接给 H1 上背景的遗留行为。日志面板里色块只覆盖标题的字形列；标题换行时每一行都会带色块，于是「长标题 + 列表」在文字后面形成一大片类似阴影的色块。整段 Markdown 路径（`MarkdownCell`，如 `/skills` 分页）从不绘制该色块，两条主区域路径表现不一致。
+
+**决策：** restyle 通道不再给标题 span 赋任何背景（pulldown 渲染器本身就不带背景）。同时删除已失效的 `Color::Rgb(70, 90, 140)` → `theme.highlight` 映射（fork 移除后无来源）。
+
+**变更后行为：** H1 标题在两条主区域路径中都渲染为无背景的加粗+下划线标题色文本；（换行的）列表标题后面不再出现高亮阴影块。
+
+**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`heading_keeps_no_background`）、`crates/tui/src/render/log_render_tests.rs`（`heading_rows_carry_no_highlight_band`）；Ch 23 渲染管线。
+
+---
+
 ## 1. 2026-08-15 — `/stats` 弹窗直接用 ratatui-markdown 渲染
 
 | 字段 | 内容 |
@@ -141,7 +175,7 @@
 | Symptom / motivation | 渲染路径审查发现：(1) 整段 Markdown 消息（`MarkdownCell`，如 `/skills`）贴左边渲染，而流式回复/工具卡有缩进；(2) 链接使用硬编码调色板 `Blue`，永不随主题变化；(3) `is_user_message_line` 每渲染一行就向块头回退扫描，长段粘贴时呈平方复杂度；(4) `TextCell` 把所有 span 背景压平为面板底色，流式回复里的围栏代码丢失背景（与 `MarkdownCell` 不一致）；(5) 原始 Markdown 标记（`# `、`> `、``` 围栏）泄漏进渲染文本。 |
 | Decision | (1) `append_markdown` 统一使用 `LOG_THINKING_INDENT + 1` 缩进；(2) 链接改用 `theme.heading`，restyle 里旧 `Blue` 重映射；(3) 每帧预计算单遍 `user_line_mask`，restyle 与缩进共用；(4) `TextCell` 保留 span 自带背景（代码 bg、H1 highlight），restyle 仅把代码背景的 span 当代码处理；(5) styled 行隐藏围栏行（渲染为空白）并剥除 `#{1,6} ` / `> ` 前缀，`raw_messages` 保留原始 Markdown 供复制、代码块检测与 hit-test；流式文本改用与最终行一致的 fg，回复完成时不再变色。 |
 | Behavior after | 流式回复中的代码块有背景；H1 保留 highlight 色带；引用渲染为 `▎ text`；标题不带 `## `；链接随主题适配；长粘贴不再触发平方级回退扫描；`/skills` 等 Markdown 通知与回复对齐。 |
-| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_highlight_bg_is_not_restyled_as_code`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_keeps_no_background`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
 
 ## 1. 2026-08-14 — 移除 cron 调度功能
 

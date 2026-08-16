@@ -29,6 +29,40 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Overlay list popups stay inside the main area
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/lib.rs`, `crates/tui/src/render/test_harness.rs` |
+
+**Symptom / motivation:** The four overlay popups rendered from the main frame loop (`command_palette`, `select`, `file_picker`, `slash_command`) were centered on the **whole frame** with a height cap of `frame.height - 4`. With a long command/file/option list on a short terminal the popup grew past the log panel and covered the command-line input box and bottom bar; popup list rows interleaved with the input box's border glyphs (outside the popup's `Clear` rect) and read as a shadow-like mess, and the user could no longer see the command being typed.
+
+**Decision:** The popup call sites pass the **main area** (`chunks[1]`: status bar below, input box above) instead of the full frame. Popups now center and cap their height inside the main area only.
+
+**Behavior after:** Palette / select / file-picker / slash popups always stay above the input box and bottom bar regardless of list length or terminal height; the input chrome stays fully visible while filtering.
+
+**Pointers:** `crates/tui/src/lib.rs` (frame loop popup calls), `crates/tui/src/render/test_harness.rs` (`draw_full_ui`, kept in sync), `crates/tui/src/render/popup_scene_tests.rs` (`full_frame_palette_popup_stays_inside_main_area`); Ch 23.
+
+---
+
+## 1. 2026-08-16 — Main-area headings no longer paint the highlight band
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/render/log_style.rs` |
+
+**Symptom / motivation:** The restyle pass (added in the pulldown-cmark migration, #69) painted H1 headings with `theme.highlight` as their background — a leftover of tui-markdown's direct H1 styling. In the log panel the band only covered the glyph columns of the heading, and on a wrapped heading every wrapped row carried the band, so a long heading plus its list read as a multi-row shadow block behind the text. The whole-Markdown path (`MarkdownCell`, e.g. `/skills` pages) never painted the band, so the two main-area paths disagreed.
+
+**Decision:** The restyle pass no longer assigns any background to heading spans (the pulldown renderer emits headings backgroundless). The legacy `Color::Rgb(70, 90, 140)` → `theme.highlight` remap (dead since the fork was dropped) was removed with it.
+
+**Behavior after:** H1 headings render as bold+underlined heading-color text with no background in both main-area paths; no highlight band can appear behind (wrapped) list headings.
+
+**Pointers:** `crates/tui/src/render/log_style.rs` (`restyle_log_line_with_skills`, `heading_keeps_no_background`), `crates/tui/src/render/log_render_tests.rs` (`heading_rows_carry_no_highlight_band`); Ch 23 render pipeline.
+
+---
+
 ## 1. 2026-08-15 — `/stats` popup renders through ratatui-markdown directly
 
 | Field | Value |
@@ -141,7 +175,7 @@ Newest entries first. Each entry should include:
 | Symptom / motivation | Render-path review found: (1) whole-Markdown messages (`MarkdownCell`, e.g. `/skills`) hugged the left border while streamed replies/tool cards are indented; (2) links used hardcoded palette `Blue` that never adapted to the theme; (3) `is_user_message_line` walked back to the block start per rendered row — quadratic for a long pasted user block; (4) `TextCell` flattened every span's background onto the surface color, so fenced code in streamed replies lost its background (inconsistent with `MarkdownCell`); (5) raw Markdown markers (`# `, `> `, ``` fences) leaked into the rendered text. |
 | Decision | (1) `append_markdown` applies the same `LOG_THINKING_INDENT + 1` gutter; (2) links use `theme.heading`, with legacy `Blue` remapped in the restyle pass; (3) a one-pass `user_line_mask` is precomputed per frame and shared by restyle + indent; (4) `TextCell` keeps span-provided backgrounds (code bg, H1 highlight) and the restyle pass only treats code-bg spans as code; (5) styled lines hide fence rows (blank) and strip `#{1,6} ` / `> ` prefixes while `raw_messages` keep the original Markdown for copy, code-block detection and hit-testing. Streamed text also uses the same fg as final rows so completing a reply does not recolor it. |
 | Behavior after | Code blocks in streamed replies show their background; H1 keeps its highlight band; quotes render as `▎ text`; headings render without `## `; links adapt per theme; long pastes no longer trigger quadratic row walks; `/skills` and other Markdown notices align with replies. |
-| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`, `crates/tui/src/render/cells/{text.rs,markdown.rs}`, `crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`; tests `span_backgrounds_survive_rendering`, `heading_highlight_bg_is_not_restyled_as_code`, `user_line_mask_matches_the_per_row_walk`, `hardcoded_blue_links_remap_to_theme_heading`, `render_markdown_fenced_code_block`, `render_markdown_heading_markers_are_stripped`, `indented_cell_shifts_content_right`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`, `crates/tui/src/render/cells/{text.rs,markdown.rs}`, `crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`; tests `span_backgrounds_survive_rendering`, `heading_keeps_no_background`, `user_line_mask_matches_the_per_row_walk`, `hardcoded_blue_links_remap_to_theme_heading`, `render_markdown_fenced_code_block`, `render_markdown_heading_markers_are_stripped`, `indented_cell_shifts_content_right`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
 
 ## 1. 2026-08-14 — Cron scheduling feature removed
 
