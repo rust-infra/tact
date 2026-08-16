@@ -29,6 +29,57 @@
 
 ---
 
+## 1. 2026-08-16 — 任务统计行支持多语言，并去掉过宽的 📊 图标
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/i18n.rs`、`crates/tui/src/widgets/state/app/messages.rs`、`crates/tui/src/handlers/mouse.rs` |
+
+**现象 / 动机：** 每轮结束的统计行被硬编码为 `📊 任务统计：…`（`messages.rs` 中的 `TASK_STATS_PREFIX`），即使 UI 切到英文模式仍是中文，且过宽的 `📊` emoji 在日志里显得太大。`[copy]` 按钮同样是一段硬编码英文。
+
+**决策：** 前缀与复制按钮移入 i18n `Messages` 表：EN `Task stats:` / `[copy]`，ZH `任务统计：` / `[复制]`，不再带 emoji 图标——过宽的 `📊` 前缀与 model 前的 `🧠` 都被移除。复制按钮渲染在**统计正文之前**，只有点击按钮字形本身才触发复制（其余位置正常做文本选择）。`add_task_stats_block` 通过 `self.msgs()` 读取；`is_task_stats_line` 现在识别所有支持语言的前缀（可带前置按钮），**并兼容旧的 `📊 任务统计：` 行**（保证旧会话里 `[copy]` 仍然可用）；鼠标处理器通过 `find_task_stats_copy_button` 定位本地化按钮的字节区间。
+
+**变更后行为：** 统计行在英文下渲染为 `[copy]  Task stats:⏱ mm:ss · model · N tokens …`，中文下为 `[复制]  任务统计：⏱ mm:ss · model · N tokens …`，前缀与 model 前都不再有宽 emoji。旧会话的统计行仍可复制。
+
+**指针：** `crates/tui/src/i18n.rs`（`task_stats_prefix`、`task_stats_copy_btn`）、`crates/tui/src/widgets/state/app/messages.rs`（`is_task_stats_line`、`find_task_stats_copy_button`、`add_task_stats_block`）、`crates/tui/src/handlers/mouse.rs`；测试 `task_stats_block_localizes_prefix_and_copy_button`、`task_stats_line_detection_covers_all_languages_and_legacy_rows`。
+
+---
+
+## 1. 2026-08-16 — `install.sh` 不再报 `tmp: unbound variable`，也不再泄漏克隆目录
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `scripts/install.sh` |
+
+**现象 / 动机：** 在 `set -u` 下，成功安装 release 后安装器打印 `bash: line 351: tmp: unbound variable`。`try_install_release` 对 `local tmp` 设置了 `trap 'rm -rf "$tmp"' RETURN`；RETURN trap 会被继承，并在调用者 `main` 返回时再次触发，此时 `tmp` 已越界，未加保护的 `$tmp` 展开因 `nounset` 中断。另外，`main` 把 `work` 声明为 `local` 并用 `EXIT` trap 清理；该 trap 在脚本退出时触发，此时 `main` 的局部变量已销毁，`${work:-}` 恒为空，导致 `git clone` 目录在源码构建 / 非仓库目录路径下泄漏。
+
+**决策：** (1) release 临时目录 trap 改为 `trap '[[ -n "${tmp:-}" ]] && rm -rf "$tmp"' RETURN` —— 加保护后，继承到调用者上下文的那次触发成为 no-op，同时在 `try_install_release` 自身返回时仍能正确清理。(2) `work` 不再是 `local`，改为初始化为 `""` 的全局变量，使已有的 `EXIT` trap 能在脚本退出时真正删除克隆目录（包括 `die` / `exit 1` 路径）。
+
+**变更后行为：** `curl … | bash`（以及 `./scripts/install.sh`）以 `Done. Run: tact-ui --help`、退出码 0 收尾，无 `unbound variable` 报错，release 临时目录与克隆仓库目录均被删除。
+
+**指针：** `scripts/install.sh`（`try_install_release`、`main`）。
+
+---
+
+## 1. 2026-08-16 — `plugin install` 不再 panic，并支持官方 `url` 类型的插件源
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 02；`crates/tact-ui/src/main.rs`、`crates/tact/src/plugin/marketplace.rs` |
+
+**现象 / 动机：** `tact-ui plugin install <plugin>@claude-plugins-official` 以两种方式失败。其一，主入口的自更新提前返回用了 `args.command.take()`，它会把*任何*非 `Upgrade` 的命令消费掉并置 `args.command = None`；于是 `Plugin`（以及 `Headless`）落到 `run_interactive`，而 `plugin` 命令解析配置时不会初始化 LLM provider（`install_without_llm`），交互路径因此在 `get_provider()` panic：`LLM provider not initialized`。其二，官方 `anthropics/claude-plugins-official` 目录使用了 `"source": "url"` 对象形式（286 个插件中的 150 个：`url` + `sha`，部分带 `path`），而 `PluginSource::from_catalog_value` 无法识别，导致整个目录解析失败，报 `invalid marketplace source: url`。
+
+**决策：** (1) 自更新提前返回改为先 `matches!(args.command, Some(CliCommand::Upgrade { .. }))` 判断，仅在命中分支内 `take()`，非 upgrade 命令得以进入后续分发。(2) `from_catalog_value` 将 `git-subdir` 与 `url` 统一视为 Git 仓库源（克隆 `url`、可选 `path`、锁定修订），优先使用 `sha` 锁定，回退到 `ref`。
+
+**变更后行为：** `plugin install`（以及 `headless`）正确分发；`plugin install frontend-design@claude-plugins-official` 会克隆官方目录、解析全部 286 条并安装 `frontend-design`（1 个 skill），锁定到其固定修订。插件命令从不依赖 LLM provider。
+
+**指针：** `crates/tact-ui/src/main.rs`（自更新提前返回）、`crates/tact/src/plugin/marketplace.rs`（`RawPluginSource::Object.sha`、`PluginSource::from_catalog_value`）；测试 `parses_url_plugin_source`、`parses_url_plugin_source_with_subdirectory`、`git_source_falls_back_to_named_ref_without_a_sha`；spec `docs/superpowers/specs/2026-07-20-plugin-install-design.md`。
+
+---
+
 ## 1. 2026-08-16 — 覆盖式列表弹窗限定在主区域内
 
 | 字段 | 内容 |

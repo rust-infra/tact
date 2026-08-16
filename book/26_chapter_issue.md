@@ -29,6 +29,57 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Task-stats line is localized and drops the wide 📊 icon
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/i18n.rs`, `crates/tui/src/widgets/state/app/messages.rs`, `crates/tui/src/handlers/mouse.rs` |
+
+**Symptom / motivation:** The per-turn stats row was hardcoded as `📊 任务统计：…` (`TASK_STATS_PREFIX` in `messages.rs`), so it stayed Chinese even in English UI mode, and the wide `📊` emoji rendered too large in the log. The `[copy]` affordance was also a hardcoded English string.
+
+**Decision:** The prefix and copy button moved into the i18n `Messages` table: EN `Task stats:` / `[copy]`, ZH `任务统计：` / `[复制]`, with no emoji icons — the wide `📊` prefix and the `🧠` before the model name were both removed. The copy affordance renders **before** the stats body; only clicks inside the button glyphs trigger the copy (the rest of the row text-selects normally). `add_task_stats_block` reads them via `self.msgs()`; `is_task_stats_line` now recognizes every supported language's prefix with an optional leading button **plus** the legacy `📊 任务统计：` rows (so `[copy]` keeps working on sessions persisted before this change); the mouse handler finds the localized button's byte range via `find_task_stats_copy_button`.
+
+**Behavior after:** The stats row renders as `[copy]  Task stats:⏱ mm:ss · model · N tokens …` in English and `[复制]  任务统计：⏱ mm:ss · model · N tokens …` in Chinese, with no wide emoji prefix or model icon. Old sessions' stats rows remain copyable.
+
+**Pointers:** `crates/tui/src/i18n.rs` (`task_stats_prefix`, `task_stats_copy_btn`), `crates/tui/src/widgets/state/app/messages.rs` (`is_task_stats_line`, `find_task_stats_copy_button`, `add_task_stats_block`), `crates/tui/src/handlers/mouse.rs`; tests `task_stats_block_localizes_prefix_and_copy_button`, `task_stats_line_detection_covers_all_languages_and_legacy_rows`.
+
+---
+
+## 1. 2026-08-16 — `install.sh` no longer errors on `tmp: unbound variable` or leaks the clone dir
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `scripts/install.sh` |
+
+**Symptom / motivation:** Under `set -u`, the installer printed `bash: line 351: tmp: unbound variable` after a successful release install. `try_install_release` set `trap 'rm -rf "$tmp"' RETURN` on a `local tmp`; the RETURN trap is inherited and fires again when the caller `main` returns, where `tmp` is out of scope, so the unguarded `$tmp` expansion aborted with `nounset`. Separately, `main` declared `work` as a `local` and cleaned it with an `EXIT` trap; that trap fires at script exit after `main`'s locals are gone, so `${work:-}` always saw an empty value and the `git clone` directory leaked on the from-source / non-repo path.
+
+**Decision:** (1) The release tmpdir trap is now `trap '[[ -n "${tmp:-}" ]] && rm -rf "$tmp"' RETURN` — the guard makes the inherited caller-context firing a no-op while still cleaning up on `try_install_release`'s own return. (2) `work` is no longer `local`; it is a global initialized to `""` so the existing `EXIT` trap actually removes the clone directory at script exit (including the `die` / `exit 1` paths).
+
+**Behavior after:** `curl … | bash` (and `./scripts/install.sh`) finishes with `Done. Run: tact-ui --help`, exit 0, no `unbound variable` error, and both the release tmpdir and the cloned repository directory are removed.
+
+**Pointers:** `scripts/install.sh` (`try_install_release`, `main`).
+
+---
+
+## 1. 2026-08-16 — `plugin install` no longer panics and parses the official `url` plugin sources
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 02; `crates/tact-ui/src/main.rs`, `crates/tact/src/plugin/marketplace.rs` |
+
+**Symptom / motivation:** `tact-ui plugin install <plugin>@claude-plugins-official` failed in two ways. First, the main entrypoint's early self-upgrade check used `args.command.take()`, which consumed *any* non-`Upgrade` command and left `args.command = None`; `Plugin` (and `Headless`) then fell through to `run_interactive`, and because `plugin` commands resolve config without an LLM provider (`install_without_llm`), the interactive path panicked at `get_provider()` with "LLM provider not initialized". Second, the official `anthropics/claude-plugins-official` catalog uses a `"source": "url"` object form (150 of its 286 plugins: `url` + `sha`, some with `path`) that `PluginSource::from_catalog_value` did not understand, so the whole catalog failed to parse with "invalid marketplace source: url".
+
+**Decision:** (1) The upgrade early-return now checks with `matches!(args.command, Some(CliCommand::Upgrade { .. }))` and only `take()`s inside the matched branch, so non-upgrade commands survive to the later dispatch. (2) `from_catalog_value` treats both `git-subdir` and `url` as Git repository sources (clone `url`, optional `path`, pinned revision), preferring the `sha` pin and falling back to `ref`.
+
+**Behavior after:** `plugin install` (and `headless`) dispatch correctly; `plugin install frontend-design@claude-plugins-official` clones the official marketplace, parses all 286 entries, and installs `frontend-design` (1 skill) at its pinned revision. Plugin commands never require an LLM provider.
+
+**Pointers:** `crates/tact-ui/src/main.rs` (upgrade early-return), `crates/tact/src/plugin/marketplace.rs` (`RawPluginSource::Object.sha`, `PluginSource::from_catalog_value`); tests `parses_url_plugin_source`, `parses_url_plugin_source_with_subdirectory`, `git_source_falls_back_to_named_ref_without_a_sha`; spec `docs/superpowers/specs/2026-07-20-plugin-install-design.md`.
+
+---
+
 ## 1. 2026-08-16 — Overlay list popups stay inside the main area
 
 | Field | Value |

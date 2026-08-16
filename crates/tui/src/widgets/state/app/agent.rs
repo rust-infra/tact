@@ -1980,11 +1980,11 @@ mod lifecycle_tests {
 
         let joined = app.raw_messages.join("\n");
         assert!(
-            joined.contains("📊 任务统计：⏱ 01:05"),
+            joined.contains("Task stats:⏱ 01:05"),
             "elapsed part missing: {joined}"
         );
         assert!(
-            joined.contains("🧠 mock-model"),
+            joined.contains("mock-model"),
             "model part missing: {joined}"
         );
         assert!(
@@ -2003,9 +2003,37 @@ mod lifecycle_tests {
         let joined = app.raw_messages.join("\n");
         let stats_line = joined
             .lines()
-            .find(|l| l.contains("📊 任务统计："))
+            .find(|l| l.contains("Task stats:"))
             .expect("stats block missing");
-        assert_eq!(stats_line, "📊 任务统计：⏱ 00:05  [copy]");
+        assert_eq!(stats_line, "[copy]  Task stats:⏱ 00:05");
+    }
+
+    #[test]
+    fn task_stats_block_localizes_prefix_and_copy_button() {
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+        app.last_prompt_elapsed_secs = Some(5);
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+
+        let joined = app.raw_messages.join("\n");
+        let stats_line = joined
+            .lines()
+            .find(|l| l.contains("任务统计："))
+            .expect("stats block missing");
+        assert_eq!(stats_line, "[复制]  任务统计：⏱ 00:05");
+    }
+
+    #[test]
+    fn task_stats_line_detection_covers_all_languages_and_legacy_rows() {
+        use crate::widgets::state::is_task_stats_line;
+
+        assert!(is_task_stats_line("[copy]  Task stats:⏱ 01:05"));
+        assert!(is_task_stats_line("[复制]  任务统计：⏱ 01:05"));
+        // Rows persisted before the icon was removed still need `[copy]` support
+        // (legacy rows keep the button at the end).
+        assert!(is_task_stats_line("📊 任务统计：⏱ 01:05  [copy]"));
+        assert!(!is_task_stats_line("plain answer text"));
     }
 
     #[test]
@@ -2026,7 +2054,7 @@ mod lifecycle_tests {
         let stats_idx = app
             .raw_messages
             .iter()
-            .rposition(|l| l.contains("📊 任务统计："))
+            .rposition(|l| l.contains("Task stats:"))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
         let copy_notice = app.raw_messages.last().expect("copy notice");
@@ -2038,7 +2066,7 @@ mod lifecycle_tests {
         let start = app
             .raw_messages
             .iter()
-            .position(|l| l.contains("📊 任务统计："))
+            .position(|l| l.contains("Task stats:"))
             .expect("first stats")
             + 1;
         let mut expected_parts = Vec::new();

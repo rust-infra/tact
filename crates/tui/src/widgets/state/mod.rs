@@ -41,7 +41,7 @@ pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 
-pub(crate) use app::messages::{TASK_STATS_COPY_BTN, is_task_stats_line};
+pub(crate) use app::messages::{find_task_stats_copy_button, is_task_stats_line};
 pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};

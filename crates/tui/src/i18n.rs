@@ -9,7 +9,7 @@ pub enum Language {
 }
 
 impl Language {
-    fn all() -> &'static [Language] {
+    pub(crate) fn all() -> &'static [Language] {
         &[Language::English, Language::Chinese]
     }
 
@@ -293,6 +293,10 @@ pub struct Messages {
 
     // ---- 其他 ----
     pub scroll_indicator_tmpl: &'static str,
+
+    // ---- 任务统计行 ----
+    pub task_stats_prefix: &'static str,   // "Task stats:" / "任务统计：" (no emoji — it rendered too wide)
+    pub task_stats_copy_btn: &'static str, // "[copy]" / "[复制]"
 }
 
 impl Messages {
@@ -555,6 +559,8 @@ impl Messages {
             exit_bye: "Bye! 🔔",
 
             scroll_indicator_tmpl: "↕ {}/{} ",
+            task_stats_prefix: "Task stats:",
+            task_stats_copy_btn: "[copy]",
         }
     }
 
@@ -808,6 +814,8 @@ impl Messages {
             exit_bye: "再见! 🔔",
 
             scroll_indicator_tmpl: "↕ {}/{} ",
+            task_stats_prefix: "任务统计：",
+            task_stats_copy_btn: "[复制]",
         }
     }
 }
