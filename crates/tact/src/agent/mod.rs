@@ -1278,6 +1278,12 @@ impl Agent {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
                     if truncated && continuation_attempt < MAX_CONTINUATION_ATTEMPTS {
+                        if response.usage.is_some() {
+                            self.emit_update(AgentUpdate::Info(format!(
+                                "[compact usage: {:?}]",
+                                response.usage.as_ref().unwrap(),
+                            )));
+                        }
                         let think_len = response.blocks.iter().fold(0, |acc, block| {
                             if let ContentBlock::Thinking {
                                 thinking,
