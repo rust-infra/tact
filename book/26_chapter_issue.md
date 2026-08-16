@@ -29,6 +29,125 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 25; `crates/tact/src/stats.rs`, `crates/tact/src/agent/mod.rs`, `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact/src/hook/rtk_filter.rs`, `crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** `UserCommand::QueryStats` fell into the command driver's `other =>` branch, which awaits the in-flight `SubmitTask` handle before touching the `Agent` (the Agent is exclusively owned by the running task). During a long task, `/stats` appeared to do nothing until the task finished — sometimes minutes.
+
+**Decision:** Make the stats shared instead of Agent-exclusive: `AgentRuntime.stats` is now `Arc<RwLock<SessionStats>>` (std lock; all update sites use `write().unwrap()`, rtk atomic counters unchanged). The command loop clones the Arc before entering the receive loop, `QueryStats` became its own match arm that reads `stats.read().unwrap().summary()` and emits `SessionStats` via the pre-cloned `ui_tx` — no `Agent` access, no await. `headless.rs` / `interactive.rs` end-of-run summaries read through the same lock.
+
+**Behavior after:** `/stats` answers instantly even mid-run, showing a snapshot of all stats recorded so far (in-flight LLM call is not counted yet — same as before, stats are only written after each call). The Agent itself is untouched; other commands (`/compact`, `/model`, `/background`, …) still serialize behind the running task.
+
+**Pointers:** `crates/tact-ui/src/driver.rs` (`run_command_loop_with_account` QueryStats arm + `stats` clone), `crates/tact/src/stats.rs`, stats update sites in `agent/mod.rs` (main loop + compaction), `agent/tool_dispatch.rs` (tool counters), `hook/rtk_filter.rs` (`record_rtk`); test `query_stats_responds_immediately_while_task_runs` (blocked responder + AssertionStats arrives before release).
+
+---
+
+## 1. 2026-08-16 — Codex-style queued messages while the agent is busy (submit after the current task)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | Ch 23; `crates/tui/src/handlers/insert.rs`, `crates/tui/src/handlers/skills.rs`, `crates/tui/src/widgets/state/app/pending.rs`, `crates/tui/src/render/input.rs`, `crates/tui/src/lib.rs` |
+
+**Symptom / motivation:** While the agent was `Planning`/`Executing`, pressing Enter flashed a "⏳ Still processing previous prompt" message and dropped the typed text — a message typed during a long tool run was lost. Codex CLI instead queues it: "Messages to be submitted after next tool call (press esc to interrupt and send immediately)".
+
+**Decision:** Replace the busy-reject with a Codex-style queue. `App.pending_messages` holds `PendingMessage { display, agent_task }`; Enter during `Planning`/`Executing` clears the input and queues (char-limit validation runs at queue time). The main loop calls `handlers::skills::flush_pending_when_idle` after draining `agent_rx`: once status reaches `Idle`/`Done`, every queued message is dispatched as its own `SubmitTask` in order — the tact-ui command driver already serializes in-flight `SubmitTask`s, so each becomes the next user turn. Submission is **fully automatic** — no "send now" path exists (the `[Send now]` button and Normal-mode `s` were removed at the user's request 2026-08-16: "send now 去掉吧，自动处理即可"). The **only** way to drop queued messages is the `[Cancel]` button on the pending block (`pending_cancel_btn_area` hit test in the mouse handler) — it clears the queue without touching the running task. `/cancel` and Normal-mode `c` are **unrelated to the queue**: they cancel only the in-flight task, exactly as before (user decision: "/cancel 也不用处理 prompt 队列"). Esc is untouched (always exits insert mode — a stray Esc never interrupts a task). The hint + `↳ message` rows render above the input box (`render_pending_block` in `render/input.rs`, button hidden on narrow terminals); the layout adds `pending_display_lines()` (hint + per-message row, capped at 4) to the input height. `submit_user_task` was split into `task_within_limits` / `dispatch_user_task` so queueing and flushing share dispatch. `/compact` keeps the old busy flash (`input_busy_msg`).
+
+**Behavior after:** Messages typed while the agent is busy are queued, shown above the input box with the Codex-style hint, and auto-submitted when the current task finishes (including when the task was ended by `/cancel`); the `[Cancel]` button drops the queue only. Multiple queued messages submit sequentially as separate turns. Oversized messages are rejected at queue time. Busy-submission is never lost.
+
+**Pointers:** `handlers/insert.rs` (`handle_enter_submit`, Esc arm), `handlers/skills.rs` (`submit_user_task`, `flush_pending_when_idle`, `interrupt_and_submit_pending`), `widgets/state/app/pending.rs`, `render/input.rs` (`render_pending_block`, `truncate_to_width`); tests `submit_queued_while_agent_busy`, `esc_with_pending_interrupts_and_submits_immediately`, `flush_pending_when_idle_submits_all_queued_in_order`, `input_box_renders_pending_block_above_input`; Ch 23 §6.6.
+
+---
+
+## 1. 2026-08-16 — Inline code uses accent text instead of a background patch
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/render/pulldown.rs`, `crates/tui/src/render/log_style.rs` |
+
+**Symptom / motivation:** The earlier fix stopped prose lines containing inline code from being repainted as full-width code blocks, but the inline-code span still carried a narrow `code_block_bg` patch. That rectangular background remained visually heavy in ordinary prose and lists, especially after wrapping.
+
+**Decision:** Render inline code with `theme.accent` as its foreground and no background. The log restyle pass applies the same rule to legacy inline-code spans, while genuine fenced-code lines continue to use `code_block_bg` and `code_block_fg`.
+
+**Behavior after:** Inline code is distinguished by accent-colored text without a rectangular background patch. Fenced code blocks retain their themed background and foreground, so code-block boundaries remain visible.
+
+**Pointers:** `crates/tui/src/render/pulldown.rs` (`push_inline_code`), `crates/tui/src/render/log_style.rs` (`restyle_log_line_with_skills`); tests `inline_code_uses_accent_without_background` in both modules; Ch 23.
+
+---
+
+## 1. 2026-08-16 — Prose/list lines with inline code no longer paint a full code-block background
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/render/log_style.rs` |
+
+**Symptom / motivation:** `restyle_log_line_with_skills` treated ANY line whose spans contained `theme.code_block_bg()` as a fenced-code line and repainted the WHOLE line with the code background. A common Markdown list item like `- run `cargo build`` therefore rendered as a full-width highlight block; when the item wrapped, `wrap_line` re-sliced the background onto every continuation row, leaving shadow-like bands that lingered between frames (the recurring "shadow" class of bugs).
+
+**Decision:** Only lines where EVERY span carries the code background (i.e. genuine fenced-code lines emitted by `flush_code_block`) are restyled as code. Mixed prose/list lines keep their styling; the inline-code span retains its narrow background patch (the text/fg special rendering stays).
+
+**Behavior after:** List items and paragraphs containing inline code no longer render as full-width code blocks, so wrapped rows no longer show a shadow band. Fenced code blocks still get the theme code background (and the light-theme fg fix via `restyle_code_line`).
+
+**Pointers:** `crates/tui/src/render/log_style.rs` (`restyle_log_line_with_skills`, `restyle_code_line`); test `inline_code_line_keeps_narrow_patch_not_full_block_bg`; Ch 23 render pipeline.
+
+---
+
+## 1. 2026-08-16 — Task-stats line is localized and drops the wide 📊 icon
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/i18n.rs`, `crates/tui/src/widgets/state/app/messages.rs`, `crates/tui/src/handlers/mouse.rs` |
+
+**Symptom / motivation:** The per-turn stats row was hardcoded as `📊 任务统计：…` (`TASK_STATS_PREFIX` in `messages.rs`), so it stayed Chinese even in English UI mode, and the wide `📊` emoji rendered too large in the log. The `[copy]` affordance was also a hardcoded English string.
+
+**Decision:** The prefix and copy button moved into the i18n `Messages` table: EN `Task stats:` / `[copy]`, ZH `任务统计：` / `[复制]`, with no emoji icons — the wide `📊` prefix and the `🧠` before the model name were both removed. The copy affordance renders **before** the stats body; only clicks inside the button glyphs trigger the copy (the rest of the row text-selects normally). `add_task_stats_block` reads them via `self.msgs()`; `is_task_stats_line` now recognizes every supported language's prefix with an optional leading button **plus** the legacy `📊 任务统计：` rows (so `[copy]` keeps working on sessions persisted before this change); the mouse handler finds the localized button's byte range via `find_task_stats_copy_button`.
+
+**Behavior after:** The stats row renders as `[copy]  Task stats:⏱ mm:ss · model · N tokens …` in English and `[复制]  任务统计：⏱ mm:ss · model · N tokens …` in Chinese, with no wide emoji prefix or model icon. Old sessions' stats rows remain copyable.
+
+**Pointers:** `crates/tui/src/i18n.rs` (`task_stats_prefix`, `task_stats_copy_btn`), `crates/tui/src/widgets/state/app/messages.rs` (`is_task_stats_line`, `find_task_stats_copy_button`, `add_task_stats_block`), `crates/tui/src/handlers/mouse.rs`; tests `task_stats_block_localizes_prefix_and_copy_button`, `task_stats_line_detection_covers_all_languages_and_legacy_rows`.
+
+---
+
+## 1. 2026-08-16 — `install.sh` no longer errors on `tmp: unbound variable` or leaks the clone dir
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `scripts/install.sh` |
+
+**Symptom / motivation:** Under `set -u`, the installer printed `bash: line 351: tmp: unbound variable` after a successful release install. `try_install_release` set `trap 'rm -rf "$tmp"' RETURN` on a `local tmp`; the RETURN trap is inherited and fires again when the caller `main` returns, where `tmp` is out of scope, so the unguarded `$tmp` expansion aborted with `nounset`. Separately, `main` declared `work` as a `local` and cleaned it with an `EXIT` trap; that trap fires at script exit after `main`'s locals are gone, so `${work:-}` always saw an empty value and the `git clone` directory leaked on the from-source / non-repo path.
+
+**Decision:** (1) The release tmpdir trap is now `trap '[[ -n "${tmp:-}" ]] && rm -rf "$tmp"' RETURN` — the guard makes the inherited caller-context firing a no-op while still cleaning up on `try_install_release`'s own return. (2) `work` is no longer `local`; it is a global initialized to `""` so the existing `EXIT` trap actually removes the clone directory at script exit (including the `die` / `exit 1` paths).
+
+**Behavior after:** `curl … | bash` (and `./scripts/install.sh`) finishes with `Done. Run: tact-ui --help`, exit 0, no `unbound variable` error, and both the release tmpdir and the cloned repository directory are removed.
+
+**Pointers:** `scripts/install.sh` (`try_install_release`, `main`).
+
+---
+
+## 1. 2026-08-16 — `plugin install` no longer panics and parses the official `url` plugin sources
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 02; `crates/tact-ui/src/main.rs`, `crates/tact/src/plugin/marketplace.rs` |
+
+**Symptom / motivation:** `tact-ui plugin install <plugin>@claude-plugins-official` failed in two ways. First, the main entrypoint's early self-upgrade check used `args.command.take()`, which consumed *any* non-`Upgrade` command and left `args.command = None`; `Plugin` (and `Headless`) then fell through to `run_interactive`, and because `plugin` commands resolve config without an LLM provider (`install_without_llm`), the interactive path panicked at `get_provider()` with "LLM provider not initialized". Second, the official `anthropics/claude-plugins-official` catalog uses a `"source": "url"` object form (150 of its 286 plugins: `url` + `sha`, some with `path`) that `PluginSource::from_catalog_value` did not understand, so the whole catalog failed to parse with "invalid marketplace source: url".
+
+**Decision:** (1) The upgrade early-return now checks with `matches!(args.command, Some(CliCommand::Upgrade { .. }))` and only `take()`s inside the matched branch, so non-upgrade commands survive to the later dispatch. (2) `from_catalog_value` treats both `git-subdir` and `url` as Git repository sources (clone `url`, optional `path`, pinned revision), preferring the `sha` pin and falling back to `ref`.
+
+**Behavior after:** `plugin install` (and `headless`) dispatch correctly; `plugin install frontend-design@claude-plugins-official` clones the official marketplace, parses all 286 entries, and installs `frontend-design` (1 skill) at its pinned revision. Plugin commands never require an LLM provider.
+
+**Pointers:** `crates/tact-ui/src/main.rs` (upgrade early-return), `crates/tact/src/plugin/marketplace.rs` (`RawPluginSource::Object.sha`, `PluginSource::from_catalog_value`); tests `parses_url_plugin_source`, `parses_url_plugin_source_with_subdirectory`, `git_source_falls_back_to_named_ref_without_a_sha`; spec `docs/superpowers/specs/2026-07-20-plugin-install-design.md`.
+
+---
+
 ## 1. 2026-08-16 — Overlay list popups stay inside the main area
 
 | Field | Value |

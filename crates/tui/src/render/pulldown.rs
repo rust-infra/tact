@@ -337,10 +337,7 @@ impl Writer {
     }
 
     fn push_inline_code(&mut self, code: &str) {
-        let style = self
-            .current_style()
-            .fg(self.theme.code_block_fg())
-            .bg(self.theme.code_block_bg());
+        let style = self.current_style().fg(self.theme.accent);
         self.push_span(Span::styled(code.to_string(), style));
     }
 
@@ -463,5 +460,39 @@ impl Writer {
         }
         let (styled, _raw) = format_table(&md_lines, &self.theme, self.available_width);
         self.lines.extend(styled);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{Theme, ThemeName};
+
+    #[test]
+    fn inline_code_uses_accent_without_background() {
+        let theme = Theme::from(ThemeName::Brutal);
+        let (lines, _) = render_markdown("prose `git push` tail", &theme, None);
+        let code = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "git push")
+            .expect("inline code span");
+
+        assert_eq!(code.style.fg, Some(theme.accent));
+        assert_eq!(code.style.bg, None);
+    }
+
+    #[test]
+    fn fenced_code_keeps_code_block_background() {
+        let theme = Theme::from(ThemeName::Brutal);
+        let (lines, _) = render_markdown("```sh\ngit push\n```", &theme, None);
+        let code = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content == "git push")
+            .expect("fenced code span");
+
+        assert_eq!(code.style.fg, Some(theme.code_block_fg()));
+        assert_eq!(code.style.bg, Some(theme.code_block_bg()));
     }
 }

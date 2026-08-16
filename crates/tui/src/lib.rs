@@ -45,8 +45,8 @@ use tokio_stream::StreamExt;
 pub use crate::widgets::state::SkillEntry;
 use crate::{
     handlers::{
-        handle_file_picker_mode, handle_insert_mode, handle_mouse_event, handle_normal_mode,
-        handle_overlay_key, handle_palette_mode, handle_select_mode,
+        flush_pending_when_idle, handle_file_picker_mode, handle_insert_mode, handle_mouse_event,
+        handle_normal_mode, handle_overlay_key, handle_palette_mode, handle_select_mode,
     },
     render::{
         render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
@@ -255,6 +255,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         while let Ok(update) = app.agent_rx.try_recv() {
             app.handle_agent_update(update);
         }
+        // Codex-style: messages queued while the agent was busy are submitted
+        // automatically once the current task reaches Idle/Done.
+        flush_pending_when_idle(&mut app);
         let account_updates: Vec<AccountUpdate> = app
             .account_rx
             .as_mut()
@@ -289,7 +292,10 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                     .map(|line| wrap_line(line, inner_width).len())
                     .sum::<usize>()
                     .clamp(1, 3) as u16;
-                let input_height = input_lines + 2;
+                // Pending (Codex-style queued) messages add a hint row plus one
+                // row per queued message above the input box.
+                let pending_lines = app.pending_display_lines();
+                let input_height = input_lines + 2 + pending_lines;
                 let bottom_height = 2u16;
                 let log_area = Layout::default()
                     .direction(Direction::Vertical)

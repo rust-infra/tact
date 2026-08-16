@@ -6,6 +6,7 @@ use ratatui::{
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use crate::{
+    i18n::{Language, Messages},
     render::{cells::separator::is_task_end_separator, render_md::render_markdown_tui},
     widgets::state::{
         log_messages::{SystemMsgStyle, classify_system_message},
@@ -13,13 +14,35 @@ use crate::{
     },
 };
 
-/// Prefix for the per-turn stats row appended after each task-end separator.
-pub(crate) const TASK_STATS_PREFIX: &str = "📊 任务统计：";
-/// Clickable copy affordance appended to each task-stats row.
-pub(crate) const TASK_STATS_COPY_BTN: &str = "[copy]";
-
+/// Returns true for a per-turn stats row in any supported language, including
+/// the legacy `📊 任务统计：` rows persisted before the icon was removed (old
+/// sessions still need the `[copy]` affordance to keep working).
 pub(crate) fn is_task_stats_line(raw: &str) -> bool {
-    raw.starts_with(TASK_STATS_PREFIX)
+    // The copy affordance renders before the stats body; strip it (any
+    // language) before matching the prefix. Rows without a leading button
+    // (the legacy format) are matched as-is.
+    let body = Language::all()
+        .iter()
+        .filter_map(|lang| {
+            raw.strip_prefix(Messages::by_language(*lang).task_stats_copy_btn)
+                .map(str::trim_start)
+        })
+        .next()
+        .unwrap_or(raw);
+    Language::all()
+        .iter()
+        .any(|lang| body.starts_with(Messages::by_language(*lang).task_stats_prefix))
+        || body.starts_with("📊 任务统计：")
+}
+
+/// Byte range `(start, end)` of the clickable copy affordance in a task-stats
+/// raw row, or `None` when no localized button label is present.
+pub(crate) fn find_task_stats_copy_button(raw: &str) -> Option<(usize, usize)> {
+    Language::all().iter().find_map(|lang| {
+        let btn = Messages::by_language(*lang).task_stats_copy_btn;
+        let start = raw.find(btn)?;
+        Some((start, start + btn.len()))
+    })
 }
 
 impl App {
@@ -212,7 +235,7 @@ impl App {
 
         let mut parts = vec![format!("⏱ {mm_ss}")];
         if !self.status_bar.model_name.is_empty() {
-            parts.push(format!("🧠 {}", self.status_bar.model_name));
+            parts.push(self.status_bar.model_name.clone());
         }
         let tokens = self.status_bar.token_total;
         if tokens > 0 {
@@ -232,18 +255,20 @@ impl App {
             }
             parts.push(detail);
         }
-        let body = format!("{TASK_STATS_PREFIX}{}", parts.join(" · "));
-        let raw = format!("{body}  {TASK_STATS_COPY_BTN}");
+        let msgs = self.msgs();
+        let body = format!("{}{}", msgs.task_stats_prefix, parts.join(" · "));
+        let copy_btn = msgs.task_stats_copy_btn;
+        let raw = format!("{copy_btn}  {body}");
         let line = Line::from(vec![
-            Span::styled(body, Style::default().fg(self.theme.accent)),
-            Span::raw("  "),
             Span::styled(
-                TASK_STATS_COPY_BTN.to_string(),
+                copy_btn.to_string(),
                 Style::default()
                     .fg(self.theme.heading)
                     .add_modifier(Modifier::BOLD)
                     .add_modifier(Modifier::UNDERLINED),
             ),
+            Span::raw("  "),
+            Span::styled(body, Style::default().fg(self.theme.accent)),
         ]);
         self.append_msg(line, raw, RawMessageType::LLM);
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {

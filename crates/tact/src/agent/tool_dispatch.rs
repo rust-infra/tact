@@ -275,6 +275,8 @@ impl Agent {
             *self
                 .runtime
                 .stats
+                .write()
+                .unwrap()
                 .tool_counts
                 .entry(name.clone())
                 .or_insert(0) += 1;
@@ -784,6 +786,8 @@ impl Agent {
                     *self
                         .runtime
                         .stats
+                        .write()
+                        .unwrap()
                         .tool_success_counts
                         .entry(prep_name.clone())
                         .or_insert(0) += 1;
@@ -791,6 +795,8 @@ impl Agent {
                     *self
                         .runtime
                         .stats
+                        .write()
+                        .unwrap()
                         .tool_failure_counts
                         .entry(prep_name.clone())
                         .or_insert(0) += 1;
@@ -798,12 +804,16 @@ impl Agent {
                 *self
                     .runtime
                     .stats
+                    .write()
+                    .unwrap()
                     .tool_total_durations_ms
                     .entry(prep_name.clone())
                     .or_insert(0) += duration_us / 1000;
                 *self
                     .runtime
                     .stats
+                    .write()
+                    .unwrap()
                     .tool_timing_counts
                     .entry(prep_name.clone())
                     .or_insert(0) += 1;
@@ -813,6 +823,8 @@ impl Agent {
             for duration_us in pending_durations_us {
                 self.runtime
                     .stats
+                    .write()
+                    .unwrap()
                     .tool_durations_ms
                     .push(duration_us / 1000);
             }

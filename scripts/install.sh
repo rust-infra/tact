@@ -242,7 +242,7 @@ try_install_release() {
   asset_name="${BINARY_NAME}-v${version}-${triple}.tar.gz"
   url="https://github.com/${REPO}/releases/download/v${version}/${asset_name}"
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  trap '[[ -n "${tmp:-}" ]] && rm -rf "$tmp"' RETURN
 
   log "Trying release asset: ${asset_name}"
   if ! curl -fsSL -o "${tmp}/${asset_name}" "$url"; then
@@ -317,7 +317,9 @@ ensure_path() {
 }
 
 main() {
-  local src_root="" work="" version="" triple=""
+  local src_root="" version="" triple=""
+  # Global so the EXIT trap can clean up the clone directory after `main` returns.
+  work=""
 
   if repo_root "$(pwd)"; then
     src_root="$(pwd)"

@@ -17,7 +17,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Self-upgrade does not need a session store or provider config.
-    if let Some(CliCommand::Upgrade { repo, yes, check }) = args.command.take() {
+    if matches!(args.command, Some(CliCommand::Upgrade { .. })) {
+        let Some(CliCommand::Upgrade { repo, yes, check }) = args.command.take() else {
+            unreachable!("upgrade command was just matched");
+        };
         return tact::upgrade::run_upgrade(tact::upgrade::UpgradeOptions { repo, yes, check })
             .await;
     }

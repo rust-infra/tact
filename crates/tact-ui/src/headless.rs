@@ -142,7 +142,15 @@ async fn run_headless_locked(
     agent.agent_loop(Some(prompt_message)).await?;
 
     eprintln!("[session id: {session_id}]");
-    eprintln!("{}", agent.runtime.stats.summary());
+    eprintln!(
+        "{}",
+        agent
+            .runtime
+            .stats
+            .read()
+            .expect("session stats lock poisoned")
+            .summary()
+    );
 
     if let Some(final_content) = agent.runtime.context.last() {
         let text = extract_text(&final_content.content);

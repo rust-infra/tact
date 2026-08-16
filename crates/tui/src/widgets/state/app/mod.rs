@@ -2,6 +2,7 @@ pub(crate) mod agent;
 pub(crate) mod config;
 pub(crate) mod construct;
 pub(crate) mod messages;
+pub(crate) mod pending;
 pub(crate) mod popups;
 pub(crate) mod scroll;
 pub(crate) mod visibility;

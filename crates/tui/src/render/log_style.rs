@@ -97,14 +97,17 @@ pub(crate) fn restyle_log_line_with_skills(
         return single_span(raw, theme.accent);
     }
 
-    // Only fenced-code lines carry the code background; a heading's
-    // highlight background must keep its own style instead of being
-    // restyled as code.
-    if stored
+    // Only whole fenced-code lines — every span already carries the code
+    // background — are restyled as a code block. A prose line that merely
+    // contains inline code (e.g. a `- run `cargo build`` list item) must keep
+    // its prose styling: restyling it here paints the whole line with the code
+    // background, a full-width highlight block that `wrap_line` re-slices onto
+    // every wrapped continuation row and reads as a shadow band.
+    let is_code_line = stored
         .spans
         .iter()
-        .any(|s| s.style.bg == Some(theme.code_block_bg()))
-    {
+        .all(|s| s.style.bg == Some(theme.code_block_bg()));
+    if is_code_line {
         return restyle_code_line(stored, theme);
     }
 
@@ -114,6 +117,13 @@ pub(crate) fn restyle_log_line_with_skills(
         .iter()
         .map(|span| {
             let mut style = line_style.patch(span.style);
+            if style.bg == Some(theme.code_block_bg()) {
+                // Inline code is part of prose, so distinguish it with the
+                // accent foreground rather than a rectangular code-block patch.
+                style.bg = None;
+                style.fg = Some(theme.accent);
+                return Span::styled(span.content.to_string(), style);
+            }
             // H1 headings used to carry the theme.highlight background here
             // (a leftover from tui-markdown). The pulldown pipeline emits
             // headings without a background and the MarkdownCell path never
@@ -306,6 +316,40 @@ mod tests {
             line.spans.first().unwrap().style.fg,
             Some(theme.code_block_fg())
         );
+    }
+
+    #[test]
+    fn inline_code_uses_accent_without_background() {
+        // Inline code is prose, not a code block: use the accent foreground
+        // without painting a rectangular background patch.
+        let theme = brutal();
+        let stored = Line::from(vec![
+            Span::styled("• ".to_string(), Style::default().fg(theme.fg)),
+            Span::styled("run ".to_string(), Style::default().fg(theme.fg)),
+            Span::styled(
+                "cargo build".to_string(),
+                Style::default()
+                    .fg(theme.code_block_fg())
+                    .bg(theme.code_block_bg()),
+            ),
+            Span::styled(" now".to_string(), Style::default().fg(theme.fg)),
+        ]);
+        let line = restyle_log_line(
+            &stored,
+            "- run `cargo build` now",
+            &theme,
+            RawMessageType::LLM,
+            false,
+        );
+        let bgs: Vec<Option<Color>> = line.spans.iter().map(|s| s.style.bg).collect();
+        assert_eq!(
+            bgs,
+            vec![None, None, None, None],
+            "inline code must not carry a code-block background"
+        );
+        assert_eq!(line.spans[2].style.fg, Some(theme.accent));
+        assert_eq!(line.spans[0].style.fg, Some(theme.fg));
+        assert_eq!(line.spans[3].style.fg, Some(theme.fg));
     }
 
     #[test]

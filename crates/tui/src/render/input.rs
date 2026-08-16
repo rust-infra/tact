@@ -86,6 +86,26 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Codex-style queued messages: the hint + "↳ message" rows sit above the
+    // bordered input box, which shrinks to the remaining height. The pending
+    // block paints its own background (TUI invariant: no shadow residue).
+    let pending_lines = app.pending_display_lines();
+    let area = if pending_lines == 0 {
+        area
+    } else {
+        render_pending_block(
+            frame,
+            Rect::new(area.x, area.y, area.width, pending_lines),
+            app,
+        );
+        Rect::new(
+            area.x,
+            area.y + pending_lines,
+            area.width,
+            area.height - pending_lines,
+        )
+    };
+
     // Logical rows are separated by explicit `\n`; the caret line/column is
     // computed on the raw input, then mapped through soft-wrapping below.
     let mut cursor_line = 0;
@@ -200,6 +220,84 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
         (area.x + 1 + caret_col_in_line as u16).min(area.x + area.width.saturating_sub(2));
     let cursor_y = area.y + 1 + (cursor_display_line - app.input_scroll as usize) as u16;
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+/// Truncate a string to at most `max` display columns, appending `…` when cut.
+fn truncate_to_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if width + cw > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        width += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// Codex-style pending block: a hint line plus one `↳ message` row per queued
+/// message, drawn above the input box while the agent is busy. The hint row
+/// carries a clickable `[Cancel]` button (mouse) — the only way to drop the
+/// queued messages; they otherwise auto-submit when the current task finishes.
+fn render_pending_block(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+    let cancel_label = app.msgs().pending_cancel_btn;
+    let cancel_width = UnicodeWidthStr::width(cancel_label) + 2; // "[label]"
+    // Hide the button on narrow terminals.
+    let cancel_area = if app.pending_messages.is_empty() || inner_width < cancel_width + 30 {
+        Rect::default()
+    } else {
+        let x = area.x + (inner_width - cancel_width) as u16;
+        Rect::new(x, area.y, cancel_width as u16, 1)
+    };
+    app.set_cancel_button_area(cancel_area);
+
+    let hint = app.msgs().pending_submit_hint;
+    let hint_max = if cancel_area.is_empty() {
+        inner_width
+    } else {
+        inner_width.saturating_sub(cancel_width).saturating_sub(1)
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        truncate_to_width(hint, hint_max),
+        Style::default()
+            .fg(app.theme.warning)
+            .bg(app.theme.input_box_bg),
+    ))];
+    if !cancel_area.is_empty() {
+        lines[0].spans.push(Span::styled(
+            " ".to_string(),
+            Style::default().bg(app.theme.input_box_bg),
+        ));
+        lines[0].spans.push(Span::styled(
+            format!("[{cancel_label}]"),
+            Style::default()
+                .fg(app.theme.warning)
+                .bg(app.theme.input_box_bg),
+        ));
+    }
+    for pending in app.pending_messages.iter().take(3) {
+        let text = truncate_to_width(&format!("↳ {}", pending.display), inner_width);
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(app.theme.input_box_fg)
+                .bg(app.theme.input_box_bg),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(app.theme.input_box_bg)),
+        area,
+    );
 }
 
 fn voice_title(app: &App) -> Option<(String, Style)> {
@@ -418,6 +516,108 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("00:08"), "recording elapsed label: {text}");
+    }
+
+    #[test]
+    fn truncate_to_width_appends_ellipsis_for_cjk() {
+        assert_eq!(super::truncate_to_width("abc", 5), "abc");
+        assert_eq!(super::truncate_to_width("abcdef", 4), "abc…");
+        // CJK wide chars count as two columns; truncation targets `max` cols.
+        assert_eq!(super::truncate_to_width("中文abc", 5), "中文…");
+        assert_eq!(super::truncate_to_width("中文abc", 6), "中文a…");
+        assert_eq!(super::truncate_to_width("中文abc", 7), "中文abc");
+    }
+
+    #[test]
+    fn input_box_renders_pending_block_above_input() {
+        let mut app = make_app();
+        app.status = crate::widgets::state::Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("fix the auth bug".into(), "fix the auth bug".into());
+
+        // Height = hint row + 1 message row + input box (2 border + 1 content).
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 80, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Message will be submitted after the current task"),
+            "pending hint visible: {text}"
+        );
+        assert!(
+            text.contains("↳ fix the auth bug"),
+            "pending message row visible: {text}"
+        );
+        assert!(
+            text.contains("[Cancel]"),
+            "cancel button visible on wide enough terminal: {text}"
+        );
+        assert!(
+            !app.pending_cancel_btn_area.is_empty(),
+            "render must record the cancel button hit area"
+        );
+        assert!(text.contains("Type a task"), "input box still rendered");
+        // Pending block rows must carry the input-box background (no shadow).
+        let buf = terminal.backend().buffer();
+        for x in 0..buf.area.width {
+            for y in 0..2 {
+                assert_eq!(
+                    buf[(x, y)].style().bg,
+                    Some(app.theme.input_box_bg),
+                    "pending row {y} col {x} must paint its own background"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn input_box_pending_button_hidden_on_narrow_terminal() {
+        let mut app = make_app();
+        app.status = crate::widgets::state::Status::Planning;
+        app.queue_pending_message("narrow".into(), "narrow".into());
+
+        // Too narrow for the hint + button: button must be hidden and the hit
+        // area cleared.
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 30, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            !text.contains("[Cancel]"),
+            "button must be hidden on narrow terminals: {text}"
+        );
+        assert!(
+            app.pending_cancel_btn_area.is_empty(),
+            "cancel hit area must be cleared when the button is hidden"
+        );
+    }
+
+    #[test]
+    fn input_box_pending_block_truncates_long_messages() {
+        let mut app = make_app();
+        app.status = crate::widgets::state::Status::Planning;
+        app.queue_pending_message("x".repeat(200), "x".repeat(200));
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, 40, 5), &mut app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains('…'), "overlong pending message ellipsized");
+        assert!(
+            !text.contains("xxxxx".repeat(20).as_str()),
+            "pending message must not overflow the width"
+        );
     }
     #[test]
     fn input_box_keeps_top_border_between_title_and_voice() {

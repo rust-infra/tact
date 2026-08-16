@@ -39,6 +39,9 @@ pub async fn run_command_loop_with_account(
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
     let ui_tx = agent.runtime.ui_tx.clone();
+    // Shared stats snapshot: QueryStats can read it without awaiting the
+    // in-flight task (the Agent itself is exclusively owned by that task).
+    let stats = agent.runtime.stats.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -51,6 +54,15 @@ pub async fn run_command_loop_with_account(
                 cancel_flag.store(true, Ordering::Relaxed);
                 if let Some(tx) = &ui_tx {
                     let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
+                }
+            }
+            UserCommand::QueryStats => {
+                // Immediate snapshot: does NOT wait for the running task —
+                // stats live in an Arc<RwLock<SessionStats>> shared with the
+                // agent, so /stats responds instantly even mid-run.
+                let stats_text = stats.read().expect("session stats lock poisoned").summary();
+                if let Some(tx) = &ui_tx {
+                    let _ = tx.send(AgentUpdate::SessionStats(stats_text));
                 }
             }
             UserCommand::SubmitTask(task) => {
@@ -142,7 +154,8 @@ async fn handle_user_command_with_account(
                 }
                 Ok(()) => {
                     // Cancelled: clear TUI busy state (Planning/Executing) so
-                    // the next prompt is not blocked behind input_busy_msg.
+                    // queued (pending) messages are flushed rather than waiting
+                    // on a stale busy state.
                     agent.emit_update(AgentUpdate::TaskCancelled);
                 }
                 Err(e) => {
@@ -177,8 +190,8 @@ async fn handle_user_command_with_account(
             }
         }
         UserCommand::QueryStats => {
-            let stats_text = agent.runtime.stats.summary();
-            agent.emit_update(AgentUpdate::SessionStats(stats_text));
+            // Handled at the loop level (immediate shared-stats snapshot);
+            // reaching this arm means the caller bypassed the command loop.
         }
         UserCommand::QueryBackground(task_id) => {
             match agent
@@ -414,5 +427,64 @@ mod tests {
             }
         }
         assert!(saw_error, "QueryBackground with unknown id must emit Error");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_stats_responds_immediately_while_task_runs() {
+        use std::time::Duration;
+
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The responder spins on an AtomicBool until the test releases it — a
+        // deterministic "long running LLM call". A serialized QueryStats
+        // (awaiting the task) would hang until the release fires.
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let mock = MockClient::with_responder(move |_request, _| {
+            while !release_rx.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        // Start a task that is now stuck in the responder, then ask for stats.
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("long task".into()))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = std::time::Instant::now();
+        user_cmd_tx.send(UserCommand::QueryStats).unwrap();
+
+        // The stats snapshot must arrive while the task is still blocked.
+        let mut saw_stats = false;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::SessionStats(_))) => {
+                    saw_stats = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(
+            saw_stats,
+            "expected SessionStats while the task is still running"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(450),
+            "QueryStats must NOT await the in-flight task"
+        );
+
+        // Release the blocked task and let the loop drain.
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(user_cmd_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)
+            .await
+            .expect("command loop must finish");
     }
 }

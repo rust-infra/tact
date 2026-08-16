@@ -50,17 +50,21 @@ impl PluginSource {
     }
 
     fn from_catalog_value(value: RawPluginSource) -> Result<Self> {
-        let (source, url, path, reference) = match value {
-            RawPluginSource::String(source) => (source, None, None, None),
+        let (source, url, path, reference, sha) = match value {
+            RawPluginSource::String(source) => (source, None, None, None, None),
             RawPluginSource::Object {
                 source,
                 url,
                 path,
                 reference,
-            } => (source, url, path, reference),
+                sha,
+            } => (source, url, path, reference, sha),
         };
-        // git-subdir means: clone url, checkout ref, use the subdirectory at path.
-        if source == "git-subdir" {
+        // `git-subdir` and `url` both describe a Git repository plugin: the
+        // former tracks a named ref and uses a subdirectory, the latter pins a
+        // commit (and may still use a subdirectory). Prefer the pinned `sha`
+        // for reproducible installs, falling back to the named `ref`.
+        if matches!(source.as_str(), "git-subdir" | "url") {
             let url =
                 url.with_context(|| format!("{source} source object must specify a url field"))?;
             if let Some(path) = &path {
@@ -69,7 +73,7 @@ impl PluginSource {
             return Ok(Self::Git {
                 url,
                 path,
-                reference,
+                reference: sha.or(reference),
             });
         }
         if is_relative_source(&source) {
@@ -77,7 +81,7 @@ impl PluginSource {
                 Some(path) => format!("{}/{}", source.trim_end_matches('/'), path),
                 None => source,
             };
-            if reference.is_some() {
+            if reference.is_some() || sha.is_some() {
                 bail!("repository-relative plugin source cannot specify ref");
             }
             return Ok(Self::Relative(normalize_relative(&source)?));
@@ -92,7 +96,7 @@ impl PluginSource {
         Ok(Self::Git {
             url,
             path,
-            reference,
+            reference: sha.or(reference),
         })
     }
 }
@@ -443,6 +447,8 @@ enum RawPluginSource {
         path: Option<String>,
         #[serde(default, rename = "ref")]
         reference: Option<String>,
+        #[serde(default)]
+        sha: Option<String>,
     },
 }
 
@@ -623,7 +629,98 @@ mod tests {
             PluginSource::Git {
                 url: "https://github.com/example/plugins.git".into(),
                 path: Some("plugins/api-security".into()),
-                reference: Some("v1.0.0".into()),
+                reference: Some("abc123".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_url_plugin_source() {
+        let root = tempdir().unwrap();
+        let catalog = MarketplaceCatalog::parse(
+            r#"{
+                "name":"fixture-market",
+                "plugins":[{
+                    "name":"external",
+                    "source":{
+                        "source":"url",
+                        "url":"https://github.com/example/external.git",
+                        "sha":"deadbeef"
+                    }
+                }]
+            }"#,
+            root.path(),
+        )
+        .unwrap();
+
+        let plugin = &catalog.plugins["external"];
+        assert_eq!(
+            plugin.source,
+            PluginSource::Git {
+                url: "https://github.com/example/external.git".into(),
+                path: None,
+                reference: Some("deadbeef".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_url_plugin_source_with_subdirectory() {
+        let root = tempdir().unwrap();
+        let catalog = MarketplaceCatalog::parse(
+            r#"{
+                "name":"fixture-market",
+                "plugins":[{
+                    "name":"zilliz",
+                    "source":{
+                        "source":"url",
+                        "url":"https://github.com/zilliztech/zilliz-plugin.git",
+                        "path":"plugins/zilliz",
+                        "sha":"768d3db"
+                    }
+                }]
+            }"#,
+            root.path(),
+        )
+        .unwrap();
+
+        let plugin = &catalog.plugins["zilliz"];
+        assert_eq!(
+            plugin.source,
+            PluginSource::Git {
+                url: "https://github.com/zilliztech/zilliz-plugin.git".into(),
+                path: Some("plugins/zilliz".into()),
+                reference: Some("768d3db".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn git_source_falls_back_to_named_ref_without_a_sha() {
+        let root = tempdir().unwrap();
+        let catalog = MarketplaceCatalog::parse(
+            r#"{
+                "name":"fixture-market",
+                "plugins":[{
+                    "name":"tracked",
+                    "source":{
+                        "source":"url",
+                        "url":"https://github.com/example/tracked.git",
+                        "ref":"main"
+                    }
+                }]
+            }"#,
+            root.path(),
+        )
+        .unwrap();
+
+        let plugin = &catalog.plugins["tracked"];
+        assert_eq!(
+            plugin.source,
+            PluginSource::Git {
+                url: "https://github.com/example/tracked.git".into(),
+                path: None,
+                reference: Some("main".into()),
             }
         );
     }

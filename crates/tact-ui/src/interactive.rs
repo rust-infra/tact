@@ -255,7 +255,15 @@ async fn run_interactive_locked(
         eprintln!("[session id: {sid}]");
     }
 
-    eprintln!("{}", agent.runtime.stats.summary());
+    eprintln!(
+        "{}",
+        agent
+            .runtime
+            .stats
+            .read()
+            .expect("session stats lock poisoned")
+            .summary()
+    );
 
     Ok(())
 }

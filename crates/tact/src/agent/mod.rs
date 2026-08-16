@@ -3,7 +3,10 @@
 mod tool_dispatch;
 pub(crate) mod tool_schedule;
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -91,7 +94,7 @@ pub struct AgentRuntime {
     pub compact_state: CompactState,
     pub recovery_state: RecoveryState,
     pub permission_manager: PermissionManager,
-    pub stats: SessionStats,
+    pub stats: Arc<RwLock<SessionStats>>,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
@@ -186,7 +189,7 @@ impl Agent {
                 compact_state: CompactState::default(),
                 recovery_state: RecoveryState::default(),
                 permission_manager,
-                stats: SessionStats::default(),
+                stats: Arc::new(RwLock::new(SessionStats::default())),
                 ui_tx: None,
                 cancel_flag,
                 session_store: None,
@@ -722,11 +725,18 @@ impl Agent {
             }));
 
             // ── Stats: before LLM call ──
-            self.runtime.stats.prompt_count += 1;
             let prompt_chars = serde_json::to_string(&request)
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
-            self.runtime.stats.total_prompt_chars += prompt_chars;
+            {
+                let mut stats = self
+                    .runtime
+                    .stats
+                    .write()
+                    .expect("session stats lock poisoned");
+                stats.prompt_count += 1;
+                stats.total_prompt_chars += prompt_chars;
+            }
             let llm_call_start = std::time::Instant::now();
 
             let (content, stop_reason, token_usage, request_body, state_update) = match self
@@ -778,23 +788,31 @@ impl Agent {
             };
 
             // ── Stats: after LLM call ──
-            self.runtime
-                .stats
-                .llm_call_durations
-                .push(llm_call_start.elapsed());
             let response_chars = serde_json::to_string(&content)
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
-            self.runtime.stats.total_response_chars += response_chars;
-            for block in &content {
-                if let ContentBlock::Thinking { thinking, .. } = block {
-                    self.runtime.stats.thinking_blocks += 1;
-                    self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
+            {
+                let mut stats = self
+                    .runtime
+                    .stats
+                    .write()
+                    .expect("session stats lock poisoned");
+                stats.llm_call_durations.push(llm_call_start.elapsed());
+                stats.total_response_chars += response_chars;
+                for block in &content {
+                    if let ContentBlock::Thinking { thinking, .. } = block {
+                        stats.thinking_blocks += 1;
+                        stats.total_thinking_chars += thinking.chars().count() as u64;
+                    }
                 }
             }
 
             if let Some(ref usage) = token_usage {
-                self.runtime.stats.record_token_usage(usage);
+                self.runtime
+                    .stats
+                    .write()
+                    .expect("session stats lock poisoned")
+                    .record_token_usage(usage);
                 self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
@@ -1100,7 +1118,11 @@ impl Agent {
         self.runtime.llm_call_last_message_id = 0;
         self.runtime.last_token_total = 0;
         self.runtime.compact_state.has_compacted = true;
-        self.runtime.stats.compactions += 1;
+        self.runtime
+            .stats
+            .write()
+            .expect("session stats lock poisoned")
+            .compactions += 1;
 
         // Informational status only: item count and a bounded compaction id
         // prefix. Never expose the opaque encrypted content, and never echo
@@ -1249,11 +1271,19 @@ impl Agent {
             extra_body: None,
         }));
         // ── Stats: before compaction LLM call ──
-        self.runtime.stats.prompt_count += 1;
+        self.runtime
+            .stats
+            .write()
+            .expect("session stats lock poisoned")
+            .prompt_count += 1;
         let compact_prompt_chars = serde_json::to_string(&initial_request)
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
-        self.runtime.stats.total_prompt_chars += compact_prompt_chars;
+        self.runtime
+            .stats
+            .write()
+            .expect("session stats lock poisoned")
+            .total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
         // Summarization call with two independent recovery axes:
@@ -1331,22 +1361,30 @@ impl Agent {
         let blocks = blocks_all;
 
         // ── Stats: after compaction LLM call ──
-        self.runtime
-            .stats
-            .llm_call_durations
-            .push(compact_start.elapsed());
         let compact_response_chars = serde_json::to_string(&blocks)
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
-        self.runtime.stats.total_response_chars += compact_response_chars;
-        for block in &blocks {
-            if let ContentBlock::Thinking { thinking, .. } = block {
-                self.runtime.stats.thinking_blocks += 1;
-                self.runtime.stats.total_thinking_chars += thinking.chars().count() as u64;
+        {
+            let mut stats = self
+                .runtime
+                .stats
+                .write()
+                .expect("session stats lock poisoned");
+            stats.llm_call_durations.push(compact_start.elapsed());
+            stats.total_response_chars += compact_response_chars;
+            for block in &blocks {
+                if let ContentBlock::Thinking { thinking, .. } = block {
+                    stats.thinking_blocks += 1;
+                    stats.total_thinking_chars += thinking.chars().count() as u64;
+                }
             }
         }
         if let Some(ref usage) = token_usage {
-            self.runtime.stats.record_token_usage(usage);
+            self.runtime
+                .stats
+                .write()
+                .expect("session stats lock poisoned")
+                .record_token_usage(usage);
             // Do NOT assign usage.total to last_token_total: that figure is for
             // the summarization request (large history prompt), not the size of
             // the replacement context below.
@@ -1470,7 +1508,11 @@ impl Agent {
         // context (via token estimate / next main-loop TokenUsage), not the
         // pre-compact or summarizer-prompt totals.
         self.runtime.last_token_total = 0;
-        self.runtime.stats.compactions += 1;
+        self.runtime
+            .stats
+            .write()
+            .expect("session stats lock poisoned")
+            .compactions += 1;
         Ok(())
     }
 
@@ -2830,7 +2872,13 @@ mod tests {
             "runtime context must remain the old committed context"
         );
         assert_eq!(
-            agent.runtime.stats.compactions, 0,
+            agent
+                .runtime
+                .stats
+                .read()
+                .expect("session stats lock poisoned")
+                .compactions,
+            0,
             "no compaction may be recorded when usage persistence failed"
         );
         assert!(

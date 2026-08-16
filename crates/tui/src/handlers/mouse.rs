@@ -100,6 +100,12 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         handle_voice_button_click(app);
         return;
     }
+    if point_in_rect(mouse.column, mouse.row, app.pending_cancel_btn_area) {
+        // Clicking `[Cancel]` drops the queued messages only — the running
+        // task keeps going (unlike `/cancel`, which stops it too).
+        app.clear_pending_messages();
+        return;
+    }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
@@ -229,12 +235,14 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
-    // Task-stats `[copy]` button: copy this turn's log text.
+    // Task-stats `[copy]` button: copy this turn's log text. Only clicks that
+    // land inside the button glyphs count — the rest of the row selects text.
     if let Some(raw) = app.raw_messages.get(phys_idx)
         && crate::widgets::state::is_task_stats_line(raw)
-        && let Some(btn_at) = raw.find(crate::widgets::state::TASK_STATS_COPY_BTN)
+        && let Some((btn_start, btn_end)) = crate::widgets::state::find_task_stats_copy_button(raw)
         && let Some((_, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
-        && byte >= btn_at
+        && byte >= btn_start
+        && byte < btn_end
     {
         app.copy_turn_ending_at_stats(phys_idx);
         app.mouse.log_selection = None;
@@ -539,6 +547,54 @@ mod tests {
         assert!(
             cmd_rx.try_recv().is_err(),
             "outside click should not send commands"
+        );
+    }
+
+    #[test]
+    fn pending_cancel_button_drops_queue_without_touching_task() {
+        use tact_protocol::UserCommand;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            std::path::PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.status = crate::widgets::state::Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("regret".into(), "regret".into());
+        app.set_cancel_button_area(Rect::new(70, 0, 10, 1));
+
+        // Click [Cancel]: the queue is dropped, the running task is untouched.
+        handle_mouse_event(&mut app, mouse_down(71, 0));
+
+        assert!(
+            app.pending_messages.is_empty(),
+            "[Cancel] must drop the queued messages"
+        );
+        assert!(
+            matches!(app.status, crate::widgets::state::Status::Executing { .. }),
+            "[Cancel] must not change the task status"
+        );
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "[Cancel] must not dispatch Cancel/SubmitTask"
         );
     }
 
@@ -1039,5 +1095,50 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(1, 20));
 
         assert!(app.mouse.log_selection.is_none());
+    }
+
+    #[test]
+    fn task_stats_copy_only_triggers_inside_button() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("first answer".into());
+        app.add_system_message("second answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+        app.log_scroll.visual_start = vec![0, 1, 2, 3];
+
+        // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
+        // `[copy]  Task stats:⏱ 00:05`; column 3 maps to byte 2, inside the
+        // button glyphs (bytes 0..6). A successful copy appends a notice row.
+        let before = app.raw_messages.len();
+        handle_mouse_event(&mut app, mouse_down(3, 3));
+        assert!(
+            app.raw_messages.len() > before,
+            "clicking the [copy] button should copy this turn"
+        );
+        let last = app.raw_messages.last().expect("copy notice");
+        assert!(
+            last.contains("已复制") || last.contains("Copied"),
+            "expected a copy notice, got: {last}"
+        );
+    }
+
+    #[test]
+    fn task_stats_body_click_does_not_copy() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("first answer".into());
+        app.add_system_message("second answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+        app.log_scroll.visual_start = vec![0, 1, 2, 3];
+
+        // Column 15 maps into the "Task stats:" body (byte 11) — outside the
+        // button range (0..6), so no copy notice may be appended.
+        let before = app.raw_messages.len();
+        handle_mouse_event(&mut app, mouse_down(15, 3));
+        assert_eq!(
+            app.raw_messages.len(),
+            before,
+            "clicking the stats body must not copy"
+        );
     }
 }

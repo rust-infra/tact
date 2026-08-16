@@ -29,6 +29,125 @@
 
 ---
 
+## 1. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 25; `crates/tact/src/stats.rs`、`crates/tact/src/agent/mod.rs`、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact/src/hook/rtk_filter.rs`、`crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** `UserCommand::QueryStats` 落在命令驱动的 `other =>` 分支，该分支会先 await 在途的 `SubmitTask` handle 才能访问 `Agent`（运行中的任务独占 Agent 所有权）。长任务期间 `/stats` 看起来毫无响应，直到任务结束——有时要等好几分钟。
+
+**Decision:** 让 stats 不再归 Agent 独占：`AgentRuntime.stats` 改为 `Arc<RwLock<SessionStats>>`（std 锁；所有更新点用 `write().unwrap()`，rtk 原子计数器保持不变）。命令循环进入 receive 循环前 clone Arc，`QueryStats` 提升为独立 match 分支：直接 `stats.read().unwrap().summary()` 并通过预 clone 的 `ui_tx` 发出 `SessionStats`——不访问 `Agent`、不 await。`headless.rs` / `interactive.rs` 的结束摘要也通过同一把锁读取。
+
+**Behavior after:** `/stats` 在任务运行中也立即响应，显示截至当前已记录的全部统计快照（进行中的 LLM 调用尚未计入——与之前一致，stats 只在每次调用后写入）。Agent 本身不受影响；其他命令（`/compact`、`/model`、`/background` 等）仍与运行中的任务串行。
+
+**Pointers:** `crates/tact-ui/src/driver.rs`（`run_command_loop_with_account` 的 QueryStats 分支 + `stats` clone）、`crates/tact/src/stats.rs`、`agent/mod.rs` 的 stats 更新点（主循环 + 压缩）、`agent/tool_dispatch.rs`（工具计数）、`hook/rtk_filter.rs`（`record_rtk`）；测试 `query_stats_responds_immediately_while_task_runs`（阻塞 responder，释放前断言收到 SessionStats）。
+
+---
+
+## 1. 2026-08-16 — Codex 风格排队消息：agent 忙时提交"当前任务结束后自动提交"
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | Ch 23; `crates/tui/src/handlers/insert.rs`、`crates/tui/src/handlers/skills.rs`、`crates/tui/src/widgets/state/app/pending.rs`、`crates/tui/src/render/input.rs`、`crates/tui/src/lib.rs` |
+
+**Symptom / motivation:** agent 处于 `Planning`/`Executing` 时按 Enter 只会闪现"⏳ 上一个任务还在处理中"并丢弃输入——工具运行期间打的消息全丢了。Codex CLI 的做法是排队："Messages to be submitted after next tool call (press esc to interrupt and send immediately)"。
+
+**Decision:** 用 Codex 风格队列取代忙时拒绝。`App.pending_messages` 存放 `PendingMessage { display, agent_task }`；`Planning`/`Executing` 时按 Enter 清空输入并入队（字符长度校验在入队时执行）。主循环在排空 `agent_rx` 后调用 `handlers::skills::flush_pending_when_idle`：状态进入 `Idle`/`Done` 后，按序把每条排队消息各自派发为一个 `SubmitTask`——tact-ui 命令驱动本就会串行处理在途 `SubmitTask`，因此每条都成为下一个用户回合。提交**纯自动**——不存在"立即发送"路径（`[Send now]` 按钮与 Normal 模式 `s` 键按用户要求移除："send now 去掉吧，自动处理即可"）。丢弃排队消息的**唯一**途径是 pending 块的 `[Cancel]` 按钮（`pending_cancel_btn_area` 命中测试在 mouse handler）——只清空队列、不影响运行中的任务。`/cancel` 与 Normal 模式 `c` 与队列**无关**：只取消在途任务，与功能引入前一致（用户决定："/cancel 也不用处理 prompt 队列"）。Esc 保持原语义（始终退出插入模式——误触不会中断任务）。提示行与 `↳ 消息` 行渲染在输入框上方（`render/input.rs` 的 `render_pending_block`，窄终端隐藏按钮）；布局把 `pending_display_lines()`（提示 + 每条一行，上限 4 行）计入输入高度。`submit_user_task` 拆成 `task_within_limits` / `dispatch_user_task`，使排队与自动提交共用派发。`/compact` 仍保留旧的忙时闪现（`input_busy_msg`）。
+
+**Behavior after:** 忙时输入的消息被排队，显示在输入框上方并带 Codex 风格提示，当前任务结束后自动提交（包括被 `/cancel` 结束的任务）；`[Cancel]` 按钮只丢弃队列。多条排队消息按顺序各自成为独立回合。超长消息在入队时即被拒绝。忙时提交不再丢失。
+
+**Pointers:** `handlers/insert.rs`（`handle_enter_submit`、Esc 分支）、`handlers/skills.rs`（`submit_user_task`、`flush_pending_when_idle`、`interrupt_and_submit_pending`）、`widgets/state/app/pending.rs`、`render/input.rs`（`render_pending_block`、`truncate_to_width`）；测试 `submit_queued_while_agent_busy`、`esc_with_pending_interrupts_and_submits_immediately`、`flush_pending_when_idle_submits_all_queued_in_order`、`input_box_renders_pending_block_above_input`；Ch 23 §6.6。
+
+---
+
+## 1. 2026-08-16 — 行内代码改用强调色文字，不再绘制背景补丁
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/render/pulldown.rs`、`crates/tui/src/render/log_style.rs` |
+
+**现象 / 动机：** 上一个修复已经阻止含行内代码的正文行被重绘成整行代码块，但行内代码 span 自身仍携带窄的 `code_block_bg` 背景补丁。这个矩形背景在普通正文和列表中仍然显得过重，换行后尤其明显。
+
+**决策：** 行内代码使用 `theme.accent` 作为前景色，不再绘制背景。日志重绘阶段对旧的行内代码背景 span 应用相同规则；真正的围栏代码行继续使用 `code_block_bg` 与 `code_block_fg`。
+
+**变更后行为：** 行内代码通过强调色文字区分，不再出现矩形背景补丁。围栏代码块仍保留主题背景和前景色，因此代码块边界仍然清晰。
+
+**指针：** `crates/tui/src/render/pulldown.rs`（`push_inline_code`）、`crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`）；两个模块中的 `inline_code_uses_accent_without_background` 测试；Ch 23。
+
+---
+
+## 1. 2026-08-16 — 含行内代码的正文/列表行不再整行绘制代码背景块
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/render/log_style.rs` |
+
+**现象 / 动机：** `restyle_log_line_with_skills` 只要某行的 span 里出现 `theme.code_block_bg()` 就把整行当作围栏代码行，重绘成整行代码背景。像 `- run `cargo build`` 这种常见列表项因此渲染成一整块高亮背景；当条目换行时，`wrap_line` 会把背景重新切片到每一续行，帧间残留成阴影状色带（反复出现的 "shadow" 类问题）。
+
+**决策：** 只有**每个** span 都带代码背景的行（即 `flush_code_block` 产生的真正围栏代码行）才按代码块重绘。混合正文/列表行保留原样式；行内代码 span 保留其窄背景补丁（文字/前景特殊渲染仍在）。
+
+**变更后行为：** 含行内代码的列表项与段落不再渲染成整行代码块，换行续行不再出现阴影色带。围栏代码块仍带主题代码背景（浅色主题下仍通过 `restyle_code_line` 修正前景色）。
+
+**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`restyle_code_line`）；测试 `inline_code_line_keeps_narrow_patch_not_full_block_bg`；Ch 23 渲染管线。
+
+---
+
+## 1. 2026-08-16 — 任务统计行支持多语言，并去掉过宽的 📊 图标
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/i18n.rs`、`crates/tui/src/widgets/state/app/messages.rs`、`crates/tui/src/handlers/mouse.rs` |
+
+**现象 / 动机：** 每轮结束的统计行被硬编码为 `📊 任务统计：…`（`messages.rs` 中的 `TASK_STATS_PREFIX`），即使 UI 切到英文模式仍是中文，且过宽的 `📊` emoji 在日志里显得太大。`[copy]` 按钮同样是一段硬编码英文。
+
+**决策：** 前缀与复制按钮移入 i18n `Messages` 表：EN `Task stats:` / `[copy]`，ZH `任务统计：` / `[复制]`，不再带 emoji 图标——过宽的 `📊` 前缀与 model 前的 `🧠` 都被移除。复制按钮渲染在**统计正文之前**，只有点击按钮字形本身才触发复制（其余位置正常做文本选择）。`add_task_stats_block` 通过 `self.msgs()` 读取；`is_task_stats_line` 现在识别所有支持语言的前缀（可带前置按钮），**并兼容旧的 `📊 任务统计：` 行**（保证旧会话里 `[copy]` 仍然可用）；鼠标处理器通过 `find_task_stats_copy_button` 定位本地化按钮的字节区间。
+
+**变更后行为：** 统计行在英文下渲染为 `[copy]  Task stats:⏱ mm:ss · model · N tokens …`，中文下为 `[复制]  任务统计：⏱ mm:ss · model · N tokens …`，前缀与 model 前都不再有宽 emoji。旧会话的统计行仍可复制。
+
+**指针：** `crates/tui/src/i18n.rs`（`task_stats_prefix`、`task_stats_copy_btn`）、`crates/tui/src/widgets/state/app/messages.rs`（`is_task_stats_line`、`find_task_stats_copy_button`、`add_task_stats_block`）、`crates/tui/src/handlers/mouse.rs`；测试 `task_stats_block_localizes_prefix_and_copy_button`、`task_stats_line_detection_covers_all_languages_and_legacy_rows`。
+
+---
+
+## 1. 2026-08-16 — `install.sh` 不再报 `tmp: unbound variable`，也不再泄漏克隆目录
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `scripts/install.sh` |
+
+**现象 / 动机：** 在 `set -u` 下，成功安装 release 后安装器打印 `bash: line 351: tmp: unbound variable`。`try_install_release` 对 `local tmp` 设置了 `trap 'rm -rf "$tmp"' RETURN`；RETURN trap 会被继承，并在调用者 `main` 返回时再次触发，此时 `tmp` 已越界，未加保护的 `$tmp` 展开因 `nounset` 中断。另外，`main` 把 `work` 声明为 `local` 并用 `EXIT` trap 清理；该 trap 在脚本退出时触发，此时 `main` 的局部变量已销毁，`${work:-}` 恒为空，导致 `git clone` 目录在源码构建 / 非仓库目录路径下泄漏。
+
+**决策：** (1) release 临时目录 trap 改为 `trap '[[ -n "${tmp:-}" ]] && rm -rf "$tmp"' RETURN` —— 加保护后，继承到调用者上下文的那次触发成为 no-op，同时在 `try_install_release` 自身返回时仍能正确清理。(2) `work` 不再是 `local`，改为初始化为 `""` 的全局变量，使已有的 `EXIT` trap 能在脚本退出时真正删除克隆目录（包括 `die` / `exit 1` 路径）。
+
+**变更后行为：** `curl … | bash`（以及 `./scripts/install.sh`）以 `Done. Run: tact-ui --help`、退出码 0 收尾，无 `unbound variable` 报错，release 临时目录与克隆仓库目录均被删除。
+
+**指针：** `scripts/install.sh`（`try_install_release`、`main`）。
+
+---
+
+## 1. 2026-08-16 — `plugin install` 不再 panic，并支持官方 `url` 类型的插件源
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 02；`crates/tact-ui/src/main.rs`、`crates/tact/src/plugin/marketplace.rs` |
+
+**现象 / 动机：** `tact-ui plugin install <plugin>@claude-plugins-official` 以两种方式失败。其一，主入口的自更新提前返回用了 `args.command.take()`，它会把*任何*非 `Upgrade` 的命令消费掉并置 `args.command = None`；于是 `Plugin`（以及 `Headless`）落到 `run_interactive`，而 `plugin` 命令解析配置时不会初始化 LLM provider（`install_without_llm`），交互路径因此在 `get_provider()` panic：`LLM provider not initialized`。其二，官方 `anthropics/claude-plugins-official` 目录使用了 `"source": "url"` 对象形式（286 个插件中的 150 个：`url` + `sha`，部分带 `path`），而 `PluginSource::from_catalog_value` 无法识别，导致整个目录解析失败，报 `invalid marketplace source: url`。
+
+**决策：** (1) 自更新提前返回改为先 `matches!(args.command, Some(CliCommand::Upgrade { .. }))` 判断，仅在命中分支内 `take()`，非 upgrade 命令得以进入后续分发。(2) `from_catalog_value` 将 `git-subdir` 与 `url` 统一视为 Git 仓库源（克隆 `url`、可选 `path`、锁定修订），优先使用 `sha` 锁定，回退到 `ref`。
+
+**变更后行为：** `plugin install`（以及 `headless`）正确分发；`plugin install frontend-design@claude-plugins-official` 会克隆官方目录、解析全部 286 条并安装 `frontend-design`（1 个 skill），锁定到其固定修订。插件命令从不依赖 LLM provider。
+
+**指针：** `crates/tact-ui/src/main.rs`（自更新提前返回）、`crates/tact/src/plugin/marketplace.rs`（`RawPluginSource::Object.sha`、`PluginSource::from_catalog_value`）；测试 `parses_url_plugin_source`、`parses_url_plugin_source_with_subdirectory`、`git_source_falls_back_to_named_ref_without_a_sha`；spec `docs/superpowers/specs/2026-07-20-plugin-install-design.md`。
+
+---
+
 ## 1. 2026-08-16 — 覆盖式列表弹窗限定在主区域内
 
 | 字段 | 内容 |

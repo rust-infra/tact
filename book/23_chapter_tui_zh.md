@@ -76,7 +76,7 @@ pub enum UserCommand {
 
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
-| **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
+| **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 —— **Planning/Executing 期间 Enter 改为排队**（Codex 风格"当前任务结束后提交"，见 §6.6） | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
 | **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
@@ -242,7 +242,7 @@ flowchart TB
 
 - 顶栏：固定 1 行。
 - 主区域：`Constraint::Min(3)`。
-- 输入高度：`min(显示行, 3) + 2`（含 border）——显示行按软换行后的行数计，不只统计显式 `\n`（长行在框内折行）。
+- 输入高度：`min(显示行, 3) + 2`（含 border）——显示行按软换行后的行数计，不只统计显式 `\n`（长行在框内折行）。有待提交的排队消息时，再叠加 `pending_display_lines()`（提示行 + 每条排队消息一行，上限 4 行）。
 - 底栏高度：始终 2 行（账户余额/配额追加到第 2 行，非第三行）。
 
 Popups 在基础布局**之后**绘制以置顶。多数先用 `Clear`（无 drop shadow — 避免部分终端暗带）。
@@ -334,6 +334,8 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 - 第 2 行：模型名、`max_out_token`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `max_out_token 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
+
+**忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行上的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
 
 ### 6.7 Markdown
 

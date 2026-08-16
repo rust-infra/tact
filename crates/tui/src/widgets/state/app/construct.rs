@@ -62,6 +62,8 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             input_scroll: 0,
+            pending_messages: Vec::new(),
+            pending_cancel_btn_area: ratatui::layout::Rect::default(),
             cmd_line: String::new(),
             model_context_window: 200_000,
             messages: Vec::new(),
