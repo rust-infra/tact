@@ -135,7 +135,23 @@ mode = "default"
 # ---------------------------------------------------------------------------
 [agent]
 # Model context window in tokens (must exceed max_tokens when nonzero;
-# auto-compaction + TUI usage meter; default: 200000)
+# auto-compaction + TUI usage meter; default: 200000).
+#
+# Resolution priority (highest first): built-in model→window mapping >
+# this file / --model-context-window > default 200000. Known mappings
+# (per official model docs, 2026-08):
+#   gpt-5.6 / gpt-5.6-luna / gpt-5.6-terra / gpt-5.6-sol / gpt-5.5 -> 1050000
+#   gpt-5.4 -> 1000000
+#   gpt-5 / gpt-5.1 / gpt-5.2 / gpt-5.3 / gpt-5.3-codex / gpt-5.4-mini -> 400000
+#   gpt-4o / gpt-4o-mini -> 128000
+#   claude-sonnet-5 / claude-fable-5 / claude-opus-5 / claude-opus-4-8 /
+#   claude-opus-4-7 / claude-opus-4-6 / claude-sonnet-4-6 -> 1000000 (API + Claude Code)
+#   claude-opus-4-20250514 / claude-sonnet-4-20250514 / claude-haiku-4-5 /
+#   claude-haiku-4-20250514 -> 200000
+#   deepseek-v4-pro / deepseek-v4-flash / deepseek-reasoner -> 1000000
+#   k3-256k -> 256000
+# Setting this value is therefore only effective for models without a
+# built-in mapping.
 # model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)

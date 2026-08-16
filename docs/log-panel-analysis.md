@@ -75,7 +75,7 @@ pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
 ```
 messages[] (物理索引)
 ┌─────┬──────────────────────────────────────┐
-│  4  │  "🧠 Thinking (8 lines)…"           │  ← title_idx = 4  (标题)
+│  4  │  "🧠 Thinking…"                      │  ← title_idx = 4  (标题)
 │  5  │  "│ Let me analyze the codebase…"    │  ← 思考内容行 1
 │  6  │  "│ First, I need to understand…"    │  ← 思考内容行 2
 │  7  │  "│ The architecture uses…"          │  ← 思考内容行 3

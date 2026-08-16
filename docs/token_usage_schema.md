@@ -215,6 +215,13 @@ This means consecutive multi-turn conversations typically achieve high cache hit
 
 **TUI bottom-bar usage display:** The second row shows:
 
+- **Max output tokens** — `max_out_token {n}`, the effective text-output
+  budget. For effort-semantic models (openai / deepseek / kimi k3) reasoning
+  shares the same `max_tokens` envelope, so the reasoning share is subtracted
+  (same tier convention as the compaction reserve: text = envelope ×
+  `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
+  models (Anthropic-style `thinking_budget`) keep a separate thinking
+  envelope, so the full `max_tokens` is shown.
 - **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
   main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
   Subagent LLM calls persist under their own `sessions.id` (linked via
@@ -242,8 +249,8 @@ Cached data is evicted after hours to days of inactivity.
 
 At the end of every session (both CLI and TUI), a summary is emitted as **GFM
 pipe markdown** with space-padded cells so columns line up in plain text.
-The TUI runs it through `tui-markdown`, which draws Unicode box borders and
-honors column alignment. CLI / headless print the same markdown source to
+The TUI runs it through `ratatui-markdown` (the `/stats` popup renders via
+`render_markdown_ratatui`). CLI / headless print the same markdown source to
 stderr:
 
 ```

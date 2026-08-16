@@ -64,48 +64,21 @@ Preserve:\n\
 Be compact but concrete. Preserve exact file paths, function names, and type signatures when they are important for continuing the work.";
 
 /// Share of the summary *text* budget reserved on top of `max_tokens` for
-/// reasoning tokens, as a percentage of the text budget.
+/// server-default reasoning tokens.
 ///
-/// Reasoning-effort providers (OpenAI o-series / DeepSeek / Kimi K3) count
-/// reasoning tokens inside the SAME `max_tokens` envelope as the summary text,
-/// so without a reserve a configured high/max effort (or DeepSeek's server
-/// default of thinking ON + effort high) starves the summary text budget and
-/// forces truncation continuations. Budget-separated providers (Anthropic)
-/// never consume `max_tokens` for thinking and return 0 here.
-fn compact_summary_reasoning_reserve_percent(
-    effort: Option<OpenAiReasoningEffort>,
-    provider_kind: &ProviderKind,
-) -> usize {
-    match effort {
-        Some(OpenAiReasoningEffort::None) => 0,
-        Some(OpenAiReasoningEffort::Minimal) | Some(OpenAiReasoningEffort::Low) => 25,
-        Some(OpenAiReasoningEffort::Medium) => 50,
-        Some(OpenAiReasoningEffort::High) => 75,
-        Some(OpenAiReasoningEffort::Xhigh) | Some(OpenAiReasoningEffort::Max) => 100,
-        // No explicit effort: DeepSeek and Kimi K3 reason by default (thinking
-        // ON + effort high server-side), so reserve their default high tier.
-        None if matches!(*provider_kind, ProviderKind::DeepSeek | ProviderKind::Kimi) => 75,
-        None => 0,
+/// The compaction summary call no longer enables thinking itself (no
+/// Claude-style budget, no explicit reasoning effort — see
+/// [`Agent::compact_history_local_with_mode`]), so only providers that
+/// reason **by default** when effort is omitted need headroom: DeepSeek and
+/// Kimi K3 default thinking ON + effort high server-side, and they count
+/// reasoning tokens inside the SAME `max_tokens` envelope as the summary
+/// text. Without the reserve their default thinking starves the summary text
+/// budget and forces truncation continuations. Other providers get 0.
+fn compact_summary_reasoning_reserve_percent(provider_kind: &ProviderKind) -> usize {
+    match provider_kind {
+        ProviderKind::DeepSeek | ProviderKind::Kimi => 75,
+        _ => 0,
     }
-}
-
-/// Summarizer thinking budget for the compaction summary call.
-///
-/// The summarizer's `max_tokens` is capped (see `summary_text_max_tokens` in
-/// [`Agent::compact_history_local_with_mode`]), and Anthropic requires
-/// `budget_tokens < max_tokens` on the wire. Clamp the configured
-/// Claude-style budget below the wire `max_tokens` so a large budget can
-/// never produce an invalid request; disable thinking entirely when the
-/// output budget is degenerate (≤ 1 token).
-fn compact_summary_thinking(configured_budget: usize, summary_max_tokens: u32) -> Option<Thinking> {
-    if summary_max_tokens <= 1 {
-        return None;
-    }
-    let budget = configured_budget.min(summary_max_tokens as usize - 1);
-    (budget > 0).then_some(Thinking {
-        budget_tokens: budget,
-        type_: ThinkingType::Enabled,
-    })
 }
 
 /// Shared state for a running agent session.
@@ -1058,12 +1031,13 @@ impl Agent {
     /// retried with bounded backoff, protocol errors are not.
     async fn compact_responses_native(&mut self) -> Result<()> {
         let model_name = self.agent_settings.model.clone();
+        // The native compact request only carries `{model, input}` — no
+        // reasoning/thinking is forwarded to the server-side compaction.
         let request = CreateMessageParams::new(RequiredMessageParams {
             model: model_name,
             messages: self.runtime.context.clone(),
             max_tokens: self.max_tokens(),
-        })
-        .with_reasoning_effort(self.agent_settings.reasoning_effort);
+        });
         self.emit_update(AgentUpdate::Info("[native compact]".into()));
 
         let mut retry_attempt = 0;
@@ -1185,21 +1159,14 @@ impl Agent {
             .context("summary output token budget does not fit u32")?
         };
         let reasoning_reserve = summary_text_max_tokens
-            .saturating_mul(compact_summary_reasoning_reserve_percent(
-                self.agent_settings.reasoning_effort,
-                &self.provider_kind,
-            ) as u32)
+            .saturating_mul(compact_summary_reasoning_reserve_percent(&self.provider_kind) as u32)
             .div_ceil(100);
         // Wire `max_tokens`: text plus the reasoning reserve. The text portion
-        // keeps its classic budget; reasoning only gets the reserved headroom.
+        // keeps its classic budget; the reserve only covers providers that
+        // reason by server default (DeepSeek / Kimi K3) — the summary call
+        // never enables thinking itself (no Claude-style budget, no explicit
+        // reasoning effort), so OpenAI / Anthropic get the full text budget.
         let summary_max_tokens = summary_text_max_tokens.saturating_add(reasoning_reserve);
-        // Summarizer thinking budget: clamped below the wire `max_tokens`
-        // (Anthropic requires `budget_tokens < max_tokens`, and the configured
-        // budget may exceed the capped summary output budget).
-        let summary_thinking = compact_summary_thinking(self.thinking_budget(), summary_max_tokens);
-        // Claude-style thinking budgets are separate from `max_tokens` but
-        // still consume context-window space; reserve them on the input side.
-        let thinking_budget = self.thinking_budget();
         let summary_input_limit = if model_context_window == 0 {
             crate::compact::KEEP_USER_MESSAGE_TOKENS
         } else {
@@ -1209,7 +1176,6 @@ impl Agent {
             model_context_window
                 .saturating_sub(summary_max_tokens as usize)
                 .saturating_sub(headroom)
-                .saturating_sub(thinking_budget)
         };
         let mut prompt = COMPACT_SUMMARY_INSTRUCTIONS.to_string();
         if approx_text_tokens(&prompt) > summary_input_limit {
@@ -1265,37 +1231,22 @@ impl Agent {
         );
 
         let model_name = self.agent_settings.model.clone();
-        // Apply the (possibly clamped) summarizer thinking budget when present;
-        // `with_thinking` takes a concrete `Thinking`, not an `Option`.
-        let apply_summary_thinking = |mut request: CreateMessageParams| -> CreateMessageParams {
-            if let Some(thinking) = summary_thinking.clone() {
-                request = request.with_thinking(thinking);
-            }
-            request
-        };
-        let initial_request =
-            apply_summary_thinking(CreateMessageParams::new(RequiredMessageParams {
-                model: model_name.clone(),
-                messages: vec![Message::new_text(Role::User, prompt.clone())],
-                max_tokens: summary_max_tokens,
-            }))
-            .with_reasoning_effort(self.agent_settings.reasoning_effort);
+        // The compaction summary call does not enable thinking: no Claude-style
+        // thinking budget and no reasoning effort, so the full `max_tokens`
+        // envelope goes to the summary text (thinking adds little value to a
+        // handoff summary and would consume output tokens).
+        let initial_request = CreateMessageParams::new(RequiredMessageParams {
+            model: model_name.clone(),
+            messages: vec![Message::new_text(Role::User, prompt.clone())],
+            max_tokens: summary_max_tokens,
+        });
 
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
             model: model_name.clone(),
             max_tokens: initial_request.max_tokens,
-            thinking_budget: initial_request
-                .thinking
-                .as_ref()
-                .map(|t| t.budget_tokens as u32),
-            reasoning_effort: self
-                .agent_settings
-                .reasoning_effort
-                .map(|effort| effort.as_str().to_string()),
-            extra_body: initial_request
-                .thinking
-                .as_ref()
-                .map(|t| serde_json::json!({"thinking": t}).to_string()),
+            thinking_budget: None,
+            reasoning_effort: None,
+            extra_body: None,
         }));
         // ── Stats: before compaction LLM call ──
         self.runtime.stats.prompt_count += 1;
@@ -1318,12 +1269,11 @@ impl Agent {
         let mut messages = vec![Message::new_text(Role::User, prompt.clone())];
         let mut blocks_all: Vec<ContentBlock> = Vec::new();
         let (stop_reason, token_usage, request_body) = loop {
-            let request = apply_summary_thinking(CreateMessageParams::new(RequiredMessageParams {
+            let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: messages.clone(),
                 max_tokens: summary_max_tokens,
-            }))
-            .with_reasoning_effort(self.agent_settings.reasoning_effort);
+            });
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
@@ -2456,123 +2406,44 @@ mod tests {
 
     #[test]
     fn compact_summary_reasoning_reserve_percent_tiers() {
-        use tact_llm::{OpenAiReasoningEffort, ProviderKind};
-        // No explicit effort: only DeepSeek and Kimi K3 reason by default
-        // (thinking ON + effort high server-side), so only they get a reserve.
+        use tact_llm::ProviderKind;
+        // The compaction summary call never enables thinking itself (no
+        // effort / no thinking budget), so only providers that reason by
+        // **server default** get headroom: DeepSeek and Kimi K3 default
+        // thinking ON + effort high server-side.
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(None, &ProviderKind::OpenAi),
+            compact_summary_reasoning_reserve_percent(&ProviderKind::OpenAi),
             0
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(None, &ProviderKind::Anthropic),
+            compact_summary_reasoning_reserve_percent(&ProviderKind::Anthropic),
             0
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(None, &ProviderKind::DeepSeek),
+            compact_summary_reasoning_reserve_percent(&ProviderKind::DeepSeek),
             75
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(None, &ProviderKind::Kimi),
+            compact_summary_reasoning_reserve_percent(&ProviderKind::Kimi),
             75
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                None,
-                &ProviderKind::Custom("other".to_string()),
-            ),
+            compact_summary_reasoning_reserve_percent(&ProviderKind::Custom("other".to_string())),
             0
-        );
-        // Explicit `none` disables reasoning → no reserve, even on DeepSeek.
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::None),
-                &ProviderKind::DeepSeek,
-            ),
-            0
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::Minimal),
-                &ProviderKind::OpenAi,
-            ),
-            25
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::Low),
-                &ProviderKind::OpenAi,
-            ),
-            25
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::Medium),
-                &ProviderKind::OpenAi,
-            ),
-            50
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::High),
-                &ProviderKind::OpenAi,
-            ),
-            75
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::Xhigh),
-                &ProviderKind::OpenAi,
-            ),
-            100
-        );
-        assert_eq!(
-            compact_summary_reasoning_reserve_percent(
-                Some(OpenAiReasoningEffort::Max),
-                &ProviderKind::OpenAi,
-            ),
-            100
-        );
-    }
-
-    #[test]
-    fn compact_summary_thinking_clamps_below_max_tokens() {
-        // Large configured budget clamped below the capped summarizer budget.
-        assert_eq!(
-            compact_summary_thinking(8_000, 2_000).map(|t| t.budget_tokens),
-            Some(1999)
-        );
-        // Budget that already fits passes through unchanged.
-        assert_eq!(
-            compact_summary_thinking(1_000, 2_000).map(|t| t.budget_tokens),
-            Some(1000)
-        );
-        // Zero configured budget → thinking disabled.
-        assert_eq!(
-            compact_summary_thinking(0, 2_000).map(|t| t.budget_tokens),
-            None
-        );
-        // Degenerate output budget → thinking disabled (cannot stay below max).
-        assert_eq!(
-            compact_summary_thinking(8_000, 1).map(|t| t.budget_tokens),
-            None
-        );
-        assert_eq!(
-            compact_summary_thinking(8_000, 0).map(|t| t.budget_tokens),
-            None
         );
     }
 
     #[tokio::test]
-    async fn local_compact_reserves_reasoning_budget_and_forwards_thinking() {
+    async fn local_compact_omits_thinking_and_effort() {
         ensure_config();
-        let context = test_context("local_compact_reasoning_budget");
+        let context = test_context("local_compact_omits_thinking");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
         tool_context.ui_tx = Some(tx);
 
-        // Capture the summarizer request so we can assert the wire output
-        // budget reserves a reasoning share above the text budget, and that
-        // the configured thinking budget / effort are forwarded.
+        // Capture the summarizer request so we can assert the compact call
+        // never enables thinking: no reasoning effort and no thinking budget
+        // are forwarded, so the full output envelope goes to the summary text.
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
         let seen_arc = seen.clone();
         let mock = MockClient::with_responder(move |request, _idx| {
@@ -2596,7 +2467,8 @@ mod tests {
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         )
         .with_provider_kind(tact_llm::ProviderKind::OpenAi);
-        // High effort + a Claude-style thinking budget on a 128k window.
+        // High effort + a Claude-style thinking budget on a 128k window:
+        // neither may reach the compact summary request.
         agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::High);
         agent.agent_settings.thinking_budget = 4096;
         agent.agent_settings.model_context_window = 128_000;
@@ -2612,28 +2484,26 @@ mod tests {
         agent
             .compact_history(None)
             .await
-            .expect("compact with reasoning reserve must succeed");
+            .expect("compact without thinking must succeed");
 
         let requests = seen.lock().unwrap();
         let request = requests
             .first()
             .expect("summarizer request must be captured");
-        // Text budget = min(20% × 128k, 2000) = 2000; high effort reserves
-        // 75% on top → wire max_tokens = 3500, so reasoning never starves
-        // the summary text budget.
+        // Text budget = min(20% × 128k, 2000) = 2000; OpenAI gets no
+        // server-default reasoning reserve, so the wire max_tokens is the
+        // full text budget.
         assert_eq!(
-            request.max_tokens, 3500,
-            "wire max_tokens must reserve reasoning headroom above the text budget"
+            request.max_tokens, 2000,
+            "wire max_tokens must equal the summary text budget (no thinking)"
         );
         assert_eq!(
-            request.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::High),
-            "configured reasoning effort must be forwarded"
+            request.reasoning_effort, None,
+            "compact summary must not forward the configured reasoning effort"
         );
-        assert_eq!(
-            request.thinking.as_ref().map(|t| t.budget_tokens),
-            Some(3499),
-            "configured thinking budget must be forwarded, clamped below the wire max_tokens"
+        assert!(
+            request.thinking.is_none(),
+            "compact summary must not forward a Claude-style thinking budget"
         );
 
         let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
@@ -2644,22 +2514,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_compact_clamps_thinking_budget_below_summary_max_tokens() {
+    async fn local_compact_keeps_server_default_reasoning_reserve() {
         ensure_config();
-        let context = test_context("local_compact_anthropic_thinking_clamp");
+        let context = test_context("local_compact_server_default_reserve");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
         tool_context.ui_tx = Some(tx);
 
-        // Capture the summarizer request so we can assert the wire thinking
-        // budget stays strictly below `max_tokens` (Anthropic rejects
-        // `budget_tokens >= max_tokens` with a 400).
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
         let seen_arc = seen.clone();
         let mock = MockClient::with_responder(move |request, _idx| {
             seen_arc.lock().unwrap().push(request.clone());
             Ok((
-                vec![make_text_block("clamped summary")],
+                vec![make_text_block("deepseek summary")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_provider_kind(tact_llm::ProviderKind::DeepSeek);
+        // DeepSeek reasons by server default even without an explicit effort,
+        // so the summary call keeps the 75% server-default reasoning reserve.
+        agent.agent_settings.reasoning_effort = None;
+        agent.agent_settings.model_context_window = 128_000;
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::Assistant, "second turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("compact with server-default reserve must succeed");
+
+        let requests = seen.lock().unwrap();
+        let request = requests
+            .first()
+            .expect("summarizer request must be captured");
+        // Text budget 2000 + 75% server-default reserve = 3500, so DeepSeek's
+        // forced reasoning never starves the summary text; but no effort and
+        // no thinking budget are sent.
+        assert_eq!(
+            request.max_tokens, 3500,
+            "DeepSeek keeps the server-default reasoning reserve"
+        );
+        assert_eq!(request.reasoning_effort, None);
+        assert!(request.thinking.is_none());
+
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("deepseek summary"),
+            "rebuilt context must contain the summary: {context_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_compact_omits_thinking_for_anthropic() {
+        ensure_config();
+        let context = test_context("local_compact_anthropic_no_thinking");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = context;
+        tool_context.ui_tx = Some(tx);
+
+        // Capture the summarizer request so we can assert no Claude-style
+        // thinking budget is forwarded even though one is configured.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
+        let seen_arc = seen.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            seen_arc.lock().unwrap().push(request.clone());
+            Ok((
+                vec![make_text_block("plain summary")],
                 Some(StopReason::EndTurn),
                 None,
             ))
@@ -2678,7 +2617,7 @@ mod tests {
         )
         .with_provider_kind(tact_llm::ProviderKind::Anthropic);
         // Claude-style thinking budget (8k) far above the capped summarizer
-        // output budget (2k); no reasoning effort (Anthropic has no effort).
+        // output budget (2k): the compact call must not forward it.
         agent.agent_settings.reasoning_effort = None;
         agent.agent_settings.thinking_budget = 8_000;
         agent.agent_settings.model_context_window = 128_000;
@@ -2694,22 +2633,21 @@ mod tests {
         agent
             .compact_history(None)
             .await
-            .expect("compact with clamped thinking budget must succeed");
+            .expect("compact without thinking must succeed");
 
         let requests = seen.lock().unwrap();
         let request = requests
             .first()
             .expect("summarizer request must be captured");
-        // Wire max_tokens = 2000 (Anthropic gets no reasoning reserve);
-        // the thinking budget must be clamped to max_tokens - 1 = 1999.
+        // Wire max_tokens = 2000 (Anthropic gets no reasoning reserve); no
+        // thinking budget may be forwarded.
         assert_eq!(
             request.max_tokens, 2000,
             "Anthropic text budget stays at the classic cap"
         );
-        assert_eq!(
-            request.thinking.as_ref().map(|t| t.budget_tokens),
-            Some(1999),
-            "summarizer thinking budget must stay strictly below wire max_tokens"
+        assert!(
+            request.thinking.is_none(),
+            "summarizer must not receive a thinking budget"
         );
         assert_eq!(
             request.reasoning_effort, None,
@@ -2718,15 +2656,15 @@ mod tests {
 
         let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
         assert!(
-            context_text.contains("clamped summary"),
+            context_text.contains("plain summary"),
             "rebuilt context must contain the summary: {context_text}"
         );
     }
 
     #[tokio::test]
-    async fn local_compact_input_reservation_subtracts_thinking_budget() {
+    async fn local_compact_bails_when_window_too_small_for_summary_prompt() {
         ensure_config();
-        let context = test_context("local_compact_thinking_input");
+        let context = test_context("local_compact_too_small_window");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
         tool_context.ui_tx = Some(tx);
@@ -2746,11 +2684,11 @@ mod tests {
             .unwrap(),
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         );
-        // 3k window with a 2k thinking budget leaves so little input room
-        // that the summarizer prompt cannot fit → compaction must bail
-        // instead of silently over-reserving the window.
-        agent.agent_settings.thinking_budget = 2000;
-        agent.agent_settings.model_context_window = 3000;
+        // Tiny window: output + 10% headroom reservation leaves so little
+        // input room that the fixed summarizer prompt cannot fit → compaction
+        // must bail instead of silently over-reserving the window. (No
+        // thinking budget is involved anymore — the compact call never thinks.)
+        agent.agent_settings.model_context_window = 100;
         agent
             .runtime
             .context
@@ -2759,7 +2697,7 @@ mod tests {
         let err = agent
             .compact_history(None)
             .await
-            .expect_err("thinking budget must be reserved from the input side");
+            .expect_err("too-small window must bail from compaction");
         assert!(
             err.to_string().contains("too small"),
             "expected a too-small-window error, got: {err}"

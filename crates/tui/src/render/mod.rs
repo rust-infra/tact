@@ -9,6 +9,7 @@ mod log_column;
 mod log_style;
 mod mermaid_sequence;
 pub(crate) mod popups;
+mod pulldown;
 pub(crate) mod render_md;
 pub(crate) mod renderable;
 pub(crate) mod slash_style;
@@ -18,7 +19,6 @@ pub(crate) mod util;
 pub(super) use bar::{render_bottom_bar, render_status_bar};
 pub(super) use input::{render_input_box, wrap_line};
 pub(super) use layout::render_main_area;
-pub(crate) use log::effective_max_logical_scroll;
 pub(crate) use log_style::is_user_message_line;
 pub(super) use popups::{
     command_palette::render_command_palette, file_picker::render_file_picker,

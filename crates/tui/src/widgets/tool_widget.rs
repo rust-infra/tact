@@ -769,10 +769,7 @@ impl<'a> ToolWidget<'a> {
 
     fn detail_card_title(&self, total_lines: usize) -> String {
         if self.live_detail {
-            return self
-                .msgs
-                .tool_live_output_title_tmpl
-                .replace("{}", &total_lines.to_string());
+            return self.msgs.tool_live_output_title.to_string();
         }
         if matches!(self.phase, ToolPhase::Failed) {
             return self.msgs.tool_error_card_title.to_string();
@@ -790,12 +787,8 @@ impl<'a> ToolWidget<'a> {
                     .replacen("{}", &total_lines.to_string(), 1)
                     .replacen("{}", &self.arg_summary, 1)
             }
-            tact_protocol::ToolVisualKind::FileRead => {
-                format!("Read {} ({} lines)", self.arg_summary, total_lines)
-            }
-            tact_protocol::ToolVisualKind::Command => {
-                format!("Command output ({} lines)", total_lines)
-            }
+            tact_protocol::ToolVisualKind::FileRead => format!("Read {}", self.arg_summary),
+            tact_protocol::ToolVisualKind::Command => "Command output".to_string(),
             tact_protocol::ToolVisualKind::Task
             | tact_protocol::ToolVisualKind::Generic
             | tact_protocol::ToolVisualKind::Sleep
@@ -914,10 +907,7 @@ mod tests {
             "live card count must match streamed output lines, not $ command prefix"
         );
         assert_eq!(output.detail_preview.len(), 2);
-        assert_eq!(
-            output.detail_title.as_deref(),
-            Some("Live output (2 lines)")
-        );
+        assert_eq!(output.detail_title.as_deref(), Some("Live output"));
         assert_eq!(
             output.detail_full.as_deref(),
             Some(

@@ -29,6 +29,120 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-15 — `/stats` popup renders through ratatui-markdown directly
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The system-prompt popup (shared by `/stats` session stats and the assembled-system-prompt view) went through the pulldown-cmark pipeline with Tact's width-aware pipe-table pass, laid out at the popup's content width. For a quick statistics popup that extra layout machinery was not worth it. |
+| Decision | `render_system_prompt_popup` now renders via `render_markdown_ratatui` (`crates/tui/src/render/render_md.rs`): a plain `ratatui_markdown::markdown::MarkdownRenderer` at the popup's content width, using the same `TuiRichTextTheme` as the Mermaid renderer. The width-aware table pass and Mermaid routing stay for the main-area Markdown cells. |
+| Behavior after | The `/stats` and system-prompt popups are laid out by ratatui-markdown's default renderer (tables included); popup tests (`session_stats_popup_renders_gfm_table`) pass unchanged. |
+| Pointers | `crates/tui/src/render/popups/system_prompt_popup.rs`, `crates/tui/src/render/render_md.rs` (`render_markdown_ratatui`); `docs/token_usage_schema.md` Session Stats Display. |
+
+---
+
+## 1. 2026-08-15 — Auto-compaction no longer enables thinking on the summary call
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The local compaction summary call forwarded the agent's Claude-style `thinking_budget` (`with_thinking`, clamped below the wire `max_tokens`) and its explicit `reasoning_effort`, and reserved an effort-tiered reasoning share on top of the text budget. Thinking on a handoff summary adds little value and consumes output tokens from the same `max_tokens` envelope (effort models) — the user asked to stop enabling it during auto-compaction. |
+| Decision | The summarizer request no longer carries any thinking: no `thinking` block and no `reasoning_effort` are forwarded (main-loop thinking config is untouched), and the input reservation no longer subtracts a thinking budget. The **server-default** reasoning reserve stays for DeepSeek / Kimi K3 only (fixed 75% of the text budget on top): they default thinking ON + effort high server-side even when the request omits effort, so without the reserve their forced reasoning would starve the summary text and force truncation continuations. The native `/responses/compact` request was already `{model, input}`-only; its dead `.with_reasoning_effort` was removed. |
+| Behavior after | The compact summary call is a plain non-streaming `create_message` with `max_tokens` = classic text budget (OpenAI / Anthropic) or text + 75% reserve (DeepSeek / Kimi K3); `AgentUpdate::ModelInfo` emitted during compaction reports no thinking/effort. |
+| Pointers | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `compact_summary_reasoning_reserve_percent`, `compact_responses_native`), book [Ch 5](./05_chapter_compact.md) §summarization call. |
+
+---
+
+## 1. 2026-08-15 — Bottom-bar `out` renamed to `max_out_token` with the real output budget
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | The bottom-bar output segment was labeled `out`/`输出` and showed the raw `max_tokens` envelope. For effort-semantic models (openai / deepseek / kimi k3) reasoning counts inside the same envelope as output text, so `out 128K` next to `think high` overstated the tokens actually left for text — the user asked for the segment to show the **max output token** value, with the reasoning share subtracted. |
+| Decision | Rename the label to `max_out_token` (language-invariant, both locales) and make the value the effective text-output budget: for effort-semantic models subtract the reasoning share using the same tier convention as the compaction reserve (percent of the text budget added on top → text = envelope × `100/(100+pct)`; `high` → 73K on a 128K envelope). Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in a separate envelope, so they show the full `max_tokens`. Computed in the TUI from `status_bar.model_max_tokens` + `model_thinking_budget` + `model_reasoning_effort`; no protocol change. |
+| Behavior after | Bottom-bar row 2 shows `max_out_token {n}` instead of `out {n}`; `n` equals `max_tokens` for budget/no-think states and `max_tokens × 100/(100+pct)` when an effort is displayed (`none`/no effort → unchanged, `low` → 80%, `medium` → ~67%, `high` → ~57%, `xhigh`/`max` → 50%). |
+| Pointers | `crates/tui/src/render/bar.rs` (`format_max_out_tokens`), `crates/tui/src/i18n.rs` (`bottom_out`), book [Ch 23](./23_chapter_tui.md) §6.6, `docs/token_usage_schema.md`. |
+
+---
+
+## 1. 2026-08-15 — Model→context-window mapping overrides manual `model_context_window` config
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | `agent.model_context_window` was purely manual (CLI/TOML, default `200_000`) with no model inference. With `deepseek-v4-pro` (real window 1M) the bottom-bar `ctx` meter showed `…/256K` from a stale 256k config and auto-compaction fired at ~80% of that (~205k) instead of ~800k, causing premature compaction. `max_tokens` already had a model-based default (`kimi_k2x → 32_000`) to copy; the window had no equivalent. |
+| Decision | Add `model_context_window_for_model(model)` in `resolve.rs` and resolve the window as: **model→window mapping (highest) → CLI/TOML → default `200_000`**. Values follow official model docs (2026-08): OpenAI `gpt-5.6` family + `gpt-5.5` → `1_050_000`, `gpt-5.4` → `1_000_000`, `gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`, `gpt-4o` family → `128_000`; Anthropic (API + Claude Code) `claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`, `claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`; DeepSeek V4 → `1_000_000`, `k3-256k` → `256_000`. A mapping match deliberately overrides user file config so a stale manual window can never under-report a well-known model. |
+| Behavior after | The `ctx` bottom-bar meter and the derived auto-compact threshold (80% of window) use the mapped window for the mapped models. GPT-5.6/5.5 models show `…/1.05M`, Claude 1M models (incl. Claude Code ids) `…/1M`, DeepSeek V4 `…/1M`, GPT-5.x `…/400K`, GPT-4o `…/128K`, `k3-256k` `…/256K`. Manual `model_context_window` only takes effect for models without a built-in mapping. The nonzero `model_context_window > max_tokens` validation still applies to the resolved value. |
+| Pointers | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, resolution at ~`:587`); `config.example.toml` `[agent]`; book [Ch 21](./21_chapter_config.md) §5, [Ch 5](./05_chapter_compact.md) §settings tables. |
+
+---
+
+## 1. 2026-08-15 — Markdown body moves to pulldown-cmark; ratatui-markdown kept for Mermaid only
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Plan | `docs/superpowers/plans/2026-08-15-pulldown-cmark-migration.md` |
+| Symptom / motivation | The consolidation below landed on a local `ratatui-markdown` fork carrying ~350 lines of patches across 8 files (H4–H6, ordered-list numbers, hard breaks, nested emphasis, CJK flanking, themed code slots) purely so Tact's prose renderer could match `tui-markdown`'s output. The fork is a rebase burden and a path dependency that only resolves on this machine; `steer` and xAI's `grok-build` both parse CommonMark with `pulldown-cmark` and render in their own code instead of forking a Markdown crate. |
+| Decision | Replace the fork's block renderer with a `pulldown-cmark` 0.13 event loop (`crates/tui/src/render/pulldown.rs`) that reuses Tact's width-aware pipe-table `format_table`, the `▎` blockquote gutter, fenced-code styling, and Mermaid routing. `ratatui-markdown` becomes an upstream git dependency (`celestia-island/ratatui-markdown` @ `3a8bcbe`, `mermaid` feature) used only for non-sequence Mermaid diagrams; `sequenceDiagram` stays in Tact's own `mermaid_sequence.rs`. The `feat/tact` fork and the `TuiRenderHooks`/`RenderHooks` adapter are removed. |
+| Behavior after | Prose/heading/list/task/table/blockquote rendering is owned by Tact from `pulldown-cmark` events. `ENABLE_SMART_PUNCTUATION` is left off so `...` is never turned into `…` (system messages and user text stay byte-stable). GFM task lists now apply to ordered lists too (`1. [X]` → `1. ☑`). Mermaid output is unchanged. |
+| Pointers | `crates/tui/src/render/pulldown.rs`, `render_md.rs`; `Cargo.toml` (`ratatui-markdown` git dep + `pulldown-cmark`); book [Ch 23](./23_chapter_tui.md) §6.7; the entry below records the intermediate fork approach. |
+
+---
+
+## 1. 2026-08-15 — Main-area Markdown consolidated onto ratatui-markdown
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Plan | `docs/superpowers/plans/2026-08-15-ratatui-markdown-migration.md` |
+| Symptom / motivation | The TUI main area maintained two Markdown stacks in parallel: `tui-markdown` 0.3.x (crates.io) rendered prose / headings / lists in the log panel, while `ratatui-markdown` (celestia-island git fork, branch-pinned) rendered Mermaid and the `/tasks-dag` popup. Two style adapters, two color palettes, and fork workarounds (task-list marker escaping, hardcoded-color remaps in `log_style.rs`, fence-marker bookkeeping) had to be kept in sync. |
+| Decision | Consolidate on `ratatui-markdown` (local fork at `../ratatui-markdown`, branch `feat/tact`, based on `chore/update-ratatui-0.30` @ `3a8bcbe`) with capability patches: H4–H6 headings, ordered-list numbers preserved, 4-column-per-level nested indent, recursive nested emphasis (`**bold _x_ italic**`), link URL suffixes, themed inline-code / fenced-code color slots, soft-break collapse + hard-break preservation, space-run preservation, and CJK-aware emphasis flanking. Tact side: `render_plain_markdown` swaps `tui_markdown::from_str_with_options` for fork parse+render with a `TuiRenderHooks` (fences / box chrome hidden, code background applied directly); the blockquote `▎` gutter and the H1 highlight background moved to post/restyle passes; tables render through a `table` RenderHooks adapter that delegates to Tact's width-aware `format_table` (pipe style), so the fork's own `render_table` is unused and kept upstream; triple-click code-block detection now matches the code background instead of ````` ``` ````` markers; the diff popup highlights via `syntect` directly (same Base16 Ocean Dark theme), so `tui-markdown` and the direct `pulldown-cmark` dep are removed. |
+| Behavior after | The log panel renders Markdown through one crate. Bullets render as `•` and task items as `☐` / `☑` (previously the literal `-` / `[ ]` text); fenced code keeps the themed background without fence markers; raw copy rows mirror the rendered text (markers are consumed at parse time); `/stats` renders its GFM table as a pipe table via `format_table`; the diff popup keeps syntax highlighting. |
+| Pointers | `crates/tui/src/render/render_md.rs` (`TuiRenderHooks`, `render_plain_markdown`, `apply_blockquote_indicator`), `crates/tui/src/render/log_style.rs` (H1 highlight rule), `crates/tui/src/render/popups/diff_popup.rs` (syntect), `crates/tui/src/widgets/state/app/popups.rs` (`find_code_block_containing_logical`), `Cargo.toml` (`ratatui-markdown` path dep + `syntect`); fork repo `../ratatui-markdown` `feat/tact`; [Ch 23](./23_chapter_tui.md) §6.7. |
+
+---
+
+## 1. 2026-08-15 — Thinking, command-output, and read cards drop the redundant line count from their top titles
+
+| Field | Value |
+|-------|-------|
+| Type | `removal` |
+| Symptom / motivation | The Thinking card showed the total line count twice — once in the top title (`🧠 Thinking (N lines)`) and again in the bottom bar (`↕ visible/N lines …`) — and the `bash` command-output card repeated it too (top `Live output (N lines)` / `Command output (N lines)` vs. the bottom `preview/total lines` hint), as did the `read_file` card (top `Read <path> (N lines)`). Whenever both were visible, the top count duplicated the bottom bar's number. |
+| Decision | Card top titles no longer carry counts: `🧠 Thinking` (active and completed), `Live output` (running bash), `Command output` (completed bash), `Read <path>` (read_file). The bottom bars remain the single count source (`↕ visible/total lines` on Thinking; `preview/total lines` when the command output overflows the preview). Removed the now-unused `thinking_card_title_pl` field, and `tool_live_output_title_tmpl` lost its `{}` placeholder and was renamed `tool_live_output_title`. |
+| Behavior after | Thinking cards read `🧠 Thinking` / `🧠 思考中`; live bash cards read `Live output` / `实时输出`; completed command cards read `Command output`; read cards read `Read <path>`. All line counts live in the card bottom bars. Popup titles unchanged (they already used the command text or bare `Command output`). |
+| Pointers | `crates/tui/src/i18n.rs`, `crates/tui/src/render/cells/thinking.rs`, `crates/tui/src/widgets/tool_widget.rs` (`detail_card_title`), `crates/tui/src/render/cells/tool.rs` (`card_bottom_text`); tests `live_output_total_excludes_command_prefix_but_popup_keeps_it`, `log_tool_card_renders_when_scrolled_into_placeholder_rows`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
+## 1. 2026-08-15 — Log word-wrap at word boundaries; selection UX made symmetric
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | (1) `wrap_line` hard-cut every visual line at the exact display width (`split_at_display_width`), so long URLs, paths and words split mid-word with no continuation hint; (2) wrapped partial selections lost the REVERSED overlay on continuation lines because the wrapped path flattened every span to one base style; (3) double-click word selection only understood ASCII, so double-clicking 中文 selected nothing; (4) selection UX was asymmetric: clicking a whole-Markdown row (or dragging into one) created an invisible selection (the MarkdownCell renderer draws no overlay), and clicking empty space / outside the panel kept a stale selection; (5) mouse hit-testing simulated hard wraps at panel width while rendering wrapped at width − indent, drifting up to the indent width on indented rows. |
+| Decision | A shared `wrap_break_offsets` computes visual-line start offsets once and both `wrap_line` and `visual_pos_to_byte_offset` consume it, so render and hit-test cannot disagree. Wrap is greedy word wrap: break at the last whitespace run that fits; hard-cut only when an unbroken word exceeds the line; trailing whitespace rides on the previous line (invisible) so segments stay contiguous. `wrap_line` now re-slices the original styled spans per segment, so per-span styles (REVERSED included) survive onto continuation lines. `find_word_bounds` classifies the char under the cursor into ASCII-word or CJK-run (Han/kana/Hangul) and expands within that class. `handle_log_click`/`handle_mouse_drag`/`handle_log_triple_click` refuse to start or extend a selection on Markdown rows, and clicks on empty space below the log or anywhere outside the panel clear the selection. Hit-testing subtracts the row indent from the wrap width. |
+| Behavior after | Words no longer break mid-word (URLs/paths/CJK stay intact until they genuinely exceed the line); selection highlight stays visible across every wrapped line; double-click selects whole 中文 runs; Markdown cards are never silently "selected"; stray clicks clear stale selections instead of keeping them; clicks on indented rows map to the right byte. |
+| Pointers | `crates/tui/src/render/util.rs` (`wrap_break_offsets`, `wrap_line`, `visual_pos_to_byte_offset`, `col_to_byte_offset`), `crates/tui/src/widgets/state/app/visibility.rs` (`find_word_bounds`, `is_markdown_row`, `byte_offset_from_log_position`), `crates/tui/src/handlers/mouse.rs` (click/drag/triple-click guards + outside-click clear), `crates/tui/src/render/cells/text.rs`; tests `wrap_break_offsets_prefers_word_boundaries`, `wrap_line_keeps_word_intact_and_preserves_span_styles`, `wrap_break_offsets_agree_with_byte_offset_hit_testing`, `partial_selection_reverses_target_span_across_wrapped_lines`, `double_click_selects_cjk_run`, `click_below_last_message_clears_selection`, `click_on_markdown_row_does_not_create_invisible_selection`, `drag_into_markdown_row_does_not_extend_selection`, `click_outside_log_clears_selection`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
+## 1. 2026-08-15 — Log scroll becomes visual; `/skills` paginated
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | The log panel scrolled in logical-message-row units (`log_scroll.offset ± 1` per `j`/`k`/wheel tick). A whole-Markdown message taller than the viewport — e.g. the `/skills` pipe table with ~60 skills ≈ 400+ rendered lines — therefore exposed only its first and last screenful: `resolve_visual_scroll` bottom-pinned at the max logical offset, so the middle rows (where `lark-*` sorts alphabetically) were unreachable in both directions. |
+| Decision | The viewport's first visible **visual** line is now authoritative (`LogScroll.visual_top`, `usize::MAX` = pin-to-bottom sentinel); `offset` becomes a derived logical mirror for read-only consumers (mouse hit-testing, code popup). Pure step functions `visual_step_up/down` move half a viewport per `j`/`k` (3 lines per wheel tick) *inside* a cell taller than the viewport and jump across row boundaries otherwise; entering a tall row from below lands on its bottom so upward traversal stays continuous. `resolve_visual_scroll` / `effective_max_logical_scroll` deleted. `/skills` output is additionally paginated into 15-skill chunks, each a separate Markdown message with a `(n/k)` heading. |
+| Behavior after | Any cell taller than the viewport (long tables, expanded tool cards) is fully traversable in both directions with `j`/`k`/wheel; `g`/`G` still jump to top/bottom, and auto-follow-the-stream keeps working (`is_log_pinned_to_bottom` compares visual positions). `/skills` renders 15 skills per page with numbered headings. |
+| Pointers | `crates/tui/src/widgets/state/app/scroll.rs` (step functions + scroll API), `crates/tui/src/widgets/state/log_scroll.rs` (`visual_top`), `crates/tui/src/render/log.rs` (visual clamp + mirror derivation), `crates/tui/src/handlers/{normal,mouse,mod}.rs` (keys, wheel, `/skills` pagination), `crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs` (pin helpers); regression tests `tall_markdown_cell_is_fully_traversable`, `skills_command_paginates_long_lists`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
+## 1. 2026-08-15 — Main-area render polish: markdown indent, theme links, code backgrounds, hidden markers
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Render-path review found: (1) whole-Markdown messages (`MarkdownCell`, e.g. `/skills`) hugged the left border while streamed replies/tool cards are indented; (2) links used hardcoded palette `Blue` that never adapted to the theme; (3) `is_user_message_line` walked back to the block start per rendered row — quadratic for a long pasted user block; (4) `TextCell` flattened every span's background onto the surface color, so fenced code in streamed replies lost its background (inconsistent with `MarkdownCell`); (5) raw Markdown markers (`# `, `> `, ``` fences) leaked into the rendered text. |
+| Decision | (1) `append_markdown` applies the same `LOG_THINKING_INDENT + 1` gutter; (2) links use `theme.heading`, with legacy `Blue` remapped in the restyle pass; (3) a one-pass `user_line_mask` is precomputed per frame and shared by restyle + indent; (4) `TextCell` keeps span-provided backgrounds (code bg, H1 highlight) and the restyle pass only treats code-bg spans as code; (5) styled lines hide fence rows (blank) and strip `#{1,6} ` / `> ` prefixes while `raw_messages` keep the original Markdown for copy, code-block detection and hit-testing. Streamed text also uses the same fg as final rows so completing a reply does not recolor it. |
+| Behavior after | Code blocks in streamed replies show their background; H1 keeps its highlight band; quotes render as `▎ text`; headings render without `## `; links adapt per theme; long pastes no longer trigger quadratic row walks; `/skills` and other Markdown notices align with replies. |
+| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`, `crates/tui/src/render/cells/{text.rs,markdown.rs}`, `crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`; tests `span_backgrounds_survive_rendering`, `heading_highlight_bg_is_not_restyled_as_code`, `user_line_mask_matches_the_per_row_walk`, `hardcoded_blue_links_remap_to_theme_heading`, `render_markdown_fenced_code_block`, `render_markdown_heading_markers_are_stripped`, `indented_cell_shifts_content_right`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
+
 ## 1. 2026-08-14 — Cron scheduling feature removed
 
 | Field | Value |

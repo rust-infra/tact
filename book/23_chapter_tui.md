@@ -215,7 +215,8 @@ flowchart TB
 | `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
 | `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `render/log_style.rs` | Shared log text styles |
-| `render/render_md.rs` | Markdown → ratatui `Line`s (`tui-markdown`) |
+| `render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
+| `render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s (prose/headings/lists/tables/blockquotes) |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`, tool indent constants |
 | `render/welcome.rs` | Startup logo |
@@ -284,17 +285,19 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 | Space | Meaning | Scrollbar tracks |
 |-------|---------|------------------|
 | **Physical** | Index in `app.messages[]` | — |
-| **Logical** | Visible messages + optional streaming buffer row | `log_scroll.offset` |
-| **Visual** | Wrapped lines at current panel width | Total visual line count |
+| **Logical** | Visible messages + optional streaming buffer row | — (`log_scroll.offset` is a derived mirror) |
+| **Visual** | Wrapped lines at current panel width | `log_scroll.visual_top` (viewport start) / total visual lines |
 
 Pipeline phases in `render_log_panel`:
 
 1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `messages.len()` changes; direct-card placeholder rows remain addressable for scroll and hit testing.
 2. **Phase 1** — `wrap_line` → `visual_cache` + `visual_start_cache` when width or message count changes.
-3. **Phase 2** — Map `log_scroll.offset` to a visual viewport (`visual_scroll`, clip height).
+3. **Phase 2** — Clamp `log_scroll.visual_top` (authoritative first visible visual line; `usize::MAX` = pin-to-bottom sentinel) to `total - height`, and derive `log_scroll.offset` as a logical mirror for hit-testing/popups. Cells taller than the viewport are stepped through visually by `visual_step_up/down` in `widgets/state/app/scroll.rs` (half a viewport per `j`/`k`, 3 lines per wheel tick inside such a cell; row-boundary jumps otherwise).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
 
-**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` also writes that same background explicitly on every glyph while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+**Viewport background invariant:** before inline cells draw, the Log inner viewport is reset to `theme.bg`. `TextCell` writes an explicit background on every glyph — spans that bring their own background (fenced code, H1 headings) keep it, everything else uses the surface color — while retaining each span's foreground and modifiers (including selection `REVERSED`). This prevents a normal row exposed by scrolling from inheriting a background left by a prior overlay or card; tool, Thinking, and code-card backgrounds still override it in their existing layers.
+
+**Markdown marker policy:** the renderer consumes fence / heading / quote markers at parse time, so raw rows mirror the rendered text (copy, code-block detection and mouse hit-testing work off those rows). Fenced code rows carry the themed code background (which delimits the block), heading markers are stripped, and the quote gutter renders as `▎`. Code-block detection for triple-click matches the code background instead of ```` ``` ```` markers.
 
 Streaming text uses `app.stream.buffer` as an extra logical row while tokens arrive.
 
@@ -331,13 +334,13 @@ pub(crate) trait Renderable {
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
-- Row 2: model name, `out`/`输出`, `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
+- Row 2: model name, `max_out_token` (the effective text-output budget: `max_tokens` minus the reasoning share for effort-semantic models — e.g. `max_out_token 73K` at `high` effort on a 128K envelope — while budget-semantic models keep the full `max_tokens` since their thinking envelope is separate), `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content rows; long lines soft-wrap at character boundaries (`wrap_line`, CJK double-width aware — `Paragraph` stays unwrapped and draws exactly those rows) and the caret/scroll follow the wrapped rows (`caret_in_wrapped`); CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
 ### 6.7 Markdown
 
-`render_md.rs` converts assistant markdown via `tui-markdown` with a custom `TuiStyleSheet` (headings, code, links, blockquotes). Code blocks get a unified dark background; tables are column-aligned. Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
+`render/pulldown.rs` converts assistant markdown via a `pulldown-cmark` 0.13 event loop (a `TextWriter`-style state machine), reusing the shared `TuiRichTextTheme` for Mermaid. Code blocks get the themed code background with fence markers hidden; all tables are column-aligned by Tact's width-aware `format_table` (pipe style). Bullets render as `•` and task items as `☐`/`☑`; GFM task lists apply to ordered lists too (`1. [X]` → `1. ☑`). The diff popup syntax-highlights via `syntect` (Base16 Ocean Dark). Hyperlink OSC-8 sequences are not preserved — ratatui strips escape sequences.
 
 **Streaming fence boundary rule:** the TUI has two different code paths for fenced content. Normal markdown rendering (`render_markdown_tui`) can display fenced text inline, while the streaming log pipeline may **promote** a completed fenced block into a dedicated code card overlay. After the 2026-08-01 bugfix, an **empty-language** fence (plain ```) that appears immediately after an in-progress markdown paragraph or list is kept in normal markdown flow instead of being promoted into a code card. This prevents a trailing list line or explanatory tail text from being hijacked into a `Click for full code` card. Streamed code blocks with an explicit language tag still use the code-card path, with one exception since 2026-08-08: a complete `mermaid` fence is rendered as a terminal diagram instead (see below).
 
@@ -562,7 +565,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from `RawMessageType`.
 
-**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. Live card counts (`Live output (N lines)`) use streamed output lines only; popup/`detail_full` still prepend `$ <command>` for consistency with completed cards, where the counter and popup share that combined content. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
+**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>` for consistency with completed cards, where the counter and popup share that combined content. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
 
 **Why code remains an overlay:** code blocks replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior. Thinking instead follows the direct `Renderable` model used by tool cards, so its live tail and completion summary have one rendering owner.
 

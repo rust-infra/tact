@@ -193,8 +193,8 @@ impl App {
         }
 
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            // u16::MAX is correctly clipped by render_log_panel based on visual line count
-            self.log_scroll.offset = u16::MAX;
+            // usize::MAX is correctly clipped by render_log_panel based on visual line count
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -247,7 +247,7 @@ impl App {
         ]);
         self.append_msg(line, raw, RawMessageType::LLM);
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 

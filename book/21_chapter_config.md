@@ -237,7 +237,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 |---------|---------|-------------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `model_context_window` | 200_000 | — (tokens; global, not per-model) |
+| `model_context_window` | 200_000 | — (tokens; global; model→window mapping overrides file config, see below) |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
@@ -274,6 +274,27 @@ Empty, multi-character, or non-`ctrl` keybinds fail at config resolution. Creden
 logged or written to session history.
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
+
+`model_context_window` resolves with a three-tier priority (highest first):
+
+1. **Model→window mapping** — a built-in lookup keyed on the resolved model id,
+   following official model docs (2026-08):
+   - OpenAI: `gpt-5.6` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
+     `gpt-5.5` → `1_050_000`; `gpt-5.4` → `1_000_000`; `gpt-5` / `gpt-5.1` /
+     `gpt-5.2` / `gpt-5.3` / `gpt-5.3-codex` / `gpt-5.4-mini` → `400_000`;
+     `gpt-4o` / `gpt-4o-mini` → `128_000`.
+   - Anthropic (API and Claude Code): `claude-sonnet-5` / `claude-fable-5` /
+     `claude-opus-5` / `claude-opus-4-8` / `claude-opus-4-7` / `claude-opus-4-6` /
+     `claude-sonnet-4-6` → `1_000_000`; `claude-opus-4-20250514` /
+     `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
+     → `200_000`.
+   - DeepSeek: `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
+     `1_000_000`; Kimi: `k3-256k` → `256_000`.
+   A match overrides both the CLI flag and the TOML file, so a stale manual
+   window can never under-report a well-known model (which would trigger
+   premature auto-compaction).
+2. **CLI `--model-context-window` / TOML `[agent].model_context_window`**.
+3. **Default `200_000`**.
 
 After merging CLI and TOML values, configuration fails fast when a nonzero
 `model_context_window` is less than or equal to `max_tokens`: the output

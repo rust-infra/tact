@@ -5,7 +5,16 @@ use crate::theme::ThemeName;
 /// Log panel scroll state: manages scroll offset, scrollbar, panel height,
 /// visible-index caches, and visual line mapping.
 pub(crate) struct LogScroll {
-    /// Current scroll offset.
+    /// Authoritative scroll position: the first visible *visual* line.
+    ///
+    /// Unlike the logical `offset`, this can point anywhere inside a cell
+    /// taller than the viewport (e.g. a long Markdown table), so the middle
+    /// of such cells stays reachable. `usize::MAX` is the pre-render
+    /// "pin to bottom" sentinel; render clamps it to `total - height`.
+    pub(crate) visual_top: usize,
+    /// Derived logical offset mirror (row containing `visual_top`), kept in
+    /// sync by render and scroll handlers for read-only consumers such as
+    /// mouse hit-testing, the code-card popup, and tests.
     pub(crate) offset: u16,
     /// Scrollbar state.
     pub(crate) state: ScrollbarState,
@@ -37,6 +46,7 @@ pub(crate) struct LogScroll {
 impl LogScroll {
     pub(crate) fn new() -> Self {
         Self {
+            visual_top: 0,
             offset: 0,
             state: ScrollbarState::new(0),
             height: 10,

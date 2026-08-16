@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
 };
 
-use crate::widgets::state::App;
+use crate::{render::render_md::render_markdown_ratatui, widgets::state::App};
 
 pub(crate) fn render_system_prompt_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(popup) = app.system_prompt_popup.as_ref() else {
@@ -19,7 +19,9 @@ pub(crate) fn render_system_prompt_popup(frame: &mut Frame, area: Rect, app: &mu
         &format!(" {} ", popup.title),
         None,
     );
-    let lines = popup.rendered.clone();
+    // Plain ratatui-markdown render at the popup's content width; the popup
+    // scrolls internally so lines wrap at the renderer's max width.
+    let lines = render_markdown_ratatui(&popup.source, &app.theme, inner.width as usize);
     let total = lines.len().max(1);
     let content_height = inner.height as usize;
     let scroll = (popup.scroll as usize).min(total.saturating_sub(1));

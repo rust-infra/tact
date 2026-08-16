@@ -43,20 +43,7 @@ impl ThinkingCell {
         let elapsed = block.started_at.elapsed();
         Self {
             lines,
-            title: format!(
-                " {spinner}{}",
-                msgs.thinking_card_title
-                    .replacen("{}", &total.to_string(), 1)
-                    .replacen(
-                        "{}",
-                        if total == 1 {
-                            ""
-                        } else {
-                            msgs.thinking_card_title_pl
-                        },
-                        1
-                    )
-            ),
+            title: format!(" {spinner}{}", msgs.thinking_card_title),
             bottom: msgs
                 .thinking_card_bottom
                 .replacen("{}", &visible.to_string(), 1)
@@ -73,18 +60,7 @@ impl ThinkingCell {
         let total = block.content.lines().count().max(1);
         Self {
             lines: vec![block.summary.clone()],
-            title: msgs
-                .thinking_card_title
-                .replacen("{}", &total.to_string(), 1)
-                .replacen(
-                    "{}",
-                    if total == 1 {
-                        ""
-                    } else {
-                        msgs.thinking_card_title_pl
-                    },
-                    1,
-                ),
+            title: msgs.thinking_card_title.to_string(),
             bottom: msgs
                 .thinking_card_bottom
                 .replacen("{}", "1", 1)
@@ -250,7 +226,7 @@ mod tests {
         let text = render_text(&four);
         assert!(text.contains("two") && text.contains("four"), "{text}");
         assert!(!text.contains("one"), "{text}");
-        assert!(text.contains("Thinking (4 lines)"), "{text}");
+        assert!(text.contains("Thinking"), "{text}");
     }
 
     #[test]
@@ -267,7 +243,7 @@ mod tests {
         let text = render_text(&ThinkingCell::completed(&block, &theme, &msgs));
         assert!(text.contains("last"), "{text}");
         assert!(!text.contains("first"), "{text}");
-        assert!(text.contains("Thinking (2 lines)"), "{text}");
+        assert!(text.contains("Thinking"), "{text}");
     }
 
     #[test]
@@ -279,7 +255,7 @@ mod tests {
         let cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
 
         let text = render_in_viewport(&cell, 12);
-        assert_eq!(text.matches("Thinking (1 line)").count(), 1, "{text}");
+        assert_eq!(text.matches("Thinking").count(), 1, "{text}");
         assert!(
             text.lines()
                 .nth(cell.height(80) as usize)
@@ -306,9 +282,6 @@ mod tests {
             rows.last().is_some_and(|line| line.trim().is_empty()),
             "{text}"
         );
-        assert!(
-            rows.iter().any(|line| line.contains("Thinking (1 line)")),
-            "{text}"
-        );
+        assert!(rows.iter().any(|line| line.contains("Thinking")), "{text}");
     }
 }

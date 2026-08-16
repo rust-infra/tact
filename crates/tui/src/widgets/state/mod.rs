@@ -214,7 +214,8 @@ pub(crate) struct MermaidPopup {
 #[derive(Debug, Clone)]
 pub(crate) struct SystemPromptPopup {
     pub title: String,
-    pub rendered: Vec<ratatui::text::Line<'static>>,
+    /// Raw Markdown source; laid out width-aware at popup render time.
+    pub source: String,
     pub scroll: u16,
 }
 

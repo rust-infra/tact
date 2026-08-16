@@ -269,6 +269,24 @@ mod tests {
     }
 
     #[test]
+    fn indented_cell_shifts_content_right() {
+        // Whole-Markdown log messages align with assistant replies
+        // (LOG_THINKING_INDENT + 1 = 3) instead of hugging the left border.
+        let cell = MarkdownCell::new("# Title", &dark()).with_indent(3);
+        let backend = TestBackend::new(20, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(0, 0)].symbol(), " ", "left gutter must stay blank");
+        assert_eq!(buf[(2, 0)].symbol(), " ", "col 2 must stay blank");
+        // The heading marker is stripped at render time; the heading text
+        // itself starts at col 3.
+        assert_eq!(buf[(3, 0)].symbol(), "T", "content starts at col 3");
+    }
+
+    #[test]
     fn single_string_with_newlines_renders_full_document() {
         // 一整段 markdown 字符串，包含结构换行（空行分隔段落）、段落内软换行、
         // fenced 代码块、列表和管道表格。

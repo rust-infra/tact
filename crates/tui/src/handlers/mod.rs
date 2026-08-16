@@ -439,18 +439,26 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
     }
 }
 
-/// `/skills` output is plain markdown (heading + pipe table) appended as a
-/// single whole-Markdown message and rendered by `MarkdownCell`.
+/// `/skills` output is plain markdown (heading + pipe table) appended as
+/// whole-Markdown messages and rendered by `MarkdownCell`. Long lists are
+/// split into pages of [`SKILLS_PER_PAGE`] rows so each message stays
+/// readable and scrollable instead of one giant table.
+const SKILLS_PER_PAGE: usize = 15;
+
 fn show_skills_command(app: &mut App) {
     app.add_new_line();
 
-    let md = skills_list_markdown(&app.skills_data);
-    let md = if md.is_empty() {
-        "(no skills available)".to_string()
+    let chunks = skills_list_markdown_pages(&app.skills_data, SKILLS_PER_PAGE);
+    if chunks.is_empty() {
+        app.append_markdown("(no skills available)".to_string());
     } else {
-        md
-    };
-    app.append_markdown(md);
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            if i > 0 {
+                app.add_new_line();
+            }
+            app.append_markdown(chunk);
+        }
+    }
 
     // Trailing blank so the next `/skills` (or other system block) is not flush.
     app.add_new_line();
@@ -458,7 +466,7 @@ fn show_skills_command(app: &mut App) {
     if app.input_mode == crate::widgets::state::InputMode::Insert
         || app.input_mode == crate::widgets::state::InputMode::Normal
     {
-        app.log_scroll.offset = u16::MAX;
+        app.scroll_log_to_bottom();
     }
 }
 
@@ -467,14 +475,49 @@ fn show_skills_command(app: &mut App) {
 /// The output is plain markdown — `render_markdown_with_tables` picks the
 /// table rows and lays them out width-aware (long descriptions wrap inside
 /// the table), so no hand-built ratatui lines are needed.
+///
+/// Production output is paginated via [`skills_list_markdown_pages`]; the
+/// single-table form is kept for tests.
+#[cfg(test)]
 fn skills_list_markdown(skills: &[crate::widgets::state::SkillEntry]) -> String {
     if skills.is_empty() {
         return String::new();
     }
     let mut skills: Vec<_> = skills.iter().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills_table_markdown(&skills, None)
+}
 
-    let mut out = String::from("## 📋 Available skills\n\n");
+/// Split the sorted skill table into pages of `per_page` rows. Each page is
+/// an independent markdown message whose heading carries the page number.
+fn skills_list_markdown_pages(
+    skills: &[crate::widgets::state::SkillEntry],
+    per_page: usize,
+) -> Vec<String> {
+    if skills.is_empty() {
+        return Vec::new();
+    }
+    let mut skills: Vec<_> = skills.iter().collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    let pages = skills.chunks(per_page.max(1)).collect::<Vec<_>>();
+    let total = pages.len();
+    pages
+        .into_iter()
+        .enumerate()
+        .map(|(i, page)| skills_table_markdown(page, Some(format!("({}/{})", i + 1, total))))
+        .collect()
+}
+
+/// One heading + pipe table for `skills`. `suffix` appends a page marker to
+/// the heading (e.g. `(2/4)`) when the list is paginated.
+fn skills_table_markdown(
+    skills: &[&crate::widgets::state::SkillEntry],
+    suffix: Option<String>,
+) -> String {
+    let mut out = match suffix {
+        Some(suffix) => format!("## 📋 Available skills {suffix}\n\n"),
+        None => String::from("## 📋 Available skills\n\n"),
+    };
     out.push_str("| Skill | Description |\n");
     out.push_str("| ----- | ----------- |\n");
     for (i, skill) in skills.iter().enumerate() {
@@ -693,6 +736,90 @@ mod tests {
                     .get(after_first)
                     .is_some_and(|s| s.is_empty()),
             "expected blank separator between skills blocks, around: {joined}"
+        );
+    }
+
+    #[test]
+    fn skills_command_paginates_long_lists() {
+        let (mut app, _rx) = make_app();
+        app.skills_data = (0..40)
+            .map(|i| crate::widgets::state::SkillEntry {
+                name: format!("skill-{i:02}"),
+                description: "d".into(),
+                body: String::new(),
+            })
+            .collect();
+        let before = app.raw_messages.len();
+        execute_palette_command(&mut app, "skills");
+        let raw = &app.raw_messages[before..];
+
+        // 40 skills / 15 per page → 3 pages with numbered headings.
+        for page in ["(1/3)", "(2/3)", "(3/3)"] {
+            assert!(
+                raw.iter()
+                    .any(|m| m.contains(&format!("Available skills {page}"))),
+                "missing page heading {page}, got: {:?}",
+                raw
+            );
+        }
+        // Page boundaries: 0-14, 15-29, 30-39.
+        for name in [
+            "skill-00", "skill-14", "skill-15", "skill-29", "skill-30", "skill-39",
+        ] {
+            assert!(
+                raw.iter().any(|m| m.contains(name)),
+                "missing skill {name}, got: {:?}",
+                raw
+            );
+        }
+    }
+
+    #[test]
+    fn skills_command_output_reaches_middle_skills_when_scrolling() {
+        // Regression for the reported symptom: with ~60 skills the old
+        // logical-row scrolling never showed alphabetically-middle entries
+        // (lark-*) of the `/skills` table. Paginated pages + visual stepping
+        // must make every row reachable.
+        let (mut app, _rx) = make_app();
+        app.skills_data = (0..58)
+            .map(|i| crate::widgets::state::SkillEntry {
+                name: if (20..=47).contains(&i) {
+                    format!("lark-skill-{i:02}")
+                } else {
+                    format!("skill-{i:02}")
+                },
+                description: format!("desc {i}"),
+                body: String::new(),
+            })
+            .collect();
+        if let Some(entry) = app
+            .skills_data
+            .iter_mut()
+            .find(|e| e.name == "lark-skill-30")
+        {
+            entry.name = "lark-doc".into();
+        }
+        execute_palette_command(&mut app, "skills");
+        app.scroll_log_to_top();
+
+        let viewport_height = 8usize;
+        let step = crate::widgets::state::app::scroll::key_cell_step(viewport_height);
+        let mut seen = false;
+        for _ in 0..300 {
+            let text = crate::render::test_harness::render_log_panel_text(
+                &mut app,
+                60,
+                viewport_height as u16 + 2,
+            );
+            if text.contains("lark-doc") {
+                seen = true;
+                break;
+            }
+            app.scroll_log_down(step);
+        }
+        assert!(
+            seen,
+            "lark-doc never visible while traversing /skills output"
         );
     }
 

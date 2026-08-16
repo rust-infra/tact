@@ -139,7 +139,7 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
   ├─ Row 1  Title     "2. bash (git status)"         (bold; truncated at 120 chars)
   ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · Always allow · 21ms"
   └─ Card   (optional, Success + detail only)
-            ╭─ Command output (24 lines) ─────────╮
+            ╭─ Command output ───────────────────╮
             │ $ git status                         │
             │  M crates/tact/src/agent/mod.rs      │
             ╰─ double-click for full content ──────╯
@@ -183,8 +183,10 @@ Shown only when **phase is Success** and tool kind is:
 Completed preview: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the preview/total counter and popup use the same content.
 
 Running `bash` cards add no detail until the first visible output. They then
-grow from one to three rows, titled `Live output (N lines)` where `N` is the
-streamed output line count (not the `$ <command>` prefix). Later progress
+grow from one to three rows, titled `Live output`. The line count lives in the
+card's bottom bar (`preview/total lines`, shown only when the output overflows
+the preview), where the total is the streamed output line count (not the
+`$ <command>` prefix). Later progress
 updates a stable three-row tail without changing card height. Popup/`detail_full`
 still prepend `$ <command>` for consistency with completed cards. stdout uses
 normal text styling and stderr spans use the theme warning color. ANSI CSI/OSC

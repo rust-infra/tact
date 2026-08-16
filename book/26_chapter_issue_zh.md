@@ -29,6 +29,120 @@
 
 ---
 
+## 1. 2026-08-15 — `/stats` 弹窗直接用 ratatui-markdown 渲染
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | system-prompt 弹窗（`/stats` 会话统计与组装后的 system prompt 视图共用）此前走 pulldown-cmark 管线 + Tact 自研 width-aware pipe 表格，并按弹窗内容宽度布局。对一个快速统计弹窗而言，这套额外布局机制不值得。 |
+| 决策 | `render_system_prompt_popup` 改为通过 `render_markdown_ratatui`（`crates/tui/src/render/render_md.rs`）渲染：按弹窗内容宽度使用普通 `ratatui_markdown::markdown::MarkdownRenderer`，复用与 Mermaid 渲染器相同的 `TuiRichTextTheme`。width-aware 表格与 Mermaid 路由保留给主区域 Markdown cell。 |
+| 改后行为 | `/stats` 与 system-prompt 弹窗由 ratatui-markdown 默认渲染器布局（含表格）；弹窗测试（`session_stats_popup_renders_gfm_table`）原样通过。 |
+| 指针 | `crates/tui/src/render/popups/system_prompt_popup.rs`、`crates/tui/src/render/render_md.rs`（`render_markdown_ratatui`）；`docs/token_usage_schema.md` Session Stats Display。 |
+
+---
+
+## 1. 2026-08-15 — 自动压缩的摘要调用不再开启 thinking
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | 本地压缩摘要调用此前会转发 agent 的 Claude 式 `thinking_budget`（`with_thinking`，并限制在线上 `max_tokens` 之下）与显式 `reasoning_effort`，并在文本预算之上按 effort 分档预留 reasoning 份额。对手交摘要而言思考价值不大，且会从同一个 `max_tokens` 信封（effort 模型）中占用输出 token——用户要求自动压缩时不再开启 think。 |
+| 决策 | 摘要请求不再携带任何 thinking：不转发 `thinking` 块、不转发 `reasoning_effort`（主循环的 thinking 配置不受影响），输入预留也不再扣除 thinking budget。**服务端默认** reasoning 预留仅保留给 DeepSeek / Kimi K3（固定为文本预算的 75% 追加在文本之上）：即使请求省略 effort，它们服务端默认 thinking 开启 + effort high，没有该预留其强制 reasoning 会挤占摘要文本、触发截断续写。原生 `/responses/compact` 请求本就只带 `{model, input}`，其无效的 `.with_reasoning_effort` 一并移除。 |
+| 改后行为 | 摘要调用为普通非流式 `create_message`，`max_tokens` = 经典文本预算（OpenAI / Anthropic）或文本 + 75% 预留（DeepSeek / Kimi K3）；压缩期间发出的 `AgentUpdate::ModelInfo` 不报告 thinking/effort。 |
+| 指针 | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`compact_summary_reasoning_reserve_percent`、`compact_responses_native`）、book [Ch 5](./05_chapter_compact_zh.md) §摘要调用。 |
+
+---
+
+## 1. 2026-08-15 — 底栏 `out` 更名为 `max_out_token`，显示真实输出额度
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | 底栏输出段此前标记为 `out`/`输出`，直接显示原始 `max_tokens` 信封。对 effort 语义模型（openai / deepseek / kimi k3），reasoning 与输出文本算在同一个信封内，`think high` 旁边的 `out 128K` 高估了真正留给文本的 token——用户要求该段显示 **max output token** 值，并扣除 reasoning 份额。 |
+| 决策 | 标签改为 `max_out_token`（两种语言统一用该标识符），数值改为真正的文本输出额度：effort 语义模型按压缩预留的同一分档约定扣除 reasoning 份额（预留为文本预算的百分比并追加在文本之上 → 文本 = 信封 × `100/(100+pct)`；128K 信封 + `high` → 73K）。budget 语义模型（Anthropic 式 `thinking_budget`）的 thinking 走独立信封，仍显示完整 `max_tokens`。在 TUI 内由 `status_bar.model_max_tokens` + `model_thinking_budget` + `model_reasoning_effort` 计算，无协议改动。 |
+| 改后行为 | 底栏第 2 行显示 `max_out_token {n}` 取代 `out {n}`；无 think / budget 语义时 `n` = `max_tokens`，显示 effort 时 `n` = `max_tokens × 100/(100+pct)`（`none`/无 effort → 不变，`low` → 80%，`medium` → ~67%，`high` → ~57%，`xhigh`/`max` → 50%）。 |
+| 指针 | `crates/tui/src/render/bar.rs`（`format_max_out_tokens`）、`crates/tui/src/i18n.rs`（`bottom_out`）、book [Ch 23](./23_chapter_tui_zh.md) §6.6、`docs/token_usage_schema.md`。 |
+
+---
+
+## 1. 2026-08-15 — 模型→上下文窗口映射覆盖手工 `model_context_window` 配置
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 现象 / 动机 | `agent.model_context_window` 此前完全手工指定（CLI/TOML，默认 `200_000`），没有任何模型推断。使用 `deepseek-v4-pro`（真实窗口 1M）时，底栏 `ctx` 计量因残留的 256k 配置显示 `…/256K`，自动压缩也在 ~80%（约 205k）处触发而非 ~800k，导致过早压缩。`max_tokens` 已有按模型的默认值可参照（`kimi_k2x → 32_000`），而窗口没有等价机制。 |
+| 决策 | 在 `resolve.rs` 新增 `model_context_window_for_model(model)`，并按 **模型→窗口映射（最高）→ CLI/TOML → 默认 `200_000`** 解析窗口。数值依据官方模型文档（2026-08）：OpenAI `gpt-5.6` 系列 + `gpt-5.5` → `1_050_000`、`gpt-5.4` → `1_000_000`、`gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`、`gpt-4o` 系列 → `128_000`；Anthropic（API 与 Claude Code 同 ID）`claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`、`claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`；DeepSeek V4 → `1_000_000`、`k3-256k` → `256_000`。命中映射时**刻意**覆盖用户文件配置，避免过时的手工窗口低估已知模型。 |
+| 改后行为 | `ctx` 底栏计量与派生的自动压缩阈值（窗口的 80%）对已映射模型使用映射后的窗口。GPT-5.6/5.5 系列显示 `…/1.05M`、Claude 1M 模型（含 Claude Code ID）`…/1M`、DeepSeek V4 `…/1M`、GPT-5.x `…/400K`、GPT-4o `…/128K`、`k3-256k` `…/256K`。手工 `model_context_window` 仅对无内置映射的模型生效。非零 `model_context_window > max_tokens` 的校验仍作用于解析后的最终值。 |
+| 指针 | `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`，解析位于 ~`:587`）；`config.example.toml` `[agent]`；book [Ch 21](./21_chapter_config_zh.md) §5、[Ch 5](./05_chapter_compact_zh.md) 设置表。 |
+
+---
+
+## 1. 2026-08-15 — Markdown 正文迁移到 pulldown-cmark；ratatui-markdown 仅保留 Mermaid
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Plan | `docs/superpowers/plans/2026-08-15-pulldown-cmark-migration.md` |
+| Symptom / motivation | 下方条目所述的整合方案最终落在本地 `ratatui-markdown` fork 上，仅为了让 Tact 的正文渲染对齐 `tui-markdown` 的输出，就携带了约 350 行、跨 8 个文件的补丁（H4–H6、有序编号、硬换行、嵌套强调、CJK 左翼、主题代码色槽）。fork 是 rebase 负担，且是只在本机可解析的 path 依赖；`steer` 与 xAI 的 `grok-build` 都用 `pulldown-cmark` 解析 CommonMark、在自己代码里渲染，而非 fork 一个 Markdown 库。 |
+| Decision | 用 `pulldown-cmark` 0.13 的事件循环（`crates/tui/src/render/pulldown.rs`）替代 fork 的块渲染器，复用 Tact 的宽度感知管道表 `format_table`、`▎` 引用块 gutter、fenced-code 无框主题样式与 Mermaid 路由。`ratatui-markdown` 改为上游 git 依赖（`celestia-island/ratatui-markdown` @ `3a8bcbe`，仅 `mermaid` feature），只用于非 sequence 的 Mermaid 图；`sequenceDiagram` 仍是 Tact 自研的 `mermaid_sequence.rs`。删除 `feat/tact` fork 与 `TuiRenderHooks`/`RenderHooks` 适配器。 |
+| Behavior after | 正文/标题/列表/任务/表格/引用块渲染由 Tact 依据 `pulldown-cmark` 事件自持。刻意关闭 `ENABLE_SMART_PUNCTUATION`，使 `...` 不被转成 `…`（系统消息与用户文本保持字节稳定）。GFM 任务列表现在同样作用于有序列表（`1. [X]` → `1. ☑`）。Mermaid 输出不变。 |
+| Pointers | `crates/tui/src/render/pulldown.rs`、`render_md.rs`；`Cargo.toml`（`ratatui-markdown` git 依赖 + `pulldown-cmark`）；book [Ch 23](./23_chapter_tui_zh.md) §6.7；下方条目记录了中间的 fork 方案。 |
+
+---
+
+## 1. 2026-08-15 — 主区域 Markdown 渲染统一到 ratatui-markdown
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 计划 | `docs/superpowers/plans/2026-08-15-ratatui-markdown-migration.md` |
+| 症状 / 动机 | TUI 主区域并行维护两套 Markdown 栈：`tui-markdown` 0.3.x（crates.io）渲染日志面板的正文 / 标题 / 列表，`ratatui-markdown`（celestia-island git fork，按分支固定）渲染 Mermaid 与 `/tasks-dag` 弹窗。两套样式适配器、两套调色板，以及各种 fork 规避（任务列表标记转义、`log_style.rs` 中的硬编码色重映射、围栏标记簿记）都必须同步维护。 |
+| 决策 | 统一到 `ratatui-markdown`（本地 fork 位于 `../ratatui-markdown`，分支 `feat/tact`，基于 `chore/update-ratatui-0.30` @ `3a8bcbe`）并补齐能力：H4–H6 标题、有序列表保留编号、每级 4 列嵌套缩进、递归嵌套强调（`**bold _x_ italic**`）、链接保留 URL 后缀、行内代码 / 围栏代码的主题色槽位、软换行折叠为空格 + 硬换行保留、连续空格保留、CJK 标点友好的强调判定。Tact 侧：`render_plain_markdown` 用 fork 的 parse+render 替换 `tui_markdown::from_str_with_options`，并通过 `TuiRenderHooks`（隐藏围栏 / 边框装饰、直接上代码背景）；引用 `▎` gutter 与 H1 高亮背景移入后处理 / restyle 阶段；表格通过 `table` RenderHooks 适配器委托给 Tact 的宽度感知 `format_table`（管道风格），因此 fork 自带的 `render_table` 不再被使用、保持上游原样；三击代码块检测改为匹配代码背景而非 ````` ``` ````` 标记；diff 弹窗直接使用 `syntect` 高亮（同一 Base16 Ocean Dark 主题），从而移除 `tui-markdown` 与直接依赖的 `pulldown-cmark`。 |
+| 行为后 | 日志面板经单一 crate 渲染 Markdown。无序列表渲染为 `•`，任务项渲染为 `☐` / `☑`（原先为字面 `-` / `[ ]` 文本）；围栏代码保持主题背景且无围栏标记；raw 复制行镜像渲染文本（标记在解析阶段被消费）；`/stats` 的 GFM 表格经 `format_table` 渲染为管道表；diff 弹窗保留语法高亮。 |
+| 指针 | `crates/tui/src/render/render_md.rs`（`TuiRenderHooks`、`render_plain_markdown`、`apply_blockquote_indicator`）、`crates/tui/src/render/log_style.rs`（H1 高亮规则）、`crates/tui/src/render/popups/diff_popup.rs`（syntect）、`crates/tui/src/widgets/state/app/popups.rs`（`find_code_block_containing_logical`）、`Cargo.toml`（`ratatui-markdown` path 依赖 + `syntect`）；fork 仓库 `../ratatui-markdown` `feat/tact`；[Ch 23](./23_chapter_tui_zh.md) §6.7。 |
+
+---
+
+## 1. 2026-08-15 — Thinking、命令输出与 Read 卡片顶部移除重复行数，统一由底部栏承载
+
+| 字段 | 内容 |
+|------|------|
+| 类型 | `removal` |
+| 症状 / 动机 | Thinking 卡片把总行数显示了两遍——顶部标题（`🧠 Thinking (N lines)`）与底部栏（`↕ 可见/N 行 …`）各一次；`bash` 命令输出卡片同样重复（顶部 `Live output (N lines)` / `Command output (N lines)`，底部 `preview/total 行` 提示）；`read_file` 卡片也是如此（顶部 `Read <路径> (N lines)`）。两者同时可见时，顶部计数与底部栏数字冗余。 |
+| 决策 | 卡片顶部标题不再携带行数：`🧠 Thinking`（active 与 completed 一致）、`Live output`（运行中 bash）、`Command output`（已完成 bash）、`Read <路径>`（read_file）。底部栏成为唯一计数来源（Thinking 的 `↕ visible/total 行`；命令输出溢出预览时的 `preview/total 行`）。删除不再使用的 `thinking_card_title_pl` 字段；`tool_live_output_title_tmpl` 去掉 `{}` 占位符并更名为 `tool_live_output_title`。 |
+| 改后行为 | Thinking 卡片显示 `🧠 Thinking` / `🧠 思考中`；运行中的 bash 卡片显示 `Live output` / `实时输出`；完成的命令卡片显示 `Command output`；Read 卡片显示 `Read <路径>`。所有行数都在卡片底部栏。Popup 标题不变（本就用命令文本或裸 `Command output`）。 |
+| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui.md) §render pipeline。 |
+
+## 1. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
+
+| Field | Value |
+|-------|-------|
+| Type | `optimization` |
+| Symptom / motivation | （1）`wrap_line` 在显示宽度处硬切每行（`split_at_display_width`），长 URL、路径与单词从中间断开且无续行提示；（2）跨折行的部分选择在续行上丢失 REVERSED 高亮——旧折行路径把所有 span 摊平为一个基础样式；（3）双击选词只认 ASCII，双击中文选不中任何内容；（4）选择交互不对称：点击/拖入整段 Markdown 行会产生看不见的选择（MarkdownCell 渲染器不画叠加层），点空白区或面板外则保留过期选择；（5）鼠标 hit-test 按面板宽度模拟硬折行，而渲染按宽度 − 缩进折行，缩进行上最多偏移一个缩进宽。 |
+| Decision | 新增共享的 `wrap_break_offsets` 一次性计算视觉行起始偏移，`wrap_line` 与 `visual_pos_to_byte_offset` 共用，渲染与 hit-test 不可能再分歧。折行改为贪心词边界折行：在最后一个放得下的空白处断开；仅当连续词超过行宽才硬切；尾随空白留在上一行（不可见），保证分段字节连续。`wrap_line` 按分段重新切片原始样式 span，使逐段样式（含 REVERSED）延续到续行。`find_word_bounds` 按光标下字符分类为 ASCII 词或 CJK 连续段（汉字/假名/谚文）并在同类内扩展。`handle_log_click`/`handle_mouse_drag`/`handle_log_triple_click` 拒绝在 Markdown 行上开始或扩展选择；点击日志下方空白或面板外的任意位置清除选择。hit-test 的折行宽度减去行缩进。 |
+| Behavior after | 单词不再从中间断开（URL/路径/CJK 保持完整直到确实超宽）；选择高亮在每条续行都可见；双击可选中整段中文；Markdown 卡片不再被"静默选中"；误点击清除过期选择而非保留；缩进行上的点击映射到正确字节。 |
+| Pointers | `crates/tui/src/render/util.rs`（`wrap_break_offsets`、`wrap_line`、`visual_pos_to_byte_offset`、`col_to_byte_offset`）、`crates/tui/src/widgets/state/app/visibility.rs`（`find_word_bounds`、`is_markdown_row`、`byte_offset_from_log_position`）、`crates/tui/src/handlers/mouse.rs`（点击/拖拽/三击守卫与面板外点击清除）、`crates/tui/src/render/cells/text.rs`；测试 `wrap_break_offsets_prefers_word_boundaries`、`wrap_line_keeps_word_intact_and_preserves_span_styles`、`wrap_break_offsets_agree_with_byte_offset_hit_testing`、`partial_selection_reverses_target_span_across_wrapped_lines`、`double_click_selects_cjk_run`、`click_below_last_message_clears_selection`、`click_on_markdown_row_does_not_create_invisible_selection`、`drag_into_markdown_row_does_not_extend_selection`、`click_outside_log_clears_selection`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+
+## 1. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | Log 面板按逻辑消息行滚动（`j`/`k`/滚轮每格 `log_scroll.offset ± 1`）。高于 viewport 的整段 Markdown 消息——例如 `/skills` 约 60 个 skill、400+ 渲染行的管道表格——只能看到首尾两屏：`resolve_visual_scroll` 在最大逻辑偏移处钉底，位于中间的行（按字母序排列的 `lark-*`）双向都滚不到。 |
+| Decision | viewport 的首条可见**视觉**行成为权威状态（`LogScroll.visual_top`，`usize::MAX` = 钉底哨兵）；`offset` 变为派生的逻辑镜像，仅供只读消费方（鼠标 hit-test、code 弹窗）使用。纯函数 `visual_step_up/down` 在高于 viewport 的 cell 内部按 `j`/`k` 半屏、滚轮 3 行步进，其余情况按行边界跳转；从下方进入高 cell 时落在其底部，保证向上遍历连续。删除 `resolve_visual_scroll` / `effective_max_logical_scroll`。`/skills` 输出额外按 15 个 skill 一页分块，每块一条带 `(n/k)` 标题的 Markdown 消息。 |
+| Behavior after | 任何高于 viewport 的 cell（长表格、展开的工具卡片）都可用 `j`/`k`/滚轮双向完整遍历；`g`/`G` 仍跳转顶/底，自动跟随流式输出保持可用（`is_log_pinned_to_bottom` 改为比较视觉位置）。`/skills` 每页渲染 15 个 skill 并带页码标题。 |
+| Pointers | `crates/tui/src/widgets/state/app/scroll.rs`（步进函数与滚动 API）、`crates/tui/src/widgets/state/log_scroll.rs`（`visual_top`）、`crates/tui/src/render/log.rs`（视觉钳制与镜像派生）、`crates/tui/src/handlers/{normal,mouse,mod}.rs`（按键、滚轮、`/skills` 分页）、`crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs`（钉底辅助）；回归测试 `tall_markdown_cell_is_fully_traversable`、`skills_command_paginates_long_lists`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+
+## 1. 2026-08-15 — 主区域渲染打磨：Markdown 缩进、主题化链接、代码背景、隐藏标记
+
+| Field | Value |
+|-------|-------|
+| Type | `bugfix` |
+| Symptom / motivation | 渲染路径审查发现：(1) 整段 Markdown 消息（`MarkdownCell`，如 `/skills`）贴左边渲染，而流式回复/工具卡有缩进；(2) 链接使用硬编码调色板 `Blue`，永不随主题变化；(3) `is_user_message_line` 每渲染一行就向块头回退扫描，长段粘贴时呈平方复杂度；(4) `TextCell` 把所有 span 背景压平为面板底色，流式回复里的围栏代码丢失背景（与 `MarkdownCell` 不一致）；(5) 原始 Markdown 标记（`# `、`> `、``` 围栏）泄漏进渲染文本。 |
+| Decision | (1) `append_markdown` 统一使用 `LOG_THINKING_INDENT + 1` 缩进；(2) 链接改用 `theme.heading`，restyle 里旧 `Blue` 重映射；(3) 每帧预计算单遍 `user_line_mask`，restyle 与缩进共用；(4) `TextCell` 保留 span 自带背景（代码 bg、H1 highlight），restyle 仅把代码背景的 span 当代码处理；(5) styled 行隐藏围栏行（渲染为空白）并剥除 `#{1,6} ` / `> ` 前缀，`raw_messages` 保留原始 Markdown 供复制、代码块检测与 hit-test；流式文本改用与最终行一致的 fg，回复完成时不再变色。 |
+| Behavior after | 流式回复中的代码块有背景；H1 保留 highlight 色带；引用渲染为 `▎ text`；标题不带 `## `；链接随主题适配；长粘贴不再触发平方级回退扫描；`/skills` 等 Markdown 通知与回复对齐。 |
+| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_highlight_bg_is_not_restyled_as_code`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+
 ## 1. 2026-08-14 — 移除 cron 调度功能
 
 | 字段 | 内容 |

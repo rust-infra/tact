@@ -125,14 +125,14 @@ fn log_scroll_offset_hides_early_lines() {
     let mut app = make_app();
     seed_many_numbered_lines(&mut app, 40);
 
-    app.log_scroll.offset = 0;
+    app.log_scroll.visual_top = 0;
     let top = render_log_panel_text(&mut app, 60, 10);
     assert!(
         top.contains("log-row-00"),
         "at offset 0 the first row should be visible, got:\n{top}"
     );
 
-    app.log_scroll.offset = u16::MAX;
+    app.log_scroll.visual_top = usize::MAX;
     let bottom = render_log_panel_text(&mut app, 60, 10);
     assert!(
         !bottom.contains("log-row-00"),
@@ -142,6 +142,58 @@ fn log_scroll_offset_hides_early_lines() {
         bottom.contains("log-row-39") || bottom.contains("log-row-38"),
         "scrolled to bottom should show the last rows, got:\n{bottom}"
     );
+}
+
+#[test]
+fn tall_markdown_cell_is_fully_traversable() {
+    // Regression: a whole-Markdown message taller than the viewport (a long
+    // `/skills` table) used to be reachable only at its top/bottom; the
+    // middle rows could never be scrolled into view.
+    let mut app = make_app();
+    let mut md = String::from("## Big table\n\n| Row | V |\n| --- | --- |\n");
+    for i in 0..60 {
+        if i > 0 {
+            md.push_str("| --- | --- |\n");
+        }
+        md.push_str(&format!("| row-{i:02} | v |\n"));
+    }
+    app.append_markdown(md);
+
+    // 60x10 terminal → 8 content lines for the bordered panel.
+    let viewport_height = 8usize;
+    let _ = render_log_panel_text(&mut app, 60, 10);
+    app.scroll_log_to_top();
+
+    let step = crate::widgets::state::app::scroll::key_cell_step(viewport_height);
+    let mut seen_top = false;
+    let mut seen_mid = false;
+    let mut seen_bottom = false;
+    for _ in 0..200 {
+        let text = render_log_panel_text(&mut app, 60, 10);
+        seen_top |= text.contains("row-00");
+        seen_mid |= text.contains("row-30");
+        seen_bottom |= text.contains("row-59");
+        if seen_top && seen_mid && seen_bottom {
+            break;
+        }
+        app.scroll_log_down(step);
+    }
+    assert!(
+        seen_top && seen_mid && seen_bottom,
+        "tall cell rows unreachable: top={seen_top} mid={seen_mid} bottom={seen_bottom}"
+    );
+
+    // Traverse back up: the first row must be reachable again.
+    let mut back_to_top = false;
+    for _ in 0..200 {
+        let text = render_log_panel_text(&mut app, 60, 10);
+        if text.contains("row-00") {
+            back_to_top = true;
+            break;
+        }
+        app.scroll_log_up(step);
+    }
+    assert!(back_to_top, "scrolling up must return to the first row");
 }
 
 // ── P1: message shapes, separators, wrap, stream ─────────────────────────────
@@ -398,17 +450,17 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
         "placeholder row should be below summary row"
     );
 
-    app.log_scroll.offset = placeholder_logical as u16;
+    app.log_scroll.visual_top = app.log_scroll.visual_start_cache[placeholder_logical];
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("bash") && mid.contains("Command output (27 lines)"),
+        mid.contains("bash") && mid.contains("Command output"),
         "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
-    app.log_scroll.offset = u16::MAX;
+    app.log_scroll.visual_top = usize::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("Command output (27 lines)") && bottom.contains("1/27"),
+        bottom.contains("Command output") && bottom.contains("1/27"),
         "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
 }
@@ -465,7 +517,7 @@ fn log_scroll_from_code_card_to_plain_text_restores_theme_background() {
         .expect("first code-card frame");
 
     let plain_logical = app.log_scroll.phys_to_logical_cache[3].expect("plain row logical index");
-    app.log_scroll.offset = plain_logical as u16;
+    app.log_scroll.visual_top = app.log_scroll.visual_start_cache[plain_logical];
     terminal
         .draw(|frame| render_log_panel(frame, frame.area(), &mut app))
         .expect("second plain-text frame");

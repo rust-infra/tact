@@ -524,7 +524,7 @@ fn main_area_system_message_renders_in_log() {
 }
 
 #[test]
-fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
+fn session_stats_popup_renders_gfm_table() {
     let mut app = make_app();
     let stats = concat!(
         "── Session Stats ──\n",
@@ -539,20 +539,17 @@ fn session_stats_popup_renders_gfm_table_via_tui_markdown() {
         .system_prompt_popup
         .as_ref()
         .expect("session stats popup");
-    let rendered = popup
-        .rendered
-        .iter()
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+    // The popup stores raw Markdown source and lays it out at render time.
     assert!(
-        rendered.contains('┌') || rendered.contains('│'),
-        "tui-markdown should draw box borders:\n{rendered}"
+        popup.source.contains('|'),
+        "GFM table source should carry pipes:\n{}",
+        popup.source
     );
     assert!(
-        popup.rendered.len() > 3,
-        "GFM table must expand to multiple lines, got {}:\n{rendered}",
-        popup.rendered.len()
+        popup.source.lines().count() > 3,
+        "GFM table source must be multi-line, got {}:\n{}",
+        popup.source.lines().count(),
+        popup.source
     );
 
     let text = render_main_area_text(&mut app, 100, 30);

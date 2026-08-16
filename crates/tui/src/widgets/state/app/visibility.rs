@@ -11,24 +11,22 @@ use crate::{
 impl App {
     /// Whether the rendered log viewport currently sits at its visual bottom.
     ///
-    /// `u16::MAX` is only a pre-render bottom sentinel: `render_log_panel`
-    /// clamps it to a real logical offset. Tool progress therefore needs to
+    /// `usize::MAX` is only a pre-render bottom sentinel: `render_log_panel`
+    /// clamps it to `total - height`. Tool progress therefore needs to
     /// recognize both representations before it grows placeholder rows.
     pub(crate) fn is_log_pinned_to_bottom(&self) -> bool {
-        if self.log_scroll.offset == u16::MAX {
+        if self.log_scroll.visual_top == usize::MAX {
             return true;
         }
         if self.log_scroll.visible_indices_ver != self.messages.len()
             || self.log_scroll.visual_cache_ver != self.messages.len()
-            || self.log_scroll.visual_start_cache.is_empty()
+            || self.log_scroll.visual_start_cache.len() < 2
         {
             return false;
         }
-        let max_offset = crate::render::effective_max_logical_scroll(
-            &self.log_scroll.visual_start_cache,
-            self.log_scroll.height as usize,
-        );
-        self.log_scroll.offset as usize >= max_offset
+        let total = *self.log_scroll.visual_start_cache.last().unwrap_or(&0);
+        let max_visual = total.saturating_sub(self.log_scroll.height as usize);
+        self.log_scroll.visual_top >= max_visual
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
@@ -36,13 +34,16 @@ impl App {
     }
 
     /// Left indent columns for nested log content at this physical row.
-    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+    ///
+    /// `is_user` is the precomputed user-line membership (`user_line_mask`),
+    /// so render hot paths avoid the O(block-length) backward walk.
+    pub(crate) fn nested_log_indent(&self, phys: usize, is_user: bool) -> u16 {
         let msg_type = self
             .raw_message_types
             .get(phys)
             .copied()
             .unwrap_or(RawMessageType::LLM);
-        if crate::render::is_user_message_line(&self.raw_messages, phys) {
+        if is_user {
             return 0;
         }
         // LLM assistant replies: align body text with the text inside a Thinking
@@ -79,8 +80,9 @@ impl App {
 
     /// Find the word boundary at the given byte offset in the raw text of a
     /// specific logical line. Returns (word_start_byte, word_end_byte).
-    /// Words consist of letters, digits, underscores, and hyphens; other
-    /// characters are separators.
+    /// Words consist of ASCII letters, digits, underscores, and hyphens;
+    /// CJK ideographs/kana/Hangul form runs of their own (so double-clicking
+    /// 中文 selects the whole contiguous run). Other characters are separators.
     pub(crate) fn find_word_bounds(
         &self,
         logical_idx: usize,
@@ -93,31 +95,61 @@ impl App {
             return None;
         }
         let byte_pos = text.floor_char_boundary(byte_offset.min(bytes.len()));
-        // Expand from click position to find word boundaries
-        let classify = |b: u8| -> bool { b.is_ascii_alphanumeric() || b == b'_' || b == b'-' };
+
+        // Class of the char under the cursor decides the run kind; a click on
+        // punctuation or whitespace selects nothing (same as before).
+        #[derive(Clone, Copy, PartialEq)]
+        enum WordClass {
+            Ascii,
+            Cjk,
+        }
+        let classify = |c: char| -> Option<WordClass> {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                Some(WordClass::Ascii)
+            } else if matches!(
+                c,
+                '\u{4E00}'..='\u{9FFF}' // CJK Unified Ideographs
+                    | '\u{3400}'..='\u{4DBF}' // Extension A
+                    | '\u{F900}'..='\u{FAFF}' // Compatibility Ideographs
+                    | '\u{3040}'..='\u{309F}' // Hiragana
+                    | '\u{30A0}'..='\u{30FF}' // Katakana
+                    | '\u{AC00}'..='\u{D7AF}' // Hangul syllables
+            ) {
+                Some(WordClass::Cjk)
+            } else {
+                None
+            }
+        };
+        let cls = classify(text[byte_pos..].chars().next()?)?;
+
+        // Expand left across same-class chars.
         let mut start = byte_pos;
-        let mut end = byte_pos;
-        // Expand left
         while start > 0 {
-            if classify(bytes[start - 1]) {
-                start -= 1;
-            } else {
+            let (i, ch) = text[..start].char_indices().next_back()?;
+            if classify(ch) != Some(cls) {
                 break;
             }
+            start = i;
         }
-        // Expand right
-        while end < bytes.len() {
-            if classify(bytes[end]) {
-                end += 1;
-            } else {
+        // Expand right across same-class chars.
+        let mut end = byte_pos;
+        for (i, ch) in text[byte_pos..].char_indices() {
+            if classify(ch) != Some(cls) {
                 break;
             }
+            end = byte_pos + i + ch.len_utf8();
         }
-        if start < end {
-            Some((start, end))
-        } else {
-            None
-        }
+        (start < end).then_some((start, end))
+    }
+
+    /// True when this physical row renders as a whole-Markdown card.
+    ///
+    /// Markdown rows never draw a text-selection overlay (their renderer
+    /// skips it), so selection creation/extension must skip them too.
+    pub(crate) fn is_markdown_row(&self, phys: usize) -> bool {
+        self.markdown_cells
+            .get(phys)
+            .is_some_and(|cell| cell.is_some())
     }
 
     /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
@@ -133,8 +165,12 @@ impl App {
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
-        let indent = self.nested_log_indent(phys_idx) as usize;
+        let is_user = crate::render::is_user_message_line(&self.raw_messages, phys_idx);
+        let indent = self.nested_log_indent(phys_idx, is_user) as usize;
         let text_col = col.saturating_sub(indent);
+        // Render wraps at (panel width - indent); the hit-test must use the
+        // same width or clicks near the right edge of indented rows drift.
+        let wrap_width = wrap_width.saturating_sub(indent).max(1);
         let byte_offset =
             visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
         Some((phys_idx, byte_offset))
@@ -563,7 +599,7 @@ impl App {
     pub(crate) fn refresh_thinking_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 
@@ -685,7 +721,7 @@ impl App {
     pub(crate) fn refresh_tool_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.log_scroll.offset = u16::MAX;
+            self.scroll_log_to_bottom();
         }
     }
 }

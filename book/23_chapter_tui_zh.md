@@ -212,7 +212,8 @@ flowchart TB
 | `render/log.rs` | Log 面板：wrap cache、scroll、overlays、scrollbar |
 | `render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
 | `render/log_style.rs` | 共享 log 文本样式 |
-| `render/render_md.rs` | Markdown → ratatui `Line`s（`tui-markdown`） |
+| `render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
+| `render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s（正文/标题/列表/表格/引用块） |
 | `render/renderable.rs` | `Renderable` trait |
 | `render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `render/welcome.rs` | 启动 logo |
@@ -281,17 +282,19 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 | 空间 | 含义 | Scrollbar 跟踪 |
 |------|------|----------------|
 | **Physical** | `app.messages[]` 中的索引 | — |
-| **Logical** | 可见消息 + 可选流式 buffer 行 | `log_scroll.offset` |
-| **Visual** | 当前面板宽度下的换行 | 总 visual 行数 |
+| **Logical** | 可见消息 + 可选流式 buffer 行 | —（`log_scroll.offset` 仅为派生镜像） |
+| **Visual** | 当前面板宽度下的换行 | `log_scroll.visual_top`（viewport 起点）/ 总 visual 行数 |
 
 `render_log_panel` 管线阶段：
 
 1. **Phase 0** — `messages.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
 2. **Phase 1** — 宽度或消息数变化时 `wrap_line` → `visual_cache` + `visual_start_cache`。
-3. **Phase 2** — 将 `log_scroll.offset` 映射到 visual viewport（`visual_scroll`、clip height）。
+3. **Phase 2** — 将权威滚动位置 `log_scroll.visual_top`（首条可见 visual 行；`usize::MAX` = 钉住底部哨兵）钳制到 `total - height`，并派生 `log_scroll.offset` 逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由 `widgets/state/app/scroll.rs` 的 `visual_step_up/down` 按视觉行步进（cell 内 `j`/`k` 半屏、滚轮 3 行；否则按行边界跳转）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
 
-**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 在保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）的同时，也会为每个字形显式写入同一背景。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+**Viewport 背景不变量：** inline cell 绘制前，Log 内层 viewport 会重置为 `theme.bg`。`TextCell` 为每个字形显式写入背景 —— 自带背景的 span（围栏代码、H1 标题）保留自己的背景，其余使用面板底色 —— 同时保留每个 span 的前景色和 modifier（包括选区 `REVERSED`）。因此滚动后出现的普通行不会继承上一帧 overlay 或卡片遗留的背景；tool、Thinking 与 code-card 仍按既有层级覆盖该背景。
+
+**Markdown 标记策略：** 渲染器在解析阶段消费围栏 / 标题 / 引用标记，因此 raw 行镜像渲染文本（复制、代码块检测与鼠标 hit-test 基于这些行）。围栏代码行携带主题代码背景（背景本身即分界），标题标记被剥除，引用 gutter 渲染为 `▎`。三击的代码块检测改为匹配代码背景，而非 ```` ``` ```` 标记。
 
 流式文本在 token 到达时用 `app.stream.buffer` 作为额外 logical 行。
 
@@ -328,13 +331,13 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
 - 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
-- 第 2 行：模型名、`输出`/`out`、`思考 high`/`think high`（effort）或 `思考 32K`/`think 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
+- 第 2 行：模型名、`max_out_token`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `max_out_token 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
 ### 6.7 Markdown
 
-`render_md.rs` 经 `tui-markdown` 与自定义 `TuiStyleSheet`（标题、代码、链接、引用）转换 assistant markdown。Code block 统一深色背景；表格列对齐。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
+`render/pulldown.rs` 经 `pulldown-cmark` 0.13 事件循环（`TextWriter` 式状态机）转换 assistant markdown，Mermaid 复用共享的 `TuiRichTextTheme`。Code block 使用主题代码背景并隐藏围栏标记；所有表格都走 Tact 的宽度感知 `format_table`（管道风格）列对齐。无序列表渲染为 `•`，任务项渲染为 `☐`/`☑`；GFM 任务列表同样作用于有序列表（`1. [X]` → `1. ☑`）。diff 弹窗经 `syntect`（Base16 Ocean Dark）语法高亮。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。
 
 **流式 fence 边界规则：** TUI 对 fenced 内容有两条不同路径。普通 markdown 渲染（`render_markdown_tui`）可以直接内联显示 fenced 文本；而流式日志管线则可能在 fenced block 完整闭合后，**提升**为专门的 code card overlay。2026-08-01 的 bugfix 之后，如果一个**空语言** fence（普通 ```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown 流程里，而不会被提升成 code card。这样可避免列表尾行或说明性尾文本被错误劫持进 `Click for full code` 卡片。带显式语言标签的流式代码块仍走 code-card 路径，唯一的例外自 2026-08-08 起：完整的 `mermaid` fence 会渲染为终端图（见下）。
 
@@ -562,7 +565,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 
 **TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自 `RawMessageType`。
 
-**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 的计数（`Live output (N lines)`）只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
+**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
 
 **为何仅 code 用 overlay：** code block 将流式 fence 行换成 blank placeholder，并用预渲染 `styled` cache 绘制 card。Thinking 则采用与 tool card 相同的 direct `Renderable` 模型，因此 live tail 与 completion summary 只有一个渲染所有者。
 

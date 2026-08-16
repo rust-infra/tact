@@ -18,7 +18,10 @@ pub(crate) fn handle_normal_mode(
             if app.mouse.in_task_panel && sticky_scrollable(app) {
                 app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
             } else {
-                app.log_scroll.offset = app.log_scroll.offset.saturating_add(1);
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.log_scroll.height as usize,
+                );
+                app.scroll_log_down(step);
             }
         }
         KeyCode::Char('k') => {
@@ -26,16 +29,18 @@ pub(crate) fn handle_normal_mode(
                 if app.task_panel.scroll > 0 {
                     app.task_panel.scroll -= 1;
                 }
-            } else if app.log_scroll.offset > 0 {
-                app.log_scroll.offset -= 1;
+            } else {
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.log_scroll.height as usize,
+                );
+                app.scroll_log_up(step);
             }
         }
         KeyCode::Char('g') => {
-            app.log_scroll.offset = 0;
+            app.scroll_log_to_top();
         }
         KeyCode::Char('G') => {
-            // Set to a large enough value; render clamps to actual max_scroll
-            app.log_scroll.offset = u16::MAX;
+            app.scroll_log_to_bottom();
         }
         KeyCode::Char('/') => {
             app.input_mode = InputMode::Palette;
@@ -256,13 +261,20 @@ mod tests {
     fn j_and_k_scroll_log() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
-        app.log_scroll.offset = 5;
+        for i in 0..10 {
+            app.add_system_message(format!("row-{i}"));
+        }
+        // One render populates the visual caches the scroll handlers read.
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 4);
+        app.scroll_log_to_top();
 
         handle_normal_mode(&mut app, key(KeyCode::Char('j')), &tx);
-        assert_eq!(app.log_scroll.offset, 6);
+        assert_eq!(app.log_scroll.offset, 1);
+        handle_normal_mode(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.log_scroll.offset, 2);
 
         handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
-        assert_eq!(app.log_scroll.offset, 5);
+        assert_eq!(app.log_scroll.offset, 1);
     }
 
     #[test]

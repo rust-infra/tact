@@ -1,11 +1,9 @@
-use std::borrow::Cow;
-
-use pulldown_cmark::{Event, Options as MarkdownOptions, Parser};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use ratatui_markdown::{
+    markdown::MarkdownRenderer,
     mermaid::{render_mermaid, theme::MermaidTheme},
     theme::{CodeColors, Generation, RichTextTheme},
 };
@@ -13,64 +11,11 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{render::util::split_at_display_width, theme::Theme};
 
-/// Theme-aware StyleSheet for tui-markdown.
-#[derive(Clone, Copy, Debug)]
-struct TuiStyleSheet {
-    theme: Theme,
-}
-
-impl TuiStyleSheet {
-    fn new(theme: Theme) -> Self {
-        Self { theme }
-    }
-}
-
-impl tui_markdown::StyleSheet for TuiStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new()
-                .fg(self.theme.heading)
-                .bg(self.theme.highlight)
-                .bold()
-                .underlined(),
-            2 => Style::new().fg(self.theme.heading).bold(),
-            3 => Style::new().fg(self.theme.heading).bold().italic(),
-            4 => Style::new().fg(self.theme.fg).bold().italic(),
-            5 => Style::new().fg(self.theme.fg).italic(),
-            _ => Style::new().fg(self.theme.fg).italic(),
-        }
-    }
-
-    fn code(&self) -> Style {
-        Style::new()
-            .fg(self.theme.code_block_fg())
-            .bg(self.theme.code_block_bg())
-    }
-
-    fn link(&self) -> Style {
-        Style::new().fg(Color::Blue).underlined()
-    }
-
-    fn blockquote(&self) -> Style {
-        Style::new().fg(self.theme.success)
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::new().fg(self.theme.muted_fg())
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::new().fg(self.theme.warning)
-    }
-}
-
-/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme`.
-///
-/// Shared by the Mermaid renderer and the `/tasks-dag` popup so both use the
-/// exact same color mapping.
+/// Maps the app [`Theme`] into ratatui-markdown's `RichTextTheme` for the
+/// Mermaid renderer.
 #[derive(Clone, Copy)]
-pub(crate) struct TuiRichTextTheme<'a> {
-    pub theme: &'a Theme,
+struct TuiRichTextTheme<'a> {
+    theme: &'a Theme,
 }
 
 impl RichTextTheme for TuiRichTextTheme<'_> {
@@ -378,11 +323,11 @@ fn is_fence_closer(line: &str, opener: Fence) -> bool {
     run_len >= opener.run_len && trimmed[run_len..].chars().all(char::is_whitespace)
 }
 
-/// Renders Markdown text into ratatui Line list and raw text list using tui-markdown.
+/// Renders Markdown text into ratatui `Line`s and raw text via pulldown-cmark.
 ///
 /// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
 /// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
-/// tui-markdown pipeline.
+/// pulldown-cmark pipeline.
 pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
     route_mermaid_fences(
         text,
@@ -392,53 +337,27 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
     )
 }
 
-/// The plain tui-markdown chunk renderer (no width-aware tables, no Mermaid
-/// routing). Fallback code-card previews go through this path directly so a
+/// Direct chunk renderer (no Mermaid routing, no width-aware tables).
+///
+/// Fallback code-card previews go through this path directly so a
 /// reconstructed fallback fence is never re-routed through the Mermaid
-/// renderer.
+/// renderer. Tables render at unlimited width: the log panel wraps lines
+/// itself via `wrap_line`.
 pub(crate) fn render_plain_markdown(
     text: &str,
     theme: &Theme,
     _width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    let options = tui_markdown::Options::new(TuiStyleSheet::new(*theme));
-    let safe_text = escape_task_list_markers(text);
-    let tui_text = tui_markdown::from_str_with_options(safe_text.as_ref(), &options);
-    let mut styled_lines: Vec<Line<'static>> = tui_text
-        .lines
-        .into_iter()
-        .map(|line| {
-            let spans: Vec<Span<'static>> = line
-                .spans
-                .into_iter()
-                .map(|s| Span::styled(s.content.into_owned(), s.style))
-                .collect();
-            let mut new_line = Line::from(spans).style(line.style);
-            if let Some(alignment) = line.alignment {
-                new_line = new_line.alignment(alignment);
-            }
-            new_line
-        })
-        .collect();
-    let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
-
-    apply_code_background(&mut styled_lines, &raw_lines, theme);
-    apply_blockquote_indicator(&mut styled_lines, theme);
-
-    let raw_lines: Vec<String> = styled_lines.iter().map(|l| l.to_string()).collect();
-    (styled_lines, raw_lines)
+    render_prose_and_tables(text, theme, None)
 }
 
 /// Render markdown with width-aware pipe tables.
 ///
-/// Pipe-table rows (lines starting with `|`) are extracted and rendered by
-/// `format_table` with `available_width` — long cells wrap inside the table
-/// layout and columns stay aligned. Everything else is delegated to
-/// tui-markdown. Complete top-level ` ```mermaid ` fences are routed to the
-/// Mermaid renderer *before* the table scanner runs, so `|` lines inside a
-/// diagram are never mistaken for table rows. System messages like `/skills`
-/// produce plain markdown and go through this single pipeline instead of
-/// hand-building ratatui lines.
+/// Complete top-level ` ```mermaid ` fences are routed to the Mermaid
+/// renderer before the chunk renderer runs, so `|` lines inside a diagram are
+/// never mistaken for table rows. Everything else (prose, headings, lists,
+/// tables, code fences, blockquotes) goes through [`super::pulldown`] with the
+/// caller's width forwarded to the pipe-table layout.
 pub(crate) fn render_markdown_with_tables(
     text: &str,
     theme: &Theme,
@@ -447,148 +366,84 @@ pub(crate) fn render_markdown_with_tables(
     route_mermaid_fences(text, theme, available_width, render_prose_and_tables)
 }
 
-/// The width-aware chunk renderer (pipe tables + tui-markdown).
+/// The width-aware chunk renderer (pulldown-cmark + the `▎` gutter pass).
 fn render_prose_and_tables(
     text: &str,
     theme: &Theme,
     available_width: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<String>) {
-    let mut styled_lines = Vec::new();
-    let mut raw_lines = Vec::new();
-    let mut table_rows: Vec<String> = Vec::new();
-    let mut paragraph = String::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('|') {
-            // Start/continue a table: flush any pending prose first.
-            if !paragraph.trim().is_empty() {
-                let (s, r) = render_markdown_tui(&paragraph, theme);
-                styled_lines.extend(s);
-                raw_lines.extend(r);
-                paragraph.clear();
-            }
-            table_rows.push(line.to_string());
-        } else {
-            // Non-table line: flush a pending table before handling prose.
-            if !table_rows.is_empty() {
-                let (s, r) = format_table(&table_rows, theme, available_width);
-                styled_lines.extend(s);
-                raw_lines.extend(r);
-                table_rows.clear();
-            }
-            if trimmed.is_empty() {
-                // Blank line ends the current paragraph.
-                if !paragraph.trim().is_empty() {
-                    let (s, r) = render_markdown_tui(&paragraph, theme);
-                    styled_lines.extend(s);
-                    raw_lines.extend(r);
-                    paragraph.clear();
-                }
-            } else {
-                paragraph.push_str(line);
-                paragraph.push('\n');
-            }
-        }
-    }
-    // Flush trailing content.
-    if !table_rows.is_empty() {
-        let (s, r) = format_table(&table_rows, theme, available_width);
-        styled_lines.extend(s);
-        raw_lines.extend(r);
-    }
-    if !paragraph.trim().is_empty() {
-        let (s, r) = render_markdown_tui(&paragraph, theme);
-        styled_lines.extend(s);
-        raw_lines.extend(r);
-    }
-
+    let (mut styled_lines, raw_lines) =
+        super::pulldown::render_markdown(text, theme, available_width);
+    apply_blockquote_indicator(&mut styled_lines, theme);
     (styled_lines, raw_lines)
 }
 
-/// Work around tui-markdown 0.3.x panicking on task markers in loose lists.
-fn escape_task_list_markers(text: &str) -> Cow<'_, str> {
-    if !text.contains("[ ]") && !text.contains("[x]") && !text.contains("[X]") {
-        return Cow::Borrowed(text);
-    }
-
-    let mut options = MarkdownOptions::empty();
-    options.insert(MarkdownOptions::ENABLE_STRIKETHROUGH);
-    options.insert(MarkdownOptions::ENABLE_TASKLISTS);
-    options.insert(MarkdownOptions::ENABLE_HEADING_ATTRIBUTES);
-    options.insert(MarkdownOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    options.insert(MarkdownOptions::ENABLE_SUPERSCRIPT);
-    options.insert(MarkdownOptions::ENABLE_SUBSCRIPT);
-    let marker_starts: Vec<usize> = Parser::new_ext(text, options)
-        .into_offset_iter()
-        .filter_map(|(event, range)| {
-            matches!(event, Event::TaskListMarker(_)).then_some(range.start)
-        })
-        .collect();
-    if marker_starts.is_empty() {
-        return Cow::Borrowed(text);
-    }
-
-    let mut escaped = String::with_capacity(text.len() + marker_starts.len());
-    let mut copied_until = 0;
-    for marker_start in marker_starts {
-        escaped.push_str(&text[copied_until..marker_start]);
-        escaped.push('\\');
-        copied_until = marker_start;
-    }
-    escaped.push_str(&text[copied_until..]);
-    Cow::Owned(escaped)
+/// Render Markdown through ratatui-markdown's own renderer.
+///
+/// Used by popups (e.g. the `/stats` session-stats popup) where a quick
+/// default layout is enough — no width-aware pipe-table pass, no Mermaid
+/// routing. `width` bounds the renderer's max line width.
+pub(crate) fn render_markdown_ratatui(
+    text: &str,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let renderer = MarkdownRenderer::new(width.max(1));
+    let blocks = renderer.parse(text);
+    renderer.render(&blocks, &TuiRichTextTheme { theme })
 }
 
-fn apply_code_background(lines: &mut [Line<'static>], raw: &[String], theme: &Theme) {
-    let code_bg = theme.code_block_bg();
-    let code_fg = theme.code_block_fg();
-
-    let mut i = 0;
-    while i < raw.len() {
-        let trimmed = raw[i].trim();
-        if trimmed.starts_with("```") {
-            let mut end_marker = None;
-            let mut j = i + 1;
-            while j < raw.len() {
-                if raw[j].trim() == "```" {
-                    end_marker = Some(j);
-                    break;
-                }
-                j += 1;
-            }
-
-            if let Some(end) = end_marker {
-                for line in lines.iter_mut().take(end).skip(i + 1) {
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    for span in &line.spans {
-                        let mut style = span.style;
-                        if style.fg.is_none() {
-                            style = style.fg(code_fg);
-                        }
-                        style = style.bg(code_bg);
-                        spans.push(Span::styled(span.content.clone(), style));
-                    }
-                    if !spans.is_empty() {
-                        *line = Line::from(spans);
-                    }
-                }
-                i = end + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-}
-
+/// Adapt the pulldown renderer's blockquotes to the log's `▎` gutter look.
+///
+/// The pulldown renderer emits a muted `│ ` gutter per level; the log's
+/// established look is a success-colored `▎ ` gutter with the quote text in
+/// the same color. Gutter-only spans are dropped, nested `│ ` runs collapse
+/// into one `▎ `, and every remaining span is recolored to `theme.success`
+/// while keeping its modifiers.
 fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>, theme: &Theme) {
-    let quote_style = Style::new().fg(theme.success);
+    let gutter_fg = theme.muted_fg();
     for line in lines.iter_mut() {
-        if line.style.fg == quote_style.fg && line.style.bg == quote_style.bg {
-            let mut spans = vec![Span::styled("▎ ", line.style)];
-            spans.extend(std::mem::take(&mut line.spans));
-            line.spans = spans;
+        let is_quote = line
+            .spans
+            .first()
+            .is_some_and(|s| s.content.starts_with('│') && s.style.fg == Some(gutter_fg));
+        if !is_quote {
+            continue;
         }
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut gutter_open = true;
+        for sp in std::mem::take(&mut line.spans) {
+            if gutter_open && sp.style.fg == Some(gutter_fg) {
+                let trimmed = sp.content.trim_start_matches(['│', ' ']);
+                if trimmed.is_empty() {
+                    // Pure gutter span (e.g. "│ "): drop it.
+                    continue;
+                }
+                gutter_open = false;
+                out.push(Span::styled("▎ ", Style::default().fg(theme.success)));
+                out.push(Span::styled(
+                    trimmed.to_string(),
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(sp.style.add_modifier),
+                ));
+            } else {
+                if gutter_open {
+                    gutter_open = false;
+                    out.push(Span::styled("▎ ", Style::default().fg(theme.success)));
+                }
+                out.push(Span::styled(
+                    sp.content.to_string(),
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(sp.style.add_modifier),
+                ));
+            }
+        }
+        if out.is_empty() {
+            out.push(Span::styled("▎ ", Style::default().fg(theme.success)));
+        }
+        line.spans = out;
     }
 }
 
@@ -1115,9 +970,11 @@ Trailing prose.
         let (_lines, raw) = render_markdown_tui(md, &theme());
         let joined = raw.join("\n");
 
-        assert!(joined.contains("[ ] pending"), "{joined}");
-        assert!(joined.contains("[x] complete"), "{joined}");
-        assert!(joined.contains("[X] ordered"), "{joined}");
+        assert!(joined.contains("☐ pending"), "{joined}");
+        assert!(joined.contains("☑ complete"), "{joined}");
+        // GFM task lists apply to ordered lists too: `1. [X]` becomes the
+        // numbered checkbox `1. ☑` (pulldown-cmark behaviour).
+        assert!(joined.contains("1. ☑ ordered"), "{joined}");
     }
 
     #[test]
@@ -1154,22 +1011,85 @@ Trailing prose.
     fn render_markdown_fenced_code_block() {
         let md = "```rust\nfn md_test() {}\n```";
         let (lines, raw) = render_markdown_tui(md, &theme());
-        let joined = raw.join("\n");
+        // The renderer consumes the fence markers at parse time; raw rows
+        // (copy / hit-testing) and styled rows both carry only the code text.
+        let joined_raw = raw.join("\n");
         assert!(
-            joined.contains("md_test") || joined.contains("fn"),
-            "code block content: {joined}"
+            joined_raw.contains("fn md_test() {}"),
+            "raw keeps code content: {joined_raw}"
         );
-        assert!(lines.iter().any(|l| !l.spans.is_empty()));
+        assert!(
+            !joined_raw.contains("```"),
+            "fence markers are consumed: {joined_raw}"
+        );
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            styled.contains("fn md_test() {}"),
+            "code block content: {styled}"
+        );
+        assert!(
+            !styled.contains("```"),
+            "fence markers must be hidden in the styled output: {styled}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(theme().code_block_bg()))),
+            "code rows carry the code background"
+        );
     }
 
     #[test]
     fn render_markdown_blockquote() {
         let md = "> quoted wisdom";
-        let (_lines, raw) = render_markdown_tui(md, &theme());
-        let joined = raw.join("\n");
+        let (lines, _raw) = render_markdown_tui(md, &theme());
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            joined.contains("quoted wisdom"),
-            "blockquote text: {joined}"
+            styled.contains("quoted wisdom"),
+            "blockquote text: {styled}"
+        );
+        assert!(
+            styled.contains("▎") && !styled.contains('>'),
+            "the literal > marker should be replaced by the ▎ gutter: {styled}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_heading_markers_are_stripped() {
+        let md = "## Sub heading\nplain";
+        let (lines, raw) = render_markdown_tui(md, &theme());
+        // Markers are consumed at parse time — neither raw nor styled rows
+        // keep the `## ` prefix.
+        let joined_raw = raw.join("\n");
+        assert!(
+            joined_raw.contains("Sub heading"),
+            "raw keeps heading text: {joined_raw}"
+        );
+        assert!(
+            !joined_raw.contains("##"),
+            "heading marker is consumed: {joined_raw}"
+        );
+        let styled = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            styled.contains("Sub heading"),
+            "heading text must stay: {styled}"
+        );
+        assert!(
+            !styled.contains("##"),
+            "the heading marker should be stripped: {styled}"
         );
     }
 
@@ -1448,7 +1368,7 @@ Plain trailing paragraph.
             "long description should wrap into extra sub-rows:\n{}",
             raw.join("\n")
         );
-        // Heading is rendered by tui-markdown (not swallowed by table logic).
+        // Heading is rendered by pulldown-cmark (not swallowed by table logic).
         assert!(
             raw.iter().any(|l| l.contains("Available skills")),
             "heading missing:\n{}",
@@ -1478,5 +1398,96 @@ Plain trailing paragraph.
             text.lines().any(|l| l == full_row),
             "long cell must stay on one row when width is None:\n{text}"
         );
+    }
+
+    /// Regression baseline for the pulldown-cmark renderer: locks the
+    /// observable behaviour of the constructs the consolidation preserves
+    /// (heading levels, emphasis nesting, lists, task lists, blockquotes).
+    mod baseline {
+        use ratatui::style::Modifier;
+
+        use super::*;
+
+        /// Locks the current pipeline's observable behaviour for the
+        /// constructs the consolidation must preserve.
+        #[test]
+        fn corpus_baseline_current_pipeline() {
+            let theme = Theme::from(ThemeName::Dark);
+
+            // H1: marker stripped, bold+underline heading style.
+            let (lines, _) = render_markdown_tui("# Title one\n\nplain", &theme);
+            let h1 = &lines[0];
+            assert!(
+                h1.to_string().contains("Title one") && !h1.to_string().contains('#'),
+                "h1 text/marker: {h1:?}"
+            );
+            assert!(
+                h1.style
+                    .add_modifier
+                    .contains(Modifier::BOLD | Modifier::UNDERLINED)
+                    || h1.spans.iter().any(|s| s
+                        .style
+                        .add_modifier
+                        .contains(Modifier::BOLD | Modifier::UNDERLINED))
+            );
+
+            // H4: marker stripped, styled bold+italic.
+            let (lines, _) = render_markdown_tui("#### Small heading", &theme);
+            let h4 = &lines[0];
+            assert!(
+                h4.to_string().contains("Small heading") && !h4.to_string().contains("####"),
+                "h4 text/marker: {h4:?}"
+            );
+            assert!(
+                h4.style.add_modifier.contains(Modifier::BOLD)
+                    || h4
+                        .spans
+                        .iter()
+                        .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            );
+
+            // Bold: `**` markers stripped, BOLD span present.
+            let (lines, _) = render_markdown_tui("Some **bold** text", &theme);
+            let text = lines[0].to_string();
+            assert!(
+                !text.contains("**"),
+                "bold markers must be stripped: {text}"
+            );
+            assert!(
+                lines[0]
+                    .spans
+                    .iter()
+                    .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            );
+
+            // Nested ordered list keeps its number.
+            let (lines, _) = render_markdown_tui("- item\n  1. ordered sub", &theme);
+            let text = lines
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("1. ordered sub"),
+                "ordered number lost: {text}"
+            );
+
+            // Task-list markers render as checkbox glyphs (no panic, no escape).
+            let (lines, _) = render_markdown_tui("- [ ] pending\n- [x] done", &theme);
+            let text = lines
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("☐ pending") && text.contains("☑ done"),
+                "{text}"
+            );
+
+            // Blockquote: ▎ gutter replaces the `>` marker.
+            let (lines, _) = render_markdown_tui("> quoted", &theme);
+            let text = lines[0].to_string();
+            assert!(text.contains('▎') && !text.contains('>'), "{text}");
+        }
     }
 }

@@ -1,6 +1,6 @@
 use arboard::Clipboard;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use ratatui::{layout::Rect, text::Line};
+use ratatui::{layout::Rect, style::Color, text::Line};
 
 use crate::{
     render::cells::markdown::MarkdownCell,
@@ -270,10 +270,13 @@ impl App {
     /// The raw source is stored verbatim (newlines included); `messages`
     /// keeps an empty placeholder row. The `MarkdownCell` lives in
     /// `markdown_cells` so rendering can cache the parsed layout across
-    /// frames (see `render_log_panel` Phase 1/3).
+    /// frames (see `render_log_panel` Phase 1/3). Rows are indented like
+    /// assistant replies (`LOG_THINKING_INDENT + 1`) so whole-Markdown
+    /// messages align with streamed text instead of hugging the left border.
     pub(crate) fn append_markdown(&mut self, content: impl Into<String>) {
         let content = content.into();
-        let cell = MarkdownCell::new(&content, &self.theme);
+        let cell = MarkdownCell::new(&content, &self.theme)
+            .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
         self.messages.push(Line::from(""));
         self.raw_messages.push(content);
         self.raw_message_types.push(RawMessageType::LLM);
@@ -396,29 +399,49 @@ impl App {
         &self,
         target_logical: usize,
     ) -> Option<(usize, usize)> {
+        // Code blocks are detected by the code background on the styled
+        // spans: the renderer consumes ``` fences at parse time, so the raw
+        // rows no longer carry the markers. The hardcoded streamed-code
+        // background (Rgb(30,35,50)) is matched too for code cards built by
+        // `apply_stream_chunk`.
+        let code_bg = self.theme.code_block_bg();
         let mut logical = 0;
         let mut block_start: Option<usize> = None;
-        for phys_idx in 0..self.raw_messages.len() {
+        let mut block_end: Option<usize> = None;
+        let mut result: Option<(usize, usize)> = None;
+        for phys_idx in 0..self.messages.len() {
             if !self.is_message_visible(phys_idx) {
                 continue;
             }
-            let raw = &self.raw_messages[phys_idx];
-            let trimmed = raw.trim();
-            if trimmed.starts_with("```") {
+            let is_code = self.messages[phys_idx]
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(code_bg) || s.style.bg == Some(Color::Rgb(30, 35, 50)));
+            if is_code {
                 if block_start.is_none() {
                     block_start = Some(logical);
-                } else if trimmed == "```" {
-                    let start = block_start.unwrap();
-                    let end = logical;
-                    if target_logical >= start && target_logical <= end {
-                        return Some((start, end));
-                    }
-                    block_start = None;
                 }
+                block_end = Some(logical);
+            } else if let Some(start) = block_start {
+                let end = block_end.unwrap_or(start);
+                if target_logical >= start && target_logical <= end {
+                    result = Some((start, end));
+                    break;
+                }
+                block_start = None;
+                block_end = None;
             }
             logical += 1;
         }
-        None
+        if result.is_none()
+            && let Some(start) = block_start
+            && let Some(end) = block_end
+            && target_logical >= start
+            && target_logical <= end
+        {
+            result = Some((start, end));
+        }
+        result
     }
 
     /// Extract the content of the last complete code block from raw_messages (without ``` markers).

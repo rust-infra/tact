@@ -538,6 +538,49 @@ pub(super) fn resolve_non_llm_settings(
     }
 }
 
+/// Returns the context window (total input + output tokens) for a known model id.
+///
+/// This mapping has the **highest** priority in resolution: it overrides both
+/// the CLI flag and the TOML file so the window stays correct for models with
+/// a well-known size regardless of stale manual config.
+///
+/// Values follow official docs (2026-08):
+/// - OpenAI (developers.openai.com/api/docs/models): GPT-5.6 family and GPT-5.5
+///   are 1,050,000; GPT-5.4 is 1,000,000; GPT-5 … GPT-5.3 and GPT-5.4-mini are
+///   400,000; GPT-4o family is 128,000.
+/// - Anthropic (platform.claude.com/docs/en/about-claude/models/overview):
+///   Sonnet 5 / Fable 5 / Opus 5 / Opus 4.6–4.8 / Sonnet 4.6 are 1M; Sonnet 4 /
+///   Opus 4 / Haiku 4.5 are 200K. Claude Code serves the same ids with the
+///   same 1M windows.
+/// - DeepSeek V4 family (api-docs.deepseek.com): 1M default; Kimi `k3-256k`: 256K.
+fn model_context_window_for_model(model: &str) -> Option<usize> {
+    match model {
+        // OpenAI — GPT-5.6 family and GPT-5.5 (1.05M).
+        "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.5" => Some(1_050_000),
+        // OpenAI — GPT-5.4 (up to 1M).
+        "gpt-5.4" => Some(1_000_000),
+        // OpenAI — 400K family (GPT-5 … GPT-5.3, GPT-5.4-mini).
+        "gpt-5" | "gpt-5.1" | "gpt-5.2" | "gpt-5.3" | "gpt-5.3-codex" | "gpt-5.4-mini" => {
+            Some(400_000)
+        }
+        // OpenAI — GPT-4o family (128K).
+        "gpt-4o" | "gpt-4o-mini" => Some(128_000),
+        // Anthropic — 1M models (API and Claude Code).
+        "claude-sonnet-5" | "claude-fable-5" | "claude-opus-5" | "claude-opus-4-8"
+        | "claude-opus-4-7" | "claude-opus-4-6" | "claude-sonnet-4-6" => Some(1_000_000),
+        // Anthropic — 200K models.
+        "claude-opus-4-20250514"
+        | "claude-sonnet-4-20250514"
+        | "claude-haiku-4-5"
+        | "claude-haiku-4-20250514" => Some(200_000),
+        // DeepSeek V4 family — 1M default.
+        "deepseek-v4-pro" | "deepseek-v4-flash" | "deepseek-reasoner" => Some(1_000_000),
+        // Kimi — k3-256k.
+        "k3-256k" => Some(256_000),
+        _ => None,
+    }
+}
+
 pub(super) fn resolve_config(
     args: &CliArgs,
     toml_cfg: &TactTomlConfig,
@@ -571,8 +614,8 @@ pub(super) fn resolve_config(
         );
     }
 
-    let model_context_window = args
-        .model_context_window
+    let model_context_window = model_context_window_for_model(&provider_info.model)
+        .or(args.model_context_window)
         .or(toml_cfg.agent.model_context_window)
         .unwrap_or(200_000);
 
@@ -769,7 +812,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 {threshold_line}
 
@@ -778,7 +821,7 @@ model_context_window = {model_context_window}
 
 [agent.subagent]
 provider = "openai"
-model = "gpt-5"
+model = "some-unknown-model"
 max_tokens = {subagent_max_tokens}
 "#
         ))
@@ -1473,7 +1516,7 @@ thinking_budget = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 thinking_budget = 64000
 "#,
         )
@@ -1619,7 +1662,7 @@ provider = "openai"
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 "#,
         )
         .unwrap();
@@ -1636,7 +1679,7 @@ provider = "openai"
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 
 [agent]
 model_context_window = 128000
@@ -1645,6 +1688,164 @@ model_context_window = 128000
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.model_context_window, 128_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_mapping_overrides_toml() {
+        // deepseek-v4-pro has a well-known 1M window; the model mapping wins
+        // over a stale `[agent] model_context_window` in the file.
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "deepseek-v4-pro"
+
+[agent]
+model_context_window = 128000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 1_000_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_mapping_overrides_cli() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "deepseek-v4-pro"
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.model_context_window = Some(128_000);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 1_000_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_maps_k3_256k() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "k3-256k"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 256_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_maps_openai_models() {
+        // Official (developers.openai.com/api/docs/models): GPT-5.6 family and
+        // GPT-5.5 are 1.05M; GPT-5.4 is 1M; GPT-5 … GPT-5.3 + GPT-5.4-mini are
+        // 400K; GPT-4o family is 128K.
+        let cases = [
+            ("gpt-5.6", 1_050_000),
+            ("gpt-5.6-luna", 1_050_000),
+            ("gpt-5.6-terra", 1_050_000),
+            ("gpt-5.6-sol", 1_050_000),
+            ("gpt-5.5", 1_050_000),
+            ("gpt-5.4", 1_000_000),
+            ("gpt-5", 400_000),
+            ("gpt-5.1", 400_000),
+            ("gpt-5.2", 400_000),
+            ("gpt-5.3", 400_000),
+            ("gpt-5.3-codex", 400_000),
+            ("gpt-5.4-mini", 400_000),
+            ("gpt-4o", 128_000),
+            ("gpt-4o-mini", 128_000),
+        ];
+        for (model, expected) in cases {
+            let toml_cfg: TactTomlConfig = toml::from_str(&format!(
+                r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "{model}"
+"#
+            ))
+            .unwrap();
+            let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+            assert_eq!(
+                resolved.agent.model_context_window, expected,
+                "model {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_model_context_window_maps_claude_models() {
+        // Official (platform.claude.com docs models overview + help center):
+        // Sonnet 5 / Fable 5 / Opus 5 / Opus 4.6–4.8 / Sonnet 4.6 are 1M
+        // (API and Claude Code); Sonnet 4 / Opus 4 / Haiku 4.5 are 200K.
+        let cases = [
+            ("claude-sonnet-5", 1_000_000),
+            ("claude-fable-5", 1_000_000),
+            ("claude-opus-5", 1_000_000),
+            ("claude-opus-4-8", 1_000_000),
+            ("claude-opus-4-7", 1_000_000),
+            ("claude-opus-4-6", 1_000_000),
+            ("claude-sonnet-4-6", 1_000_000),
+            ("claude-sonnet-4-20250514", 200_000),
+            ("claude-opus-4-20250514", 200_000),
+            ("claude-haiku-4-5", 200_000),
+            ("claude-haiku-4-20250514", 200_000),
+        ];
+        for (model, expected) in cases {
+            let toml_cfg: TactTomlConfig = toml::from_str(&format!(
+                r#"
+[llm]
+provider = "anthropic"
+
+[llm.providers.anthropic]
+api_key = "sk-test"
+model = "{model}"
+base_url = "https://api.anthropic.com"
+"#
+            ))
+            .unwrap();
+            let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+            assert_eq!(
+                resolved.agent.model_context_window, expected,
+                "model {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_model_context_window_unknown_model_falls_through_to_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+model_context_window = 777_000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 777_000);
     }
 
     #[test]
@@ -1657,7 +1858,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 
 [agent]
 model_context_window = 8000
@@ -1684,7 +1885,7 @@ max_tokens = 1000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 
 [agent]
 model_context_window = 8000
@@ -1711,7 +1912,7 @@ max_tokens = 7999
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 
 [agent]
 model_context_window = 8000
@@ -1734,7 +1935,7 @@ max_tokens = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-4o"
+model = "some-unknown-model"
 
 [agent]
 model_context_window = 0
@@ -1757,7 +1958,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
@@ -1780,7 +1981,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 responses_compact_threshold = 160000
 
@@ -1803,7 +2004,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 responses_compact_threshold = 0
 
@@ -1828,7 +2029,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 responses_compact_threshold = 180000
 
@@ -1858,7 +2059,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 responses_compact_threshold = 160000
 
@@ -1867,7 +2068,7 @@ model_context_window = 200000
 
 [agent.subagent]
 provider = "openai"
-model = "gpt-5"
+model = "some-unknown-model"
 max_tokens = 40000
 "#,
         )
@@ -1891,7 +2092,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 responses_compact_threshold = 160000
 
@@ -1900,7 +2101,7 @@ model_context_window = 250000
 
 [agent.subagent]
 provider = "openai"
-model = "gpt-5"
+model = "some-unknown-model"
 max_tokens = 40000
 "#,
         )
@@ -1964,7 +2165,7 @@ max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
-model = "gpt-5"
+model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
