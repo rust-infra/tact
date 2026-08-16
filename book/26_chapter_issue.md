@@ -29,6 +29,57 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Tables render a horizontal separator between body rows
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`render_table_chunk`, `push_separator`) |
+
+**Symptom / motivation:** Pipe tables only drew the header separator; multi-row bodies rendered as consecutive wrapped blocks, so long rows were hard to tell apart and the table did not read as a grid.
+
+**Decision:** `render_table_chunk` now emits a separator row (accent-colored dashes matching the column widths, same look as the header rule) after every body row except the last. Rows that wrap into several visual sub-rows stay above their rule. A body row already followed by an explicit dash-only row (`/skills` style dividers) does not get an extra rule. The separator is generated from the same width data, so it stays pipe-aligned with every row, including chunk-split tables and streamed rows (`format_table_lines` shares the implementation).
+
+**Behavior after:** Multi-row tables display with grid lines between rows (header rule + inter-row rules); single-row tables are unchanged. Wrapped continuation lines stay grouped under their row, separators keep display-width alignment.
+
+**Pointers:** `render_table_chunk` / `push_separator` in `crates/tui/src/render/render_md.rs`; updated row-count assertions in `format_table_aligns_cjk_and_ascii`, `format_table_keeps_pipe_inside_cell`, `format_table_splits_chunks_only_when_compact_cannot_fit`, `format_table_renders_row_separators_aligned`.
+
+---
+
+## 1. 2026-08-16 — Over-wide tables stay intact when a compact layout fits (chunk splits are the last resort)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `fit_columns_to_width`, `MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`), `crates/tui/src/render/cells/markdown.rs` (rendered-width regression tests) |
+
+**Symptom / motivation:** When a table's natural width exceeded the main area, `format_table` shrank columns to the readability floor (`MIN_COL_WIDTH = 8`) and, if the table was still too wide, split it into column chunks that each repeat the header. The greedy chunking produced lopsided blocks (e.g. 12 columns at 95 wide → 8+4, the second block using only half the width; a 4-column long table at 35 wide → 3+1 with a lonely single-column block), even when the whole table could have been shown intact at narrower columns.
+
+**Decision:** Two-phase fit. First shrink to the readability floor; if the table still does not fit, shrink further to the compact floor (`COMPACT_COL_WIDTH = 4` — still ~2 CJK glyphs per line) and keep the table intact whenever that fits. Chunk splitting (`split_into_fitting_chunks`) now runs only when even the compact floor cannot fit (e.g. 10 columns at 40 wide), and the readability floor is restored before splitting so chunk cells stay 8 columns wide. `fit_columns_to_width` gained a `floor` parameter.
+
+**Behavior after:** Tables wider than the main area are compressed column-wise (≥ 4 cols each) and displayed as one complete table with a single header whenever possible; only genuinely unrenderable tables split into chunks (header repeated per chunk), which keeps the existing `wide_table_chunks_into_fitting_blocks` guarantees (rows ≤ panel width, per-block pipe alignment).
+
+**Pointers:** `format_table` / `fit_columns_to_width` / `COMPACT_COL_WIDTH` in `crates/tui/src/render/render_md.rs`; tests `format_table_keeps_overwide_table_intact_when_compact_fits`, `format_table_splits_chunks_only_when_compact_cannot_fit`.
+
+---
+
+## 1. 2026-08-16 — Streamed table rows no longer clip their rightmost pipes after the reply indent
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/widgets/state/app/visibility.rs` (`App::table_layout_width`), `crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs` (`format_table_lines` call sites), `crates/tui/src/render/render_md.rs` (`format_table`), `crates/tui/src/render/cells/markdown.rs` (regression test) |
+
+**Symptom / motivation:** Streamed and system pipe tables were laid out at build time against `log_scroll.width` — the full content width of the log panel. When rendered, assistant / system rows are indented (`nested_log_indent` returns at least `LOG_THINKING_INDENT + 1 = 3` for LLM rows), so the actual render width is 3 columns narrower. Long tables that were shrunk to the full content width then had their trailing pipe and rightmost column clipped, and the columns read as misaligned. The `MarkdownCell` path never had this bug (`render_if_needed` subtracts the indent from `content_width`), which is why only streamed / system tables misaligned.
+
+**Decision:** New `App::table_layout_width()` returns `log_scroll.width - (LOG_THINKING_INDENT + 1)` (floored at 1) and every `format_table_lines` call site (`agent.rs` streaming flushes and `/plugin` + `/marketplace` lists, `visibility.rs::flush_stream_pending`) now lays tables out against it. Every table row renders with indent ≥ 3 (LLM rows = 3, SysTool rows = 4, `/plugin` tables classify as LLM), so a table laid out at the reduced width always fits the real render width.
+
+**Behavior after:** Streamed and system table rows never exceed the rendered content width; trailing pipes stay visible and columns keep their display-width alignment at any panel size. Regression test `streamed_table_rows_stay_aligned_after_reply_indent` asserts real buffer pipe coordinates (aligned within each block, trailing pipe present) at 40/60/80 columns.
+
+**Pointers:** `App::table_layout_width` in `crates/tui/src/widgets/state/app/visibility.rs`; call sites in `widgets/state/app/agent.rs` (lines ~790/810/872/887/972/1028) and `visibility.rs` (`flush_stream_pending`); test in `crates/tui/src/render/cells/markdown.rs`.
+
+---
+
 ## 1. 2026-08-16 — Table cells containing `|` no longer split into phantom columns
 
 | Field | Value |

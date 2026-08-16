@@ -790,7 +790,7 @@ impl App {
                         let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
-                            Some(self.log_scroll.width as usize),
+                            Some(self.table_layout_width()),
                         );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
@@ -810,7 +810,7 @@ impl App {
                     let (styled, raw) = format_table_lines(
                         &self.stream.table_buffer,
                         &self.theme,
-                        Some(self.log_scroll.width as usize),
+                        Some(self.table_layout_width()),
                     );
                     completed.extend(styled.into_iter().zip(raw));
                     self.stream.table_buffer.clear();
@@ -872,7 +872,7 @@ impl App {
                         let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
-                            Some(self.log_scroll.width as usize),
+                            Some(self.table_layout_width()),
                         );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
@@ -887,7 +887,7 @@ impl App {
                         let (styled, raw) = format_table_lines(
                             &self.stream.table_buffer,
                             &self.theme,
-                            Some(self.log_scroll.width as usize),
+                            Some(self.table_layout_width()),
                         );
                         completed.extend(styled.into_iter().zip(raw));
                         self.stream.table_buffer.clear();
@@ -969,7 +969,7 @@ impl App {
                 )
             }));
             let (styled, raw) =
-                format_table_lines(&rows, &self.theme, Some(self.log_scroll.width as usize));
+                format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }
@@ -1025,7 +1025,7 @@ impl App {
                 )
             }));
             let (styled, raw) =
-                format_table_lines(&rows, &self.theme, Some(self.log_scroll.width as usize));
+                format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
             let ty = classify_system_message(&raw.first().cloned().unwrap_or_default());
             self.extend_msgs(styled, raw, ty);
         }

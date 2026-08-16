@@ -9,6 +9,22 @@ use crate::{
 };
 
 impl App {
+    /// Layout width for streamed / system pipe tables.
+    ///
+    /// Table rows are laid out once at build time and later rendered as
+    /// indented `TextCell` rows (assistant / system rows indent at least
+    /// `LOG_THINKING_INDENT + 1` via `nested_log_indent`). The rendered
+    /// content width is therefore `log_scroll.width - indent`; laying the
+    /// table out against the full content width would leave the rightmost
+    /// columns clipped (trailing pipes vanish and the columns read as
+    /// misaligned). `MarkdownCell::render_if_needed` already subtracts its
+    /// own indent; this mirrors that for the line-oriented streaming path.
+    pub(crate) fn table_layout_width(&self) -> usize {
+        (self.log_scroll.width as usize)
+            .saturating_sub(crate::render::util::LOG_THINKING_INDENT as usize + 1)
+            .max(1)
+    }
+
     /// Whether the rendered log viewport currently sits at its visual bottom.
     ///
     /// `usize::MAX` is only a pre-render bottom sentinel: `render_log_panel`
@@ -445,7 +461,7 @@ impl App {
             let (lines, raw_lines) = format_table_lines(
                 &self.stream.table_buffer,
                 &self.theme,
-                Some(self.log_scroll.width as usize),
+                Some(self.table_layout_width()),
             );
             self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
             self.stream.table_buffer.clear();

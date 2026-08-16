@@ -611,7 +611,10 @@ mod integration_tests {
     use tact_protocol::AgentUpdate;
 
     use crate::{
-        render::test_harness::{make_app, render_log_panel_text},
+        render::{
+            render_md::format_table_lines,
+            test_harness::{make_app, render_log_panel_text},
+        },
         widgets::state::RawMessageType,
     };
 
@@ -718,4 +721,66 @@ mod integration_tests {
             "markdown cell must not draw selection overlay (reversed), got:\n{text}"
         );
     }
+
+    #[test]
+    fn streamed_table_rows_stay_aligned_after_reply_indent() {
+        // 回归：流式表格按 log_scroll.width（含缩进的全内容宽度）布局，
+        // 但渲染时 assistant 行缩进 LOG_THINKING_INDENT + 1 = 3 列，实际
+        // 可用宽度少 3 —— 长表格行尾 pipe 被裁掉、列看起来错位。
+        // `table_layout_width` 在布局时扣掉缩进，表格行永不超渲染宽度。
+        use crate::render::test_harness::render_log_panel_terminal;
+        use crate::widgets::state::RawMessageType;
+
+        let md = "| 编号 | 问题描述 | 影响范围 | 处理建议 |\n|-----:|:---------|:---------|:---------|\n| 1 | 当用户连续快速点击「保存」按钮超过五次时，系统会偶发出现重复提交，导致数据库中产生两条内容完全一致但主键不同的记录 | 涉及所有使用表单保存功能的页面，包括用户管理、订单管理、商品管理、配置管理四个模块 | 在前端增加防抖与提交锁，后端在事务中增加唯一性约束校验，并对历史重复数据执行清理脚本 |";
+
+        for width in [40u16, 60, 80] {
+            let mut app = make_app();
+            // First render sets log_scroll.width, as in real usage before
+            // streaming table rows arrive.
+            let _first = render_log_panel_terminal(&mut app, width, 5);
+            let (styled, raw) = format_table_lines(
+                &md.lines().map(|s| s.to_string()).collect::<Vec<_>>(),
+                &app.theme,
+                Some(app.table_layout_width()),
+            );
+            for (s, r) in styled.into_iter().zip(raw) {
+                app.append_msg(s, r, RawMessageType::LLM);
+            }
+            let height = app.messages.len() as u16 + 2;
+            let terminal = render_log_panel_terminal(&mut app, width, height);
+            let buf = terminal.backend().buffer();
+
+            // Group pipe cells by row using real buffer coordinates.
+            let mut rows: Vec<Vec<u16>> = Vec::new();
+            for y in 0..buf.area.height {
+                let xs: Vec<u16> = (0..buf.area.width)
+                    .filter(|&x| buf[(x, y)].symbol() == "|")
+                    .collect();
+                if !xs.is_empty() {
+                    rows.push(xs);
+                }
+            }
+            assert!(!rows.is_empty(), "expected table rows at width {width}");
+            // Rows sharing a pipe pattern (same block / column count) must
+            // have identical pipe columns.
+            for w in rows.windows(2) {
+                if w[0].len() == w[1].len() {
+                    assert_eq!(w[0], w[1], "same-block pipes misaligned at width {width}");
+                }
+            }
+            // Every table row keeps its trailing pipe (no right clipping).
+            assert!(
+                rows.iter().all(|xs| xs.len() >= 2),
+                "trailing pipe clipped at width {width}: {rows:?}"
+            );
+            // Every pipe column must sit inside the rendered content area
+            // (panel width minus right border).
+            for xs in &rows {
+                for &x in xs {
+                    assert!(x < width, "pipe beyond panel at width {width}: {rows:?}");
+                }
+            }
+        }
+    }
+    // appended below integration_tests
 }

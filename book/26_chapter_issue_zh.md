@@ -29,6 +29,57 @@
 
 ---
 
+## 1. 2026-08-16 — 表格数据行之间渲染水平分隔线
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`render_table_chunk`、`push_separator`） |
+
+**现象 / 动机：** 管道表格只有表头分隔线；多行数据体渲染成一串连续换行块，长行之间难以区分，表格不像网格。
+
+**决策：** `render_table_chunk` 现在在每个数据行（最后一行除外）之后输出一条分隔线（accent 色短横线，宽度对齐列宽，与表头分隔线同款）。换行成多个视觉子行的行保持在其分隔线上方。数据行后紧跟显式 dash 行（`/skills` 风格分隔线）时不再额外加线。分隔线由同一列宽数据生成，因此与所有行保持 pipe 对齐，包括拆块表格与流式行（`format_table_lines` 共用实现）。
+
+**改后行为：** 多行表格以网格线显示（表头线 + 行间线）；单行表格不变。换行续行保持归组在其行下，分隔线保持显示宽度对齐。
+
+**指针：** `crates/tui/src/render/render_md.rs` 的 `render_table_chunk` / `push_separator`；更新行数断言的测试：`format_table_aligns_cjk_and_ascii`、`format_table_keeps_pipe_inside_cell`、`format_table_splits_chunks_only_when_compact_cannot_fit`、`format_table_renders_row_separators_aligned`。
+
+---
+
+## 1. 2026-08-16 — 超宽表格在紧凑布局能放下时保持完整显示（拆块是最后手段）
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`format_table`、`fit_columns_to_width`、`MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`），`crates/tui/src/render/cells/markdown.rs`（渲染宽度回归测试） |
+
+**现象 / 动机：** 表格自然宽度超过主区域时，`format_table` 先把列压缩到可读地板（`MIN_COL_WIDTH = 8`），仍放不下就拆成列块、每块重复表头。贪心拆块产生悬殊的块（如 12 列在 95 宽拆成 8+4，第二块只用一半宽度；4 列长表格在 35 宽拆成 3+1，第二块孤零零一列），即使整张表在更窄列宽下本可以完整显示。
+
+**决策：** 两阶段压缩。先压到可读地板；仍放不下时再压到紧凑地板（`COMPACT_COL_WIDTH = 4`，仍可显示约 2 个 CJK 字符/行），只要紧凑布局能放下就保持整表完整。只有紧凑地板也放不下时才拆块（如 10 列在 40 宽），且拆块前恢复可读地板，保证块内列宽 8。`fit_columns_to_width` 增加 `floor` 参数。
+
+**改后行为：** 超宽表格优先按列压缩（每列 ≥ 4）以一张完整表格 + 单表头显示；只有真正放不下的表格才拆块（每块重复表头），保留既有 `wide_table_chunks_into_fitting_blocks` 保证（行 ≤ 面板宽、块内 pipe 对齐）。
+
+**指针：** `crates/tui/src/render/render_md.rs` 的 `format_table` / `fit_columns_to_width` / `COMPACT_COL_WIDTH`；测试 `format_table_keeps_overwide_table_intact_when_compact_fits`、`format_table_splits_chunks_only_when_compact_cannot_fit`。
+
+---
+
+## 1. 2026-08-16 — 流式表格行不再因回复缩进裁掉最右管道
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）；`crates/tui/src/widgets/state/app/visibility.rs`（`App::table_layout_width`），`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（`format_table_lines` 调用点），`crates/tui/src/render/render_md.rs`（`format_table`），`crates/tui/src/render/cells/markdown.rs`（回归测试） |
+
+**现象 / 动机：** 流式与系统管道表格在构建时按 `log_scroll.width`（日志面板的完整内容宽度）布局；渲染时 assistant / 系统行有缩进（`nested_log_indent` 对 LLM 行至少返回 `LOG_THINKING_INDENT + 1 = 3`），实际可用宽度少 3 列。被压缩到满宽的长表格行因此裁掉尾部管道与最右列，竖线看起来对不齐。`MarkdownCell` 路径一直没有此问题（`render_if_needed` 的 `content_width` 已扣缩进），所以只有流式 / 系统表格错位。
+
+**决策：** 新增 `App::table_layout_width()`，返回 `log_scroll.width - (LOG_THINKING_INDENT + 1)`（下限 1）；所有 `format_table_lines` 调用点（`agent.rs` 流式 flush、`/plugin` 与 `/marketplace` 列表、`visibility.rs::flush_stream_pending`）改用该宽度布局。所有表格行渲染缩进 ≥ 3（LLM 行 = 3，SysTool 行 = 4，`/plugin` 表格归类为 LLM），因此按缩减宽度布局的表格必然放进真实渲染宽度。
+
+**改后行为：** 流式与系统表格行永不超出渲染内容宽度；任意面板宽度下尾部管道保持可见、列保持显示宽度对齐。回归测试 `streamed_table_rows_stay_aligned_after_reply_indent` 在 40/60/80 列下断言真实 buffer 的管道坐标（块内对齐、尾部管道存在）。
+
+**指针：** `App::table_layout_width` 在 `crates/tui/src/widgets/state/app/visibility.rs`；调用点在 `widgets/state/app/agent.rs`（约 790/810/872/887/972/1028 行）与 `visibility.rs`（`flush_stream_pending`）；测试在 `crates/tui/src/render/cells/markdown.rs`。
+
+---
+
 ## 1. 2026-08-16 — 单元格内包含 `|` 的表格不再裂成幻影列
 
 | Field | Value |

@@ -551,9 +551,20 @@ pub(crate) fn format_table(
     let chunks: Vec<Range<usize>> = match available_width {
         None => std::iter::once(0..col_count).collect(),
         Some(avail) => {
-            fit_columns_to_width(&mut col_widths, avail);
+            fit_columns_to_width(&mut col_widths, avail, MIN_COL_WIDTH);
             if row_width(&col_widths, 0, col_count) > avail && col_count > 1 {
-                split_into_fitting_chunks(&mut col_widths, avail)
+                // Keep the table intact if a compact layout (columns still ≥
+                // COMPACT_COL_WIDTH wide) fits: an intact 4-column table is
+                // far more readable than a 3+1 chunk split with a repeated
+                // header. Only split when even the compact floor is too wide.
+                let readable = col_widths.clone();
+                fit_columns_to_width(&mut col_widths, avail, COMPACT_COL_WIDTH);
+                if row_width(&col_widths, 0, col_count) > avail {
+                    col_widths = readable;
+                    split_into_fitting_chunks(&mut col_widths, avail)
+                } else {
+                    std::iter::once(0..col_count).collect()
+                }
             } else {
                 std::iter::once(0..col_count).collect()
             }
@@ -636,6 +647,23 @@ fn render_table_chunk(
     styled_lines: &mut Vec<Line<'static>>,
     raw_lines: &mut Vec<String>,
 ) {
+    let push_separator = |styled_lines: &mut Vec<Line<'static>>,
+                          raw_lines: &mut Vec<String>| {
+        let sep_cells: Vec<String> = cols
+            .clone()
+            .map(|i| {
+                let w = col_widths.get(i).copied().unwrap_or(0).max(1);
+                format!(" {} ", "-".repeat(w))
+            })
+            .collect();
+        let line_text = format!("|{}|", sep_cells.join("|"));
+        styled_lines.push(Line::from(Span::styled(
+            line_text.clone(),
+            Style::default().fg(theme.accent),
+        )));
+        raw_lines.push(line_text);
+    };
+
     for (row_idx, row) in rows.iter().enumerate() {
         let is_sep = row.iter().all(|c| {
             c.chars()
@@ -644,19 +672,7 @@ fn render_table_chunk(
 
         if is_sep {
             // Render a visual separator that matches column widths.
-            let sep_cells: Vec<String> = cols
-                .clone()
-                .map(|i| {
-                    let w = col_widths.get(i).copied().unwrap_or(0).max(1);
-                    format!(" {} ", "-".repeat(w))
-                })
-                .collect();
-            let line_text = format!("|{}|", sep_cells.join("|"));
-            styled_lines.push(Line::from(Span::styled(
-                line_text.clone(),
-                Style::default().fg(theme.accent),
-            )));
-            raw_lines.push(line_text);
+            push_separator(styled_lines, raw_lines);
             continue;
         }
 
@@ -695,23 +711,49 @@ fn render_table_chunk(
             styled_lines.push(styled);
             raw_lines.push(line_text);
         }
+
+        // Row separators between body rows (`rows` = header + synthesized
+        // separator + body): after each body row except the last, emit a
+        // horizontal rule so multi-row tables read as grid lines, not as one
+        // blob of wrapped text. Wrapped sub-rows stay above the rule. A body
+        // row followed by an explicit dash-only row already has its divider,
+        // so no extra rule is added there (`/skills` style).
+        let is_body = row_idx >= 2;
+        let is_last_row = row_idx + 1 == rows.len();
+        let next_is_sep = rows.get(row_idx + 1).is_some_and(|r| {
+            r.iter().all(|c| {
+                c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            })
+        });
+        if is_body && !is_last_row && !next_is_sep {
+            push_separator(styled_lines, raw_lines);
+        }
     }
 }
 
 /// Minimum content width a column keeps when shrinking to fit.
 const MIN_COL_WIDTH: usize = 8;
 
+/// Compact floor used to keep an over-wide table intact instead of splitting
+/// it into column chunks. A column this narrow still shows ~2 CJK glyphs per
+/// line; only when even this cannot fit do we fall back to chunk splits
+/// (which repeat the header and visually break the table apart).
+const COMPACT_COL_WIDTH: usize = 4;
+
 /// Shrink the widest columns until the rendered table fits `available_width`.
 ///
 /// A rendered row costs `sum(widths) + 3 * col_count + 1` display columns:
 /// two padding spaces per cell plus one pipe per column and a leading pipe.
-fn fit_columns_to_width(col_widths: &mut [usize], available_width: usize) {
+/// Columns stop shrinking at `floor` — [`MIN_COL_WIDTH`] for the readability
+/// pass, [`COMPACT_COL_WIDTH`] when trying to keep an over-wide table intact.
+fn fit_columns_to_width(col_widths: &mut [usize], available_width: usize, floor: usize) {
     let row_width = |widths: &[usize]| widths.iter().sum::<usize>() + 3 * widths.len() + 1;
     let mut overflow = row_width(col_widths).saturating_sub(available_width);
     while overflow > 0 {
         // Widest column still above the floor.
         let mut target = None;
-        let mut widest = MIN_COL_WIDTH;
+        let mut widest = floor;
         for (i, &w) in col_widths.iter().enumerate() {
             if w > widest {
                 widest = w;
@@ -719,7 +761,7 @@ fn fit_columns_to_width(col_widths: &mut [usize], available_width: usize) {
             }
         }
         let Some(idx) = target else { break };
-        let reduce = (col_widths[idx] - MIN_COL_WIDTH).min(overflow);
+        let reduce = (col_widths[idx] - floor).min(overflow);
         col_widths[idx] -= reduce;
         overflow = overflow.saturating_sub(reduce);
     }
@@ -1240,13 +1282,18 @@ Trailing prose.
             vec!["y".to_string(), "esc\\|pipe".to_string()],
         ];
         let (_styled, raw) = format_table(&headers, &rows, &theme(), None);
-        assert_eq!(raw.len(), 4, "header + sep + 2 body:\n{}", raw.join("\n"));
+        assert_eq!(
+            raw.len(),
+            5,
+            "header + sep + body + row-sep + body:\n{}",
+            raw.join("\n")
+        );
         // The header row has exactly 3 structural pipes.
         assert_eq!(raw[0].matches('|').count(), 3, "header pipes: {}", raw[0]);
         // The pipe data survives intact inside the second column.
         let body = &raw[2];
         assert!(body.contains("a|b|c"), "{body}");
-        let body2 = &raw[3];
+        let body2 = &raw[4];
         assert!(body2.contains("esc\\|pipe"), "{body2}");
         // Every row has the same display width (uniform padding), and the
         // structural pipes — the boundary after column A and the trailing
@@ -1313,7 +1360,11 @@ Trailing prose.
             ],
         ];
         let (_styled, raw) = format_table(&headers, &rows, &theme(), None);
-        assert_eq!(raw.len(), 5, "header + sep + 3 data rows");
+        assert_eq!(
+            raw.len(),
+            7,
+            "header + sep + 3 data rows + 2 row separators"
+        );
 
         // All rows must have the same display width and pipe positions.
         let widths: Vec<usize> = raw
@@ -1461,6 +1512,141 @@ Trailing prose.
         assert!(
             dash_run.len() <= 40,
             "column B should be shrunk: {dash_run:?}"
+        );
+    }
+
+    #[test]
+    fn format_table_keeps_overwide_table_intact_when_compact_fits() {
+        // 回归 / 优化：表格内容超过可用宽度时，先尝试把列压缩到紧凑地板
+        // （COMPACT_COL_WIDTH = 4）让整张表完整显示；只有紧凑布局也放不下
+        // 时才拆成列块。此前 4 列长表格在窄面板被拆成 3+1，第二块孤零零
+        // 一列、表头重复，观感破碎。
+        let headers = vec![
+            "编号".to_string(),
+            "问题描述".to_string(),
+            "影响范围".to_string(),
+            "处理建议".to_string(),
+        ];
+        let rows = vec![vec![
+            "1".to_string(),
+            "当用户连续快速点击「保存」按钮超过五次时，系统会偶发出现重复提交".to_string(),
+            "涉及用户管理、订单管理、商品管理、配置管理四个模块".to_string(),
+            "在前端增加防抖与提交锁，后端增加唯一性约束校验".to_string(),
+        ]];
+
+        // 35 columns: 4 columns at COMPACT_COL_WIDTH = 4 cost 4*4 + 3*4 + 1 =
+        // 29 <= 35, so the table must stay intact (header appears exactly once).
+        let (_styled, raw) = format_table(&headers, &rows, &theme(), Some(35));
+        // One chunk => exactly one synthesized separator row (a split table
+        // would repeat the separator once per chunk).
+        let sep_rows = raw
+            .iter()
+            .filter(|r| {
+                let trimmed = r.trim_matches('|');
+                !trimmed.is_empty()
+                    && trimmed.split('|').all(|seg| {
+                        seg.chars()
+                            .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+                    })
+            })
+            .count();
+        assert_eq!(
+            sep_rows,
+            1,
+            "compact layout must keep the table intact (no chunk split):\n{}",
+            raw.join("\n")
+        );
+        assert!(
+            raw.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 35),
+            "rows must fit the available width:\n{}",
+            raw.join("\n")
+        );
+        // Four columns, all visible in one block.
+        let pipe_cols = |s: &str| -> Vec<usize> {
+            let mut cols = Vec::new();
+            let mut col = 0;
+            for ch in s.chars() {
+                if ch == '|' {
+                    cols.push(col);
+                }
+                col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            cols
+        };
+        let first = pipe_cols(&raw[0]);
+        assert_eq!(first.len(), 5, "4 columns + leading pipe: {first:?}");
+        assert!(
+            raw.iter().map(|r| pipe_cols(r)).all(|c| c == first),
+            "all rows share the same pipe columns:\n{}",
+            raw.join("\n")
+        );
+    }
+
+    #[test]
+    fn format_table_splits_chunks_only_when_compact_cannot_fit() {
+        // 12 列在 95 列宽：紧凑布局 12*4 + 3*12 + 1 = 85 <= 95 → 完整显示，
+        // 不拆块（此前贪心拆成 8+4，第二块只占一半宽度）。
+        let headers: Vec<String> = (1..=12).map(|i| format!("列{i}")).collect();
+        let rows = vec![
+            (1..=12)
+                .map(|c| format!("https://example.com/path/{c}/very/long/url"))
+                .collect::<Vec<_>>(),
+            (1..=12)
+                .map(|c| format!("单元格{c}号的内容比较长需要换行显示"))
+                .collect::<Vec<_>>(),
+        ];
+        let (_styled, raw) = format_table(&headers, &rows, &theme(), Some(95));
+        let sep_rows = raw
+            .iter()
+            .filter(|r| {
+                let trimmed = r.trim_matches('|');
+                !trimmed.is_empty()
+                    && trimmed.split('|').all(|seg| {
+                        seg.chars()
+                            .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+                    })
+            })
+            .count();
+        assert_eq!(
+            sep_rows,
+            2,
+            "12 columns at 95 wide: header separator + one row separator:\n{}",
+            raw.join("\n")
+        );
+        assert!(
+            raw.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 95),
+            "rows must fit:\n{}",
+            raw.join("\n")
+        );
+
+        // 10 列在 40 列宽：紧凑布局 10*4 + 3*10 + 1 = 71 > 40 → 拆块兜底
+        // 仍然工作（wide_table_chunks_into_fitting_blocks 覆盖渲染层）。
+        let headers10: Vec<String> = (1..=10).map(|i| format!("c{i}")).collect();
+        let rows10 = vec![(1..=10).map(|c| format!("v{c}")).collect::<Vec<_>>()];
+        let (_styled, raw10) = format_table(&headers10, &rows10, &theme(), Some(40));
+        let sep_rows10 = raw10
+            .iter()
+            .filter(|r| {
+                let trimmed = r.trim_matches('|');
+                !trimmed.is_empty()
+                    && trimmed.split('|').all(|seg| {
+                        seg.chars()
+                            .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+                    })
+            })
+            .count();
+        assert_eq!(
+            sep_rows10,
+            2,
+            "10 columns at 40 wide must split into two chunks:\n{}",
+            raw10.join("\n")
+        );
+        assert!(
+            raw10
+                .iter()
+                .all(|r| UnicodeWidthStr::width(r.as_str()) <= 40),
+            "chunk rows must fit:\n{}",
+            raw10.join("\n")
         );
     }
 
