@@ -100,6 +100,12 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         handle_voice_button_click(app);
         return;
     }
+    if point_in_rect(mouse.column, mouse.row, app.pending_cancel_btn_area) {
+        // Clicking `[Cancel]` drops the queued messages only — the running
+        // task keeps going (unlike `/cancel`, which stops it too).
+        app.clear_pending_messages();
+        return;
+    }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
@@ -541,6 +547,54 @@ mod tests {
         assert!(
             cmd_rx.try_recv().is_err(),
             "outside click should not send commands"
+        );
+    }
+
+    #[test]
+    fn pending_cancel_button_drops_queue_without_touching_task() {
+        use tact_protocol::UserCommand;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            std::path::PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.status = crate::widgets::state::Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("regret".into(), "regret".into());
+        app.set_cancel_button_area(Rect::new(70, 0, 10, 1));
+
+        // Click [Cancel]: the queue is dropped, the running task is untouched.
+        handle_mouse_event(&mut app, mouse_down(71, 0));
+
+        assert!(
+            app.pending_messages.is_empty(),
+            "[Cancel] must drop the queued messages"
+        );
+        assert!(
+            matches!(app.status, crate::widgets::state::Status::Executing { .. }),
+            "[Cancel] must not change the task status"
+        );
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "[Cancel] must not dispatch Cancel/SubmitTask"
         );
     }
 

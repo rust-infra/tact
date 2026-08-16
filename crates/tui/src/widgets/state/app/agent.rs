@@ -204,7 +204,8 @@ impl App {
             }
             AgentUpdate::TaskCancelled => {
                 // Cancel exits without TaskComplete; must leave Planning/Executing
-                // or Enter keeps flashing input_busy_msg.
+                // or queued (pending) messages would be flushed against a stale
+                // busy state.
                 self.flush_stream_pending();
                 self.add_task_end_separator();
                 if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {

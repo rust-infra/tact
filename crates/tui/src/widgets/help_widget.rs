@@ -41,6 +41,7 @@ impl<'a> Widget for HelpWidget<'a> {
             // ── Insert Mode ──
             Line::from(Span::styled(msgs.help_insert_header, dim_style)),
             Line::from(Span::styled(msgs.help_type_task, normal_style)),
+            Line::from(Span::styled(msgs.help_queued_submit, normal_style)),
             Line::from(Span::styled(msgs.help_ctrl_z, normal_style)),
             Line::from(""),
             // ── Global ──

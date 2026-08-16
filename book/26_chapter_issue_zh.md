@@ -29,6 +29,40 @@
 
 ---
 
+## 1. 2026-08-16 — Codex 风格排队消息：agent 忙时提交"当前任务结束后自动提交"
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | Ch 23; `crates/tui/src/handlers/insert.rs`、`crates/tui/src/handlers/skills.rs`、`crates/tui/src/widgets/state/app/pending.rs`、`crates/tui/src/render/input.rs`、`crates/tui/src/lib.rs` |
+
+**Symptom / motivation:** agent 处于 `Planning`/`Executing` 时按 Enter 只会闪现"⏳ 上一个任务还在处理中"并丢弃输入——工具运行期间打的消息全丢了。Codex CLI 的做法是排队："Messages to be submitted after next tool call (press esc to interrupt and send immediately)"。
+
+**Decision:** 用 Codex 风格队列取代忙时拒绝。`App.pending_messages` 存放 `PendingMessage { display, agent_task }`；`Planning`/`Executing` 时按 Enter 清空输入并入队（字符长度校验在入队时执行）。主循环在排空 `agent_rx` 后调用 `handlers::skills::flush_pending_when_idle`：状态进入 `Idle`/`Done` 后，按序把每条排队消息各自派发为一个 `SubmitTask`——tact-ui 命令驱动本就会串行处理在途 `SubmitTask`，因此每条都成为下一个用户回合。提交**纯自动**——不存在"立即发送"路径（`[Send now]` 按钮与 Normal 模式 `s` 键按用户要求移除："send now 去掉吧，自动处理即可"）。丢弃排队消息的**唯一**途径是 pending 块的 `[Cancel]` 按钮（`pending_cancel_btn_area` 命中测试在 mouse handler）——只清空队列、不影响运行中的任务。`/cancel` 与 Normal 模式 `c` 与队列**无关**：只取消在途任务，与功能引入前一致（用户决定："/cancel 也不用处理 prompt 队列"）。Esc 保持原语义（始终退出插入模式——误触不会中断任务）。提示行与 `↳ 消息` 行渲染在输入框上方（`render/input.rs` 的 `render_pending_block`，窄终端隐藏按钮）；布局把 `pending_display_lines()`（提示 + 每条一行，上限 4 行）计入输入高度。`submit_user_task` 拆成 `task_within_limits` / `dispatch_user_task`，使排队与自动提交共用派发。`/compact` 仍保留旧的忙时闪现（`input_busy_msg`）。
+
+**Behavior after:** 忙时输入的消息被排队，显示在输入框上方并带 Codex 风格提示，当前任务结束后自动提交（包括被 `/cancel` 结束的任务）；`[Cancel]` 按钮只丢弃队列。多条排队消息按顺序各自成为独立回合。超长消息在入队时即被拒绝。忙时提交不再丢失。
+
+**Pointers:** `handlers/insert.rs`（`handle_enter_submit`、Esc 分支）、`handlers/skills.rs`（`submit_user_task`、`flush_pending_when_idle`、`interrupt_and_submit_pending`）、`widgets/state/app/pending.rs`、`render/input.rs`（`render_pending_block`、`truncate_to_width`）；测试 `submit_queued_while_agent_busy`、`esc_with_pending_interrupts_and_submits_immediately`、`flush_pending_when_idle_submits_all_queued_in_order`、`input_box_renders_pending_block_above_input`；Ch 23 §6.6。
+
+---
+
+## 1. 2026-08-16 — 行内代码改用强调色文字，不再绘制背景补丁
+
+| 字段 | 内容 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23；`crates/tui/src/render/pulldown.rs`、`crates/tui/src/render/log_style.rs` |
+
+**现象 / 动机：** 上一个修复已经阻止含行内代码的正文行被重绘成整行代码块，但行内代码 span 自身仍携带窄的 `code_block_bg` 背景补丁。这个矩形背景在普通正文和列表中仍然显得过重，换行后尤其明显。
+
+**决策：** 行内代码使用 `theme.accent` 作为前景色，不再绘制背景。日志重绘阶段对旧的行内代码背景 span 应用相同规则；真正的围栏代码行继续使用 `code_block_bg` 与 `code_block_fg`。
+
+**变更后行为：** 行内代码通过强调色文字区分，不再出现矩形背景补丁。围栏代码块仍保留主题背景和前景色，因此代码块边界仍然清晰。
+
+**指针：** `crates/tui/src/render/pulldown.rs`（`push_inline_code`）、`crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`）；两个模块中的 `inline_code_uses_accent_without_background` 测试；Ch 23。
+
+---
+
 ## 1. 2026-08-16 — 含行内代码的正文/列表行不再整行绘制代码背景块
 
 | 字段 | 内容 |

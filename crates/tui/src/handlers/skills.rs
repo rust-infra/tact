@@ -121,16 +121,25 @@ pub(super) fn format_skill_agent_task(skill: &SkillEntry, args: &str) -> String 
 }
 
 /// Shared task submission used by normal Enter and skill invoke.
-/// Returns `true` when the task was accepted and dispatched.
+///
+/// Returns `true` when the task was accepted — either dispatched immediately
+/// (agent idle) or queued while the agent is busy (Codex-style "submit after
+/// the current task"; see [`flush_pending_when_idle`]).
 pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: String) -> bool {
-    if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-        app.flash_msg = Some((
-            app.msgs().input_busy_msg.to_string(),
-            std::time::Instant::now(),
-        ));
+    if !task_within_limits(app, &display_text, &agent_task) {
         return false;
     }
+    if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+        // The agent is busy: queue the message instead of rejecting it. It is
+        // auto-submitted when the current task finishes (or immediately on Esc).
+        app.queue_pending_message(display_text, agent_task);
+        return true;
+    }
+    dispatch_user_task(app, display_text, agent_task)
+}
 
+/// Char-limit validation shared by the direct and queued submit paths.
+fn task_within_limits(app: &mut App, display_text: &str, agent_task: &str) -> bool {
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
     if tact::consts::exceeds_input_char_limit(agent_chars) {
@@ -149,7 +158,13 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
         app.add_system_message(msg);
         return false;
     }
+    true
+}
 
+/// Dispatch one task to the agent: record history, show the user bubble, and
+/// send `SubmitTask`. Callers must already have validated limits and the busy
+/// gate (see [`submit_user_task`]).
+fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -> bool {
     if app.input_history.entries.last() != Some(&display_text) {
         app.input_history.entries.push(display_text.clone());
         app.save_history(&display_text);
@@ -164,6 +179,19 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
     app.task_start_time = Some(chrono::Local::now());
     let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));
     true
+}
+
+/// Codex-style auto-submit: once the agent reaches Idle/Done, submit every
+/// queued message as its own task. The command driver serializes them in
+/// order, so each queued message becomes the next user turn.
+pub(crate) fn flush_pending_when_idle(app: &mut App) {
+    if app.pending_messages.is_empty() || !matches!(app.status, Status::Idle | Status::Done) {
+        return;
+    }
+    let pending = std::mem::take(&mut app.pending_messages);
+    for p in pending {
+        let _ = dispatch_user_task(app, p.display, p.agent_task);
+    }
 }
 
 /// Invoke `/skill-name` [args]: always runs (no equip step).
@@ -278,5 +306,124 @@ mod tests {
         };
         let out = format_skill_agent_task(&skill, "");
         assert!(out.contains(r#"<skill name="weird&quot;name">"#));
+    }
+
+    // ---- Codex-style queued submission (pending messages) ----
+
+    fn make_app_with_cmds() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
+        use std::path::PathBuf;
+
+        use tact_protocol::AgentUpdate;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn submit_user_task_queues_when_busy() {
+        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        let ok = submit_user_task(&mut app, "hi".into(), "hi".into());
+
+        assert!(ok, "queued task counts as accepted");
+        assert_eq!(app.pending_messages.len(), 1);
+        assert_eq!(app.pending_messages[0].display, "hi");
+        assert_eq!(app.pending_messages[0].agent_task, "hi");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "queued task must not dispatch immediately"
+        );
+        assert!(
+            matches!(app.status, Status::Executing { .. }),
+            "busy status must be preserved while queued"
+        );
+    }
+
+    #[test]
+    fn submit_user_task_dispatches_when_idle() {
+        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Idle;
+
+        let ok = submit_user_task(&mut app, "go".into(), "go".into());
+
+        assert!(ok);
+        assert!(app.pending_messages.is_empty());
+        assert!(matches!(app.status, Status::Planning));
+        match user_cmd_rx.try_recv().expect("SubmitTask") {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "go"),
+            other => panic!("expected SubmitTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flush_pending_when_idle_submits_all_queued_in_order() {
+        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        submit_user_task(&mut app, "one".into(), "one".into());
+        submit_user_task(&mut app, "two".into(), "two".into());
+        assert_eq!(app.pending_messages.len(), 2);
+
+        // Still busy: flush must not fire.
+        flush_pending_when_idle(&mut app);
+        assert_eq!(app.pending_messages.len(), 2);
+        assert!(user_cmd_rx.try_recv().is_err());
+
+        // Agent reached Idle (e.g. TaskComplete): every queued message is
+        // submitted, each as its own task, in queue order.
+        app.status = Status::Idle;
+        flush_pending_when_idle(&mut app);
+        assert!(app.pending_messages.is_empty(), "queue drained by flush");
+        let mut tasks = Vec::new();
+        while let Ok(cmd) = user_cmd_rx.try_recv() {
+            if let UserCommand::SubmitTask(task) = cmd {
+                tasks.push(task);
+            }
+        }
+        assert_eq!(tasks, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn flush_pending_fires_on_done_too() {
+        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        submit_user_task(&mut app, "x".into(), "x".into());
+
+        app.status = Status::Done;
+        flush_pending_when_idle(&mut app);
+
+        assert!(app.pending_messages.is_empty());
+        assert!(matches!(
+            user_cmd_rx.try_recv(),
+            Ok(UserCommand::SubmitTask(_))
+        ));
     }
 }

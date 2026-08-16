@@ -17,6 +17,7 @@ pub(crate) use normal::handle_normal_mode;
 pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
+pub(crate) use skills::flush_pending_when_idle;
 use tact_protocol::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, Status};
@@ -358,7 +359,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "plugin" => plugin::handle_plugin_command(app),
         "cancel" => {
-            // Only cancel an in-flight task; Idle and Done have nothing to abort.
+            // Only cancel an in-flight task; Idle and Done have nothing to
+            // abort. Queued (pending) messages are NOT touched — dropping
+            // them is the `[Cancel]` button's job.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = app.user_cmd_tx.send(UserCommand::Cancel);
             } else {
@@ -640,6 +643,55 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
+    }
+
+    #[test]
+    fn cancel_command_leaves_queued_messages_alone() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("one".into(), "one".into());
+        app.queue_pending_message("two".into(), "two".into());
+        assert_eq!(app.pending_messages.len(), 2);
+
+        let outcome = execute_palette_command(&mut app, "cancel");
+
+        assert!(outcome.handled);
+        assert_eq!(
+            app.pending_messages.len(),
+            2,
+            "/cancel must NOT clear the queue — the [Cancel] button does that"
+        );
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected Cancel"),
+            UserCommand::Cancel
+        ));
+    }
+
+    #[test]
+    fn cancel_command_idle_keeps_noop_flash() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.status = Status::Idle;
+        app.queue_pending_message("stale".into(), "stale".into());
+
+        let outcome = execute_palette_command(&mut app, "cancel");
+
+        assert!(outcome.handled);
+        assert_eq!(
+            app.pending_messages.len(),
+            1,
+            "idle cancel must not touch the queue"
+        );
+        assert!(
+            app.flash_msg.is_some(),
+            "idle cancel still shows noop flash"
+        );
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "idle cancel must not dispatch Cancel"
+        );
     }
 
     #[test]

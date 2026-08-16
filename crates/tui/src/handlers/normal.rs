@@ -104,7 +104,9 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('c') => {
-            // Same gate as `/cancel`: only Planning / Executing.
+            // Same gate as `/cancel`: only Planning / Executing. Queued
+            // (pending) messages are NOT touched — dropping them is the
+            // `[Cancel]` button's job.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
                 let _ = _user_cmd_tx.send(UserCommand::Cancel);
             }
@@ -181,6 +183,49 @@ mod tests {
     }
 
     #[test]
+    fn s_is_unbound_noop_key() {
+        use std::path::PathBuf;
+
+        use tact_protocol::{AgentUpdate, UserCommand};
+
+        use crate::widgets::state::Status;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx.clone(),
+            PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("urgent".into(), "urgent".into());
+
+        // `s` is not a bound key: it must not send or drop anything.
+        handle_normal_mode(&mut app, key(KeyCode::Char('s')), &user_cmd_tx);
+
+        assert_eq!(app.pending_messages.len(), 1, "s must not touch the queue");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "s must not dispatch anything"
+        );
+    }
+
+    #[test]
     fn c_cancels_while_executing() {
         use std::path::PathBuf;
 
@@ -211,6 +256,7 @@ mod tests {
             current_step: 0,
             total: 1,
         };
+        app.queue_pending_message("queued".into(), "queued".into());
 
         handle_normal_mode(&mut app, key(KeyCode::Char('c')), &user_cmd_tx);
 
@@ -218,6 +264,11 @@ mod tests {
             user_cmd_rx.try_recv().expect("expected Cancel"),
             UserCommand::Cancel
         ));
+        assert_eq!(
+            app.pending_messages.len(),
+            1,
+            "Normal-mode c must NOT drop queued (pending) messages — that is the [Cancel] button's job"
+        );
     }
 
     #[test]

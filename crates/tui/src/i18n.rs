@@ -115,6 +115,7 @@ pub struct Messages {
     pub palette_empty: &'static str,
     pub select_empty: &'static str,
     pub select_arrow: &'static str,
+    pub pending_cancel_btn: &'static str,
 
     // ---- 帮助面板 ---
     pub help_header_shortcuts: &'static str,
@@ -127,6 +128,7 @@ pub struct Messages {
     pub help_colon: &'static str,
     pub help_insert_header: &'static str,
     pub help_type_task: &'static str,
+    pub help_queued_submit: &'static str,
     pub help_ctrl_z: &'static str,
     pub help_global_header: &'static str,
     pub help_yn: &'static str,
@@ -276,6 +278,7 @@ pub struct Messages {
     pub input_too_long_tmpl: &'static str,
     pub skill_task_too_long_tmpl: &'static str,
     pub input_busy_msg: &'static str,
+    pub pending_submit_hint: &'static str,
     pub cancel_noop_msg: &'static str,
 
     // ---- 持久任务进度 ----
@@ -384,6 +387,7 @@ impl Messages {
             palette_empty: "No matching commands",
             select_empty: "No options",
             select_arrow: "▶ ",
+            pending_cancel_btn: "Cancel",
 
             help_header_shortcuts: "⌨️  Keyboard Shortcuts:",
             help_normal_header: "  🔤 Normal Mode (Esc from Insert)",
@@ -395,6 +399,7 @@ impl Messages {
             help_colon: "    /           Command palette (commands & skills)",
             help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
             help_type_task: "    Type task or /skill, Enter to submit, @ to attach file",
+            help_queued_submit: "    Enter while running  Queue; auto-submit after task ([Cancel] to drop)",
             help_ctrl_z: "    Ctrl+Z/Y    Undo/redo input",
             help_global_header: "  🌐 Global",
             help_yn: "    ↑↓/j/k      Move in select popup; Enter/Esc confirm/cancel",
@@ -537,6 +542,7 @@ impl Messages {
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
+            pending_submit_hint: "Message will be submitted after the current task finishes",
             cancel_noop_msg: "Nothing to cancel",
 
             tasks_sticky_title: "Tasks",
@@ -640,6 +646,7 @@ impl Messages {
             palette_empty: "没有匹配的命令",
             select_empty: "无选项",
             select_arrow: "▶ ",
+            pending_cancel_btn: "取消",
 
             help_header_shortcuts: "⌨️  键盘快捷键:",
             help_normal_header: "  🔤 普通模式 (在插入模式按 Esc)",
@@ -651,6 +658,7 @@ impl Messages {
             help_colon: "    /           命令面板 (内置命令与 Skills)",
             help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",
             help_type_task: "    输入任务或 /skill，Enter 提交，@ 附加文件",
+            help_queued_submit: "    运行中输入按 Enter 排队；任务结束后自动提交（[取消] 丢弃）",
             help_ctrl_z: "    Ctrl+Z/Y    撤销/重做输入",
             help_global_header: "  🌐 全局",
             help_yn: "    ↑↓/j/k      选择弹窗移动；Enter/Esc 确认/取消",
@@ -793,6 +801,7 @@ impl Messages {
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
+            pending_submit_hint: "消息将在当前任务结束后自动提交",
             cancel_noop_msg: "当前没有可取消的任务",
 
             tasks_sticky_title: "任务",

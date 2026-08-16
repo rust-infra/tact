@@ -42,6 +42,7 @@ pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 
 pub(crate) use app::messages::{find_task_stats_copy_button, is_task_stats_line};
+pub(crate) use app::pending::PendingMessage;
 pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
 pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
@@ -246,6 +247,12 @@ pub struct App {
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
     pub(crate) input_scroll: u16,
+    /// Messages queued while the agent is busy (Codex-style "submit after the
+    /// current task"); auto-submitted on Idle/Done, or immediately on Esc.
+    pub(crate) pending_messages: Vec<PendingMessage>,
+    /// Hit area of the pending block's `[Cancel]` button (drops the queue
+    /// without touching the running task; `Rect::default()` = inactive).
+    pub(crate) pending_cancel_btn_area: ratatui::layout::Rect,
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
     pub(crate) model_context_window: usize,

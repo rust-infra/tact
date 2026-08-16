@@ -75,7 +75,7 @@ pub enum UserCommand {
 
 | Command | Source | Handler in `tui.rs` |
 |---------|--------|---------------------|
-| **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
+| **`SubmitTask`** | Enter in insert mode, slash commands, `@` file picker submit — **while `Planning`/`Executing` the Enter instead queues the message** (Codex-style "submit after the current task", see §6.6) | Reset `tool_use_counter`, clear `cancel_flag`, `build_user_message`, `agent_loop`; emit `TaskComplete` only if loop succeeds and was not cancelled |
 | **`Cancel`** | `/cancel`, or Normal-mode `c` while `Planning` / `Executing` | Set `cancel_flag`; loop exits at next check; next `SubmitTask` clears the flag ([Ch 18](./18_chapter_agent_loop.md)) |
 | **`Compact`** | `/compact` (idle only) | `agent.compact_history(None)` → native `/responses/compact` for Responses providers, local summarizer otherwise ([Ch 5](./05_chapter_compact.md)) |
 | **`QueryBalance`** | `/balance` (DeepSeek/Kimi only) | `account::query_once()` → `AccountUpdate` channel ([Ch 25](./25_chapter_protocol.md)) |
@@ -245,7 +245,7 @@ Vertical constraints in `lib.rs`:
 
 - Top bar: fixed 1 row.
 - Main area: `Constraint::Min(3)`.
-- Input height: `min(display rows, 3) + 2` for border — display rows count soft-wrapped rows, not just explicit `\n` splits (long lines wrap inside the box).
+- Input height: `min(display rows, 3) + 2` for border — display rows count soft-wrapped rows, not just explicit `\n` splits (long lines wrap inside the box). While queued messages are pending, add `pending_display_lines()` (hint row + one row per queued message, capped at 4) on top.
 - Bottom height: always 2 rows (account balance/quota appends to row 1, not a third row).
 
 Popups are drawn **after** the base layout so they paint on top. Most use `Clear` first (no drop shadow — avoids dark bands on some terminals).
@@ -337,6 +337,8 @@ pub(crate) trait Renderable {
 - Row 2: model name, `max_out_token` (the effective text-output budget: `max_tokens` minus the reasoning share for effort-semantic models — e.g. `max_out_token 73K` at `high` effort on a 128K envelope — while budget-semantic models keep the full `max_tokens` since their thinking envelope is separate), `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content rows; long lines soft-wrap at character boundaries (`wrap_line`, CJK double-width aware — `Paragraph` stays unwrapped and draws exactly those rows) and the caret/scroll follow the wrapped rows (`caret_in_wrapped`); CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
+
+**Queued messages while busy** (Codex-style "submit after the current task", since 2026-08-16): pressing Enter while the agent is `Planning`/`Executing` no longer flashes a "busy" message — the text is queued in `App.pending_messages` (input is cleared, the hint "Message will be submitted after the current task (esc to interrupt and send immediately)" plus one `↳ message` row per queued message render **above** the input box). The queue is flushed automatically when the agent reaches `Idle`/`Done` (`handlers::skills::flush_pending_when_idle`, called from the main loop after the `agent_rx` drain): every queued message is dispatched as its own `SubmitTask`, in order — the command driver (`tact-ui/src/driver.rs`) already serializes in-flight `SubmitTask`s, so each queued message becomes the next user turn. **Esc is untouched** — it always exits insert mode, queue intact (it never interrupts a running task). There is **no "send now" action**: queued messages are purely automatic — they are submitted when the current task finishes. The **only** way to drop queued messages is the clickable **`[Cancel]` button** on the pending block's hint row (mouse; hidden on narrow terminals): it clears the queue without touching the running task. `/cancel` (and Normal-mode `c`) is unrelated to the queue — it only cancels the in-flight task (Idle/Done → noop flash), exactly as before this feature; a task ended by `/cancel` still flushes the queue like any other task end. Char-limit validation runs at queue time, so oversized messages are rejected before they are queued. Pending state lives in `widgets/state/app/pending.rs`; the pending block paints its own background (no shadow residue, see Ch 26 2026-08-16 entry).
 
 ### 6.7 Markdown
 

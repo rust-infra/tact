@@ -125,14 +125,6 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
             }
         }
 
-        if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-            app.flash_msg = Some((
-                app.msgs().input_busy_msg.to_string(),
-                std::time::Instant::now(),
-            ));
-            return;
-        }
-
         let display = app.input.clone();
         if tact::consts::exceeds_input_char_limit(display.chars().count()) {
             let msg = app
@@ -145,6 +137,15 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
 
         app.input.clear();
         app.input_cursor = 0;
+
+        if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+            // Codex-style: while the agent is busy, Enter queues the message
+            // (hint shown above the input box) instead of rejecting it. It is
+            // auto-submitted after the current task finishes, or immediately
+            // when the user presses Esc.
+            app.queue_pending_message(display.clone(), display);
+            return;
+        }
         let _ = submit_user_task(app, display.clone(), display);
     }
 }
@@ -596,7 +597,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{handle_insert_mode, insert_transcript};
-    use crate::widgets::state::{App, Status};
+    use crate::widgets::state::{App, InputMode, Status};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -643,10 +644,20 @@ mod tests {
     }
 
     #[test]
-    fn slash_cancel_sends_cancel_without_submitting_task() {
+    fn slash_cancel_sends_cancel_without_touching_queue() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Planning;
+        // Queue a message while busy, then /cancel.
+        app.input = "queued message".to_string();
+        app.input_cursor = app.input.len();
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+        assert_eq!(app.pending_messages.len(), 1);
+
         app.input = "/cancel".to_string();
         app.input_cursor = app.input.len();
 
@@ -656,6 +667,11 @@ mod tests {
             &user_cmd_tx,
         );
 
+        assert_eq!(
+            app.pending_messages.len(),
+            1,
+            "/cancel must NOT drop queued (pending) messages — that is the [Cancel] button's job"
+        );
         let cmd = user_cmd_rx
             .try_recv()
             .expect("expected /cancel to dispatch UserCommand::Cancel");
@@ -845,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_rejected_while_agent_busy() {
+    fn submit_queued_while_agent_busy() {
         let (mut app, mut user_cmd_rx) = make_app();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Planning;
@@ -860,12 +876,76 @@ mod tests {
 
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected busy input not to submit task"
+            "busy input must not dispatch SubmitTask immediately"
         );
+        assert_eq!(app.pending_messages.len(), 1, "busy input should be queued");
+        assert_eq!(app.pending_messages[0].display, "do something");
+        assert!(app.input.is_empty(), "queued input should be cleared");
         assert!(
-            app.flash_msg.is_some(),
-            "expected a flash message while busy"
+            app.flash_msg.is_none(),
+            "queuing must not flash the old busy message"
         );
+    }
+
+    #[test]
+    fn esc_with_pending_exits_insert_mode_and_keeps_queue() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.input = "do something".to_string();
+        app.input_cursor = app.input.chars().count();
+
+        // Queue a message while the agent is busy.
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+        assert_eq!(app.pending_messages.len(), 1);
+
+        // Esc stays a plain "exit insert mode" key — it must never interrupt
+        // the running task or touch the queue (Send-now is the button / `s`).
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "Esc must exit insert mode even with queued messages"
+        );
+        assert_eq!(app.pending_messages.len(), 1, "queue untouched by Esc");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "Esc must not dispatch Cancel/SubmitTask"
+        );
+    }
+
+    #[test]
+    fn esc_without_pending_still_exits_insert_mode() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.input_mode = InputMode::Insert;
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "Esc with no pending messages must exit insert mode"
+        );
+        assert!(app.pending_messages.is_empty());
     }
 
     #[test]

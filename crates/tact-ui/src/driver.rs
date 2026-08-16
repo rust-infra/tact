@@ -142,7 +142,8 @@ async fn handle_user_command_with_account(
                 }
                 Ok(()) => {
                     // Cancelled: clear TUI busy state (Planning/Executing) so
-                    // the next prompt is not blocked behind input_busy_msg.
+                    // queued (pending) messages are flushed rather than waiting
+                    // on a stale busy state.
                     agent.emit_update(AgentUpdate::TaskCancelled);
                 }
                 Err(e) => {

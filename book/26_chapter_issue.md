@@ -29,6 +29,40 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-16 — Codex-style queued messages while the agent is busy (submit after the current task)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | Ch 23; `crates/tui/src/handlers/insert.rs`, `crates/tui/src/handlers/skills.rs`, `crates/tui/src/widgets/state/app/pending.rs`, `crates/tui/src/render/input.rs`, `crates/tui/src/lib.rs` |
+
+**Symptom / motivation:** While the agent was `Planning`/`Executing`, pressing Enter flashed a "⏳ Still processing previous prompt" message and dropped the typed text — a message typed during a long tool run was lost. Codex CLI instead queues it: "Messages to be submitted after next tool call (press esc to interrupt and send immediately)".
+
+**Decision:** Replace the busy-reject with a Codex-style queue. `App.pending_messages` holds `PendingMessage { display, agent_task }`; Enter during `Planning`/`Executing` clears the input and queues (char-limit validation runs at queue time). The main loop calls `handlers::skills::flush_pending_when_idle` after draining `agent_rx`: once status reaches `Idle`/`Done`, every queued message is dispatched as its own `SubmitTask` in order — the tact-ui command driver already serializes in-flight `SubmitTask`s, so each becomes the next user turn. Submission is **fully automatic** — no "send now" path exists (the `[Send now]` button and Normal-mode `s` were removed at the user's request 2026-08-16: "send now 去掉吧，自动处理即可"). The **only** way to drop queued messages is the `[Cancel]` button on the pending block (`pending_cancel_btn_area` hit test in the mouse handler) — it clears the queue without touching the running task. `/cancel` and Normal-mode `c` are **unrelated to the queue**: they cancel only the in-flight task, exactly as before (user decision: "/cancel 也不用处理 prompt 队列"). Esc is untouched (always exits insert mode — a stray Esc never interrupts a task). The hint + `↳ message` rows render above the input box (`render_pending_block` in `render/input.rs`, button hidden on narrow terminals); the layout adds `pending_display_lines()` (hint + per-message row, capped at 4) to the input height. `submit_user_task` was split into `task_within_limits` / `dispatch_user_task` so queueing and flushing share dispatch. `/compact` keeps the old busy flash (`input_busy_msg`).
+
+**Behavior after:** Messages typed while the agent is busy are queued, shown above the input box with the Codex-style hint, and auto-submitted when the current task finishes (including when the task was ended by `/cancel`); the `[Cancel]` button drops the queue only. Multiple queued messages submit sequentially as separate turns. Oversized messages are rejected at queue time. Busy-submission is never lost.
+
+**Pointers:** `handlers/insert.rs` (`handle_enter_submit`, Esc arm), `handlers/skills.rs` (`submit_user_task`, `flush_pending_when_idle`, `interrupt_and_submit_pending`), `widgets/state/app/pending.rs`, `render/input.rs` (`render_pending_block`, `truncate_to_width`); tests `submit_queued_while_agent_busy`, `esc_with_pending_interrupts_and_submits_immediately`, `flush_pending_when_idle_submits_all_queued_in_order`, `input_box_renders_pending_block_above_input`; Ch 23 §6.6.
+
+---
+
+## 1. 2026-08-16 — Inline code uses accent text instead of a background patch
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23; `crates/tui/src/render/pulldown.rs`, `crates/tui/src/render/log_style.rs` |
+
+**Symptom / motivation:** The earlier fix stopped prose lines containing inline code from being repainted as full-width code blocks, but the inline-code span still carried a narrow `code_block_bg` patch. That rectangular background remained visually heavy in ordinary prose and lists, especially after wrapping.
+
+**Decision:** Render inline code with `theme.accent` as its foreground and no background. The log restyle pass applies the same rule to legacy inline-code spans, while genuine fenced-code lines continue to use `code_block_bg` and `code_block_fg`.
+
+**Behavior after:** Inline code is distinguished by accent-colored text without a rectangular background patch. Fenced code blocks retain their themed background and foreground, so code-block boundaries remain visible.
+
+**Pointers:** `crates/tui/src/render/pulldown.rs` (`push_inline_code`), `crates/tui/src/render/log_style.rs` (`restyle_log_line_with_skills`); tests `inline_code_uses_accent_without_background` in both modules; Ch 23.
+
+---
+
 ## 1. 2026-08-16 — Prose/list lines with inline code no longer paint a full code-block background
 
 | Field | Value |
