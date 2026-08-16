@@ -50,6 +50,52 @@ If only wording polish is needed on one language, that is fine; do not leave one
 - Test-only changes
 - Typo fixes confined to code comments
 
+## TUI rendering — no shadow / residue (design invariants)
+
+The recurring "shadow" / ghost-cell bugs share one root cause: ratatui
+computes a full buffer each frame, then **diffs cell-by-cell and only sends
+changed cells to the terminal**. Any cell you intended to restore to the
+background but never actually re-wrote is judged "unchanged" and is not
+emitted, so the terminal keeps the previous frame's style — which reads as a
+shadow. Guard against it with these invariants when writing or reviewing
+main-area render code (`crates/tui/src/render/**`):
+
+1. **Every renderable unit paints its own background — never rely on the
+   caller to clear first.** `render` / `render_partial` must begin by filling
+   its full `area` with `base_bg` (`buf.set_style(area, Style::default().bg(theme.bg))`)
+   or render through a widget that does (e.g. `Paragraph` with `.style(bg)`).
+   Row tails, blank separator rows, and indent gutters are part of the unit's
+   area, not someone else's job.
+2. **A span-carried background only covers its glyph columns.** A span with
+   `code_block_bg` / `theme.highlight` / any custom bg paints a colored patch,
+   not a full-width bar. Only give a span a bg if that patch is wanted; if a
+   row must be a full-width band, paint the whole row — not per-glyph.
+   `wrap_line` re-slices styled spans per wrapped segment, so a bg on a
+   wrapped line multiplies the patch across every continuation row.
+3. **"Restore to default" must actually write the style.** For cells that must
+   be correct even when their content looks unchanged across frames (chrome
+   columns, scrollbar neighbors), force-emit with `CellDiffOption::AlwaysUpdate`
+   — see `restamp_log_left_border` in `crates/tui/src/render/log.rs`.
+4. **Overlays/popups size and center against their real parent rect, not the
+   whole frame.** Palette / select / file-picker / slash popups are rendered
+   from `lib.rs`; they must receive the main area (`chunks[1]`), never `size`.
+   A popup's `Clear` rect must cover (≥) its draw rect and come from the same
+   geometry, or adjacent chrome (input box / bottom bar) shows through as a
+   shadow-like mess.
+5. **Wide graphemes (emoji/CJK, width 2) make gaps worse**; after writing
+   glyphs, the remainder of a row must still carry the base bg rather than
+   leftover cells.
+6. **Every new render unit ships a buffer-level test** asserting that blank
+   cells carry `theme.bg` (pattern: `heading_rows_carry_no_highlight_band`,
+   `full_frame_palette_popup_stays_inside_main_area` in
+   `crates/tui/src/render/*_tests.rs`).
+
+History (why each rule exists): `book/26_chapter_issue.md` entries
+2026-07-27 "Log scroll restores the theme background", 2026-07-28 "Log
+left-border scrollbar residue", 2026-08-16 "Main-area headings no longer
+paint the highlight band" and "Overlay list popups stay inside the main
+area".
+
 ## Compaction (quick pointer)
 
 Current design: Codex-style rebuild — recent real user messages + `SUMMARY_PREFIX` handoff; entry path compacts **before** pushing `user_turn_message` and reserves incoming-turn size in `should_auto_compact`. Spec: `docs/superpowers/specs/2026-07-18-codex-style-compact-design.md`. Legacy single-summary path: `Agent::compact_history_legacy`.

@@ -1278,6 +1278,23 @@ impl Agent {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
                     if truncated && continuation_attempt < MAX_CONTINUATION_ATTEMPTS {
+                        if let Some(usage) = &response.usage {
+                            self.emit_update(AgentUpdate::Info(format!(
+                                "[compact usage: {:?}]",
+                                usage,
+                            )));
+                        }
+                        let think_len = response.blocks.iter().fold(0, |acc, block| {
+                            if let ContentBlock::Thinking {
+                                thinking,
+                                signature,
+                            } = block
+                            {
+                                acc + thinking.len() + signature.len()
+                            } else {
+                                acc
+                            }
+                        });
                         continuation_attempt = continuation_attempt.saturating_add(1);
                         blocks_all.extend(response.blocks.clone());
                         messages.push(Message::new_blocks(Role::Assistant, response.blocks));
@@ -1286,7 +1303,7 @@ impl Agent {
                             continuation_message(continuation_attempt).to_string(),
                         ));
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[compact continue {continuation_attempt}/{MAX_CONTINUATION_ATTEMPTS}] summary truncated, continuing"
+                            "[compact continue {continuation_attempt}/{MAX_CONTINUATION_ATTEMPTS}] summary truncated({think_len} think tokens, {summary_max_tokens} max tokens), continuing"
                         )));
                         continue;
                     }

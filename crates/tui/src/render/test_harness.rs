@@ -120,16 +120,16 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
     render_bottom_bar(frame, chunks[3], app);
 
     if app.input_mode == InputMode::Palette {
-        render_command_palette(frame, size, app);
+        render_command_palette(frame, chunks[1], app);
     }
     if app.input_mode == InputMode::Select {
-        render_select_popup(frame, size, app);
+        render_select_popup(frame, chunks[1], app);
     }
     if app.input_mode == InputMode::FilePicker {
-        render_file_picker(frame, size, app);
+        render_file_picker(frame, chunks[1], app);
     }
     if app.slash_command.active {
-        render_slash_command_popup(frame, size, app);
+        render_slash_command_popup(frame, chunks[1], app);
     }
 }
 

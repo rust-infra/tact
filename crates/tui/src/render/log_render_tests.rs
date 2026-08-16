@@ -9,7 +9,7 @@ use tact_protocol::{
 
 use super::log::render_log_panel;
 use super::test_harness::{
-    buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
+    buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
 use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
 
@@ -570,5 +570,33 @@ fn log_left_border_force_updates_and_stays_theme_border_color() {
     assert!(
         side_rows >= 5,
         "expected multiple restamped left-border rows, got {side_rows}"
+    );
+}
+
+#[test]
+fn heading_rows_carry_no_highlight_band() {
+    // Regression: the restyle pass used to paint H1 headings with the
+    // theme.highlight background (a tui-markdown leftover). On wrapped
+    // headings the band covered every wrapped row and read as a shadow
+    // block behind the list heading; headings must render backgroundless
+    // like the MarkdownCell path.
+    let mut app = make_app();
+    app.add_system_message(
+        "# A very long heading that wraps at this panel width\n\n- item one\n- item two"
+            .to_string(),
+    );
+
+    let terminal = render_log_panel_terminal(&mut app, 40, 12);
+    let buf = terminal.backend().buffer();
+    assert!(
+        !buffer_has_bg(buf, app.theme.highlight),
+        "heading must not paint the highlight band anywhere in the log"
+    );
+    // The heading text itself still renders.
+    let text = super::test_harness::buffer_text(buf);
+    assert!(text.contains("A very long heading"), "{text}");
+    assert!(
+        text.contains("item one") && text.contains("item two"),
+        "{text}"
     );
 }
