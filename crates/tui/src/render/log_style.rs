@@ -103,11 +103,11 @@ pub(crate) fn restyle_log_line_with_skills(
     // its prose styling: restyling it here paints the whole line with the code
     // background, a full-width highlight block that `wrap_line` re-slices onto
     // every wrapped continuation row and reads as a shadow band.
-    if stored
+    let is_code_line = stored
         .spans
         .iter()
-        .all(|s| s.style.bg == Some(theme.code_block_bg()))
-    {
+        .all(|s| s.style.bg == Some(theme.code_block_bg()));
+    if is_code_line {
         return restyle_code_line(stored, theme);
     }
 
@@ -117,6 +117,13 @@ pub(crate) fn restyle_log_line_with_skills(
         .iter()
         .map(|span| {
             let mut style = line_style.patch(span.style);
+            if style.bg == Some(theme.code_block_bg()) {
+                // Inline code is part of prose, so distinguish it with the
+                // accent foreground rather than a rectangular code-block patch.
+                style.bg = None;
+                style.fg = Some(theme.accent);
+                return Span::styled(span.content.to_string(), style);
+            }
             // H1 headings used to carry the theme.highlight background here
             // (a leftover from tui-markdown). The pulldown pipeline emits
             // headings without a background and the MarkdownCell path never
@@ -312,11 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_line_keeps_narrow_patch_not_full_block_bg() {
-        // A list item with inline code (`- run `cargo build``) is prose, not a
-        // code block: only the inline-code span may carry the code background.
-        // Restyling the whole line as code painted a full-width highlight block
-        // that wrapped into a shadow band on continuation rows.
+    fn inline_code_uses_accent_without_background() {
+        // Inline code is prose, not a code block: use the accent foreground
+        // without painting a rectangular background patch.
         let theme = brutal();
         let stored = Line::from(vec![
             Span::styled("• ".to_string(), Style::default().fg(theme.fg)),
@@ -339,10 +344,10 @@ mod tests {
         let bgs: Vec<Option<Color>> = line.spans.iter().map(|s| s.style.bg).collect();
         assert_eq!(
             bgs,
-            vec![None, None, Some(theme.code_block_bg()), None],
-            "only the inline code span may carry the code background"
+            vec![None, None, None, None],
+            "inline code must not carry a code-block background"
         );
-        // The prose spans keep their own fg (not the code fg).
+        assert_eq!(line.spans[2].style.fg, Some(theme.accent));
         assert_eq!(line.spans[0].style.fg, Some(theme.fg));
         assert_eq!(line.spans[3].style.fg, Some(theme.fg));
     }

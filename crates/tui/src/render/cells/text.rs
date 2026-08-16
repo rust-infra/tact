@@ -12,10 +12,10 @@ use crate::render::{renderable::Renderable, util::wrap_line};
 fn render_line(line: &Line, x: u16, y: u16, width: u16, bg_color: Color, buf: &mut Buffer) {
     let mut col = x;
     for span in &line.spans {
-        // Spans that bring their own background (fenced code, H1 headings)
-        // keep it; everything else sits on the panel surface color. Either
-        // way every glyph writes an explicit bg so no overlay residue can
-        // leak through when the line scrolls into view.
+        // Fenced code spans may bring their own background; everything else
+        // sits on the panel surface color. Either way every glyph writes an
+        // explicit bg so no overlay residue can leak through when the line
+        // scrolls into view.
         let style = if span.style.bg.is_some() {
             span.style
         } else {
