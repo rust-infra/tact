@@ -1023,11 +1023,11 @@ thinking_budget = {thinking_budget}
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_eq!(rx.try_recv(), Ok(Some(1)));
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
                 .any(|m| m.contains("Deny") || m.contains("Selected") || m.contains("已选择")),
             "log_confirm should render selection in the log: {:?}",
-            app.raw_messages
+            app.log_items
         );
     }
 
@@ -1056,11 +1056,11 @@ thinking_budget = {thinking_budget}
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
                 .any(|m| m.contains("models") || m.contains("models =")),
             "expected empty-models hint, got {:?}",
-            app.raw_messages
+            app.log_items
         );
 
         install_models_config(vec!["kimi-k2.5", "kimi-for-coding"], "kimi-k2.5");
@@ -1393,7 +1393,7 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(app.raw_messages.iter().any(|message| {
+        assert!(app.log_items.iter().any(|message| {
             message.contains(
                 "Model kimi-for-coding and thinking budget 64K apply only to this session",
             )

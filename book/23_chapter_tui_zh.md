@@ -272,7 +272,7 @@ Popups 在基础布局**之后**绘制以置顶。多数先用 `Clear`（无 dro
 Log 面板是最复杂渲染器。`log.rs` 文档化三种空间：
 
 ```text
-PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
+PHYSICAL (log_items[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 ┌───┬───┬───┬───┐         ┌───┬───┬───┐                 ┌───┬───┬───┬───┐
 │ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap at width  │ 0 │ 1 │ 2 │ 3 │ …
 └───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→            └───┴───┴───┴───┘
@@ -281,13 +281,13 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 
 | 空间 | 含义 | Scrollbar 跟踪 |
 |------|------|----------------|
-| **Physical** | `app.messages[]` 中的索引 | — |
+| **Physical** | `app.log_items[]` 中的索引 | — |
 | **Logical** | 可见消息 + 可选流式 buffer 行 | —（`log_scroll.offset` 仅为派生镜像） |
 | **Visual** | 当前面板宽度下的换行 | `log_scroll.visual_top`（viewport 起点）/ 总 visual 行数 |
 
 `render_log_panel` 管线阶段：
 
-1. **Phase 0** — `messages.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
+1. **Phase 0** — `log_items.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
 2. **Phase 1** — 宽度或消息数变化时 `wrap_line` → `visual_cache` + `visual_start_cache`。
 3. **Phase 2** — 将权威滚动位置 `log_scroll.visual_top`（首条可见 visual 行；`usize::MAX` = 钉住底部哨兵）钳制到 `total - height`，并派生 `log_scroll.offset` 逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由 `widgets/state/app/scroll.rs` 的 `visual_step_up/down` 按视觉行步进（cell 内 `j`/`k` 半屏、滚轮 3 行；否则按行边界跳转）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
@@ -415,13 +415,15 @@ UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msg
 
 ### 6.11 Log 消息模型
 
-Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vector 支撑且须同步（见 `widgets/state/app/popups.rs` 中 `append_msg`）：
+Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` 中的一个 `LogItem`；`append_msg`、`insert_msg`、`splice_msgs`、`drain_msgs`、`remove_msg` 都只修改这一组 collection，因此行文本、raw 来源、kind 和可选 Markdown cache 不会再彼此错位。
 
-| Vector | 类型 | 用途 |
-|--------|------|------|
-| `messages[]` | `Vec<Line<'static>>` | 预 styled ratatui 行（Markdown、颜色、modifier） |
-| `raw_messages[]` | `Vec<String>` | 纯文本：复制、hit test 与结构查找 |
-| `log_item_kinds[]` | `Vec<LogItemKind>` | 显式来源、渲染模式、缩进与类别 metadata |
+| Field | 类型 | 用途 |
+|-------|------|------|
+| `log_items[]` | `Vec<LogItem>` | 每个 physical 行的一条同步记录 |
+| `LogItem::line` | `Line<'static>` | 预 styled ratatui 行（Markdown、颜色、modifier） |
+| `LogItem::raw` | `String` | 纯文本：复制、hit test 与结构查找 |
+| `LogItem::kind` | `LogItemKind` | 显式来源、渲染模式、缩进与类别 metadata |
+| `LogItem::markdown_cell` | `Option<MarkdownCell>` | 整段 Markdown notice 的缓存 renderer |
 
 `LogItemKind` 在行进入 TUI 时分配（`widgets/state/mod.rs`）；renderer 不再从 raw 前缀或缩进推断归属：
 
@@ -438,7 +440,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 
 **行类别**现在来自来源 metadata，而不是 raw 文本猜测：
 
-| 类别 | 在 `messages[]` 中如何出现 | 说明 |
+| 类别 | 在 `log_items[]` 中如何出现 | 说明 |
 |------|---------------------------|------|
 | **User** | `add_user_message` 产生的绿色前缀行（`💬 …` / 续行 `  …`） | 前有 blank 分隔行；续行归属记录为 `LogItemKind::User` |
 | **Assistant text** | `StreamChunk` / `flush_stream_pending` 的 Markdown 行 | 单段可能占多 physical 行 |
@@ -449,14 +451,14 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
 | **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
 
-若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `messages[]` 重复文本：
+若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `log_items[]` 重复文本：
 
 | 注册表 | Key | 用于 |
 |--------|-----|------|
 | `thinking.active` / `thinking.blocks[]` | `phys_idx` | Active/completed direct card + thinking popup |
 | `tools.active[]` / `tools.blocks[]` | `phys_idx` | 运行中 / 完成 tool card |
 | `code_blocks[]` | `start_idx`、`end_idx` | 语法着色 code card |
-| `stream.buffer` |（不在 `messages[]`） | token 流期间额外 *logical* 行 |
+| `stream.buffer` |（尚未进入 `log_items[]`） | token 流期间额外 *logical* 行 |
 
 正常流式期间 physical 行仅 append；code fence 关闭或 tool placeholder resize 时 `splice_msgs` / `drain_msgs` 重写区间。
 
@@ -494,7 +496,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 - **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式；closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。若空语言 fence 紧跟在进行中的 markdown 段落/列表后，则继续保留在 paragraph 流中，不提升为 code card。
 - **Gap 规则** — tool card 后 assistant 文本前 `ensure_gap_after_tools()` 插 blank；tool 开始 `ensure_gap_before_tools()`。
 
-Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `messages[]`。
+Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `log_items[]`。
 
 ### 6.13 流式生命周期
 
@@ -508,7 +510,7 @@ Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table�
 
 **活跃 vs 已完成 assistant 文本：**
 
-Token 到达时当前 assistant 回复 tail 在 `stream.buffer`。Render Phase 1 若 buffer 非空，`total_logical` 在可见 physical 消息外多计一行 logical。该行用 accent 色直接从 buffer wrap — **未** flush 前进 `messages[]`。
+Token 到达时当前 assistant 回复 tail 在 `stream.buffer`。Render Phase 1 若 buffer 非空，`total_logical` 在可见 physical 消息外多计一行 logical。该行直接从 buffer 以 accent 色 wrap — flush 前**不会**写入 `log_items[]`。
 
 **Thinking block 生命周期：**
 
@@ -591,7 +593,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 双击 card | 打开对应 detail popup |
 | 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
 
-复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `raw_messages`。
+复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。
 
 **Hit test 链：**
 
@@ -607,7 +609,7 @@ mouse row in log_area
 
 **键盘 scroll**（normal 模式，log 焦点）：`j`/`k` ±1 logical 行；`G`/`g` 底/顶。无 popup 时滚轮事件调整 offset。
 
-装饰性 **类别分隔符**（user ↔ system ↔ assistant）在 Phase 3 render 时嗅探 `raw_messages` 前缀插入 — 不在 `messages[]` 存储。
+装饰性 **类别分隔符**（user ↔ system ↔ assistant）在 Phase 3 render 时依据 `LogItemKind` 插入；不会作为额外 `LogItem` 存储。
 
 ### 6.18 Log 管线序列
 
@@ -616,7 +618,7 @@ sequenceDiagram
     participant Agent as Agent::emit_update
     participant Rx as agent_rx drain
     participant H as handle_agent_update
-    participant M as messages[] + overlays
+    participant M as log_items[] + overlays
     participant R as render_log_panel
 
     Agent->>Rx: AgentUpdate

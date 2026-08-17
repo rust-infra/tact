@@ -309,7 +309,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 if size != last_size {
                     last_size = size;
                     app.log_scroll.state =
-                        ScrollbarState::new(app.messages.len().saturating_sub(1));
+                        ScrollbarState::new(app.log_items.len().saturating_sub(1));
                 }
                 app.log_scroll.height = log_area.height.saturating_sub(2);
                 let chunks = Layout::default()

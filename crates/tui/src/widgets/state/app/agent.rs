@@ -189,7 +189,7 @@ impl App {
                 if let Some(entry) = self.task_history.last_mut() {
                     entry.summary = summary;
                 }
-                // Trailing separator: bumps messages.len() to rebuild the visual wrap
+                // Trailing separator: bumps `log_items.len()` to rebuild the visual wrap
                 // cache and marks the end of this response.
                 self.add_task_end_separator();
                 if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
@@ -670,7 +670,7 @@ impl App {
                     start
                 }
                 None => {
-                    let start = self.messages.len();
+                    let start = self.log_items.len();
                     self.extend_msgs(diagram, raw, LogItemKind::AssistantMarkdown);
                     start
                 }
@@ -759,14 +759,17 @@ impl App {
                 // Streaming: update previous line (remove indicator), append new line with indicator
                 self.stream.code_block_buffer.push(line.clone());
 
-                let prev_idx = self.messages.len().saturating_sub(1);
+                let prev_idx = self.log_items.len().saturating_sub(1);
                 if self.stream.code_block_line_count > 1
-                    && let Some(prev_raw) = self.raw_messages.get_mut(prev_idx)
-                    && prev_raw.ends_with(STREAMING_INDICATOR)
+                    && let Some(prev_item) = self.log_items.get_mut(prev_idx)
+                    && prev_item.raw.ends_with(STREAMING_INDICATOR)
                 {
-                    let clean = prev_raw.trim_end_matches(STREAMING_INDICATOR).to_string();
-                    *prev_raw = clean.clone();
-                    self.messages[prev_idx] = Line::from(vec![
+                    let clean = prev_item
+                        .raw
+                        .trim_end_matches(STREAMING_INDICATOR)
+                        .to_string();
+                    prev_item.raw = clean.clone();
+                    prev_item.line = Line::from(vec![
                         Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
                         Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
                     ]);
@@ -836,7 +839,7 @@ impl App {
                     .split_whitespace()
                     .next()
                     .is_some_and(|token| token.eq_ignore_ascii_case("mermaid"));
-                self.stream.code_block_start_idx = Some(self.messages.len());
+                self.stream.code_block_start_idx = Some(self.log_items.len());
                 self.stream.code_block_line_count = 1;
 
                 // Container header: ╭─ lang ─────
@@ -1146,7 +1149,7 @@ mod lifecycle_tests {
     fn tasks_changed_shows_panel_without_touching_log() {
         let mut app = make_app();
         assert!(!app.task_panel.visible);
-        let log_len_before = app.raw_messages.len();
+        let log_len_before = app.log_items.len();
         app.handle_agent_update(AgentUpdate::TasksChanged {
             tasks: vec![TaskSnapshot {
                 id: 1,
@@ -1171,10 +1174,10 @@ mod lifecycle_tests {
             "sticky snapshot should carry the subject"
         );
         assert_eq!(
-            app.raw_messages.len(),
+            app.log_items.len(),
             log_len_before,
             "the task_* tool row already covers this in the Log, got:\n{:?}",
-            app.raw_messages
+            app.log_items
         );
     }
 
@@ -1361,7 +1364,7 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
                 .any(|message| message.contains("已安装插件 demo（来自 fixture）"))
         );
@@ -1380,7 +1383,7 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
                 .any(|message| message.contains("Installed plugin demo from fixture"))
         );
@@ -1403,7 +1406,12 @@ mod lifecycle_tests {
             refresh_skills: false,
         });
 
-        let joined = app.raw_messages.join("\n");
+        let joined = app
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             joined.contains("Installed plugins (1)"),
             "expected titled block, got:\n{joined}"
@@ -1446,20 +1454,27 @@ mod lifecycle_tests {
             refresh_skills: false,
         });
 
-        let joined = app.raw_messages.join("\n");
+        let joined = app
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             joined.contains("Marketplaces (2)"),
             "expected titled block, got:\n{joined}"
         );
         let official_line = app
-            .raw_messages
+            .log_items
             .iter()
-            .find(|line| line.contains("claude-plugins-official"))
+            .find(|item| item.raw.contains("claude-plugins-official"))
+            .map(|item| item.raw.as_str())
             .expect("official marketplace row");
         let superpowers_line = app
-            .raw_messages
+            .log_items
             .iter()
-            .find(|line| line.contains("superpowers-dev"))
+            .find(|item| item.raw.contains("superpowers-dev"))
+            .map(|item| item.raw.as_str())
             .expect("superpowers marketplace row");
         assert_ne!(
             official_line, superpowers_line,
@@ -1485,9 +1500,9 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
-                .any(|message| message == "安装插件失败：network timeout")
+                .any(|message| message.raw == "安装插件失败：network timeout")
         );
     }
 
@@ -1508,9 +1523,10 @@ mod lifecycle_tests {
         });
 
         let message = app
-            .raw_messages
+            .log_items
             .iter()
-            .find(|message| message.starts_with("install plugin failed: "))
+            .find(|item| item.raw.starts_with("install plugin failed: "))
+            .map(|item| item.raw.as_str())
             .unwrap();
         let sanitized_detail = message.strip_prefix("install plugin failed: ").unwrap();
         assert!(!sanitized_detail.chars().any(char::is_control));
@@ -1774,11 +1790,11 @@ mod lifecycle_tests {
         assert!(app.tools.active.is_empty());
         assert!(app.tools.blocks.is_empty());
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
                 .any(|m| m.contains("Background task 018f3a2c completed")),
             "missing fallback message: {:?}",
-            app.raw_messages
+            app.log_items
         );
     }
 
@@ -1984,7 +2000,12 @@ mod lifecycle_tests {
 
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
-        let joined = app.raw_messages.join("\n");
+        let joined = app
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             joined.contains("Task stats:⏱ 01:05"),
             "elapsed part missing: {joined}"
@@ -2006,7 +2027,12 @@ mod lifecycle_tests {
 
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
-        let joined = app.raw_messages.join("\n");
+        let joined = app
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         let stats_line = joined
             .lines()
             .find(|l| l.contains("Task stats:"))
@@ -2022,7 +2048,12 @@ mod lifecycle_tests {
 
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
-        let joined = app.raw_messages.join("\n");
+        let joined = app
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         let stats_line = joined
             .lines()
             .find(|l| l.contains("任务统计："))
@@ -2058,26 +2089,26 @@ mod lifecycle_tests {
         app.add_task_stats_block();
 
         let stats_idx = app
-            .raw_messages
+            .log_items
             .iter()
-            .rposition(|l| l.contains("Task stats:"))
+            .rposition(|item| item.raw.contains("Task stats:"))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
-        let copy_notice = app.raw_messages.last().expect("copy notice");
-        assert!(copy_notice.contains("已复制") || copy_notice.contains("Copied"));
-        assert!(!copy_notice.contains("second question"));
+        let copy_notice = app.log_items.last().expect("copy notice");
+        assert!(copy_notice.raw.contains("已复制") || copy_notice.raw.contains("Copied"));
+        assert!(!copy_notice.raw.contains("second question"));
 
         // Prefer clipboard_buffer when system clipboard is unavailable; otherwise
         // just verify the extracted range would exclude the first turn.
         let start = app
-            .raw_messages
+            .log_items
             .iter()
-            .position(|l| l.contains("Task stats:"))
+            .position(|item| item.raw.contains("Task stats:"))
             .expect("first stats")
             + 1;
         let mut expected_parts = Vec::new();
         for i in start..stats_idx {
-            let line = app.raw_messages[i].as_str();
+            let line = app.log_items[i].raw.as_str();
             if line.is_empty()
                 || crate::render::cells::separator::is_task_end_separator(line)
                 || crate::widgets::state::is_task_stats_line(line)
@@ -2190,22 +2221,20 @@ mod lifecycle_tests {
         )));
         assert!(matches!(app.status, Status::Idle));
         assert!(
-            app.raw_messages
-                .iter()
-                .any(|m| m.contains("LLM unavailable")),
+            app.log_items.iter().any(|m| m.contains("LLM unavailable")),
             "error message should appear in log: {:?}",
-            app.raw_messages
+            app.log_items
         );
     }
 
     #[test]
     fn info_update_appends_system_message() {
         let mut app = make_app();
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
         app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
-        assert!(app.raw_messages.len() > before);
+        assert!(app.log_items.len() > before);
         assert!(
-            app.raw_messages
+            app.log_items
                 .last()
                 .is_some_and(|m| m.contains("Cancelling"))
         );
@@ -2454,19 +2483,19 @@ mod lifecycle_tests {
     #[test]
     fn empty_started_finished_leaves_no_thinking_ui() {
         let mut app = make_app();
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
         assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.active.is_none());
         assert!(app.thinking.blocks.is_empty());
-        assert_eq!(app.raw_messages.len(), before);
+        assert_eq!(app.log_items.len(), before);
     }
 
     #[test]
     fn whitespace_only_delta_finished_leaves_no_thinking_block() {
         let mut app = make_app();
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "   ".into(),
@@ -2474,7 +2503,7 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.blocks.is_empty());
         assert!(app.thinking.active.is_none());
-        assert_eq!(app.raw_messages.len(), before);
+        assert_eq!(app.log_items.len(), before);
     }
 
     #[test]
@@ -2494,14 +2523,14 @@ mod lifecycle_tests {
     #[test]
     fn missing_thinking_started_creates_one_placeholder_not_source_rows() {
         let mut app = make_app();
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
 
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "first\nsecond".into(),
         )));
 
         assert_eq!(
-            app.raw_messages.len(),
+            app.log_items.len(),
             before + crate::render::cells::thinking::thinking_visual_rows(2)
         );
         assert_eq!(

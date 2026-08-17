@@ -275,7 +275,7 @@ Detail popups anchored over the main area (not separate input modes):
 The log panel is the most complex renderer. `log.rs` documents three spaces:
 
 ```text
-PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
+PHYSICAL (log_items[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 ┌───┬───┬───┬───┐         ┌───┬───┬───┐                 ┌───┬───┬───┬───┐
 │ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap at width  │ 0 │ 1 │ 2 │ 3 │ …
 └───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→            └───┴───┴───┴───┘
@@ -284,13 +284,13 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 
 | Space | Meaning | Scrollbar tracks |
 |-------|---------|------------------|
-| **Physical** | Index in `app.messages[]` | — |
+| **Physical** | Index in `app.log_items[]` | — |
 | **Logical** | Visible messages + optional streaming buffer row | — (`log_scroll.offset` is a derived mirror) |
 | **Visual** | Wrapped lines at current panel width | `log_scroll.visual_top` (viewport start) / total visual lines |
 
 Pipeline phases in `render_log_panel`:
 
-1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `messages.len()` changes; direct-card placeholder rows remain addressable for scroll and hit testing.
+1. **Phase 0** — Rebuild `visible_indices` / `phys_to_logical_cache` when `log_items.len()` changes; direct-card placeholder rows remain addressable for scroll and hit testing.
 2. **Phase 1** — `wrap_line` → `visual_cache` + `visual_start_cache` when width or message count changes.
 3. **Phase 2** — Clamp `log_scroll.visual_top` (authoritative first visible visual line; `usize::MAX` = pin-to-bottom sentinel) to `total - height`, and derive `log_scroll.offset` as a logical mirror for hit-testing/popups. Cells taller than the viewport are stepped through visually by `visual_step_up/down` in `widgets/state/app/scroll.rs` (half a viewport per `j`/`k`, 3 lines per wheel tick inside such a cell; row-boundary jumps otherwise).
 4. **Phase 3** — Build `LogColumnRenderer` with `TextCell`, `ToolCell`, and `ThinkingCell`; code remains an overlay. Only cells intersecting the viewport are drawn.
@@ -418,13 +418,15 @@ UI strings are centralized in `i18n.rs` (`English` / `Chinese`); render code pul
 
 ### 6.11 Log message model
 
-The log is not a single list of strings. Every row in `app.messages[]` is backed by three parallel vectors that must stay in sync (see `append_msg` in `widgets/state/app/popups.rs`):
+The log is not a single list of strings. Each physical row is one `LogItem` in `app.log_items[]`; `append_msg`, `insert_msg`, `splice_msgs`, `drain_msgs`, and `remove_msg` mutate that one collection so line text, raw source, kind, and optional Markdown cache cannot drift apart.
 
-| Vector | Type | Purpose |
-|--------|------|---------|
-| `messages[]` | `Vec<Line<'static>>` | Pre-styled ratatui line for rendering (Markdown, colors, modifiers) |
-| `raw_messages[]` | `Vec<String>` | Plain text for copy, hit testing, and structural lookup |
-| `log_item_kinds[]` | `Vec<LogItemKind>` | Explicit source, render mode, indent, and category metadata |
+| Field | Type | Purpose |
+|-------|------|---------|
+| `log_items[]` | `Vec<LogItem>` | One synchronized record per physical row |
+| `LogItem::line` | `Line<'static>` | Pre-styled ratatui line for rendering (Markdown, colors, modifiers) |
+| `LogItem::raw` | `String` | Plain text for copy, hit testing, and structural lookup |
+| `LogItem::kind` | `LogItemKind` | Explicit source, render mode, indent, and category metadata |
+| `LogItem::markdown_cell` | `Option<MarkdownCell>` | Cached whole-Markdown renderer for one-item Markdown notices |
 
 `LogItemKind` is assigned when a row enters the TUI (`widgets/state/mod.rs`); the renderer does not infer ownership from raw prefixes or indentation:
 
@@ -441,7 +443,7 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 
 **Row categories** are now source metadata, not raw-text guesses:
 
-| Category | How it appears in `messages[]` | Notes |
+| Category | How it appears in `log_items[]` | Notes |
 |----------|-------------------------------|-------|
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row; continuation ownership is stored in `LogItemKind::User` |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
@@ -452,14 +454,14 @@ The log is not a single list of strings. Every row in `app.messages[]` is backed
 | **Loading placeholder** | One blank `SystemTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
 | **Task-end separator** | Sentinel row with magic raw text `\x07tact-task-end\x1f{secs}` | Rendered as a full-width accent-colored rule with centered `Elapsed MM:SS` / `耗时 MM:SS` |
 
-Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `messages[]`:
+Several **overlay registries** hold metadata keyed by physical index — they do not duplicate text in `log_items[]`:
 
 | Registry | Key | Used for |
 |----------|-----|----------|
 | `thinking.active` / `thinking.blocks[]` | `phys_idx` | Active/completed direct card + thinking popup |
 | `tools.active[]` / `tools.blocks[]` | `phys_idx` | Running / completed tool cards |
 | `code_blocks[]` | `start_idx`, `end_idx` | Syntax-tinted code card |
-| `stream.buffer` | (not in `messages[]` yet) | Extra *logical* row while tokens stream |
+| `stream.buffer` | (not in `log_items[]` yet) | Extra *logical* row while tokens stream |
 
 Physical rows are append-only during normal streaming; `splice_msgs` / `drain_msgs` rewrite ranges when code fences close or tool placeholders resize.
 
@@ -497,7 +499,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 - **Code fence mode** — opening ` ```lang ` sets `stream.code_block`; interior lines stream with a ` ▌` indicator; closing ` ``` ` splices placeholder rows and pushes a `CodeBlock` overlay entry. Empty-language fences that appear immediately after an in-progress markdown paragraph/list stay in paragraph flow instead of being promoted into a code card.
 - **Gap rules** — `ensure_gap_after_tools()` inserts a blank before assistant text following a tool card; tool start calls `ensure_gap_before_tools()`.
 
-When a tool starts, `flush_stream_pending()` runs first — any partial paragraph, table, code block, or `stream.buffer` tail is committed to `messages[]` before placeholder rows appear.
+When a tool starts, `flush_stream_pending()` runs first — any partial paragraph, table, code block, or `stream.buffer` tail is committed to `log_items[]` before placeholder rows appear.
 
 ### 6.13 Streaming lifecycle
 
@@ -511,7 +513,7 @@ Three buffers can hold text that is not yet a permanent log row:
 
 **Active vs completed assistant text:**
 
-While tokens arrive, the tail of the current assistant reply lives in `stream.buffer`. During render Phase 1, if the buffer is non-empty, `total_logical` counts one extra logical row beyond visible physical messages. That row is wrapped with accent color directly from the buffer — it is **not** stored in `messages[]` until flushed.
+While tokens arrive, the tail of the current assistant reply lives in `stream.buffer`. During render Phase 1, if the buffer is non-empty, `total_logical` counts one extra logical row beyond visible physical messages. That row is wrapped with accent color directly from the buffer — it is **not** stored in `log_items[]` until flushed.
 
 **Thinking block lifecycle:**
 
@@ -591,7 +593,7 @@ Diff previews for file-write tools are now folded into `ToolCell` detail cards; 
 | Double click on card | Open corresponding detail popup |
 | Left-button drag in tool/Thinking detail popup | Select original tool text or visible Thinking text; display-only prefixes are excluded |
 
-Copy (`y` in normal mode) prefers a non-empty selection while a tool or Thinking popup is active; with an empty popup selection it copies the full original popup content. Without a selectable popup, it prefers log word selection, then concatenates selected logical rows' `raw_messages`.
+Copy (`y` in normal mode) prefers a non-empty selection while a tool or Thinking popup is active; with an empty popup selection it copies the full original popup content. Without a selectable popup, it prefers log word selection, then concatenates the selected logical rows' `LogItem::raw` values.
 
 **Hit testing chain:**
 
@@ -607,7 +609,7 @@ mouse row in log_area
 
 **Keyboard scroll** (normal mode, log focused): `j`/`k` ±1 logical row; `G`/`g` bottom/top. Wheel events adjust offset when no popup is open.
 
-Decorative **category separators** (user ↔ system ↔ assistant) are inserted at render time in Phase 3 by sniffing `raw_messages` prefixes — they are not stored in `messages[]`.
+Decorative **category separators** (user ↔ system ↔ assistant) are inserted at render time in Phase 3 from `LogItemKind`; they are not stored as extra `LogItem`s.
 
 ### 6.18 Log pipeline sequence
 
@@ -616,7 +618,7 @@ sequenceDiagram
     participant Agent as Agent::emit_update
     participant Rx as agent_rx drain
     participant H as handle_agent_update
-    participant M as messages[] + overlays
+    participant M as log_items[] + overlays
     participant R as render_log_panel
 
     Agent->>Rx: AgentUpdate
