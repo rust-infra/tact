@@ -6,7 +6,7 @@ use async_openai_responses::types::responses::{
     ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
 };
 
-use super::history;
+use super::{history, wire};
 use crate::{
     ContentBlock, CreateMessageParams, LlmError, Message, MessageContent,
     ProviderConversationState, ResponsesConversationState, Role, ToolChoice, context_hash,
@@ -221,8 +221,9 @@ fn validate_conversion_state(
 /// suffix). With no state, every logical message is converted. With an OpenAI
 /// Responses state, the provider/model binding and the logical prefix hash are
 /// validated before only the uncovered suffix is converted. The state baseline
-/// items are reused verbatim as JSON so unknown fields and future item types
-/// survive.
+/// items are reused verbatim as JSON for same-model requests; on a model switch,
+/// only hosted web-search `query` / `queries` fields are adapted to the target
+/// model's spelling.
 ///
 /// When `native_web_search` is true, a `Tool::WebSearch` is injected
 /// alongside the function tools so the Provider can execute web search
@@ -234,13 +235,25 @@ pub(crate) fn create_response(
     compact_threshold: Option<u32>,
     native_web_search: bool,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
-    let (baseline, covered) = match provider_state {
-        None => (Vec::new(), 0),
+    let (mut baseline, covered, model_changed) = match provider_state {
+        None => (Vec::new(), 0, false),
         Some(ProviderConversationState::OpenAiResponses(state)) => {
             validate_conversion_state(state, request)?;
-            (state.input_items.clone(), state.logical_message_count)
+            (
+                state.input_items.clone(),
+                state.logical_message_count,
+                state.model != request.model,
+            )
         }
     };
+    if model_changed {
+        let shape = if request.model.to_ascii_lowercase().contains("deepseek") {
+            wire::WebSearchQueryShape::Queries
+        } else {
+            wire::WebSearchQueryShape::Query
+        };
+        wire::normalize_web_search_call_query_shape_in_items(&mut baseline, shape);
+    }
 
     let mut converted = Vec::new();
     for message in &request.messages[covered..] {
@@ -641,6 +654,83 @@ mod tests {
     }
 
     #[test]
+    fn model_switch_to_deepseek_rewrites_baseline_web_search_query_to_queries() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.model = "gpt-5".to_string();
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "Tokyo weather"}
+        })];
+
+        let mut request = request;
+        request.model = "deepseek-chat".to_string();
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            false,
+        )
+        .unwrap();
+        let baseline = &body["input"][0];
+        assert_eq!(baseline["action"]["queries"][0], "Tokyo weather");
+        assert!(baseline["action"].get("query").is_none());
+    }
+
+    #[test]
+    fn model_switch_from_deepseek_rewrites_baseline_web_search_queries_to_query() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.model = "deepseek-chat".to_string();
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["Tokyo weather", "ws_call_id=ws-1"]}
+        })];
+
+        let mut request = request;
+        request.model = "gpt-5".to_string();
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            false,
+        )
+        .unwrap();
+        let baseline = &body["input"][0];
+        assert_eq!(baseline["action"]["query"], "Tokyo weather");
+        assert!(baseline["action"].get("queries").is_none());
+    }
+
+    #[test]
+    fn same_model_reuses_baseline_web_search_verbatim() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "Tokyo weather"}
+        })];
+
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(
+                state.clone(),
+            )),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(body["input"][0], state.input_items[0]);
+        assert_eq!(body["input"][0]["action"]["query"], "Tokyo weather");
+        assert!(body["input"][0]["action"].get("queries").is_none());
+    }
+
+    #[test]
     fn responses_request_injects_context_management_and_keeps_stateless_fields() {
         let request = request_with_history();
         let (body, _) = create_response(&request, None, Some(160_000), false).unwrap();
@@ -746,6 +836,86 @@ mod tests {
             false,
         )
         .expect("model mismatch should not be rejected by local state validation");
+    }
+
+    #[test]
+    fn mismatched_model_converts_openai_search_query_to_deepseek_queries() {
+        let mut request = request_with_history();
+        request.model = "deepseek-chat".to_string();
+        let mut state = state_covering_first_message(&request);
+        state.model = "gpt-5.6-luna".to_string();
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-openai-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "old OpenAI wire shape"}
+        })];
+
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            false,
+        )
+        .unwrap();
+        let item = &body["input"][0];
+        assert_eq!(
+            item["action"]["queries"],
+            serde_json::json!(["old OpenAI wire shape"])
+        );
+        assert!(item["action"].get("query").is_none());
+    }
+
+    #[test]
+    fn mismatched_model_converts_deepseek_queries_to_openai_search_query() {
+        let request = request_with_history();
+        let mut state = state_covering_first_message(&request);
+        state.model = "deepseek-chat".to_string();
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-deepseek-1",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["old DeepSeek wire shape", "tracking-id"]}
+        })];
+
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            false,
+        )
+        .unwrap();
+        let item = &body["input"][0];
+        assert_eq!(item["action"]["query"], "old DeepSeek wire shape");
+        assert!(item["action"].get("queries").is_none());
+    }
+
+    #[test]
+    fn same_model_preserves_web_search_wire_shape() {
+        let mut request = request_with_history();
+        request.model = "deepseek-chat".to_string();
+        let mut state = state_covering_first_message(&request);
+        state.model = request.model.clone();
+        state.input_items = vec![serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-deepseek-1",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["same model shape"]}
+        })];
+
+        let (body, _) = create_response(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            false,
+        )
+        .unwrap();
+        let item = &body["input"][0];
+        assert_eq!(
+            item["action"]["queries"],
+            serde_json::json!(["same model shape"])
+        );
+        assert!(item["action"].get("query").is_none());
     }
 
     #[test]

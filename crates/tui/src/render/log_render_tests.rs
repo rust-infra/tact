@@ -11,7 +11,7 @@ use super::log::render_log_panel;
 use super::test_harness::{
     buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
-use crate::widgets::state::{App, LogSelection, RawMessageType, Status};
+use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -97,7 +97,7 @@ fn buffer_cell_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16
 fn log_line_selection_applies_reversed_modifier() {
     let mut app = make_app();
     app.add_system_message("select this entire line".into());
-    let raw = app.raw_messages[0].clone();
+    let raw = app.log_items[0].raw.clone();
     app.mouse.log_selection = Some(LogSelection::full_message(0, raw.len()));
 
     let terminal = render_log_panel_terminal(&mut app, 80, 16);
@@ -309,12 +309,12 @@ fn log_sys_tool_message_uses_extra_indent() {
     app.append_msg(
         ratatui::text::Line::from("plain assistant"),
         "plain assistant".into(),
-        RawMessageType::LLM,
+        LogItemKind::AssistantMarkdown,
     );
     app.append_msg(
         ratatui::text::Line::from("nested tool line"),
         "nested tool line".into(),
-        RawMessageType::SysTool,
+        LogItemKind::SystemTool,
     );
 
     let text = render_log_panel_text(&mut app, 80, 12);
@@ -331,7 +331,7 @@ fn log_sys_tool_message_uses_extra_indent() {
 fn log_full_width_nested_line_wraps_before_indentation_clip() {
     let mut app = make_app();
     let line = "abcdefghijklmnopqrstuvwxyz";
-    app.append_msg(Line::from(line), line.into(), RawMessageType::SysTool);
+    app.append_msg(Line::from(line), line.into(), LogItemKind::SystemTool);
 
     let text = render_log_panel_text(&mut app, 30, 12);
 
@@ -472,8 +472,8 @@ fn log_loading_spinner_shows_braille_and_label() {
         current_step: 0,
         total: 1,
     };
-    app.append_blank(RawMessageType::SysTool);
-    app.loading_idx = Some(app.messages.len().saturating_sub(1));
+    app.append_blank(LogItemKind::SystemTool);
+    app.loading_idx = Some(app.log_items.len().saturating_sub(1));
     app.spinner_frame = 3;
 
     let text = render_log_panel_text(&mut app, 80, 16);

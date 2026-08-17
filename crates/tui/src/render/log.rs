@@ -14,7 +14,7 @@ use crate::{
         util::wrap_line,
     },
     theme::Theme,
-    widgets::state::App,
+    widgets::state::{App, LogItemKind},
 };
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
@@ -34,7 +34,7 @@ use crate::{
 /// # Three coordinate spaces
 ///
 /// ```text
-///  PHYSICAL (messages[])     LOGICAL (scroll here)        VISUAL (draw here)
+///  PHYSICAL (log_items[])     LOGICAL (scroll here)        VISUAL (draw here)
 ///  ┌───┬───┬───┬───┐         ┌───┬───┬───┐                ┌───┬───┬───┬───┬───┐
 ///  │ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap long     │ 0 │ 1 │ 2 │ 3 │ 4 │
 ///  └───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→           └───┴───┴───┴───┴───┘
@@ -86,21 +86,21 @@ pub(crate) fn render_log_panel_with_borders(
     // width at build time so they never need post-hoc char wrapping.
     app.log_scroll.width = wrap_width as u16;
 
-    // `visible_indices_ver` 是**脏检测的版本号**。它存的是上次构建时 `messages.len()` 的值。这里的逻辑：
+    // `visible_indices_ver` is the **dirty marker**. It stores the previous `log_items.len()`; a change invalidates the cache:
     // ```
     // 当前消息数量 ≠ 上次缓存时的消息数量  →  缓存过期，需要重建
     // ```
     // 这是 Phase 0 唯一的触发条件——因为只有消息增删才会改变可见索引（消息新增可能落在 thinking block 内部，需要重新判断是否可见）。消息内容变化不改变可见性，所以不用重建。
-    let indices_stale = app.log_scroll.visible_indices_ver != app.messages.len();
+    let indices_stale = app.log_scroll.visible_indices_ver != app.log_items.len();
     if indices_stale {
         app.log_scroll.visible_indices.clear();
         app.log_scroll.phys_to_logical_cache.clear();
         app.log_scroll
             .phys_to_logical_cache
-            .resize(app.messages.len(), None);
+            .resize(app.log_items.len(), None);
         let mut total_logical = 0;
         // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
-        for phys in 0..app.messages.len() {
+        for phys in 0..app.log_items.len() {
             if app.is_message_visible(phys) {
                 app.log_scroll.visible_indices.push(phys);
                 app.log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
@@ -108,7 +108,7 @@ pub(crate) fn render_log_panel_with_borders(
             }
         }
         // update visible_indices_ver to mark cache valid
-        app.log_scroll.visible_indices_ver = app.messages.len();
+        app.log_scroll.visible_indices_ver = app.log_items.len();
     }
     // total_logical: 可见的逻辑行数量
     let mut total_logical = app.log_scroll.visible_indices.len();
@@ -117,10 +117,8 @@ pub(crate) fn render_log_panel_with_borders(
         total_logical += 1;
     }
 
-    // User-line membership precomputed in one O(n) pass: the per-row backward
-    // walk in `is_user_message_line` is quadratic for a long pasted user
-    // block. Shared by Phase 1 (restyle) and Phase 3 (indent).
-    let user_lines = super::log_style::user_line_mask(&app.raw_messages);
+    // Every stored row carries its source kind, so the render path never has
+    // to infer user/system ownership from raw prefixes or indentation.
 
     // Phase 1: logical → visual wrap cache.
     //
@@ -135,7 +133,7 @@ pub(crate) fn render_log_panel_with_borders(
     // ```
     //
     // Rebuild when message count, panel width, or theme changes.
-    let cache_valid = app.log_scroll.visual_cache_ver == app.messages.len()
+    let cache_valid = app.log_scroll.visual_cache_ver == app.log_items.len()
         && app.log_scroll.visual_cache_width == wrap_width as u16
         && app.log_scroll.visual_cache_theme == app.theme.name;
 
@@ -156,7 +154,10 @@ pub(crate) fn render_log_panel_with_borders(
             // width), and the rows are blank placeholders so the prefix-sum
             // cache stays consistent (same pattern as tool placeholder rows).
             if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i)
-                && let Some(cell) = app.markdown_cells.get(phys_idx).and_then(|c| c.as_ref())
+                && let Some(cell) = app
+                    .log_items
+                    .get(phys_idx)
+                    .and_then(|item| item.markdown_cell.as_ref())
             {
                 let rows = cell.height(wrap_width as u16) as usize;
                 app.log_scroll
@@ -169,17 +170,17 @@ pub(crate) fn render_log_panel_with_borders(
             }
 
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx])
-                    || app.messages[phys_idx].spans.is_empty()
+                let item = &app.log_items[phys_idx];
+                if super::cells::separator::is_task_end_separator(&item.raw)
+                    || item.line.spans.is_empty()
                 {
                     Line::default()
                 } else {
                     super::log_style::restyle_log_line_with_skills(
-                        &app.messages[phys_idx],
-                        &app.raw_messages[phys_idx],
+                        &item.line,
+                        &item.raw,
                         &app.theme,
-                        app.raw_message_types[phys_idx],
-                        user_lines[phys_idx],
+                        item.kind,
                         &skill_names,
                         user_prefix_tmpl,
                         user_cont_tmpl,
@@ -191,10 +192,10 @@ pub(crate) fn render_log_panel_with_borders(
                 Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.fg))
             };
             let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                if super::cells::separator::is_task_end_separator(&app.raw_messages[phys_idx]) {
+                if super::cells::separator::is_task_end_separator(&app.log_items[phys_idx].raw) {
                     vec![Line::default()]
                 } else {
-                    let indent = app.nested_log_indent(phys_idx, user_lines[phys_idx]) as usize;
+                    let indent = app.nested_log_indent(phys_idx) as usize;
                     wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
                 }
             } else {
@@ -208,7 +209,7 @@ pub(crate) fn render_log_panel_with_borders(
                 .push(app.log_scroll.visual_cache.len());
         }
         app.log_scroll.visual_cache_width = wrap_width as u16;
-        app.log_scroll.visual_cache_ver = app.messages.len();
+        app.log_scroll.visual_cache_ver = app.log_items.len();
         app.log_scroll.visual_cache_theme = app.theme.name;
     }
 
@@ -292,33 +293,21 @@ pub(crate) fn render_log_panel_with_borders(
         // Compute the byte-range selection for this logical row, if any.
         let selection_range = app.mouse.log_selection.and_then(|sel| {
             let phys = phys_idx?;
-            sel.byte_range_for(phys, app.raw_messages[phys].len())
+            sel.byte_range_for(phys, app.log_items[phys].raw.len())
         });
 
         // ── Message category separator ──────────────────────────────
         // Between message groups of different types (user ↔ system ↔ assistant),
         // insert a thin decorative separator line.
         if let Some(phys) = phys_idx {
-            let raw = app.raw_messages[phys].as_str();
-            // Determine category for this line
-            let category = if raw.starts_with("💬") {
-                "user"
-            } else if raw.starts_with("  ") {
-                // Continuation line: same as previous category
-                prev_category.unwrap_or("assistant")
-            } else if raw.starts_with("✓")
-                || raw.starts_with("✗")
-                || raw.starts_with("⚠")
-                || raw.starts_with("📝")
-                || raw.starts_with("❌")
-                || raw.starts_with("✅")
-                || raw.starts_with("▶")
-                || raw.starts_with("🤖")
-                || raw.starts_with("  ██")
-            {
-                "system"
-            } else {
-                "assistant"
+            let kind = app.log_items[phys].kind;
+            let category = match kind {
+                LogItemKind::User => "user",
+                LogItemKind::AssistantMarkdown => "assistant",
+                LogItemKind::SystemPlain(_)
+                | LogItemKind::SystemMarkdown
+                | LogItemKind::SystemTool
+                | LogItemKind::Thinking => "system",
             };
 
             // Insert separator if category changed (and not first line)
@@ -448,7 +437,10 @@ pub(crate) fn render_log_panel_with_borders(
         // Whole-Markdown message: render the cached MarkdownCell at the
         // logical row's visual start. `vs_cache` already reserved its rows.
         if let Some(phys) = phys_idx
-            && let Some(cell) = app.markdown_cells.get(phys).and_then(|c| c.as_ref())
+            && let Some(cell) = app
+                .log_items
+                .get(phys)
+                .and_then(|item| item.markdown_cell.as_ref())
         {
             renderer.push(vs_cache[logical_i], cell);
             logical_i += 1;
@@ -457,9 +449,9 @@ pub(crate) fn render_log_panel_with_borders(
 
         // Task-end rule: full-width line with centered elapsed label.
         if let Some(phys) = phys_idx
-            && super::cells::separator::is_task_end_separator(&app.raw_messages[phys])
+            && super::cells::separator::is_task_end_separator(&app.log_items[phys].raw)
         {
-            let raw = &app.raw_messages[phys];
+            let raw = &app.log_items[phys].raw;
             let msgs = app.msgs();
             let sep = match super::cells::separator::task_end_elapsed_secs(raw) {
                 Some(secs) => super::cells::separator::TaskEndSeparator::with_elapsed(
@@ -478,11 +470,11 @@ pub(crate) fn render_log_panel_with_borders(
         let cached_lines: Vec<Line<'static>> =
             app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
         let raw_text = phys_idx
-            .map(|p| app.raw_messages[p].clone())
+            .map(|p| app.log_items[p].raw.clone())
             .unwrap_or_default();
 
         let indent_cols = phys_idx
-            .map(|p| app.nested_log_indent(p, user_lines[p]))
+            .map(|p| app.nested_log_indent(p))
             // The last row is an in-progress assistant response, not a stored
             // physical message, so apply the same reply indent directly.
             .unwrap_or(super::util::LOG_THINKING_INDENT + 1);

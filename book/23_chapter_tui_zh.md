@@ -272,7 +272,7 @@ Popups 在基础布局**之后**绘制以置顶。多数先用 `Clear`（无 dro
 Log 面板是最复杂渲染器。`log.rs` 文档化三种空间：
 
 ```text
-PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
+PHYSICAL (log_items[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 ┌───┬───┬───┬───┐         ┌───┬───┬───┐                 ┌───┬───┬───┬───┐
 │ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap at width  │ 0 │ 1 │ 2 │ 3 │ …
 └───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→            └───┴───┴───┴───┘
@@ -281,13 +281,13 @@ PHYSICAL (messages[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 
 | 空间 | 含义 | Scrollbar 跟踪 |
 |------|------|----------------|
-| **Physical** | `app.messages[]` 中的索引 | — |
+| **Physical** | `app.log_items[]` 中的索引 | — |
 | **Logical** | 可见消息 + 可选流式 buffer 行 | —（`log_scroll.offset` 仅为派生镜像） |
 | **Visual** | 当前面板宽度下的换行 | `log_scroll.visual_top`（viewport 起点）/ 总 visual 行数 |
 
 `render_log_panel` 管线阶段：
 
-1. **Phase 0** — `messages.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
+1. **Phase 0** — `log_items.len()` 变化时重建 `visible_indices` / `phys_to_logical_cache`；direct card 的 placeholder 行仍可寻址，供 scroll 与 hit test 使用。
 2. **Phase 1** — 宽度或消息数变化时 `wrap_line` → `visual_cache` + `visual_start_cache`。
 3. **Phase 2** — 将权威滚动位置 `log_scroll.visual_top`（首条可见 visual 行；`usize::MAX` = 钉住底部哨兵）钳制到 `total - height`，并派生 `log_scroll.offset` 逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由 `widgets/state/app/scroll.rs` 的 `visual_step_up/down` 按视觉行步进（cell 内 `j`/`k` 半屏、滚轮 3 行；否则按行边界跳转）。
 4. **Phase 3** — 用 `TextCell`、`ToolCell`、`ThinkingCell` 构建 `LogColumnRenderer`；code 保持 overlay；仅绘制与 viewport 相交的 cell。
@@ -335,7 +335,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
-**忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行上的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
+**忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行文案后紧接的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
 
 ### 6.7 Markdown
 
@@ -415,43 +415,50 @@ UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msg
 
 ### 6.11 Log 消息模型
 
-Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vector 支撑且须同步（见 `widgets/state/app/popups.rs` 中 `append_msg`）：
+Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` 中的一个 `LogItem`；`append_msg`、`insert_msg`、`splice_msgs`、`drain_msgs`、`remove_msg` 都只修改这一组 collection，因此行文本、raw 来源、kind 和可选 Markdown cache 不会再彼此错位。
 
-| Vector | 类型 | 用途 |
-|--------|------|------|
-| `messages[]` | `Vec<Line<'static>>` | 预 styled ratatui 行（Markdown、颜色、modifier） |
-| `raw_messages[]` | `Vec<String>` | 纯文本：复制、类别检测、hit test |
-| `raw_message_types[]` | `Vec<RawMessageType>` | Gutter 缩进与样式提示 |
+| Field | 类型 | 用途 |
+|-------|------|------|
+| `log_items[]` | `Vec<LogItem>` | 每个 physical 行的一条同步记录 |
+| `LogItem::line` | `Line<'static>` | 预 styled ratatui 行（Markdown、颜色、modifier） |
+| `LogItem::raw` | `String` | 纯文本：复制、hit test 与结构查找 |
+| `LogItem::kind` | `LogItemKind` | 显式来源、渲染模式、缩进与类别 metadata |
+| `LogItem::markdown_cell` | `Option<MarkdownCell>` | 整段 Markdown notice 的缓存 renderer |
 
-`RawMessageType` 三个 variant（`widgets/state/mod.rs`）：
+`LogItemKind` 在行进入 TUI 时分配（`widgets/state/mod.rs`）；renderer 不再从 raw 前缀或缩进推断归属：
 
-| 类型 | 典型内容 | 缩进（`log_indent`） |
+| Kind | 典型来源 | 缩进（`log_indent`） |
 |------|----------|----------------------|
-| `LLM` | 用户消息、assistant markdown、任务结束分隔符 | 0 |
-| `LLMThinking` | 为一个 direct thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
-| `SysTool` | Plan 步骤、tool placeholder、loading spinner 行 | `LOG_TOOL_INDENT` |
+| `User` | `add_user_message` 产生的用户输入行 | 0 |
+| `AssistantMarkdown` | 流式或持久化的 assistant Markdown | `LOG_THINKING_INDENT + 1` |
+| `SystemPlain(style)` | 显式系统 / info 纯文本行 | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | `/skills` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
+| `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
+| `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
 
-**行类别**（按创建方式，非专用 enum）：
+`SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
 
-| 类别 | 在 `messages[]` 中如何出现 | 说明 |
+**行类别**现在来自来源 metadata，而不是 raw 文本猜测：
+
+| 类别 | 在 `log_items[]` 中如何出现 | 说明 |
 |------|---------------------------|------|
-| **User** | 绿色前缀行（`💬 …` / 续行 `  …`）via `add_user_message` | 前有 blank 分隔行 |
+| **User** | `add_user_message` 产生的绿色前缀行（`💬 …` / 续行 `  …`） | 前有 blank 分隔行；续行归属记录为 `LogItemKind::User` |
 | **Assistant text** | `StreamChunk` / `flush_stream_pending` 的 Markdown 行 | 单段可能占多 physical 行 |
-| **System / info** | 彩色前缀行（`✓`、`⚠`、`▶`、plan 文本等）via `add_system_message` | `classify_system_message` 选 `SysTool` vs `LLM` 缩进 |
-| **Thinking card** | Placeholder 行（`LLMThinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
-| **Tool blocks** | Blank placeholder 行（`SysTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
+| **System / info** | 显式 plain 或 Markdown 插入 API | 不再有基于缩进的 fallback，来源决定渲染路径 |
+| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
+| **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
-| **Loading placeholder** | `app.loading_idx` 处一行 blank `SysTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
+| **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
 | **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
 
-若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `messages[]` 重复文本：
+若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `log_items[]` 重复文本：
 
 | 注册表 | Key | 用于 |
 |--------|-----|------|
 | `thinking.active` / `thinking.blocks[]` | `phys_idx` | Active/completed direct card + thinking popup |
 | `tools.active[]` / `tools.blocks[]` | `phys_idx` | 运行中 / 完成 tool card |
 | `code_blocks[]` | `start_idx`、`end_idx` | 语法着色 code card |
-| `stream.buffer` |（不在 `messages[]`） | token 流期间额外 *logical* 行 |
+| `stream.buffer` |（尚未进入 `log_items[]`） | token 流期间额外 *logical* 行 |
 
 正常流式期间 physical 行仅 append；code fence 关闭或 tool placeholder resize 时 `splice_msgs` / `drain_msgs` 重写区间。
 
@@ -489,7 +496,7 @@ Log 不是单一字符串列表。`app.messages[]` 中每行由三个并行 vect
 - **Code fence 模式** — opening ` ```lang ` 设 `stream.code_block`；内部行带 ` ▌` 流式；closing ` ``` ` splice placeholder 并 push `CodeBlock` overlay。若空语言 fence 紧跟在进行中的 markdown 段落/列表后，则继续保留在 paragraph 流中，不提升为 code card。
 - **Gap 规则** — tool card 后 assistant 文本前 `ensure_gap_after_tools()` 插 blank；tool 开始 `ensure_gap_before_tools()`。
 
-Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `messages[]`。
+Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table、code block 或 `stream.buffer` tail 在 placeholder 前提交到 `log_items[]`。
 
 ### 6.13 流式生命周期
 
@@ -503,7 +510,7 @@ Tool 开始时先 `flush_stream_pending()` — 任何 partial paragraph、table�
 
 **活跃 vs 已完成 assistant 文本：**
 
-Token 到达时当前 assistant 回复 tail 在 `stream.buffer`。Render Phase 1 若 buffer 非空，`total_logical` 在可见 physical 消息外多计一行 logical。该行用 accent 色直接从 buffer wrap — **未** flush 前进 `messages[]`。
+Token 到达时当前 assistant 回复 tail 在 `stream.buffer`。Render Phase 1 若 buffer 非空，`total_logical` 在可见 physical 消息外多计一行 logical。该行直接从 buffer 以 accent 色 wrap — flush 前**不会**写入 `log_items[]`。
 
 **Thinking block 生命周期：**
 
@@ -565,7 +572,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | **Code card** | Overlay | `code_blocks[]` 中 placeholder 行 span | 打开 `code_popup` |
 | **Loading spinner** | Overlay | `loading_idx` 处 1 行（若设） | —（通常 inactive — 见 `PlanGenerated` legacy） |
 
-**TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自 `RawMessageType`。
+**TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自行的 `LogItemKind`；user 归属与类别分隔线不再检查 raw 文本。
 
 **ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
 
@@ -586,7 +593,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 双击 card | 打开对应 detail popup |
 | 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
 
-复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `raw_messages`。
+复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。
 
 **Hit test 链：**
 
@@ -602,7 +609,7 @@ mouse row in log_area
 
 **键盘 scroll**（normal 模式，log 焦点）：`j`/`k` ±1 logical 行；`G`/`g` 底/顶。无 popup 时滚轮事件调整 offset。
 
-装饰性 **类别分隔符**（user ↔ system ↔ assistant）在 Phase 3 render 时嗅探 `raw_messages` 前缀插入 — 不在 `messages[]` 存储。
+装饰性 **类别分隔符**（user ↔ system ↔ assistant）在 Phase 3 render 时依据 `LogItemKind` 插入；不会作为额外 `LogItem` 存储。
 
 ### 6.18 Log 管线序列
 
@@ -611,7 +618,7 @@ sequenceDiagram
     participant Agent as Agent::emit_update
     participant Rx as agent_rx drain
     participant H as handle_agent_update
-    participant M as messages[] + overlays
+    participant M as log_items[] + overlays
     participant R as render_log_panel
 
     Agent->>Rx: AgentUpdate

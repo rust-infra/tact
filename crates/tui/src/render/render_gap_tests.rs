@@ -245,7 +245,7 @@ fn mermaid_popup_copy_uses_source_not_ascii() {
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
     assert_eq!(app.mermaid_blocks.len(), 1);
-    let ascii = app.raw_messages[app.mermaid_blocks[0].start_idx].clone();
+    let ascii = app.log_items[app.mermaid_blocks[0].start_idx].raw.clone();
     assert!(
         !ascii.contains("sequenceDiagram"),
         "raw_messages should hold ASCII diagram, got: {ascii}"
@@ -302,14 +302,14 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
         "both fenced blocks should become cards"
     );
     let leaked: Vec<_> = app
-        .raw_messages
+        .log_items
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            let t = r.trim();
+        .filter(|(_, item)| {
+            let t = item.raw.trim();
             t == "```" || t.starts_with("```")
         })
-        .map(|(i, r)| (i, r.as_str()))
+        .map(|(i, item)| (i, item.raw.as_str()))
         .collect();
     assert!(
         leaked.is_empty(),
@@ -653,7 +653,11 @@ fn thinking_popup_scroll_shows_later_lines() {
     let markdown: Vec<Line> = (1..=12)
         .map(|n| Line::from(format!("reason-{n}")))
         .collect();
-    app.raw_messages.push("Thinking".into());
+    app.append_msg(
+        Line::from("Thinking"),
+        "Thinking".into(),
+        crate::widgets::state::LogItemKind::Thinking,
+    );
     app.thinking.blocks.push(ThinkingBlock {
         phys_idx: 0,
         content: (1..=12)

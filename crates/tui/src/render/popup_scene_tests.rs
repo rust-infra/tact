@@ -6,7 +6,7 @@ use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, PopupTextSelection, RawMessageType,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection,
     ThinkingBlock, ThinkingPopup,
 };
 
@@ -68,7 +68,11 @@ fn seed_code_popup(app: &mut App) {
 }
 
 fn seed_thinking_popup(app: &mut App) {
-    app.raw_messages.push("Thinking title".into());
+    app.append_msg(
+        Line::from("Thinking title"),
+        "Thinking title".into(),
+        LogItemKind::Thinking,
+    );
     app.thinking.blocks.push(ThinkingBlock {
         phys_idx: 0,
         content: "Deep reasoning line".into(),
@@ -640,8 +644,8 @@ fn main_area_loading_spinner_when_executing() {
         arg_full: "sleep 1".into(),
         presentation: ToolPresentationInfo::generic("bash"),
     });
-    app.append_blank(RawMessageType::SysTool);
-    app.loading_idx = Some(app.messages.len().saturating_sub(1));
+    app.append_blank(LogItemKind::SystemTool);
+    app.loading_idx = Some(app.log_items.len().saturating_sub(1));
 
     let text = render_main_area_text(&mut app, 100, 24);
 

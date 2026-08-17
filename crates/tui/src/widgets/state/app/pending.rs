@@ -34,6 +34,7 @@ impl App {
             self.pending_messages.clear();
             self.dirty = true;
         }
+        self.pending_cancel_btn_area = ratatui::layout::Rect::default();
     }
 
     /// Record the `[Cancel]` button hit area (render-time; drops the queue

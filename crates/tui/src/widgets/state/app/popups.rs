@@ -2,10 +2,7 @@ use arboard::Clipboard;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ratatui::{layout::Rect, style::Color, text::Line};
 
-use crate::{
-    render::cells::markdown::MarkdownCell,
-    widgets::{state::*, tool_widget::ToolPhase},
-};
+use crate::widgets::{state::*, tool_widget::ToolPhase};
 
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
@@ -249,67 +246,56 @@ impl App {
 
     // Add a blank line as separator to distinguish different input/output blocks in the log.
     pub(crate) fn add_new_line(&mut self) {
-        self.append_blank(RawMessageType::LLM);
+        self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
-    /// Append one log row, keeping `messages`, `raw_messages`, and `raw_message_types` in sync.
-    pub(crate) fn append_msg(
-        &mut self,
-        line_msg: Line<'static>,
-        raw_msg: String,
-        msg_type: RawMessageType,
-    ) {
-        self.messages.push(line_msg);
-        self.raw_messages.push(raw_msg);
-        self.raw_message_types.push(msg_type);
-        self.markdown_cells.push(None);
+    /// Append one log row, keeping all row metadata together in `log_items`.
+    pub(crate) fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
+        self.log_items.push(LogItem::new(line, raw, kind));
     }
 
-    /// Append a whole-Markdown notice as a single message.
-    ///
-    /// The raw source is stored verbatim (newlines included); `messages`
-    /// keeps an empty placeholder row. The `MarkdownCell` lives in
-    /// `markdown_cells` so rendering can cache the parsed layout across
-    /// frames (see `render_log_panel` Phase 1/3). Rows are indented like
-    /// assistant replies (`LOG_THINKING_INDENT + 1`) so whole-Markdown
-    /// messages align with streamed text instead of hugging the left border.
+    /// Append a whole-Markdown notice as a single log item.
     pub(crate) fn append_markdown(&mut self, content: impl Into<String>) {
-        let content = content.into();
-        let cell = MarkdownCell::new(&content, &self.theme)
-            .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
-        self.messages.push(Line::from(""));
-        self.raw_messages.push(content);
-        self.raw_message_types.push(RawMessageType::LLM);
-        self.markdown_cells.push(Some(cell));
+        self.append_markdown_with_kind(content, LogItemKind::AssistantMarkdown);
     }
 
-    pub(crate) fn append_blank(&mut self, msg_type: RawMessageType) {
-        self.append_msg(Line::from(""), String::new(), msg_type);
+    pub(crate) fn append_system_markdown(&mut self, content: impl Into<String>) {
+        self.append_markdown_with_kind(content, LogItemKind::SystemMarkdown);
+    }
+
+    pub(crate) fn append_markdown_with_kind(
+        &mut self,
+        content: impl Into<String>,
+        kind: LogItemKind,
+    ) {
+        self.log_items
+            .push(LogItem::markdown(content.into(), &self.theme, kind));
+    }
+
+    pub(crate) fn append_blank(&mut self, kind: LogItemKind) {
+        self.append_msg(Line::from(""), String::new(), kind);
     }
 
     pub(crate) fn extend_msgs(
         &mut self,
         lines: Vec<Line<'static>>,
         raw_lines: Vec<String>,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         debug_assert_eq!(lines.len(), raw_lines.len());
         for (line, raw) in lines.into_iter().zip(raw_lines) {
-            self.append_msg(line, raw, msg_type);
+            self.append_msg(line, raw, kind);
         }
     }
 
     pub(crate) fn insert_msg(
         &mut self,
         idx: usize,
-        line_msg: Line<'static>,
-        raw_msg: String,
-        msg_type: RawMessageType,
+        line: Line<'static>,
+        raw: String,
+        kind: LogItemKind,
     ) {
-        self.messages.insert(idx, line_msg);
-        self.raw_messages.insert(idx, raw_msg);
-        self.raw_message_types.insert(idx, msg_type);
-        self.markdown_cells.insert(idx, None);
+        self.log_items.insert(idx, LogItem::new(line, raw, kind));
     }
 
     pub(crate) fn splice_msgs(
@@ -317,29 +303,24 @@ impl App {
         range: std::ops::Range<usize>,
         lines: Vec<Line<'static>>,
         raw: Vec<String>,
-        msg_type: RawMessageType,
+        kind: LogItemKind,
     ) {
         debug_assert_eq!(lines.len(), raw.len());
-        let n = lines.len();
-        self.messages.splice(range.clone(), lines);
-        self.raw_messages.splice(range.clone(), raw);
-        self.raw_message_types
-            .splice(range.clone(), std::iter::repeat_n(msg_type, n));
-        self.markdown_cells.splice(range, (0..n).map(|_| None));
+        self.log_items.splice(
+            range,
+            lines
+                .into_iter()
+                .zip(raw)
+                .map(|(line, raw)| LogItem::new(line, raw, kind)),
+        );
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
-        self.messages.drain(range.clone());
-        self.raw_messages.drain(range.clone());
-        self.raw_message_types.drain(range.clone());
-        self.markdown_cells.drain(range);
+        self.log_items.drain(range);
     }
 
     pub(crate) fn remove_msg(&mut self, idx: usize) {
-        self.messages.remove(idx);
-        self.raw_messages.remove(idx);
-        self.raw_message_types.remove(idx);
-        self.markdown_cells.remove(idx);
+        self.log_items.remove(idx);
     }
 
     /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
@@ -357,7 +338,7 @@ impl App {
         self.append_msg(
             Line::default(),
             crate::render::cells::separator::task_end_separator_raw(secs),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
     }
 
@@ -409,14 +390,14 @@ impl App {
         let mut block_start: Option<usize> = None;
         let mut block_end: Option<usize> = None;
         let mut result: Option<(usize, usize)> = None;
-        for phys_idx in 0..self.messages.len() {
+        for phys_idx in 0..self.log_items.len() {
             if !self.is_message_visible(phys_idx) {
                 continue;
             }
-            let is_code = self.messages[phys_idx]
-                .spans
-                .iter()
-                .any(|s| s.style.bg == Some(code_bg) || s.style.bg == Some(Color::Rgb(30, 35, 50)));
+            let is_code =
+                self.log_items[phys_idx].line.spans.iter().any(|s| {
+                    s.style.bg == Some(code_bg) || s.style.bg == Some(Color::Rgb(30, 35, 50))
+                });
             if is_code {
                 if block_start.is_none() {
                     block_start = Some(logical);
@@ -444,10 +425,14 @@ impl App {
         result
     }
 
-    /// Extract the content of the last complete code block from raw_messages (without ``` markers).
+    /// Extract the content of the last complete code block from `LogItem::raw` values (without ``` markers).
     /// Returns None if no closed code block is found.
     pub(crate) fn extract_last_code_block(&self) -> Option<String> {
-        let raw = &self.raw_messages;
+        let raw = self
+            .log_items
+            .iter()
+            .map(|item| item.raw.as_str())
+            .collect::<Vec<_>>();
         // Search backwards for a closing ```
         let mut end = raw.len();
         loop {
@@ -468,7 +453,7 @@ impl App {
             start -= 1;
             if raw[start].trim_start().starts_with("```") {
                 // Extract content lines (excluding opening and closing ``` markers)
-                let content: Vec<&str> = raw[start + 1..end].iter().map(|s| s.as_str()).collect();
+                let content: Vec<&str> = raw[start + 1..end].to_vec();
                 return if content.is_empty() {
                     None
                 } else {

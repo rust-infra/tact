@@ -112,7 +112,7 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
         .split(size);
 
     app.log_scroll.height = chunks[1].height.saturating_sub(2);
-    app.log_scroll.state = ScrollbarState::new(app.messages.len().saturating_sub(1));
+    app.log_scroll.state = ScrollbarState::new(app.log_items.len().saturating_sub(1));
 
     render_status_bar(frame, chunks[0], app);
     render_main_area(frame, chunks[1], app);

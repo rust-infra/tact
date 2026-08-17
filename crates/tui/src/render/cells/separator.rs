@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::super::renderable::Renderable;
 
-/// Sentinel prefix stored in `raw_messages` for task-end rules.
+/// Sentinel prefix stored in `LogItem::raw` for task-end rules.
 /// Optional payload: `\x07tact-task-end\x1f{secs}` encodes elapsed seconds.
 pub(crate) const TASK_END_SEPARATOR: &str = "\x07tact-task-end";
 const TASK_END_ELAPSED_SEP: char = '\x1f';

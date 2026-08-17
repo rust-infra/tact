@@ -30,7 +30,7 @@ pub(crate) struct ActiveToolBlock {
 /// A completed tool invocation's range in messages and its pre-built render output.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolBlock {
-    /// Physical index of the first placeholder row in `messages` / `raw_messages`.
+    /// Physical index of the first placeholder row in `App::log_items`.
     pub phys_idx: usize,
     pub tool_id: String,
     pub output: ToolRenderOutput,

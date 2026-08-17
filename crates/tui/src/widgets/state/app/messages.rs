@@ -7,11 +7,8 @@ use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use crate::{
     i18n::{Language, Messages},
-    render::{cells::separator::is_task_end_separator, render_md::render_markdown_tui},
-    widgets::state::{
-        log_messages::{SystemMsgStyle, classify_system_message},
-        *,
-    },
+    render::cells::separator::is_task_end_separator,
+    widgets::state::*,
 };
 
 /// Returns true for a per-turn stats row in any supported language, including
@@ -97,7 +94,7 @@ impl App {
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )),
                 (*line).to_string(),
-                RawMessageType::LLM,
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
             );
         }
 
@@ -110,7 +107,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             title,
-            RawMessageType::LLM,
+            LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
 
         // Random startup quote
@@ -129,7 +126,7 @@ impl App {
                     .add_modifier(Modifier::ITALIC),
             )),
             tagline.to_string(),
-            RawMessageType::LLM,
+            LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
         self.add_new_line();
     }
@@ -196,25 +193,28 @@ impl App {
         }
     }
 
-    /// Add a system message, auto-color by prefix, and update scroll position.
-    /// Non-system-marker messages are parsed as Markdown.
+    /// Append a plain system message with explicit provenance.
+    ///
+    /// System-ness comes from this API's caller, never from indentation or
+    /// arbitrary content. Explicit marker prefixes only choose the visual
+    /// system color for each line.
     pub(crate) fn add_system_message(&mut self, content: String) {
-        if let Some(style) = SystemMsgStyle::from_line(&content) {
-            let color = style.color(&self.theme);
-            for line in content.split('\n') {
-                let ty = classify_system_message(line);
-                self.append_msg(
-                    Line::from(Span::styled(line.to_string(), Style::default().fg(color))),
+        let theme = self.theme;
+        for line in content.split('\n') {
+            let style = SystemMsgStyle::from_marker(line).unwrap_or(SystemMsgStyle::Default);
+            self.append_msg(
+                Line::from(Span::styled(
                     line.to_string(),
-                    ty,
-                );
-            }
-        } else {
-            let ty = classify_system_message(&content);
-            let (lines, raw_lines) = render_markdown_tui(&content, &self.theme);
-            self.extend_msgs(lines, raw_lines, ty);
+                    Style::default().fg(style.color(&theme)),
+                )),
+                line.to_string(),
+                LogItemKind::SystemPlain(style),
+            );
         }
+        self.scroll_after_message();
+    }
 
+    fn scroll_after_message(&mut self) {
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             // usize::MAX is correctly clipped by render_log_panel based on visual line count
             self.scroll_log_to_bottom();
@@ -270,7 +270,7 @@ impl App {
             Span::raw("  "),
             Span::styled(body, Style::default().fg(self.theme.accent)),
         ]);
-        self.append_msg(line, raw, RawMessageType::LLM);
+        self.append_msg(line, raw, LogItemKind::SystemPlain(SystemMsgStyle::Default));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             self.scroll_log_to_bottom();
         }
@@ -281,20 +281,20 @@ impl App {
     /// Range: after the previous stats line (or session start) .. `stats_phys`
     /// (exclusive). Skips blank rows, task-end separators, and other stats rows.
     pub(crate) fn copy_turn_ending_at_stats(&mut self, stats_phys: usize) {
-        let Some(raw) = self.raw_messages.get(stats_phys) else {
+        let Some(item) = self.log_items.get(stats_phys) else {
             return;
         };
-        if !is_task_stats_line(raw) {
+        if !is_task_stats_line(&item.raw) {
             return;
         }
         let start = (0..stats_phys)
             .rev()
-            .find(|&i| is_task_stats_line(&self.raw_messages[i]))
+            .find(|&i| is_task_stats_line(&self.log_items[i].raw))
             .map(|i| i + 1)
             .unwrap_or(0);
         let mut parts: Vec<&str> = Vec::new();
         for i in start..stats_phys {
-            let line = self.raw_messages[i].as_str();
+            let line = self.log_items[i].raw.as_str();
             if line.is_empty() || is_task_end_separator(line) || is_task_stats_line(line) {
                 continue;
             }
@@ -341,7 +341,7 @@ impl App {
             })
             .collect();
         for (styled, text) in pending {
-            self.append_msg(styled, text, RawMessageType::LLM);
+            self.append_msg(styled, text, LogItemKind::User);
         }
         let timestamp = Local::now().format("%H:%M:%S").to_string();
         self.task_history.push(HistoryEntry {
@@ -367,40 +367,71 @@ mod tests {
 
         app.add_system_message("❌ Error: boom".into());
         assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
+            app.log_items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.error)
         );
 
         app.add_system_message("✓ Selected: x".into());
         assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
+            app.log_items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.success)
         );
 
         app.add_system_message("  ✓ still success".into());
         assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
+            app.log_items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.success)
         );
 
         app.add_system_message("📋 Copied: x".into());
         assert_eq!(
-            app.messages.last().unwrap().spans[0].style.fg,
+            app.log_items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.accent)
         );
     }
 
     #[test]
-    fn indent_prefix_uses_plain_path_not_markdown() {
+    fn system_markdown_keeps_explicit_kind_and_source() {
         let mut app = make_app();
-        app.add_system_message("  **not bold**".into());
+        app.append_system_markdown("  **not bold**");
+
+        assert!(
+            app.log_items
+                .last()
+                .is_some_and(|item| item.markdown_cell.is_some())
+        );
         assert_eq!(
-            app.raw_messages.last().map(String::as_str),
+            app.log_items.last().map(|item| item.kind),
+            Some(LogItemKind::SystemMarkdown)
+        );
+        assert_eq!(
+            app.log_items.last().map(|item| item.raw.as_str()),
             Some("  **not bold**")
         );
-        let spans = &app.messages.last().unwrap().spans;
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].style.fg, Some(app.theme.accent));
-        assert!(!spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn system_tool_rows_use_explicit_provenance() {
+        let mut app = make_app();
+        app.append_msg(
+            Line::from(Span::styled(
+                "  1. inspect files",
+                Style::default().fg(app.theme.accent),
+            )),
+            "  1. inspect files".into(),
+            LogItemKind::SystemTool,
+        );
+
+        let line = app.log_items.last().expect("rendered system tool row");
+        assert_eq!(line.line.spans.len(), 1);
+        assert_eq!(line.line.spans[0].style.fg, Some(app.theme.accent));
+        assert_eq!(
+            app.log_items.last().map(|item| item.kind),
+            Some(LogItemKind::SystemTool)
+        );
+        assert_eq!(
+            app.log_items.last().map(|item| item.raw.as_str()),
+            Some("  1. inspect files")
+        );
     }
 }

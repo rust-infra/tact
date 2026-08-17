@@ -491,8 +491,10 @@ Design rules:
 - **Wire compatibility.** Some compatible endpoints emit the search action
   with a `queries` array instead of the singular `query` (async-openai 0.41.x
   models `query` only). `wire::normalize_web_search_call_query` fills `query`
-  from `queries` for typed parsing; the raw item JSON is preserved verbatim so
-  follow-up turns replay the provider's own shape.
+  from `queries` for typed parsing; the raw item JSON is preserved verbatim for
+  same-model follow-up turns. When the request model changes, the outgoing
+  baseline rewrites only this action to the target model's `query` or `queries`
+  spelling.
 - **Protocol, not endpoint.** The adapter injects the hosted tool on every
   ordinary Responses request regardless of provider kind. Kimi never reaches
   this adapter (it has its own Chat Completions adapter); a custom
@@ -512,11 +514,12 @@ owns the exact **conversion/state boundaries**:
   baseline: `input_items` (verbatim JSON from previous terminal outputs,
   including `compaction` and `reasoning` items), `compaction_id`,
   `is_compacted`, `logical_message_count`, and `logical_context_hash`.
-- **Validation** — before reuse, `validate_conversion_state` checks that the
-  persisted state binds to the same provider/model and that the logical-message
-  prefix covered by the state hashes to the recorded value. A mismatch is a
-  hard protocol error; Tact never silently duplicates, truncates, or
-  reconstructs the baseline.
+- **Validation** — before reuse, `validate_conversion_state` checks the state
+  version/provider and logical-message prefix hash, while the adapter checks
+  provider and base URL. Those mismatches remain hard protocol errors. A model
+  mismatch is allowed and only triggers hosted web-search `query` / `queries`
+  adaptation in the outgoing baseline; Tact does not rebuild the logical
+  history.
 - **Incremental conversion** — `create_response` sends the state baseline
   verbatim plus only the newly uncovered logical messages converted to
   `/responses` items. With no state, every logical message is converted.

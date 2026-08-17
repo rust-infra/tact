@@ -161,9 +161,9 @@ fn full_frame_fatal_error_message() {
     assert!(
         text.contains("provider timeout")
             || app
-                .raw_messages
+                .log_items
                 .iter()
-                .any(|m| m.contains("provider timeout")),
+                .any(|item| item.raw.contains("provider timeout")),
         "fatal error should appear in frame, got:\n{text}"
     );
 }
@@ -368,37 +368,43 @@ fn full_frame_skills_command_renders_list_with_separator() {
     execute_palette_command(&mut app, "skills");
 
     let title_idxs: Vec<_> = app
-        .raw_messages
+        .log_items
         .iter()
         .enumerate()
-        .filter_map(|(i, m)| m.contains("Available skills").then_some(i))
+        .filter_map(|(i, item)| item.raw.contains("Available skills").then_some(i))
         .collect();
     assert!(
         title_idxs.len() >= 2,
         "expected two skills titles in log, got: {:?}",
-        app.raw_messages
+        app.log_items
     );
-    let between = &app.raw_messages[title_idxs[0]..=title_idxs[1]];
+    let between = &app.log_items[title_idxs[0]..=title_idxs[1]];
     assert!(
-        between.iter().any(|m| m.is_empty()),
+        between.iter().any(|item| item.raw.is_empty()),
         "expected blank separator between skills blocks, messages: {between:?}"
     );
     assert!(
-        app.raw_messages.iter().any(|m| m.contains("code-reviewer")),
+        app.log_items
+            .iter()
+            .any(|item| item.raw.contains("code-reviewer")),
         "skills content missing code-reviewer: {:?}",
-        app.raw_messages
+        app.log_items
     );
     assert!(
-        app.raw_messages.iter().any(|m| m.contains("demo-test")),
+        app.log_items
+            .iter()
+            .any(|item| item.raw.contains("demo-test")),
         "skills content missing demo-test: {:?}",
-        app.raw_messages
+        app.log_items
     );
     // Each skills block is one whole-Markdown message whose raw source keeps
     // the pipe-table syntax; rendered output must not show raw pipes.
     assert!(
-        app.raw_messages.iter().any(|m| m.contains("| Skill |")),
+        app.log_items
+            .iter()
+            .any(|item| item.raw.contains("| Skill |")),
         "skills raw source should keep the markdown table: {:?}",
-        app.raw_messages
+        app.log_items
     );
 
     // Tall frame so both blocks are visible; CJK glyphs pad in TestBackend.

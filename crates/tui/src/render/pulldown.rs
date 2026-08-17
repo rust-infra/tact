@@ -167,6 +167,12 @@ impl Writer {
                 self.code_buf.clear();
             }
             Tag::List(start) => {
+                // A nested list follows the parent item's inline content in
+                // the event stream. Flush that content before the first child
+                // marker so it cannot be appended to the parent row.
+                if !self.list_stack.is_empty() && !self.pending.is_empty() {
+                    self.flush_line();
+                }
                 self.begin_block();
                 self.list_stack.push(ListCtx {
                     ordered: start.is_some(),
@@ -450,15 +456,14 @@ impl Writer {
         if table.headers.is_empty() && table.rows.is_empty() {
             return;
         }
-        let mut md_lines: Vec<String> = vec![format!("| {} |", table.headers.join(" | "))];
-        md_lines.push(format!(
-            "| {} |",
-            vec!["---"; table.headers.len()].join(" | ")
-        ));
-        for row in &table.rows {
-            md_lines.push(format!("| {} |", row.join(" | ")));
-        }
-        let (styled, _raw) = format_table(&md_lines, &self.theme, self.available_width);
+        // Pass cells through structured, never `|`-joined strings: a pipe
+        // inside a cell (inline code, escaped `\|`) is data, not a separator.
+        let (styled, _raw) = format_table(
+            &table.headers,
+            &table.rows,
+            &self.theme,
+            self.available_width,
+        );
         self.lines.extend(styled);
     }
 }
@@ -480,6 +485,22 @@ mod tests {
 
         assert_eq!(code.style.fg, Some(theme.accent));
         assert_eq!(code.style.bg, None);
+    }
+
+    #[test]
+    fn nested_list_items_render_on_separate_lines() {
+        let theme = Theme::from(ThemeName::Brutal);
+        let (_, raw) = render_markdown("- parent\n  - child one\n  - child two", &theme, None);
+
+        assert_eq!(
+            raw,
+            vec![
+                "• parent".to_string(),
+                "    • child one".to_string(),
+                "    • child two".to_string(),
+            ],
+            "nested items must not be appended to the parent row"
+        );
     }
 
     #[test]

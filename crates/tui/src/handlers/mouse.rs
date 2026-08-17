@@ -237,9 +237,10 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
     // Task-stats `[copy]` button: copy this turn's log text. Only clicks that
     // land inside the button glyphs count — the rest of the row selects text.
-    if let Some(raw) = app.raw_messages.get(phys_idx)
-        && crate::widgets::state::is_task_stats_line(raw)
-        && let Some((btn_start, btn_end)) = crate::widgets::state::find_task_stats_copy_button(raw)
+    if let Some(item) = app.log_items.get(phys_idx)
+        && crate::widgets::state::is_task_stats_line(&item.raw)
+        && let Some((btn_start, btn_end)) =
+            crate::widgets::state::find_task_stats_copy_button(&item.raw)
         && let Some((_, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         && byte >= btn_start
         && byte < btn_end
@@ -385,7 +386,7 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
     {
         if let Some(start_phys) = app.visible_message_index(cb_start) {
             let end_phys = app.visible_message_index(cb_end).unwrap_or(start_phys);
-            let end_len = app.raw_messages[end_phys].len();
+            let end_len = app.log_items[end_phys].raw.len();
             app.mouse.log_selection = Some(LogSelection::new(
                 TextPosition::new(start_phys, 0),
                 TextPosition::new(end_phys, end_len),
@@ -402,7 +403,7 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
             app.mouse.dragging_log = false;
             return;
         }
-        let len = app.raw_messages[phys].len();
+        let len = app.log_items[phys].raw.len();
         app.mouse.log_selection = Some(LogSelection::full_message(phys, len));
     }
     app.mouse.dragging_log = true;
@@ -595,6 +596,52 @@ mod tests {
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "[Cancel] must not dispatch Cancel/SubmitTask"
+        );
+    }
+
+    #[test]
+    fn pending_cancel_click_hits_the_rendered_button() {
+        let mut app = crate::render::test_harness::make_app();
+        app.status = crate::widgets::state::Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("regret".into(), "regret".into());
+        app.input = "a\nb\nc".into();
+        app.input_cursor = app.input.len();
+
+        let rendered = crate::render::test_harness::render_app_text(&mut app, 100, 24);
+        let (button_row, button_line) = rendered
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("[Cancel]"))
+            .expect("rendered pending block must contain Cancel");
+        let button_col = button_line.find("[Cancel]").expect("Cancel column") as u16 + 3;
+        let area = app.pending_cancel_btn_area;
+        assert!(
+            !area.is_empty(),
+            "rendered pending block must expose Cancel area"
+        );
+        assert!(
+            point_in_rect(button_col, button_row as u16, area),
+            "visible Cancel button must fall inside its recorded hit area: visible=({}, {}), area={area:?}",
+            button_col,
+            button_row
+        );
+
+        handle_mouse_event(&mut app, mouse_down(button_col, button_row as u16));
+
+        assert!(
+            app.pending_messages.is_empty(),
+            "clicking the rendered [Cancel] button must clear the queue"
+        );
+        assert!(matches!(
+            app.status,
+            crate::widgets::state::Status::Executing { .. }
+        ));
+        assert!(
+            app.pending_cancel_btn_area.is_empty(),
+            "clearing the queue must invalidate the old button hit area"
         );
     }
 
@@ -998,7 +1045,13 @@ mod tests {
     #[test]
     fn triple_click_inside_code_fence_selects_whole_block() {
         let mut app = make_app();
-        app.add_system_message("```rust\nfn main() {}\n```".into());
+        let (lines, raw) =
+            crate::render::render_md::render_markdown_tui("```rust\nfn main() {}\n```", &app.theme);
+        app.extend_msgs(
+            lines,
+            raw,
+            crate::widgets::state::LogItemKind::SystemMarkdown,
+        );
 
         let inside_line = (0..20)
             .find(|&logical| app.find_code_block_containing_logical(logical).is_some())
@@ -1013,7 +1066,7 @@ mod tests {
         let end_phys = app.visible_message_index(cb_end).unwrap();
         let expected = Some(LogSelection::new(
             TextPosition::new(start_phys, 0),
-            TextPosition::new(end_phys, app.raw_messages[end_phys].len()),
+            TextPosition::new(end_phys, app.log_items[end_phys].raw.len()),
         ));
         assert_eq!(app.mouse.log_selection, expected);
         assert!(
@@ -1109,16 +1162,17 @@ mod tests {
         // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
         // `[copy]  Task stats:⏱ 00:05`; column 3 maps to byte 2, inside the
         // button glyphs (bytes 0..6). A successful copy appends a notice row.
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
         handle_mouse_event(&mut app, mouse_down(3, 3));
         assert!(
-            app.raw_messages.len() > before,
+            app.log_items.len() > before,
             "clicking the [copy] button should copy this turn"
         );
-        let last = app.raw_messages.last().expect("copy notice");
+        let last = app.log_items.last().expect("copy notice");
         assert!(
-            last.contains("已复制") || last.contains("Copied"),
-            "expected a copy notice, got: {last}"
+            last.raw.contains("已复制") || last.raw.contains("Copied"),
+            "expected a copy notice, got: {:?}",
+            last
         );
     }
 
@@ -1133,10 +1187,10 @@ mod tests {
 
         // Column 15 maps into the "Task stats:" body (byte 11) — outside the
         // button range (0..6), so no copy notice may be appended.
-        let before = app.raw_messages.len();
+        let before = app.log_items.len();
         handle_mouse_event(&mut app, mouse_down(15, 3));
         assert_eq!(
-            app.raw_messages.len(),
+            app.log_items.len(),
             before,
             "clicking the stats body must not copy"
         );

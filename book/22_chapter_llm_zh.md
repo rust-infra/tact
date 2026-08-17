@@ -411,8 +411,9 @@ custom OpenAI-compatible 端点一视同仁。没有按 provider 的开关，也
 - **线格式兼容。** 部分兼容端点会在 search action 中返回 `queries` 数组
   而不是单数 `query`（async-openai 0.41.x 只建模了 `query`）。
   `wire::normalize_web_search_call_query` 仅在做 typed 解析时从 `queries`
-  回填 `query`；原始 item JSON 原样保留，后续轮次仍按 provider 自己的
-  形状回放。
+  回填 `query`；原始 item JSON 原样保留，供**同一模型**的后续轮次回放。若切换
+  模型，发送前只把该 action 转成目标模型要求的 `query` 或 `queries` 字段，
+  不重建整段逻辑历史。
 - **协议而非端点。** adapter 在每次普通 Responses 请求中都注入 hosted
   tool，不看 provider 种类。Kimi 不经过此 adapter（它有自己的 Chat
   Completions adapter）；任何讲 Responses 协议的 custom OpenAI-compatible
@@ -431,9 +432,10 @@ custom OpenAI-compatible 端点一视同仁。没有按 provider 的开关，也
   `input_items`（此前 terminal outputs 的原样 JSON，含 `compaction` 与
   `reasoning` item）、`compaction_id`、`is_compacted`、`logical_message_count`
   与 `logical_context_hash`。
-- **校验** — 复用前，`validate_conversion_state` 检查持久化状态是否绑定到同一
-  provider/model，并确认基线覆盖的逻辑消息前缀哈希与记录值一致。不一致是硬性
-  协议错误；Tact 绝不静默重复、截断或重建基线。
+- **校验** — 复用前，`validate_conversion_state` 检查 state version/provider 与逻辑
+  消息前缀哈希，adapter 检查 provider 与 base URL；这些不一致仍是硬性协议错误。
+  模型不一致则允许继续，仅在发送基线时适配 hosted web-search 的 `query` /
+  `queries` 字段，不重建整段逻辑历史。
 - **增量转换** — `create_response` 发送状态基线原文，再加上仅新出现的逻辑
   消息转换出的 `/responses` items。无状态时则转换全部逻辑消息。
 - **`context_management`** — 解析出压缩阈值（配置或推导）后，每个普通

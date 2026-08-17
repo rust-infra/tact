@@ -2,13 +2,29 @@ use ratatui::{text::Line, widgets::ScrollbarState};
 
 use crate::{
     render::{
-        render_md::{format_table, render_markdown_tui},
+        render_md::{format_table_lines, render_markdown_tui},
         util::visual_pos_to_byte_offset,
     },
     widgets::{state::*, tool_widget::ToolRenderOutput},
 };
 
 impl App {
+    /// Layout width for streamed / system pipe tables.
+    ///
+    /// Table rows are laid out once at build time and later rendered as
+    /// indented `TextCell` rows (assistant / system rows indent at least
+    /// `LOG_THINKING_INDENT + 1` via `nested_log_indent`). The rendered
+    /// content width is therefore `log_scroll.width - indent`; laying the
+    /// table out against the full content width would leave the rightmost
+    /// columns clipped (trailing pipes vanish and the columns read as
+    /// misaligned). `MarkdownCell::render_if_needed` already subtracts its
+    /// own indent; this mirrors that for the line-oriented streaming path.
+    pub(crate) fn table_layout_width(&self) -> usize {
+        (self.log_scroll.width as usize)
+            .saturating_sub(crate::render::util::LOG_THINKING_INDENT as usize + 1)
+            .max(1)
+    }
+
     /// Whether the rendered log viewport currently sits at its visual bottom.
     ///
     /// `usize::MAX` is only a pre-render bottom sentinel: `render_log_panel`
@@ -18,8 +34,8 @@ impl App {
         if self.log_scroll.visual_top == usize::MAX {
             return true;
         }
-        if self.log_scroll.visible_indices_ver != self.messages.len()
-            || self.log_scroll.visual_cache_ver != self.messages.len()
+        if self.log_scroll.visible_indices_ver != self.log_items.len()
+            || self.log_scroll.visual_cache_ver != self.log_items.len()
             || self.log_scroll.visual_start_cache.len() < 2
         {
             return false;
@@ -30,32 +46,19 @@ impl App {
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
-        idx < self.messages.len()
+        idx < self.log_items.len()
     }
 
-    /// Left indent columns for nested log content at this physical row.
+    /// Left indent columns for a physical log row.
     ///
-    /// `is_user` is the precomputed user-line membership (`user_line_mask`),
-    /// so render hot paths avoid the O(block-length) backward walk.
-    pub(crate) fn nested_log_indent(&self, phys: usize, is_user: bool) -> u16 {
-        let msg_type = self
-            .raw_message_types
+    /// The row kind is recorded when the item enters the TUI, so indentation
+    /// never depends on raw text prefixes or a backward scan of prior rows.
+    pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
+        self.log_items
             .get(phys)
-            .copied()
-            .unwrap_or(RawMessageType::LLM);
-        if is_user {
-            return 0;
-        }
-        // LLM assistant replies: align body text with the text inside a Thinking
-        // card.  The thinking component renders inside an area indented by
-        // LOG_THINKING_INDENT (2), then draws a left border, so its content
-        // starts at column 3 (indent) + 1 (border) = 4 relative to the log
-        // panel's inner area.  Using LOG_THINKING_INDENT + 1 keeps the
-        // assistant reply at the same visual position.
-        if msg_type == RawMessageType::LLM {
-            return crate::render::util::LOG_THINKING_INDENT + 1;
-        }
-        msg_type.log_indent()
+            .map(|item| item.kind)
+            .unwrap_or(LogItemKind::AssistantMarkdown)
+            .log_indent()
     }
 
     /// Map a logical line number to the physical index in messages.
@@ -63,11 +66,11 @@ impl App {
     /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
-        if self.log_scroll.visible_indices_ver == self.messages.len() {
+        if self.log_scroll.visible_indices_ver == self.log_items.len() {
             return self.log_scroll.visible_indices.get(logical_idx).copied();
         }
         let mut visible_count = 0;
-        for idx in 0..self.messages.len() {
+        for idx in 0..self.log_items.len() {
             if self.is_message_visible(idx) {
                 if visible_count == logical_idx {
                     return Some(idx);
@@ -89,7 +92,7 @@ impl App {
         byte_offset: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let text = self.raw_messages.get(phys_idx)?;
+        let text = &self.log_items.get(phys_idx)?.raw;
         let bytes = text.as_bytes();
         if bytes.is_empty() {
             return None;
@@ -147,12 +150,12 @@ impl App {
     /// Markdown rows never draw a text-selection overlay (their renderer
     /// skips it), so selection creation/extension must skip them too.
     pub(crate) fn is_markdown_row(&self, phys: usize) -> bool {
-        self.markdown_cells
+        self.log_items
             .get(phys)
-            .is_some_and(|cell| cell.is_some())
+            .is_some_and(|item| item.markdown_cell.is_some())
     }
 
-    /// Compute the byte offset in raw_messages for a given mouse position in the Log panel.
+    /// Compute the byte offset in `LogItem::raw` for a mouse position in the Log panel.
     /// Returns (phys_idx, byte_offset) or None if the position is not inside a physical message.
     pub(crate) fn byte_offset_from_log_position(
         &self,
@@ -161,12 +164,11 @@ impl App {
         col: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let raw_text = self.raw_messages.get(phys_idx)?;
+        let raw_text = &self.log_items.get(phys_idx)?.raw;
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
-        let is_user = crate::render::is_user_message_line(&self.raw_messages, phys_idx);
-        let indent = self.nested_log_indent(phys_idx, is_user) as usize;
+        let indent = self.nested_log_indent(phys_idx) as usize;
         let text_col = col.saturating_sub(indent);
         // Render wraps at (panel width - indent); the hit-test must use the
         // same width or clicks near the right edge of indented rows drift.
@@ -258,10 +260,10 @@ impl App {
 
     /// Total logical line count of the current Log area (fixed messages + incomplete streaming lines).
     pub(crate) fn total_log_lines(&self) -> usize {
-        let visible_count = if self.log_scroll.visible_indices_ver == self.messages.len() {
+        let visible_count = if self.log_scroll.visible_indices_ver == self.log_items.len() {
             self.log_scroll.visible_indices.len()
         } else {
-            (0..self.messages.len())
+            (0..self.log_items.len())
                 .filter(|&idx| self.is_message_visible(idx))
                 .count()
         };
@@ -272,8 +274,9 @@ impl App {
     /// Skips collapsed/hidden physical rows so yank matches what the user sees.
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
-            if let Some(text) = self.raw_messages.get(start.phys_idx) {
-                return text[start.byte_offset.min(text.len())..end.byte_offset.min(text.len())]
+            if let Some(item) = self.log_items.get(start.phys_idx) {
+                return item.raw
+                    [start.byte_offset.min(item.raw.len())..end.byte_offset.min(item.raw.len())]
                     .to_string();
             }
             return String::new();
@@ -283,21 +286,21 @@ impl App {
         }
         let mut parts: Vec<&str> = Vec::new();
         if self.is_message_visible(start.phys_idx)
-            && let Some(text) = self.raw_messages.get(start.phys_idx)
+            && let Some(item) = self.log_items.get(start.phys_idx)
         {
-            parts.push(&text[start.byte_offset.min(text.len())..]);
+            parts.push(&item.raw[start.byte_offset.min(item.raw.len())..]);
         }
         for phys in (start.phys_idx + 1)..end.phys_idx {
             if self.is_message_visible(phys)
-                && let Some(text) = self.raw_messages.get(phys)
+                && let Some(item) = self.log_items.get(phys)
             {
-                parts.push(text);
+                parts.push(&item.raw);
             }
         }
         if self.is_message_visible(end.phys_idx)
-            && let Some(text) = self.raw_messages.get(end.phys_idx)
+            && let Some(item) = self.log_items.get(end.phys_idx)
         {
-            parts.push(&text[..end.byte_offset.min(text.len())]);
+            parts.push(&item.raw[..end.byte_offset.min(item.raw.len())]);
         }
         parts.join("\n")
     }
@@ -311,7 +314,7 @@ impl App {
             crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
             let end = active.phys_idx.saturating_add(old_rows);
-            if active.phys_idx < self.messages.len() && end <= self.messages.len() {
+            if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
                 self.drain_msgs(active.phys_idx..end);
                 self.shift_phys_indices_from(end, -(old_rows as isize));
             }
@@ -377,7 +380,7 @@ impl App {
     }
 
     fn last_visible_phys_idx(&self) -> Option<usize> {
-        (0..self.messages.len())
+        (0..self.log_items.len())
             .rev()
             .find(|&idx| self.is_message_visible(idx))
     }
@@ -400,7 +403,7 @@ impl App {
         if !self.phys_idx_in_tool_block(phys) {
             return;
         }
-        self.append_blank(RawMessageType::LLM);
+        self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
     /// Blank line before assistant stream content when it follows a user message.
@@ -408,8 +411,12 @@ impl App {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
-        if crate::render::is_user_message_line(&self.raw_messages, phys) {
-            self.append_blank(RawMessageType::LLM);
+        if self
+            .log_items
+            .get(phys)
+            .is_some_and(|item| item.kind.is_user())
+        {
+            self.append_blank(LogItemKind::AssistantMarkdown);
         }
     }
 
@@ -422,13 +429,13 @@ impl App {
             return;
         }
         if self
-            .raw_messages
+            .log_items
             .get(phys)
-            .is_some_and(|line| line.is_empty())
+            .is_some_and(|item| item.raw.is_empty())
         {
             return;
         }
-        self.append_blank(RawMessageType::SysTool);
+        self.append_blank(LogItemKind::SystemTool);
     }
 
     /// Flush residual content from the streaming buffer into the message list.
@@ -442,12 +449,12 @@ impl App {
         }
         // Flush accumulated table
         if !self.stream.table_buffer.is_empty() {
-            let (lines, raw_lines) = format_table(
+            let (lines, raw_lines) = format_table_lines(
                 &self.stream.table_buffer,
                 &self.theme,
-                Some(self.log_scroll.width as usize),
+                Some(self.table_layout_width()),
             );
-            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+            self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
             self.stream.table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
@@ -479,7 +486,7 @@ impl App {
         if !self.stream.paragraph.is_empty() {
             let paragraph = std::mem::take(&mut self.stream.paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
-            self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+            self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         }
         self.close_active_thinking_block();
         if self.stream.buffer.is_empty() {
@@ -487,7 +494,7 @@ impl App {
         }
         let display = self.stream.buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display, &self.theme);
-        self.extend_msgs(lines, raw_lines, RawMessageType::LLM);
+        self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         self.stream.buffer.clear();
     }
 
@@ -495,7 +502,7 @@ impl App {
     /// Returns true if a loading placeholder was removed.
     pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
         if let Some(idx) = self.loading_idx.take() {
-            if idx < self.messages.len() {
+            if idx < self.log_items.len() {
                 self.remove_msg(idx);
                 // Adjust any code_blocks / tool_blocks / thinking blocks that reference
                 // indices after the removed line
@@ -557,18 +564,18 @@ impl App {
 
     pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
         self.ensure_gap_before_tools();
-        let phys_idx = self.messages.len();
+        let phys_idx = self.log_items.len();
         let rows = output.visual_rows(false);
         for _ in 0..rows {
-            self.append_blank(RawMessageType::SysTool);
+            self.append_blank(LogItemKind::SystemTool);
         }
         phys_idx
     }
 
     pub(crate) fn push_thinking_placeholder_rows(&mut self, body_lines: usize) -> usize {
-        let phys_idx = self.messages.len();
+        let phys_idx = self.log_items.len();
         for _ in 0..crate::render::cells::thinking::thinking_visual_rows(body_lines) {
-            self.append_blank(RawMessageType::LLMThinking);
+            self.append_blank(LogItemKind::Thinking);
         }
         phys_idx
     }
@@ -586,7 +593,7 @@ impl App {
                     insert_at,
                     Line::from(""),
                     String::new(),
-                    RawMessageType::LLMThinking,
+                    LogItemKind::Thinking,
                 );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);
@@ -658,7 +665,7 @@ impl App {
             return;
         }
         let end = active.phys_idx.saturating_add(rows);
-        if active.phys_idx < self.messages.len() && end <= self.messages.len() {
+        if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
             self.drain_msgs(active.phys_idx..end);
             self.shift_phys_indices_from(end, -(rows as isize));
         }
@@ -686,7 +693,7 @@ impl App {
                     insert_at,
                     Line::from(""),
                     String::new(),
-                    RawMessageType::SysTool,
+                    LogItemKind::SystemTool,
                 );
             }
             self.shift_phys_indices_from(insert_at, (new_rows - old_rows) as isize);

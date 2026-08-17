@@ -849,8 +849,12 @@ mod tests {
             "expected oversize input not to dispatch UserCommand"
         );
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("too long")
-                || m.contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
+            app.log_items
+                .iter()
+                .any(|item| item.raw.contains("too long")
+                    || item
+                        .raw
+                        .contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
             "expected a system message indicating input is too long"
         );
         assert_eq!(
@@ -1044,11 +1048,11 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(!app.slash_command.active);
         assert!(
-            !app.raw_messages
+            !app.log_items
                 .iter()
-                .any(|m| m.starts_with("Usage: /plugin")),
+                .any(|item| item.raw.starts_with("Usage: /plugin")),
             "must not run bare /plugin yet: {:?}",
-            app.raw_messages
+            app.log_items
         );
         assert!(user_cmd_rx.try_recv().is_err());
     }
@@ -1123,7 +1127,7 @@ mod tests {
             other => panic!("expected SubmitTask, got {other:?}"),
         }
         assert!(
-            app.raw_messages.iter().any(|m| m.contains("/demo")),
+            app.log_items.iter().any(|item| item.raw.contains("/demo")),
             "user bubble should show slash command"
         );
     }
@@ -1156,9 +1160,9 @@ mod tests {
             other => panic!("expected SubmitTask, got {other:?}"),
         }
         assert!(
-            app.raw_messages
+            app.log_items
                 .iter()
-                .any(|m| m.contains("/demo fix auth")),
+                .any(|item| item.raw.contains("/demo fix auth")),
             "user bubble should show slash + args"
         );
     }

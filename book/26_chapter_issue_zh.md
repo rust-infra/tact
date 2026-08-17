@@ -29,6 +29,159 @@
 
 ---
 
+## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | 第 22 章（LLM / Responses）；`crates/tact_llm/src/openai/responses/wire.rs`、`crates/tact_llm/src/openai/responses/convert.rs` |
+
+**现象 / 动机：** 在同一个 Responses 端点上从 OpenAI 模型切换到 DeepSeek 兼容模型后，旧的 `web_search_call` 使用 `action.query` 被回放，而目标端点要求 `action.queries`，最终返回 HTTP 400：`missing field queries`。
+
+**决策：** 保留现有 Responses 基线，只在发送边界且模型发生变化时适配 hosted web-search action：DeepSeek 目标使用 `queries: [query]`，其他目标取第一条 query 写成单数 `query`。同模型回放保持原样。
+
+**改后行为：** 模型切换不再发送上一个模型不兼容的 `query` / `queries` 字段形状，其余 opaque Responses 基线和逻辑会话保持不变。
+
+**指针：** `crates/tact_llm/src/openai/responses/wire.rs` 的 `normalize_web_search_call_query_shape_in_items`；`crates/tact_llm/src/openai/responses/convert.rs` 的 `create_response` outgoing baseline 处理；双向转换回归测试；第 22 章。
+
+---
+
+## 1. 2026-08-17 — Pending prompt 的 `[Cancel]` 紧跟提示文案
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23（TUI）；`crates/tui/src/render/input.rs`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/pending.rs` |
+
+**现象 / 动机：** pending 队列的 `[Cancel]` 控件曾经右对齐在提示行最右侧，虽然它只控制旁边的 pending prompt 区域，但实际操作距离较远、不易点击。
+
+**决策：** 为按钮预留宽度并相应截断提示文案，然后让 `[Cancel]` 在提示文案后紧接显示，中间只保留一个空格；保留现有的渲染时命中矩形和“只取消队列”的语义。
+
+**改后行为：** 宽终端显示 `Message will be submitted after the current task [Cancel]`；按钮紧挨解释性文案，点击只清空排队 prompt，窄终端仍隐藏按钮。
+
+**指针：** `crates/tui/src/render/input.rs` 的 `render_pending_block`；`crates/tui/src/handlers/mouse.rs` 的 `handle_mouse_down` 与 `pending_cancel_click_hits_the_rendered_button`；`widgets/state/app/pending.rs` 的 `App::clear_pending_messages`；Ch 23；`docs/superpowers/specs/2026-08-17-pending-cancel-button-placement-design.md`。
+
+---
+
+## 1. 2026-08-16 — Log 行改用显式来源 metadata，不再从文本推断系统 item
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix / optimization |
+| **相关** | Ch 23（TUI）；`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/render/log.rs` |
+
+**现象 / 动机：** Log 通过原始前缀和缩进推断 user / system 归属。普通 item 只要以两个空格开头就可能进入系统纯文本路径，导致 `  **粗体文本**` 显示字面量 `**`。用户续行识别和行缩进也依赖相邻 raw 字符串，容易被内容格式误导。
+
+**决策：** 为每个 physical log 行增加 `LogItemKind` metadata。插入路径显式标记来源：user、assistant Markdown、system plain / Markdown、system tool 或 Thinking。历史消息使用原始 `Role` / content 路径，实时消息使用对应的 `AgentUpdate` variant。渲染、缩进、类别分隔线和 user gap 都消费该 metadata；显式系统前缀只在来源已经确定为 system 后用于选择颜色。
+
+**改后行为：** 缩进的 assistant / system Markdown 保留 Markdown 样式；user 行和续行使用记录好的来源；tool 与 Thinking placeholder 保留专用缩进；raw 文本不再用于推断行归属或类别。主 Log 路径移除 `RawMessageType`、`is_user_message_line`、`user_line_mask` 和 `classify_system_message`。
+
+**指针：** `crates/tui/src/widgets/state/mod.rs` 的 `LogItemKind` / `SystemMsgStyle`；`app/popups.rs` 的 metadata 同步操作；`app/messages.rs`、`app/agent.rs`、`handlers/mod.rs` 的显式插入路径；`render/log.rs`、`render/log_style.rs`、`app/visibility.rs` 的 metadata 驱动渲染；Ch 23。
+
+---
+
+## 1. 2026-08-16 — 嵌套 Markdown 列表项不再与父项粘在同一行
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23（TUI）；`crates/tui/src/render/pulldown.rs`（`Writer::start_tag`、`Tag::List`） |
+
+**现象 / 动机：** pulldown-cmark 事件流进入嵌套 `Tag::List` 时，父列表项的行内 span 仍保存在 `pending` 中。因此第一个子项的 marker 会被拼到父项行尾（`• parent    • child one`），后续子项才会单独换行。
+
+**决策：** 进入嵌套列表时，如果 writer 仍有未刷出的父列表行，先刷出该行，再压入嵌套列表上下文。现有列表 marker 与逐级缩进逻辑保持不变。
+
+**改后行为：** 父项与每个嵌套项均渲染为独立行；嵌套 bullet 继续按每级四列缩进。已有有序列表与任务列表行为不变。
+
+**指针：** `crates/tui/src/render/pulldown.rs` 的 `Writer::start_tag`；回归测试 `nested_list_items_render_on_separate_lines`；Ch 23。
+
+---
+
+## 1. 2026-08-16 — 表格数据行之间渲染水平分隔线
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`render_table_chunk`、`push_separator`） |
+
+**现象 / 动机：** 管道表格只有表头分隔线；多行数据体渲染成一串连续换行块，长行之间难以区分，表格不像网格。
+
+**决策：** `render_table_chunk` 现在在每个数据行（最后一行除外）之后输出一条分隔线（accent 色短横线，宽度对齐列宽，与表头分隔线同款）。换行成多个视觉子行的行保持在其分隔线上方。数据行后紧跟显式 dash 行（`/skills` 风格分隔线）时不再额外加线。分隔线由同一列宽数据生成，因此与所有行保持 pipe 对齐，包括拆块表格与流式行（`format_table_lines` 共用实现）。
+
+**改后行为：** 多行表格以网格线显示（表头线 + 行间线）；单行表格不变。换行续行保持归组在其行下，分隔线保持显示宽度对齐。
+
+**指针：** `crates/tui/src/render/render_md.rs` 的 `render_table_chunk` / `push_separator`；更新行数断言的测试：`format_table_aligns_cjk_and_ascii`、`format_table_keeps_pipe_inside_cell`、`format_table_splits_chunks_only_when_compact_cannot_fit`、`format_table_renders_row_separators_aligned`。
+
+---
+
+## 1. 2026-08-16 — 超宽表格在紧凑布局能放下时保持完整显示（拆块是最后手段）
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`format_table`、`fit_columns_to_width`、`MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`），`crates/tui/src/render/cells/markdown.rs`（渲染宽度回归测试） |
+
+**现象 / 动机：** 表格自然宽度超过主区域时，`format_table` 先把列压缩到可读地板（`MIN_COL_WIDTH = 8`），仍放不下就拆成列块、每块重复表头。贪心拆块产生悬殊的块（如 12 列在 95 宽拆成 8+4，第二块只用一半宽度；4 列长表格在 35 宽拆成 3+1，第二块孤零零一列），即使整张表在更窄列宽下本可以完整显示。
+
+**决策：** 两阶段压缩。先压到可读地板；仍放不下时再压到紧凑地板（`COMPACT_COL_WIDTH = 4`，仍可显示约 2 个 CJK 字符/行），只要紧凑布局能放下就保持整表完整。只有紧凑地板也放不下时才拆块（如 10 列在 40 宽），且拆块前恢复可读地板，保证块内列宽 8。`fit_columns_to_width` 增加 `floor` 参数。
+
+**改后行为：** 超宽表格优先按列压缩（每列 ≥ 4）以一张完整表格 + 单表头显示；只有真正放不下的表格才拆块（每块重复表头），保留既有 `wide_table_chunks_into_fitting_blocks` 保证（行 ≤ 面板宽、块内 pipe 对齐）。
+
+**指针：** `crates/tui/src/render/render_md.rs` 的 `format_table` / `fit_columns_to_width` / `COMPACT_COL_WIDTH`；测试 `format_table_keeps_overwide_table_intact_when_compact_fits`、`format_table_splits_chunks_only_when_compact_cannot_fit`。
+
+---
+
+## 1. 2026-08-16 — 流式表格行不再因回复缩进裁掉最右管道
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）；`crates/tui/src/widgets/state/app/visibility.rs`（`App::table_layout_width`），`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（`format_table_lines` 调用点），`crates/tui/src/render/render_md.rs`（`format_table`），`crates/tui/src/render/cells/markdown.rs`（回归测试） |
+
+**现象 / 动机：** 流式与系统管道表格在构建时按 `log_scroll.width`（日志面板的完整内容宽度）布局；渲染时 assistant / 系统行有缩进（`nested_log_indent` 对 LLM 行至少返回 `LOG_THINKING_INDENT + 1 = 3`），实际可用宽度少 3 列。被压缩到满宽的长表格行因此裁掉尾部管道与最右列，竖线看起来对不齐。`MarkdownCell` 路径一直没有此问题（`render_if_needed` 的 `content_width` 已扣缩进），所以只有流式 / 系统表格错位。
+
+**决策：** 新增 `App::table_layout_width()`，返回 `log_scroll.width - (LOG_THINKING_INDENT + 1)`（下限 1）；所有 `format_table_lines` 调用点（`agent.rs` 流式 flush、`/plugin` 与 `/marketplace` 列表、`visibility.rs::flush_stream_pending`）改用该宽度布局。所有表格行渲染缩进 ≥ 3（LLM 行 = 3，SysTool 行 = 4，`/plugin` 表格归类为 LLM），因此按缩减宽度布局的表格必然放进真实渲染宽度。
+
+**改后行为：** 流式与系统表格行永不超出渲染内容宽度；任意面板宽度下尾部管道保持可见、列保持显示宽度对齐。回归测试 `streamed_table_rows_stay_aligned_after_reply_indent` 在 40/60/80 列下断言真实 buffer 的管道坐标（块内对齐、尾部管道存在）。
+
+**指针：** `App::table_layout_width` 在 `crates/tui/src/widgets/state/app/visibility.rs`；调用点在 `widgets/state/app/agent.rs`（约 790/810/872/887/972/1028 行）与 `visibility.rs`（`flush_stream_pending`）；测试在 `crates/tui/src/render/cells/markdown.rs`。
+
+---
+
+## 1. 2026-08-16 — 单元格内包含 `|` 的表格不再裂成幻影列
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`format_table_lines`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（流式刷出点） |
+
+**Symptom / motivation:** `format_table` 接收 `| a | b |` 原始字符串并按 `'|'` 重新切分。`pulldown.rs::flush_table` 把收集到的单元格拼回这种字符串再传进去，所以单元格里含有字面量管道（转义 `\|`、行内代码）时会多出幻影列、整行错位。行式流式渲染器（`agent.rs` / `visibility.rs` 的 table_buffer）也有同样的隐患。
+
+**Decision:** `format_table` 改为接收结构化单元格（`headers: &[String]`、`rows: &[Vec<String>]`）；内部做 trim、合成 GFM 表头分隔线、保留"全破折号"正文行作为 `/skills` 风格的分隔线。`flush_table` 直接把 pulldown 收集的单元格传进去——不再有 `|` 往返。基于原始源码行的调用方（流式缓冲、`/plugins`、`/marketplace` 列表）改走新增的 `format_table_lines`：把缓冲行拼接后交给标准 pulldown 管线渲染，转义规则只应用一次。已知上游限制：pulldown-cmark 在解析表格行时连行内代码里的未转义管道也会切分（`| x | `a|b` |`），所以端到端只支持转义管道形式；`format_table` 本身对收到的任何单元格内容都是正确的。
+
+**Behavior after:** 转义管道和行内代码里的管道是单元格数据，不再是列分隔符；所有行共享统一的显示宽度 padding，结构性管道（列边界、行边缘）保持对齐。测试断言单元格内容完整 + 结构性管道对齐（`format_table_keeps_pipe_inside_cell`、`table_cell_with_pipe_stays_aligned_end_to_end`）。
+
+**Pointers:** `crates/tui/src/render/render_md.rs` 中的 `format_table` / `format_table_lines`；`crates/tui/src/render/pulldown.rs` 的 `flush_table`；`widgets/state/app/agent.rs` 与 `visibility.rs` 的流式刷出点。
+
+---
+
+## 1. 2026-08-16 — 超宽表格拆分为可放下的列块（不再出现被折断的管道行）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`split_into_fitting_chunks`、`render_table_chunk`、`row_width`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/render/cells/markdown.rs`（`wide_table_chunks_into_fitting_blocks` 测试） |
+
+**Symptom / motivation:** 宽度超过面板的 Markdown 管道表格（例如 40 列面板里的 10 列表格）渲染出的行比可用宽度还宽：`fit_columns_to_width` 收缩到 `MIN_COL_WIDTH = 8` 可读性下限就停（10×8 + 3×10 + 1 = 111 列放不进 40 列）。随后 `MarkdownCell::render_if_needed` 里面板级的 `wrap_line` 把每个表格行拦腰折断，丢失行首管道符、后续所有行全部错位——表格看起来像被撕碎了一样。
+
+**Decision:** `format_table` 现在保证每一行都放得下可用宽度。全局收缩碰到列宽下限后如果整表仍然过宽（`row_width > available_width`），就把列拆成若干连续的、各自放得下的块（`split_into_fitting_chunks`）；每个块渲染成独立的小表格，表头与分隔线重复（`render_table_chunk`）。单独一列也放不下时，该列继续收缩到下限以下（最小 1），保证它的块必然放得下。这样 `wrap_line` 永远见不到超宽的表格行，也就不会折断管道对齐。无限宽路径（`available_width = None`，日志/弹窗正文）保持不变——那些行由 widget 裁剪，而不是被折断。
+
+**Behavior after:** 任何表格都能放进面板；真正很宽的表格显示为纵向堆叠的列块，表头重复，块内各行保持对齐（CJK 感知的显示宽度填充、表格内单元格换行）。宽度感知的消息路径中，行宽永远不会超过面板宽度。
+
+**Pointers:** `crates/tui/src/render/render_md.rs` 中的 `format_table` 分块分发与 `split_into_fitting_chunks`/`render_table_chunk`；回归测试 `wide_table_chunks_into_fitting_blocks`（`crates/tui/src/render/cells/markdown.rs`）。
+
+---
+
 ## 1. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
 
 | Field | Value |

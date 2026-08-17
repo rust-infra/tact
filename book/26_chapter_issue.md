@@ -29,6 +29,159 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-17 — Responses model switches adapt web-search query fields
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 22 (LLM / Responses); `crates/tact_llm/src/openai/responses/wire.rs`, `crates/tact_llm/src/openai/responses/convert.rs` |
+
+**Symptom / motivation:** Switching from an OpenAI model to a DeepSeek-compatible model on the same Responses endpoint replayed a prior `web_search_call` with `action.query`, while the target endpoint required `action.queries`, causing HTTP 400 `missing field queries`.
+
+**Decision:** Keep the existing Responses baseline and normalize only the hosted web-search action at the outgoing boundary when the request model changes: DeepSeek-like targets receive `queries: [query]`; other targets receive the first query as singular `query`. Same-model replay remains verbatim.
+
+**Behavior after:** Model switching no longer sends the previous model's incompatible `query` / `queries` spelling, while the rest of the opaque Responses baseline and logical conversation remain unchanged.
+
+**Pointers:** `normalize_web_search_call_query_shape_in_items` in `crates/tact_llm/src/openai/responses/wire.rs`; outgoing baseline handling in `create_response` in `crates/tact_llm/src/openai/responses/convert.rs`; regression tests for both conversion directions; Ch 22.
+
+---
+
+## 1. 2026-08-17 — Pending prompt `[Cancel]` sits beside the hint text
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/input.rs`, `crates/tui/src/handlers/mouse.rs`, `crates/tui/src/widgets/state/app/pending.rs` |
+
+**Symptom / motivation:** The pending queue's `[Cancel]` control was right-aligned at the far edge of the hint row, making it awkward to reach even though it only controls the nearby pending prompt block.
+
+**Decision:** Reserve the button width while truncating the hint, then render `[Cancel]` immediately after the hint text with one space. Keep the existing render-time hit rectangle and queue-only cancellation semantics.
+
+**Behavior after:** On wide terminals the hint reads `Message will be submitted after the current task [Cancel]`; the button is directly beside the explanatory text, clicks clear only queued prompts, and narrow terminals still hide it.
+
+**Pointers:** `render_pending_block` in `crates/tui/src/render/input.rs`; `handle_mouse_down` and `pending_cancel_click_hits_the_rendered_button` in `crates/tui/src/handlers/mouse.rs`; `App::clear_pending_messages` in `widgets/state/app/pending.rs`; Ch 23; `docs/superpowers/specs/2026-08-17-pending-cancel-button-placement-design.md`.
+
+---
+
+## 1. 2026-08-16 — Log rows carry explicit provenance instead of inferring system items from text
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix / optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/widgets/state/mod.rs`, `crates/tui/src/widgets/state/app/popups.rs`, `crates/tui/src/render/log.rs` |
+
+**Symptom / motivation:** Log rendering inferred user/system ownership from raw prefixes and indentation. A normal item beginning with two spaces could enter the system plain-text path, so Markdown such as `  **bold text**` displayed literal `**` markers. The same heuristics also made user continuation detection and row indentation depend on neighboring raw strings.
+
+**Decision:** Add `LogItemKind` metadata to every physical log row. Insertion paths assign the source explicitly: user, assistant Markdown, system plain/Markdown, system tool, or Thinking. History uses the original `Role` / content path; live updates use their `AgentUpdate` variant. Rendering, indentation, category separators, and user-gap handling consume this metadata. Explicit system marker prefixes only choose a system color after the source is already known.
+
+**Behavior after:** Indented assistant/system Markdown keeps Markdown styling; user rows and continuations use their recorded source; tool and Thinking placeholders retain their dedicated indentation; raw text is no longer used to infer row ownership or category. `RawMessageType`, `is_user_message_line`, `user_line_mask`, and `classify_system_message` are removed from the main log path.
+
+**Pointers:** `LogItemKind` / `SystemMsgStyle` in `crates/tui/src/widgets/state/mod.rs`; synchronized metadata operations in `app/popups.rs`; explicit insertion paths in `app/messages.rs`, `app/agent.rs`, and `handlers/mod.rs`; metadata-driven rendering in `render/log.rs`, `render/log_style.rs`, and `app/visibility.rs`; Ch 23.
+
+---
+
+## 1. 2026-08-16 — Nested Markdown list items no longer join the parent row
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/pulldown.rs` (`Writer::start_tag`, `Tag::List`) |
+
+**Symptom / motivation:** With pulldown-cmark events, a nested `Tag::List` arrived while the parent item's inline spans were still in `pending`. The first child marker was therefore appended to the parent row (`• parent    • child one`), while later children rendered on separate rows.
+
+**Decision:** When entering a nested list and the writer has an unfinished parent list row, flush that row before pushing the nested list context. The existing marker and per-level indentation logic remains unchanged.
+
+**Behavior after:** The parent and every nested item render on separate rows; nested bullets retain four-column indentation per list level. Existing ordered-list and task-list behavior is unchanged.
+
+**Pointers:** `Writer::start_tag` in `crates/tui/src/render/pulldown.rs`; regression test `nested_list_items_render_on_separate_lines`; Ch 23.
+
+---
+
+## 1. 2026-08-16 — Tables render a horizontal separator between body rows
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`render_table_chunk`, `push_separator`) |
+
+**Symptom / motivation:** Pipe tables only drew the header separator; multi-row bodies rendered as consecutive wrapped blocks, so long rows were hard to tell apart and the table did not read as a grid.
+
+**Decision:** `render_table_chunk` now emits a separator row (accent-colored dashes matching the column widths, same look as the header rule) after every body row except the last. Rows that wrap into several visual sub-rows stay above their rule. A body row already followed by an explicit dash-only row (`/skills` style dividers) does not get an extra rule. The separator is generated from the same width data, so it stays pipe-aligned with every row, including chunk-split tables and streamed rows (`format_table_lines` shares the implementation).
+
+**Behavior after:** Multi-row tables display with grid lines between rows (header rule + inter-row rules); single-row tables are unchanged. Wrapped continuation lines stay grouped under their row, separators keep display-width alignment.
+
+**Pointers:** `render_table_chunk` / `push_separator` in `crates/tui/src/render/render_md.rs`; updated row-count assertions in `format_table_aligns_cjk_and_ascii`, `format_table_keeps_pipe_inside_cell`, `format_table_splits_chunks_only_when_compact_cannot_fit`, `format_table_renders_row_separators_aligned`.
+
+---
+
+## 1. 2026-08-16 — Over-wide tables stay intact when a compact layout fits (chunk splits are the last resort)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `fit_columns_to_width`, `MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`), `crates/tui/src/render/cells/markdown.rs` (rendered-width regression tests) |
+
+**Symptom / motivation:** When a table's natural width exceeded the main area, `format_table` shrank columns to the readability floor (`MIN_COL_WIDTH = 8`) and, if the table was still too wide, split it into column chunks that each repeat the header. The greedy chunking produced lopsided blocks (e.g. 12 columns at 95 wide → 8+4, the second block using only half the width; a 4-column long table at 35 wide → 3+1 with a lonely single-column block), even when the whole table could have been shown intact at narrower columns.
+
+**Decision:** Two-phase fit. First shrink to the readability floor; if the table still does not fit, shrink further to the compact floor (`COMPACT_COL_WIDTH = 4` — still ~2 CJK glyphs per line) and keep the table intact whenever that fits. Chunk splitting (`split_into_fitting_chunks`) now runs only when even the compact floor cannot fit (e.g. 10 columns at 40 wide), and the readability floor is restored before splitting so chunk cells stay 8 columns wide. `fit_columns_to_width` gained a `floor` parameter.
+
+**Behavior after:** Tables wider than the main area are compressed column-wise (≥ 4 cols each) and displayed as one complete table with a single header whenever possible; only genuinely unrenderable tables split into chunks (header repeated per chunk), which keeps the existing `wide_table_chunks_into_fitting_blocks` guarantees (rows ≤ panel width, per-block pipe alignment).
+
+**Pointers:** `format_table` / `fit_columns_to_width` / `COMPACT_COL_WIDTH` in `crates/tui/src/render/render_md.rs`; tests `format_table_keeps_overwide_table_intact_when_compact_fits`, `format_table_splits_chunks_only_when_compact_cannot_fit`.
+
+---
+
+## 1. 2026-08-16 — Streamed table rows no longer clip their rightmost pipes after the reply indent
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/widgets/state/app/visibility.rs` (`App::table_layout_width`), `crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs` (`format_table_lines` call sites), `crates/tui/src/render/render_md.rs` (`format_table`), `crates/tui/src/render/cells/markdown.rs` (regression test) |
+
+**Symptom / motivation:** Streamed and system pipe tables were laid out at build time against `log_scroll.width` — the full content width of the log panel. When rendered, assistant / system rows are indented (`nested_log_indent` returns at least `LOG_THINKING_INDENT + 1 = 3` for LLM rows), so the actual render width is 3 columns narrower. Long tables that were shrunk to the full content width then had their trailing pipe and rightmost column clipped, and the columns read as misaligned. The `MarkdownCell` path never had this bug (`render_if_needed` subtracts the indent from `content_width`), which is why only streamed / system tables misaligned.
+
+**Decision:** New `App::table_layout_width()` returns `log_scroll.width - (LOG_THINKING_INDENT + 1)` (floored at 1) and every `format_table_lines` call site (`agent.rs` streaming flushes and `/plugin` + `/marketplace` lists, `visibility.rs::flush_stream_pending`) now lays tables out against it. Every table row renders with indent ≥ 3 (LLM rows = 3, SysTool rows = 4, `/plugin` tables classify as LLM), so a table laid out at the reduced width always fits the real render width.
+
+**Behavior after:** Streamed and system table rows never exceed the rendered content width; trailing pipes stay visible and columns keep their display-width alignment at any panel size. Regression test `streamed_table_rows_stay_aligned_after_reply_indent` asserts real buffer pipe coordinates (aligned within each block, trailing pipe present) at 40/60/80 columns.
+
+**Pointers:** `App::table_layout_width` in `crates/tui/src/widgets/state/app/visibility.rs`; call sites in `widgets/state/app/agent.rs` (lines ~790/810/872/887/972/1028) and `visibility.rs` (`flush_stream_pending`); test in `crates/tui/src/render/cells/markdown.rs`.
+
+---
+
+## 1. 2026-08-16 — Table cells containing `|` no longer split into phantom columns
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `format_table_lines`), `crates/tui/src/render/pulldown.rs` (`flush_table`), `crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs` (streaming flush sites) |
+
+**Symptom / motivation:** `format_table` took raw `| a | b |` strings and re-split every row on `'|'`. `pulldown.rs::flush_table` round-tripped collected cells through such strings, so a cell containing a literal pipe (escaped `\|`, inline code) gained phantom columns and the whole row misaligned. The line-oriented streaming renderer (`agent.rs` / `visibility.rs` table buffers) had the same hazard.
+
+**Decision:** `format_table` now takes structured cells (`headers: &[String]`, `rows: &[Vec<String>]`); it trims cells, synthesizes the GFM header separator, and keeps dash-only body rows as `/skills`-style dashed dividers. `flush_table` passes pulldown's collected cells directly — no `|` round-trip. Raw-source-line callers (streaming buffers, `/plugins`, `/marketplace` lists) moved to a new `format_table_lines`, which joins the buffered lines and renders through the standard pulldown pipeline, so escaping rules apply exactly once. Known upstream limit: pulldown-cmark splits table rows at unescaped pipes even inside code spans (`| x | `a|b` |`), so only the escaped-pipe form is supported end-to-end; `format_table` itself is correct for any cell content it receives.
+
+**Behavior after:** Escaped pipes and pipes inside inline code are cell data, never column separators; structural pipes (column boundaries and row edges) stay aligned because all rows share uniform display-width padding. Tests assert intact cell content plus aligned structural pipes (`format_table_keeps_pipe_inside_cell`, `table_cell_with_pipe_stays_aligned_end_to_end`).
+
+**Pointers:** `format_table` / `format_table_lines` in `crates/tui/src/render/render_md.rs`; `flush_table` in `crates/tui/src/render/pulldown.rs`; streaming flush sites in `widgets/state/app/agent.rs` and `visibility.rs`.
+
+---
+
+## 1. 2026-08-16 — Over-wide tables split into fitting column chunks (no more shredded pipe rows)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/render_md.rs` (`format_table`, `split_into_fitting_chunks`, `render_table_chunk`, `row_width`), `crates/tui/src/render/pulldown.rs` (`flush_table`), `crates/tui/src/render/cells/markdown.rs` (`wide_table_chunks_into_fitting_blocks` test) |
+
+**Symptom / motivation:** A Markdown pipe table wider than the panel (e.g. 10 columns at a 40-column width) rendered rows wider than the available width: `fit_columns_to_width` stops shrinking at the `MIN_COL_WIDTH = 8` readability floor, so 10×8 + 3×10 + 1 = 111 columns cannot fit in 40. The panel-level `wrap_line` pass in `MarkdownCell::render_if_needed` then broke each table row at arbitrary points, dropping leading pipes and misaligning every subsequent row — the table looked like shredded garbage.
+
+**Decision:** `format_table` now guarantees every rendered row fits the available width. After the floor-limited global shrink, if the whole table is still too wide (`row_width > available_width`), the columns are split into contiguous chunks that each fit (`split_into_fitting_chunks`); each chunk renders as its own table block with the header and separator repeated (`render_table_chunk`). A single column that alone cannot fit is shrunk below the floor (down to 1) so its chunk always fits. `wrap_line` then never sees an over-wide table row, so it cannot break pipe alignment. The unlimited-width path (`available_width = None`, log/popup prose) is unchanged — those rows are clipped by the widget, not shredded.
+
+**Behavior after:** Any table fits the panel; genuinely wide tables appear as vertically stacked column chunks with repeated headers, each chunk internally aligned (CJK-aware display-width padding, in-table cell wrapping). Rows never exceed the panel width in the width-aware message path.
+
+**Pointers:** `format_table` chunk dispatch + `split_into_fitting_chunks`/`render_table_chunk` in `crates/tui/src/render/render_md.rs`; regression test `wide_table_chunks_into_fitting_blocks` in `crates/tui/src/render/cells/markdown.rs`.
+
+---
+
 ## 1. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
 
 | Field | Value |

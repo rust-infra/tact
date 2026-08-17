@@ -230,12 +230,63 @@ pub(crate) enum Status {
     Done,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::upper_case_acronyms)]
-pub(crate) enum RawMessageType {
-    LLM,
-    LLMThinking,
-    SysTool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SystemMsgStyle {
+    Default,
+    Success,
+    Error,
+    Warning,
+    Accent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogItemKind {
+    User,
+    AssistantMarkdown,
+    SystemPlain(SystemMsgStyle),
+    SystemMarkdown,
+    SystemTool,
+    Thinking,
+}
+
+pub(crate) struct LogItem {
+    pub(crate) line: Line<'static>,
+    pub(crate) raw: String,
+    pub(crate) kind: LogItemKind,
+    pub(crate) markdown_cell: Option<crate::render::cells::markdown::MarkdownCell>,
+}
+
+impl std::fmt::Debug for LogItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LogItem")
+            .field("raw", &self.raw)
+            .field("kind", &self.kind)
+            .field("has_markdown_cell", &self.markdown_cell.is_some())
+            .finish()
+    }
+}
+
+impl LogItem {
+    pub(crate) fn new(line: Line<'static>, raw: String, kind: LogItemKind) -> Self {
+        Self {
+            line,
+            raw,
+            kind,
+            markdown_cell: None,
+        }
+    }
+
+    pub(crate) fn markdown(raw: String, theme: &Theme, kind: LogItemKind) -> Self {
+        let markdown_cell = crate::render::cells::markdown::MarkdownCell::new(&raw, theme)
+            .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
+        Self {
+            line: Line::from(""),
+            raw,
+            kind,
+            markdown_cell: Some(markdown_cell),
+        }
+    }
 }
 
 // ========== Main State ==========
@@ -256,13 +307,7 @@ pub struct App {
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
     pub(crate) model_context_window: usize,
-    pub(crate) messages: Vec<Line<'static>>,
-    pub(crate) raw_messages: Vec<String>,
-    pub(crate) raw_message_types: Vec<RawMessageType>,
-    /// Parallel to `raw_messages`: cached `MarkdownCell` when the message is
-    /// a whole-markdown notice (`AgentUpdate::MdInfo` / `/skills`), `None`
-    /// otherwise. `Some` doubles as the "render as MarkdownCell" marker.
-    pub(crate) markdown_cells: Vec<Option<crate::render::cells::markdown::MarkdownCell>>,
+    pub(crate) log_items: Vec<LogItem>,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,

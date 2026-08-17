@@ -484,6 +484,83 @@ fn whole_doc() {}
         );
     }
 
+    #[test]
+    fn table_cell_with_pipe_stays_aligned_end_to_end() {
+        // 回归：转义管道 `\|` 在整条管线（pulldown → format_table）中保持为
+        // 单元格数据，不再被二次拆列。
+        // 注意：行内代码里的管道（| x | `a|b` |）是 pulldown-cmark 的上游
+        // 限制——它在单元格层面就按未转义管道切分表格行，本仓库无法修复；
+        // `format_table_keeps_pipe_inside_cell` 保证的是 format_table 层收到
+        // 结构化单元格后不再拆列。
+        let md = "| A | B |\n| --- | --- |\n| x | `plain` |\n| y | esc\\|pipe |";
+        let cell = MarkdownCell::new(md, &dark());
+        let width = 60u16;
+        let text = render_text(&cell, width);
+
+        let rows: Vec<&str> = text.lines().filter(|l| l.contains('|')).collect();
+        assert!(!rows.is_empty(), "expected table rows:\n{text}");
+        // The header row keeps exactly 3 structural pipes.
+        assert_eq!(rows[0].matches('|').count(), 3, "header pipes: {}", rows[0]);
+        // The escaped pipe survives intact inside column B; inline code in a
+        // cell renders without backticks.
+        assert!(text.contains("esc|pipe"), "{text}");
+        assert!(text.contains("plain"), "{text}");
+        // Uniform display width across rows, with the structural pipes (the
+        // A/B boundary and the trailing edge) aligned. Pipes inside cell
+        // data are allowed between them.
+        let widths: Vec<usize> = rows
+            .iter()
+            .map(|r| unicode_width::UnicodeWidthStr::width(*r))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "row display widths differ: {widths:?}\n{text}"
+        );
+        let pipe_cols = |row: &str| -> Vec<usize> {
+            let mut cols = Vec::new();
+            let mut col = 0;
+            for ch in row.chars() {
+                if ch == '|' {
+                    cols.push(col);
+                }
+                col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+            cols
+        };
+        let sep: Vec<Vec<usize>> = rows.iter().map(|r| pipe_cols(r)).collect();
+        assert!(
+            sep.iter()
+                .all(|c| c.first() == sep[0].first() && c.last() == sep[0].last()),
+            "structural pipes must align:\n{text}"
+        );
+    }
+
+    #[test]
+    fn wide_table_chunks_into_fitting_blocks() {
+        // 回归：10 列表格在 40 列面板里，旧实现 shrink 到 MIN_COL_WIDTH=8
+        // 地板后整行仍 111 列宽，外层 wrap_line 把表格行拦腰折断导致管道错乱。
+        // 现在列会被拆成多个能放下的块（每块重复表头），所有行都不超宽。
+        let md = "| c1 | c2 | c3 | c4 | c5 | c6 | c7 | c8 | c9 | c10 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| a1 | b1 | c1 | d1 | e1 | f1 | g1 | h1 | i1 | j1 |";
+        let cell = MarkdownCell::new(md, &dark());
+        let width = 40u16;
+        let text = render_text(&cell, width);
+
+        let rows: Vec<&str> = text.lines().filter(|l| l.contains('|')).collect();
+        assert!(!rows.is_empty(), "expected table rows:\n{text}");
+        for r in &rows {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(*r) <= width as usize,
+                "row must never exceed the panel width (was shredded): {r}\n{text}"
+            );
+        }
+        // The header repeats per chunk: chunk 1 carries c1..c7, chunk 2 c8..c10.
+        assert!(
+            text.contains("| c1 | c2 | c3") && text.contains("| c8 | c9 | c10"),
+            "each chunk must repeat the header:\n{text}"
+        );
+        assert!(text.contains("a1") && text.contains("j1"), "{text}");
+    }
+
     /// 肉眼查看渲染效果的 demo：跑
     /// `cargo test -p tui --lib cells::markdown::tests::demo_render_output -- --nocapture`
     #[test]
@@ -534,8 +611,11 @@ mod integration_tests {
     use tact_protocol::AgentUpdate;
 
     use crate::{
-        render::test_harness::{make_app, render_log_panel_text},
-        widgets::state::RawMessageType,
+        render::{
+            render_md::format_table_lines,
+            test_harness::{make_app, render_log_panel_text},
+        },
+        widgets::state::LogItemKind,
     };
 
     #[test]
@@ -547,9 +627,9 @@ mod integration_tests {
             md,
         )]);
 
-        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.log_items.len(), 1);
         assert!(
-            app.markdown_cells[0].is_some(),
+            app.log_items[0].markdown_cell.is_some(),
             "assistant history should use the width-aware MarkdownCell"
         );
 
@@ -573,12 +653,12 @@ mod integration_tests {
         assert!(text.contains("fn hi() {}"), "{text}");
         // One physical message: the markdown is a single cell.
         assert_eq!(
-            app.messages.len(),
+            app.log_items.len(),
             1,
             "MdInfo must append exactly one message"
         );
-        assert!(app.markdown_cells[0].is_some());
-        assert_eq!(app.raw_messages[0], md);
+        assert!(app.log_items[0].markdown_cell.is_some());
+        assert_eq!(app.log_items[0].raw, md);
     }
 
     #[test]
@@ -589,7 +669,7 @@ mod integration_tests {
         app.append_msg(
             ratatui::text::Line::from("after markdown"),
             "after markdown".into(),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
 
         let text = render_log_panel_text(&mut app, 40, 20);
@@ -605,7 +685,7 @@ mod integration_tests {
         app.append_msg(
             ratatui::text::Line::from("tail line"),
             "tail line".into(),
-            RawMessageType::LLM,
+            LogItemKind::AssistantMarkdown,
         );
 
         // Render twice: the prefix-sum cache must stay consistent so the
@@ -641,4 +721,66 @@ mod integration_tests {
             "markdown cell must not draw selection overlay (reversed), got:\n{text}"
         );
     }
+
+    #[test]
+    fn streamed_table_rows_stay_aligned_after_reply_indent() {
+        // 回归：流式表格按 log_scroll.width（含缩进的全内容宽度）布局，
+        // 但渲染时 assistant 行缩进 LOG_THINKING_INDENT + 1 = 3 列，实际
+        // 可用宽度少 3 —— 长表格行尾 pipe 被裁掉、列看起来错位。
+        // `table_layout_width` 在布局时扣掉缩进，表格行永不超渲染宽度。
+        use crate::render::test_harness::render_log_panel_terminal;
+        use crate::widgets::state::LogItemKind;
+
+        let md = "| 编号 | 问题描述 | 影响范围 | 处理建议 |\n|-----:|:---------|:---------|:---------|\n| 1 | 当用户连续快速点击「保存」按钮超过五次时，系统会偶发出现重复提交，导致数据库中产生两条内容完全一致但主键不同的记录 | 涉及所有使用表单保存功能的页面，包括用户管理、订单管理、商品管理、配置管理四个模块 | 在前端增加防抖与提交锁，后端在事务中增加唯一性约束校验，并对历史重复数据执行清理脚本 |";
+
+        for width in [40u16, 60, 80] {
+            let mut app = make_app();
+            // First render sets log_scroll.width, as in real usage before
+            // streaming table rows arrive.
+            let _first = render_log_panel_terminal(&mut app, width, 5);
+            let (styled, raw) = format_table_lines(
+                &md.lines().map(|s| s.to_string()).collect::<Vec<_>>(),
+                &app.theme,
+                Some(app.table_layout_width()),
+            );
+            for (s, r) in styled.into_iter().zip(raw) {
+                app.append_msg(s, r, LogItemKind::AssistantMarkdown);
+            }
+            let height = app.log_items.len() as u16 + 2;
+            let terminal = render_log_panel_terminal(&mut app, width, height);
+            let buf = terminal.backend().buffer();
+
+            // Group pipe cells by row using real buffer coordinates.
+            let mut rows: Vec<Vec<u16>> = Vec::new();
+            for y in 0..buf.area.height {
+                let xs: Vec<u16> = (0..buf.area.width)
+                    .filter(|&x| buf[(x, y)].symbol() == "|")
+                    .collect();
+                if !xs.is_empty() {
+                    rows.push(xs);
+                }
+            }
+            assert!(!rows.is_empty(), "expected table rows at width {width}");
+            // Rows sharing a pipe pattern (same block / column count) must
+            // have identical pipe columns.
+            for w in rows.windows(2) {
+                if w[0].len() == w[1].len() {
+                    assert_eq!(w[0], w[1], "same-block pipes misaligned at width {width}");
+                }
+            }
+            // Every table row keeps its trailing pipe (no right clipping).
+            assert!(
+                rows.iter().all(|xs| xs.len() >= 2),
+                "trailing pipe clipped at width {width}: {rows:?}"
+            );
+            // Every pipe column must sit inside the rendered content area
+            // (panel width minus right border).
+            for xs in &rows {
+                for &x in xs {
+                    assert!(x < width, "pipe beyond panel at width {width}: {rows:?}");
+                }
+            }
+        }
+    }
+    // appended below integration_tests
 }
